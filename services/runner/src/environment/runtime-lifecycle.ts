@@ -34,6 +34,10 @@
 import { rmSync } from "node:fs";
 
 import { configureDaytonaCodexEnv } from "../engines/sandbox_agent/codex-assets.ts";
+import {
+  prepareCodexRolloutTrace,
+  type CodexRolloutTraceCapture,
+} from "../engines/sandbox_agent/codex-rollout-capture.ts";
 import { buildDaemonEnv } from "../engines/sandbox_agent/daemon.ts";
 import {
   buildPiExtensionEnv,
@@ -152,7 +156,10 @@ export interface BuildRuntimeEnvironmentInput {
   request: AgentRunRequest;
   piSkillSnapshot: unknown;
   log: Log;
-  deps: { buildDaemonEnv?: typeof buildDaemonEnv };
+  deps: {
+    buildDaemonEnv?: typeof buildDaemonEnv;
+    prepareCodexRolloutTrace?: typeof prepareCodexRolloutTrace;
+  };
 }
 
 export interface RuntimeEnvironment {
@@ -164,6 +171,8 @@ export interface RuntimeEnvironment {
   piSessionDir: string | undefined;
   /** The 0600 file holding the OTLP bearer, or undefined when there is none to write. */
   otlpAuthFilePath: string | undefined;
+  /** Native Codex trace staging source, or undefined when capture is disabled/non-Codex. */
+  codexRolloutTrace: CodexRolloutTraceCapture | undefined;
 }
 
 /**
@@ -231,9 +240,18 @@ export function buildRuntimeEnvironment(
   // `sessions/` rollouts) while CODEX_SQLITE_HOME points in-VM, off the mount. Set here because
   // the Daytona daemon env is fixed at sandbox creation and is built from `piExtEnv`.
   configureDaytonaCodexEnv(input.plan, piExtEnv);
+  const codexRolloutTrace = (
+    input.deps.prepareCodexRolloutTrace ?? prepareCodexRolloutTrace
+  )(input.plan, { env, piExtEnv });
   // LAST, deliberately: the local daemon inherits the extension env, and Daytona gets the same
   // values through `envVars`. Assigning earlier would drop every key added above.
   Object.assign(env, piExtEnv);
 
-  return { env, piExtEnv, piSessionDir, otlpAuthFilePath };
+  return {
+    env,
+    piExtEnv,
+    piSessionDir,
+    otlpAuthFilePath,
+    codexRolloutTrace,
+  };
 }

@@ -1,0 +1,4 @@
+{"schema_version":1,"seq":1,"wall_time_unix_ms":2000,"rollout_id":"rollout-turn","thread_id":null,"codex_turn_id":null,"payload":{"type":"rollout_started","trace_id":"trace-turn","root_thread_id":"thread-root"}}
+{"schema_version":1,"seq":2,"wall_time_unix_ms":2010,"rollout_id":"rollout-turn","thread_id":null,"codex_turn_id":null,"payload":{"type":"thread_started","thread_id":"thread-root","agent_path":"/root","metadata_payload":null}}
+{"schema_version":1,"seq":3,"wall_time_unix_ms":2020,"rollout_id":"rollout-turn","thread_id":"thread-root","codex_turn_id":"turn-warm","payload":{"type":"codex_turn_started","codex_turn_id":"turn-warm","thread_id":"thread-root"}}
+{"schema_version":1,"seq":4,"wall_time_unix_ms":2030,"rollout_id":"rollout-turn","thread_id":"thread-root","codex_turn_id":"turn-warm","payload":{"type":"codex_turn_ended","codex_turn_id":"turn-warm","status":"completed"}}

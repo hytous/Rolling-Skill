@@ -166,6 +166,11 @@ import {
 import { uploadToolMcpAssets, type ToolMcpAssets } from "./tool-mcp-assets.ts";
 import { prepareWorkspace } from "./workspace.ts";
 import { prepareEnvironmentSetup } from "./environment-setup.ts";
+import {
+  createCodexRolloutEvidencePort,
+  resolveCodexEvidenceOperationTimeoutMs,
+  runCodexEvidenceOperation,
+} from "./codex-rollout-evidence.ts";
 
 function log(message: string): void {
   process.stderr.write(`[sandbox-agent] ${message}\n`);
@@ -372,6 +377,43 @@ export async function acquireEnvironment(
       session: environment.session,
       alreadyRequested: !!environment.sessionDestroyRequested,
     });
+    // Codex writes its root terminal while the harness session closes. Preserve and validate the
+    // final native bytes after that boundary, but before the sandbox disappears; then remove only
+    // the ephemeral staging source. Both calls are diagnostic and must never block teardown.
+    if (
+      environment.codexRolloutEvidence &&
+      !environment.codexRolloutEvidenceAbandoned
+    ) {
+      const evidenceTimeoutMs =
+        deps.codexEvidenceOperationTimeoutMs ??
+        resolveCodexEvidenceOperationTimeoutMs();
+      const finalSweep = await runCodexEvidenceOperation({
+        operation: (operationSignal) =>
+          environment.codexRolloutEvidence!.finalize({
+            signal: operationSignal,
+          }),
+        timeoutMs: evidenceTimeoutMs,
+        label: "final-sweep",
+        log: logger,
+      });
+      if (!finalSweep.ok && finalSweep.reason === "timed-out") {
+        environment.codexRolloutEvidenceAbandoned = true;
+      }
+      if (!environment.codexRolloutEvidenceAbandoned) {
+        const cleanup = await runCodexEvidenceOperation({
+          operation: (operationSignal) =>
+            environment.codexRolloutEvidence!.cleanup({
+              signal: operationSignal,
+            }),
+          timeoutMs: evidenceTimeoutMs,
+          label: "source-cleanup",
+          log: logger,
+        });
+        if (!cleanup.ok && cleanup.reason === "timed-out") {
+          environment.codexRolloutEvidenceAbandoned = true;
+        }
+      }
+    }
     // SandboxLifecycle owns park-versus-delete. It returns `parked` because the mount teardown
     // below is gated on it: a parked Daytona sandbox keeps its agent mount.
     const { parked } = await teardownSandbox({
@@ -537,6 +579,22 @@ export async function acquireEnvironment(
     );
     environment.sandbox = acquiredSandbox.sandbox;
     environment.resumable = acquiredSandbox.resumable;
+    if (environment.codexRolloutTrace) {
+      try {
+        environment.codexRolloutEvidence = (
+          deps.createCodexRolloutEvidence ?? createCodexRolloutEvidencePort
+        )({
+          capture: environment.codexRolloutTrace,
+          sandbox: environment.sandbox,
+          producerTrust: "diagnostic_full_access",
+          log: logger,
+        });
+      } catch {
+        // Capture is diagnostic. A collector construction failure must not change the run path,
+        // and raw exception text may contain a local/remote source path, so keep the log bounded.
+        logger("codex evidence collector initialization failed");
+      }
+    }
     // Read AFTER the sandbox is acquired, because the port is bound to a sandbox: the provider has
     // no allocation to deliver against until create (or reconnect) has settled. Undefined for
     // every provider that cannot deliver a credential to a live sandbox, which is what routes a

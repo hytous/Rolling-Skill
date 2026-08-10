@@ -123,7 +123,43 @@ index 29a0a22210d39ae9d886c0ccd7059cd9af0e26f0..7d4585271c700e6222d24bd391604e70
      const updated = {
        ...existing,
        agentSessionId: recreated.sessionId,
-@@ -2504,6 +2545,25 @@ function normalizeSessionInit(value, cwdShorthand, providerDefaultCwd) {
+@@ -1822,15 +1863,17 @@ var SandboxAgent = class _SandboxAgent {
+   async listAcpServers() {
+     return this.requestJson("GET", `${API_PREFIX}/acp`);
+   }
+-  async listFsEntries(query = {}) {
++  async listFsEntries(query = {}, options = {}) {
+     return this.requestJson("GET", `${FS_PATH}/entries`, {
+-      query
++      query,
++      signal: options.signal
+     });
+   }
+-  async readFsFile(query) {
++  async readFsFile(query, options = {}) {
+     const response = await this.requestRaw("GET", `${FS_PATH}/file`, {
+       query,
+-      accept: "application/octet-stream"
++      accept: "application/octet-stream",
++      signal: options.signal
+     });
+     const buffer = await response.arrayBuffer();
+     return new Uint8Array(buffer);
+@@ -1844,8 +1887,11 @@ var SandboxAgent = class _SandboxAgent {
+     });
+     return await response.json();
+   }
+-  async deleteFsEntry(query) {
+-    return this.requestJson("DELETE", `${FS_PATH}/entry`, { query });
++  async deleteFsEntry(query, options = {}) {
++    return this.requestJson("DELETE", `${FS_PATH}/entry`, {
++      query,
++      signal: options.signal
++    });
+   }
+   async mkdirFs(query) {
+     return this.requestJson("POST", `${FS_PATH}/mkdir`, { query });
+@@ -2504,6 +2550,25 @@ function normalizeSessionInit(value, cwdShorthand, providerDefaultCwd) {
      mcpServers: value.mcpServers ?? []
    };
  }
@@ -149,6 +185,29 @@ index 29a0a22210d39ae9d886c0ccd7059cd9af0e26f0..7d4585271c700e6222d24bd391604e70
  function mapSessionParams(params, agentSessionId) {
    return {
      ...params,
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -3245,10 +3245,16 @@ declare class SandboxAgent {
+     getAgent(agent: string, options?: AgentQueryOptions): Promise<AgentInfo>;
+     installAgent(agent: string, request?: AgentInstallRequest): Promise<AgentInstallResponse>;
+     listAcpServers(): Promise<AcpServerListResponse>;
+-    listFsEntries(query?: FsEntriesQuery): Promise<FsEntry[]>;
+-    readFsFile(query: FsPathQuery): Promise<Uint8Array>;
++    listFsEntries(query?: FsEntriesQuery, options?: {
++        signal?: AbortSignal;
++    }): Promise<FsEntry[]>;
++    readFsFile(query: FsPathQuery, options?: {
++        signal?: AbortSignal;
++    }): Promise<Uint8Array>;
+     writeFsFile(query: FsPathQuery, body: BodyInit): Promise<FsWriteResponse>;
+-    deleteFsEntry(query: FsDeleteQuery): Promise<FsActionResponse>;
++    deleteFsEntry(query: FsDeleteQuery, options?: {
++        signal?: AbortSignal;
++    }): Promise<FsActionResponse>;
+     mkdirFs(query: FsPathQuery): Promise<FsActionResponse>;
+     moveFs(request: FsMoveRequest): Promise<FsMoveResponse>;
+     statFs(query: FsPathQuery): Promise<FsStat>;
 diff --git a/dist/providers/local.js b/dist/providers/local.js
 index 3e68d70c340ded6b2f99cf3142e951b804a4a8a2..103851397d0f575f103644002a94ab46306034d5 100644
 --- a/dist/providers/local.js

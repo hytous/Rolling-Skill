@@ -182,12 +182,18 @@ export async function prepareEnvironmentSetup(
     request,
     piSkillSnapshot,
     log: logger,
-    deps: { ...(deps.buildDaemonEnv ? { buildDaemonEnv: deps.buildDaemonEnv } : {}) },
+    deps: {
+      ...(deps.buildDaemonEnv ? { buildDaemonEnv: deps.buildDaemonEnv } : {}),
+      ...(deps.prepareCodexRolloutTrace
+        ? { prepareCodexRolloutTrace: deps.prepareCodexRolloutTrace }
+        : {}),
+    },
   });
   const env = runtimeEnvironment.env;
   const piExtEnv = runtimeEnvironment.piExtEnv;
   const piSessionDir = runtimeEnvironment.piSessionDir;
   const otlpAuthFilePath = runtimeEnvironment.otlpAuthFilePath;
+  const codexRolloutTrace = runtimeEnvironment.codexRolloutTrace;
   const strictModel = modelResolutionStrict();
   logger(
     `tools=${plan.tools.toolSpecs.length} executableTools=${plan.tools.executableToolSpecs.length} ` +
@@ -359,6 +365,9 @@ export async function prepareEnvironmentSetup(
     runAgentDir,
     otlpAuthFilePath,
     codexSqliteHome,
+    codexRolloutTrace,
+    codexRolloutEvidence: undefined,
+    codexRolloutEvidenceAbandoned: false,
     mountCreds,
     agentMountCreds,
     mountProjectId: mountCreds?.projectId,

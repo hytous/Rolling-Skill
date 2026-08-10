@@ -1,0 +1,1 @@
+{"schema_version":1,"trace_id":"trace-gap","rollout_id":"rollout-gap","root_thread_id":"thread-root","started_at_unix_ms":4000,"raw_event_log":"trace.jsonl","payloads_dir":"payloads"}

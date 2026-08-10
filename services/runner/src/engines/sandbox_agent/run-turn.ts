@@ -87,6 +87,10 @@ import { reconstructHistoryIfNeeded } from "./reconstruct-history.ts";
 import { carriesApprovalReplyOnly } from "./session-identity.ts";
 import { buildTurnText, priorMessages } from "./transcript.ts";
 import { resolveRunUsage } from "./usage.ts";
+import {
+  resolveCodexEvidenceOperationTimeoutMs,
+  runCodexEvidenceOperation,
+} from "./codex-rollout-evidence.ts";
 
 /**
  * Run one turn against an acquired environment: start a fresh otel run, wire this turn's pause
@@ -141,6 +145,49 @@ export async function runTurn(
   // stop this turn's relay on EVERY exit path (a cleared sink must never orphan it).
   let otel: ReturnType<typeof createSandboxAgentOtel> | undefined;
   let activeTurn: CurrentTurn | undefined;
+  let codexEvidenceSettled = false;
+  const codexEvidenceTimeoutMs =
+    deps.codexEvidenceOperationTimeoutMs ??
+    resolveCodexEvidenceOperationTimeoutMs();
+  const beginCodexEvidence = async (): Promise<void> => {
+    if (!env.codexRolloutEvidence || env.codexRolloutEvidenceAbandoned) return;
+    const result = await runCodexEvidenceOperation({
+      operation: (operationSignal) =>
+        env.codexRolloutEvidence!.beginTurn({ signal: operationSignal }),
+      timeoutMs: codexEvidenceTimeoutMs,
+      label: "begin",
+      log: logger,
+    });
+    if (!result.ok && result.reason === "timed-out") {
+      env.codexRolloutEvidenceAbandoned = true;
+    }
+  };
+  const settleCodexEvidence = async (
+    outcome: "completed" | "cancelled" | "error",
+  ): Promise<void> => {
+    if (
+      codexEvidenceSettled ||
+      !env.codexRolloutEvidence ||
+      env.codexRolloutEvidenceAbandoned
+    ) return;
+    codexEvidenceSettled = true;
+    const settled = await runCodexEvidenceOperation({
+      operation: (operationSignal) =>
+        env.codexRolloutEvidence!.settleTurn({
+          outcome,
+          signal: operationSignal,
+        }),
+      timeoutMs: codexEvidenceTimeoutMs,
+      label: "settle",
+      log: logger,
+    });
+    if (!settled.ok && settled.reason === "timed-out") {
+      env.codexRolloutEvidenceAbandoned = true;
+    }
+    if (settled.ok && settled.value) {
+      otel?.recordCodexEvidence(settled.value.projection);
+    }
+  };
   // Assigned once the turn's interaction plumbing exists; called from the `finally` so EVERY exit
   // path (done, paused, cancelled, error) settles the durable rows this turn's in-band answers
   // consumed. Without it, a resume the harness does not re-gate leaves them `pending` forever.
@@ -939,7 +986,7 @@ export async function runTurn(
       for (const seed of carriedApprovedExecutions) {
         seedApprovedExecution(seed);
       }
-      for (const decision of decisions) {
+      for (const [decisionIndex, decision] of decisions.entries()) {
         // Seed this run's trace with the parked tool call so the completing `tool_call_update`
         // closes it and the FE approval part flips to output-available even if the adapter
         // re-announces nothing.
@@ -972,6 +1019,9 @@ export async function runTurn(
           // the records this call parked on must not outlive the human's "no".
           approvedContent.onDenied(decision.toolCallId);
         }
+        // This is the first operation below that can advance the still-live native Codex rollout.
+        // The original paused turn already owns the active attempt, so begin is idempotent here.
+        if (decisionIndex === 0) await beginCodexEvidence();
         // Answer this gate on the live session. Each parked gate holds its OWN pending
         // `respondPermission` on the harness, so answering them one by one settles each
         // independently — an approve and a deny in the same turn each land on the right call.
@@ -994,6 +1044,8 @@ export async function runTurn(
       // this answer batch and let the normal park path refresh their approval TTL.
       if (opts.resume.carriedForward.length > 0) pause.pause();
     } else {
+      // Establish the cursor immediately before the fresh prompt can advance the native rollout.
+      await beginCodexEvidence();
       promptPromise = Promise.resolve(
         env.session.prompt(promptBlocks),
       );
@@ -1142,6 +1194,15 @@ export async function runTurn(
 
     // Before `finish()`, which emits the terminal `done` the API reconciles gates against.
     await settleInBandInteractions?.();
+    if (stopReason !== "paused") {
+      await settleCodexEvidence(
+        swallowedError
+          ? "error"
+          : stopReason === "cancelled"
+            ? "cancelled"
+            : "completed",
+      );
+    }
     const output = run.finish(stopReason);
     await run.flush();
     const turnEndedAt = new Date().toISOString();
@@ -1216,6 +1277,7 @@ export async function runTurn(
     invalidateContinuity(sessionId, plan.harness, deps);
     // Same ordering as the happy path: settle the durable rows before the terminal record goes out.
     await settleInBandInteractions?.();
+    await settleCodexEvidence("error");
     // finish() must not throw uncaught — tracing must not mask the run error.
     try {
       otel?.finish();

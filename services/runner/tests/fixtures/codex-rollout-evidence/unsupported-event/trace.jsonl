@@ -1,0 +1,2 @@
+{"schema_version":1,"seq":1,"wall_time_unix_ms":7000,"rollout_id":"rollout-future","thread_id":null,"codex_turn_id":null,"payload":{"type":"rollout_started","trace_id":"trace-future","root_thread_id":"thread-root"}}
+{"schema_version":1,"seq":2,"wall_time_unix_ms":7010,"rollout_id":"rollout-future","thread_id":"thread-root","codex_turn_id":"turn-future","payload":{"type":"future_runtime_observation","nested":{"evidence":{"raw_payload_id":"raw_payload:future","kind":{"type":"protocol_event"},"path":"payloads/1.json"}}}}

@@ -43,6 +43,8 @@ import {
 import { type SessionContinuityStore } from "./session-continuity.ts";
 import { type InstalledMountExpiries } from "./session-identity.ts";
 import type { AppliedEnvironmentState } from "./applied-state.ts";
+import type { CodexRolloutTraceCapture } from "./codex-rollout-capture.ts";
+import type { CodexRolloutEvidencePort } from "./codex-rollout-evidence.ts";
 import type { FacetDigests } from "../../lifecycle/desired-state.ts";
 import { type TeardownReason } from "./teardown.ts";
 import { uploadToolMcpAssets } from "./tool-mcp-assets.ts";
@@ -55,6 +57,10 @@ export interface SandboxAgentDeps extends BuildRunPlanDeps {
   createPersist?: () => InMemorySessionPersistDriver;
   createOtel?: typeof createSandboxAgentOtel;
   buildDaemonEnv?: typeof buildDaemonEnv;
+  prepareCodexRolloutTrace?: typeof import("./codex-rollout-capture.ts").prepareCodexRolloutTrace;
+  createCodexRolloutEvidence?: typeof import("./codex-rollout-evidence.ts").createCodexRolloutEvidencePort;
+  /** Bound best-effort evidence I/O in tests or specialized evaluation workers. */
+  codexEvidenceOperationTimeoutMs?: number;
   resolveDaemonBinary?: typeof resolveDaemonBinary;
   buildSandboxProvider?: typeof buildSandboxProvider;
   createCookieFetch?: typeof createCookieFetch;
@@ -290,6 +296,12 @@ export interface SessionEnvironment {
    * SQLite. Undefined when not a local managed Codex run.
    */
   codexSqliteHome: string | undefined;
+  /** Environment-scoped native rollout trace staging source. */
+  codexRolloutTrace: CodexRolloutTraceCapture | undefined;
+  /** Best-effort native evidence collector; absent when capture is disabled or unavailable. */
+  codexRolloutEvidence: CodexRolloutEvidencePort | undefined;
+  /** A timed-out operation may still own non-cancellable remote I/O; no later phase may overlap it. */
+  codexRolloutEvidenceAbandoned: boolean;
   mountCreds: MountCredentials | null;
   agentMountCreds?: MountCredentials | null;
   /** The mount's owning project id (keep-alive pool key FALLBACK scope, preferred is

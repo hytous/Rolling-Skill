@@ -79,6 +79,60 @@ bundled extension (`extensions/agenta.ts`); other harnesses are traced from the 
 event stream (`tracing/otel.ts`). The Python `tracing` module fills `trace` in from the
 live workflow span.
 
+### Native Codex evaluation evidence (opt-in)
+
+Set `AGENTA_RUNNER_CODEX_EVIDENCE_CAPTURE=on` only on evaluation workers to preserve Codex's
+native rollout bundle for observable Skill-compliance and runtime-latency evaluation. The switch
+is off by default, applies only when the resolved ACP agent is Codex, and does not change the
+public `/run` result. Unset the variable or set it to any value other than `1`, `true`, `yes`, or
+`on` for the kill switch.
+
+The runner injects `CODEX_ROLLOUT_TRACE_ROOT` into a path-isolated, environment-scoped staging
+directory before the daemon starts. It does not move `CODEX_HOME`, `CODEX_SQLITE_HOME`, the
+durable cwd, or the user's workspace. Each attempt is copied to an append-only artifact revision
+before validation; the staging source is removed best-effort only after the harness closes and a
+final sweep runs. Warm turns can therefore be `turn_complete` initially. To prevent a later warm
+turn from contaminating an earlier attempt, only the final attempt in a warm root can gain a
+separate `rollout_complete` revision at teardown; earlier attempts remain `turn_complete`.
+
+Path isolation is not writer authentication. Agenta currently has to run Codex in
+`agent-full-access` mode in its local and Daytona containers, and upstream Codex writes native
+rollout traces as ordinary files. Tool subprocesses therefore share the writer's filesystem
+authority. Current captures are marked `diagnostic_full_access`, structurally complete evidence
+receives collection status `DIAGNOSTIC_ONLY` with `trace.writer-not-isolated`, and
+`hardScoreEligible` is forced to false. These traces remain useful for inspection and latency
+analysis, but the A-class evaluator does not run. `runtime_isolated` provenance is reserved for a
+future out-of-band writer/sink capability that evaluated tool subprocesses cannot access; chmod,
+a random path, a hidden environment variable, or a post-copy digest is not sufficient.
+
+Raw bundles are sensitive: they may contain prompts, responses, tool arguments/results, terminal
+output, and secrets returned by tools. By default the preserved revisions live under a separate
+runner OS-temp directory. Set `AGENTA_RUNNER_CODEX_EVIDENCE_ARTIFACT_ROOT` to a protected local
+directory when an evaluation worker needs a stable artifact location. Directories are created as
+`0700`, raw bundle files as read-only `0400`, and assessment files as `0600`. The runner does not
+upload raw bundles, does not put their local paths in artifact references, and does not delete
+preserved revisions automatically; operators own retention and garbage collection for the
+configured artifact root. Only bounded collection status, completeness, counts, reason codes, a
+digest, and an opaque artifact reference are projected to OTel under
+`ag.meta.eval.evidence.*` and bounded count attributes. The collector does not write
+evaluator-owned `ag.meta.eval.status` outcomes.
+
+Each best-effort begin, settle, final-sweep, and source-cleanup operation is bounded to 5 seconds
+so diagnostic I/O cannot hold a prompt, agent result, cold retry, or sandbox teardown forever.
+`AGENTA_RUNNER_CODEX_EVIDENCE_OPERATION_TIMEOUT_MS` can set a 100–60,000 ms bound for evaluation
+workers with different storage latency. A timeout degrades or omits the evidence record; it does
+not change `AgentRunResult.ok`. A timeout aborts cooperative I/O and terminally abandons the
+collector. Later evidence phases are skipped, and source cleanup is not started if a timed-out
+operation may still own non-cancellable remote I/O.
+
+The v1 reader fails closed at 64 KiB per manifest, 16 MiB for the event log, 16 MiB per payload,
+64 MiB per snapshot, 50,000 events, and 10,000 payloads. The session collector additionally caps
+attempts, revisions, and cumulative snapshot bytes. Missing, truncated, unsupported,
+path-escaping, or over-limit evidence is `INVALID_TRACE`, never a Skill behavior failure.
+Numerical-answer correctness remains a soft B-class result (`B_UNSCORED` when no oracle is
+configured). A-class hard scoring additionally requires runner-bound `runtime_isolated` writer
+provenance; current full-access captures never satisfy that gate.
+
 ## Tools
 
 Tools are resolved in the Python backend and arrive on the request as `customTools` plus a

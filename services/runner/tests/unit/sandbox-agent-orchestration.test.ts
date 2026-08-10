@@ -28,6 +28,7 @@ import { PendingApprovalPauseController } from "../../src/engines/sandbox_agent/
 import { shouldSuppressPausedToolCallUpdate } from "../../src/engines/sandbox_agent/runtime-policy.ts";
 import { mountStorage } from "../../src/engines/sandbox_agent/mount.ts";
 import { buildPiGateEnvelope } from "../../src/engines/sandbox_agent/pi-gate-envelope.ts";
+import type { CodexEvidenceProjection } from "../../src/engines/sandbox_agent/codex-rollout-evidence.ts";
 import { appendPlatformGuidance } from "../../src/engines/sandbox_agent/system-prompt-appendix.ts";
 import { platformGuidanceAppendix } from "../../src/engines/sandbox_agent/platform-guidance.ts";
 import type { PermissionDecision } from "../../src/responder.ts";
@@ -51,6 +52,17 @@ afterEach(() => {
 
 function flushPromises(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 interface FakeOptions {
@@ -82,6 +94,22 @@ interface FakeOptions {
   // stand in for a wedged harness that a run-limits deadline (which aborts `startOptions.signal`)
   // must be able to unstick.
   abortSignalCancelsHungPrompt?: boolean;
+  codexEvidencePort?: {
+    beginTurn: () => Promise<unknown>;
+    settleTurn: (input: {
+      outcome: "completed" | "cancelled" | "error";
+    }) => Promise<
+      | {
+          projection: Parameters<
+            ReturnType<typeof createSandboxAgentOtel>["recordCodexEvidence"]
+          >[0];
+        }
+      | undefined
+    >;
+    finalize: () => Promise<void>;
+    cleanup: () => Promise<void>;
+  };
+  codexEvidenceTimeoutMs?: number;
 }
 
 function fakeHarness(options: FakeOptions = {}) {
@@ -114,6 +142,8 @@ function fakeHarness(options: FakeOptions = {}) {
     runFlushed: 0,
     recordedErrors: [] as Array<{ message: string; provider?: string }>,
     handledUpdates: [] as unknown[],
+    recordedCodexEvidence: [] as unknown[],
+    order: [] as string[],
   };
   const events: AgentEvent[] = [];
   const logs: string[] = [];
@@ -135,6 +165,7 @@ function fakeHarness(options: FakeOptions = {}) {
       calls.permissionReplies.push({ id, reply });
     },
     async prompt(blocks: any) {
+      calls.order.push("prompt");
       calls.promptBlocks = blocks;
       const promptEvents = options.promptEvents ?? [
         options.promptEvent ?? { payload: { update: { kind: "noop" } } },
@@ -187,6 +218,7 @@ function fakeHarness(options: FakeOptions = {}) {
       return session;
     },
     async destroySession(id: string) {
+      calls.order.push("session.destroy");
       calls.sessionDestroyed += 1;
       void id;
       if (options.destroySessionError) throw options.destroySessionError;
@@ -195,6 +227,7 @@ function fakeHarness(options: FakeOptions = {}) {
       resolveHungPrompt?.({ stopReason: "cancelled" });
     },
     async destroySandbox() {
+      calls.order.push("sandbox.destroy");
       calls.sandboxDestroyed += 1;
     },
     async dispose() {
@@ -221,11 +254,16 @@ function fakeHarness(options: FakeOptions = {}) {
       events.push({ type: "usage", ...(usage as any) });
     },
     finish() {
+      calls.order.push("otel.finish");
       calls.runFinished += 1;
       return options.output ?? "assistant output";
     },
     recordError(message: string, provider?: string) {
       calls.recordedErrors.push({ message, provider });
+    },
+    recordCodexEvidence(evidence: unknown) {
+      calls.order.push("evidence.project");
+      calls.recordedCodexEvidence.push(evidence);
     },
     output() {
       return options.output ?? "assistant output";
@@ -323,6 +361,23 @@ function fakeHarness(options: FakeOptions = {}) {
     }),
   };
 
+  if (options.codexEvidencePort) {
+    Object.assign(deps, {
+      prepareCodexRolloutTrace: () => ({
+        captureId: "capture-orchestration",
+        sourceRoot: "/tmp/codex-rollout-source",
+        remote: false,
+      }),
+      createCodexRolloutEvidence: () => options.codexEvidencePort,
+      ...(options.codexEvidenceTimeoutMs === undefined
+        ? {}
+        : {
+            codexEvidenceOperationTimeoutMs:
+              options.codexEvidenceTimeoutMs,
+          }),
+    });
+  }
+
   return { calls, deps, events, logs };
 }
 
@@ -407,6 +462,352 @@ describe("runSandboxAgent orchestration", () => {
     assert.equal(calls.sandboxDestroyed, 1);
     assert.equal(calls.sandboxDisposed, 1);
     assert.equal(calls.workspaceCleanup, 1);
+  });
+
+  it("collects Codex evidence around prompt and finalizes before sandbox teardown", async () => {
+    const projection: CodexEvidenceProjection = {
+      schemaVersion: "codex-evidence/v1",
+      collectionStatus: "PENDING_TERMINAL",
+      sourceTrust: "diagnostic_full_access",
+      completeness: "turn_complete",
+      events: 2,
+      payloads: 0,
+      tools: 0,
+      toolErrors: 0,
+      openRuntimeObjects: 0,
+    };
+    let callsRef: ReturnType<typeof fakeHarness>["calls"];
+    const port = {
+      beginTurn: async () => {
+        callsRef.order.push("evidence.begin");
+        return { attemptId: "attempt-1" };
+      },
+      settleTurn: async () => {
+        callsRef.order.push("evidence.settle");
+        return { projection };
+      },
+      finalize: async () => {
+        callsRef.order.push("evidence.finalize");
+      },
+      cleanup: async () => {
+        callsRef.order.push("evidence.cleanup");
+      },
+    };
+    const harness = fakeHarness({ codexEvidencePort: port });
+    callsRef = harness.calls;
+
+    const result = await runSandboxAgent(
+      {
+        harness: "codex",
+        messages: [{ role: "user", content: "hello" }],
+      },
+      undefined,
+      undefined,
+      harness.deps,
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(harness.calls.recordedCodexEvidence, [projection]);
+    const order = harness.calls.order;
+    assert.ok(order.indexOf("evidence.begin") < order.indexOf("prompt"));
+    assert.ok(order.indexOf("prompt") < order.indexOf("evidence.settle"));
+    assert.ok(order.indexOf("evidence.settle") < order.indexOf("evidence.project"));
+    assert.ok(order.indexOf("evidence.project") < order.indexOf("otel.finish"));
+    assert.ok(order.indexOf("session.destroy") < order.indexOf("evidence.finalize"));
+    assert.ok(order.indexOf("evidence.finalize") < order.indexOf("evidence.cleanup"));
+    assert.ok(order.indexOf("evidence.cleanup") < order.indexOf("sandbox.destroy"));
+  });
+
+  it("projects the same Codex evidence for one-shot and streaming runs without changing the result contract", async () => {
+    const projection: CodexEvidenceProjection = {
+      schemaVersion: "codex-evidence/v1",
+      collectionStatus: "DIAGNOSTIC_ONLY",
+      sourceTrust: "diagnostic_full_access",
+      completeness: "turn_complete",
+      reasonCodes: ["trace.writer-not-isolated"],
+      events: 2,
+      payloads: 0,
+      tools: 0,
+      toolErrors: 0,
+      openRuntimeObjects: 0,
+    };
+    const run = async (streaming: boolean) => {
+      const harness = fakeHarness({
+        codexEvidencePort: {
+          beginTurn: async () => ({ attemptId: "attempt-parity" }),
+          settleTurn: async () => ({ projection }),
+          finalize: async () => {},
+          cleanup: async () => {},
+        },
+      });
+      const streamed: AgentEvent[] = [];
+      const result = await runSandboxAgent(
+        {
+          harness: "codex",
+          messages: [{ role: "user", content: "hello" }],
+        },
+        streaming ? (event) => streamed.push(event) : undefined,
+        undefined,
+        harness.deps,
+      );
+      return {
+        result,
+        evidence: harness.calls.recordedCodexEvidence,
+      };
+    };
+
+    const oneShot = await run(false);
+    const streaming = await run(true);
+
+    assert.deepEqual(oneShot.evidence, [projection]);
+    assert.deepEqual(streaming.evidence, oneShot.evidence);
+    assert.equal("evidence" in oneShot.result, false);
+    assert.equal("evidence" in streaming.result, false);
+  });
+
+  it("keeps the agent result when an injected evidence collector throws", async () => {
+    const port = {
+      beginTurn: async () => {
+        throw new Error("raw sensitive begin error");
+      },
+      settleTurn: async () => {
+        throw new Error("raw sensitive settle error");
+      },
+      finalize: async () => {
+        throw new Error("raw sensitive final error");
+      },
+      cleanup: async () => {
+        throw new Error("raw sensitive cleanup error");
+      },
+    };
+    const { calls, deps, logs } = fakeHarness({ codexEvidencePort: port });
+
+    const result = await runSandboxAgent(
+      {
+        harness: "codex",
+        messages: [{ role: "user", content: "hello" }],
+      },
+      undefined,
+      undefined,
+      deps,
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(calls.runFinished, 1);
+    assert.equal(calls.sandboxDestroyed, 1);
+    assert.equal(
+      logs.some((line) => line.includes("raw sensitive")),
+      false,
+      "collector failures are logged without raw exception content",
+    );
+  });
+
+  it("keeps a paused Codex attempt open and defers collection to final sweep", async () => {
+    const evidenceCalls: string[] = [];
+    const port = {
+      beginTurn: async () => {
+        evidenceCalls.push("begin");
+        return { attemptId: "attempt-paused" };
+      },
+      settleTurn: async () => {
+        evidenceCalls.push("settle");
+        return undefined;
+      },
+      finalize: async () => {
+        evidenceCalls.push("finalize");
+      },
+      cleanup: async () => {
+        evidenceCalls.push("cleanup");
+      },
+    };
+    const { deps } = fakeHarness({
+      codexEvidencePort: port,
+      emitPermission: true,
+      permissionDecision: "pendingApproval",
+      hangPrompt: true,
+    });
+
+    const result = await runSandboxAgent(
+      {
+        harness: "codex",
+        permissions: { default: "ask" },
+        messages: [{ role: "user", content: "edit the file" }],
+      },
+      undefined,
+      undefined,
+      deps,
+    );
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.stopReason, "paused");
+    assert.deepEqual(evidenceCalls, ["begin", "finalize", "cleanup"]);
+  });
+
+  it("settles cancelled and failed Codex turns exactly once with their real outcome", async () => {
+    for (const testCase of ["cancelled", "error"] as const) {
+      const outcomes: string[] = [];
+      const port = {
+        beginTurn: async () => ({ attemptId: `attempt-${testCase}` }),
+        settleTurn: async ({ outcome }: { outcome: string }) => {
+          outcomes.push(outcome);
+          return undefined;
+        },
+        finalize: async () => {},
+        cleanup: async () => {},
+      };
+      const abort = new AbortController();
+      const { calls, deps } = fakeHarness({
+        codexEvidencePort: port,
+        ...(testCase === "cancelled"
+          ? {
+              hangPrompt: true,
+              afterPromptEvents: () => abort.abort(),
+            }
+          : { promptError: new Error("prompt failed") }),
+      });
+
+      const result = await runSandboxAgent(
+        {
+          harness: "codex",
+          messages: [{ role: "user", content: "hello" }],
+        },
+        undefined,
+        testCase === "cancelled" ? abort.signal : undefined,
+        deps,
+      );
+
+      assert.equal(result.ok, testCase === "cancelled", testCase);
+      if (result.ok) assert.equal(result.stopReason, "cancelled");
+      assert.deepEqual(outcomes, [testCase]);
+      assert.equal(calls.runFinished, 1);
+    }
+  });
+
+  it("bounds a hung evidence collector without changing the agent result or teardown", async () => {
+    const never = () => new Promise<never>(() => {});
+    const { calls, deps, logs } = fakeHarness({
+      codexEvidenceTimeoutMs: 5,
+      codexEvidencePort: {
+        beginTurn: never,
+        settleTurn: never,
+        finalize: never,
+        cleanup: never,
+      },
+    });
+
+    const result = await Promise.race([
+      runSandboxAgent(
+        {
+          harness: "codex",
+          messages: [{ role: "user", content: "hello" }],
+        },
+        undefined,
+        undefined,
+        deps,
+      ),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("agent path remained blocked")), 500),
+      ),
+    ]);
+
+    assert.equal(result.ok, true);
+    assert.equal(calls.runFinished, 1);
+    assert.equal(calls.sandboxDestroyed, 1);
+    assert.ok(logs.some((line) => line.includes("evidence begin timed-out")));
+    assert.equal(
+      logs.some((line) =>
+        /evidence (settle|final-sweep|source-cleanup) timed-out/.test(line),
+      ),
+      false,
+      "one timeout terminally abandons later evidence phases",
+    );
+  });
+
+  it("terminally abandons evidence after a non-cooperative begin timeout", async () => {
+    const beginGate = deferred<void>();
+    const evidenceCalls: string[] = [];
+    const { calls, deps } = fakeHarness({
+      codexEvidenceTimeoutMs: 5,
+      codexEvidencePort: {
+        beginTurn: async () => {
+          evidenceCalls.push("begin");
+          await beginGate.promise;
+        },
+        settleTurn: async () => {
+          evidenceCalls.push("settle");
+          return undefined;
+        },
+        finalize: async () => {
+          evidenceCalls.push("finalize");
+        },
+        cleanup: async () => {
+          evidenceCalls.push("cleanup");
+        },
+      },
+    });
+
+    const result = await runSandboxAgent(
+      {
+        harness: "codex",
+        messages: [{ role: "user", content: "hello" }],
+      },
+      undefined,
+      undefined,
+      deps,
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(calls.sandboxDestroyed, 1);
+    assert.deepEqual(
+      evidenceCalls,
+      ["begin"],
+      "a port whose operation ignored cancellation must become terminal; later phases cannot overlap it",
+    );
+    beginGate.resolve();
+  });
+
+  it("does not clean the source while a timed-out final sweep is still running", async () => {
+    const finalizationGate = deferred<void>();
+    const evidenceCalls: string[] = [];
+    const { calls, deps } = fakeHarness({
+      codexEvidenceTimeoutMs: 5,
+      codexEvidencePort: {
+        beginTurn: async () => {
+          evidenceCalls.push("begin");
+        },
+        settleTurn: async () => {
+          evidenceCalls.push("settle");
+          return undefined;
+        },
+        finalize: async () => {
+          evidenceCalls.push("finalize");
+          await finalizationGate.promise;
+        },
+        cleanup: async () => {
+          evidenceCalls.push("cleanup");
+        },
+      },
+    });
+
+    const result = await runSandboxAgent(
+      {
+        harness: "codex",
+        messages: [{ role: "user", content: "hello" }],
+      },
+      undefined,
+      undefined,
+      deps,
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(calls.sandboxDestroyed, 1);
+    assert.deepEqual(
+      evidenceCalls,
+      ["begin", "settle", "finalize"],
+      "cleanup must be skipped when finalization has not quiesced",
+    );
+    finalizationGate.resolve();
   });
 
   it("delivers the current legacy inline image before one text block", async () => {

@@ -57,6 +57,7 @@ import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 
 import type { AgentEvent, AgentUsage, EmitEvent } from "../protocol.ts";
 import type { Redactor } from "../redaction.ts";
+import type { CodexEvidenceProjection } from "../engines/sandbox_agent/codex-rollout-evidence.ts";
 
 /** Machine-readable prefix on a sibling force-settle result (see TOOL_NOT_EXECUTED_PAUSED). The
  *  responder keys off this to keep the deferral out of the client-output store, and the web widget
@@ -1082,6 +1083,8 @@ export interface SandboxAgentOtel {
    * the HTTP response does (it previously showed only an error COUNT). Call before finish/flush.
    */
   recordError(message: string, provider?: string): void;
+  /** Stamp bounded native Codex evidence metadata before `finish()` ends the agent span. */
+  recordCodexEvidence(evidence: CodexEvidenceProjection): void;
   /** Set final run usage before finish/flush so events and exported spans carry final totals. */
   setUsage(usage: AgentUsage | undefined): void;
   /** Flush this run's trace to Agenta (invoke_agent has a remote parent). */
@@ -1568,6 +1571,68 @@ export function createSandboxAgentOtel(
     }
   }
 
+  function recordCodexEvidence(evidence: CodexEvidenceProjection): void {
+    if (!agentSpan) return;
+    const bounded = (value: string, length: number): string =>
+      value.slice(0, length);
+    const count = (value: number): number =>
+      Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+    try {
+      agentSpan.setAttribute(
+        "ag.meta.eval.schema_version",
+        bounded(evidence.schemaVersion, 128),
+      );
+      agentSpan.setAttribute(
+        "ag.meta.eval.evidence.collection_status",
+        bounded(evidence.collectionStatus, 128),
+      );
+      agentSpan.setAttribute(
+        "ag.meta.eval.evidence.source_trust",
+        bounded(evidence.sourceTrust, 128),
+      );
+      agentSpan.setAttribute(
+        "ag.meta.eval.evidence.completeness",
+        bounded(evidence.completeness, 128),
+      );
+      if (evidence.digest) {
+        agentSpan.setAttribute(
+          "ag.meta.eval.evidence.digest",
+          bounded(evidence.digest, 256),
+        );
+      }
+      if (evidence.artifactRef) {
+        agentSpan.setAttribute(
+          "ag.meta.eval.evidence.artifact_ref",
+          bounded(evidence.artifactRef, 1_024),
+        );
+      }
+      if (evidence.reasonCodes?.length) {
+        agentSpan.setAttribute(
+          "ag.meta.eval.evidence.reason_codes",
+          evidence.reasonCodes
+            .slice(0, 16)
+            .map((reason) => bounded(reason, 128)),
+        );
+      }
+      agentSpan.setAttribute("ag.meta.eval.events.count", count(evidence.events));
+      agentSpan.setAttribute(
+        "ag.meta.eval.payloads.count",
+        count(evidence.payloads),
+      );
+      agentSpan.setAttribute("ag.meta.eval.tools.calls", count(evidence.tools));
+      agentSpan.setAttribute(
+        "ag.meta.eval.tools.errors",
+        count(evidence.toolErrors),
+      );
+      agentSpan.setAttribute(
+        "ag.meta.eval.runtime.open_objects",
+        count(evidence.openRuntimeObjects),
+      );
+    } catch {
+      // Evidence projection is diagnostic and must never break the agent run.
+    }
+  }
+
   function finish(stopReason?: string): string {
     const text = stripStartupBanner(accumulated.trim());
     // The event log is independent of span emission, so build its tail either way.
@@ -1634,6 +1699,7 @@ export function createSandboxAgentOtel(
     emitEvent: record,
     finish,
     recordError,
+    recordCodexEvidence,
     setUsage,
     flush: () => flushTrace(runTraceId, init.redactor, runId),
     traceId: () => runTraceId,
