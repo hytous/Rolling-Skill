@@ -13,6 +13,13 @@ class TraceRecorder {
         this.fileName = `${sessionId}.jsonl`
         this.line = 0
         this.latestReference = null
+        this.runtime = options.runtime
+            ? {
+                  runtimeId: options.runtime.runtimeId,
+                  providerId: options.runtime.providerId,
+                  version: options.runtime.version,
+              }
+            : null
     }
 
     record(direction, message) {
@@ -23,6 +30,7 @@ class TraceRecorder {
             recordedAt: new Date().toISOString(),
             direction,
             message,
+            runtime: this.runtime,
         }
         const descriptor = openSync(
             this.path,
@@ -57,4 +65,3 @@ class TraceRecorder {
 }
 
 module.exports = {TraceRecorder, safeSessionId}
-

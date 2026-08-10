@@ -4,9 +4,9 @@ const {homedir} = require("node:os")
 const {join} = require("node:path")
 const {pathToFileURL} = require("node:url")
 
-const {CodexAppServerClient} = require("./codex-app-server.cjs")
-const {resolveCodexBinary} = require("./codex-binary.cjs")
+const {CodexRuntimeProvider} = require("./codex-runtime-provider.cjs")
 const {LocalEvaluationStore} = require("./local-store.cjs")
+const {RuntimeRegistry} = require("./runtime-registry.cjs")
 const {findGitWorkspace} = require("./workspace.cjs")
 
 const RENDERER_FILE = join(__dirname, "..", "renderer", "index.html")
@@ -14,10 +14,14 @@ const PRELOAD_FILE = join(__dirname, "preload.cjs")
 
 let mainWindow = null
 let client = null
+let runtimeRegistry = null
+let runtimeDescriptor = null
+let availableRuntimes = []
 let store = null
 let workspaceRoot = null
 let rendererUrl = null
 let runtimeStart = null
+let runtimeOperationTail = Promise.resolve()
 let quitAfterRuntimeStops = false
 const loadedThreads = new Set()
 
@@ -50,30 +54,57 @@ function locateInitialWorkspace() {
     return homedir()
 }
 
-function desktopProjectRoot() {
-    return join(__dirname, "..")
-}
-
 function send(channel, payload) {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
 }
 
 function installClientEvents(nextClient) {
-    nextClient.on("state", (state) => send("runtime:state", state))
-    nextClient.on("notification", (message) => send("codex:notification", message))
+    nextClient.on("state", (state) => send("runtime:state", enrichRuntimeState(state)))
+    nextClient.on("notification", (message) => send("runtime:notification", message))
     nextClient.on("runtimeError", (error) => {
-        send("runtime:state", {...nextClient.state(), status: "error", error: error.message})
+        send("runtime:state", {
+            ...enrichRuntimeState(nextClient.state()),
+            status: "error",
+            error: error.message,
+        })
     })
 }
 
-function createClient() {
-    const binaryPath = resolveCodexBinary({
-        isPackaged: app.isPackaged,
-        resourcesPath: process.resourcesPath,
-        projectRoot: desktopProjectRoot(),
+function preferredRuntime() {
+    const selected = readPreferences().runtimeSelection
+    return selected && typeof selected === "object" ? selected : null
+}
+
+function discoverLocalRuntimes(options = {}) {
+    const preferred = options.preferredRuntime ?? preferredRuntime()
+    const discovery = runtimeRegistry.discover({
+        preferredRuntime: preferred,
+        commonProviderOptions: {configuredPath: preferred?.executablePath ?? null},
     })
-    const nextClient = new CodexAppServerClient({
-        binaryPath,
+    availableRuntimes = discovery.available
+    runtimeDescriptor = discovery.selected
+    return discovery
+}
+
+function enrichRuntimeState(state) {
+    return {...state, availableRuntimes}
+}
+
+function unavailableRuntimeState(error = null) {
+    return {
+        status: "unavailable",
+        workspaceRoot,
+        runtime: null,
+        availableRuntimes,
+        error:
+            error?.message ??
+            "No compatible local agent runtime was found. Install one, rescan, or choose its executable.",
+    }
+}
+
+function createClient() {
+    if (!runtimeDescriptor) return null
+    const nextClient = runtimeRegistry.createClient(runtimeDescriptor, {
         traceDirectory: join(app.getPath("userData"), "traces"),
         workspaceRoot,
     })
@@ -83,7 +114,15 @@ function createClient() {
 
 async function ensureRuntime() {
     if (client?.ready) return client
-    if (!client) client = createClient()
+    if (!client) {
+        if (!runtimeDescriptor) discoverLocalRuntimes()
+        client = createClient()
+    }
+    if (!client) {
+        const error = new Error("No compatible local agent runtime is available")
+        error.code = "RUNTIME_UNAVAILABLE"
+        throw error
+    }
     if (!runtimeStart) {
         runtimeStart = client.start().finally(() => {
             runtimeStart = null
@@ -93,12 +132,105 @@ async function ensureRuntime() {
     return client
 }
 
-async function restartRuntime() {
+function enqueueRuntimeOperation(operation) {
+    const result = runtimeOperationTail.then(operation, operation)
+    runtimeOperationTail = result.catch(() => {})
+    return result
+}
+
+async function restartRuntimeNow({rediscover = false} = {}) {
     if (client) await client.stop()
+    runtimeStart = null
     loadedThreads.clear()
+    client = null
+    if (rediscover || !runtimeDescriptor) discoverLocalRuntimes()
     client = createClient()
-    await ensureRuntime()
-    return client.state()
+    if (!client) {
+        const state = unavailableRuntimeState()
+        send("runtime:state", state)
+        return state
+    }
+    try {
+        await ensureRuntime()
+        return enrichRuntimeState(client.state())
+    } catch (error) {
+        const state =
+            error.code === "RUNTIME_UNAVAILABLE"
+                ? unavailableRuntimeState(error)
+                : {...enrichRuntimeState(client.state()), status: "error", error: error.message}
+        send("runtime:state", state)
+        return state
+    }
+}
+
+function restartRuntime(options) {
+    return enqueueRuntimeOperation(() => restartRuntimeNow(options))
+}
+
+async function detectLocalRuntimes() {
+    return enqueueRuntimeOperation(() => restartRuntimeNow({rediscover: true}))
+}
+
+async function chooseRuntimeExecutable() {
+    const result = await dialog.showOpenDialog(mainWindow, {
+        title: "Choose a local agent runtime executable",
+        properties: ["openFile"],
+        message: "The executable must identify a supported provider and pass its compatibility probe.",
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const executablePath = result.filePaths[0]
+    const discovery = runtimeRegistry.discover({
+        preferredRuntime: {executablePath},
+        commonProviderOptions: {configuredPath: executablePath},
+    })
+    const selected = discovery.available.find(
+        (runtime) => runtime.executablePath === executablePath,
+    )
+    if (!selected) {
+        await dialog.showMessageBox(mainWindow, {
+            type: "error",
+            message: "Unsupported agent runtime",
+            detail: "The selected executable did not pass any registered runtime provider probe.",
+        })
+        return null
+    }
+    return enqueueRuntimeOperation(async () => {
+        writePreferences({
+            runtimeSelection: {
+                runtimeId: selected.runtimeId,
+                providerId: selected.providerId,
+                executablePath: selected.executablePath,
+            },
+        })
+        availableRuntimes = discovery.available
+        runtimeDescriptor = selected
+        return restartRuntimeNow()
+    })
+}
+
+async function useAutomaticRuntimeSelection() {
+    return enqueueRuntimeOperation(async () => {
+        writePreferences({runtimeSelection: null})
+        runtimeDescriptor = null
+        return restartRuntimeNow({rediscover: true})
+    })
+}
+
+async function selectDiscoveredRuntime(runtimeId) {
+    runtimeId = requireIdentifier(runtimeId, "runtime")
+    return enqueueRuntimeOperation(async () => {
+        const selected = availableRuntimes.find((runtime) => runtime.runtimeId === runtimeId)
+        if (!selected) throw new Error("The selected local runtime is no longer available")
+        writePreferences({
+            runtimeSelection: {
+                runtimeId: selected.runtimeId,
+                providerId: selected.providerId,
+                executablePath: selected.executablePath,
+            },
+        })
+        runtimeDescriptor = selected
+        return restartRuntimeNow()
+    })
 }
 
 async function chooseWorkspace() {
@@ -207,7 +339,24 @@ function installMenu() {
             {
                 label: "Runtime",
                 submenu: [
-                    {label: "Restart Local Runtime", click: () => restartRuntime()},
+                    {
+                        label: "Restart Active Runtime",
+                        click: () => void restartRuntime(),
+                    },
+                    {
+                        label: "Detect Local Runtimes",
+                        accelerator: "CommandOrControl+Shift+R",
+                        click: () => void detectLocalRuntimes(),
+                    },
+                    {
+                        label: "Choose Runtime Executable…",
+                        click: () => void chooseRuntimeExecutable(),
+                    },
+                    {
+                        label: "Use Automatic Runtime Selection",
+                        click: () => void useAutomaticRuntimeSelection(),
+                    },
+                    {type: "separator"},
                     {label: "Choose Workspace…", click: () => chooseWorkspace()},
                     {type: "separator"},
                     {label: "Open Trace Folder", click: openTraceFolder},
@@ -221,26 +370,36 @@ function installMenu() {
 
 function installIpc() {
     ipcMain.handle("app:bootstrap", async () => {
-        const runtime = client?.state() ?? {status: "starting", workspaceRoot}
+        const runtime = client
+            ? enrichRuntimeState(client.state())
+            : runtimeDescriptor
+              ? enrichRuntimeState({status: "starting", workspaceRoot, runtime: runtimeDescriptor})
+              : unavailableRuntimeState()
         return {runtime, workspaceRoot, datasets: store.listDatasets()}
     })
     ipcMain.handle("workspace:choose", chooseWorkspace)
     ipcMain.handle("runtime:restart", restartRuntime)
+    ipcMain.handle("runtime:detect", detectLocalRuntimes)
+    ipcMain.handle("runtime:choose", chooseRuntimeExecutable)
+    ipcMain.handle("runtime:automatic", useAutomaticRuntimeSelection)
+    ipcMain.handle("runtime:select", (_event, runtimeId) =>
+        selectDiscoveredRuntime(runtimeId),
+    )
     ipcMain.handle("runtime:trace", (_event, limit) =>
         client?.recentTrace(limit) ?? {path: null, reference: null, events: []},
     )
     ipcMain.handle("runtime:open-traces", openTraceFolder)
 
-    ipcMain.handle("codex:list-threads", async () => (await ensureRuntime()).listThreads())
-    ipcMain.handle("codex:read-thread", async (_event, threadId) =>
+    ipcMain.handle("runtime:list-threads", async () => (await ensureRuntime()).listThreads())
+    ipcMain.handle("runtime:read-thread", async (_event, threadId) =>
         (await ensureRuntime()).readThread(requireIdentifier(threadId, "thread")),
     )
-    ipcMain.handle("codex:start-thread", async () => {
+    ipcMain.handle("runtime:start-thread", async () => {
         const response = await (await ensureRuntime()).startThread()
         loadedThreads.add(response.thread.id)
         return response
     })
-    ipcMain.handle("codex:start-turn", async (_event, {threadId, text}) => {
+    ipcMain.handle("runtime:start-turn", async (_event, {threadId, text}) => {
         threadId = requireIdentifier(threadId, "thread")
         text = String(text ?? "").trim()
         if (!text) throw new Error("Task text is required")
@@ -251,7 +410,7 @@ function installIpc() {
         }
         return runtime.startTurn(threadId, text)
     })
-    ipcMain.handle("codex:interrupt-turn", async (_event, input) =>
+    ipcMain.handle("runtime:interrupt-turn", async (_event, input) =>
         (await ensureRuntime()).interruptTurn(
             requireIdentifier(input.threadId, "thread"),
             requireIdentifier(input.turnId, "turn"),
@@ -262,6 +421,7 @@ function installIpc() {
     ipcMain.handle("datasets:save-case", (_event, input) =>
         store.saveCase({
             ...input,
+            runtimeId: input.runtimeId ?? runtimeDescriptor?.runtimeId ?? null,
             traceReference: input.traceReference ?? client?.recorder?.latestReference ?? null,
         }),
     )
@@ -292,12 +452,23 @@ if (!hasLock) {
         })
         workspaceRoot = locateInitialWorkspace()
         store = new LocalEvaluationStore(join(app.getPath("userData"), "evaluation-store.json"))
+        runtimeRegistry = new RuntimeRegistry([new CodexRuntimeProvider()])
+        discoverLocalRuntimes()
         client = createClient()
         installIpc()
         installMenu()
         createWindow()
         void ensureRuntime().catch((error) => {
-            send("runtime:state", {status: "error", error: error.message, workspaceRoot})
+            send(
+                "runtime:state",
+                error.code === "RUNTIME_UNAVAILABLE"
+                    ? unavailableRuntimeState(error)
+                    : {
+                          ...enrichRuntimeState(client?.state() ?? {workspaceRoot}),
+                          status: "error",
+                          error: error.message,
+                      },
+            )
         })
     })
 

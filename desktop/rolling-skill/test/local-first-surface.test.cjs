@@ -34,4 +34,27 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /goodcase/)
         assert.match(renderer, /badcase/)
     })
+
+    it("contains no bundled agent runtime dependency", () => {
+        const packageJson = source("package.json")
+        assert.doesNotMatch(packageJson, /@openai\/codex|codex-runtime|extraResources/)
+    })
+
+    it("exposes local runtime discovery and explicit selection controls", () => {
+        const html = source("renderer/index.html")
+        const preload = source("src/preload.cjs")
+        const renderer = source("renderer/renderer.js")
+        const main = source("src/main.cjs")
+
+        assert.match(html, /id="runtime-dialog"/)
+        assert.match(html, /id="detect-runtimes"/)
+        assert.match(html, /id="automatic-runtime"/)
+        assert.match(html, /id="choose-runtime-file"/)
+        assert.match(preload, /detectRuntimes/)
+        assert.match(preload, /selectRuntime/)
+        assert.match(preload, /useAutomaticRuntime/)
+        assert.match(renderer, /runtimeOperationInProgress/)
+        assert.match(renderer, /changeRuntime/)
+        assert.match(main, /enqueueRuntimeOperation/)
+    })
 })

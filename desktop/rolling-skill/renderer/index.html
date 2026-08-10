@@ -48,6 +48,7 @@
                     <div class="evaluation-row">
                         <button id="show-local-data" class="sidebar-link" type="button">Datasets</button>
                         <button id="open-trace" class="sidebar-link" type="button">Trace</button>
+                        <button id="choose-runtime" class="sidebar-link" type="button">Runtime…</button>
                     </div>
                     <div class="capture-note">
                         <span class="capture-dot" aria-hidden="true"></span>
@@ -92,7 +93,7 @@
                         ></textarea>
                         <div class="composer-footer">
                             <div class="composer-context">
-                                <span>Local Codex runtime</span>
+                                <span id="runtime-context-name">Detecting local runtime</span>
                                 <span aria-hidden="true">·</span>
                                 <span>workspace-write</span>
                             </div>
@@ -124,6 +125,27 @@
                 <div id="trace-events" class="trace-events"></div>
             </aside>
         </div>
+
+        <dialog id="runtime-dialog" class="case-dialog runtime-dialog">
+            <div class="runtime-dialog-body">
+                <div class="dialog-header">
+                    <div>
+                        <div class="drawer-eyebrow">LOCAL PROVIDERS</div>
+                        <h2>Agent runtimes</h2>
+                    </div>
+                    <button id="close-runtime-dialog" class="icon-button large" type="button">×</button>
+                </div>
+                <p class="runtime-dialog-copy">
+                    Compatible runtimes are discovered locally and are not installed or upgraded by Rolling Skill.
+                </p>
+                <div id="runtime-options" class="runtime-options"></div>
+                <div class="runtime-dialog-actions">
+                    <button id="detect-runtimes" type="button">Rescan</button>
+                    <button id="automatic-runtime" type="button">Use automatic selection</button>
+                    <button id="choose-runtime-file" class="primary" type="button">Choose executable…</button>
+                </div>
+            </div>
+        </dialog>
 
         <dialog id="save-case-dialog" class="case-dialog">
             <form id="save-case-form">

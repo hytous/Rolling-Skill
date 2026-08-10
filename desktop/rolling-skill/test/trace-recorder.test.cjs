@@ -18,7 +18,10 @@ describe("local app-server trace recorder", () => {
     it("appends ordered inbound and outbound JSONL with stable references", () => {
         const directory = mkdtempSync(join(tmpdir(), "rolling-skill-traces-"))
         temporaryDirectories.push(directory)
-        const recorder = new TraceRecorder(directory, {sessionId: "session-test"})
+        const recorder = new TraceRecorder(directory, {
+            sessionId: "session-test",
+            runtime: {runtimeId: "codex:local", providerId: "codex", version: "0.147.0"},
+        })
 
         const first = recorder.record("outbound", {id: 1, method: "initialize"})
         const second = recorder.record("inbound", {id: 1, result: {userAgent: "Codex"}})
@@ -34,6 +37,10 @@ describe("local app-server trace recorder", () => {
             ["outbound", "inbound"],
         )
         assert.equal(lines[1].message.result.userAgent, "Codex")
+        assert.deepEqual(lines[1].runtime, {
+            runtimeId: "codex:local",
+            providerId: "codex",
+            version: "0.147.0",
+        })
     })
 })
-

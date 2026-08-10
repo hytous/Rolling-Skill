@@ -135,11 +135,11 @@ Agenta traces every run and keeps a version history of each agent configuration.
 
 ### Run the Rolling Skill evaluation workbench on macOS
 
-This checkout includes a local-first macOS client for running and evaluating Codex Skill tasks.
+This checkout includes a local-first macOS client for running and evaluating Skill tasks.
 Double-click `Rolling Skill.app` at the repository root to open the task list, conversation surface,
-local trace viewer, and goodcase/badcase curation workflow. The app starts a bundled Codex
-app-server directly; it does not require Docker, Compose, Postgres, Redis, Traefik, an Agenta HTTP
-service, or a separately installed Codex CLI.
+local trace viewer, and goodcase/badcase curation workflow. The app discovers compatible agent
+runtimes already installed on the machine; it does not bundle Codex and does not require Docker,
+Compose, Postgres, Redis, Traefik, or an Agenta HTTP service.
 
 There is no application login page or startup authentication gate. Runtime startup, workspace
 selection, and local task browsing remain available without provider credentials. If credentials
@@ -149,18 +149,25 @@ Use the sidebar workspace control or **Runtime → Choose Workspace…** to sele
 tasks should be shown. This exact working-directory filter prevents unrelated Codex sessions from
 other products from appearing in Rolling Skill.
 
+Runtime discovery currently supports Codex app-server. It checks a saved executable,
+`ROLLING_SKILL_CODEX_BIN`, `PATH`, known application resources, Homebrew/system paths, and common
+user-local installs. Every candidate is compatibility-probed before use. Use the sidebar
+**Runtime…** control or native **Runtime** menu to rescan, choose an executable, or return to
+automatic selection. If no compatible runtime exists, the application and its local datasets still
+open.
+
 Local files are stored here:
 
 | Path | Contents |
 | --- | --- |
 | `~/Library/Application Support/Rolling Skill/evaluation-store.json` | Local datasets, cases, and capture settings |
-| `~/Library/Application Support/Rolling Skill/preferences.json` | Selected workspace |
-| `~/Library/Application Support/Rolling Skill/traces/*.jsonl` | Append-only raw app-server events |
+| `~/Library/Application Support/Rolling Skill/preferences.json` | Selected workspace and optional runtime selection |
+| `~/Library/Application Support/Rolling Skill/traces/*.jsonl` | Append-only runtime events with runtime identity |
 
 The renderer has Node integration disabled, context isolation and sandboxing enabled, and only a
-narrow IPC bridge for workspace, thread, turn, dataset, and trace operations. The bundled runtime
-starts with a fixed binary and argument array, `workspace-write`, and no automatic approval
-escalation.
+narrow IPC bridge for runtime, workspace, thread, turn, dataset, and trace operations. Runtime
+probes and launches use fixed executable/argument arrays with `shell: false`; Codex threads use
+`workspace-write` and no automatic approval escalation.
 
 To rebuild the Finder-double-clickable application from source:
 
@@ -168,19 +175,23 @@ To rebuild the Finder-double-clickable application from source:
 bash desktop/rolling-skill/scripts/build-macos-app.sh
 ```
 
-This installs the pinned desktop dependencies, runs unit and real app-server smoke tests, packages
-the complete Apple Silicon Codex runtime, verifies its executable, applies an ad-hoc local
+This installs the desktop dependencies, runs unit and locally discovered app-server smoke tests,
+packages the Apple Silicon Electron client without an agent runtime, applies an ad-hoc local
 signature, and replaces the ignored root `Rolling Skill.app`. Desktop source and its lockfile are
 tracked; the generated Electron bundle is intentionally not committed. For development, run
 `npm ci && npm start` from `desktop/rolling-skill/`.
 
 For a traced assistant answer, select **Save case** beside the message. Choose or create a local
 dataset, review the question and answer, classify the row as `goodcase` or `badcase`, then save it.
-The new row retains thread, turn, item, and trace provenance.
+The new row retains runtime, thread, turn, item, and trace provenance.
 
 Capture is manual in this version. It does not automatically save messages or invoke a curation
 subagent. The Agenta server deployment options elsewhere in this repository remain available for
 other use cases, but the desktop client's default path does not inspect or start them.
+
+Runtime discovery is provider-based. This release selects one active runtime, while the registry
+retains all compatible descriptors and stable `runtimeId` values so a later orchestrator can run
+the same Skill evaluation against multiple runtimes in parallel.
 
 ### Try Agenta Cloud
 

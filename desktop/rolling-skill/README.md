@@ -1,22 +1,55 @@
 # Rolling Skill Desktop
 
-Rolling Skill is a local-first macOS client for running and evaluating Codex Skill tasks. The
-application opens directly into a task interface and starts its bundled Codex app-server process
-over JSONL stdio. The desktop client does not need Docker, Compose, Postgres, Redis, Traefik, an
-Agenta service, a browser session, or a separately installed Codex CLI.
+Rolling Skill is a local-first macOS client for running and evaluating Skill tasks through agent
+runtimes already installed on the machine. It opens directly into a task interface, discovers
+compatible runtimes, and connects through a provider adapter. The application does not package
+Codex and does not require Docker, Compose, Postgres, Redis, Traefik, an Agenta service, or a browser
+session.
 
 ## Open the app
 
 Double-click `Rolling Skill.app` at the repository root. On the first launch, macOS may require a
 Control-click followed by **Open** because the local build uses an ad-hoc signature.
 
-There is no application login screen. Starting the runtime, selecting a workspace, and browsing
-existing local tasks work without provider authentication. If the selected model provider has no
-usable credentials, only the model turn reports that error; the rest of the desktop client remains
-available.
+There is no application login screen. Runtime discovery, workspace selection, and local dataset
+access work independently of provider authentication. If the selected runtime cannot make a model
+request, only that turn reports the runtime error.
 
-Use the sidebar workspace control or **Runtime → Choose Workspace…** to scope the task list to a
-folder. Tasks from other working directories are not shown.
+## Runtime discovery
+
+The first provider supports Codex app-server. It probes candidates in this order:
+
+1. A runtime explicitly selected by the operator.
+2. `ROLLING_SKILL_CODEX_BIN`.
+3. Executables named `codex` in the process `PATH`.
+4. Codex resources inside known local applications such as ChatGPT.app.
+5. Homebrew, system, and common user-local installation paths.
+
+Every candidate must identify itself as Codex and expose `app-server` before it can be selected.
+Rolling Skill records its provider, version, source, path, capabilities, and stable `runtimeId`.
+
+Use the sidebar **Runtime…** control or the native **Runtime** menu to:
+
+- rescan installed runtimes;
+- choose an executable explicitly;
+- return to automatic selection; or
+- restart the active runtime.
+
+If no compatible runtime is found, the desktop shell and local datasets still open. Rolling Skill
+does not download, install, upgrade, or authenticate a runtime.
+
+## Provider architecture
+
+`src/runtime-registry.cjs` contains the provider-neutral registry. Providers implement two
+operations:
+
+- `discover(options)` returns compatible runtime descriptors;
+- `createClient(descriptor, options)` creates the runtime-specific client.
+
+`src/codex-runtime-provider.cjs` is the first adapter. The registry retains every compatible
+descriptor even though this version selects one active runtime. A future evaluation orchestrator
+can create clients for multiple selected descriptors and run the same Skill case in parallel while
+attributing traces and case results by `runtimeId`.
 
 ## Build the double-clickable app
 
@@ -26,9 +59,10 @@ From the repository root:
 bash desktop/rolling-skill/scripts/build-macos-app.sh
 ```
 
-The script installs the pinned dependencies, runs the unit and app-server integration tests,
-packages the Apple Silicon runtime, verifies the bundled Codex executable, applies an ad-hoc
-signature, and writes `Rolling Skill.app` at the repository root. It targets macOS 13 or newer.
+The script installs desktop dependencies, runs unit and discovered-runtime integration tests,
+packages the Apple Silicon Electron client, refuses any bundle containing an embedded Codex
+runtime, applies an ad-hoc signature, and writes `Rolling Skill.app` at the repository root. It
+targets macOS 13 or newer.
 
 ## Develop
 
@@ -39,46 +73,47 @@ npm test
 npm start
 ```
 
-Development uses the pinned native runtime installed by `@openai/codex`. The packaged application
-copies the complete arm64 runtime directory, including its bundled search and shell resources, to
-`Contents/Resources/codex-runtime/`.
+Development and packaged builds use the same discovery path. Set `ROLLING_SKILL_CODEX_BIN` when a
+specific local Codex should be used without saving it through the UI.
 
 ## Local evaluation workflow
 
-1. Start a new task or open an existing workspace-scoped task.
-2. Inspect the streamed conversation and the raw local trace.
-3. Select **Save case** beside an assistant message.
-4. Choose or create a dataset, classify it as `goodcase` or `badcase`, review the question and
+1. Select a workspace and active runtime.
+2. Start a new task or open an existing workspace-scoped task.
+3. Inspect the streamed conversation and raw local trace.
+4. Select **Save case** beside an assistant message.
+5. Choose or create a dataset, classify it as `goodcase` or `badcase`, review the question and
    answer, and save it.
 
-Automatic capture is disabled by default. Saving a case is always an explicit action. The case row
-includes thread, turn, item, and trace provenance.
+Automatic capture is disabled by default. Saved cases include thread, turn, item, trace, and
+`runtimeId` provenance.
 
 Local state is stored under `~/Library/Application Support/Rolling Skill/`:
 
 | Path | Contents |
 | --- | --- |
 | `evaluation-store.json` | Dataset definitions, goodcases, badcases, and capture settings |
-| `preferences.json` | Selected workspace |
-| `traces/*.jsonl` | Append-only inbound and outbound app-server messages |
+| `preferences.json` | Selected workspace and optional runtime selection |
+| `traces/*.jsonl` | Append-only runtime events with runtime identity metadata |
 
-## Runtime and security model
+## Security model
 
-- Electron starts a fixed bundled `codex app-server` binary with `shell: false`.
-- Threads default to `workspace-write` and `approvalPolicy: never`.
+- Runtime probes and launches use fixed executable/argument arrays with `shell: false`.
+- Codex threads default to `workspace-write` and `approvalPolicy: never`.
 - The renderer has Node integration disabled, context isolation enabled, and Chromium sandboxing
   enabled.
-- The preload bridge exposes only workspace, thread, turn, dataset, and trace operations; it does
-  not expose shell or filesystem primitives.
+- The preload bridge exposes only runtime, workspace, thread, turn, dataset, and trace operations;
+  it does not expose shell or filesystem primitives.
 - Packaged renderer files are the only internal navigation target. External HTTPS links are handed
   to macOS and all other navigation is blocked.
-- Dataset writes are atomic and local trace files are append-only with owner-only permissions.
+- Dataset writes are atomic and trace files are append-only with owner-only permissions.
 
 The wider Agenta repository still contains server deployment options. Those are independent
 capabilities and are not inspected, started, or required by `Rolling Skill.app`.
 
 ## Tests
 
-`npm test` covers protocol framing and request correlation, bundled binary selection, a real
-app-server initialize/list smoke, Git workspace discovery, local-first surface invariants, atomic
-dataset persistence, case classification, and trace provenance.
+`npm test` covers provider discovery priority and de-duplication, compatibility probing, registry
+selection/client delegation, a real locally discovered app-server smoke, protocol framing, Git
+workspace discovery, local-first surface invariants, atomic dataset persistence, case
+classification, runtime attribution, and trace provenance.

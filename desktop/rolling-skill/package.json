@@ -1,6 +1,6 @@
 {
     "name": "rolling-skill-desktop",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "private": true,
     "author": "Rolling Skill",
     "description": "Native-window macOS client for the Rolling Skill evaluation workbench",
@@ -12,7 +12,6 @@
         "dist:mac": "electron-builder --mac dmg zip --arm64"
     },
     "devDependencies": {
-        "@openai/codex": "0.147.0",
         "electron": "^43.3.0",
         "electron-builder": "^26.0.12"
     },
@@ -24,12 +23,6 @@
             "src/**/*",
             "renderer/**/*",
             "package.json"
-        ],
-        "extraResources": [
-            {
-                "from": "node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin",
-                "to": "codex-runtime"
-            }
         ],
         "directories": {
             "output": "dist",

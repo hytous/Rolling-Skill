@@ -7,9 +7,16 @@ const {JsonLineDecoder, RpcRequestTracker} = require("./json-rpc.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
 
 class CodexAppServerClient extends EventEmitter {
-    constructor({binaryPath, traceDirectory, workspaceRoot, spawnProcess = spawn}) {
+    constructor({
+        binaryPath,
+        runtimeDescriptor = null,
+        traceDirectory,
+        workspaceRoot,
+        spawnProcess = spawn,
+    }) {
         super()
         this.binaryPath = binaryPath
+        this.runtimeDescriptor = runtimeDescriptor
         this.traceDirectory = traceDirectory
         this.workspaceRoot = workspaceRoot
         this.spawnProcess = spawnProcess
@@ -25,6 +32,7 @@ class CodexAppServerClient extends EventEmitter {
         return {
             status: this.ready ? "ready" : this.child ? "starting" : "stopped",
             binaryPath: this.binaryPath,
+            runtime: this.runtimeDescriptor,
             workspaceRoot: this.workspaceRoot,
             tracePath: this.recorder?.path ?? null,
             traceReference: this.recorder?.latestReference ?? null,
@@ -41,20 +49,23 @@ class CodexAppServerClient extends EventEmitter {
     }
 
     async startProcess() {
-        if (!this.binaryPath) throw new Error("The packaged Codex runtime is unavailable")
+        if (!this.binaryPath) throw new Error("The selected local Codex runtime is unavailable")
         this.stopping = false
         this.recorder = new TraceRecorder(this.traceDirectory, {
             sessionId: `runtime-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+            runtime: this.runtimeDescriptor,
         })
         const runtimeRoot = dirname(dirname(this.binaryPath))
         const runtimePath = join(runtimeRoot, "codex-path")
+        const executablePath = dirname(this.binaryPath)
+        const inheritedPath = process.env.PATH ?? "/usr/bin:/bin"
         const managedEnvironment = existsSync(runtimePath)
             ? {
                   CODEX_MANAGED_BY_NPM: "1",
                   CODEX_MANAGED_PACKAGE_ROOT: runtimeRoot,
-                  PATH: `${runtimePath}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+                  PATH: `${runtimePath}:${executablePath}:${inheritedPath}`,
               }
-            : {}
+            : {PATH: `${executablePath}:${inheritedPath}`}
         this.child = this.spawnProcess(this.binaryPath, ["app-server"], {
             cwd: this.workspaceRoot,
             env: {
@@ -89,7 +100,7 @@ class CodexAppServerClient extends EventEmitter {
         })
 
         const initialized = await this.request("initialize", {
-            clientInfo: {name: "rolling-skill", title: "Rolling Skill", version: "0.3.0"},
+            clientInfo: {name: "rolling-skill", title: "Rolling Skill", version: "0.4.0"},
             capabilities: {experimentalApi: true, requestAttestation: false},
         })
         this.notify("initialized")

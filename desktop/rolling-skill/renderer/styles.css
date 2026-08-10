@@ -420,7 +420,8 @@ kbd {
 }
 
 .runtime-status.error .runtime-dot,
-.runtime-status.stopped .runtime-dot {
+.runtime-status.stopped .runtime-dot,
+.runtime-status.unavailable .runtime-dot {
     background: var(--danger);
     box-shadow: 0 0 0 3px rgba(241, 141, 134, 0.08);
 }
@@ -887,6 +888,115 @@ kbd {
     overflow-y: auto;
     max-height: calc(100vh - 70px);
     padding: 0 20px 18px;
+}
+
+.runtime-dialog {
+    width: min(680px, calc(100vw - 80px));
+}
+
+.runtime-dialog-body {
+    overflow-y: auto;
+    max-height: calc(100vh - 70px);
+    padding: 0 20px 18px;
+}
+
+.runtime-dialog-copy {
+    margin: 0 0 14px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.runtime-options {
+    display: flex;
+    min-height: 92px;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.runtime-option {
+    display: grid;
+    width: 100%;
+    min-height: 68px;
+    padding: 10px 11px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: #171716;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    text-align: left;
+}
+
+.runtime-option:hover {
+    border-color: var(--border-strong);
+    background: #1a1a18;
+}
+
+.runtime-option.selected {
+    border-color: rgba(217, 249, 157, 0.3);
+    background: rgba(217, 249, 157, 0.035);
+}
+
+.runtime-option-title {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    font-size: 12px;
+    font-weight: 610;
+}
+
+.runtime-option-title small {
+    color: var(--faint);
+    font-size: 9px;
+    font-weight: 500;
+    text-transform: uppercase;
+}
+
+.runtime-option-path {
+    overflow: hidden;
+    margin-top: 5px;
+    color: var(--faint);
+    font-family: "SFMono-Regular", Menlo, monospace;
+    font-size: 8.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.runtime-option-state {
+    color: var(--accent);
+    font-size: 9px;
+}
+
+.runtime-dialog-actions {
+    display: flex;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    justify-content: flex-end;
+    gap: 7px;
+}
+
+.runtime-dialog-actions button {
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.035);
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.runtime-dialog-actions button:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
+}
+
+.runtime-dialog-actions button.primary {
+    border-color: transparent;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-weight: 650;
 }
 
 .dialog-header {

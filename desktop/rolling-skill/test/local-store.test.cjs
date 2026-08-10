@@ -42,11 +42,13 @@ describe("local evaluation store", () => {
             threadId: "thread-1",
             turnId: "turn-1",
             itemId: "item-1",
+            runtimeId: "codex:local",
             traceReference: "trace://runtime/session.jsonl#42",
         })
 
         assert.equal(saved.caseType, "badcase")
         assert.equal(saved.source.threadId, "thread-1")
+        assert.equal(saved.source.runtimeId, "codex:local")
         assert.equal(saved.source.traceReference, "trace://runtime/session.jsonl#42")
         const disk = JSON.parse(readFileSync(path, "utf8"))
         assert.equal(disk.cases.length, 1)

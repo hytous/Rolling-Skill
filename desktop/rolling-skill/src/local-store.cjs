@@ -104,6 +104,7 @@ class LocalEvaluationStore {
                 threadId: input.threadId ?? null,
                 turnId: input.turnId ?? null,
                 itemId: input.itemId ?? null,
+                runtimeId: input.runtimeId ?? null,
                 traceReference: input.traceReference ?? null,
             },
             createdAt: new Date().toISOString(),

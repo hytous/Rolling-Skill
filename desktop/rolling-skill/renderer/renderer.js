@@ -12,6 +12,8 @@ const state = {
     newTaskMode: false,
     error: null,
     runtimeErrorDismissed: false,
+    runtimeOperationInProgress: false,
+    runtimeEpoch: 0,
     caseSelection: null,
     traceOpen: false,
     renderQueued: false,
@@ -27,7 +29,9 @@ const elements = {
     activeTitle: document.querySelector("#active-title"),
     runtimeStatus: document.querySelector("#runtime-status"),
     runtimeLabel: document.querySelector("#runtime-label"),
+    runtimeContextName: document.querySelector("#runtime-context-name"),
     showLocalData: document.querySelector("#show-local-data"),
+    chooseRuntime: document.querySelector("#choose-runtime"),
     openTrace: document.querySelector("#open-trace"),
     topbarTrace: document.querySelector("#topbar-trace"),
     errorBanner: document.querySelector("#error-banner"),
@@ -45,6 +49,12 @@ const elements = {
     openTraceFolder: document.querySelector("#open-trace-folder"),
     traceMeta: document.querySelector("#trace-meta"),
     traceEvents: document.querySelector("#trace-events"),
+    runtimeDialog: document.querySelector("#runtime-dialog"),
+    closeRuntimeDialog: document.querySelector("#close-runtime-dialog"),
+    runtimeOptions: document.querySelector("#runtime-options"),
+    detectRuntimes: document.querySelector("#detect-runtimes"),
+    automaticRuntime: document.querySelector("#automatic-runtime"),
+    chooseRuntimeFile: document.querySelector("#choose-runtime-file"),
     caseDialog: document.querySelector("#save-case-dialog"),
     caseForm: document.querySelector("#save-case-form"),
     caseDataset: document.querySelector("#case-dataset"),
@@ -168,21 +178,68 @@ function renderWorkspace() {
 
 function renderRuntime() {
     const status = state.runtime?.status || "starting"
+    const runtime = state.runtime?.runtime
     elements.runtimeStatus.className = `runtime-status ${status}`
     const labels = {
-        ready: "Local runtime ready",
-        starting: "Starting local runtime",
+        ready: runtime ? `${runtime.displayName} ${runtime.version}` : "Local runtime ready",
+        starting: runtime ? `Starting ${runtime.displayName}` : "Detecting local runtimes",
         stopped: "Local runtime stopped",
         error: "Local runtime error",
+        unavailable: "No local runtime",
     }
     elements.runtimeLabel.textContent = labels[status] || status
+    elements.runtimeContextName.textContent = runtime
+        ? `${runtime.displayName} ${runtime.version}`
+        : "No agent runtime selected"
     elements.runtimeStatus.title =
-        status === "ready" ? "Open the runtime trace" : "Restart the local runtime"
+        status === "ready"
+            ? `${runtime?.executablePath || "Local runtime"} · ${runtime?.source || "detected"}`
+            : "Rescan compatible local runtimes"
 
     const runtimeError = state.runtimeErrorDismissed ? null : state.runtime?.error
     const message = state.error || runtimeError
     elements.errorBanner.classList.toggle("hidden", !message)
     elements.errorMessage.textContent = message || ""
+}
+
+function renderRuntimeOptions() {
+    elements.runtimeOptions.replaceChildren()
+    elements.detectRuntimes.disabled = state.runtimeOperationInProgress
+    elements.automaticRuntime.disabled = state.runtimeOperationInProgress
+    elements.chooseRuntimeFile.disabled = state.runtimeOperationInProgress
+    const runtimes = state.runtime?.availableRuntimes ?? []
+    if (runtimes.length === 0) {
+        elements.runtimeOptions.append(
+            node(
+                "div",
+                "sidebar-placeholder",
+                "No compatible local runtime was detected. Rescan or choose an executable.",
+            ),
+        )
+        return
+    }
+    for (const runtime of runtimes) {
+        const button = node("button", "runtime-option")
+        button.type = "button"
+        button.disabled = state.runtimeOperationInProgress
+        button.dataset.runtimeId = runtime.runtimeId
+        const selected = runtime.runtimeId === state.runtime?.runtime?.runtimeId
+        if (selected) button.classList.add("selected")
+        const copy = node("span")
+        const title = node("span", "runtime-option-title")
+        title.append(
+            node("span", "", `${runtime.displayName} ${runtime.version}`),
+            node("small", "", runtime.source),
+        )
+        copy.append(title, node("span", "runtime-option-path", runtime.executablePath))
+        button.append(copy, node("span", "runtime-option-state", selected ? "Active" : "Use"))
+        elements.runtimeOptions.append(button)
+    }
+}
+
+function openRuntimeDialog() {
+    renderRuntimeOptions()
+    elements.runtimeDialog.showModal()
 }
 
 function renderThreads() {
@@ -226,10 +283,10 @@ function renderWelcome() {
     const copy = node(
         "p",
         "",
-        "Run a task through the bundled Codex runtime, inspect its local trace, then save the useful response as a goodcase or badcase.",
+        "Run a task through a compatible local agent runtime, inspect its trace, then save the useful response as a goodcase or badcase.",
     )
     const chips = node("div", "welcome-chips")
-    for (const label of ["No server required", "Manual case curation", "Local trace evidence"]) {
+    for (const label of ["Runtime auto-discovery", "Manual case curation", "Local trace evidence"]) {
         chips.append(node("span", "welcome-chip", label))
     }
     inner.append(mark, heading, copy, chips)
@@ -337,6 +394,7 @@ function renderAll(options) {
     renderTitle()
     renderConversation(options)
     renderComposer()
+    renderRuntimeOptions()
 }
 
 function queueRender(options = {}) {
@@ -362,10 +420,12 @@ function showToast(message) {
 }
 
 async function refreshThreads(selectFirst = false) {
+    const runtimeEpoch = state.runtimeEpoch
     state.loadingThreads = true
     renderThreads()
     try {
         const response = await window.rollingSkill.listThreads()
+        if (runtimeEpoch !== state.runtimeEpoch) return false
         state.threads = response.data ?? []
         state.loadingThreads = false
         renderThreads()
@@ -377,15 +437,19 @@ async function refreshThreads(selectFirst = false) {
         ) {
             await loadThread(state.threads[0].id)
         }
+        return true
     } catch (error) {
+        if (runtimeEpoch !== state.runtimeEpoch) return false
         state.loadingThreads = false
         showError(error)
         renderThreads()
+        return false
     }
 }
 
 async function loadThread(threadId) {
     if (!threadId) return
+    const runtimeEpoch = state.runtimeEpoch
     state.activeThreadId = threadId
     state.newTaskMode = false
     state.loadingThread = true
@@ -394,7 +458,7 @@ async function loadThread(threadId) {
     renderAll()
     try {
         const response = await window.rollingSkill.readThread(threadId)
-        if (state.activeThreadId !== threadId) return
+        if (runtimeEpoch !== state.runtimeEpoch || state.activeThreadId !== threadId) return
         state.activeThread = response.thread
         state.activeTurnId =
             response.thread.turns?.find((turn) => turn.status === "inProgress")?.id ?? null
@@ -402,7 +466,7 @@ async function loadThread(threadId) {
         upsertThreadSummary(response.thread)
         renderAll({forceBottom: true})
     } catch (error) {
-        if (state.activeThreadId !== threadId) return
+        if (runtimeEpoch !== state.runtimeEpoch || state.activeThreadId !== threadId) return
         state.loadingThread = false
         showError(error)
         renderConversation()
@@ -610,6 +674,46 @@ function handleNotification(message) {
     queueRender({forceBottom: method === "item/agentMessage/delta"})
 }
 
+function clearRuntimeTaskState() {
+    state.threads = []
+    state.activeThreadId = null
+    state.activeThread = null
+    state.activeTurnId = null
+    state.loadingThread = false
+    state.loadingThreads = true
+    state.sending = false
+    state.newTaskMode = false
+}
+
+async function changeRuntime(operation, {markStarting = true, clearBefore = true} = {}) {
+    if (state.runtimeOperationInProgress) return
+    state.runtimeOperationInProgress = true
+    state.runtimeEpoch += 1
+    state.error = null
+    if (clearBefore) clearRuntimeTaskState()
+    if (markStarting) state.runtime = {...state.runtime, status: "starting", error: null}
+    renderAll()
+    try {
+        const runtime = await operation()
+        if (!runtime) return
+        if (!clearBefore) clearRuntimeTaskState()
+        state.runtime = runtime
+        state.runtimeErrorDismissed = false
+        if (runtime.status === "ready") {
+            const refreshed = await refreshThreads(true)
+            if (refreshed) state.error = null
+        } else {
+            state.loadingThreads = false
+        }
+    } catch (error) {
+        state.loadingThreads = false
+        showError(error)
+    } finally {
+        state.runtimeOperationInProgress = false
+        renderAll()
+    }
+}
+
 elements.newTask.addEventListener("click", beginNewTask)
 elements.refreshThreads.addEventListener("click", () => refreshThreads(false))
 elements.threadList.addEventListener("click", (event) => {
@@ -624,26 +728,32 @@ elements.workspaceButton.addEventListener("click", async () => {
     }
 })
 elements.showLocalData.addEventListener("click", () => window.rollingSkill.revealLocalData())
+elements.chooseRuntime.addEventListener("click", openRuntimeDialog)
 elements.openTrace.addEventListener("click", () => setTraceOpen(true))
 elements.topbarTrace.addEventListener("click", () => setTraceOpen(true))
 elements.closeTrace.addEventListener("click", () => setTraceOpen(false))
 elements.refreshTrace.addEventListener("click", loadTrace)
 elements.openTraceFolder.addEventListener("click", () => window.rollingSkill.openTraceFolder())
 elements.runtimeStatus.addEventListener("click", async () => {
-    if (state.runtime?.status === "ready") {
-        setTraceOpen(true)
-        return
-    }
-    try {
-        state.runtime = {status: "starting", workspaceRoot: state.workspaceRoot}
-        renderRuntime()
-        state.runtime = await window.rollingSkill.restartRuntime()
-        state.runtimeErrorDismissed = false
-        await refreshThreads(false)
-        renderAll()
-    } catch (error) {
-        showError(error)
-    }
+    openRuntimeDialog()
+})
+elements.closeRuntimeDialog.addEventListener("click", () => elements.runtimeDialog.close())
+elements.runtimeOptions.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-runtime-id]")
+    if (!button || button.dataset.runtimeId === state.runtime?.runtime?.runtimeId) return
+    await changeRuntime(() => window.rollingSkill.selectRuntime(button.dataset.runtimeId))
+})
+elements.detectRuntimes.addEventListener("click", async () => {
+    await changeRuntime(() => window.rollingSkill.detectRuntimes())
+})
+elements.automaticRuntime.addEventListener("click", async () => {
+    await changeRuntime(() => window.rollingSkill.useAutomaticRuntime())
+})
+elements.chooseRuntimeFile.addEventListener("click", async () => {
+    await changeRuntime(() => window.rollingSkill.chooseRuntime(), {
+        markStarting: false,
+        clearBefore: false,
+    })
 })
 elements.dismissError.addEventListener("click", () => {
     state.error = null
@@ -680,7 +790,7 @@ window.rollingSkill.onRuntimeState((runtime) => {
     renderRuntime()
     renderComposer()
 })
-window.rollingSkill.onCodexNotification(handleNotification)
+window.rollingSkill.onRuntimeNotification(handleNotification)
 window.rollingSkill.onWorkspaceChanged(async ({workspaceRoot}) => {
     state.workspaceRoot = workspaceRoot
     state.activeThread = null
@@ -688,7 +798,11 @@ window.rollingSkill.onWorkspaceChanged(async ({workspaceRoot}) => {
     state.activeTurnId = null
     state.newTaskMode = false
     renderAll()
-    await refreshThreads(true)
+    if (state.runtime?.status === "ready") await refreshThreads(true)
+    else {
+        state.loadingThreads = false
+        renderThreads()
+    }
 })
 window.rollingSkill.onNewTask(beginNewTask)
 async function bootstrap() {
@@ -698,7 +812,12 @@ async function bootstrap() {
         state.workspaceRoot = initial.workspaceRoot
         state.datasets = initial.datasets ?? []
         renderAll()
-        await refreshThreads(true)
+        if (state.runtime?.status !== "unavailable") {
+            await refreshThreads(true)
+        } else {
+            state.loadingThreads = false
+            renderThreads()
+        }
     } catch (error) {
         state.loadingThreads = false
         showError(error)

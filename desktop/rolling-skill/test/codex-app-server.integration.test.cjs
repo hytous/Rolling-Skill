@@ -1,36 +1,23 @@
 const assert = require("node:assert/strict")
-const {accessSync, constants, mkdtempSync, rmSync} = require("node:fs")
+const {mkdtempSync, rmSync} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {after, describe, it} = require("node:test")
 
 const {CodexAppServerClient} = require("../src/codex-app-server.cjs")
+const {CodexRuntimeProvider} = require("../src/codex-runtime-provider.cjs")
 
-const binaryPath = join(
-    __dirname,
-    "..",
-    "node_modules",
-    "@openai",
-    "codex-darwin-arm64",
-    "vendor",
-    "aarch64-apple-darwin",
-    "bin",
-    "codex",
-)
+const descriptor = new CodexRuntimeProvider().discover()[0] ?? null
 
-function runtimeAvailable() {
-    try {
-        accessSync(binaryPath, constants.X_OK)
-        return process.platform === "darwin" && process.arch === "arm64"
-    } catch {
-        return false
-    }
-}
-
-describe("packaged Codex app-server smoke", {skip: !runtimeAvailable()}, () => {
+describe("discovered local Codex app-server smoke", {skip: !descriptor}, () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "rolling-skill-app-server-"))
     const traceDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-app-server-trace-"))
-    const client = new CodexAppServerClient({binaryPath, traceDirectory, workspaceRoot})
+    const client = new CodexAppServerClient({
+        binaryPath: descriptor?.executablePath,
+        runtimeDescriptor: descriptor,
+        traceDirectory,
+        workspaceRoot,
+    })
 
     after(async () => {
         await client.stop()
@@ -43,6 +30,7 @@ describe("packaged Codex app-server smoke", {skip: !runtimeAvailable()}, () => {
         const response = await client.listThreads()
 
         assert.equal(state.status, "ready")
+        assert.equal(state.runtime.runtimeId, descriptor.runtimeId)
         assert.equal(Array.isArray(response.data), true)
         assert.equal(response.data.every((thread) => thread.cwd === workspaceRoot), true)
         const listRequest = client
