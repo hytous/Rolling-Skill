@@ -48,19 +48,5 @@
     "tsx": "4.19.2",
     "typescript": "^5.9.3",
     "vitest": "^4.1.4"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@sandbox-agent/cli-linux-x64",
-      "@sandbox-agent/cli-darwin-arm64",
-      "@sandbox-agent/cli-darwin-x64",
-      "@sandbox-agent/cli-linux-arm64",
-      "esbuild"
-    ],
-    "patchedDependencies": {
-      "acp-http-client@0.4.2": "patches/acp-http-client@0.4.2.patch",
-      "pi-acp@0.0.29": "patches/pi-acp@0.0.29.patch",
-      "sandbox-agent@0.4.2": "patches/sandbox-agent@0.4.2.patch"
-    }
   }
 }

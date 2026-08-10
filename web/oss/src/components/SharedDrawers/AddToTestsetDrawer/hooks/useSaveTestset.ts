@@ -24,6 +24,7 @@ import {
 import {projectIdAtom} from "@/oss/state/project"
 import {clearRevisionsCacheAtom, setRevisionsForTestsetAtom} from "@/oss/state/testsetSelection"
 
+import {augmentCaseCaptureRows, missingCaseCaptureColumns} from "../assets/caseCapture"
 import {isNewTestsetAtom, newTestsetNameAtom, selectedTestsetInfoAtom} from "../atoms/cascaderState"
 import {
     mappingDataAtom,
@@ -32,6 +33,7 @@ import {
 } from "../atoms/drawerState"
 import {
     commitMessageAtom,
+    caseCaptureContextAtom,
     convertTraceDataAtom,
     hasNewColumnsAtom,
     isSavingAtom,
@@ -59,6 +61,7 @@ export function useSaveTestset() {
     // Save state atoms
     const [isSaving, setIsSaving] = useAtom(isSavingAtom)
     const [commitMessage, setCommitMessage] = useAtom(commitMessageAtom)
+    const caseCaptureContext = useAtomValue(caseCaptureContextAtom)
     const [showConfirmSave, setShowConfirmSave] = useAtom(showConfirmSaveAtom)
     const [localColumns, setLocalColumns] = useAtom(localTestsetColumnsAtom)
     const [localRows, setLocalRows] = useAtom(localTestsetRowsAtom)
@@ -112,12 +115,13 @@ export function useSaveTestset() {
             ? localColumns.map((c) => c.column)
             : currentColumns.map((c) => c.key)
 
-        return convertTraceData({
+        const rows = convertTraceData({
             traceData,
             mappings: mappingData,
             columns,
             existingRows: isNewTestset ? [] : localRows,
         })
+        return augmentCaseCaptureRows(rows, caseCaptureContext)
     }, [
         traceData,
         mappingData,
@@ -126,6 +130,7 @@ export function useSaveTestset() {
         localRows,
         isNewTestset,
         convertTraceData,
+        caseCaptureContext,
     ])
 
     /**
@@ -200,11 +205,14 @@ export function useSaveTestset() {
                         ),
                     )
 
-                    const rowsToAdd = convertTraceData({
-                        traceData,
-                        mappings: mappingData,
-                        columns: mappedColumns,
-                    }).map((data) => ({data}))
+                    const rowsToAdd = augmentCaseCaptureRows(
+                        convertTraceData({
+                            traceData,
+                            mappings: mappingData,
+                            columns: mappedColumns,
+                        }),
+                        caseCaptureContext,
+                    ).map((data) => ({data}))
 
                     const newColumnNames = new Set(
                         localColumns
@@ -212,6 +220,10 @@ export function useSaveTestset() {
                             .map((column) => column.column)
                             .filter(Boolean),
                     )
+                    missingCaseCaptureColumns(
+                        currentColumns.map((column) => column.key),
+                        caseCaptureContext,
+                    ).forEach((column) => newColumnNames.add(column))
 
                     const operations: TestsetRevisionDelta = {
                         rows: {
@@ -318,6 +330,8 @@ export function useSaveTestset() {
             commitMessage,
             traceData,
             mappingData,
+            currentColumns,
+            caseCaptureContext,
             localColumns,
             getExportData,
             convertTraceData,

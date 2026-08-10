@@ -57,7 +57,7 @@ RUN corepack enable
 # Install deps as a cached layer (manifest + lockfile only). The full dependency set is
 # installed (not --prod): the runtime uses `tsx` and the extension build uses `esbuild`,
 # both devDependencies.
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches ./patches
 RUN pnpm install --frozen-lockfile
 

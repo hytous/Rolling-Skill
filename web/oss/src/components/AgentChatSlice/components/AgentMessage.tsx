@@ -12,15 +12,17 @@ import {
     Check,
     Clock,
     Copy,
+    Database,
     Robot,
     TreeStructure,
     User,
     XCircle,
 } from "@phosphor-icons/react"
 import type {FileUIPart, ReasoningUIPart, ToolUIPart, UIMessage} from "ai"
-import {Avatar, Skeleton, Tooltip, Typography} from "antd"
+import {Avatar, Button, Skeleton, Tooltip, Typography} from "antd"
 import {useAtomValue, useSetAtom} from "jotai"
 
+import AddToTestsetButton from "@/oss/components/SharedDrawers/AddToTestsetDrawer/components/AddToTestsetButton"
 import {openTraceDrawerAtom} from "@/oss/components/SharedDrawers/TraceDrawer/store/traceDrawerStore"
 
 import {useAttachmentMediaSrc} from "../assets/attachmentMedia"
@@ -686,6 +688,18 @@ const AgentMessage = ({
                         : []),
                 ]}
             />
+            {traceId ? (
+                <AddToTestsetButton traceId={traceId} caseCapture label="Save case">
+                    <Button
+                        type="text"
+                        size="small"
+                        icon={<Database size={14} />}
+                        title="Save case"
+                        aria-label="Save case"
+                        className="!h-7 !w-7 !p-0 text-colorTextSecondary hover:!text-colorText"
+                    />
+                </AddToTestsetButton>
+            ) : null}
         </>
     )
 

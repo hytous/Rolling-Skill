@@ -140,6 +140,10 @@ services/sdks
 # The committed gh.local stage files have no <name> segment, so they are NOT matched.
 hosting/docker-compose/*/docker-compose.*.*.local.yml
 
+# Local Rolling Skill launcher state. Evidence and launcher logs must stay on the host but
+# must never be committed with the source checkout.
+/.local/
+
 # Helm chart packages (built artifacts)
 agenta-oss-*.tgz
 

@@ -1,12 +1,16 @@
 import {useMemo} from "react"
 
+import {traceRootSpanAtomFamily} from "@agenta/entities/trace"
 import {Collapse, CollapseProps, Skeleton, Typography} from "antd"
 import clsx from "clsx"
+import {useAtomValue} from "jotai"
 
 import {TracesWithAnnotations} from "@/oss/services/observability/types"
 
 import useTraceDrawer from "../../hooks/useTraceDrawer"
 
+import {parseCodexEvidenceAttributes} from "./codexEvidence"
+import CodexEvidencePanel from "./CodexEvidencePanel"
 import TraceAnnotations from "./TraceAnnotations"
 import TraceDetails from "./TraceDetails"
 import TraceLinkedSpans from "./TraceLinkedSpans"
@@ -25,6 +29,11 @@ const TraceSidePanel = ({
 }) => {
     const {getTraceById} = useTraceDrawer()
     const derived = activeTrace || getTraceById(activeTraceId)
+    const rootSpan = useAtomValue(traceRootSpanAtomFamily(derived?.trace_id ?? null))
+    const evidence = useMemo(
+        () => parseCodexEvidenceAttributes(rootSpan?.attributes),
+        [rootSpan?.attributes],
+    )
 
     const showLoading = isLoading && !derived
 
@@ -76,6 +85,19 @@ const TraceSidePanel = ({
 
     const items: CollapseProps["items"] = useMemo(
         () => [
+            ...(evidence
+                ? [
+                      {
+                          key: "codex-evidence",
+                          label: (
+                              <Typography.Text className={collapseItemLabelClass}>
+                                  Codex Skill evidence
+                              </Typography.Text>
+                          ),
+                          children: <CodexEvidencePanel evidence={evidence} />,
+                      },
+                  ]
+                : []),
             {
                 key: "annotations",
                 label: (
@@ -109,13 +131,19 @@ const TraceSidePanel = ({
                 children: linkedContent,
             },
         ],
-        [activeTrace, derived],
+        [annotationsContent, detailsContent, evidence, linkedContent, referencesContent],
     )
 
     return (
         <Collapse
             items={items}
-            defaultActiveKey={["annotations", "details", "linked", "references"]}
+            defaultActiveKey={[
+                ...(evidence ? ["codex-evidence"] : []),
+                "annotations",
+                "details",
+                "linked",
+                "references",
+            ]}
             className={clsx(
                 "transition-all duration-300 ease-[ease] max-w-full overflow-hidden opacity-100 rounded-none border-0",
                 "[&_.ant-collapse-content]:border-[var(--ag-colorSplit)] [&_.ant-collapse-content_.ant-collapse-content-box]:p-3 [&_.ant-collapse-item]:border-[var(--ag-colorSplit)]",

@@ -133,6 +133,63 @@ Agenta traces every run and keeps a version history of each agent configuration.
 
 ## Get started
 
+### Run the Rolling Skill evaluation workbench on macOS
+
+This checkout includes a local macOS launcher for testing Codex Skills in Agenta. It runs the
+development stack, so the first launch builds Docker images and can take several minutes.
+
+Before the first launch:
+
+1. Install and open Docker Desktop.
+2. Run `codex login` on the host and finish the browser sign-in. The launcher requires a non-empty
+   `~/.codex/auth.json` so it can prepare an isolated subscription credential copy.
+
+Then open [Rolling Skill.app](./Rolling%20Skill.app) from Finder. The app starts Docker Desktop when
+needed, creates the ignored local configuration, starts Agenta, waits for the web application, and
+opens [http://localhost](http://localhost). If macOS blocks the unsigned local app on first open,
+Control-click it and select **Open**.
+
+Open [Stop Rolling Skill.app](./Stop%20Rolling%20Skill.app) to stop the stack. This keeps database
+volumes, evidence, and logs. Local files are stored here:
+
+| Path | Contents |
+| --- | --- |
+| `.local/codex-evidence/` | Preserved Codex evidence revisions |
+| `.local/codex-home/auth.json` | Isolated Codex credential copy used by the runner |
+| `.local/launcher.log` | Build, startup, readiness, and stop output |
+| `hosting/docker-compose/oss/.env.oss.dev` | Ignored local Agenta configuration |
+
+The evidence folder is mounted at `/var/lib/agenta/codex-evidence` inside the runner. This nested
+container path is intentional: the evidence writer rejects broad top-level cleanup targets.
+The launcher never mounts the host `~/.codex` directory; it refreshes only the isolated auth copy
+when the host login is newer, so evaluated runs cannot see local Skills, plugins, apps, or config.
+
+To start the same stack from a terminal:
+
+```bash
+test -f hosting/docker-compose/oss/.env.oss.dev || \
+  cp hosting/docker-compose/oss/env.oss.dev.example hosting/docker-compose/oss/.env.oss.dev
+mkdir -p .local/codex-evidence .local/codex-home
+cp ~/.codex/auth.json .local/codex-home/auth.json
+chmod 600 .local/codex-home/auth.json
+ROLLING_SKILL_EVIDENCE_DIR="$PWD/.local/codex-evidence" \
+ROLLING_SKILL_CODEX_HOME_DIR="$PWD/.local/codex-home" \
+  bash hosting/docker-compose/run.sh \
+    --oss --dev --build --no-tunnel \
+    --env-file .env.oss.dev \
+    --compose-file docker-compose.dev.rolling-skill.yml
+```
+
+Use the same command with `--down` and without `--build` to stop it.
+
+For a traced assistant answer, select **Save case** beside the message. Choose a testset, review the
+mapping, classify the row as `goodcase` or `badcase`, then confirm the save. The new row contains
+`eval_case_type`, `source_trace_id`, and `source_span_id`.
+
+Capture is manual in this version. It does not automatically save messages or invoke a curation
+subagent. Evidence marked `DIAGNOSTIC_ONLY` or `diagnostic_full_access` is suitable for inspecting
+Skill execution and latency, but it is not eligible for a trusted A-class score.
+
 ### Try Agenta Cloud
 
 The fastest way to try Agenta.

@@ -3,6 +3,7 @@ import {atom} from "jotai"
 
 import {currentColumnsAtom} from "@/oss/state/entities/testcase/columnState"
 
+import type {CaseCaptureContext} from "../assets/caseCapture"
 import type {Mapping, TestsetTraceData} from "../assets/types"
 
 import {isNewTestsetAtom} from "./cascaderState"
@@ -24,6 +25,9 @@ export const isSavingAtom = atom<boolean>(false)
 
 /** Commit message for new revision */
 export const commitMessageAtom = atom<string>("")
+
+/** Manual evaluation-case metadata. Null keeps the ordinary trace-to-testset flow unchanged. */
+export const caseCaptureContextAtom = atom<CaseCaptureContext | null>(null)
 
 /** Show confirm save modal */
 export const showConfirmSaveAtom = atom<boolean>(false)
@@ -291,6 +295,7 @@ export const convertTraceDataAtom = atom(
 export const resetSaveStateAtom = atom(null, (get, set) => {
     set(isSavingAtom, false)
     set(commitMessageAtom, "")
+    set(caseCaptureContextAtom, null)
     set(showConfirmSaveAtom, false)
     set(localTestsetRowsAtom, [])
     set(localColumnsAtom, [])

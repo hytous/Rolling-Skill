@@ -1,14 +1,16 @@
 import {useCallback, useEffect, useState} from "react"
 
 import {WarningCircle} from "@phosphor-icons/react"
-import {Button, Input, Typography} from "antd"
-import {useAtomValue, useSetAtom} from "jotai"
+import {Button, Input, Segmented, Typography} from "antd"
+import {useAtom, useAtomValue, useSetAtom} from "jotai"
 
 import GenericDrawer from "@/oss/components/GenericDrawer"
 import useResizeObserver from "@/oss/hooks/useResizeObserver"
 
+import type {CaseCaptureType} from "./assets/caseCapture"
 import {effectiveTestsetNameAtom} from "./atoms/cascaderState"
 import {initializeWithSpanIdsAtom, isDrawerOpenAtom} from "./atoms/drawerState"
+import {caseCaptureContextAtom} from "./atoms/saveState"
 import {
     ConfirmSaveModal,
     DataPreviewEditor,
@@ -26,13 +28,25 @@ interface TestsetDrawerProps {
     onClose: () => void
     /** Initial path to start navigation at in drill-in view (e.g., "inputs.prompt" or ["inputs", "prompt"]) */
     initialPath?: string | string[]
+    caseCapture?: {
+        sourceTraceId: string
+        sourceSpanId: string
+        defaultCaseType?: CaseCaptureType
+    }
 }
 
-const TestsetDrawer = ({open, spanIds, onClose, initialPath = "ag.data"}: TestsetDrawerProps) => {
+const TestsetDrawer = ({
+    open,
+    spanIds,
+    onClose,
+    initialPath = "ag.data",
+    caseCapture,
+}: TestsetDrawerProps) => {
     const setIsDrawerOpen = useSetAtom(isDrawerOpenAtom)
     const initializeWithSpanIds = useSetAtom(initializeWithSpanIdsAtom)
     const drawer = useTestsetDrawer()
     const effectiveTestsetName = useAtomValue(effectiveTestsetNameAtom)
+    const [caseCaptureContext, setCaseCaptureContext] = useAtom(caseCaptureContextAtom)
 
     // State for focusing drill-in view on a specific path
     const [focusPath, setFocusPath] = useState<string | undefined>(undefined)
@@ -51,6 +65,19 @@ const TestsetDrawer = ({open, spanIds, onClose, initialPath = "ag.data"}: Testse
     useEffect(() => {
         setIsDrawerOpen(open)
     }, [open, setIsDrawerOpen])
+
+    useEffect(() => {
+        if (!open) return
+        setCaseCaptureContext(
+            caseCapture
+                ? {
+                      caseType: caseCapture.defaultCaseType ?? "badcase",
+                      sourceTraceId: caseCapture.sourceTraceId,
+                      sourceSpanId: caseCapture.sourceSpanId,
+                  }
+                : null,
+        )
+    }, [caseCapture, open, setCaseCaptureContext])
 
     // Initialize with span IDs - entity atoms will fetch the actual data
     useEffect(() => {
@@ -76,10 +103,35 @@ const TestsetDrawer = ({open, spanIds, onClose, initialPath = "ag.data"}: Testse
                 }}
                 expandable
                 initialWidth={640}
-                headerExtra="Add to testset"
+                headerExtra={caseCapture ? "Save evaluation case" : "Add to testset"}
                 closeButtonProps={{"data-tour": "add-to-testset-close"}}
                 footer={
                     <div className="flex flex-col gap-3 py-2 px-3 w-full">
+                        {caseCaptureContext ? (
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="flex flex-col">
+                                    <Typography.Text className="font-medium">
+                                        Case classification
+                                    </Typography.Text>
+                                    <Typography.Text type="secondary" className="text-xs">
+                                        Saved as the eval_case_type dataset column.
+                                    </Typography.Text>
+                                </div>
+                                <Segmented
+                                    value={caseCaptureContext.caseType}
+                                    options={[
+                                        {label: "Bad case", value: "badcase"},
+                                        {label: "Good case", value: "goodcase"},
+                                    ]}
+                                    onChange={(value) =>
+                                        setCaseCaptureContext({
+                                            ...caseCaptureContext,
+                                            caseType: value as CaseCaptureType,
+                                        })
+                                    }
+                                />
+                            </div>
+                        ) : null}
                         {/* Commit message input */}
                         <div className="flex flex-col gap-1">
                             <Typography.Text className="text-gray-500">
