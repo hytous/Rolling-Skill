@@ -144,6 +144,12 @@ hosting/docker-compose/*/docker-compose.*.*.local.yml
 # must never be committed with the source checkout.
 /.local/
 
+# Generated native desktop bundles and Electron packaging output. Build source, tests, and the
+# npm lockfile stay tracked; the 275MB local application bundle does not.
+/Rolling Skill.app/
+/Stop Rolling Skill.app/
+/desktop/rolling-skill/dist/
+
 # Helm chart packages (built artifacts)
 agenta-oss-*.tgz
 

@@ -135,34 +135,58 @@ Agenta traces every run and keeps a version history of each agent configuration.
 
 ### Run the Rolling Skill evaluation workbench on macOS
 
-This checkout includes a local macOS launcher for testing Codex Skills in Agenta. It runs the
-development stack, so the first launch builds Docker images and can take several minutes.
+This checkout includes a real local macOS client for testing Codex Skills in Agenta. It has its
+own native window, Dock icon, application menu, startup status, and runtime logs. The workbench is
+loaded inside the client; local application routes no longer open a browser. It runs the development
+stack, so the first launch builds Docker images and can take several minutes.
 
 Before the first launch:
 
 1. Install and open Docker Desktop.
-2. Run `codex login` on the host and finish the browser sign-in. The launcher requires a non-empty
+2. Run `codex login` on the host and finish the browser sign-in. The client requires a non-empty
    `~/.codex/auth.json` so it can prepare an isolated subscription credential copy.
 
-Then open [Rolling Skill.app](./Rolling%20Skill.app) from Finder. The app starts Docker Desktop when
-needed, creates the ignored local configuration, starts Agenta, waits for the web application, and
-opens [http://localhost](http://localhost). If macOS blocks the unsigned local app on first open,
-Control-click it and select **Open**.
+Then double-click `Rolling Skill.app` in the checkout. The app starts Docker Desktop when needed,
+creates the ignored local configuration, shows live Compose progress, starts Agenta, waits for the
+web application, and loads the workbench in the same window. If macOS blocks the ad-hoc signed local
+app on first open, Control-click it and select **Open**.
 
-Open [Stop Rolling Skill.app](./Stop%20Rolling%20Skill.app) to stop the stack. This keeps database
-volumes, evidence, and logs. Local files are stored here:
+Use the native **Runtime** menu for status, retry, restart, stop, logs, and checkout selection.
+Stopping keeps database volumes, evidence, and logs. Closing or quitting the desktop client also
+keeps the runtime running; use **Runtime → Stop Runtime** when you want to stop its containers.
+
+If the host is not signed into Codex, the client shows **Codex sign-in required** rather than
+claiming evaluation is ready. Select **Open Terminal for login**, run
+`codex login`, complete sign-in, then select **Retry**. If the web stack is already healthy, the
+client also allows opening the workbench while clearly keeping Codex runs disabled.
+
+Local files are stored here:
 
 | Path | Contents |
 | --- | --- |
 | `.local/codex-evidence/` | Preserved Codex evidence revisions |
 | `.local/codex-home/auth.json` | Isolated Codex credential copy used by the runner |
-| `.local/launcher.log` | Build, startup, readiness, and stop output |
+| `.local/desktop.log` | Desktop runtime build, startup, readiness, and stop output |
 | `hosting/docker-compose/oss/.env.oss.dev` | Ignored local Agenta configuration |
 
 The evidence folder is mounted at `/var/lib/agenta/codex-evidence` inside the runner. This nested
 container path is intentional: the evidence writer rejects broad top-level cleanup targets.
-The launcher never mounts the host `~/.codex` directory; it refreshes only the isolated auth copy
-when the host login is newer, so evaluated runs cannot see local Skills, plugins, apps, or config.
+The desktop client never mounts the host `~/.codex` directory; it refreshes only the isolated auth
+copy, so evaluated runs cannot see local Skills, plugins, apps, or config. Renderer Node integration
+is disabled, context isolation and sandboxing are enabled, and the application window only accepts
+the configured local origin.
+
+To rebuild the Finder-double-clickable application from source:
+
+```bash
+bash desktop/rolling-skill/scripts/build-macos-app.sh
+```
+
+This installs the pinned desktop dependencies, runs the desktop tests, packages an Apple Silicon
+Electron app, applies an ad-hoc local signature, verifies that signature, and replaces the ignored
+root `Rolling Skill.app`. Desktop source and its lockfile are tracked; the generated 275MB Electron
+bundle is intentionally not committed. For development, run `npm install && npm start` from
+`desktop/rolling-skill/`.
 
 To start the same stack from a terminal:
 
