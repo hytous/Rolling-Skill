@@ -14,4 +14,4 @@
 
 - [x] 3.1 Update README and architecture documentation for discovered runtimes and provider extensibility.
 - [x] 3.2 Run tests, audit, OpenSpec, package inspection, signature, native launch, and screenshot verification.
-- [ ] 3.3 Rebuild the root application, push both rolling-skill branches, and leave the app open.
+- [x] 3.3 Rebuild the root application, push both rolling-skill branches, and leave the app open.
