@@ -1,21 +1,25 @@
 const {app, BrowserWindow, dialog, ipcMain, Menu, session, shell} = require("electron")
-const {existsSync, readFileSync, writeFileSync} = require("node:fs")
-const {dirname, join} = require("node:path")
+const {chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync} = require("node:fs")
+const {homedir} = require("node:os")
+const {join} = require("node:path")
 const {pathToFileURL} = require("node:url")
-const {spawn} = require("node:child_process")
 
-const {classifyNavigation} = require("./navigation.cjs")
-const {findRepositoryRoot, isRepositoryRoot} = require("./paths.cjs")
-const {createRuntimePaths} = require("./runtime-command.cjs")
-const {RuntimeController} = require("./runtime-controller.cjs")
+const {CodexAppServerClient} = require("./codex-app-server.cjs")
+const {resolveCodexBinary} = require("./codex-binary.cjs")
+const {LocalEvaluationStore} = require("./local-store.cjs")
+const {findGitWorkspace} = require("./workspace.cjs")
 
-const APP_URL = process.env.ROLLING_SKILL_APP_URL || "http://localhost/"
-const STARTUP_FILE = join(__dirname, "..", "renderer", "index.html")
+const RENDERER_FILE = join(__dirname, "..", "renderer", "index.html")
 const PRELOAD_FILE = join(__dirname, "preload.cjs")
 
 let mainWindow = null
-let controller = null
-let startupUrl = null
+let client = null
+let store = null
+let workspaceRoot = null
+let rendererUrl = null
+let runtimeStart = null
+let quitAfterRuntimeStops = false
+const loadedThreads = new Set()
 
 app.setName("Rolling Skill")
 
@@ -23,71 +27,124 @@ function preferencesFile() {
     return join(app.getPath("userData"), "preferences.json")
 }
 
-function readSavedRepository() {
+function readPreferences() {
     try {
-        const parsed = JSON.parse(readFileSync(preferencesFile(), "utf8"))
-        return typeof parsed.repositoryRoot === "string" ? parsed.repositoryRoot : null
+        return JSON.parse(readFileSync(preferencesFile(), "utf8"))
     } catch {
-        return null
+        return {}
     }
 }
 
-function saveRepository(repositoryRoot) {
-    writeFileSync(preferencesFile(), `${JSON.stringify({repositoryRoot}, null, 2)}\n`, {
-        mode: 0o600,
+function writePreferences(patch) {
+    const next = {...readPreferences(), ...patch}
+    mkdirSync(app.getPath("userData"), {recursive: true, mode: 0o700})
+    writeFileSync(preferencesFile(), `${JSON.stringify(next, null, 2)}\n`, {mode: 0o600})
+    chmodSync(preferencesFile(), 0o600)
+}
+
+function locateInitialWorkspace() {
+    const saved = readPreferences().workspaceRoot
+    if (typeof saved === "string" && existsSync(saved)) return saved
+    const checkout = findGitWorkspace([process.cwd(), app.getAppPath(), __dirname, process.execPath])
+    if (checkout) return checkout
+    return homedir()
+}
+
+function desktopProjectRoot() {
+    return join(__dirname, "..")
+}
+
+function send(channel, payload) {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+}
+
+function installClientEvents(nextClient) {
+    nextClient.on("state", (state) => send("runtime:state", state))
+    nextClient.on("notification", (message) => send("codex:notification", message))
+    nextClient.on("runtimeError", (error) => {
+        send("runtime:state", {...nextClient.state(), status: "error", error: error.message})
     })
 }
 
-function locateRepository() {
-    return findRepositoryRoot([
-        process.env.ROLLING_SKILL_REPO_ROOT,
-        app.getAppPath(),
-        __dirname,
-        process.execPath,
-        process.cwd(),
-        readSavedRepository(),
-    ])
+function createClient() {
+    const binaryPath = resolveCodexBinary({
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+        projectRoot: desktopProjectRoot(),
+    })
+    const nextClient = new CodexAppServerClient({
+        binaryPath,
+        traceDirectory: join(app.getPath("userData"), "traces"),
+        workspaceRoot,
+    })
+    installClientEvents(nextClient)
+    return nextClient
 }
 
-function sendState(state = controller?.getState()) {
-    if (state && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("runtime:state", state)
+async function ensureRuntime() {
+    if (client?.ready) return client
+    if (!client) client = createClient()
+    if (!runtimeStart) {
+        runtimeStart = client.start().finally(() => {
+            runtimeStart = null
+        })
     }
+    await runtimeStart
+    return client
 }
 
-async function showStartup() {
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    const current = mainWindow.webContents.getURL()
-    if (current !== startupUrl) await mainWindow.loadFile(STARTUP_FILE)
-    sendState()
+async function restartRuntime() {
+    if (client) await client.stop()
+    loadedThreads.clear()
+    client = createClient()
+    await ensureRuntime()
+    return client.state()
 }
 
-async function showWorkbench() {
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    await mainWindow.loadURL(APP_URL)
+async function chooseWorkspace() {
+    const result = await dialog.showOpenDialog(mainWindow, {
+        title: "Choose a local workspace",
+        properties: ["openDirectory", "createDirectory"],
+        message: "Codex threads shown in Rolling Skill are scoped to this folder.",
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    workspaceRoot = result.filePaths[0]
+    writePreferences({workspaceRoot})
+    loadedThreads.clear()
+    client?.setWorkspace(workspaceRoot)
+    send("workspace:changed", {workspaceRoot})
+    return workspaceRoot
+}
+
+function openTraceFolder() {
+    const directory = join(app.getPath("userData"), "traces")
+    mkdirSync(directory, {recursive: true, mode: 0o700})
+    void shell.openPath(directory)
+    return directory
+}
+
+function revealLocalData() {
+    shell.showItemInFolder(store.path)
+    return store.path
 }
 
 function installNavigationPolicy(window) {
-    const guardNavigation = (event, target) => {
-        if (target === startupUrl || classifyNavigation(target, APP_URL) === "internal") return
-        event.preventDefault()
-        if (classifyNavigation(target, APP_URL) === "external") void shell.openExternal(target)
-    }
     window.webContents.setWindowOpenHandler(({url}) => {
-        const classification = classifyNavigation(url, APP_URL)
-        if (classification === "internal") void window.loadURL(url)
-        if (classification === "external") void shell.openExternal(url)
+        if (url.startsWith("https://")) void shell.openExternal(url)
         return {action: "deny"}
     })
-    window.webContents.on("will-navigate", guardNavigation)
-    window.webContents.on("will-redirect", guardNavigation)
+    window.webContents.on("will-navigate", (event, target) => {
+        if (target === rendererUrl) return
+        event.preventDefault()
+        if (target.startsWith("https://")) void shell.openExternal(target)
+    })
     window.webContents.on("will-attach-webview", (event) => event.preventDefault())
 }
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 1440,
-        height: 920,
+        width: 1480,
+        height: 940,
         minWidth: 980,
         minHeight: 680,
         show: false,
@@ -113,151 +170,109 @@ function createWindow() {
                 const image = await mainWindow.webContents.capturePage()
                 writeFileSync(smokeScreenshot, image.toPNG())
                 if (process.env.ROLLING_SKILL_SMOKE_QUIT === "1") app.quit()
-            }, 1_000)
+            }, 1_200)
         }
     })
     mainWindow.on("closed", () => {
         mainWindow = null
     })
-    void showStartup()
+    void mainWindow.loadFile(RENDERER_FILE)
 }
 
 function installMenu() {
-    const template = [
-        {
-            label: "Rolling Skill",
-            submenu: [
-                {role: "about"},
-                {type: "separator"},
-                {label: "Runtime Status", accelerator: "CommandOrControl+Shift+S", click: showStartup},
-                {
-                    label: "Open Workbench",
-                    accelerator: "CommandOrControl+1",
-                    click: showWorkbench,
-                },
-                {type: "separator"},
-                {role: "services"},
-                {type: "separator"},
-                {role: "hide"},
-                {role: "hideOthers"},
-                {role: "unhide"},
-                {type: "separator"},
-                {role: "quit"},
-            ],
-        },
-        {role: "editMenu"},
-        {role: "viewMenu"},
-        {
-            label: "Runtime",
-            submenu: [
-                {
-                    label: "Retry Start",
-                    accelerator: "CommandOrControl+R",
-                    click: async () => {
-                        await showStartup()
-                        await controller?.start()
+    Menu.setApplicationMenu(
+        Menu.buildFromTemplate([
+            {
+                label: "Rolling Skill",
+                submenu: [
+                    {role: "about"},
+                    {type: "separator"},
+                    {
+                        label: "New Task",
+                        accelerator: "CommandOrControl+N",
+                        click: () => send("app:new-task"),
                     },
-                },
-                {
-                    label: "Restart Runtime",
-                    click: async () => {
-                        await showStartup()
-                        await controller?.restart()
-                    },
-                },
-                {
-                    label: "Stop Runtime",
-                    click: async () => {
-                        await showStartup()
-                        await controller?.stop()
-                    },
-                },
-                {type: "separator"},
-                {label: "Open Logs", click: () => openLogs()},
-                {label: "Show Checkout in Finder", click: () => revealRepository()},
-                {label: "Choose Checkout…", click: () => chooseRepository()},
-            ],
-        },
-        {role: "windowMenu"},
-        {
-            role: "help",
-            submenu: [
-                {
-                    label: "Agenta Documentation",
-                    click: () => shell.openExternal("https://agenta.ai/docs"),
-                },
-            ],
-        },
-    ]
-    Menu.setApplicationMenu(Menu.buildFromTemplate(template))
-}
-
-async function chooseRepository() {
-    const result = await dialog.showOpenDialog(mainWindow, {
-        title: "Choose the Agenta checkout",
-        properties: ["openDirectory"],
-        message: "Choose the folder that contains hosting/docker-compose/run.sh",
-    })
-    if (result.canceled || result.filePaths.length === 0) return false
-    const selected = result.filePaths[0]
-    if (!isRepositoryRoot(selected)) {
-        await dialog.showMessageBox(mainWindow, {
-            type: "error",
-            message: "This is not an Agenta checkout",
-            detail: "The selected folder does not contain hosting/docker-compose/run.sh.",
-        })
-        return false
-    }
-    saveRepository(selected)
-    controller.setRepositoryRoot(selected)
-    await controller.start()
-    return true
-}
-
-function openLogs() {
-    const root = controller?.repositoryRoot
-    if (!root) return false
-    const path = createRuntimePaths(root).logFile
-    if (existsSync(path)) void shell.openPath(path)
-    else void shell.showItemInFolder(dirname(path))
-    return true
-}
-
-function revealRepository() {
-    if (!controller?.repositoryRoot) return false
-    shell.showItemInFolder(controller.repositoryRoot)
-    return true
-}
-
-function openLoginTerminal() {
-    const root = controller?.repositoryRoot
-    if (!root) return false
-    spawn("/usr/bin/open", ["-a", "Terminal", root], {shell: false, stdio: "ignore"})
-    return true
+                    {type: "separator"},
+                    {role: "services"},
+                    {type: "separator"},
+                    {role: "hide"},
+                    {role: "hideOthers"},
+                    {role: "unhide"},
+                    {type: "separator"},
+                    {role: "quit"},
+                ],
+            },
+            {role: "editMenu"},
+            {role: "viewMenu"},
+            {
+                label: "Runtime",
+                submenu: [
+                    {label: "Restart Local Runtime", click: () => restartRuntime()},
+                    {label: "Choose Workspace…", click: () => chooseWorkspace()},
+                    {type: "separator"},
+                    {label: "Open Trace Folder", click: openTraceFolder},
+                    {label: "Show Local Evaluation Data", click: revealLocalData},
+                ],
+            },
+            {role: "windowMenu"},
+        ]),
+    )
 }
 
 function installIpc() {
-    ipcMain.handle("runtime:get-state", () => controller.getState())
-    ipcMain.handle("runtime:retry", async () => {
-        await controller.start()
-        return controller.getState()
+    ipcMain.handle("app:bootstrap", async () => {
+        const runtime = client?.state() ?? {status: "starting", workspaceRoot}
+        return {runtime, workspaceRoot, datasets: store.listDatasets()}
     })
-    ipcMain.handle("runtime:stop", async () => {
-        await controller.stop()
-        return controller.getState()
+    ipcMain.handle("workspace:choose", chooseWorkspace)
+    ipcMain.handle("runtime:restart", restartRuntime)
+    ipcMain.handle("runtime:trace", (_event, limit) =>
+        client?.recentTrace(limit) ?? {path: null, reference: null, events: []},
+    )
+    ipcMain.handle("runtime:open-traces", openTraceFolder)
+
+    ipcMain.handle("codex:list-threads", async () => (await ensureRuntime()).listThreads())
+    ipcMain.handle("codex:read-thread", async (_event, threadId) =>
+        (await ensureRuntime()).readThread(requireIdentifier(threadId, "thread")),
+    )
+    ipcMain.handle("codex:start-thread", async () => {
+        const response = await (await ensureRuntime()).startThread()
+        loadedThreads.add(response.thread.id)
+        return response
     })
-    ipcMain.handle("runtime:restart", async () => {
-        await controller.restart()
-        return controller.getState()
+    ipcMain.handle("codex:start-turn", async (_event, {threadId, text}) => {
+        threadId = requireIdentifier(threadId, "thread")
+        text = String(text ?? "").trim()
+        if (!text) throw new Error("Task text is required")
+        const runtime = await ensureRuntime()
+        if (!loadedThreads.has(threadId)) {
+            await runtime.resumeThread(threadId)
+            loadedThreads.add(threadId)
+        }
+        return runtime.startTurn(threadId, text)
     })
-    ipcMain.handle("runtime:choose-repository", chooseRepository)
-    ipcMain.handle("runtime:open-logs", openLogs)
-    ipcMain.handle("runtime:reveal-repository", revealRepository)
-    ipcMain.handle("runtime:open-login-terminal", openLoginTerminal)
-    ipcMain.handle("runtime:open-workbench", async () => {
-        await showWorkbench()
-        return true
-    })
+    ipcMain.handle("codex:interrupt-turn", async (_event, input) =>
+        (await ensureRuntime()).interruptTurn(
+            requireIdentifier(input.threadId, "thread"),
+            requireIdentifier(input.turnId, "turn"),
+        ),
+    )
+    ipcMain.handle("datasets:list", () => store.listDatasets())
+    ipcMain.handle("datasets:create", (_event, name) => store.createDataset(name))
+    ipcMain.handle("datasets:save-case", (_event, input) =>
+        store.saveCase({
+            ...input,
+            traceReference: input.traceReference ?? client?.recorder?.latestReference ?? null,
+        }),
+    )
+    ipcMain.handle("datasets:reveal", revealLocalData)
+}
+
+function requireIdentifier(value, label) {
+    if (typeof value !== "string" || !value || value.length > 200) {
+        throw new Error(`A valid ${label} identifier is required`)
+    }
+    return value
 }
 
 const hasLock = app.requestSingleInstanceLock()
@@ -270,28 +285,34 @@ if (!hasLock) {
         mainWindow?.focus()
     })
 
-    app.whenReady().then(async () => {
-        startupUrl = pathToFileURL(STARTUP_FILE).toString()
+    app.whenReady().then(() => {
+        rendererUrl = pathToFileURL(RENDERER_FILE).toString()
         session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => {
             callback(false)
         })
-        const repositoryRoot = locateRepository()
-        controller = new RuntimeController({repositoryRoot, appUrl: APP_URL})
-        controller.on("state", (state) => {
-            sendState(state)
-            if (state.phase === "ready") void showWorkbench()
-        })
+        workspaceRoot = locateInitialWorkspace()
+        store = new LocalEvaluationStore(join(app.getPath("userData"), "evaluation-store.json"))
+        client = createClient()
         installIpc()
         installMenu()
         createWindow()
-        if (repositoryRoot) await controller.start()
+        void ensureRuntime().catch((error) => {
+            send("runtime:state", {status: "error", error: error.message, workspaceRoot})
+        })
     })
 
     app.on("activate", () => {
         if (!mainWindow) createWindow()
     })
 
+    app.on("before-quit", (event) => {
+        if (!client?.child || quitAfterRuntimeStops) return
+        event.preventDefault()
+        quitAfterRuntimeStops = true
+        void client.stop().finally(() => app.quit())
+    })
+
     app.on("window-all-closed", () => {
-        // Keep the macOS application and local runtime available from the Dock.
+        // Keep the local app-server available while the macOS app remains in the Dock.
     })
 }

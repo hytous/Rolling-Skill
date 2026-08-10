@@ -1,11 +1,9 @@
 const {existsSync, statSync} = require("node:fs")
 const {dirname, join, resolve} = require("node:path")
 
-const REPOSITORY_MARKER = join("hosting", "docker-compose", "run.sh")
-
-function isRepositoryRoot(candidate) {
+function isGitWorkspace(candidate) {
     if (!candidate || typeof candidate !== "string") return false
-    return existsSync(join(resolve(candidate), REPOSITORY_MARKER))
+    return existsSync(join(resolve(candidate), ".git"))
 }
 
 function directoryForCandidate(candidate) {
@@ -18,13 +16,13 @@ function directoryForCandidate(candidate) {
     }
 }
 
-function findRepositoryRoot(candidates) {
+function findGitWorkspace(candidates) {
     const visited = new Set()
     for (const candidate of candidates) {
         let current = directoryForCandidate(candidate)
         while (current && !visited.has(current)) {
             visited.add(current)
-            if (isRepositoryRoot(current)) return current
+            if (isGitWorkspace(current)) return current
             const parent = dirname(current)
             if (parent === current) break
             current = parent
@@ -33,8 +31,4 @@ function findRepositoryRoot(candidates) {
     return null
 }
 
-module.exports = {
-    REPOSITORY_MARKER,
-    findRepositoryRoot,
-    isRepositoryRoot,
-}
+module.exports = {findGitWorkspace, isGitWorkspace}

@@ -11,56 +11,169 @@
         <link rel="stylesheet" href="styles.css" />
     </head>
     <body>
-        <div class="titlebar" aria-hidden="true"></div>
-        <main class="shell">
-            <header class="masthead">
-                <div class="brand-mark"><img src="logo.svg" alt="" /></div>
-                <div>
-                    <div class="eyebrow">LOCAL SKILL EVALUATION</div>
-                    <h1>Rolling Skill</h1>
-                </div>
-                <div id="phase-pill" class="phase-pill">Starting</div>
-            </header>
-
-            <section class="hero panel">
-                <div class="status-symbol" id="status-symbol"><span></span></div>
-                <div class="hero-copy">
-                    <h2 id="status-title">Starting the desktop client</h2>
-                    <p id="status-detail">Inspecting the local runtime…</p>
-                    <div class="repository" id="repository">Locating the Agenta checkout</div>
-                </div>
-            </section>
-
-            <div class="content-grid">
-                <section class="panel steps-panel">
-                    <div class="panel-heading">
-                        <h3>Runtime</h3>
-                        <span>Managed locally</span>
+        <div class="window-drag-region" aria-hidden="true"></div>
+        <div class="app-shell">
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <div class="brand">
+                        <img src="logo.svg" alt="" />
+                        <span>Rolling Skill</span>
                     </div>
-                    <ol class="steps" id="steps"></ol>
-                    <div class="actions">
-                        <button id="open-workbench" class="button primary hidden">Open workbench</button>
-                        <button id="retry" class="button primary">Retry</button>
-                        <button id="login" class="button primary hidden">Open Terminal for login</button>
-                        <button id="choose-repository" class="button">Choose checkout…</button>
-                        <button id="stop" class="button danger hidden">Stop runtime</button>
+                    <button id="new-task" class="new-task-button" type="button">
+                        <span aria-hidden="true">＋</span>
+                        New task
+                        <kbd>⌘N</kbd>
+                    </button>
+                </div>
+
+                <div class="task-heading">
+                    <span>Tasks</span>
+                    <button id="refresh-threads" class="icon-button" type="button" title="Refresh tasks">
+                        ↻
+                    </button>
+                </div>
+                <nav id="thread-list" class="thread-list" aria-label="Tasks">
+                    <div class="sidebar-placeholder">Loading local tasks…</div>
+                </nav>
+
+                <div class="sidebar-footer">
+                    <button id="workspace-button" class="workspace-button" type="button">
+                        <span class="workspace-icon" aria-hidden="true">⌁</span>
+                        <span class="workspace-copy">
+                            <span class="workspace-label">Workspace</span>
+                            <span id="workspace-name" class="workspace-name">Loading…</span>
+                        </span>
+                        <span aria-hidden="true">›</span>
+                    </button>
+                    <div class="evaluation-row">
+                        <button id="show-local-data" class="sidebar-link" type="button">Datasets</button>
+                        <button id="open-trace" class="sidebar-link" type="button">Trace</button>
                     </div>
+                    <div class="capture-note">
+                        <span class="capture-dot" aria-hidden="true"></span>
+                        Automatic capture is off
+                    </div>
+                </div>
+            </aside>
+
+            <main class="workbench">
+                <header class="topbar">
+                    <div class="task-title-wrap">
+                        <div id="active-title" class="active-title">New task</div>
+                        <div id="workspace-path" class="workspace-path"></div>
+                    </div>
+                    <button id="runtime-status" class="runtime-status starting" type="button">
+                        <span class="runtime-dot" aria-hidden="true"></span>
+                        <span id="runtime-label">Starting local runtime</span>
+                    </button>
+                    <button id="topbar-trace" class="topbar-button" type="button">Trace</button>
+                </header>
+
+                <div id="error-banner" class="error-banner hidden" role="alert">
+                    <div>
+                        <strong>Task could not continue</strong>
+                        <span id="error-message"></span>
+                    </div>
+                    <button id="dismiss-error" type="button">Dismiss</button>
+                </div>
+
+                <section id="conversation-scroll" class="conversation-scroll">
+                    <div id="conversation" class="conversation" aria-live="polite"></div>
                 </section>
 
-                <section class="panel logs-panel">
-                    <div class="panel-heading">
-                        <h3>Live logs</h3>
-                        <button id="open-logs" class="text-button">Open full log</button>
-                    </div>
-                    <pre id="logs" aria-live="polite">Waiting for runtime output…</pre>
+                <section class="composer-wrap">
+                    <form id="composer" class="composer">
+                        <textarea
+                            id="composer-input"
+                            rows="1"
+                            maxlength="120000"
+                            placeholder="Ask Rolling Skill to evaluate or run a task"
+                            aria-label="Task prompt"
+                        ></textarea>
+                        <div class="composer-footer">
+                            <div class="composer-context">
+                                <span>Local Codex runtime</span>
+                                <span aria-hidden="true">·</span>
+                                <span>workspace-write</span>
+                            </div>
+                            <button id="stop-turn" class="stop-button hidden" type="button" title="Stop task">
+                                <span aria-hidden="true"></span>
+                            </button>
+                            <button id="send-turn" class="send-button" type="submit" title="Send task">
+                                ↑
+                            </button>
+                        </div>
+                    </form>
+                    <p class="composer-hint">Enter to send · Shift+Enter for a new line</p>
                 </section>
-            </div>
+            </main>
 
-            <footer>
-                <span>Closing this window keeps the runtime and evaluation data.</span>
-                <button id="reveal-repository" class="text-button">Show checkout in Finder</button>
-            </footer>
-        </main>
+            <aside id="trace-drawer" class="trace-drawer" aria-label="Local trace">
+                <header class="drawer-header">
+                    <div>
+                        <div class="drawer-eyebrow">LOCAL EVIDENCE</div>
+                        <h2>Runtime trace</h2>
+                    </div>
+                    <button id="close-trace" class="icon-button large" type="button" title="Close trace">×</button>
+                </header>
+                <div class="trace-toolbar">
+                    <button id="refresh-trace" type="button">Refresh</button>
+                    <button id="open-trace-folder" type="button">Open folder</button>
+                </div>
+                <div id="trace-meta" class="trace-meta">Trace begins when the local runtime starts.</div>
+                <div id="trace-events" class="trace-events"></div>
+            </aside>
+        </div>
+
+        <dialog id="save-case-dialog" class="case-dialog">
+            <form id="save-case-form">
+                <div class="dialog-header">
+                    <div>
+                        <div class="drawer-eyebrow">CURATE EVALUATION DATA</div>
+                        <h2>Save this response</h2>
+                    </div>
+                    <button id="close-case-dialog" class="icon-button large" type="button">×</button>
+                </div>
+
+                <label class="field">
+                    <span>Dataset</span>
+                    <select id="case-dataset" required></select>
+                </label>
+                <div class="new-dataset-row">
+                    <input id="new-dataset-name" type="text" placeholder="Create a new dataset" maxlength="100" />
+                    <button id="create-dataset" type="button">Create</button>
+                </div>
+
+                <fieldset class="case-type-field">
+                    <legend>Classification</legend>
+                    <label>
+                        <input type="radio" name="case-type" value="goodcase" checked />
+                        <span><strong>Goodcase</strong><small>Expected Skill behavior</small></span>
+                    </label>
+                    <label>
+                        <input type="radio" name="case-type" value="badcase" />
+                        <span><strong>Badcase</strong><small>Needs improvement</small></span>
+                    </label>
+                </fieldset>
+
+                <label class="field">
+                    <span>Question</span>
+                    <textarea id="case-question" rows="4" required></textarea>
+                </label>
+                <label class="field">
+                    <span>Answer</span>
+                    <textarea id="case-answer" rows="7" required></textarea>
+                </label>
+
+                <div class="dialog-footer">
+                    <span>Trace provenance is attached automatically.</span>
+                    <button id="cancel-save-case" type="button">Cancel</button>
+                    <button id="confirm-save-case" class="primary" type="submit">Save case</button>
+                </div>
+            </form>
+        </dialog>
+
+        <div id="toast" class="toast hidden" role="status"></div>
         <script src="renderer.js"></script>
     </body>
 </html>

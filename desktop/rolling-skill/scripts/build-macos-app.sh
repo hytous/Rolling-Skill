@@ -6,6 +6,7 @@ DESKTOP_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPOSITORY_ROOT="$(cd "$DESKTOP_ROOT/../.." && pwd)"
 BUILT_APP="$DESKTOP_ROOT/dist/mac-arm64/Rolling Skill.app"
 TARGET_APP="$REPOSITORY_ROOT/Rolling Skill.app"
+PACKAGED_CODEX="$BUILT_APP/Contents/Resources/codex-runtime/bin/codex"
 
 if [[ "$TARGET_APP" != "$REPOSITORY_ROOT/Rolling Skill.app" ]]; then
     echo "Refusing unexpected application target: $TARGET_APP" >&2
@@ -16,6 +17,12 @@ cd "$DESKTOP_ROOT"
 npm ci
 npm test
 npm run pack:mac
+
+if [[ ! -x "$PACKAGED_CODEX" ]]; then
+    echo "Packaged Codex runtime is missing or not executable: $PACKAGED_CODEX" >&2
+    exit 1
+fi
+"$PACKAGED_CODEX" --version
 
 /usr/bin/codesign --force --deep --sign - "$BUILT_APP"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$BUILT_APP"

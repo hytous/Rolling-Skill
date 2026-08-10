@@ -135,46 +135,32 @@ Agenta traces every run and keeps a version history of each agent configuration.
 
 ### Run the Rolling Skill evaluation workbench on macOS
 
-This checkout includes a real local macOS client for testing Codex Skills in Agenta. It has its
-own native window, Dock icon, application menu, startup status, and runtime logs. The workbench is
-loaded inside the client; local application routes no longer open a browser. It runs the development
-stack, so the first launch builds Docker images and can take several minutes.
+This checkout includes a local-first macOS client for running and evaluating Codex Skill tasks.
+Double-click `Rolling Skill.app` at the repository root to open the task list, conversation surface,
+local trace viewer, and goodcase/badcase curation workflow. The app starts a bundled Codex
+app-server directly; it does not require Docker, Compose, Postgres, Redis, Traefik, an Agenta HTTP
+service, or a separately installed Codex CLI.
 
-Before the first launch:
+There is no application login page or startup authentication gate. Runtime startup, workspace
+selection, and local task browsing remain available without provider credentials. If credentials
+are missing, only a model turn reports the normal runtime error.
 
-1. Install and open Docker Desktop.
-2. Run `codex login` on the host and finish the browser sign-in. The client requires a non-empty
-   `~/.codex/auth.json` so it can prepare an isolated subscription credential copy.
-
-Then double-click `Rolling Skill.app` in the checkout. The app starts Docker Desktop when needed,
-creates the ignored local configuration, shows live Compose progress, starts Agenta, waits for the
-web application, and loads the workbench in the same window. If macOS blocks the ad-hoc signed local
-app on first open, Control-click it and select **Open**.
-
-Use the native **Runtime** menu for status, retry, restart, stop, logs, and checkout selection.
-Stopping keeps database volumes, evidence, and logs. Closing or quitting the desktop client also
-keeps the runtime running; use **Runtime → Stop Runtime** when you want to stop its containers.
-
-If the host is not signed into Codex, the client shows **Codex sign-in required** rather than
-claiming evaluation is ready. Select **Open Terminal for login**, run
-`codex login`, complete sign-in, then select **Retry**. If the web stack is already healthy, the
-client also allows opening the workbench while clearly keeping Codex runs disabled.
+Use the sidebar workspace control or **Runtime → Choose Workspace…** to select the folder whose
+tasks should be shown. This exact working-directory filter prevents unrelated Codex sessions from
+other products from appearing in Rolling Skill.
 
 Local files are stored here:
 
 | Path | Contents |
 | --- | --- |
-| `.local/codex-evidence/` | Preserved Codex evidence revisions |
-| `.local/codex-home/auth.json` | Isolated Codex credential copy used by the runner |
-| `.local/desktop.log` | Desktop runtime build, startup, readiness, and stop output |
-| `hosting/docker-compose/oss/.env.oss.dev` | Ignored local Agenta configuration |
+| `~/Library/Application Support/Rolling Skill/evaluation-store.json` | Local datasets, cases, and capture settings |
+| `~/Library/Application Support/Rolling Skill/preferences.json` | Selected workspace |
+| `~/Library/Application Support/Rolling Skill/traces/*.jsonl` | Append-only raw app-server events |
 
-The evidence folder is mounted at `/var/lib/agenta/codex-evidence` inside the runner. This nested
-container path is intentional: the evidence writer rejects broad top-level cleanup targets.
-The desktop client never mounts the host `~/.codex` directory; it refreshes only the isolated auth
-copy, so evaluated runs cannot see local Skills, plugins, apps, or config. Renderer Node integration
-is disabled, context isolation and sandboxing are enabled, and the application window only accepts
-the configured local origin.
+The renderer has Node integration disabled, context isolation and sandboxing enabled, and only a
+narrow IPC bridge for workspace, thread, turn, dataset, and trace operations. The bundled runtime
+starts with a fixed binary and argument array, `workspace-write`, and no automatic approval
+escalation.
 
 To rebuild the Finder-double-clickable application from source:
 
@@ -182,37 +168,19 @@ To rebuild the Finder-double-clickable application from source:
 bash desktop/rolling-skill/scripts/build-macos-app.sh
 ```
 
-This installs the pinned desktop dependencies, runs the desktop tests, packages an Apple Silicon
-Electron app, applies an ad-hoc local signature, verifies that signature, and replaces the ignored
-root `Rolling Skill.app`. Desktop source and its lockfile are tracked; the generated 275MB Electron
-bundle is intentionally not committed. For development, run `npm install && npm start` from
-`desktop/rolling-skill/`.
+This installs the pinned desktop dependencies, runs unit and real app-server smoke tests, packages
+the complete Apple Silicon Codex runtime, verifies its executable, applies an ad-hoc local
+signature, and replaces the ignored root `Rolling Skill.app`. Desktop source and its lockfile are
+tracked; the generated Electron bundle is intentionally not committed. For development, run
+`npm ci && npm start` from `desktop/rolling-skill/`.
 
-To start the same stack from a terminal:
-
-```bash
-test -f hosting/docker-compose/oss/.env.oss.dev || \
-  cp hosting/docker-compose/oss/env.oss.dev.example hosting/docker-compose/oss/.env.oss.dev
-mkdir -p .local/codex-evidence .local/codex-home
-cp ~/.codex/auth.json .local/codex-home/auth.json
-chmod 600 .local/codex-home/auth.json
-ROLLING_SKILL_EVIDENCE_DIR="$PWD/.local/codex-evidence" \
-ROLLING_SKILL_CODEX_HOME_DIR="$PWD/.local/codex-home" \
-  bash hosting/docker-compose/run.sh \
-    --oss --dev --build --no-tunnel \
-    --env-file .env.oss.dev \
-    --compose-file docker-compose.dev.rolling-skill.yml
-```
-
-Use the same command with `--down` and without `--build` to stop it.
-
-For a traced assistant answer, select **Save case** beside the message. Choose a testset, review the
-mapping, classify the row as `goodcase` or `badcase`, then confirm the save. The new row contains
-`eval_case_type`, `source_trace_id`, and `source_span_id`.
+For a traced assistant answer, select **Save case** beside the message. Choose or create a local
+dataset, review the question and answer, classify the row as `goodcase` or `badcase`, then save it.
+The new row retains thread, turn, item, and trace provenance.
 
 Capture is manual in this version. It does not automatically save messages or invoke a curation
-subagent. Evidence marked `DIAGNOSTIC_ONLY` or `diagnostic_full_access` is suitable for inspecting
-Skill execution and latency, but it is not eligible for a trusted A-class score.
+subagent. The Agenta server deployment options elsewhere in this repository remain available for
+other use cases, but the desktop client's default path does not inspect or start them.
 
 ### Try Agenta Cloud
 
