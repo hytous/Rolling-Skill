@@ -107,8 +107,7 @@
                             <div class="composer-context">
                                 <select id="composer-model" class="model-picker" aria-label="Task model"></select>
                                 <select id="composer-effort" class="effort-picker" aria-label="Reasoning effort"></select>
-                                <span aria-hidden="true">·</span>
-                                <span id="composer-access"></span>
+                                <select id="composer-access" class="access-picker" aria-label="Permission mode"></select>
                             </div>
                             <button id="stop-turn" class="stop-button hidden" type="button" title="Stop task">
                                 <span aria-hidden="true"></span>
@@ -323,12 +322,12 @@
                         <code id="settings-workspace-path"></code>
                     </div>
                     <label class="settings-field">
-                        <span data-i18n="localAccess">Local access</span>
+                        <span data-i18n="localAccess">Codex new conversation default</span>
                         <select id="settings-local-access">
                             <option value="full" data-i18n="fullLocalAccess">Full local access</option>
                             <option value="workspace" data-i18n="workspaceOnlyAccess">Workspace only</option>
                         </select>
-                        <small id="settings-local-access-help" data-i18n="localAccessHelp">This is the selected runtime's own local sandbox. Full local access lets its CLI read credentials and files available to the current user.</small>
+                        <small id="settings-local-access-help" data-i18n="localAccessHelp">Default permission for new Codex conversations. Each conversation can override it from the task composer.</small>
                     </label>
                     <div class="settings-utility-row">
                         <button id="choose-runtime" type="button" data-i18n="runtime">Runtime…</button>

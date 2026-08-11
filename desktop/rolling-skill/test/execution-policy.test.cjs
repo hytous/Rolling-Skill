@@ -1,7 +1,11 @@
 const assert = require("node:assert/strict")
 const {describe, it} = require("node:test")
 
-const {resolveExecutionPolicy} = require("../src/execution-policy.cjs")
+const {
+    permissionModeOptions,
+    resolveExecutionPolicy,
+    resolveRuntimePermission,
+} = require("../src/execution-policy.cjs")
 
 describe("runtime execution policy", () => {
     it("defaults new local tasks to full access", () => {
@@ -20,5 +24,22 @@ describe("runtime execution policy", () => {
             sandbox: "workspace-write",
             approvalPolicy: "never",
         })
+    })
+
+    it("maps provider-specific conversation permission modes", () => {
+        assert.deepEqual(resolveRuntimePermission("codex", "read-only"), {
+            permissionMode: "read-only",
+            sandbox: "read-only",
+            approvalPolicy: "never",
+        })
+        assert.deepEqual(resolveRuntimePermission("codebuddy", "fullAccess"), {
+            permissionMode: "fullAccess",
+        })
+        assert.equal(permissionModeOptions("codebuddy").some((entry) => entry.value === "bypassPermissions"), true)
+        assert.deepEqual(resolveRuntimePermission("codebuddy", "delegate"), {
+            permissionMode: "delegate",
+        })
+        assert.equal(permissionModeOptions("codebuddy").some((entry) => entry.value === "dontAsk"), true)
+        assert.throws(() => resolveRuntimePermission("codebuddy", "bad mode"), /permission mode/i)
     })
 })

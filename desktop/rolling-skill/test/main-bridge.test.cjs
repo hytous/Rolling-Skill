@@ -33,11 +33,38 @@ describe("desktop main/preload bridge", () => {
 
     it("persists the selected task profile per runtime thread", () => {
         const main = source("src/main.cjs")
+        const preload = source("src/preload.cjs")
 
         assert.match(main, /readThreadProfile/)
         assert.match(main, /updateThreadProfiles/)
         assert.match(main, /rollingSkillProfile/)
         assert.match(main, /rememberThreadProfile/)
+        assert.match(main, /permissionMode:\s*permission\.permissionMode/)
+        assert.match(preload, /permissionMode/)
+    })
+
+    it("serializes sends with runtime switching and persists profiles after runtime success", () => {
+        const main = source("src/main.cjs")
+
+        assert.match(main, /runtime:start-thread[\s\S]{0,500}enqueueRuntimeOperation/)
+        assert.match(main, /runtime:start-turn[\s\S]{0,700}enqueueRuntimeOperation/)
+        assert.match(main, /const sourceRuntimeId = sourceRuntime\.runtimeId/)
+        assert.match(main, /sourceRuntime\.providerId === "codex" \? permission : \{\}/)
+        const turnHandler = main.match(/ipcMain\.handle\(\s*"runtime:start-turn"[\s\S]*?ipcMain\.handle\("runtime:interrupt-turn"/)?.[0] ?? ""
+        assert.ok(turnHandler.indexOf("runtime.startTurn") < turnHandler.indexOf("rememberThreadProfile"))
+    })
+
+    it("relays CodeBuddy permission requests to a local approval dialog", () => {
+        const main = source("src/main.cjs")
+        const client = source("src/codebuddy-acp-client.cjs")
+
+        assert.match(main, /requestPermission:[\s\S]{0,120}requestRuntimePermission/)
+        assert.match(main, /dialog\.showMessageBox/)
+        assert.match(main, /clientGeneration/)
+        assert.match(main, /sessionId/)
+        assert.match(client, /session\/request_permission/)
+        assert.match(client, /settlePermissionRequest\(pending,\s*\{outcome:\s*"selected",\s*optionId\}\)/)
+        assert.match(client, /cancelPendingPermissionRequests/)
     })
 
     it("opens message links only through validated IPC handlers", () => {

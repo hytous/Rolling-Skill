@@ -82,6 +82,13 @@ function parseModels(help) {
         .filter((entry) => /^[a-zA-Z0-9._-]+$/.test(entry))
 }
 
+function parsePermissionModes(help) {
+    const line = help.match(/--permission-mode\s+<mode>[^\n]*/i)?.[0] ?? ""
+    return [...line.matchAll(/["']([a-zA-Z][a-zA-Z0-9_-]+)["']/g)].map(
+        (match) => match[1],
+    )
+}
+
 function probeCodeBuddyRuntime(executablePath, spawnProcess = spawnSync) {
     const options = {
         encoding: "utf8",
@@ -106,6 +113,7 @@ function probeCodeBuddyRuntime(executablePath, spawnProcess = spawnSync) {
         version: versionMatch[1],
         acp: true,
         models: parseModels(help),
+        permissionModes: parsePermissionModes(help),
         efforts: [...CODEBUDDY_EFFORTS],
     }
 }
@@ -141,8 +149,12 @@ class CodeBuddyRuntimeProvider {
                         "streaming",
                         "raw-trace",
                         "reasoning-effort",
+                        "permission-mode",
                     ]),
                     models: Object.freeze([...(compatibility.models ?? [])]),
+                    permissionModes: Object.freeze([
+                        ...(compatibility.permissionModes ?? []),
+                    ]),
                     efforts: Object.freeze([...(compatibility.efforts ?? CODEBUDDY_EFFORTS)]),
                 }),
             )
@@ -164,6 +176,7 @@ module.exports = {
     CodeBuddyRuntimeProvider,
     buildCodeBuddyCandidates,
     parseModels,
+    parsePermissionModes,
     probeCodeBuddyRuntime,
     runtimeIdFor,
     sreCodeBuddyCandidates,

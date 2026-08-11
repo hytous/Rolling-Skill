@@ -1709,7 +1709,8 @@ kbd {
 }
 
 .model-picker,
-.effort-picker {
+.effort-picker,
+.access-picker {
     min-width: 0;
     height: 26px;
     padding: 0 22px 0 7px;
@@ -1724,14 +1725,17 @@ kbd {
 .model-picker:hover,
 .model-picker:focus,
 .effort-picker:hover,
-.effort-picker:focus {
+.effort-picker:focus,
+.access-picker:hover,
+.access-picker:focus {
     border-color: var(--border);
     background: var(--surface-raised);
     color: var(--text);
 }
 
 .model-picker:disabled,
-.effort-picker:disabled {
+.effort-picker:disabled,
+.access-picker:disabled {
     opacity: 0.58;
 }
 

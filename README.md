@@ -51,8 +51,8 @@ Rolling Skill 不捆绑 Codex、CodeBuddy 或其他 Runtime，不要求 Docker�
 
 | Runtime | 接入协议 | 当前能力 |
 | --- | --- | --- |
-| Codex | app-server JSONL | 对话、历史任务、模型、推理强度、Skills、Plugins、Trace、评测 |
-| CodeBuddy | ACP stdio JSONL | 对话、模型、推理强度、流式输出、Trace、评测 |
+| Codex | app-server JSONL | 对话、历史任务、模型、推理强度、会话权限、Skills、Plugins、Trace、评测 |
+| CodeBuddy | ACP stdio JSONL | 对话、模型、推理强度、会话权限与授权确认、流式输出、Trace、评测 |
 
 Chat 始终绑定一个活动 Runtime。Skill 评测使用隔离的 Runtime 客户端，因此可以让多个
 Runtime 配置并行运行，而不会共享活动对话的客户端状态。同一个 Runtime 内的 Cases 顺序
@@ -61,6 +61,12 @@ Runtime 配置并行运行，而不会共享活动对话的客户端状态。同
 Runtime 自己负责 Skills、MCP、Plugins、上下文和模型认证。Rolling Skill 负责统一发现、
 会话呈现、数据集、评测编排和证据记录，不复制 Runtime 的 Skill 内容，也不会静默安装或
 升级 Runtime。
+
+Chat 输入框左下角提供按会话保存的权限选择。Codex 映射到只读、仅工作目录或完整本机
+访问；CodeBuddy 使用其原生 `session/set_mode`，可选自动审核、需要时询问、自动允许编辑、
+Plan、不询问直接拒绝、跳过提示或完整访问（ACP `fullAccess`）。CodeBuddy 的“需要时询问”
+会在本机弹出授权确认；找不到明确拒绝选项时会安全取消。默认使用自动审核，不再硬编码
+`dontAsk`。
 
 ### 本机发现
 

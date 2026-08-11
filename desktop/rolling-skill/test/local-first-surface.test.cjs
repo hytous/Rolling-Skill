@@ -371,12 +371,13 @@ describe("local-first desktop surface", () => {
         assert.match(styles, /\.composer textarea\s*\{[^}]*max-height:\s*min\(220px,\s*28vh\)/s)
     })
 
-    it("lets Settings choose the selected runtime local-access sandbox", () => {
+    it("lets the composer manage provider-specific permission modes per conversation", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")
 
         assert.match(html, /id="settings-local-access"/)
         assert.match(html, /id="composer-access"/)
+        assert.match(html, /class="access-picker"/)
         assert.match(html, /id="settings-local-access-help"/)
         assert.match(html, /option value="full"[^>]*data-i18n="fullLocalAccess"/)
         assert.match(html, /option value="workspace"[^>]*data-i18n="workspaceOnlyAccess"/)
@@ -385,6 +386,11 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /settingsLocalAccess\.value\s*=\s*state\.settings\.localAccess\s*\?\?\s*"full"/)
         assert.match(renderer, /localAccess:\s*elements\.settingsLocalAccess\.value/)
         assert.match(renderer, /capabilities\.includes\("sandbox-policy"\)/)
-        assert.match(renderer, /localAccessUnsupported/)
+        assert.match(renderer, /permissionModeOptions/)
+        assert.match(renderer, /availablePermissionModes/)
+        assert.match(renderer, /runtimeCurrent/)
+        assert.match(renderer, /selectedTaskPermissionMode/)
+        assert.match(renderer, /composerAccess\.addEventListener\("change"/)
+        assert.match(renderer, /submittedPermissionMode/)
     })
 })

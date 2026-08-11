@@ -30,10 +30,16 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     listInstalledPlugins: () => ipcRenderer.invoke("plugins:installed"),
     installPlugin: (input) => ipcRenderer.invoke("plugins:install", input),
     readThread: (threadId) => ipcRenderer.invoke("runtime:read-thread", threadId),
-    startThread: (modelId = null, effort = null) =>
-        ipcRenderer.invoke("runtime:start-thread", {modelId, effort}),
-    startTurn: (threadId, text, modelId = null, effort = null) =>
-        ipcRenderer.invoke("runtime:start-turn", {threadId, text, modelId, effort}),
+    startThread: (modelId = null, effort = null, permissionMode = null) =>
+        ipcRenderer.invoke("runtime:start-thread", {modelId, effort, permissionMode}),
+    startTurn: (threadId, text, modelId = null, effort = null, permissionMode = null) =>
+        ipcRenderer.invoke("runtime:start-turn", {
+            threadId,
+            text,
+            modelId,
+            effort,
+            permissionMode,
+        }),
     interruptTurn: (threadId, turnId) =>
         ipcRenderer.invoke("runtime:interrupt-turn", {threadId, turnId}),
     listDatasets: () => ipcRenderer.invoke("datasets:list"),

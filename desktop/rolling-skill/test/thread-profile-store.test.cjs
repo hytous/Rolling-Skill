@@ -7,18 +7,19 @@ const {
 } = require("../src/thread-profile-store.cjs")
 
 describe("thread task profile persistence", () => {
-    it("restores the selected model and reasoning effort for one runtime thread", () => {
+    it("restores the selected model, reasoning effort, and permission mode for one runtime thread", () => {
         const profiles = updateThreadProfiles(
             {},
             "codex:alpha",
             "thread-1",
-            {modelId: "gpt-5.6-sol", effort: "xhigh"},
+            {modelId: "gpt-5.6-sol", effort: "xhigh", permissionMode: "workspace"},
             "2026-08-11T00:00:00.000Z",
         )
 
         assert.deepEqual(readThreadProfile({threadProfiles: profiles}, "codex:alpha", "thread-1"), {
             modelId: "gpt-5.6-sol",
             effort: "xhigh",
+            permissionMode: "workspace",
             updatedAt: "2026-08-11T00:00:00.000Z",
         })
         assert.equal(readThreadProfile({threadProfiles: profiles}, "codex:beta", "thread-1"), null)
@@ -61,7 +62,7 @@ describe("thread task profile persistence", () => {
             {},
             "codex:alpha",
             "thread-1",
-            {modelId: "gpt-5.6-sol", effort: "max"},
+            {modelId: "gpt-5.6-sol", effort: "max", permissionMode: "full"},
             "2026-08-11T00:00:00.000Z",
         )
         const next = updateThreadProfiles(
@@ -75,6 +76,7 @@ describe("thread task profile persistence", () => {
         assert.deepEqual(readThreadProfile({threadProfiles: next}, "codex:alpha", "thread-1"), {
             modelId: "gpt-5.7",
             effort: "max",
+            permissionMode: "full",
             updatedAt: "2026-08-11T00:01:00.000Z",
         })
     })

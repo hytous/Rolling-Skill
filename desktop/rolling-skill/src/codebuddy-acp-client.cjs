@@ -20,6 +20,7 @@ class CodeBuddyAcpClient extends EventEmitter {
         traceDirectory,
         workspaceRoot,
         spawnProcess = spawn,
+        requestPermission = null,
     }) {
         super()
         this.binaryPath = binaryPath
@@ -27,6 +28,7 @@ class CodeBuddyAcpClient extends EventEmitter {
         this.traceDirectory = traceDirectory
         this.workspaceRoot = workspaceRoot
         this.spawnProcess = spawnProcess
+        this.requestPermission = requestPermission
         this.child = null
         this.tracker = new RpcRequestTracker()
         this.recorder = null
@@ -36,6 +38,9 @@ class CodeBuddyAcpClient extends EventEmitter {
         this.sessions = new Map()
         this.pendingTurns = new Map()
         this.modelCatalog = null
+        this.sessionModes = new Map()
+        this.processEpoch = 0
+        this.pendingPermissionRequests = new Map()
     }
 
     state() {
@@ -65,9 +70,10 @@ class CodeBuddyAcpClient extends EventEmitter {
             sessionId: `codebuddy-${new Date().toISOString().replace(/[:.]/g, "-")}`,
             runtime: this.runtimeDescriptor,
         })
-        this.child = this.spawnProcess(
+        const processEpoch = ++this.processEpoch
+        const sourceChild = this.spawnProcess(
             this.binaryPath,
-            ["--acp", "--acp-transport", "stdio", "--permission-mode", "dontAsk"],
+            ["--acp", "--acp-transport", "stdio", "--permission-mode", "auto"],
             {
                 cwd: this.workspaceRoot,
                 env: {
@@ -78,27 +84,30 @@ class CodeBuddyAcpClient extends EventEmitter {
                 stdio: ["pipe", "pipe", "pipe"],
             },
         )
+        this.child = sourceChild
         this.emit("state", this.state())
         const decoder = new JsonLineDecoder(
-            (message) => this.handleMessage(message),
+            (message) => this.handleMessage(message, {sourceChild, processEpoch}),
             (error, line) => {
                 this.recorder.record("decode-error", {line, error: error.message})
                 this.emit("runtimeLog", `Invalid ACP message: ${error.message}`)
             },
         )
-        this.child.stdout.on("data", (chunk) => decoder.push(chunk))
-        this.child.stderr.on("data", (chunk) => {
+        sourceChild.stdout.on("data", (chunk) => decoder.push(chunk))
+        sourceChild.stderr.on("data", (chunk) => {
             const text = chunk.toString("utf8").trim()
             if (!text) return
             this.recorder.record("stderr", {text})
             this.emit("runtimeLog", text)
         })
-        this.child.once("error", (error) => this.handleExit(error))
-        this.child.once("close", (code, signal) => {
+        sourceChild.once("error", (error) => this.handleExit(error, sourceChild, processEpoch))
+        sourceChild.once("close", (code, signal) => {
             this.handleExit(
                 new Error(
                     `CodeBuddy ACP exited${code === null ? "" : ` with code ${code}`}${signal ? ` (${signal})` : ""}`,
                 ),
+                sourceChild,
+                processEpoch,
             )
         })
         const initialized = await this.request("initialize", {
@@ -112,8 +121,9 @@ class CodeBuddyAcpClient extends EventEmitter {
         return this.state()
     }
 
-    handleExit(error) {
-        if (!this.child) return
+    handleExit(error, sourceChild = this.child, processEpoch = this.processEpoch) {
+        if (this.child !== sourceChild || this.processEpoch !== processEpoch) return
+        this.cancelPendingPermissionRequests(null, {write: false})
         this.child = null
         this.ready = false
         this.tracker.rejectAll(error)
@@ -121,10 +131,17 @@ class CodeBuddyAcpClient extends EventEmitter {
         if (!this.stopping) this.emit("runtimeError", error)
     }
 
-    handleMessage(message) {
+    handleMessage(
+        message,
+        {sourceChild = this.child, processEpoch = this.processEpoch} = {},
+    ) {
+        if (this.child !== sourceChild || this.processEpoch !== processEpoch) return
         this.recorder?.record("inbound", message)
-        if (this.tracker.settle(message)) return
         if (message?.id !== undefined && message?.method) {
+            if (message.method === "session/request_permission") {
+                void this.handlePermissionRequest(message, {sourceChild, processEpoch})
+                return
+            }
             this.write({
                 jsonrpc: "2.0",
                 id: message.id,
@@ -132,8 +149,90 @@ class CodeBuddyAcpClient extends EventEmitter {
             })
             return
         }
+        if (this.tracker.settle(message)) return
         if (message?.method === "session/update") this.handleSessionUpdate(message.params)
         if (message?.method) this.emit(message.method, message.params)
+    }
+
+    permissionRequestKey(processEpoch, requestId) {
+        return JSON.stringify([processEpoch, requestId])
+    }
+
+    settlePermissionRequest(pending, outcome) {
+        if (this.pendingPermissionRequests.get(pending.key) !== pending) return false
+        this.pendingPermissionRequests.delete(pending.key)
+        if (
+            this.child !== pending.sourceChild ||
+            this.processEpoch !== pending.processEpoch ||
+            !pending.sourceChild?.stdin?.writable
+        ) {
+            return false
+        }
+        try {
+            this.write({jsonrpc: "2.0", id: pending.requestId, result: {outcome}})
+            return true
+        } catch (error) {
+            this.emit("runtimeLog", `Permission response failed: ${error.message}`)
+            return false
+        }
+    }
+
+    cancelPendingPermissionRequests(sessionId = null, {write = true} = {}) {
+        const matching = [...this.pendingPermissionRequests.values()].filter(
+            (pending) => !sessionId || pending.sessionId === sessionId,
+        )
+        for (const pending of matching) {
+            if (write) {
+                this.settlePermissionRequest(pending, {outcome: "cancelled"})
+            } else {
+                this.pendingPermissionRequests.delete(pending.key)
+            }
+        }
+    }
+
+    async handlePermissionRequest(
+        message,
+        {sourceChild = this.child, processEpoch = this.processEpoch} = {},
+    ) {
+        if (this.child !== sourceChild || this.processEpoch !== processEpoch) return
+        const pending = {
+            key: this.permissionRequestKey(processEpoch, message.id),
+            requestId: message.id,
+            sessionId: message.params?.sessionId ?? null,
+            sourceChild,
+            processEpoch,
+        }
+        this.pendingPermissionRequests.set(pending.key, pending)
+        const options = Array.isArray(message.params?.options) ? message.params.options : []
+        const fallback = options.find((option) =>
+            /reject|deny|decline|cancel/i.test(
+                `${option.kind ?? ""} ${option.optionId ?? ""} ${option.name ?? ""}`,
+            ),
+        )
+        if (!fallback) {
+            this.settlePermissionRequest(pending, {outcome: "cancelled"})
+            return
+        }
+        let optionId = null
+        try {
+            if (typeof this.requestPermission === "function") {
+                const selected = await this.requestPermission({
+                    providerId: "codebuddy",
+                    processEpoch,
+                    method: message.method,
+                    params: message.params ?? {},
+                    options,
+                })
+                if (options.some((option) => (option.optionId ?? option.name) === selected)) {
+                    optionId = selected
+                }
+            }
+        } catch (error) {
+            this.emit("runtimeLog", `Permission request failed: ${error.message}`)
+        }
+        if (this.pendingPermissionRequests.get(pending.key) !== pending) return
+        optionId ??= fallback.optionId ?? fallback.name
+        this.settlePermissionRequest(pending, {outcome: "selected", optionId})
     }
 
     handleSessionUpdate(params = {}) {
@@ -255,7 +354,32 @@ class CodeBuddyAcpClient extends EventEmitter {
         })
     }
 
+    captureModes(sessionId, response) {
+        const modes = response?.modes
+        const availableModes = Array.isArray(modes?.availableModes) ? modes.availableModes : []
+        this.sessionModes.set(
+            sessionId,
+            new Set(availableModes.map((entry) => entry.id).filter(Boolean)),
+        )
+        return {
+            currentModeId: modes?.currentModeId ?? null,
+            availablePermissionModes: [...this.sessionModes.get(sessionId)],
+        }
+    }
+
+    availablePermissionMode(sessionId, requested) {
+        const available = this.sessionModes.get(sessionId)
+        if (!available?.size || available.has(requested)) return requested
+        throw new Error(`CodeBuddy does not support permission mode ${requested}`)
+    }
+
     async configureSession(sessionId, options = {}) {
+        if (options.permissionMode) {
+            await this.request("session/set_mode", {
+                sessionId,
+                modeId: this.availablePermissionMode(sessionId, options.permissionMode),
+            })
+        }
         if (options.model) {
             await this.request("session/set_model", {sessionId, modelId: options.model})
         }
@@ -274,6 +398,7 @@ class CodeBuddyAcpClient extends EventEmitter {
             mcpServers: [],
         })
         this.captureModels(response)
+        const runtimeModes = this.captureModes(response.sessionId, response)
         await this.configureSession(response.sessionId, options)
         const now = Date.now() / 1000
         const thread = {
@@ -283,6 +408,8 @@ class CodeBuddyAcpClient extends EventEmitter {
             cwd: this.workspaceRoot,
             model: options.model ?? response.models?.currentModelId ?? null,
             effort: options.effort ?? null,
+            permissionMode: options.permissionMode ?? runtimeModes.currentModeId,
+            availablePermissionModes: runtimeModes.availablePermissionModes,
             status: {type: "idle"},
             updatedAt: now,
             recencyAt: now,
@@ -303,6 +430,7 @@ class CodeBuddyAcpClient extends EventEmitter {
                 mcpServers: [],
             })
             this.captureModels(response)
+            const runtimeModes = this.captureModes(threadId, response)
             const now = Date.now() / 1000
             this.sessions.set(threadId, {
                 id: threadId,
@@ -311,6 +439,8 @@ class CodeBuddyAcpClient extends EventEmitter {
                 cwd: this.workspaceRoot,
                 model: options.model ?? response.models?.currentModelId ?? null,
                 effort: options.effort ?? null,
+                permissionMode: options.permissionMode ?? runtimeModes.currentModeId,
+                availablePermissionModes: runtimeModes.availablePermissionModes,
                 status: {type: "idle"},
                 updatedAt: now,
                 recencyAt: now,
@@ -328,6 +458,7 @@ class CodeBuddyAcpClient extends EventEmitter {
         await this.configureSession(threadId, options)
         if (options.model) thread.model = options.model
         if (options.effort) thread.effort = options.effort
+        if (options.permissionMode) thread.permissionMode = options.permissionMode
         const text = Array.isArray(value)
             ? value
                   .map((part) =>
@@ -406,6 +537,7 @@ class CodeBuddyAcpClient extends EventEmitter {
     }
 
     interruptTurn(threadId) {
+        this.cancelPendingPermissionRequests(threadId)
         this.notify("session/cancel", {sessionId: threadId})
         return Promise.resolve({})
     }
@@ -488,9 +620,14 @@ class CodeBuddyAcpClient extends EventEmitter {
     }
 
     async stop() {
-        if (!this.child) return
+        if (!this.child) {
+            this.cancelPendingPermissionRequests(null, {write: false})
+            return
+        }
         this.stopping = true
         const child = this.child
+        const processEpoch = this.processEpoch
+        this.cancelPendingPermissionRequests()
         await new Promise((resolve) => {
             const timeout = setTimeout(() => {
                 if (!child.killed) child.kill("SIGKILL")
@@ -502,6 +639,9 @@ class CodeBuddyAcpClient extends EventEmitter {
             })
             child.kill("SIGTERM")
         })
+        if (this.child === child && this.processEpoch === processEpoch) {
+            this.handleExit(new Error("CodeBuddy ACP stopped"), child, processEpoch)
+        }
     }
 }
 

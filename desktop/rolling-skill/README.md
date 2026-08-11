@@ -46,8 +46,9 @@ Use **Settings → Runtime…** or the native **Runtime** menu to:
 If no compatible runtime is found, the desktop shell and local datasets still open. Rolling Skill
 does not download, install, upgrade, or authenticate a runtime.
 
-The active runtime's model catalog is loaded through its provider adapter. The task composer and
-each editable Case Draft can select both a model and reasoning effort. Settings provides defaults
+The active runtime's model catalog is loaded through its provider adapter. The task composer can
+select a model, reasoning effort, and conversation permission mode; each editable Case Draft can
+select its model and effort. Settings provides defaults
 for new tasks, Curator tasks, and Automatic Capture. No model names are bundled into the desktop
 application.
 
@@ -57,7 +58,7 @@ Open **Settings** in the lower-left sidebar to configure:
 
 - Simplified Chinese or English interface text;
 - Codex Light (the default white-and-blue theme), Codex Dark, or the original Graphite theme;
-- Full local access (default) or Workspace only for new runtime tasks;
+- Full local access (default) or Workspace only as the default for new Codex conversations;
 - the default model and reasoning effort for new tasks and Curator tasks; and
 - Automatic Capture, including its Curator model and effort, current runtime Skill, destination
   dataset, and default case type.
@@ -65,13 +66,22 @@ Open **Settings** in the lower-left sidebar to configure:
 All settings are stored locally. Automatic Capture remains disabled until explicitly enabled.
 Runtime selection, raw Trace access, and the local dataset file are also grouped in **Settings**.
 
-For runtimes that expose a sandbox policy, Full local access maps Codex to
-`danger-full-access` with `approvalPolicy: never`, allowing the selected local CLI to read
-credentials and files already available to the signed-in macOS user. Workspace only maps to
-`workspace-write`. Rolling Skill does not create a container or require Docker. CodeBuddy ACP does
-not expose an equivalent workspace sandbox, so the control is disabled and the UI says
-**Runtime-managed access** when CodeBuddy is active. The Electron renderer still uses Chromium's
-separate renderer sandbox in every mode.
+The permission picker in the task composer is provider-aware and stored per runtime conversation.
+Codex offers Full local access (`danger-full-access`), Workspace only (`workspace-write`), and Read
+only. CodeBuddy offers its native session modes: Auto review, Ask when needed, Accept edits, Plan,
+Don't ask, Bypass prompts, and Full local access. Rolling Skill applies CodeBuddy changes through
+ACP `session/set_mode`, so switching modes does not restart the runtime. **Don't ask** means that an
+operation needing approval is rejected. **Bypass prompts** can still be stopped by explicit rules
+or dangerous-command checks; CodeBuddy's ACP-only `fullAccess` mode is the actual full-access
+choice. **Ask when needed** relays
+ACP permission requests to a local approval dialog, shows the runtime, workspace, session and raw
+tool input, and returns the exact option selected by the operator. Requests without an explicit
+reject option are cancelled safely. New CodeBuddy conversations default to Auto review instead of
+Don't ask.
+
+Rolling Skill does not create a container or require Docker. CodeBuddy's permission mode controls
+tool approval, while CodeBuddy's optional shell sandbox is a separate runtime feature. The Electron
+renderer also keeps using Chromium's own renderer sandbox in every mode.
 
 ## Conversation history and workspace scope
 

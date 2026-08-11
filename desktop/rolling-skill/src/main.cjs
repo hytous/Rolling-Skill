@@ -10,7 +10,7 @@ const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
 const {EvaluationRunner} = require("./evaluation-runner.cjs")
 const {LocalEvaluationStore, reasoningEffort} = require("./local-store.cjs")
-const {resolveExecutionPolicy} = require("./execution-policy.cjs")
+const {resolveExecutionPolicy, resolveRuntimePermission} = require("./execution-policy.cjs")
 const {requireLocalPath, requireWebUrl} = require("./link-targets.cjs")
 const {readThreadProfile, updateThreadProfiles} = require("./thread-profile-store.cjs")
 const {ThreadActivityStore} = require("./thread-activity-store.cjs")
@@ -34,6 +34,8 @@ let workspaceRoot = null
 let rendererUrl = null
 let runtimeStart = null
 let runtimeOperationTail = Promise.resolve()
+let clientGeneration = 0
+const permissionDialogTails = new Map()
 let quitAfterRuntimeStops = false
 const loadedThreads = new Set()
 const activeThreads = new Set()
@@ -159,6 +161,144 @@ function currentExecutionPolicy() {
     return resolveExecutionPolicy(store?.read().settings)
 }
 
+function runtimePermissionFor(providerId, requestedMode = null) {
+    return resolveRuntimePermission(
+        providerId,
+        requestedMode,
+        store?.read().settings,
+    )
+}
+
+function permissionOptionId(option = {}) {
+    return String(option.optionId ?? option.name ?? "")
+}
+
+function permissionOptionKind(option = {}) {
+    return String(option.kind ?? "")
+}
+
+function isRejectionOption(option = {}) {
+    return /reject|deny|decline|cancel/i.test(
+        `${permissionOptionKind(option)} ${permissionOptionId(option)} ${option.name ?? ""}`,
+    )
+}
+
+function permissionOptionLabel(option = {}, language = store?.read().settings.language) {
+    const id = permissionOptionKind(option) || permissionOptionId(option)
+    const english = {
+        allow: "Allow once",
+        allow_once: "Allow once",
+        allow_always: "Always allow",
+        allow_session: "Allow for session",
+        reject: "Deny",
+        reject_once: "Deny",
+        reject_always: "Always deny",
+        deny: "Deny",
+        decline: "Deny",
+        cancel: "Cancel",
+    }
+    const chinese = {
+        allow: "仅本次允许",
+        allow_once: "仅本次允许",
+        allow_always: "始终允许",
+        allow_session: "本会话允许",
+        reject: "拒绝",
+        reject_once: "拒绝",
+        reject_always: "始终拒绝",
+        deny: "拒绝",
+        decline: "拒绝",
+        cancel: "取消",
+    }
+    const translated = language === "zh-CN" ? chinese[id] : english[id]
+    return String((translated ?? option.name ?? id) || (language === "zh-CN" ? "拒绝" : "Deny"))
+}
+
+function permissionRequestDetail(params = {}, request = {}) {
+    const toolCall = params.toolCall ?? {}
+    const value =
+        toolCall.rawInput ??
+        params.rawInput ??
+        params.command ??
+        params.reason ??
+        toolCall.content ??
+        ""
+    const detail = typeof value === "string" ? value : JSON.stringify(value, null, 2)
+    const lines = []
+    if (request.workspaceRoot) lines.push(`Workspace: ${request.workspaceRoot}`)
+    if (params.sessionId) lines.push(`Session: ${params.sessionId}`)
+    if (Array.isArray(toolCall.locations) && toolCall.locations.length) {
+        lines.push(`Locations: ${JSON.stringify(toolCall.locations)}`)
+    }
+    if (detail) lines.push(detail)
+    return lines.join("\n")
+}
+
+async function showRuntimePermissionDialog(request = {}) {
+    const options = Array.isArray(request.options) ? request.options : []
+    const rejectedIndex = options.findIndex(isRejectionOption)
+    if (rejectedIndex < 0) throw new Error("Permission request has no explicit rejection option")
+    if (!mainWindow || mainWindow.isDestroyed()) return permissionOptionId(options[rejectedIndex])
+    const params = request.params ?? {}
+    const toolCall = params.toolCall ?? {}
+    const title = String(
+        toolCall._meta?.["codebuddy.ai/toolName"] ??
+            toolCall.name ??
+            toolCall.title ??
+            params.title ??
+            params.toolName ??
+            "Tool permission",
+    )
+    const language = store?.read().settings.language ?? "zh-CN"
+    const runtimeName = request.runtime?.displayName ?? "Runtime"
+    const sessionLabel = params.sessionId ? ` · ${params.sessionId}` : ""
+    const result = await dialog.showMessageBox(mainWindow, {
+        type: "warning",
+        title: language === "zh-CN" ? "运行时权限" : "Runtime permission",
+        message:
+            language === "zh-CN"
+                ? `${runtimeName} 请求执行：${title}${sessionLabel}`
+                : `${runtimeName} requests permission: ${title}${sessionLabel}`,
+        detail: permissionRequestDetail(params, request),
+        buttons: options.map((option) => permissionOptionLabel(option, language)),
+        defaultId: rejectedIndex,
+        cancelId: rejectedIndex,
+        noLink: true,
+    })
+    return permissionOptionId(options[result.response] ?? options[rejectedIndex])
+}
+
+function requestRuntimePermission(request = {}) {
+    const options = Array.isArray(request.options) ? request.options : []
+    const rejection = options.find(isRejectionOption)
+    if (!rejection) return Promise.reject(new Error("Permission request has no explicit rejection option"))
+    const rejectionId = permissionOptionId(rejection)
+    const generation = request.clientGeneration
+    const processEpoch = request.processEpoch ?? null
+    const permissionQueueId = `${generation}:${processEpoch ?? "runtime"}`
+    const isCurrent = () =>
+        generation === clientGeneration &&
+        request.runtimeId === runtimeDescriptor?.runtimeId &&
+        request.sourceClient === client &&
+        (processEpoch === null || request.sourceClient?.processEpoch === processEpoch)
+    const respond = async () => {
+        if (!isCurrent()) return rejectionId
+        const selected = await showRuntimePermissionDialog(request).catch(() => rejectionId)
+        if (!isCurrent()) return rejectionId
+        return options.some((option) => permissionOptionId(option) === selected)
+            ? selected
+            : rejectionId
+    }
+    const previous = permissionDialogTails.get(permissionQueueId) ?? Promise.resolve()
+    const operation = previous.then(respond, respond)
+    const tail = operation.catch(() => {}).finally(() => {
+        if (permissionDialogTails.get(permissionQueueId) === tail) {
+            permissionDialogTails.delete(permissionQueueId)
+        }
+    })
+    permissionDialogTails.set(permissionQueueId, tail)
+    return operation
+}
+
 function preferredRuntime() {
     const selected = readPreferences().runtimeSelection
     return selected && typeof selected === "object" ? selected : null
@@ -193,10 +333,25 @@ function unavailableRuntimeState(error = null) {
 
 function createClient() {
     if (!runtimeDescriptor) return null
-    const nextClient = runtimeRegistry.createClient(runtimeDescriptor, {
+    const sourceRuntime = runtimeDescriptor
+    const sourceGeneration = ++clientGeneration
+    let nextClient = null
+    nextClient = runtimeRegistry.createClient(runtimeDescriptor, {
         traceDirectory: join(app.getPath("userData"), "traces"),
         workspaceRoot,
         executionPolicy: currentExecutionPolicy(),
+        requestPermission: (request) =>
+            requestRuntimePermission({
+                ...request,
+                runtime: sourceRuntime,
+                runtimeId: sourceRuntime.runtimeId,
+                clientGeneration: sourceGeneration,
+                sourceClient: nextClient,
+                workspaceRoot:
+                    nextClient?.sessions?.get(request.params?.sessionId)?.cwd ??
+                    nextClient?.workspaceRoot ??
+                    workspaceRoot,
+            }),
     })
     installClientEvents(nextClient, runtimeDescriptor.runtimeId)
     return nextClient
@@ -229,6 +384,7 @@ function enqueueRuntimeOperation(operation) {
 }
 
 async function restartRuntimeNow({rediscover = false} = {}) {
+    clientGeneration += 1
     if (client) await client.stop()
     runtimeStart = null
     loadedThreads.clear()
@@ -331,14 +487,20 @@ async function chooseWorkspace() {
         message: "Codex threads shown in Rolling Skill are scoped to this folder.",
     })
     if (result.canceled || result.filePaths.length === 0) return null
-    workspaceRoot = result.filePaths[0]
-    writePreferences({workspaceRoot})
-    loadedThreads.clear()
-    activeThreads.clear()
-    client?.setWorkspace(workspaceRoot)
-    if (evaluationRunner) evaluationRunner.workspaceRoot = workspaceRoot
-    send("workspace:changed", {workspaceRoot})
-    return workspaceRoot
+    const selectedWorkspace = result.filePaths[0]
+    return enqueueRuntimeOperation(async () => {
+        if (activeThreads.size) {
+            throw new Error("Stop active tasks before changing the workspace")
+        }
+        workspaceRoot = selectedWorkspace
+        writePreferences({workspaceRoot})
+        loadedThreads.clear()
+        activeThreads.clear()
+        client?.setWorkspace(workspaceRoot)
+        if (evaluationRunner) evaluationRunner.workspaceRoot = workspaceRoot
+        send("workspace:changed", {workspaceRoot})
+        return workspaceRoot
+    })
 }
 
 function openTraceFolder() {
@@ -635,34 +797,81 @@ function installIpc() {
     ipcMain.handle("runtime:start-thread", async (_event, input = {}) => {
         const model = optionalIdentifier(input.modelId, "model")
         const effort = optionalEffort(input.effort)
-        const response = await (await ensureRuntime()).startThread({
-            ...(model ? {model} : {}),
-            ...(effort ? {effort} : {}),
+        return enqueueRuntimeOperation(async () => {
+            const runtime = await ensureRuntime()
+            const sourceRuntime = runtimeDescriptor
+            if (!sourceRuntime || runtime !== client) {
+                throw new Error("The active runtime changed before the task could start")
+            }
+            const sourceRuntimeId = sourceRuntime.runtimeId
+            const permission = runtimePermissionFor(
+                sourceRuntime.providerId,
+                input.permissionMode,
+            )
+            const response = await runtime.startThread({
+                ...(model ? {model} : {}),
+                ...(effort ? {effort} : {}),
+                ...permission,
+            })
+            loadedThreads.add(response.thread.id)
+            rememberThreadProfile(
+                response.thread.id,
+                {
+                    modelId: model,
+                    effort,
+                    permissionMode: permission.permissionMode,
+                },
+                sourceRuntimeId,
+            )
+            return attachThreadProfile(response, response.thread.id, sourceRuntimeId)
         })
-        loadedThreads.add(response.thread.id)
-        rememberThreadProfile(response.thread.id, {modelId: model, effort})
-        return attachThreadProfile(response)
     })
-    ipcMain.handle("runtime:start-turn", async (_event, {threadId, text, modelId, effort}) => {
-        threadId = requireIdentifier(threadId, "thread")
-        const input = normalizeTurnInput(text)
-        const model = optionalIdentifier(modelId, "model")
-        effort = optionalEffort(effort)
-        const options = {model, effort}
-        rememberThreadProfile(threadId, {modelId: model, effort})
-        const runtime = await ensureRuntime()
-        if (!loadedThreads.has(threadId)) {
-            await runtime.resumeThread(threadId, options)
-            loadedThreads.add(threadId)
-        }
-        activeThreads.add(threadId)
-        try {
-            return await runtime.startTurn(threadId, input, options)
-        } catch (error) {
-            activeThreads.delete(threadId)
-            throw error
-        }
-    })
+    ipcMain.handle(
+        "runtime:start-turn",
+        async (_event, {threadId, text, modelId, effort, permissionMode}) => {
+            threadId = requireIdentifier(threadId, "thread")
+            const input = normalizeTurnInput(text)
+            const model = optionalIdentifier(modelId, "model")
+            effort = optionalEffort(effort)
+            return enqueueRuntimeOperation(async () => {
+                const runtime = await ensureRuntime()
+                const sourceRuntime = runtimeDescriptor
+                if (!sourceRuntime || runtime !== client) {
+                    throw new Error("The active runtime changed before the turn could start")
+                }
+                const sourceRuntimeId = sourceRuntime.runtimeId
+                const permission = runtimePermissionFor(
+                    sourceRuntime.providerId,
+                    permissionMode,
+                )
+                const options = {model, effort, ...permission}
+                if (!loadedThreads.has(threadId)) {
+                    await runtime.resumeThread(
+                        threadId,
+                        sourceRuntime.providerId === "codex" ? permission : {},
+                    )
+                    loadedThreads.add(threadId)
+                }
+                activeThreads.add(threadId)
+                try {
+                    const response = await runtime.startTurn(threadId, input, options)
+                    rememberThreadProfile(
+                        threadId,
+                        {
+                            modelId: model,
+                            effort,
+                            permissionMode: permission.permissionMode,
+                        },
+                        sourceRuntimeId,
+                    )
+                    return response
+                } catch (error) {
+                    activeThreads.delete(threadId)
+                    throw error
+                }
+            })
+        },
+    )
     ipcMain.handle("runtime:interrupt-turn", async (_event, input) =>
         (await ensureRuntime()).interruptTurn(
             requireIdentifier(input.threadId, "thread"),

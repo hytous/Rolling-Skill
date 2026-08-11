@@ -157,6 +157,33 @@ describe("Codex app-server request construction", () => {
         assert.equal("reasoningEffort" in request.params, false)
     })
 
+    it("applies approval and sandbox overrides directly on the turn", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        let request
+        client.request = async (method, params) => {
+            request = {method, params}
+            return {turn: {id: "turn-1"}}
+        }
+
+        await client.startTurn("thread-1", "hello", {
+            approvalPolicy: "never",
+            sandbox: "workspace-write",
+        })
+
+        assert.equal(request.params.approvalPolicy, "never")
+        assert.deepEqual(request.params.sandboxPolicy, {
+            type: "workspaceWrite",
+            writableRoots: [],
+            networkAccess: false,
+            excludeTmpdirEnvVar: false,
+            excludeSlashTmp: false,
+        })
+    })
+
     it("sends explicit nulls when the user resets turn settings to runtime defaults", async () => {
         const client = new CodexAppServerClient({
             binaryPath: "/tmp/codex",

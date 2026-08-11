@@ -9,6 +9,7 @@ const {afterEach, describe, it} = require("node:test")
 const {
     CodeBuddyRuntimeProvider,
     buildCodeBuddyCandidates,
+    parsePermissionModes,
     probeCodeBuddyRuntime,
 } = require("../src/codebuddy-runtime-provider.cjs")
 const {CodeBuddyAcpClient} = require("../src/codebuddy-acp-client.cjs")
@@ -69,7 +70,7 @@ describe("CodeBuddy runtime provider", () => {
             if (args[0] === "--version") return {status: 0, stdout: "2.133.1\n", stderr: ""}
             return {
                 status: 0,
-                stdout: "--acp Start ACP --acp-transport stdio --model <model> (default-model, gpt-5.5) --effort <level>",
+                stdout: '--acp Start ACP --acp-transport stdio --model <model> (default-model, gpt-5.5) --effort <level>\n--permission-mode <mode> (choices: "acceptEdits", "bypassPermissions", "default", "plan", "dontAsk", "auto")',
                 stderr: "",
             }
         }
@@ -77,6 +78,15 @@ describe("CodeBuddy runtime provider", () => {
         assert.equal(result.version, "2.133.1")
         assert.equal(result.acp, true)
         assert.deepEqual(result.models, ["default-model", "gpt-5.5"])
+        assert.deepEqual(result.permissionModes, [
+            "acceptEdits",
+            "bypassPermissions",
+            "default",
+            "plan",
+            "dontAsk",
+            "auto",
+        ])
+        assert.deepEqual(parsePermissionModes("no permission choices"), [])
     })
 
     it("probes env-node installations when the parent PATH is Finder-like", () => {
@@ -130,7 +140,7 @@ describe("CodeBuddy ACP client", () => {
             workspaceRoot: "/workspace",
             traceDirectory: mkdtempSync(join(tmpdir(), "rolling-skill-codebuddy-trace-")),
             spawnProcess: (_path, args) => {
-                assert.deepEqual(args, ["--acp", "--acp-transport", "stdio", "--permission-mode", "dontAsk"])
+                assert.deepEqual(args, ["--acp", "--acp-transport", "stdio", "--permission-mode", "auto"])
                 return child
             },
         })
@@ -140,22 +150,207 @@ describe("CodeBuddy ACP client", () => {
         child.stdout.emit("data", `${JSON.stringify({jsonrpc: "2.0", id: 1, result: {protocolVersion: 1}})}\n`)
         await started
 
-        const threadPromise = client.startThread({model: "gpt-5.5", effort: "xhigh"})
+        const threadPromise = client.startThread({
+            model: "gpt-5.5",
+            effort: "xhigh",
+            permissionMode: "fullAccess",
+        })
         await new Promise((resolve) => setImmediate(resolve))
-        child.stdout.emit("data", `${JSON.stringify({jsonrpc: "2.0", id: 2, result: {sessionId: "session-1", models: {availableModels: []}}})}\n`)
+        child.stdout.emit("data", `${JSON.stringify({jsonrpc: "2.0", id: 2, result: {
+            sessionId: "session-1",
+            models: {availableModels: []},
+            modes: {
+                currentModeId: "auto",
+                availableModes: [
+                    {id: "auto", name: "Auto"},
+                    {id: "bypassPermissions", name: "Bypass permissions"},
+                    {id: "fullAccess", name: "Full access"},
+                ],
+            },
+        }})}\n`)
         await new Promise((resolve) => setImmediate(resolve))
         child.stdout.emit("data", `${JSON.stringify({jsonrpc: "2.0", id: 3, result: {}})}\n`)
         await new Promise((resolve) => setImmediate(resolve))
-        child.stdout.emit("data", `${JSON.stringify({jsonrpc: "2.0", id: 4, result: {configOptions: []}})}\n`)
+        child.stdout.emit("data", `${JSON.stringify({jsonrpc: "2.0", id: 4, result: {}})}\n`)
+        await new Promise((resolve) => setImmediate(resolve))
+        child.stdout.emit("data", `${JSON.stringify({jsonrpc: "2.0", id: 5, result: {configOptions: []}})}\n`)
         const thread = await threadPromise
 
         assert.equal(thread.thread.id, "session-1")
         assert.deepEqual(writes.slice(1).map((entry) => [entry.method, entry.params]), [
             ["session/new", {cwd: "/workspace", mcpServers: []}],
+            ["session/set_mode", {sessionId: "session-1", modeId: "fullAccess"}],
             ["session/set_model", {sessionId: "session-1", modelId: "gpt-5.5"}],
             ["session/set_config_option", {sessionId: "session-1", configId: "thought_level", value: "xhigh"}],
         ])
         await client.stop()
+    })
+
+    it("rejects an unavailable permission mode before sending a prompt", async () => {
+        const client = new CodeBuddyAcpClient({
+            binaryPath: "/bin/codebuddy",
+            workspaceRoot: "/workspace",
+            traceDirectory: "/tmp",
+        })
+        client.sessionModes.set("session-1", new Set(["auto", "plan"]))
+
+        await assert.rejects(
+            client.configureSession("session-1", {permissionMode: "bypassPermissions"}),
+            /does not support permission mode bypassPermissions/,
+        )
+    })
+
+    it("routes ACP permission requests to the client and returns the selected option", async () => {
+        const writes = []
+        const child = new EventEmitter()
+        child.stdout = new EventEmitter()
+        child.stderr = new EventEmitter()
+        child.stdin = {writable: true, write: (value) => writes.push(JSON.parse(value))}
+        child.kill = () => child.emit("close", 0, null)
+        const permissionRequests = []
+        const client = new CodeBuddyAcpClient({
+            binaryPath: "/bin/codebuddy",
+            workspaceRoot: "/workspace",
+            traceDirectory: mkdtempSync(join(tmpdir(), "rolling-skill-codebuddy-permission-")),
+            spawnProcess: () => child,
+            requestPermission: async (request) => {
+                permissionRequests.push(request)
+                return "allow"
+            },
+        })
+
+        const started = client.start()
+        await new Promise((resolve) => setImmediate(resolve))
+        child.stdout.emit("data", `${JSON.stringify({jsonrpc: "2.0", id: 1, result: {}})}\n`)
+        await started
+        child.stdout.emit(
+            "data",
+            `${JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                method: "session/request_permission",
+                params: {
+                    sessionId: "session-1",
+                    toolCall: {title: "Bash", rawInput: {command: "npm test"}},
+                    options: [
+                        {optionId: "allow", name: "Allow once"},
+                        {optionId: "reject", name: "Deny"},
+                    ],
+                },
+            })}\n`,
+        )
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.equal(permissionRequests.length, 1)
+        assert.equal(permissionRequests[0].params.toolCall.title, "Bash")
+        assert.deepEqual(writes.at(-1), {
+            jsonrpc: "2.0",
+            id: 1,
+            result: {outcome: {outcome: "selected", optionId: "allow"}},
+        })
+        await client.stop()
+    })
+
+    it("cancels safely when a permission request has no explicit rejection option", async () => {
+        const writes = []
+        const client = new CodeBuddyAcpClient({
+            binaryPath: "/bin/codebuddy",
+            workspaceRoot: "/workspace",
+            traceDirectory: "/tmp",
+            requestPermission: async () => {
+                throw new Error("dialog unavailable")
+            },
+        })
+        client.child = {stdin: {writable: true, write: (value) => writes.push(JSON.parse(value))}}
+
+        await client.handlePermissionRequest({
+            jsonrpc: "2.0",
+            id: 9,
+            method: "session/request_permission",
+            params: {
+                sessionId: "session-1",
+                options: [{optionId: "allow", name: "Allow once", kind: "allow_once"}],
+            },
+        })
+
+        assert.equal(writes.length, 1)
+        assert.equal(writes[0].id, 9)
+        assert.deepEqual(writes[0].result, {outcome: {outcome: "cancelled"}})
+    })
+
+    it("cancels pending approvals before interrupting a session and ignores the late dialog result", async () => {
+        const writes = []
+        let finishDialog
+        const client = new CodeBuddyAcpClient({
+            binaryPath: "/bin/codebuddy",
+            workspaceRoot: "/workspace",
+            traceDirectory: "/tmp",
+            requestPermission: () => new Promise((resolve) => {
+                finishDialog = resolve
+            }),
+        })
+        client.processEpoch = 1
+        client.child = {stdin: {writable: true, write: (value) => writes.push(JSON.parse(value))}}
+        const pending = client.handlePermissionRequest({
+            jsonrpc: "2.0",
+            id: 7,
+            method: "session/request_permission",
+            params: {
+                sessionId: "session-1",
+                options: [
+                    {kind: "allow_once", optionId: "allow", name: "Allow"},
+                    {kind: "reject_once", optionId: "reject", name: "Reject"},
+                ],
+            },
+        }, {sourceChild: client.child, processEpoch: 1})
+        await new Promise((resolve) => setImmediate(resolve))
+
+        await client.interruptTurn("session-1")
+        finishDialog("allow")
+        await pending
+
+        assert.deepEqual(writes, [
+            {jsonrpc: "2.0", id: 7, result: {outcome: {outcome: "cancelled"}}},
+            {jsonrpc: "2.0", method: "session/cancel", params: {sessionId: "session-1"}},
+        ])
+    })
+
+    it("never writes an old approval result into a restarted ACP process", async () => {
+        const oldWrites = []
+        const newWrites = []
+        let finishDialog
+        const client = new CodeBuddyAcpClient({
+            binaryPath: "/bin/codebuddy",
+            workspaceRoot: "/workspace",
+            traceDirectory: "/tmp",
+            requestPermission: () => new Promise((resolve) => {
+                finishDialog = resolve
+            }),
+        })
+        const oldChild = {stdin: {writable: true, write: (value) => oldWrites.push(JSON.parse(value))}}
+        const newChild = {stdin: {writable: true, write: (value) => newWrites.push(JSON.parse(value))}}
+        client.processEpoch = 3
+        client.child = oldChild
+        const pending = client.handlePermissionRequest({
+            jsonrpc: "2.0",
+            id: 4,
+            method: "session/request_permission",
+            params: {
+                sessionId: "session-1",
+                options: [
+                    {kind: "allow_once", optionId: "allow", name: "Allow"},
+                    {kind: "reject_once", optionId: "reject", name: "Reject"},
+                ],
+            },
+        }, {sourceChild: oldChild, processEpoch: 3})
+        await new Promise((resolve) => setImmediate(resolve))
+        client.child = newChild
+        client.processEpoch = 4
+        finishDialog("allow")
+        await pending
+
+        assert.deepEqual(oldWrites, [])
+        assert.deepEqual(newWrites, [])
     })
 
     it("removes its evaluation listener when turn startup fails", async () => {

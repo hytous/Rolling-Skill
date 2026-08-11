@@ -20,6 +20,9 @@ function readThreadProfile(preferences, runtimeId, threadId) {
     const profile = {updatedAt: String(entry.updatedAt ?? "")}
     if (Object.hasOwn(entry, "modelId")) profile.modelId = optionalValue(entry.modelId)
     if (Object.hasOwn(entry, "effort")) profile.effort = optionalValue(entry.effort)
+    if (Object.hasOwn(entry, "permissionMode")) {
+        profile.permissionMode = optionalValue(entry.permissionMode)
+    }
     return profile
 }
 
@@ -40,6 +43,11 @@ function updateThreadProfiles(
     else if (Object.hasOwn(previous, "modelId")) next.modelId = optionalValue(previous.modelId)
     if (Object.hasOwn(patch, "effort")) next.effort = optionalValue(patch.effort)
     else if (Object.hasOwn(previous, "effort")) next.effort = optionalValue(previous.effort)
+    if (Object.hasOwn(patch, "permissionMode")) {
+        next.permissionMode = optionalValue(patch.permissionMode)
+    } else if (Object.hasOwn(previous, "permissionMode")) {
+        next.permissionMode = optionalValue(previous.permissionMode)
+    }
     profiles[key] = next
     return Object.fromEntries(
         Object.entries(profiles)

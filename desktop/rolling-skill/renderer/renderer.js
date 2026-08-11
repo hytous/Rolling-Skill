@@ -209,11 +209,18 @@ const translations = {
         skillInventoryUnavailable: "Skill inventory is unavailable for this runtime",
         localRuntimeAndData: "Local runtime & data",
         localRuntimeAndDataHelp: "Runtime discovery, raw trace, and the local evaluation store stay on this Mac.",
-        localAccess: "Local access",
+        localAccess: "Codex new conversation default",
         fullLocalAccess: "Full local access",
         workspaceOnlyAccess: "Workspace only",
-        localAccessHelp: "This is the selected runtime's own local sandbox. Full local access lets its CLI read credentials and files available to the current user.",
-        localAccessUnsupported: "This runtime manages its own permissions and does not expose a workspace sandbox to Rolling Skill.",
+        readOnlyAccess: "Read only",
+        codebuddyAutoAccess: "Auto review",
+        codebuddyAskAccess: "Ask when needed",
+        codebuddyAcceptEditsAccess: "Accept edits",
+        codebuddyPlanAccess: "Plan mode",
+        codebuddyDontAskAccess: "Don't ask · deny unapproved",
+        codebuddyBypassAccess: "Bypass prompts · dangerous actions may still ask",
+        localAccessHelp: "Default permission for new Codex conversations. Each conversation can override it from the task composer.",
+        localAccessUnsupported: "CodeBuddy permissions are selected per conversation in the task composer. Its separate shell sandbox remains runtime-managed.",
         runtimeManagedAccess: "Runtime-managed access",
         openDatasetFile: "Open dataset file",
     },
@@ -427,11 +434,18 @@ const translations = {
         skillInventoryUnavailable: "该运行时不提供 Skill 清单",
         localRuntimeAndData: "本地运行时与数据",
         localRuntimeAndDataHelp: "运行时发现、原始 Trace 和本地评测数据都保存在这台 Mac。",
-        localAccess: "本地访问权限",
+        localAccess: "Codex 新会话默认权限",
         fullLocalAccess: "完整本机访问",
         workspaceOnlyAccess: "仅工作目录",
-        localAccessHelp: "这是所选运行时自身的本地 sandbox。完整本机访问会让其 CLI 读取当前用户可访问的凭据和文件。",
-        localAccessUnsupported: "当前运行时自行管理权限，未向 Rolling Skill 提供工作目录 sandbox。",
+        readOnlyAccess: "只读",
+        codebuddyAutoAccess: "自动审核",
+        codebuddyAskAccess: "需要时询问",
+        codebuddyAcceptEditsAccess: "自动允许编辑",
+        codebuddyPlanAccess: "计划模式",
+        codebuddyDontAskAccess: "不询问 · 未授权即拒绝",
+        codebuddyBypassAccess: "跳过权限提示 · 高危操作仍可能询问",
+        localAccessHelp: "这是 Codex 新会话的默认权限；每个会话都可在输入框左下角单独调整。",
+        localAccessUnsupported: "CodeBuddy 权限请在输入框左下角按会话选择；它独立的 Shell sandbox 仍由运行时管理。",
         runtimeManagedAccess: "运行时自行管理权限",
         openDatasetFile: "打开数据集文件",
     },
@@ -484,6 +498,7 @@ const state = {
     models: [],
     selectedTaskModelId: null,
     selectedTaskEffort: null,
+    selectedTaskPermissionMode: null,
     discardCurationId: null,
     traceOpen: false,
     surface: "chat",
@@ -1089,6 +1104,7 @@ async function saveSettings() {
         if (state.newTaskMode || !state.activeThread) {
             state.selectedTaskModelId = settings.taskProfile?.modelId ?? null
             state.selectedTaskEffort = settings.taskProfile?.effort ?? null
+            state.selectedTaskPermissionMode = defaultPermissionMode()
         }
         renderAll()
         renderCurations()
@@ -1124,6 +1140,7 @@ async function refreshModels() {
         const profile = configuredTaskProfile()
         state.selectedTaskModelId = profile.modelId
         state.selectedTaskEffort = profile.effort
+        state.selectedTaskPermissionMode ??= defaultPermissionMode()
     }
     renderTaskModelPicker()
     renderEvaluationWorkbench()
@@ -1153,6 +1170,86 @@ function supportsThreadArchive() {
 function supportsLocalAccessPolicy() {
     const capabilities = state.runtime?.runtime?.capabilities ?? []
     return capabilities.includes("sandbox-policy")
+}
+
+function activeProviderId() {
+    return state.runtime?.runtime?.providerId ?? null
+}
+
+function permissionModeOptions(providerId = activeProviderId()) {
+    if (providerId === "codex") {
+        return [
+            {value: "full", label: "fullLocalAccess"},
+            {value: "workspace", label: "workspaceOnlyAccess"},
+            {value: "read-only", label: "readOnlyAccess"},
+        ]
+    }
+    if (providerId === "codebuddy") {
+        const options = [
+            {value: "auto", label: "codebuddyAutoAccess"},
+            {value: "default", label: "codebuddyAskAccess"},
+            {value: "acceptEdits", label: "codebuddyAcceptEditsAccess"},
+            {value: "plan", label: "codebuddyPlanAccess"},
+            {value: "dontAsk", label: "codebuddyDontAskAccess"},
+            {value: "bypassPermissions", label: "codebuddyBypassAccess"},
+            {value: "fullAccess", label: "fullLocalAccess"},
+        ]
+        const available = state.activeThread?.availablePermissionModes
+        if (!Array.isArray(available) || !available.length) return options
+        const filtered = options.filter((option) => available.includes(option.value))
+        const current = state.activeThread?.permissionMode
+        if (
+            current &&
+            available.includes(current) &&
+            !filtered.some((option) => option.value === current)
+        ) {
+            filtered.unshift({value: current, labelText: current, disabled: true})
+        }
+        return filtered
+    }
+    return []
+}
+
+function defaultPermissionMode(providerId = activeProviderId()) {
+    if (providerId === "codex") {
+        return state.settings.localAccess === "workspace" ? "workspace" : "full"
+    }
+    if (providerId === "codebuddy") return "auto"
+    return null
+}
+
+function renderPermissionModePicker() {
+    const options = permissionModeOptions()
+    const requested = state.selectedTaskPermissionMode
+    const runtimeCurrent = state.activeThread?.permissionMode
+    const selected = options.some((option) => option.value === requested)
+        ? requested
+        : options.some((option) => option.value === runtimeCurrent)
+          ? runtimeCurrent
+          : options.find((option) => !option.disabled)?.value ?? options[0]?.value ?? null
+    const signature = JSON.stringify({
+        providerId: activeProviderId(),
+        language: state.settings.language,
+        options,
+    })
+    if (elements.composerAccess.dataset.permissionSignature !== signature) {
+        elements.composerAccess.replaceChildren()
+        if (!options.length) {
+            const option = node("option", "", t("runtimeManagedAccess"))
+            option.value = ""
+            elements.composerAccess.append(option)
+        } else {
+            for (const entry of options) {
+                const option = node("option", "", entry.labelText ?? t(entry.label))
+                option.value = entry.value
+                option.disabled = Boolean(entry.disabled)
+                elements.composerAccess.append(option)
+            }
+        }
+        elements.composerAccess.dataset.permissionSignature = signature
+    }
+    elements.composerAccess.value = selected ?? ""
+    state.selectedTaskPermissionMode = elements.composerAccess.value || null
 }
 
 function isThreadRunning(thread) {
@@ -1587,11 +1684,11 @@ function renderComposer() {
         readOnly || loading || loadFailed || running || state.runtime?.status !== "ready"
     elements.composerEffort.disabled =
         readOnly || loading || loadFailed || running || state.runtime?.status !== "ready"
+    elements.composerAccess.disabled =
+        readOnly || loading || loadFailed || running || state.runtime?.status !== "ready"
     elements.composer.classList.toggle("archived-readonly", readOnly)
     elements.archivedThreadNotice.classList.toggle("hidden", !readOnly)
-    elements.composerAccess.textContent = supportsLocalAccessPolicy()
-        ? t(state.settings.localAccess === "workspace" ? "workspaceOnlyAccess" : "fullLocalAccess")
-        : t("runtimeManagedAccess")
+    renderPermissionModePicker()
     renderTaskModelPicker()
 }
 
@@ -2616,6 +2713,10 @@ async function loadThread(threadId) {
             rememberedProfile && Object.hasOwn(rememberedProfile, "effort")
                 ? rememberedProfile.effort
                 : response.thread.effort ?? state.settings.taskProfile?.effort ?? null
+        state.selectedTaskPermissionMode =
+            rememberedProfile && Object.hasOwn(rememberedProfile, "permissionMode")
+                ? rememberedProfile.permissionMode
+                : response.thread.permissionMode ?? defaultPermissionMode()
         state.activeTurnId =
             response.thread.turns?.find((turn) => turn.status === "inProgress")?.id ?? null
         state.loadingThread = false
@@ -2654,6 +2755,7 @@ function beginNewTask() {
     const profile = configuredTaskProfile()
     state.selectedTaskModelId = profile.modelId
     state.selectedTaskEffort = profile.effort
+    state.selectedTaskPermissionMode = defaultPermissionMode()
     state.error = null
     restoreActiveThreadView()
     renderAll()
@@ -2675,6 +2777,7 @@ async function submitTurn() {
     const submittedRuntimeEpoch = state.runtimeEpoch
     const submittedModelId = state.selectedTaskModelId
     const submittedEffort = state.selectedTaskEffort
+    const submittedPermissionMode = state.selectedTaskPermissionMode
     let submittedThreadId = state.activeThreadId
     let submittedIdentity = submittedSourceIdentity
     state.sending = true
@@ -2685,6 +2788,7 @@ async function submitTurn() {
             const response = await window.rollingSkill.startThread(
                 submittedModelId,
                 submittedEffort,
+                submittedPermissionMode,
             )
             if (submittedRuntimeEpoch !== state.runtimeEpoch) {
                 state.sending = false
@@ -2714,6 +2818,7 @@ async function submitTurn() {
             text,
             submittedModelId,
             submittedEffort,
+            submittedPermissionMode,
         )
         state.sending = false
         threadViewState.clearDraft(submittedIdentity)
@@ -3125,6 +3230,7 @@ function clearRuntimeTaskState() {
     state.models = []
     state.selectedTaskModelId = null
     state.selectedTaskEffort = null
+    state.selectedTaskPermissionMode = null
 }
 
 async function changeRuntime(operation, {markStarting = true, clearBefore = true} = {}) {
@@ -3335,6 +3441,10 @@ elements.composerEffort.addEventListener("change", () => {
     state.selectedTaskEffort = elements.composerEffort.value || null
     renderComposer()
 })
+elements.composerAccess.addEventListener("change", () => {
+    state.selectedTaskPermissionMode = elements.composerAccess.value || null
+    renderComposer()
+})
 elements.stopTurn.addEventListener("click", stopTurn)
 elements.conversation.addEventListener("click", (event) => {
     const external = event.target.closest("[data-external-url]")
@@ -3477,6 +3587,7 @@ window.rollingSkill.onWorkspaceChanged(async ({workspaceRoot}) => {
     const profile = configuredTaskProfile()
     state.selectedTaskModelId = profile.modelId
     state.selectedTaskEffort = profile.effort
+    state.selectedTaskPermissionMode = defaultPermissionMode()
     restoreActiveThreadView()
     renderAll()
     if (state.runtime?.status === "ready") await refreshThreads(true)
@@ -3498,6 +3609,7 @@ async function bootstrap() {
         applySettings(initial.settings ?? state.settings)
         state.selectedTaskModelId = state.settings.taskProfile?.modelId ?? null
         state.selectedTaskEffort = state.settings.taskProfile?.effort ?? null
+        state.selectedTaskPermissionMode = defaultPermissionMode()
         state.activeCurationId = state.curationSessions[0]?.id ?? null
         restoreActiveThreadView()
         renderAll()

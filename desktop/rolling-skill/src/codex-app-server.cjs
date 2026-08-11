@@ -7,6 +7,21 @@ const {version: clientVersion} = require("../package.json")
 const {JsonLineDecoder, RpcRequestTracker} = require("./json-rpc.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
 
+function turnSandboxPolicy(sandbox) {
+    if (sandbox === "danger-full-access") return {type: "dangerFullAccess"}
+    if (sandbox === "read-only") return {type: "readOnly", networkAccess: false}
+    if (sandbox === "workspace-write") {
+        return {
+            type: "workspaceWrite",
+            writableRoots: [],
+            networkAccess: false,
+            excludeTmpdirEnvVar: false,
+            excludeSlashTmp: false,
+        }
+    }
+    return null
+}
+
 // Temporary compatibility identity for the internal Codex gateway used during development.
 // Restore this to "rolling-skill" before distributing the client as a standalone product.
 const CODEX_APP_SERVER_ORIGINATOR = "codex_exec"
@@ -135,7 +150,6 @@ class CodexAppServerClient extends EventEmitter {
 
     handleMessage(message) {
         this.recorder?.record("inbound", message)
-        if (this.tracker.settle(message)) return
         if (message?.id !== undefined && message?.method) {
             this.write({
                 id: message.id,
@@ -143,6 +157,7 @@ class CodexAppServerClient extends EventEmitter {
             })
             return
         }
+        if (this.tracker.settle(message)) return
         if (message?.method) {
             this.emit("notification", message)
             this.emit(message.method, message.params)
@@ -257,6 +272,12 @@ class CodexAppServerClient extends EventEmitter {
             input,
             ...(Object.hasOwn(options, "model") ? {model: options.model ?? null} : {}),
             ...(Object.hasOwn(options, "effort") ? {effort: options.effort ?? null} : {}),
+            ...(Object.hasOwn(options, "approvalPolicy")
+                ? {approvalPolicy: options.approvalPolicy ?? null}
+                : {}),
+            ...(Object.hasOwn(options, "sandbox")
+                ? {sandboxPolicy: turnSandboxPolicy(options.sandbox)}
+                : {}),
         })
     }
 
