@@ -64,13 +64,13 @@ Runtime selection, raw Trace access, and the local dataset file are also grouped
 Use the switch below the Rolling Skill logo to move between the native **Chat** client and the
 **Skill evaluation** workbench. The workbench can:
 
-- create and browse local datasets;
+- create, browse, and delete local datasets;
 - inspect the verbatim questions and curated references saved in each dataset;
 - delete a Case without invalidating older evaluation snapshots;
 - query a provider's path-precise Skill inventory when it exposes one;
 - run one selected Case or an entire dataset;
 - select multiple runtime/model/reasoning-effort configurations for one run; and
-- inspect durable Case × Runtime results under **Evaluation runs / 评测记录**.
+- inspect and delete durable Case × Runtime results under **Evaluation runs / 评测记录**.
 
 Automatic activation sends only the dataset question, byte-for-byte as saved. This is the path to
 use when measuring whether the runtime can discover and activate a Skill by itself. Explicit
@@ -85,6 +85,12 @@ runtime paths and versions, models, efforts, responses/errors, duration, session
 and Trace references. Deleting a current Case therefore does not damage historical evidence. The
 Curator grading contract is not yet applied automatically, so results remain reviewable evidence
 rather than a numeric pass/fail score.
+
+Deleting a dataset removes its current Cases and finished Curator records but preserves immutable
+evaluation-run snapshots. An unfinished Curator draft blocks dataset deletion. Only terminal
+evaluation runs can be deleted; deleting a run does not remove its separate raw Trace files. If the
+deleted dataset was the Automatic Capture target, capture is disabled instead of being silently
+redirected to another dataset.
 
 Codex app-server currently exposes `skills/list`, `skills/config/write`, `plugin/list`,
 `plugin/installed`, `plugin/read`, `plugin/install`, and `plugin/uninstall`. Rolling Skill's Codex

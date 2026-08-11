@@ -165,6 +165,7 @@ describe("local-first desktop surface", () => {
     it("switches between chat and a Skill evaluation workbench", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
         const preload = source("src/preload.cjs")
         const main = source("src/main.cjs")
 
@@ -181,6 +182,8 @@ describe("local-first desktop surface", () => {
         assert.match(preload, /listCases/)
         assert.match(main, /skills:list/)
         assert.match(main, /datasets:list-cases/)
+        assert.doesNotMatch(styles, /\.workbench\.evaluation-mode\s*>\s*\.topbar/)
+        assert.match(styles, /\.evaluation-workbench\s*\{[^}]*grid-row:\s*2\s*\/\s*-1/s)
     })
 
     it("keeps runtime and trace utilities inside Settings instead of the sidebar footer", () => {
@@ -195,6 +198,8 @@ describe("local-first desktop surface", () => {
 
     it("exposes effort controls, dataset runs, runtime matrices, run history, deletion, and archived drafts", () => {
         const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
         const preload = source("src/preload.cjs")
         const main = source("src/main.cjs")
 
@@ -211,11 +216,21 @@ describe("local-first desktop surface", () => {
             assert.match(html, new RegExp(`id="${id}"`))
         }
         assert.match(preload, /deleteCase/)
+        assert.match(preload, /deleteDataset/)
+        assert.match(preload, /deleteEvaluationRun/)
         assert.match(preload, /startEvaluationRun/)
         assert.match(preload, /listEvaluationRuns/)
         assert.match(preload, /listArchivedCurations/)
         assert.match(main, /CodeBuddyRuntimeProvider/)
         assert.match(main, /datasets:delete-case/)
+        assert.match(main, /datasets:delete/)
+        assert.match(main, /evaluations:delete/)
         assert.match(main, /evaluations:start/)
+        assert.match(html, /id="delete-dataset-dialog"/)
+        assert.match(html, /id="delete-evaluation-run-dialog"/)
+        assert.match(renderer, /data-delete-evaluation-dataset/)
+        assert.match(renderer, /data-delete-evaluation-run/)
+        assert.match(renderer, /state\.evaluationRuns\s*=\s*await window\.rollingSkill\.listEvaluationRuns\(\)/)
+        assert.match(styles, /\.evaluation-case-row:hover\s+\.evaluation-case-delete/)
     })
 })

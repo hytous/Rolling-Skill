@@ -111,6 +111,15 @@ class CurationManager {
     }
 
     async createSession(input) {
+        const releaseDataset = this.store.reserveDataset(input.datasetId)
+        try {
+            return await this.createSessionFromEvidence(input)
+        } finally {
+            releaseDataset()
+        }
+    }
+
+    async createSessionFromEvidence(input) {
         const runtime = await this.getRuntime()
         const response = await runtime.readThread(input.sourceThreadId)
         const runtimeDescriptor = this.getRuntimeDescriptor()

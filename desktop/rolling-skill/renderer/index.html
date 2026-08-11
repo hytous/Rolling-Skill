@@ -381,6 +381,38 @@
             </div>
         </dialog>
 
+        <dialog id="delete-dataset-dialog" class="case-dialog confirm-dialog">
+            <div class="confirm-dialog-body">
+                <div class="dialog-header">
+                    <div><div class="drawer-eyebrow">DATASET</div><h2 data-i18n="deleteDataset">Delete dataset?</h2></div>
+                    <button id="close-delete-dataset-dialog" class="icon-button large" type="button" data-i18n-title="close" data-i18n-aria-label="close" title="Close" aria-label="Close">×</button>
+                </div>
+                <p data-i18n="deleteDatasetHelp">All Cases and finished draft records in this dataset will be removed. Unfinished drafts block deletion; evaluation records keep their snapshots.</p>
+                <p id="delete-dataset-error" class="confirm-dialog-error hidden" role="alert"></p>
+                <div class="dialog-footer">
+                    <span></span>
+                    <button id="cancel-delete-dataset" type="button" data-i18n="cancel">Cancel</button>
+                    <button id="confirm-delete-dataset" class="danger" type="button" data-i18n="delete">Delete</button>
+                </div>
+            </div>
+        </dialog>
+
+        <dialog id="delete-evaluation-run-dialog" class="case-dialog confirm-dialog">
+            <div class="confirm-dialog-body">
+                <div class="dialog-header">
+                    <div><div class="drawer-eyebrow">EVALUATION RUN</div><h2 data-i18n="deleteEvaluationRun">Delete evaluation record?</h2></div>
+                    <button id="close-delete-evaluation-run-dialog" class="icon-button large" type="button" data-i18n-title="close" data-i18n-aria-label="close" title="Close" aria-label="Close">×</button>
+                </div>
+                <p data-i18n="deleteEvaluationRunHelp">This saved run, its results, and embedded snapshots will be permanently removed. Trace files are not deleted.</p>
+                <p id="delete-evaluation-run-error" class="confirm-dialog-error hidden" role="alert"></p>
+                <div class="dialog-footer">
+                    <span></span>
+                    <button id="cancel-delete-evaluation-run" type="button" data-i18n="cancel">Cancel</button>
+                    <button id="confirm-delete-evaluation-run" class="danger" type="button" data-i18n="delete">Delete</button>
+                </div>
+            </div>
+        </dialog>
+
         <dialog id="discard-curation-dialog" class="case-dialog confirm-dialog">
             <div class="confirm-dialog-body">
                 <div class="dialog-header">

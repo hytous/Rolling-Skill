@@ -9,6 +9,7 @@ const translations = {
         caseDrafts: "Case drafts",
         taskCouldNotContinue: "Task could not continue",
         dismiss: "Dismiss",
+        close: "Close",
         taskPlaceholder: "Message the agent…",
         composerHint: "Enter to send · Shift+Enter for a new line",
         appearance: "Appearance",
@@ -177,8 +178,16 @@ const translations = {
         runResults: "Case × runtime results",
         deleteCase: "Delete Case?",
         deleteCaseHelp: "The Case will be removed from the dataset. Existing run snapshots stay available.",
+        deleteDataset: "Delete dataset?",
+        deleteDatasetHelp: "All Cases and finished draft records in this dataset will be removed. Unfinished drafts block deletion; evaluation records keep their snapshots.",
+        deleteEvaluationRun: "Delete evaluation record?",
+        deleteEvaluationRunHelp: "This saved run, its results, and embedded snapshots will be permanently removed. Trace files are not deleted.",
         delete: "Delete",
         caseDeleted: "Case deleted",
+        datasetDeleted: "Dataset deleted",
+        evaluationRunDeleted: "Evaluation record deleted",
+        unfinishedDraftBlocksDatasetDelete: "Finish or discard the dataset's active Case drafts before deleting it.",
+        activeRunCannotDelete: "Wait for this evaluation run to finish before deleting it.",
         archivedDrafts: "Archived Case drafts",
         noArchivedDrafts: "No archived Case drafts.",
         skillInventoryUnavailable: "Skill inventory is unavailable for this runtime",
@@ -196,6 +205,7 @@ const translations = {
         caseDrafts: "Case 草稿",
         taskCouldNotContinue: "任务无法继续",
         dismiss: "关闭",
+        close: "关闭",
         taskPlaceholder: "输入消息…",
         composerHint: "Enter 发送 · Shift+Enter 换行",
         appearance: "外观",
@@ -364,8 +374,16 @@ const translations = {
         runResults: "Case × Runtime 结果",
         deleteCase: "删除 Case？",
         deleteCaseHelp: "该 Case 会从数据集中移除；已有评测记录中的快照仍会保留。",
+        deleteDataset: "删除数据集？",
+        deleteDatasetHelp: "该数据集中的所有 Case 和已结束草稿记录都会被删除；未结束草稿会阻止删除，已有评测记录仍保留快照。",
+        deleteEvaluationRun: "删除评测记录？",
+        deleteEvaluationRunHelp: "本次评测、结果及内嵌快照会被永久删除；对应的原始 Trace 文件不会删除。",
         delete: "删除",
         caseDeleted: "Case 已删除",
+        datasetDeleted: "数据集已删除",
+        evaluationRunDeleted: "评测记录已删除",
+        unfinishedDraftBlocksDatasetDelete: "请先完成或丢弃这个数据集中的活动 Case 草稿，再删除数据集。",
+        activeRunCannotDelete: "请等待本次评测结束后再删除这条记录。",
         archivedDrafts: "已归档 Case 草稿",
         noArchivedDrafts: "还没有已归档的 Case 草稿。",
         skillInventoryUnavailable: "该运行时不提供 Skill 清单",
@@ -425,10 +443,13 @@ const state = {
     evaluationView: "cases",
     evaluationRuns: [],
     activeEvaluationRunId: null,
+    activeEvaluationRun: null,
     evaluationRuntimeConfigurations: {},
     archivedCurations: [],
     archivedCurationsOpen: false,
     deleteCaseId: null,
+    deleteDatasetId: null,
+    deleteEvaluationRunId: null,
     evaluationLoading: false,
     evaluationError: null,
     evaluationSkillByThread: {},
@@ -527,6 +548,16 @@ const elements = {
     closeDeleteCaseDialog: document.querySelector("#close-delete-case-dialog"),
     cancelDeleteCase: document.querySelector("#cancel-delete-case"),
     confirmDeleteCase: document.querySelector("#confirm-delete-case"),
+    deleteDatasetDialog: document.querySelector("#delete-dataset-dialog"),
+    closeDeleteDatasetDialog: document.querySelector("#close-delete-dataset-dialog"),
+    cancelDeleteDataset: document.querySelector("#cancel-delete-dataset"),
+    confirmDeleteDataset: document.querySelector("#confirm-delete-dataset"),
+    deleteDatasetError: document.querySelector("#delete-dataset-error"),
+    deleteEvaluationRunDialog: document.querySelector("#delete-evaluation-run-dialog"),
+    closeDeleteEvaluationRunDialog: document.querySelector("#close-delete-evaluation-run-dialog"),
+    cancelDeleteEvaluationRun: document.querySelector("#cancel-delete-evaluation-run"),
+    confirmDeleteEvaluationRun: document.querySelector("#confirm-delete-evaluation-run"),
+    deleteEvaluationRunError: document.querySelector("#delete-evaluation-run-error"),
     caseDialog: document.querySelector("#save-case-dialog"),
     caseForm: document.querySelector("#save-case-form"),
     caseDataset: document.querySelector("#case-dataset"),
@@ -569,6 +600,12 @@ function applyLocalization() {
     }
     for (const element of document.querySelectorAll("[data-i18n-placeholder]")) {
         element.placeholder = t(element.dataset.i18nPlaceholder)
+    }
+    for (const element of document.querySelectorAll("[data-i18n-title]")) {
+        element.title = t(element.dataset.i18nTitle)
+    }
+    for (const element of document.querySelectorAll("[data-i18n-aria-label]")) {
+        element.setAttribute("aria-label", t(element.dataset.i18nAriaLabel))
     }
 }
 
@@ -1192,7 +1229,9 @@ function renderComposer() {
 }
 
 function renderTitle() {
-    elements.activeTitle.textContent = state.newTaskMode
+    elements.activeTitle.textContent = state.surface === "evaluation"
+        ? t("skillEvaluation")
+        : state.newTaskMode
         ? t("newTask")
         : titleForThread(state.activeThread || state.threads.find((item) => item.id === state.activeThreadId))
 }
@@ -1461,6 +1500,7 @@ function renderEvaluationWorkbench() {
         elements.evaluationDatasetList.append(node("div", "sidebar-placeholder", t("noDatasets")))
     }
     for (const dataset of state.datasets) {
+        const row = node("article", "evaluation-dataset-row")
         const button = node("button", "evaluation-dataset")
         button.type = "button"
         button.dataset.evaluationDatasetId = dataset.id
@@ -1471,7 +1511,13 @@ function renderEvaluationWorkbench() {
             node("small", "", `${dataset.goodcaseCount ?? 0} good · ${dataset.badcaseCount ?? 0} bad`),
         )
         button.append(copy, node("span", "dataset-count", String(dataset.caseCount ?? 0)))
-        elements.evaluationDatasetList.append(button)
+        const remove = node("button", "hover-delete-button evaluation-dataset-delete", "×")
+        remove.type = "button"
+        remove.title = t("deleteDataset")
+        remove.setAttribute("aria-label", t("deleteDataset"))
+        remove.dataset.deleteEvaluationDataset = dataset.id
+        row.append(button, remove)
+        elements.evaluationDatasetList.append(row)
     }
 
     elements.evaluationCaseCount.textContent = String(state.evaluationCases.length)
@@ -1494,7 +1540,7 @@ function renderEvaluationWorkbench() {
             node("strong", "", caseEntry.question),
             node("small", "", caseEntry.curated?.referenceAnswer?.summary || caseEntry.answer || ""),
         )
-        const remove = node("button", "evaluation-case-delete", "×")
+        const remove = node("button", "hover-delete-button evaluation-case-delete", "×")
         remove.type = "button"
         remove.title = t("deleteCase")
         remove.setAttribute("aria-label", t("deleteCase"))
@@ -1648,6 +1694,7 @@ function renderEvaluationRuns() {
         elements.evaluationRunList.append(node("div", "evaluation-empty", t("noRuns")))
     }
     for (const run of state.evaluationRuns) {
+        const row = node("article", "evaluation-run-row")
         const button = node("button", "evaluation-run-item")
         button.type = "button"
         button.dataset.evaluationRunId = run.id
@@ -1658,15 +1705,32 @@ function renderEvaluationRuns() {
             node(
                 "small",
                 "",
-                `${run.caseSnapshots?.length ?? 0} Cases · ${run.runtimeConfigurations?.length ?? 0} runtimes · ${new Date(run.createdAt).toLocaleString(state.settings.language)}`,
+                `${run.caseCount ?? 0} Cases · ${run.runtimeCount ?? 0} runtimes · ${new Date(run.createdAt).toLocaleString(state.settings.language)}`,
             ),
         )
-        elements.evaluationRunList.append(button)
+        row.append(button)
+        if (run.status !== "queued" && run.status !== "running") {
+            const remove = node("button", "hover-delete-button evaluation-run-delete", "×")
+            remove.type = "button"
+            remove.title = t("deleteEvaluationRun")
+            remove.setAttribute("aria-label", t("deleteEvaluationRun"))
+            remove.dataset.deleteEvaluationRun = run.id
+            row.append(remove)
+        }
+        elements.evaluationRunList.append(row)
     }
     elements.evaluationRunDetail.replaceChildren()
-    const run = state.evaluationRuns.find((entry) => entry.id === state.activeEvaluationRunId)
+    const run = state.activeEvaluationRun?.id === state.activeEvaluationRunId
+        ? state.activeEvaluationRun
+        : null
     if (!run) {
-        elements.evaluationRunDetail.append(node("div", "evaluation-empty", t("noRuns")))
+        elements.evaluationRunDetail.append(
+            node(
+                "div",
+                "evaluation-empty",
+                state.activeEvaluationRunId ? t("loadingTask") : t("noRuns"),
+            ),
+        )
         return
     }
     const header = node("header", "evaluation-run-detail-header")
@@ -1707,6 +1771,23 @@ function renderEvaluationRuns() {
         results.append(card)
     }
     elements.evaluationRunDetail.append(header, node("h3", "", t("runResults")), results)
+}
+
+function evaluationRunSummary(run) {
+    return {
+        id: run.id,
+        datasetId: run.datasetId,
+        datasetSnapshot: run.datasetSnapshot,
+        selectionMode: run.selectionMode,
+        skillReference: run.skillReference,
+        activationMode: run.activationMode,
+        status: run.status,
+        caseCount: run.caseCount ?? run.caseSnapshots?.length ?? 0,
+        runtimeCount: run.runtimeCount ?? run.runtimeConfigurations?.length ?? 0,
+        createdAt: run.createdAt,
+        startedAt: run.startedAt,
+        completedAt: run.completedAt,
+    }
 }
 
 function flattenRuntimeSkills(response) {
@@ -1764,12 +1845,13 @@ async function loadEvaluationWorkbench(forceReload = false) {
             refreshRuntimeSkills(forceReload),
             refreshEvaluationRuntimeModels(forceReload),
         ])
-        state.evaluationRuns = state.evaluationDatasetId
-            ? await window.rollingSkill.listEvaluationRuns(state.evaluationDatasetId)
-            : []
+        state.evaluationRuns = await window.rollingSkill.listEvaluationRuns()
         if (!state.evaluationRuns.some((entry) => entry.id === state.activeEvaluationRunId)) {
             state.activeEvaluationRunId = state.evaluationRuns[0]?.id ?? null
         }
+        state.activeEvaluationRun = state.activeEvaluationRunId
+            ? await window.rollingSkill.getEvaluationRun(state.activeEvaluationRunId)
+            : null
         if (previousSkillPath && state.evaluationSkills.some((skill) => skill.path === previousSkillPath)) {
             elements.evaluationSkill.value = previousSkillPath
         }
@@ -1786,6 +1868,24 @@ async function selectEvaluationDataset(datasetId) {
     state.evaluationDatasetId = datasetId
     state.evaluationCaseId = null
     await loadEvaluationWorkbench(false)
+}
+
+async function selectEvaluationRun(runId) {
+    if (!runId || runId === state.activeEvaluationRunId) return
+    state.activeEvaluationRunId = runId
+    state.activeEvaluationRun = null
+    renderEvaluationWorkbench()
+    try {
+        const run = await window.rollingSkill.getEvaluationRun(runId)
+        if (state.activeEvaluationRunId !== runId) return
+        state.activeEvaluationRun = run
+    } catch (error) {
+        if (state.activeEvaluationRunId === runId) {
+            state.activeEvaluationRunId = null
+            showError(error)
+        }
+    }
+    renderEvaluationWorkbench()
 }
 
 async function createEvaluationDataset() {
@@ -1807,6 +1907,69 @@ function openDeleteCaseDialog(caseId) {
     elements.deleteCaseDialog.showModal()
 }
 
+function openDeleteDatasetDialog(datasetId) {
+    state.deleteDatasetId = datasetId
+    elements.deleteDatasetError.textContent = ""
+    elements.deleteDatasetError.classList.add("hidden")
+    elements.deleteDatasetDialog.showModal()
+}
+
+async function deleteEvaluationDataset() {
+    if (!state.deleteDatasetId) return
+    elements.confirmDeleteDataset.disabled = true
+    try {
+        const datasetId = state.deleteDatasetId
+        const deleted = await window.rollingSkill.deleteDataset(datasetId)
+        if (deleted.settings) applySettings(deleted.settings)
+        state.deleteDatasetId = null
+        if (state.evaluationDatasetId === datasetId) {
+            state.evaluationDatasetId = null
+            state.evaluationCaseId = null
+        }
+        elements.deleteDatasetDialog.close()
+        await loadEvaluationWorkbench(false)
+        showToast(t("datasetDeleted"))
+    } catch (error) {
+        const message = error?.message || String(error)
+        elements.deleteDatasetError.textContent = /unfinished Curator draft|capture in progress/i.test(message)
+            ? t("unfinishedDraftBlocksDatasetDelete")
+            : message
+        elements.deleteDatasetError.classList.remove("hidden")
+    } finally {
+        elements.confirmDeleteDataset.disabled = false
+    }
+}
+
+function openDeleteEvaluationRunDialog(runId) {
+    state.deleteEvaluationRunId = runId
+    elements.deleteEvaluationRunError.textContent = ""
+    elements.deleteEvaluationRunError.classList.add("hidden")
+    elements.deleteEvaluationRunDialog.showModal()
+}
+
+async function deleteEvaluationRun() {
+    if (!state.deleteEvaluationRunId) return
+    elements.confirmDeleteEvaluationRun.disabled = true
+    try {
+        const runId = state.deleteEvaluationRunId
+        await window.rollingSkill.deleteEvaluationRun(runId)
+        state.deleteEvaluationRunId = null
+        if (state.activeEvaluationRunId === runId) state.activeEvaluationRunId = null
+        if (state.activeEvaluationRun?.id === runId) state.activeEvaluationRun = null
+        elements.deleteEvaluationRunDialog.close()
+        await loadEvaluationWorkbench(false)
+        showToast(t("evaluationRunDeleted"))
+    } catch (error) {
+        const message = error?.message || String(error)
+        elements.deleteEvaluationRunError.textContent = /active evaluation run/i.test(message)
+            ? t("activeRunCannotDelete")
+            : message
+        elements.deleteEvaluationRunError.classList.remove("hidden")
+    } finally {
+        elements.confirmDeleteEvaluationRun.disabled = false
+    }
+}
+
 async function deleteEvaluationCase() {
     if (!state.deleteCaseId || !state.evaluationDatasetId) return
     elements.confirmDeleteCase.disabled = true
@@ -1817,7 +1980,9 @@ async function deleteEvaluationCase() {
         await loadEvaluationWorkbench(false)
         showToast(t("caseDeleted"))
     } catch (error) {
-        showError(error)
+        state.deleteCaseId = null
+        elements.deleteCaseDialog.close()
+        showToast(error?.message || String(error))
     } finally {
         elements.confirmDeleteCase.disabled = false
     }
@@ -1885,8 +2050,9 @@ async function startEvaluation(selectionMode) {
             skillReference: {name: skill.name, path: skill.path},
             runtimeConfigurations,
         })
-        state.evaluationRuns.unshift(run)
+        state.evaluationRuns.unshift(evaluationRunSummary(run))
         state.activeEvaluationRunId = run.id
+        state.activeEvaluationRun = run
         state.evaluationView = "runs"
         renderEvaluationWorkbench()
         showToast(t("runQueued"))
@@ -2445,6 +2611,11 @@ elements.evaluationWorkbench.addEventListener("click", (event) => {
     renderEvaluationWorkbench()
 })
 elements.evaluationDatasetList.addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-delete-evaluation-dataset]")
+    if (remove) {
+        openDeleteDatasetDialog(remove.dataset.deleteEvaluationDataset)
+        return
+    }
     const button = event.target.closest("[data-evaluation-dataset-id]")
     if (button) void selectEvaluationDataset(button.dataset.evaluationDatasetId)
 })
@@ -2475,10 +2646,14 @@ elements.evaluationRuntimeList.addEventListener("change", (event) => {
     renderEvaluationWorkbench()
 })
 elements.evaluationRunList.addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-delete-evaluation-run]")
+    if (remove) {
+        openDeleteEvaluationRunDialog(remove.dataset.deleteEvaluationRun)
+        return
+    }
     const button = event.target.closest("[data-evaluation-run-id]")
     if (!button) return
-    state.activeEvaluationRunId = button.dataset.evaluationRunId
-    renderEvaluationWorkbench()
+    void selectEvaluationRun(button.dataset.evaluationRunId)
 })
 elements.evaluationCreateDataset.addEventListener("submit", (event) => {
     event.preventDefault()
@@ -2588,6 +2763,12 @@ elements.confirmDiscard.addEventListener("click", discardCuration)
 elements.closeDeleteCaseDialog.addEventListener("click", () => elements.deleteCaseDialog.close())
 elements.cancelDeleteCase.addEventListener("click", () => elements.deleteCaseDialog.close())
 elements.confirmDeleteCase.addEventListener("click", () => void deleteEvaluationCase())
+elements.closeDeleteDatasetDialog.addEventListener("click", () => elements.deleteDatasetDialog.close())
+elements.cancelDeleteDataset.addEventListener("click", () => elements.deleteDatasetDialog.close())
+elements.confirmDeleteDataset.addEventListener("click", () => void deleteEvaluationDataset())
+elements.closeDeleteEvaluationRunDialog.addEventListener("click", () => elements.deleteEvaluationRunDialog.close())
+elements.cancelDeleteEvaluationRun.addEventListener("click", () => elements.deleteEvaluationRunDialog.close())
+elements.confirmDeleteEvaluationRun.addEventListener("click", () => void deleteEvaluationRun())
 
 window.rollingSkill.onRuntimeState((runtime) => {
     state.runtime = runtime
@@ -2603,13 +2784,18 @@ window.rollingSkill.onCurationChanged((session) => {
     if (!state.activeCurationId) state.activeCurationId = session.id
     renderCurations()
 })
-window.rollingSkill.onEvaluationChanged(async ({runId}) => {
+window.rollingSkill.onEvaluationChanged(async ({runId, resultId, status}) => {
     if (!runId) return
     try {
-        const run = await window.rollingSkill.getEvaluationRun(runId)
         const index = state.evaluationRuns.findIndex((entry) => entry.id === runId)
-        if (index >= 0) state.evaluationRuns[index] = run
-        else state.evaluationRuns.unshift(run)
+        if (index < 0) {
+            state.evaluationRuns = await window.rollingSkill.listEvaluationRuns()
+        } else if (!resultId && status) {
+            state.evaluationRuns[index] = {...state.evaluationRuns[index], status}
+        }
+        if (state.activeEvaluationRunId === runId) {
+            state.activeEvaluationRun = await window.rollingSkill.getEvaluationRun(runId)
+        }
         renderEvaluationWorkbench()
     } catch {
         // The next explicit refresh will reconcile local run history.

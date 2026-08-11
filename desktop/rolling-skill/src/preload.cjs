@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     deleteCase: (datasetId, caseId) =>
         ipcRenderer.invoke("datasets:delete-case", {datasetId, caseId}),
     createDataset: (name) => ipcRenderer.invoke("datasets:create", name),
+    deleteDataset: (datasetId) => ipcRenderer.invoke("datasets:delete", datasetId),
     revealLocalData: () => ipcRenderer.invoke("datasets:reveal"),
     updateSettings: (input) => ipcRenderer.invoke("settings:update", input),
     listCurations: () => ipcRenderer.invoke("curation:list"),
@@ -54,6 +55,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     updateCuratorProfile: (input) => ipcRenderer.invoke("curation:update-profile", input),
     listEvaluationRuns: (datasetId = null) => ipcRenderer.invoke("evaluations:list", datasetId),
     getEvaluationRun: (runId) => ipcRenderer.invoke("evaluations:get", runId),
+    deleteEvaluationRun: (runId) => ipcRenderer.invoke("evaluations:delete", runId),
     startEvaluationRun: (input) => ipcRenderer.invoke("evaluations:start", input),
     onRuntimeState: (listener) => subscribe("runtime:state", listener),
     onRuntimeNotification: (listener) => subscribe("runtime:notification", listener),

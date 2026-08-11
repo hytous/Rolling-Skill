@@ -234,6 +234,7 @@ class LocalEvaluationStore {
     constructor(path) {
         this.path = path
         this.state = null
+        this.datasetReservations = new Map()
     }
 
     load() {
@@ -283,6 +284,71 @@ class LocalEvaluationStore {
         state.datasets.push(dataset)
         this.persist()
         return copy(dataset)
+    }
+
+    reserveDataset(datasetId) {
+        requireDataset(this.load(), datasetId)
+        this.datasetReservations.set(
+            datasetId,
+            (this.datasetReservations.get(datasetId) ?? 0) + 1,
+        )
+        let released = false
+        return () => {
+            if (released) return
+            released = true
+            const remaining = (this.datasetReservations.get(datasetId) ?? 1) - 1
+            if (remaining > 0) this.datasetReservations.set(datasetId, remaining)
+            else this.datasetReservations.delete(datasetId)
+        }
+    }
+
+    deleteDataset(datasetId) {
+        const state = this.load()
+        requireDataset(state, datasetId)
+        if ((this.datasetReservations.get(datasetId) ?? 0) > 0) {
+            throw new Error("Dataset has an unfinished Curator draft or capture in progress")
+        }
+        const unfinishedCurations = state.curationSessions.filter(
+            (entry) =>
+                entry.datasetId === datasetId &&
+                entry.status !== "archived" &&
+                entry.status !== "cancelled",
+        )
+        if (unfinishedCurations.length) {
+            throw new Error("Dataset has unfinished Curator drafts")
+        }
+
+        const dataset = state.datasets.find((entry) => entry.id === datasetId)
+        const deletedCaseCount = state.cases.filter(
+            (entry) => entry.datasetId === datasetId,
+        ).length
+        const deletedCurationCount = state.curationSessions.filter(
+            (entry) => entry.datasetId === datasetId,
+        ).length
+        const preservedEvaluationRunCount = state.evaluationRuns.filter(
+            (entry) => entry.datasetId === datasetId,
+        ).length
+
+        state.datasets = state.datasets.filter((entry) => entry.id !== datasetId)
+        state.cases = state.cases.filter((entry) => entry.datasetId !== datasetId)
+        state.curationSessions = state.curationSessions.filter(
+            (entry) => entry.datasetId !== datasetId,
+        )
+
+        const automatic = state.settings.autoCaptureProfile
+        if (automatic.datasetId === datasetId) {
+            automatic.datasetId = null
+            state.settings.autoCapture = false
+        }
+
+        this.persist()
+        return copy({
+            dataset,
+            deletedCaseCount,
+            deletedCurationCount,
+            preservedEvaluationRunCount,
+            settings: state.settings,
+        })
     }
 
     listCases(datasetId) {
@@ -788,7 +854,6 @@ class LocalEvaluationStore {
 
     listEvaluationRuns(datasetId = null) {
         const state = this.load()
-        if (datasetId) requireDataset(state, datasetId)
         return copy(
             state.evaluationRuns
                 .filter((entry) => !datasetId || entry.datasetId === datasetId)
@@ -798,10 +863,48 @@ class LocalEvaluationStore {
         )
     }
 
+    listEvaluationRunSummaries(datasetId = null) {
+        const state = this.load()
+        return copy(
+            state.evaluationRuns
+                .filter((entry) => !datasetId || entry.datasetId === datasetId)
+                .sort((left, right) =>
+                    String(right.createdAt).localeCompare(String(left.createdAt)),
+                )
+                .map((run) => ({
+                    id: run.id,
+                    datasetId: run.datasetId,
+                    datasetSnapshot: run.datasetSnapshot,
+                    selectionMode: run.selectionMode,
+                    skillReference: run.skillReference,
+                    activationMode: run.activationMode,
+                    status: run.status,
+                    caseCount: run.caseSnapshots?.length ?? 0,
+                    runtimeCount: run.runtimeConfigurations?.length ?? 0,
+                    createdAt: run.createdAt,
+                    startedAt: run.startedAt,
+                    completedAt: run.completedAt,
+                })),
+        )
+    }
+
     getEvaluationRun(id) {
         const run = this.load().evaluationRuns.find((entry) => entry.id === id)
         if (!run) throw new Error("Unknown evaluation run")
         return copy(run)
+    }
+
+    deleteEvaluationRun(id) {
+        const state = this.load()
+        const index = state.evaluationRuns.findIndex((entry) => entry.id === id)
+        if (index < 0) throw new Error("Unknown evaluation run")
+        const run = state.evaluationRuns[index]
+        if (run.status === "queued" || run.status === "running") {
+            throw new Error("Cannot delete an active evaluation run")
+        }
+        const [deleted] = state.evaluationRuns.splice(index, 1)
+        this.persist()
+        return copy(deleted)
     }
 
     updateEvaluationRun(id, patch = {}) {

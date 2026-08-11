@@ -526,6 +526,9 @@ function installIpc() {
         store.listCases(requireIdentifier(datasetId, "dataset")),
     )
     ipcMain.handle("datasets:create", (_event, name) => store.createDataset(name))
+    ipcMain.handle("datasets:delete", (_event, datasetId) =>
+        store.deleteDataset(requireIdentifier(datasetId, "dataset")),
+    )
     ipcMain.handle("datasets:delete-case", (_event, input = {}) =>
         store.deleteCase(
             requireIdentifier(input.datasetId, "dataset"),
@@ -596,12 +599,15 @@ function installIpc() {
     )
 
     ipcMain.handle("evaluations:list", (_event, datasetId) =>
-        store.listEvaluationRuns(
+        store.listEvaluationRunSummaries(
             datasetId ? requireIdentifier(datasetId, "dataset") : null,
         ),
     )
     ipcMain.handle("evaluations:get", (_event, runId) =>
         store.getEvaluationRun(requireIdentifier(runId, "evaluation run")),
+    )
+    ipcMain.handle("evaluations:delete", (_event, runId) =>
+        store.deleteEvaluationRun(requireIdentifier(runId, "evaluation run")),
     )
     ipcMain.handle("evaluations:start", (_event, input = {}) => {
         const runtimeConfigurations = (input.runtimeConfigurations ?? []).map((requested) => {

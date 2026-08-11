@@ -129,6 +129,105 @@ describe("evaluation data lifecycle", () => {
         assert.equal(historical.results[0].runtimeConfiguration.effort, "high")
     })
 
+    it("deletes a Dataset and its Cases while preserving immutable evaluation history", () => {
+        const store = fixture()
+        const dataset = store.listDatasets()[0]
+        const saved = store.saveCase({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            question: "原始问题",
+            answer: "参考答案",
+        })
+        store.updateSettings({autoCapture: true, autoCaptureDatasetId: dataset.id})
+        const finishedDraft = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "badcase",
+            episode: frozenEpisode(),
+            curator: {runtimeId: "codex:source"},
+        })
+        store.cancelCurationSession(finishedDraft.id)
+        const run = store.createEvaluationRun({
+            datasetId: dataset.id,
+            caseIds: [saved.id],
+            selectionMode: "dataset",
+            activationMode: "automatic",
+            skillReference: {name: "billing-cost-management", path: "/skills/billing/SKILL.md"},
+            runtimeConfigurations: [
+                {runtimeId: "codex:a", providerId: "codex", displayName: "Codex", executablePath: "/a"},
+            ],
+        })
+        store.updateEvaluationRun(run.id, {status: "completed", completedAt: "later"})
+
+        const deleted = store.deleteDataset(dataset.id)
+
+        assert.equal(deleted.dataset.id, dataset.id)
+        assert.equal(deleted.deletedCaseCount, 1)
+        assert.equal(deleted.deletedCurationCount, 1)
+        assert.equal(deleted.settings.autoCapture, false)
+        assert.equal(deleted.settings.autoCaptureProfile.datasetId, null)
+        assert.deepEqual(store.listDatasets(), [])
+        assert.deepEqual(store.read().curationSessions, [])
+        assert.equal(store.read().settings.autoCaptureProfile.datasetId, null)
+        assert.equal(store.read().settings.autoCapture, false)
+        assert.throws(() => store.listCases(dataset.id), /dataset/i)
+        assert.equal(store.listEvaluationRuns()[0].datasetSnapshot.name, dataset.name)
+        assert.equal(store.listEvaluationRuns(dataset.id)[0].id, run.id)
+    })
+
+    it("disables automatic capture instead of silently redirecting it to another Dataset", () => {
+        const store = fixture()
+        const dataset = store.listDatasets()[0]
+        store.createDataset("Remaining")
+        store.updateSettings({autoCapture: true, autoCaptureDatasetId: dataset.id})
+
+        store.deleteDataset(dataset.id)
+
+        const settings = store.read().settings
+        assert.equal(settings.autoCaptureProfile.datasetId, null)
+        assert.equal(settings.autoCapture, false)
+    })
+
+    it("refuses to delete a Dataset with an unfinished Curator draft", () => {
+        const store = fixture()
+        const dataset = store.listDatasets()[0]
+        store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            episode: frozenEpisode(),
+            curator: {runtimeId: "codex:source"},
+        })
+
+        assert.throws(() => store.deleteDataset(dataset.id), /unfinished.*draft/i)
+        assert.equal(store.listDatasets()[0].id, dataset.id)
+    })
+
+    it("deletes finished evaluation records but protects active runs", () => {
+        const store = fixture()
+        const dataset = store.listDatasets()[0]
+        const saved = store.saveCase({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            question: "q",
+            answer: "a",
+        })
+        const run = store.createEvaluationRun({
+            datasetId: dataset.id,
+            caseIds: [saved.id],
+            selectionMode: "selected",
+            activationMode: "automatic",
+            skillReference: {name: "billing-cost-management", path: "/skills/billing/SKILL.md"},
+            runtimeConfigurations: [
+                {runtimeId: "codex:a", providerId: "codex", displayName: "Codex", executablePath: "/a"},
+            ],
+        })
+
+        assert.throws(() => store.deleteEvaluationRun(run.id), /active evaluation run/i)
+        store.updateEvaluationRun(run.id, {status: "failed", completedAt: "later"})
+        assert.equal(store.deleteEvaluationRun(run.id).id, run.id)
+        assert.deepEqual(store.listEvaluationRuns(), [])
+        assert.throws(() => store.getEvaluationRun(run.id), /evaluation run/i)
+    })
+
     it("updates and lists durable Case x runtime evaluation results", () => {
         const store = fixture()
         const dataset = store.listDatasets()[0]
@@ -162,5 +261,12 @@ describe("evaluation data lifecycle", () => {
         assert.equal(listed.id, run.id)
         assert.equal(listed.status, "partial")
         assert.equal(listed.results[0].response, "done")
+
+        const summary = store.listEvaluationRunSummaries(dataset.id)[0]
+        assert.equal(summary.id, run.id)
+        assert.equal(summary.caseCount, 2)
+        assert.equal(summary.runtimeCount, 2)
+        assert.equal("caseSnapshots" in summary, false)
+        assert.equal("results" in summary, false)
     })
 })

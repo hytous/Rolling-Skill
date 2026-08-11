@@ -215,6 +215,32 @@ describe("curation manager", () => {
         assert.equal(changed.at(-1).status, "running")
     })
 
+    it("reserves the target Dataset while source evidence is still loading", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const originalReadThread = runtime.readThread.bind(runtime)
+        let releaseRead
+        runtime.readThread = (...args) =>
+            new Promise((resolve) => {
+                releaseRead = async () => resolve(await originalReadThread(...args))
+            })
+
+        const creating = manager.createSession({
+            datasetId,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            startItemId: "user-1",
+            endItemId: "answer-1",
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.throws(() => store.deleteDataset(datasetId), /unfinished.*draft|capture in progress/i)
+        await releaseRead()
+        const session = await creating
+        await manager.waitForIdle(session.id)
+        store.cancelCurationSession(session.id)
+        assert.doesNotThrow(() => store.deleteDataset(datasetId))
+    })
+
     it("rejects a Skill that the current runtime no longer reports as enabled", async () => {
         runtime.listSkills = async () => ({
             data: [
