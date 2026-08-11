@@ -213,13 +213,14 @@ provenance.
 
 ## Troubleshooting
 
-### Codex returns `403 Forbidden: unsupported Codex client originator`
+### Codex originator compatibility mode
 
 Codex app-server copies `initialize.params.clientInfo.name` into the `originator` header of model
-requests. Rolling Skill identifies itself as `rolling-skill`. Some enterprise Codex endpoints only
-accept a registered list of clients and reject any other value before model execution.
+requests. Some enterprise Codex endpoints only accept a registered list of clients and reject any
+other value before model execution.
 
-This error is not an authentication, model, or reasoning-effort failure. Ask the service owner to
-register `rolling-skill` as an allowed Codex client/originator, or use an explicitly approved
-Runtime Driver. Do not impersonate `codex_exec`, `Codex Desktop`, `codex_vscode`, or another allowed
-client: originator is also used for enterprise compliance attribution.
+This error is not an authentication, model, or reasoning-effort failure. The current development
+build temporarily uses `codex_exec` as its app-server originator so it can work with an internal
+gateway that already permits the local Codex CLI. The title and product UI remain Rolling Skill.
+Restore the originator to `rolling-skill` and register that client identity before distributing a
+production build.

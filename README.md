@@ -67,20 +67,19 @@ CodeBuddy 会检查已保存路径、`ROLLING_SKILL_CODEBUDDY_BIN`、`PATH`、Ho
 
 每个候选 Runtime 都必须通过对应 Provider 的兼容性探测，不能仅凭文件名被选中。
 
-## Codex 403：unsupported client originator
+## Codex originator 兼容模式
 
 Codex app-server 会把初始化请求中的 `clientInfo.name` 作为后续模型请求的 `originator`
-header。Rolling Skill 使用自己的身份 `rolling-skill`。如果企业 Codex 服务只允许固定的
-known clients，可能返回：
+header。如果企业 Codex 服务只允许固定的 known clients，未登记的客户端会返回：
 
 ```text
 403 Forbidden: unsupported Codex client originator
 ```
 
-这不是账号未登录，也与模型或推理强度无关。正确处理方式是让服务提供方把
-`rolling-skill` 注册到允许的 Codex client/originator 清单，或者使用企业明确批准的
-Runtime Driver。不要把 Rolling Skill 伪装成 `codex_exec`、`Codex Desktop`、
-`codex_vscode` 或其他白名单客户端；originator 同时用于企业合规日志，伪装会造成错误归因。
+这不是账号未登录，也与模型或推理强度无关。当前开发测试版本临时使用 `codex_exec`
+作为 app-server originator，以兼容已经允许本机 Codex CLI 的内部网关；窗口标题与产品界面仍
+保持 Rolling Skill。该兼容身份只用于开发测试，正式分发前应恢复 `rolling-skill` 并完成相应
+客户端登记。
 
 ## Case 沉淀流程
 

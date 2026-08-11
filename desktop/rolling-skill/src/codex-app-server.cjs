@@ -7,6 +7,10 @@ const {version: clientVersion} = require("../package.json")
 const {JsonLineDecoder, RpcRequestTracker} = require("./json-rpc.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
 
+// Temporary compatibility identity for the internal Codex gateway used during development.
+// Restore this to "rolling-skill" before distributing the client as a standalone product.
+const CODEX_APP_SERVER_ORIGINATOR = "codex_exec"
+
 class CodexAppServerClient extends EventEmitter {
     constructor({
         binaryPath,
@@ -101,7 +105,11 @@ class CodexAppServerClient extends EventEmitter {
         })
 
         const initialized = await this.request("initialize", {
-            clientInfo: {name: "rolling-skill", title: "Rolling Skill", version: clientVersion},
+            clientInfo: {
+                name: CODEX_APP_SERVER_ORIGINATOR,
+                title: "Rolling Skill",
+                version: clientVersion,
+            },
             capabilities: {experimentalApi: true, requestAttestation: false},
         })
         this.notify("initialized")

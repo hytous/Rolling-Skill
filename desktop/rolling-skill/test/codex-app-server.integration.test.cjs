@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict")
+const {EventEmitter} = require("node:events")
 const {mkdtempSync, rmSync} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
@@ -44,6 +45,47 @@ describe("discovered local Codex app-server smoke", {skip: !descriptor}, () => {
 })
 
 describe("Codex app-server request construction", () => {
+    it("uses the temporary codex_exec originator while retaining the Rolling Skill title", async () => {
+        const writes = []
+        class FakeChild extends EventEmitter {
+            constructor() {
+                super()
+                this.stdout = new EventEmitter()
+                this.stderr = new EventEmitter()
+                this.stdin = {writable: true, write: (value) => writes.push(JSON.parse(value))}
+            }
+            kill() {
+                this.emit("close", 0, null)
+            }
+        }
+
+        const traceDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-originator-trace-"))
+        const child = new FakeChild()
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory,
+            workspaceRoot: "/tmp/workspace",
+            spawnProcess: () => child,
+        })
+
+        try {
+            const started = client.start()
+            await new Promise((resolve) => setImmediate(resolve))
+            child.stdout.emit("data", `${JSON.stringify({id: 1, result: {userAgent: "Codex"}})}\n`)
+            await started
+
+            assert.equal(writes[0].method, "initialize")
+            assert.deepEqual(writes[0].params.clientInfo, {
+                name: "codex_exec",
+                title: "Rolling Skill",
+                version: require("../package.json").version,
+            })
+        } finally {
+            await client.stop()
+            rmSync(traceDirectory, {recursive: true, force: true})
+        }
+    })
+
     it("lists the active runtime model catalog", async () => {
         const client = new CodexAppServerClient({
             binaryPath: "/tmp/codex",
