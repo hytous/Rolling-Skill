@@ -17,6 +17,7 @@ class CodexAppServerClient extends EventEmitter {
         runtimeDescriptor = null,
         traceDirectory,
         workspaceRoot,
+        executionPolicy = null,
         spawnProcess = spawn,
     }) {
         super()
@@ -24,6 +25,10 @@ class CodexAppServerClient extends EventEmitter {
         this.runtimeDescriptor = runtimeDescriptor
         this.traceDirectory = traceDirectory
         this.workspaceRoot = workspaceRoot
+        this.executionPolicy = {
+            sandbox: executionPolicy?.sandbox ?? "workspace-write",
+            approvalPolicy: executionPolicy?.approvalPolicy ?? "never",
+        }
         this.spawnProcess = spawnProcess
         this.child = null
         this.tracker = new RpcRequestTracker()
@@ -172,13 +177,20 @@ class CodexAppServerClient extends EventEmitter {
         this.emit("state", this.state())
     }
 
-    listThreads() {
+    setExecutionPolicy(executionPolicy = {}) {
+        this.executionPolicy = {
+            sandbox: executionPolicy.sandbox ?? "workspace-write",
+            approvalPolicy: executionPolicy.approvalPolicy ?? "never",
+        }
+    }
+
+    listThreads(options = {}) {
         return this.request("thread/list", {
             limit: 100,
             sortKey: "updated_at",
             sortDirection: "desc",
             sourceKinds: [],
-            archived: false,
+            archived: options.archived ?? false,
             cwd: this.workspaceRoot,
         })
     }
@@ -217,8 +229,8 @@ class CodexAppServerClient extends EventEmitter {
     startThread(options = {}) {
         return this.request("thread/start", {
             cwd: this.workspaceRoot,
-            approvalPolicy: options.approvalPolicy ?? "never",
-            sandbox: options.sandbox ?? "workspace-write",
+            approvalPolicy: options.approvalPolicy ?? this.executionPolicy.approvalPolicy,
+            sandbox: options.sandbox ?? this.executionPolicy.sandbox,
             ephemeral: options.ephemeral ?? false,
             sessionStartSource: "startup",
             threadSource: options.threadSource ?? "user",
@@ -230,8 +242,8 @@ class CodexAppServerClient extends EventEmitter {
         return this.request("thread/resume", {
             threadId,
             cwd: options.cwd ?? this.workspaceRoot,
-            approvalPolicy: options.approvalPolicy ?? "never",
-            sandbox: options.sandbox ?? "workspace-write",
+            approvalPolicy: options.approvalPolicy ?? this.executionPolicy.approvalPolicy,
+            sandbox: options.sandbox ?? this.executionPolicy.sandbox,
             ...(options.model ? {model: options.model} : {}),
         })
     }
@@ -342,6 +354,10 @@ class CodexAppServerClient extends EventEmitter {
 
     archiveThread(threadId) {
         return this.request("thread/archive", {threadId})
+    }
+
+    unarchiveThread(threadId) {
+        return this.request("thread/unarchive", {threadId})
     }
 
     recentTrace(limit) {

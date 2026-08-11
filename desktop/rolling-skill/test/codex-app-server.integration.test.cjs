@@ -106,6 +106,33 @@ describe("Codex app-server request construction", () => {
         })
     })
 
+    it("lists active threads by default and archived threads on request", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        const requests = []
+        client.request = async (method, params) => {
+            requests.push({method, params})
+            return {data: []}
+        }
+
+        await client.listThreads()
+        await client.listThreads({archived: false})
+        await client.listThreads({archived: true})
+
+        assert.deepEqual(
+            requests.map(({method, params}) => ({method, archived: params.archived})),
+            [
+                {method: "thread/list", archived: false},
+                {method: "thread/list", archived: false},
+                {method: "thread/list", archived: true},
+            ],
+        )
+        assert.equal(requests.every(({params}) => params.cwd === "/tmp/workspace"), true)
+    })
+
     it("can override the model and reasoning effort for this turn and subsequent turns", async () => {
         const client = new CodexAppServerClient({
             binaryPath: "/tmp/codex",
@@ -155,6 +182,56 @@ describe("Codex app-server request construction", () => {
         assert.equal(request.params.model, "gpt-5.6-sol")
     })
 
+    it("applies a client-level execution policy to thread start and resume", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            executionPolicy: {
+                sandbox: "danger-full-access",
+                approvalPolicy: "never",
+            },
+        })
+        const requests = []
+        client.request = async (method, params) => {
+            requests.push({method, params})
+            return {thread: {id: "thread-1"}}
+        }
+
+        await client.startThread()
+        await client.resumeThread("thread-1")
+        client.setExecutionPolicy({
+            sandbox: "workspace-write",
+            approvalPolicy: "never",
+        })
+        await client.startThread()
+
+        assert.deepEqual(
+            requests.map(({method, params}) => ({
+                method,
+                sandbox: params.sandbox,
+                approvalPolicy: params.approvalPolicy,
+            })),
+            [
+                {
+                    method: "thread/start",
+                    sandbox: "danger-full-access",
+                    approvalPolicy: "never",
+                },
+                {
+                    method: "thread/resume",
+                    sandbox: "danger-full-access",
+                    approvalPolicy: "never",
+                },
+                {
+                    method: "thread/start",
+                    sandbox: "workspace-write",
+                    approvalPolicy: "never",
+                },
+            ],
+        )
+    })
+
     it("archives a Curator thread through the supported protocol method", async () => {
         const client = new CodexAppServerClient({
             binaryPath: "/tmp/codex",
@@ -172,6 +249,27 @@ describe("Codex app-server request construction", () => {
             method: "thread/archive",
             params: {threadId: "curator-thread"},
         })
+    })
+
+    it("unarchives a thread through the supported protocol method", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        let request
+        client.request = async (method, params) => {
+            request = {method, params}
+            return {thread: {id: "thread-1"}}
+        }
+
+        const response = await client.unarchiveThread("thread-1")
+
+        assert.deepEqual(request, {
+            method: "thread/unarchive",
+            params: {threadId: "thread-1"},
+        })
+        assert.deepEqual(response, {thread: {id: "thread-1"}})
     })
 
     it("resumes Curator threads without upgrading their sandbox", async () => {

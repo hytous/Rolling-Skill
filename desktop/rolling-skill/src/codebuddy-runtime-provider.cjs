@@ -2,7 +2,7 @@ const {createHash} = require("node:crypto")
 const {spawnSync} = require("node:child_process")
 const {accessSync, constants, readdirSync, realpathSync} = require("node:fs")
 const {homedir} = require("node:os")
-const {delimiter, join} = require("node:path")
+const {delimiter, dirname, join} = require("node:path")
 
 const {CodeBuddyAcpClient} = require("./codebuddy-acp-client.cjs")
 
@@ -83,7 +83,16 @@ function parseModels(help) {
 }
 
 function probeCodeBuddyRuntime(executablePath, spawnProcess = spawnSync) {
-    const options = {encoding: "utf8", timeout: 3_000, shell: false, windowsHide: true}
+    const options = {
+        encoding: "utf8",
+        timeout: 3_000,
+        shell: false,
+        windowsHide: true,
+        env: {
+            ...process.env,
+            PATH: `${dirname(executablePath)}${delimiter}${process.env.PATH ?? "/usr/bin:/bin"}`,
+        },
+    }
     const versionResult = spawnProcess(executablePath, ["--version"], options)
     if (versionResult?.status !== 0 || versionResult.error) return null
     const versionText = `${versionResult.stdout ?? ""}\n${versionResult.stderr ?? ""}`.trim()

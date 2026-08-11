@@ -159,6 +159,8 @@ describe("Codex runtime provider", () => {
         assert.match(results[0].runtimeId, /^codex:/)
         assert.deepEqual(results[0].capabilities, [
             "threads",
+            "thread-archive",
+            "sandbox-policy",
             "turns",
             "models",
             "skills",

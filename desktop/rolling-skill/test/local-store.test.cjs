@@ -79,6 +79,7 @@ describe("local evaluation store", () => {
         assert.equal(snapshot.settings.autoCapture, false)
         assert.equal(snapshot.settings.language, "zh-CN")
         assert.equal(snapshot.settings.theme, "codex-light")
+        assert.equal(snapshot.settings.localAccess, "full")
         assert.deepEqual(snapshot.settings.taskProfile, {
             runtimePolicy: "active",
             modelId: null,
@@ -123,6 +124,7 @@ describe("local evaluation store", () => {
         const settings = store.updateSettings({
             language: "en",
             theme: "codex-dark",
+            localAccess: "workspace",
             taskModelId: " gpt-5.6-sol ",
             autoCapture: true,
             autoCaptureModelId: " gpt-5.6-terra ",
@@ -134,6 +136,7 @@ describe("local evaluation store", () => {
 
         assert.equal(settings.language, "en")
         assert.equal(settings.theme, "codex-dark")
+        assert.equal(settings.localAccess, "workspace")
         assert.equal(settings.taskProfile.modelId, "gpt-5.6-sol")
         assert.equal(settings.autoCapture, true)
         assert.deepEqual(settings.autoCaptureProfile, {
@@ -147,6 +150,20 @@ describe("local evaluation store", () => {
         })
         assert.throws(() => store.updateSettings({language: "fr"}), /language/i)
         assert.throws(() => store.updateSettings({theme: "neon"}), /theme/i)
+        assert.throws(() => store.updateSettings({localAccess: "container"}), /local access/i)
+    })
+
+    it("migrates existing stores to full local access without changing other settings", () => {
+        const {path} = fixture()
+        const legacy = new LocalEvaluationStore(path).read()
+        delete legacy.settings.localAccess
+        writeFileSync(path, `${JSON.stringify(legacy, null, 2)}\n`)
+
+        const migrated = new LocalEvaluationStore(path).read()
+
+        assert.equal(migrated.settings.localAccess, "full")
+        assert.equal(migrated.settings.language, "zh-CN")
+        assert.equal(JSON.parse(readFileSync(path, "utf8")).settings.localAccess, "full")
     })
 
     it("atomically persists a classified case with full local provenance", () => {

@@ -22,6 +22,7 @@ const CURATION_STATUSES = new Set([
 ])
 const LANGUAGES = new Set(["zh-CN", "en"])
 const THEMES = new Set(["codex-light", "codex-dark", "graphite"])
+const LOCAL_ACCESS_POLICIES = new Set(["full", "workspace"])
 const REASONING_EFFORTS = new Set([
     "minimal",
     "low",
@@ -63,6 +64,7 @@ function defaultSettings() {
         autoCapture: false,
         language: "zh-CN",
         theme: "codex-light",
+        localAccess: "full",
         taskProfile: {runtimePolicy: "active", modelId: null, effort: null},
         curatorProfile: {runtimePolicy: "active", modelId: null, effort: null},
         autoCaptureProfile: {
@@ -113,6 +115,10 @@ function migrateState(input) {
     }
     if (!THEMES.has(state.settings.theme)) {
         state.settings.theme = "codex-light"
+        changed = true
+    }
+    if (!LOCAL_ACCESS_POLICIES.has(state.settings.localAccess)) {
+        state.settings.localAccess = "full"
         changed = true
     }
     if (!state.settings.taskProfile) {
@@ -385,6 +391,12 @@ class LocalEvaluationStore {
         if (input.theme !== undefined) {
             if (!THEMES.has(input.theme)) throw new Error("Unsupported interface theme")
             settings.theme = input.theme
+        }
+        if (input.localAccess !== undefined) {
+            if (!LOCAL_ACCESS_POLICIES.has(input.localAccess)) {
+                throw new Error("Unsupported local access policy")
+            }
+            settings.localAccess = input.localAccess
         }
         if (input.taskModelId !== undefined) {
             settings.taskProfile = {

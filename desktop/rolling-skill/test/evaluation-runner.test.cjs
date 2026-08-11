@@ -106,4 +106,41 @@ describe("multi-runtime evaluation runner", () => {
         assert.equal(stopCount, 1)
         await running
     })
+
+    it("passes the current local execution policy to isolated evaluation clients", async () => {
+        let clientOptions = null
+        const runner = new EvaluationRunner({
+            store: {
+                updateEvaluationRun() {},
+                updateEvaluationResult() {},
+            },
+            runtimeRegistry: {
+                createClient(_descriptor, options) {
+                    clientOptions = options
+                    return {start: async () => {}, stop: async () => {}}
+                },
+            },
+            workspaceRoot: "/workspace",
+            traceDirectory: "/traces",
+            getExecutionPolicy: () => ({
+                sandbox: "danger-full-access",
+                approvalPolicy: "never",
+            }),
+        })
+
+        await runner.run({
+            id: "run-policy",
+            activationMode: "automatic",
+            skillReference: {name: "billing", path: "/skills/billing/SKILL.md"},
+            runtimeConfigurations: [
+                {runtimeId: "codex:a", providerId: "codex", executablePath: "/a"},
+            ],
+            results: [],
+        })
+
+        assert.deepEqual(clientOptions.executionPolicy, {
+            sandbox: "danger-full-access",
+            approvalPolicy: "never",
+        })
+    })
 })

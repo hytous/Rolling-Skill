@@ -16,7 +16,12 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     selectRuntime: (runtimeId) => ipcRenderer.invoke("runtime:select", runtimeId),
     getTrace: (limit = 200) => ipcRenderer.invoke("runtime:trace", limit),
     openTraceFolder: () => ipcRenderer.invoke("runtime:open-traces"),
-    listThreads: () => ipcRenderer.invoke("runtime:list-threads"),
+    listThreads: (archived = false) =>
+        ipcRenderer.invoke("runtime:list-threads", {archived}),
+    archiveThread: (threadId) => ipcRenderer.invoke("runtime:archive-thread", threadId),
+    unarchiveThread: (threadId) => ipcRenderer.invoke("runtime:unarchive-thread", threadId),
+    openExternal: (url) => ipcRenderer.invoke("links:open-external", url),
+    openLocalPath: (path) => ipcRenderer.invoke("links:open-local", path),
     listModels: () => ipcRenderer.invoke("models:list"),
     listModelsForRuntime: (runtimeId) =>
         ipcRenderer.invoke("models:list-for-runtime", runtimeId),

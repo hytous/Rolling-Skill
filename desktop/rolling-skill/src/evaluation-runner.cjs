@@ -4,12 +4,14 @@ class EvaluationRunner {
         runtimeRegistry,
         workspaceRoot,
         traceDirectory,
+        getExecutionPolicy = () => null,
         onChanged = () => {},
     }) {
         this.store = store
         this.runtimeRegistry = runtimeRegistry
         this.workspaceRoot = workspaceRoot
         this.traceDirectory = traceDirectory
+        this.getExecutionPolicy = getExecutionPolicy
         this.onChanged = onChanged
         this.running = new Map()
         this.activeClients = new Set()
@@ -61,6 +63,7 @@ class EvaluationRunner {
         const client = this.runtimeRegistry.createClient(descriptor, {
             workspaceRoot: this.workspaceRoot,
             traceDirectory: this.traceDirectory,
+            executionPolicy: this.getExecutionPolicy(),
         })
         this.activeClients.add(client)
         let completed = 0

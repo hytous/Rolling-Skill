@@ -10,6 +10,8 @@ const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
 const {EvaluationRunner} = require("./evaluation-runner.cjs")
 const {LocalEvaluationStore, reasoningEffort} = require("./local-store.cjs")
+const {resolveExecutionPolicy} = require("./execution-policy.cjs")
+const {requireLocalPath, requireWebUrl} = require("./link-targets.cjs")
 const {RuntimeRegistry} = require("./runtime-registry.cjs")
 const {findGitWorkspace} = require("./workspace.cjs")
 
@@ -31,6 +33,7 @@ let runtimeStart = null
 let runtimeOperationTail = Promise.resolve()
 let quitAfterRuntimeStops = false
 const loadedThreads = new Set()
+const activeThreads = new Set()
 
 app.setName("Rolling Skill")
 
@@ -66,12 +69,33 @@ function send(channel, payload) {
 }
 
 function installClientEvents(nextClient) {
-    nextClient.on("state", (state) => send("runtime:state", enrichRuntimeState(state)))
+    nextClient.on("state", (state) => {
+        if (state.status === "stopped" || state.status === "error") activeThreads.clear()
+        send("runtime:state", enrichRuntimeState(state))
+    })
     nextClient.on("notification", (message) => {
         void curationManager?.handleNotification(message)
         void automaticCaptureManager?.handleNotification(message)
         const params = message?.params ?? {}
         const threadId = params.threadId ?? params.thread?.id ?? null
+        if (threadId && message.method === "turn/started") activeThreads.add(threadId)
+        if (threadId && message.method === "turn/completed") activeThreads.delete(threadId)
+        if (threadId && message.method === "thread/status/changed") {
+            const type =
+                typeof params.status === "string" ? params.status : params.status?.type
+            if (type === "active" || type === "running" || type === "inProgress") {
+                activeThreads.add(threadId)
+            } else {
+                activeThreads.delete(threadId)
+            }
+        }
+        if (threadId && message.method === "error" && !params.willRetry) {
+            activeThreads.delete(threadId)
+        }
+        if (threadId && message.method === "thread/archived") {
+            activeThreads.delete(threadId)
+            loadedThreads.delete(threadId)
+        }
         const hidden =
             (threadId && curationManager?.hiddenThreadIds().has(threadId)) ||
             params.thread?.threadSource === "subagent"
@@ -84,6 +108,10 @@ function installClientEvents(nextClient) {
             error: error.message,
         })
     })
+}
+
+function currentExecutionPolicy() {
+    return resolveExecutionPolicy(store?.read().settings)
 }
 
 function preferredRuntime() {
@@ -123,6 +151,7 @@ function createClient() {
     const nextClient = runtimeRegistry.createClient(runtimeDescriptor, {
         traceDirectory: join(app.getPath("userData"), "traces"),
         workspaceRoot,
+        executionPolicy: currentExecutionPolicy(),
     })
     installClientEvents(nextClient)
     return nextClient
@@ -158,6 +187,7 @@ async function restartRuntimeNow({rediscover = false} = {}) {
     if (client) await client.stop()
     runtimeStart = null
     loadedThreads.clear()
+    activeThreads.clear()
     client = null
     if (rediscover || !runtimeDescriptor) discoverLocalRuntimes()
     client = createClient()
@@ -259,6 +289,7 @@ async function chooseWorkspace() {
     workspaceRoot = result.filePaths[0]
     writePreferences({workspaceRoot})
     loadedThreads.clear()
+    activeThreads.clear()
     client?.setWorkspace(workspaceRoot)
     if (evaluationRunner) evaluationRunner.workspaceRoot = workspaceRoot
     send("workspace:changed", {workspaceRoot})
@@ -420,10 +451,58 @@ function installIpc() {
     )
     ipcMain.handle("runtime:open-traces", openTraceFolder)
 
-    ipcMain.handle("runtime:list-threads", async () => {
-        const response = await (await ensureRuntime()).listThreads()
+    ipcMain.handle("runtime:list-threads", async (_event, input = {}) => {
+        const archived = Boolean(input.archived)
+        if (archived && !runtimeDescriptor?.capabilities?.includes("thread-archive")) {
+            return {data: [], nextCursor: null, unsupported: true}
+        }
+        const response = await (await ensureRuntime()).listThreads({archived})
         const hidden = curationManager.hiddenThreadIds()
         return {...response, data: (response.data ?? []).filter((thread) => !hidden.has(thread.id))}
+    })
+    ipcMain.handle("runtime:archive-thread", async (_event, threadId) => {
+        threadId = requireIdentifier(threadId, "thread")
+        if (!runtimeDescriptor?.capabilities?.includes("thread-archive")) {
+            throw new Error("The active runtime does not support conversation archive history")
+        }
+        const runtime = await ensureRuntime()
+        if (activeThreads.has(threadId)) {
+            const response = await runtime.readThread(threadId)
+            const status = response.thread?.status
+            const type = typeof status === "string" ? status : status?.type
+            if (type === "active" || type === "running" || type === "inProgress") {
+                throw new Error("Stop the running task before archiving this conversation")
+            }
+            activeThreads.delete(threadId)
+        }
+        if (typeof runtime.archiveThread !== "function") {
+            throw new Error("The active runtime does not support conversation archive history")
+        }
+        const response = await runtime.archiveThread(threadId)
+        loadedThreads.delete(threadId)
+        return response
+    })
+    ipcMain.handle("runtime:unarchive-thread", async (_event, threadId) => {
+        threadId = requireIdentifier(threadId, "thread")
+        if (!runtimeDescriptor?.capabilities?.includes("thread-archive")) {
+            throw new Error("The active runtime does not support conversation archive history")
+        }
+        const runtime = await ensureRuntime()
+        if (typeof runtime.unarchiveThread !== "function") {
+            throw new Error("The active runtime does not support conversation archive history")
+        }
+        return runtime.unarchiveThread(threadId)
+    })
+    ipcMain.handle("links:open-external", async (_event, value) => {
+        const url = requireWebUrl(value)
+        await shell.openExternal(url)
+        return url
+    })
+    ipcMain.handle("links:open-local", async (_event, value) => {
+        const target = requireLocalPath(value)
+        if (!existsSync(target.path)) throw new Error("The linked local file no longer exists")
+        shell.showItemInFolder(target.path)
+        return target
     })
     ipcMain.handle("models:list", async () => {
         const runtime = await ensureRuntime()
@@ -443,6 +522,7 @@ function installIpc() {
         const temporaryClient = runtimeRegistry.createClient(descriptor, {
             traceDirectory: join(app.getPath("userData"), "traces", "catalogs"),
             workspaceRoot,
+            executionPolicy: currentExecutionPolicy(),
         })
         try {
             await temporaryClient.start()
@@ -513,7 +593,13 @@ function installIpc() {
             await runtime.resumeThread(threadId, options)
             loadedThreads.add(threadId)
         }
-        return runtime.startTurn(threadId, input, options)
+        activeThreads.add(threadId)
+        try {
+            return await runtime.startTurn(threadId, input, options)
+        } catch (error) {
+            activeThreads.delete(threadId)
+            throw error
+        }
     })
     ipcMain.handle("runtime:interrupt-turn", async (_event, input) =>
         (await ensureRuntime()).interruptTurn(
@@ -536,7 +622,11 @@ function installIpc() {
         ),
     )
     ipcMain.handle("datasets:reveal", revealLocalData)
-    ipcMain.handle("settings:update", (_event, input) => store.updateSettings(input))
+    ipcMain.handle("settings:update", (_event, input) => {
+        const settings = store.updateSettings(input)
+        client?.setExecutionPolicy?.(currentExecutionPolicy())
+        return settings
+    })
 
     ipcMain.handle("curation:list", () => store.listCurationSessions())
     ipcMain.handle("curation:list-archived", () => store.listArchivedCurationSessions())
@@ -734,6 +824,7 @@ if (!hasLock) {
             runtimeRegistry,
             workspaceRoot,
             traceDirectory: join(app.getPath("userData"), "traces", "evaluations"),
+            getExecutionPolicy: currentExecutionPolicy,
             onChanged: (update) => send("evaluation:changed", update),
         })
         discoverLocalRuntimes()

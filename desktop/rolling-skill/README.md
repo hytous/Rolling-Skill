@@ -31,6 +31,11 @@ candidate must identify its provider and pass the provider's compatibility probe
 `app-server`; CodeBuddy must expose stdio ACP. Rolling Skill records the provider, version, source,
 path, capabilities, and stable `runtimeId` of every compatible result.
 
+Finder-launched apps receive a minimal macOS `PATH`. CodeBuddy installations whose executable uses
+`#!/usr/bin/env node` are still supported: the compatibility probe prepends the executable's own
+directory, matching the environment used for the real ACP process. CodeBuddy does not need to be
+running before it can appear in the Runtime list.
+
 Use **Settings → Runtime…** or the native **Runtime** menu to:
 
 - rescan installed runtimes;
@@ -52,12 +57,40 @@ Open **Settings** in the lower-left sidebar to configure:
 
 - Simplified Chinese or English interface text;
 - Codex Light (the default white-and-blue theme), Codex Dark, or the original Graphite theme;
+- Full local access (default) or Workspace only for new runtime tasks;
 - the default model and reasoning effort for new tasks and Curator tasks; and
 - Automatic Capture, including its Curator model and effort, current runtime Skill, destination
   dataset, and default case type.
 
 All settings are stored locally. Automatic Capture remains disabled until explicitly enabled.
 Runtime selection, raw Trace access, and the local dataset file are also grouped in **Settings**.
+
+For runtimes that expose a sandbox policy, Full local access maps Codex to
+`danger-full-access` with `approvalPolicy: never`, allowing the selected local CLI to read
+credentials and files already available to the signed-in macOS user. Workspace only maps to
+`workspace-write`. Rolling Skill does not create a container or require Docker. CodeBuddy ACP does
+not expose an equivalent workspace sandbox, so the control is disabled and the UI says
+**Runtime-managed access** when CodeBuddy is active. The Electron renderer still uses Chromium's
+separate renderer sandbox in every mode.
+
+## Conversation history and workspace scope
+
+Codex conversation history is runtime-native. Use **Current / Archived** above the task list,
+archive a stopped conversation from its hover action, and restore it from the Archived view.
+Archived conversations open read-only until restored. CodeBuddy ACP does not currently expose a
+durable archive/list contract, so Rolling Skill reports archive history as unsupported instead of
+maintaining a conflicting local copy.
+
+Codex filters `thread/list` by an exact working-directory string. Rolling Skill shows that full
+path beside the conversation list and in Settings. For example, a thread created with
+`/Users/example/project` is persisted but will not appear in a Codex project view filtered to
+`/Users/example/project/agenta`. Choose the exact intended workspace before creating the thread;
+existing threads are not silently moved between workspaces.
+
+Web URLs, Markdown links, and absolute local file references in messages are clickable. Web links
+are restricted to HTTP/HTTPS and handed to the default browser. Local links are validated as
+absolute existing paths and revealed in Finder through a narrow main-process bridge; they are not
+executed directly. Message HTML is never injected into the renderer.
 
 ## Chat and Skill evaluation workbench
 
@@ -196,14 +229,17 @@ Local state is stored under `~/Library/Application Support/Rolling Skill/`:
 ## Security model
 
 - Runtime probes and launches use fixed executable/argument arrays with `shell: false`.
-- Source Codex threads default to `workspace-write`; Curator threads are forced to `read-only`.
-  Both use `approvalPolicy: never`.
+- Source Codex and Codex evaluation threads use the selected local-access policy, defaulting to
+  `danger-full-access`; Codex Curator threads remain forced to `read-only`. CodeBuddy uses its own
+  ACP permission mode because it does not expose the same OS workspace sandbox. Codex threads use
+  `approvalPolicy: never`.
 - The renderer has Node integration disabled, context isolation enabled, and Chromium sandboxing
   enabled.
 - The preload bridge exposes only runtime, workspace, thread, turn, dataset, and trace operations;
   it does not expose shell or filesystem primitives.
-- Packaged renderer files are the only internal navigation target. External HTTPS links are handed
-  to macOS and all other navigation is blocked.
+- Packaged renderer files are the only internal navigation target. Validated HTTP/HTTPS links are
+  handed to macOS, validated absolute local paths are revealed in Finder, and all other navigation
+  is blocked.
 - Dataset writes are atomic and trace files are append-only with owner-only permissions.
 
 ## Tests
@@ -218,6 +254,13 @@ parallel queues, CodeBuddy ACP configuration, runtime attribution, shutdown clea
 provenance.
 
 ## Troubleshooting
+
+### CodeBuddy appears in Terminal but not from Finder
+
+Older Rolling Skill builds probed an env-based CodeBuddy launcher with Finder's minimal `PATH`, so
+`/usr/bin/env node` failed even though Terminal discovery worked. Rebuild the current app; its
+probe prepends CodeBuddy's executable directory. Use **Settings → Runtime… → Rescan** after replacing
+an older packaged app.
 
 ### Codex originator compatibility mode
 

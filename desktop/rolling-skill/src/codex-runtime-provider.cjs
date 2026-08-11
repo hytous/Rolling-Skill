@@ -132,6 +132,8 @@ class CodexRuntimeProvider {
                     transport: "stdio-jsonl",
                     capabilities: Object.freeze([
                         "threads",
+                        "thread-archive",
+                        "sandbox-policy",
                         "turns",
                         "models",
                         "skills",

@@ -2,6 +2,13 @@ const translations = {
     en: {
         newTask: "New task",
         tasks: "Tasks",
+        currentThreads: "Current",
+        archivedThreads: "Archived",
+        archiveThread: "Archive",
+        restoreThread: "Restore",
+        archiveHistoryUnavailable: "Archive history is unavailable for this runtime.",
+        archivedThreadReadOnly: "Archived tasks are read-only. Restore this task to continue.",
+        runningThreadCannotArchive: "Stop the running task before archiving it.",
         settings: "Settings",
         datasets: "Datasets",
         trace: "Trace",
@@ -88,6 +95,7 @@ const translations = {
         localTraceEvidence: "Local trace evidence",
         loadingTasks: "Loading local tasks…",
         noTasks: "No tasks in this workspace yet. Start one below.",
+        noArchivedThreads: "No archived tasks in this workspace.",
         loadingTask: "Loading task…",
         curateCase: "Curate case",
         curatorPromptPlaceholder: "Ask Curator to explain or revise this draft",
@@ -193,11 +201,24 @@ const translations = {
         skillInventoryUnavailable: "Skill inventory is unavailable for this runtime",
         localRuntimeAndData: "Local runtime & data",
         localRuntimeAndDataHelp: "Runtime discovery, raw trace, and the local evaluation store stay on this Mac.",
+        localAccess: "Local access",
+        fullLocalAccess: "Full local access",
+        workspaceOnlyAccess: "Workspace only",
+        localAccessHelp: "This is the selected runtime's own local sandbox. Full local access lets its CLI read credentials and files available to the current user.",
+        localAccessUnsupported: "This runtime manages its own permissions and does not expose a workspace sandbox to Rolling Skill.",
+        runtimeManagedAccess: "Runtime-managed access",
         openDatasetFile: "Open dataset file",
     },
     "zh-CN": {
         newTask: "新任务",
         tasks: "任务",
+        currentThreads: "当前",
+        archivedThreads: "已归档",
+        archiveThread: "归档",
+        restoreThread: "恢复",
+        archiveHistoryUnavailable: "当前运行时不支持会话归档历史。",
+        archivedThreadReadOnly: "已归档任务为只读；恢复后才能继续对话。",
+        runningThreadCannotArchive: "请先停止正在运行的任务，再将其归档。",
         settings: "设置",
         datasets: "数据集",
         trace: "Trace",
@@ -284,6 +305,7 @@ const translations = {
         localTraceEvidence: "本地 Trace 证据",
         loadingTasks: "正在加载本地任务…",
         noTasks: "此工作目录还没有任务，请从下方开始。",
+        noArchivedThreads: "此工作目录没有已归档任务。",
         loadingTask: "正在加载任务…",
         curateCase: "沉淀 Case",
         curatorPromptPlaceholder: "询问 Curator，或要求它解释、修改这个草稿",
@@ -389,6 +411,12 @@ const translations = {
         skillInventoryUnavailable: "该运行时不提供 Skill 清单",
         localRuntimeAndData: "本地运行时与数据",
         localRuntimeAndDataHelp: "运行时发现、原始 Trace 和本地评测数据都保存在这台 Mac。",
+        localAccess: "本地访问权限",
+        fullLocalAccess: "完整本机访问",
+        workspaceOnlyAccess: "仅工作目录",
+        localAccessHelp: "这是所选运行时自身的本地 sandbox。完整本机访问会让其 CLI 读取当前用户可访问的凭据和文件。",
+        localAccessUnsupported: "当前运行时自行管理权限，未向 Rolling Skill 提供工作目录 sandbox。",
+        runtimeManagedAccess: "运行时自行管理权限",
         openDatasetFile: "打开数据集文件",
     },
 }
@@ -397,8 +425,11 @@ const state = {
     runtime: {status: "starting"},
     workspaceRoot: "",
     threads: [],
+    threadView: "current",
+    threadRefreshToken: 0,
     activeThreadId: null,
     activeThread: null,
+    activeThreadArchived: false,
     activeTurnId: null,
     datasets: [],
     loadingThreads: true,
@@ -418,6 +449,7 @@ const state = {
         autoCapture: false,
         language: "zh-CN",
         theme: "codex-light",
+        localAccess: "full",
         taskProfile: {runtimePolicy: "active", modelId: null, effort: null},
         curatorProfile: {runtimePolicy: "active", modelId: null, effort: null},
         autoCaptureProfile: {
@@ -461,10 +493,14 @@ const elements = {
     surfaceSwitch: document.querySelector("#surface-switch"),
     workbench: document.querySelector(".workbench"),
     refreshThreads: document.querySelector("#refresh-threads"),
+    threadViewSwitch: document.querySelector("#thread-view-switch"),
+    threadHistoryStatus: document.querySelector("#thread-history-status"),
     threadList: document.querySelector("#thread-list"),
     workspaceButton: document.querySelector("#workspace-button"),
     settingsButton: document.querySelector("#settings-button"),
     workspaceName: document.querySelector("#workspace-name"),
+    sidebarWorkspacePath: document.querySelector("#sidebar-workspace-path"),
+    settingsWorkspacePath: document.querySelector("#settings-workspace-path"),
     workspacePath: document.querySelector("#workspace-path"),
     activeTitle: document.querySelector("#active-title"),
     runtimeStatus: document.querySelector("#runtime-status"),
@@ -502,6 +538,8 @@ const elements = {
     composerInput: document.querySelector("#composer-input"),
     composerModel: document.querySelector("#composer-model"),
     composerEffort: document.querySelector("#composer-effort"),
+    composerAccess: document.querySelector("#composer-access"),
+    archivedThreadNotice: document.querySelector("#archived-thread-notice"),
     sendTurn: document.querySelector("#send-turn"),
     stopTurn: document.querySelector("#stop-turn"),
     traceDrawer: document.querySelector("#trace-drawer"),
@@ -521,6 +559,8 @@ const elements = {
     saveSettings: document.querySelector("#save-settings"),
     settingsLanguage: document.querySelector("#settings-language"),
     settingsTheme: document.querySelector("#settings-theme"),
+    settingsLocalAccess: document.querySelector("#settings-local-access"),
+    settingsLocalAccessHelp: document.querySelector("#settings-local-access-help"),
     settingsTaskModel: document.querySelector("#settings-task-model"),
     settingsTaskEffort: document.querySelector("#settings-task-effort"),
     settingsCuratorModel: document.querySelector("#settings-curator-model"),
@@ -580,6 +620,60 @@ function node(tag, className, text) {
     if (className) element.className = className
     if (text !== undefined) element.textContent = text
     return element
+}
+
+const messageLinkPattern = /\[([^\]\n]+)\]\(<?(https?:\/\/[^)>\s]+|\/[^)>\n]+)>?\)|(https?:\/\/[^\s<]+)|(\/(?:[^\s<>()]+\/)*[^\s<>()]+)/g
+
+function localPathReference(value) {
+    const match = String(value ?? "").match(/^(\/.*?)(?::(\d+))?$/)
+    if (!match) return null
+    return {path: match[1], line: match[2] ? Number(match[2]) : null}
+}
+
+function trimBareLinkSuffix(value) {
+    const suffix = String(value).match(/[.,;!?]+$/)?.[0] ?? ""
+    return {target: suffix ? value.slice(0, -suffix.length) : value, suffix}
+}
+
+function messageLink(label, target) {
+    const external = /^https?:\/\//i.test(target)
+    const local = external ? null : localPathReference(target)
+    if (!external && !local) return null
+    const link = node("a", "message-link", label)
+    link.href = external ? target : "#"
+    if (external) {
+        link.rel = "noreferrer"
+        link.dataset.externalUrl = target
+    } else {
+        link.dataset.localPath = local.path
+        if (local.line !== null) {
+            link.dataset.line = String(local.line)
+            link.title = `${local.path}:${local.line}`
+        }
+    }
+    return link
+}
+
+function appendSafeMessageText(container, value) {
+    const text = String(value ?? "")
+    messageLinkPattern.lastIndex = 0
+    let cursor = 0
+    for (const match of text.matchAll(messageLinkPattern)) {
+        if (match.index > cursor) {
+            container.append(document.createTextNode(text.slice(cursor, match.index)))
+        }
+        const markdown = match[1] !== undefined
+        const rawTarget = match[2] ?? match[3] ?? match[4]
+        const {target, suffix} = markdown
+            ? {target: rawTarget, suffix: ""}
+            : trimBareLinkSuffix(rawTarget)
+        const link = messageLink(markdown ? match[1] : target, target)
+        if (link) container.append(link)
+        else container.append(document.createTextNode(match[0]))
+        if (suffix) container.append(document.createTextNode(suffix))
+        cursor = match.index + match[0].length
+    }
+    if (cursor < text.length) container.append(document.createTextNode(text.slice(cursor)))
 }
 
 function t(key) {
@@ -720,6 +814,7 @@ function renderCaptureStatus() {
 function applySettings(settings) {
     state.settings = {
         ...settings,
+        localAccess: settings.localAccess ?? "full",
         taskProfile: {...settings.taskProfile, effort: settings.taskProfile?.effort ?? null},
         curatorProfile: {...settings.curatorProfile, effort: settings.curatorProfile?.effort ?? null},
         autoCaptureProfile: {
@@ -798,6 +893,11 @@ function renderSettingsForm() {
     const settings = state.settings
     elements.settingsLanguage.value = settings.language
     elements.settingsTheme.value = settings.theme
+    elements.settingsLocalAccess.value = state.settings.localAccess ?? "full"
+    elements.settingsLocalAccess.disabled = !supportsLocalAccessPolicy()
+    elements.settingsLocalAccessHelp.textContent = t(
+        supportsLocalAccessPolicy() ? "localAccessHelp" : "localAccessUnsupported",
+    )
     populateModelSelect(elements.settingsTaskModel, settings.taskProfile?.modelId)
     populateEffortSelect(
         elements.settingsTaskEffort,
@@ -862,6 +962,7 @@ async function saveSettings() {
         const settings = await window.rollingSkill.updateSettings({
             language: elements.settingsLanguage.value,
             theme: elements.settingsTheme.value,
+            localAccess: elements.settingsLocalAccess.value,
             taskModelId: elements.settingsTaskModel.value,
             taskEffort: elements.settingsTaskEffort.value,
             curatorModelId: elements.settingsCuratorModel.value,
@@ -914,6 +1015,26 @@ function titleForThread(thread) {
 
 function statusType(status) {
     return typeof status === "string" ? status : status?.type
+}
+
+function supportsThreadArchive() {
+    const capabilities = state.runtime?.runtime?.capabilities ?? []
+    return capabilities.includes("thread-archive")
+}
+
+function supportsLocalAccessPolicy() {
+    const capabilities = state.runtime?.runtime?.capabilities ?? []
+    return capabilities.includes("sandbox-policy")
+}
+
+function isThreadRunning(thread) {
+    const status = statusType(thread?.status)
+    return (
+        status === "active" ||
+        status === "running" ||
+        status === "inProgress" ||
+        (thread?.id === state.activeThreadId && (Boolean(state.activeTurnId) || state.sending))
+    )
 }
 
 function relativeTime(timestamp) {
@@ -1004,6 +1125,9 @@ function upsertThreadSummary(thread) {
 function renderWorkspace() {
     elements.workspaceName.textContent = baseName(state.workspaceRoot)
     elements.workspacePath.textContent = state.workspaceRoot
+    elements.sidebarWorkspacePath.textContent = state.workspaceRoot
+    elements.sidebarWorkspacePath.title = state.workspaceRoot
+    elements.settingsWorkspacePath.textContent = state.workspaceRoot
     elements.workspaceButton.title = state.workspaceRoot || t("chooseWorkspace")
 }
 
@@ -1074,17 +1198,41 @@ function openRuntimeDialog() {
 }
 
 function renderThreads() {
+    const archiveSupported = supportsThreadArchive()
+    for (const button of elements.threadViewSwitch.querySelectorAll("[data-thread-view]")) {
+        const selected = button.dataset.threadView === state.threadView
+        button.classList.toggle("active", selected)
+        button.setAttribute("aria-selected", String(selected))
+        if (button.dataset.threadView === "archived") button.disabled = !archiveSupported
+    }
+    elements.threadHistoryStatus.classList.toggle("hidden", archiveSupported)
+    elements.threadHistoryStatus.textContent = archiveSupported
+        ? ""
+        : t("archiveHistoryUnavailable")
     elements.threadList.replaceChildren()
     if (state.loadingThreads) {
         elements.threadList.append(node("div", "sidebar-placeholder", t("loadingTasks")))
         return
     }
+    if (state.threadView === "archived" && !archiveSupported) {
+        elements.threadList.append(
+            node("div", "sidebar-placeholder", t("archiveHistoryUnavailable")),
+        )
+        return
+    }
     if (state.threads.length === 0) {
-        elements.threadList.append(node("div", "sidebar-placeholder", t("noTasks")))
+        elements.threadList.append(
+            node(
+                "div",
+                "sidebar-placeholder",
+                t(state.threadView === "archived" ? "noArchivedThreads" : "noTasks"),
+            ),
+        )
         return
     }
 
     for (const thread of state.threads) {
+        const row = node("div", "thread-row")
         const button = node("button", "thread-button")
         button.type = "button"
         button.dataset.threadId = thread.id
@@ -1096,7 +1244,24 @@ function renderThreads() {
             node("span", "thread-preview", thread.preview || baseName(thread.cwd)),
         )
         if (statusType(thread.status) === "active") button.append(node("span", "thread-status"))
-        elements.threadList.append(button)
+        row.append(button)
+        if (archiveSupported) {
+            const action = node(
+                "button",
+                "thread-action",
+                t(state.threadView === "archived" ? "restoreThread" : "archiveThread"),
+            )
+            action.type = "button"
+            if (state.threadView === "archived") {
+                action.dataset.unarchiveThread = thread.id
+            } else {
+                action.dataset.archiveThread = thread.id
+                action.disabled = isThreadRunning(thread)
+                if (action.disabled) action.title = t("runningThreadCannotArchive")
+            }
+            row.append(action)
+        }
+        elements.threadList.append(row)
     }
 }
 
@@ -1156,7 +1321,9 @@ function activityText(item) {
 function renderItem(item, turn) {
     if (item.type === "userMessage") {
         const wrapper = node("article", "message user")
-        wrapper.append(node("div", "message-body", textFromUserInput(item.content)))
+        const body = node("div", "message-body")
+        appendSafeMessageText(body, textFromUserInput(item.content))
+        wrapper.append(body)
         return wrapper
     }
     if (item.type === "agentMessage") {
@@ -1166,7 +1333,8 @@ function renderItem(item, turn) {
         image.src = "logo.svg"
         image.alt = ""
         avatar.append(image)
-        const body = node("div", "message-body", item.text || "")
+        const body = node("div", "message-body")
+        appendSafeMessageText(body, item.text || "")
         wrapper.append(avatar, body)
         if (turn.status !== "inProgress") {
             const actions = node("div", "message-actions")
@@ -1219,12 +1387,19 @@ function renderConversation(options = {}) {
 
 function renderComposer() {
     const running = Boolean(state.activeTurnId) || state.sending
+    const readOnly = state.activeThreadArchived
     elements.stopTurn.classList.toggle("hidden", !running)
-    elements.sendTurn.classList.toggle("hidden", running)
-    elements.sendTurn.disabled = state.runtime?.status !== "ready" || !elements.composerInput.value.trim()
-    elements.composerInput.disabled = state.sending
-    elements.composerModel.disabled = running || state.runtime?.status !== "ready"
-    elements.composerEffort.disabled = running || state.runtime?.status !== "ready"
+    elements.sendTurn.classList.toggle("hidden", running || readOnly)
+    elements.sendTurn.disabled =
+        readOnly || state.runtime?.status !== "ready" || !elements.composerInput.value.trim()
+    elements.composerInput.disabled = state.sending || readOnly
+    elements.composerModel.disabled = readOnly || running || state.runtime?.status !== "ready"
+    elements.composerEffort.disabled = readOnly || running || state.runtime?.status !== "ready"
+    elements.composer.classList.toggle("archived-readonly", readOnly)
+    elements.archivedThreadNotice.classList.toggle("hidden", !readOnly)
+    elements.composerAccess.textContent = supportsLocalAccessPolicy()
+        ? t(state.settings.localAccess === "workspace" ? "workspaceOnlyAccess" : "fullLocalAccess")
+        : t("runtimeManagedAccess")
     renderTaskModelPicker()
 }
 
@@ -1676,11 +1851,19 @@ function renderEvaluationRuntimeConfigurations(skill) {
         modelSelect.disabled = !configuration.selected || configuration.loading
         effortSelect.disabled = !configuration.selected || configuration.loading
         controls.append(modelSelect, effortSelect)
-        const preflight = runtime.capabilities?.includes("skills")
+        const skillPreflight = runtime.capabilities?.includes("skills")
             ? skill
                 ? skill.name
                 : t("noSkills")
             : t("skillInventoryUnavailable")
+        const accessPreflight = runtime.capabilities?.includes("sandbox-policy")
+            ? t(
+                  state.settings.localAccess === "workspace"
+                      ? "workspaceOnlyAccess"
+                      : "fullLocalAccess",
+              )
+            : t("runtimeManagedAccess")
+        const preflight = `${skillPreflight} · ${accessPreflight}`
         row.append(heading, controls, node("small", "evaluation-runtime-preflight", preflight))
         if (configuration.error) row.append(node("small", "error", configuration.error))
         elements.evaluationRuntimeList.append(row)
@@ -2073,13 +2256,77 @@ function setSurface(surface) {
     renderAll()
 }
 
+async function setThreadView(view) {
+    if (view !== "current" && view !== "archived") return
+    if (view === "archived" && !supportsThreadArchive()) return
+    if (view === state.threadView) return
+    state.threadView = view
+    state.activeThreadId = null
+    state.activeThread = null
+    state.activeThreadArchived = false
+    state.activeTurnId = null
+    state.newTaskMode = false
+    state.loadingThreads = true
+    renderAll()
+    await refreshThreads(true)
+}
+
+async function archiveThread(threadId) {
+    const thread = state.threads.find((entry) => entry.id === threadId)
+    if (!thread || !supportsThreadArchive()) return
+    if (isThreadRunning(thread)) {
+        showError(new Error(t("runningThreadCannotArchive")))
+        return
+    }
+    try {
+        await window.rollingSkill.archiveThread(threadId)
+        if (state.activeThreadId === threadId) {
+            state.activeThreadId = null
+            state.activeThread = null
+            state.activeThreadArchived = false
+        }
+        await refreshThreads(true)
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function unarchiveThread(threadId) {
+    if (!threadId || !supportsThreadArchive()) return
+    try {
+        await window.rollingSkill.unarchiveThread(threadId)
+        if (state.activeThreadId === threadId) {
+            state.activeThreadId = null
+            state.activeThread = null
+            state.activeThreadArchived = false
+        }
+        await refreshThreads(true)
+    } catch (error) {
+        showError(error)
+    }
+}
+
 async function refreshThreads(selectFirst = false) {
     const runtimeEpoch = state.runtimeEpoch
+    const requestedView = state.threadView
+    const requestToken = ++state.threadRefreshToken
+    if (requestedView === "archived" && !supportsThreadArchive()) {
+        state.threads = []
+        state.loadingThreads = false
+        renderThreads()
+        return true
+    }
     state.loadingThreads = true
     renderThreads()
     try {
-        const response = await window.rollingSkill.listThreads()
-        if (runtimeEpoch !== state.runtimeEpoch) return false
+        const response = await window.rollingSkill.listThreads(requestedView === "archived")
+        if (
+            runtimeEpoch !== state.runtimeEpoch ||
+            requestToken !== state.threadRefreshToken ||
+            requestedView !== state.threadView
+        ) {
+            return false
+        }
         state.threads = response.data ?? []
         state.loadingThreads = false
         renderThreads()
@@ -2093,7 +2340,13 @@ async function refreshThreads(selectFirst = false) {
         }
         return true
     } catch (error) {
-        if (runtimeEpoch !== state.runtimeEpoch) return false
+        if (
+            runtimeEpoch !== state.runtimeEpoch ||
+            requestToken !== state.threadRefreshToken ||
+            requestedView !== state.threadView
+        ) {
+            return false
+        }
         state.loadingThreads = false
         showError(error)
         renderThreads()
@@ -2106,6 +2359,7 @@ async function loadThread(threadId) {
     state.surface = "chat"
     const runtimeEpoch = state.runtimeEpoch
     state.activeThreadId = threadId
+    state.activeThreadArchived = state.threadView === "archived"
     state.newTaskMode = false
     state.loadingThread = true
     state.error = null
@@ -2133,9 +2387,12 @@ async function loadThread(threadId) {
 }
 
 function beginNewTask() {
+    const changedView = state.threadView !== "current"
     state.surface = "chat"
+    state.threadView = "current"
     state.activeThreadId = null
     state.activeThread = null
+    state.activeThreadArchived = false
     state.activeTurnId = null
     state.loadingThread = false
     state.newTaskMode = true
@@ -2143,18 +2400,20 @@ function beginNewTask() {
     state.selectedTaskEffort = state.settings.taskProfile?.effort ?? null
     state.error = null
     renderAll()
+    if (changedView) void refreshThreads(false)
     elements.composerInput.focus()
 }
 
 function resizeComposer() {
+    const viewportCap = window.innerHeight * 0.28
     elements.composerInput.style.height = "auto"
-    elements.composerInput.style.height = `${Math.min(elements.composerInput.scrollHeight, 220)}px`
+    elements.composerInput.style.height = `${Math.min(elements.composerInput.scrollHeight, 220, viewportCap)}px`
     renderComposer()
 }
 
 async function submitTurn() {
     const text = elements.composerInput.value.trim()
-    if (!text || state.sending || state.activeTurnId) return
+    if (!text || state.sending || state.activeTurnId || state.activeThreadArchived) return
     state.sending = true
     state.error = null
     renderAll()
@@ -2478,7 +2737,17 @@ async function updateCurationEffort(sessionId, selectedEffort) {
 function handleNotification(message) {
     const {method, params = {}} = message ?? {}
     if (method === "thread/started") {
-        upsertThreadSummary(params.thread)
+        if (state.threadView === "current") upsertThreadSummary(params.thread)
+    } else if (method === "thread/archived" || method === "thread/unarchived") {
+        const threadId = params.threadId ?? params.thread?.id ?? null
+        if (threadId && state.activeThreadId === threadId) {
+            state.activeThreadId = null
+            state.activeThread = null
+            state.activeThreadArchived = false
+            state.activeTurnId = null
+            state.newTaskMode = false
+        }
+        void refreshThreads(false)
     } else if (method === "thread/name/updated") {
         const thread = state.threads.find((entry) => entry.id === params.threadId)
         if (thread) thread.name = params.threadName
@@ -2521,8 +2790,10 @@ function handleNotification(message) {
 
 function clearRuntimeTaskState() {
     state.threads = []
+    state.threadView = "current"
     state.activeThreadId = null
     state.activeThread = null
+    state.activeThreadArchived = false
     state.activeTurnId = null
     state.loadingThread = false
     state.loadingThreads = true
@@ -2566,7 +2837,21 @@ elements.surfaceSwitch.addEventListener("click", (event) => {
 })
 elements.newTask.addEventListener("click", beginNewTask)
 elements.refreshThreads.addEventListener("click", () => refreshThreads(false))
+elements.threadViewSwitch.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-thread-view]")
+    if (button) void setThreadView(button.dataset.threadView)
+})
 elements.threadList.addEventListener("click", (event) => {
+    const archive = event.target.closest("[data-archive-thread]")
+    if (archive) {
+        void archiveThread(archive.dataset.archiveThread)
+        return
+    }
+    const unarchive = event.target.closest("[data-unarchive-thread]")
+    if (unarchive) {
+        void unarchiveThread(unarchive.dataset.unarchiveThread)
+        return
+    }
     const button = event.target.closest("[data-thread-id]")
     if (button) void loadThread(button.dataset.threadId)
 })
@@ -2716,6 +3001,18 @@ elements.composerEffort.addEventListener("change", () => {
 })
 elements.stopTurn.addEventListener("click", stopTurn)
 elements.conversation.addEventListener("click", (event) => {
+    const external = event.target.closest("[data-external-url]")
+    if (external) {
+        event.preventDefault()
+        void window.rollingSkill.openExternal(external.dataset.externalUrl).catch(showError)
+        return
+    }
+    const local = event.target.closest("[data-local-path]")
+    if (local) {
+        event.preventDefault()
+        void window.rollingSkill.openLocalPath(local.dataset.localPath).catch(showError)
+        return
+    }
     const button = event.target.closest("[data-save-case]")
     if (button) void openCaseDialog(button.dataset.turnId, button.dataset.itemId)
 })
@@ -2803,8 +3100,10 @@ window.rollingSkill.onEvaluationChanged(async ({runId, resultId, status}) => {
 })
 window.rollingSkill.onWorkspaceChanged(async ({workspaceRoot}) => {
     state.workspaceRoot = workspaceRoot
+    state.threadView = "current"
     state.activeThread = null
     state.activeThreadId = null
+    state.activeThreadArchived = false
     state.activeTurnId = null
     state.newTaskMode = false
     state.selectedTaskModelId = state.settings.taskProfile?.modelId ?? null

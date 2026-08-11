@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict")
+const {spawnSync} = require("node:child_process")
 const {EventEmitter} = require("node:events")
-const {chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync} = require("node:fs")
+const {chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {afterEach, describe, it} = require("node:test")
@@ -76,6 +77,36 @@ describe("CodeBuddy runtime provider", () => {
         assert.equal(result.version, "2.133.1")
         assert.equal(result.acp, true)
         assert.deepEqual(result.models, ["default-model", "gpt-5.5"])
+    })
+
+    it("probes env-node installations when the parent PATH is Finder-like", () => {
+        const root = mkdtempSync(join(tmpdir(), "rolling-skill-codebuddy-finder-path-"))
+        temporaryDirectories.push(root)
+        const bin = join(root, "bin")
+        mkdirSync(bin, {recursive: true})
+        symlinkSync(process.execPath, join(bin, "node"))
+        const binary = join(bin, "codebuddy")
+        writeFileSync(
+            binary,
+            `#!/usr/bin/env node
+const argument = process.argv[2]
+if (argument === "--version") console.log("2.133.1")
+else if (argument === "--help") console.log("--acp Start ACP --acp-transport stdio")
+else process.exitCode = 1
+`,
+            {mode: 0o755},
+        )
+
+        const originalPath = process.env.PATH
+        try {
+            process.env.PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+            const result = probeCodeBuddyRuntime(binary, spawnSync)
+
+            assert.equal(result.version, "2.133.1")
+            assert.equal(result.acp, true)
+        } finally {
+            process.env.PATH = originalPath
+        }
     })
 })
 

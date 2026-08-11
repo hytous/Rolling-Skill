@@ -109,6 +109,7 @@ button:not(:disabled) {
     display: grid;
     width: 100vw;
     height: 100vh;
+    min-height: 0;
     grid-template-columns: var(--sidebar-width) minmax(0, 1fr) 0;
     background: var(--app);
     transition: grid-template-columns 180ms ease;
@@ -121,6 +122,7 @@ button:not(:disabled) {
 
 .sidebar {
     display: flex;
+    min-height: 0;
     min-width: 0;
     padding: 54px 10px 10px;
     border-right: 1px solid var(--border);
@@ -219,6 +221,53 @@ kbd {
     text-transform: uppercase;
 }
 
+.thread-view-switch {
+    display: grid;
+    margin: 0 4px 6px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--surface) 45%, transparent);
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+}
+
+.thread-view-switch button {
+    height: 25px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--faint);
+    font-size: 10px;
+}
+
+.thread-view-switch button.active {
+    background: var(--surface);
+    color: var(--text);
+    font-weight: 620;
+}
+
+.thread-view-switch button:disabled {
+    opacity: 0.45;
+}
+
+.thread-history-status,
+.sidebar-workspace-path {
+    overflow: hidden;
+    margin: 0 8px 7px;
+    color: var(--faint);
+    font-size: 9px;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.thread-history-status {
+    color: var(--warning);
+    white-space: normal;
+}
+
 .icon-button {
     display: grid;
     width: 26px;
@@ -246,11 +295,15 @@ kbd {
 .thread-list {
     overflow-x: hidden;
     overflow-y: auto;
-    min-height: 100px;
+    min-height: 0;
     margin-right: -4px;
     padding-right: 4px;
     flex: 1;
     scrollbar-width: thin;
+}
+
+.thread-row {
+    position: relative;
 }
 
 .thread-button {
@@ -274,6 +327,32 @@ kbd {
 
 .thread-button.active {
     background: rgba(255, 255, 255, 0.075);
+}
+
+.thread-action {
+    position: absolute;
+    z-index: 1;
+    right: 6px;
+    bottom: 7px;
+    height: 21px;
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--surface-raised);
+    color: var(--muted);
+    font-size: 9px;
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+
+.thread-row:hover .thread-action,
+.thread-action:focus-visible {
+    opacity: 1;
+}
+
+.thread-action:disabled {
+    color: var(--faint);
+    opacity: 0.45;
 }
 
 .thread-title {
@@ -445,6 +524,7 @@ kbd {
     position: relative;
     display: grid;
     overflow: hidden;
+    min-height: 0;
     min-width: 0;
     background: var(--surface);
     grid-template-rows: 54px auto minmax(0, 1fr) auto;
@@ -1348,6 +1428,17 @@ kbd {
     white-space: pre-wrap;
 }
 
+.message-link {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    text-underline-offset: 2px;
+}
+
+.message-link:hover {
+    text-decoration-color: currentColor;
+}
+
 .message.assistant .message-body:empty::after {
     color: var(--faint);
     content: "Thinking…";
@@ -1412,6 +1503,8 @@ kbd {
 
 .composer-wrap {
     z-index: 2;
+    overflow: hidden;
+    min-height: 0;
     padding: 0 34px 18px;
     background: linear-gradient(to bottom, transparent, var(--surface) 22px);
     grid-row: 4;
@@ -1436,7 +1529,7 @@ kbd {
     display: block;
     overflow-y: auto;
     width: 100%;
-    max-height: 220px;
+    max-height: min(220px, 28vh);
     min-height: 25px;
     padding: 2px 2px 5px;
     resize: none;
@@ -1446,6 +1539,18 @@ kbd {
     color: var(--text);
     font-size: 13.5px;
     line-height: 1.55;
+}
+
+.composer.archived-readonly {
+    opacity: 0.72;
+}
+
+.archived-thread-notice {
+    width: min(790px, 100%);
+    margin: 7px auto 0;
+    color: var(--muted);
+    font-size: 10px;
+    text-align: center;
 }
 
 .composer textarea::placeholder {
@@ -2323,6 +2428,25 @@ kbd {
     line-height: 1.5;
 }
 
+.settings-workspace-path {
+    display: flex;
+    min-width: 0;
+    margin-bottom: 8px;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--faint);
+    font-size: 9px;
+}
+
+.settings-workspace-path code {
+    overflow: hidden;
+    color: var(--text);
+    font-family: "SFMono-Regular", Menlo, monospace;
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .settings-utility-row {
     display: flex;
     flex-wrap: wrap;
@@ -2419,6 +2543,13 @@ kbd {
 
 .settings-field select:focus {
     border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.settings-field small {
+    color: var(--faint);
+    font-size: 9px;
+    font-weight: 450;
+    line-height: 1.45;
 }
 
 .switch {

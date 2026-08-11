@@ -36,6 +36,12 @@
                         ↻
                     </button>
                 </div>
+                <div id="thread-view-switch" class="thread-view-switch" role="tablist" aria-label="Task history">
+                    <button class="active" type="button" role="tab" aria-selected="true" data-thread-view="current" data-i18n="currentThreads">Current</button>
+                    <button type="button" role="tab" aria-selected="false" data-thread-view="archived" data-i18n="archivedThreads">Archived</button>
+                </div>
+                <div id="thread-history-status" class="thread-history-status hidden" role="status"></div>
+                <div id="sidebar-workspace-path" class="sidebar-workspace-path" title=""></div>
                 <nav id="thread-list" class="thread-list" aria-label="Tasks">
                     <div class="sidebar-placeholder">Loading local tasks…</div>
                 </nav>
@@ -102,7 +108,7 @@
                                 <select id="composer-model" class="model-picker" aria-label="Task model"></select>
                                 <select id="composer-effort" class="effort-picker" aria-label="Reasoning effort"></select>
                                 <span aria-hidden="true">·</span>
-                                <span>workspace-write</span>
+                                <span id="composer-access"></span>
                             </div>
                             <button id="stop-turn" class="stop-button hidden" type="button" title="Stop task">
                                 <span aria-hidden="true"></span>
@@ -112,6 +118,9 @@
                             </button>
                         </div>
                     </form>
+                    <p id="archived-thread-notice" class="archived-thread-notice hidden" data-i18n="archivedThreadReadOnly">
+                        Archived tasks are read-only. Restore this task to continue.
+                    </p>
                     <p class="composer-hint" data-i18n="composerHint">Enter to send · Shift+Enter for a new line</p>
                 </section>
 
@@ -309,6 +318,18 @@
                 <section class="settings-section">
                     <h3 data-i18n="localRuntimeAndData">Local runtime & data</h3>
                     <p class="settings-section-copy" data-i18n="localRuntimeAndDataHelp">Runtime discovery, raw trace, and the local evaluation store stay on this Mac.</p>
+                    <div class="settings-workspace-path">
+                        <span data-i18n="workspace">Workspace</span>
+                        <code id="settings-workspace-path"></code>
+                    </div>
+                    <label class="settings-field">
+                        <span data-i18n="localAccess">Local access</span>
+                        <select id="settings-local-access">
+                            <option value="full" data-i18n="fullLocalAccess">Full local access</option>
+                            <option value="workspace" data-i18n="workspaceOnlyAccess">Workspace only</option>
+                        </select>
+                        <small id="settings-local-access-help" data-i18n="localAccessHelp">This is the selected runtime's own local sandbox. Full local access lets its CLI read credentials and files available to the current user.</small>
+                    </label>
                     <div class="settings-utility-row">
                         <button id="choose-runtime" type="button" data-i18n="runtime">Runtime…</button>
                         <button id="open-trace" type="button" data-i18n="trace">Trace</button>
