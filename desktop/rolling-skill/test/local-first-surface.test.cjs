@@ -78,4 +78,22 @@ describe("local-first desktop surface", () => {
         assert.match(runtimeDialog, /id="confirm-runtime" class="primary"[^>]*>Done<\/button>/)
         assert.match(renderer, /confirmRuntime\.addEventListener\("click", \(\) => elements\.runtimeDialog\.close\(\)\)/)
     })
+
+    it("pins both chat composers outside their scrollable message regions", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        assert.match(html, /id="conversation-scroll"/)
+        assert.match(html, /class="composer-wrap"/)
+        assert.match(styles, /\.topbar\s*\{[^}]*grid-row:\s*1/s)
+        assert.match(styles, /\.error-banner\s*\{[^}]*grid-row:\s*2/s)
+        assert.match(styles, /\.conversation-scroll\s*\{[^}]*grid-row:\s*3/s)
+        assert.match(styles, /\.composer-wrap\s*\{[^}]*grid-row:\s*4/s)
+
+        assert.match(renderer, /curation-detail-scroll/)
+        assert.match(renderer, /curation-composer-wrap/)
+        assert.match(styles, /\.curation-detail-scroll\s*\{[^}]*overflow-y:\s*auto/s)
+        assert.match(styles, /\.curation-composer-wrap\s*\{[^}]*border-top:/s)
+    })
 })

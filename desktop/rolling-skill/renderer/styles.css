@@ -356,6 +356,7 @@ kbd {
     border-bottom: 1px solid var(--border);
     align-items: center;
     gap: 9px;
+    grid-row: 1;
     -webkit-app-region: drag;
 }
 
@@ -442,6 +443,7 @@ kbd {
     gap: 20px;
     color: #eab0ac;
     font-size: 11px;
+    grid-row: 2;
 }
 
 .error-banner div {
@@ -467,6 +469,7 @@ kbd {
     overflow-x: hidden;
     overflow-y: auto;
     min-height: 0;
+    grid-row: 3;
     scroll-behavior: smooth;
     scrollbar-width: thin;
 }
@@ -653,6 +656,7 @@ kbd {
     z-index: 2;
     padding: 0 34px 18px;
     background: linear-gradient(to bottom, transparent, var(--surface) 22px);
+    grid-row: 4;
 }
 
 .composer {
@@ -961,10 +965,24 @@ kbd {
 }
 
 .curation-detail {
+    display: grid;
+    overflow: hidden;
+    min-height: 0;
+    padding: 0;
+    grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.curation-detail-scroll {
     overflow-y: auto;
     min-height: 0;
     padding: 13px 14px 22px;
     scrollbar-width: thin;
+}
+
+.curation-composer-wrap {
+    padding: 10px 14px 14px;
+    border-top: 1px solid var(--border);
+    background: #181817;
 }
 
 .curation-overview {
@@ -1112,7 +1130,7 @@ kbd {
 
 .curation-followup {
     display: grid;
-    margin-top: 16px;
+    margin: 0;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: end;
     gap: 6px;

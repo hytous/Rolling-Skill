@@ -505,11 +505,11 @@ function renderCurations() {
     }
 
     elements.curationDetail.replaceChildren()
+    const scroll = node("div", "curation-detail-scroll")
+    elements.curationDetail.append(scroll)
     const session = activeCuration()
     if (!session) {
-        elements.curationDetail.append(
-            node("div", "sidebar-placeholder", "Select a case draft to review it."),
-        )
+        scroll.append(node("div", "sidebar-placeholder", "Select a case draft to review it."))
         return
     }
 
@@ -528,7 +528,7 @@ function renderCurations() {
         "curation-provenance",
         `${session.episode.items.length} episode items · ${session.episode.toolActivity.length} tool signatures · ${session.curator.modelId || "runtime default model"}`,
     )
-    elements.curationDetail.append(overview, question, provenance)
+    scroll.append(overview, question, provenance)
 
     const conversation = node("section", "curator-conversation")
     conversation.append(node("h3", "", "Curator conversation"))
@@ -552,10 +552,11 @@ function renderCurations() {
         }
         conversation.append(error)
     }
-    elements.curationDetail.append(conversation)
-    if (session.draft) elements.curationDetail.append(renderDraft(session.draft))
+    scroll.append(conversation)
+    if (session.draft) scroll.append(renderDraft(session.draft))
 
     if (session.status !== "archived" && session.status !== "cancelled") {
+        const composerWrap = node("div", "curation-composer-wrap")
         const form = node("form", "curation-followup")
         form.dataset.curationForm = session.id
         const input = node("textarea")
@@ -568,13 +569,14 @@ function renderCurations() {
         send.type = "submit"
         send.disabled = input.disabled
         form.append(input, send)
-        elements.curationDetail.append(form)
+        composerWrap.append(form)
         if (session.status === "needs_review" && session.draft) {
             const done = node("button", "curation-done primary", "Done · save case")
             done.type = "button"
             done.dataset.archiveCuration = session.id
-            elements.curationDetail.append(done)
+            composerWrap.append(done)
         }
+        elements.curationDetail.append(composerWrap)
     }
 }
 
