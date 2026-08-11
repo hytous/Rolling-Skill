@@ -160,14 +160,15 @@ Local files are stored here:
 
 | Path | Contents |
 | --- | --- |
-| `~/Library/Application Support/Rolling Skill/evaluation-store.json` | Local datasets, cases, and capture settings |
+| `~/Library/Application Support/Rolling Skill/evaluation-store.json` | Local datasets, cases, Curator sessions/revisions, and capture settings |
 | `~/Library/Application Support/Rolling Skill/preferences.json` | Selected workspace and optional runtime selection |
 | `~/Library/Application Support/Rolling Skill/traces/*.jsonl` | Append-only runtime events with runtime identity |
 
 The renderer has Node integration disabled, context isolation and sandboxing enabled, and only a
-narrow IPC bridge for runtime, workspace, thread, turn, dataset, and trace operations. Runtime
-probes and launches use fixed executable/argument arrays with `shell: false`; Codex threads use
-`workspace-write` and no automatic approval escalation.
+narrow IPC bridge for runtime, workspace, thread, turn, dataset, curation, and trace operations.
+Runtime probes and launches use fixed executable/argument arrays with `shell: false`; source Codex
+threads use `workspace-write`, Curator threads use `read-only`, and neither enables automatic
+approval escalation.
 
 To rebuild the Finder-double-clickable application from source:
 
@@ -181,13 +182,17 @@ signature, and replaces the ignored root `Rolling Skill.app`. Desktop source and
 tracked; the generated Electron bundle is intentionally not committed. For development, run
 `npm ci && npm start` from `desktop/rolling-skill/`.
 
-For a traced assistant answer, select **Save case** beside the message. Choose or create a local
-dataset, review the question and answer, classify the row as `goodcase` or `badcase`, then save it.
-The new row retains runtime, thread, turn, item, and trace provenance.
+For a completed problem-solving episode, select **Curate case** beside its ending assistant message.
+Choose the earlier source user message, dataset, and `goodcase` or `badcase`, then start curation.
+The original question remains verbatim and read-only; the selected Episode and trace range are
+frozen without locking the source task. An independent read-only Curator produces a structured
+reference answer and explicit hard/soft grading contract in the right-side **Case drafts** panel.
+You can question it, request revisions, retry failures, and select **Done** to save one approved
+revision and archive the Curator task.
 
-Capture is manual in this version. It does not automatically save messages or invoke a curation
-subagent. The Agenta server deployment options elsewhere in this repository remain available for
-other use cases, but the desktop client's default path does not inspect or start them.
+Capture remains manual and automatic capture is off by default. Starting curation never writes a
+dataset case by itself. The Agenta server deployment options elsewhere in this repository remain
+available for other use cases, but the desktop client's default path does not inspect or start them.
 
 Runtime discovery is provider-based. This release selects one active runtime, while the registry
 retains all compatible descriptors and stable `runtimeId` values so a later orchestrator can run

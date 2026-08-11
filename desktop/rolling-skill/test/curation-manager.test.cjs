@@ -1,0 +1,275 @@
+const assert = require("node:assert/strict")
+const {mkdtempSync, rmSync} = require("node:fs")
+const {tmpdir} = require("node:os")
+const {join} = require("node:path")
+const {afterEach, beforeEach, describe, it} = require("node:test")
+
+const {CurationManager} = require("../src/curation-manager.cjs")
+const {buildEpisodeSnapshot} = require("../src/episode-curation.cjs")
+const {LocalEvaluationStore} = require("../src/local-store.cjs")
+
+function validDraft(summary = "Use the verified billing result.") {
+    return {
+        schemaVersion: "rolling-skill-curated-case/v1",
+        referenceAnswer: {
+            summary,
+            requiredFacts: ["The result must be tied to July."],
+            requiredSteps: ["Query the billing source and verify the returned month."],
+            requiredOutputFormat: ["State the amount and currency."],
+            evidence: [{claim: "July is the requested period.", sourceItemIds: ["user-1"]}],
+        },
+        grading: {
+            hardRequirements: [
+                {
+                    id: "H1",
+                    criterion: "Uses July billing data",
+                    passCondition: "The answer explicitly identifies July as the billing period.",
+                    evidenceBasis: "The verbatim source question asks for July.",
+                },
+            ],
+            softCriteria: [{id: "S1", criterion: "Concise", weight: 1}],
+            automaticFailures: ["Invents an unverified amount"],
+        },
+        badCaseAnalysis: null,
+    }
+}
+
+function sourceThread() {
+    return {
+        id: "source-thread",
+        modelProvider: "openai",
+        turns: [
+            {
+                id: "turn-1",
+                status: "completed",
+                items: [
+                    {
+                        id: "user-1",
+                        type: "userMessage",
+                        content: [{type: "text", text: "查一下7月份账单，各业务混元3多少成本？"}],
+                    },
+                    {
+                        id: "cmd-1",
+                        type: "commandExecution",
+                        command: "bash -lc 'billing-cli cost query --month 7'",
+                        status: "completed",
+                    },
+                    {id: "answer-1", type: "agentMessage", text: "原始回答"},
+                ],
+            },
+        ],
+    }
+}
+
+class FakeRuntime {
+    constructor() {
+        this.startedThreads = []
+        this.startedTurns = []
+        this.resumedThreads = []
+        this.archivedThreads = []
+    }
+
+    async readThread(threadId) {
+        assert.equal(threadId, "source-thread")
+        return {thread: sourceThread()}
+    }
+
+    async startThread(options) {
+        this.startedThreads.push(options)
+        return {
+            thread: {
+                id: `curator-${this.startedThreads.length}`,
+                modelProvider: "openai",
+                model: options.model ?? "runtime-default",
+            },
+        }
+    }
+
+    async resumeThread(threadId, options) {
+        this.resumedThreads.push({threadId, options})
+        return {thread: {id: threadId}}
+    }
+
+    async startTurn(threadId, text) {
+        const turn = {id: `curator-turn-${this.startedTurns.length + 1}`, items: []}
+        this.startedTurns.push({threadId, text, turn})
+        return {turn}
+    }
+
+    async archiveThread(threadId) {
+        this.archivedThreads.push(threadId)
+    }
+}
+
+describe("curation manager", () => {
+    let directory
+    let store
+    let runtime
+    let changed
+    let manager
+
+    beforeEach(() => {
+        directory = mkdtempSync(join(tmpdir(), "rolling-skill-curation-manager-"))
+        store = new LocalEvaluationStore(join(directory, "store.json"))
+        runtime = new FakeRuntime()
+        changed = []
+        manager = new CurationManager({
+            store,
+            getRuntime: async () => runtime,
+            getRuntimeDescriptor: () => ({runtimeId: "codex-alpha"}),
+            onChanged: (session) => changed.push(session),
+            schedule: (task) => task(),
+        })
+    })
+
+    afterEach(() => rmSync(directory, {recursive: true, force: true}))
+
+    it("freezes an exact source episode and starts a read-only Curator thread", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const session = await manager.createSession({
+            datasetId,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            startItemId: "user-1",
+            endItemId: "answer-1",
+            traceReference: "trace.ndjson#42",
+            modelId: "gpt-5.6-sol",
+        })
+        await manager.waitForIdle(session.id)
+
+        const persisted = store.getCurationSession(session.id)
+        assert.equal(session.episode.originalQuestion, "查一下7月份账单，各业务混元3多少成本？")
+        assert.equal(persisted.status, "running")
+        assert.equal(persisted.curator.threadId, "curator-1")
+        assert.equal(persisted.curator.modelId, "gpt-5.6-sol")
+        assert.deepEqual(runtime.startedThreads[0], {
+            sandbox: "read-only",
+            approvalPolicy: "never",
+            ephemeral: false,
+            threadSource: "subagent",
+            model: "gpt-5.6-sol",
+        })
+        assert.match(runtime.startedTurns[0].text, /must remain\s+verbatim/i)
+        assert.match(runtime.startedTurns[0].text, /billing-cli cost query/)
+        assert.equal(changed.at(-1).status, "running")
+    })
+
+    it("records a valid draft, supports follow-up revision, and archives only on Done", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const session = await manager.createSession({
+            datasetId,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+        const firstTurn = store.getCurationSession(session.id).curator.currentTurnId
+        await manager.handleNotification({
+            method: "turn/completed",
+            params: {
+                threadId: "curator-1",
+                turn: {
+                    id: firstTurn,
+                    status: "completed",
+                    items: [
+                        {
+                            id: "curator-answer-1",
+                            type: "agentMessage",
+                            text: `Review complete.\n\n\`\`\`json\n${JSON.stringify(validDraft())}\n\`\`\``,
+                        },
+                    ],
+                },
+            },
+        })
+        assert.equal(store.getCurationSession(session.id).status, "needs_review")
+
+        await manager.sendMessage(session.id, "把金额和币种的硬判定写得更明确")
+        const revising = store.getCurationSession(session.id)
+        assert.equal(revising.status, "running")
+        assert.equal(revising.conversation.at(-1).text, "把金额和币种的硬判定写得更明确")
+        assert.equal(runtime.startedTurns.at(-1).threadId, "curator-1")
+
+        const secondTurn = revising.curator.currentTurnId
+        await manager.handleNotification({
+            method: "turn/completed",
+            params: {
+                threadId: "curator-1",
+                turn: {
+                    id: secondTurn,
+                    status: "completed",
+                    items: [
+                        {
+                            id: "curator-answer-2",
+                            type: "agentMessage",
+                            text: `\`\`\`json\n${JSON.stringify(validDraft("修订后的参考答案"))}\n\`\`\``,
+                        },
+                    ],
+                },
+            },
+        })
+        const saved = await manager.archive(session.id)
+        assert.equal(saved.question, "查一下7月份账单，各业务混元3多少成本？")
+        assert.equal(saved.curated.referenceAnswer.summary, "修订后的参考答案")
+        assert.equal(store.getCurationSession(session.id).status, "archived")
+        assert.deepEqual(runtime.archivedThreads, ["curator-1"])
+    })
+
+    it("isolates malformed Curator output and can retry it without changing the source", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const session = await manager.createSession({
+            datasetId,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+        const turnId = store.getCurationSession(session.id).curator.currentTurnId
+        await manager.handleNotification({
+            method: "turn/completed",
+            params: {
+                threadId: "curator-1",
+                turn: {
+                    id: turnId,
+                    status: "completed",
+                    items: [{id: "broken", type: "agentMessage", text: "I could not decide."}],
+                },
+            },
+        })
+
+        const failed = store.getCurationSession(session.id)
+        assert.equal(failed.status, "failed")
+        assert.match(failed.error, /JSON draft/i)
+        assert.equal(failed.episode.originalQuestion, "查一下7月份账单，各业务混元3多少成本？")
+
+        await manager.retry(session.id)
+        const retried = store.getCurationSession(session.id)
+        assert.equal(retried.status, "running")
+        assert.match(runtime.startedTurns.at(-1).text, /previous response did not satisfy/i)
+        assert.equal(runtime.resumedThreads.at(-1).threadId, "curator-1")
+    })
+
+    it("turns an interrupted persisted job into a retryable failure on restart", () => {
+        const datasetId = store.listDatasets()[0].id
+        const episode = buildEpisodeSnapshot(sourceThread(), {
+            endItemId: "answer-1",
+            runtimeId: "codex-alpha",
+        })
+        const session = store.createCurationSession({
+            datasetId,
+            caseType: "goodcase",
+            episode,
+            curator: {threadId: "curator-before-restart"},
+        })
+        store.updateCurationSession(session.id, {
+            status: "running",
+            curator: {threadId: "curator-before-restart", currentTurnId: "turn-before-restart"},
+        })
+
+        const restarted = new CurationManager({store, getRuntime: async () => runtime})
+        const recovered = store.getCurationSession(session.id)
+        assert.equal(recovered.status, "failed")
+        assert.match(recovered.error, /interrupted/i)
+        assert.equal(recovered.curator.currentTurnId, null)
+        assert.equal(restarted.hiddenThreadIds().has("curator-before-restart"), true)
+    })
+})

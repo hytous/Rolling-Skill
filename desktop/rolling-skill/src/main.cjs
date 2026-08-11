@@ -5,6 +5,7 @@ const {join} = require("node:path")
 const {pathToFileURL} = require("node:url")
 
 const {CodexRuntimeProvider} = require("./codex-runtime-provider.cjs")
+const {CurationManager} = require("./curation-manager.cjs")
 const {LocalEvaluationStore} = require("./local-store.cjs")
 const {RuntimeRegistry} = require("./runtime-registry.cjs")
 const {findGitWorkspace} = require("./workspace.cjs")
@@ -18,6 +19,7 @@ let runtimeRegistry = null
 let runtimeDescriptor = null
 let availableRuntimes = []
 let store = null
+let curationManager = null
 let workspaceRoot = null
 let rendererUrl = null
 let runtimeStart = null
@@ -60,7 +62,15 @@ function send(channel, payload) {
 
 function installClientEvents(nextClient) {
     nextClient.on("state", (state) => send("runtime:state", enrichRuntimeState(state)))
-    nextClient.on("notification", (message) => send("runtime:notification", message))
+    nextClient.on("notification", (message) => {
+        void curationManager?.handleNotification(message)
+        const params = message?.params ?? {}
+        const threadId = params.threadId ?? params.thread?.id ?? null
+        const hidden =
+            (threadId && curationManager?.hiddenThreadIds().has(threadId)) ||
+            params.thread?.threadSource === "subagent"
+        if (!hidden) send("runtime:notification", message)
+    })
     nextClient.on("runtimeError", (error) => {
         send("runtime:state", {
             ...enrichRuntimeState(nextClient.state()),
@@ -375,7 +385,13 @@ function installIpc() {
             : runtimeDescriptor
               ? enrichRuntimeState({status: "starting", workspaceRoot, runtime: runtimeDescriptor})
               : unavailableRuntimeState()
-        return {runtime, workspaceRoot, datasets: store.listDatasets()}
+        return {
+            runtime,
+            workspaceRoot,
+            datasets: store.listDatasets(),
+            curationSessions: store.listCurationSessions(),
+            curatorProfile: store.read().settings.curatorProfile,
+        }
     })
     ipcMain.handle("workspace:choose", chooseWorkspace)
     ipcMain.handle("runtime:restart", restartRuntime)
@@ -390,10 +406,18 @@ function installIpc() {
     )
     ipcMain.handle("runtime:open-traces", openTraceFolder)
 
-    ipcMain.handle("runtime:list-threads", async () => (await ensureRuntime()).listThreads())
-    ipcMain.handle("runtime:read-thread", async (_event, threadId) =>
-        (await ensureRuntime()).readThread(requireIdentifier(threadId, "thread")),
-    )
+    ipcMain.handle("runtime:list-threads", async () => {
+        const response = await (await ensureRuntime()).listThreads()
+        const hidden = curationManager.hiddenThreadIds()
+        return {...response, data: (response.data ?? []).filter((thread) => !hidden.has(thread.id))}
+    })
+    ipcMain.handle("runtime:read-thread", async (_event, threadId) => {
+        threadId = requireIdentifier(threadId, "thread")
+        if (curationManager.hiddenThreadIds().has(threadId)) {
+            throw new Error("Curator threads are available through curation sessions only")
+        }
+        return (await ensureRuntime()).readThread(threadId)
+    })
     ipcMain.handle("runtime:start-thread", async () => {
         const response = await (await ensureRuntime()).startThread()
         loadedThreads.add(response.thread.id)
@@ -418,14 +442,49 @@ function installIpc() {
     )
     ipcMain.handle("datasets:list", () => store.listDatasets())
     ipcMain.handle("datasets:create", (_event, name) => store.createDataset(name))
-    ipcMain.handle("datasets:save-case", (_event, input) =>
-        store.saveCase({
-            ...input,
-            runtimeId: input.runtimeId ?? runtimeDescriptor?.runtimeId ?? null,
-            traceReference: input.traceReference ?? client?.recorder?.latestReference ?? null,
-        }),
-    )
     ipcMain.handle("datasets:reveal", revealLocalData)
+
+    ipcMain.handle("curation:list", () => store.listCurationSessions())
+    ipcMain.handle("curation:get", (_event, sessionId) =>
+        store.getCurationSession(requireIdentifier(sessionId, "curation session")),
+    )
+    ipcMain.handle("curation:create", async (_event, input = {}) => {
+        const sourceThreadId = requireIdentifier(input.sourceThreadId, "source thread")
+        const startItemId = input.startItemId
+            ? requireIdentifier(input.startItemId, "episode start item")
+            : null
+        const endItemId = requireIdentifier(input.endItemId, "episode end item")
+        const traceReference = client?.recorder?.referenceForEpisode({
+            threadId: sourceThreadId,
+            startItemId,
+            endItemId,
+        })
+        const profile = store.read().settings.curatorProfile
+        return curationManager.createSession({
+            datasetId: requireIdentifier(input.datasetId, "dataset"),
+            caseType: input.caseType,
+            sourceThreadId,
+            startItemId,
+            endItemId,
+            traceReference,
+            modelId: profile.modelId,
+        })
+    })
+    ipcMain.handle("curation:send", (_event, input = {}) =>
+        curationManager.sendMessage(
+            requireIdentifier(input.sessionId, "curation session"),
+            String(input.text ?? ""),
+        ),
+    )
+    ipcMain.handle("curation:retry", (_event, sessionId) =>
+        curationManager.retry(requireIdentifier(sessionId, "curation session")),
+    )
+    ipcMain.handle("curation:archive", (_event, sessionId) =>
+        curationManager.archive(requireIdentifier(sessionId, "curation session")),
+    )
+    ipcMain.handle("curation:update-profile", (_event, input) =>
+        store.updateCuratorProfile(input),
+    )
 }
 
 function requireIdentifier(value, label) {
@@ -452,6 +511,12 @@ if (!hasLock) {
         })
         workspaceRoot = locateInitialWorkspace()
         store = new LocalEvaluationStore(join(app.getPath("userData"), "evaluation-store.json"))
+        curationManager = new CurationManager({
+            store,
+            getRuntime: ensureRuntime,
+            getRuntimeDescriptor: () => runtimeDescriptor,
+            onChanged: (session) => send("curation:changed", session),
+        })
         runtimeRegistry = new RuntimeRegistry([new CodexRuntimeProvider()])
         discoverLocalRuntimes()
         client = createClient()

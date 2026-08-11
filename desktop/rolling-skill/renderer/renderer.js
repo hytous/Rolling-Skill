@@ -15,6 +15,10 @@ const state = {
     runtimeOperationInProgress: false,
     runtimeEpoch: 0,
     caseSelection: null,
+    curationSessions: [],
+    activeCurationId: null,
+    curationOpen: false,
+    curatorProfile: {runtimePolicy: "active", modelId: null},
     traceOpen: false,
     renderQueued: false,
 }
@@ -33,6 +37,7 @@ const elements = {
     showLocalData: document.querySelector("#show-local-data"),
     chooseRuntime: document.querySelector("#choose-runtime"),
     openTrace: document.querySelector("#open-trace"),
+    topbarCurations: document.querySelector("#topbar-curations"),
     topbarTrace: document.querySelector("#topbar-trace"),
     errorBanner: document.querySelector("#error-banner"),
     errorMessage: document.querySelector("#error-message"),
@@ -49,19 +54,28 @@ const elements = {
     openTraceFolder: document.querySelector("#open-trace-folder"),
     traceMeta: document.querySelector("#trace-meta"),
     traceEvents: document.querySelector("#trace-events"),
+    curationDrawer: document.querySelector("#curation-drawer"),
+    closeCurations: document.querySelector("#close-curations"),
+    curationList: document.querySelector("#curation-list"),
+    curationDetail: document.querySelector("#curation-detail"),
+    curatorModelId: document.querySelector("#curator-model-id"),
+    saveCuratorProfile: document.querySelector("#save-curator-profile"),
     runtimeDialog: document.querySelector("#runtime-dialog"),
     closeRuntimeDialog: document.querySelector("#close-runtime-dialog"),
     runtimeOptions: document.querySelector("#runtime-options"),
     detectRuntimes: document.querySelector("#detect-runtimes"),
     automaticRuntime: document.querySelector("#automatic-runtime"),
     chooseRuntimeFile: document.querySelector("#choose-runtime-file"),
+    confirmRuntime: document.querySelector("#confirm-runtime"),
     caseDialog: document.querySelector("#save-case-dialog"),
     caseForm: document.querySelector("#save-case-form"),
     caseDataset: document.querySelector("#case-dataset"),
     newDatasetName: document.querySelector("#new-dataset-name"),
     createDataset: document.querySelector("#create-dataset"),
+    caseStartItem: document.querySelector("#case-start-item"),
     caseQuestion: document.querySelector("#case-question"),
-    caseAnswer: document.querySelector("#case-answer"),
+    caseScope: document.querySelector("#case-scope"),
+    caseEndPreview: document.querySelector("#case-end-preview"),
     closeCaseDialog: document.querySelector("#close-case-dialog"),
     cancelSaveCase: document.querySelector("#cancel-save-case"),
     confirmSaveCase: document.querySelector("#confirm-save-case"),
@@ -207,6 +221,7 @@ function renderRuntimeOptions() {
     elements.detectRuntimes.disabled = state.runtimeOperationInProgress
     elements.automaticRuntime.disabled = state.runtimeOperationInProgress
     elements.chooseRuntimeFile.disabled = state.runtimeOperationInProgress
+    elements.confirmRuntime.disabled = state.runtimeOperationInProgress
     const runtimes = state.runtime?.availableRuntimes ?? []
     if (runtimes.length === 0) {
         elements.runtimeOptions.append(
@@ -283,10 +298,10 @@ function renderWelcome() {
     const copy = node(
         "p",
         "",
-        "Run a task through a compatible local agent runtime, inspect its trace, then save the useful response as a goodcase or badcase.",
+        "Run a task through a compatible local agent runtime, then curate a complete problem-solving episode into a reviewable goodcase or badcase.",
     )
     const chips = node("div", "welcome-chips")
-    for (const label of ["Runtime auto-discovery", "Manual case curation", "Local trace evidence"]) {
+    for (const label of ["Runtime auto-discovery", "Episode curation", "Local trace evidence"]) {
         chips.append(node("span", "welcome-chip", label))
     }
     inner.append(mark, heading, copy, chips)
@@ -326,7 +341,7 @@ function renderItem(item, turn) {
         wrapper.append(avatar, body)
         if (turn.status !== "inProgress") {
             const actions = node("div", "message-actions")
-            const save = node("button", "save-case-button", "Save case")
+            const save = node("button", "save-case-button", "Curate case")
             save.type = "button"
             save.dataset.saveCase = "true"
             save.dataset.turnId = turn.id
@@ -385,6 +400,182 @@ function renderTitle() {
     elements.activeTitle.textContent = state.newTaskMode
         ? "New task"
         : titleForThread(state.activeThread || state.threads.find((item) => item.id === state.activeThreadId))
+}
+
+const curationStatusLabels = {
+    queued: "Queued",
+    running: "Running",
+    needs_review: "Needs review",
+    failed: "Failed",
+    archived: "Archived",
+    cancelled: "Cancelled",
+}
+
+function activeCuration() {
+    return state.curationSessions.find((session) => session.id === state.activeCurationId) ?? null
+}
+
+function appendStringList(container, values, empty = "None") {
+    if (!values?.length) {
+        container.append(node("div", "curation-empty", empty))
+        return
+    }
+    const list = node("ul", "curation-value-list")
+    for (const value of values) list.append(node("li", "", value))
+    container.append(list)
+}
+
+function draftSection(title, values) {
+    const section = node("section", "draft-section")
+    section.append(node("h4", "", title))
+    appendStringList(section, values)
+    return section
+}
+
+function renderDraft(draft) {
+    const wrapper = node("div", "curation-draft")
+    wrapper.append(node("h3", "", "Structured reference"))
+    const summary = node("section", "draft-section")
+    summary.append(
+        node("h4", "", "Reference answer"),
+        node("div", "draft-summary", draft.referenceAnswer.summary),
+    )
+    wrapper.append(
+        summary,
+        draftSection("Required facts", draft.referenceAnswer.requiredFacts),
+        draftSection("Required steps", draft.referenceAnswer.requiredSteps),
+        draftSection("Required output format", draft.referenceAnswer.requiredOutputFormat),
+    )
+
+    const hard = node("section", "draft-section hard-requirements")
+    hard.append(node("h4", "", "Hard requirements"))
+    for (const requirement of draft.grading.hardRequirements) {
+        const card = node("article", "requirement-card")
+        card.append(
+            node("strong", "", `${requirement.id} · ${requirement.criterion}`),
+            node("span", "", `Pass: ${requirement.passCondition}`),
+            node("small", "", `Basis: ${requirement.evidenceBasis}`),
+        )
+        hard.append(card)
+    }
+    wrapper.append(
+        hard,
+        draftSection(
+            "Soft criteria",
+            draft.grading.softCriteria.map(
+                (criterion) => `${criterion.id} · ${criterion.criterion} (weight ${criterion.weight})`,
+            ),
+        ),
+        draftSection("Automatic failures", draft.grading.automaticFailures),
+    )
+    if (draft.badCaseAnalysis) {
+        wrapper.append(
+            draftSection("Root causes", draft.badCaseAnalysis.rootCauses),
+            draftSection("Expected recovery", [draft.badCaseAnalysis.expectedRecovery]),
+        )
+    }
+    return wrapper
+}
+
+function renderCurations() {
+    elements.curationDrawer.classList.toggle("visible", state.curationOpen)
+    elements.curationList.replaceChildren()
+    elements.curatorModelId.value = state.curatorProfile?.modelId ?? ""
+    if (!state.curationSessions.length) {
+        elements.curationList.append(
+            node("div", "sidebar-placeholder", "No drafts yet. Use Curate case under an assistant response."),
+        )
+    } else {
+        for (const session of state.curationSessions) {
+            const button = node("button", "curation-list-item")
+            button.type = "button"
+            button.dataset.curationId = session.id
+            if (session.id === state.activeCurationId) button.classList.add("active")
+            const title = String(session.episode?.originalQuestion ?? "Untitled case").trim()
+            button.append(
+                node("span", "curation-list-title", title || "Untitled case"),
+                node(
+                    "span",
+                    `curation-status ${session.status}`,
+                    curationStatusLabels[session.status] ?? session.status,
+                ),
+            )
+            elements.curationList.append(button)
+        }
+    }
+
+    elements.curationDetail.replaceChildren()
+    const session = activeCuration()
+    if (!session) {
+        elements.curationDetail.append(
+            node("div", "sidebar-placeholder", "Select a case draft to review it."),
+        )
+        return
+    }
+
+    const overview = node("div", "curation-overview")
+    overview.append(
+        node("span", `case-kind ${session.caseType}`, session.caseType),
+        node("span", `curation-status ${session.status}`, curationStatusLabels[session.status]),
+    )
+    const question = node("section", "frozen-question")
+    question.append(
+        node("span", "curation-label", "Verbatim question"),
+        node("div", "", session.episode.originalQuestion),
+    )
+    const provenance = node(
+        "div",
+        "curation-provenance",
+        `${session.episode.items.length} episode items · ${session.episode.toolActivity.length} tool signatures · ${session.curator.modelId || "runtime default model"}`,
+    )
+    elements.curationDetail.append(overview, question, provenance)
+
+    const conversation = node("section", "curator-conversation")
+    conversation.append(node("h3", "", "Curator conversation"))
+    for (const message of session.conversation) {
+        const bubble = node("article", `curator-message ${message.role}`)
+        bubble.append(node("span", "curator-role", message.role === "assistant" ? "Curator" : "You"))
+        bubble.append(node("div", "", message.text))
+        conversation.append(bubble)
+    }
+    if (session.status === "queued" || session.status === "running") {
+        conversation.append(node("div", "curator-working", "Curator is working…"))
+    }
+    if (session.error) {
+        const error = node("div", "curation-error")
+        error.append(node("span", "", session.error))
+        if (session.status === "failed") {
+            const retry = node("button", "", "Retry")
+            retry.type = "button"
+            retry.dataset.retryCuration = session.id
+            error.append(retry)
+        }
+        conversation.append(error)
+    }
+    elements.curationDetail.append(conversation)
+    if (session.draft) elements.curationDetail.append(renderDraft(session.draft))
+
+    if (session.status !== "archived" && session.status !== "cancelled") {
+        const form = node("form", "curation-followup")
+        form.dataset.curationForm = session.id
+        const input = node("textarea")
+        input.rows = 3
+        input.maxLength = 120000
+        input.placeholder = "Ask Curator to explain or revise this draft"
+        input.disabled = session.status === "queued" || session.status === "running"
+        input.dataset.curationInput = session.id
+        const send = node("button", "", "Send")
+        send.type = "submit"
+        send.disabled = input.disabled
+        form.append(input, send)
+        elements.curationDetail.append(form)
+        if (session.status === "needs_review" && session.draft) {
+            const done = node("button", "curation-done primary", "Done · save case")
+            done.type = "button"
+            done.dataset.archiveCuration = session.id
+            elements.curationDetail.append(done)
+        }
+    }
 }
 
 function renderAll(options) {
@@ -538,18 +729,53 @@ function updateDatasetOptions(selectedId) {
     }
 }
 
+function flattenedActiveItems() {
+    const items = []
+    for (const turn of getTurns()) {
+        for (const item of turn.items ?? []) items.push({turnId: turn.id, item})
+    }
+    return items
+}
+
+function updateEpisodeStartPreview() {
+    const selection = state.caseSelection
+    if (!selection) return
+    const selected = selection.startCandidates.find(
+        (candidate) => candidate.item.id === elements.caseStartItem.value,
+    )
+    if (!selected) return
+    selection.startItemId = selected.item.id
+    elements.caseQuestion.value = textFromUserInput(selected.item.content)
+    const flattened = flattenedActiveItems()
+    const startIndex = flattened.findIndex(({item}) => item.id === selected.item.id)
+    const endIndex = flattened.findIndex(({item}) => item.id === selection.itemId)
+    elements.caseScope.textContent = `Frozen range: ${Math.max(0, endIndex - startIndex + 1)} conversation and tool items. New messages in the original task are not included.`
+}
+
 function openCaseDialog(turnId, itemId) {
     const turn = findTurn(turnId)
     const item = turn?.items?.find((entry) => entry.id === itemId)
     if (!turn || !item || item.type !== "agentMessage") return
-    const question = [...(turn.items ?? [])]
-        .filter((entry) => entry.type === "userMessage")
-        .map((entry) => textFromUserInput(entry.content))
-        .filter(Boolean)
-        .join("\n\n")
-    state.caseSelection = {turnId, itemId}
-    elements.caseQuestion.value = question
-    elements.caseAnswer.value = item.text || ""
+    const flattened = flattenedActiveItems()
+    const endIndex = flattened.findIndex(({item: entry}) => entry.id === itemId)
+    const startCandidates = flattened
+        .slice(0, endIndex + 1)
+        .filter(({item: entry}) => entry.type === "userMessage")
+    if (!startCandidates.length) {
+        showError(new Error("No source question was found before this response"))
+        return
+    }
+    state.caseSelection = {turnId, itemId, startCandidates, startItemId: startCandidates.at(-1).item.id}
+    elements.caseStartItem.replaceChildren()
+    for (const candidate of [...startCandidates].reverse()) {
+        const question = textFromUserInput(candidate.item.content)
+        const option = node("option", "", question.replace(/\s+/g, " ").slice(0, 110))
+        option.value = candidate.item.id
+        elements.caseStartItem.append(option)
+    }
+    elements.caseStartItem.value = state.caseSelection.startItemId
+    elements.caseEndPreview.value = item.text || ""
+    updateEpisodeStartPreview()
     updateDatasetOptions(state.datasets[0]?.id)
     elements.caseDialog.showModal()
 }
@@ -571,28 +797,29 @@ async function createDataset() {
     }
 }
 
-async function saveCase() {
+async function createCuration() {
     const selection = state.caseSelection
     if (!selection) return
     const caseType = new FormData(elements.caseForm).get("case-type")
     elements.confirmSaveCase.disabled = true
+    elements.caseDialog.close()
     try {
-        await window.rollingSkill.saveCase({
+        const session = await window.rollingSkill.createCuration({
             datasetId: elements.caseDataset.value,
             caseType,
-            question: elements.caseQuestion.value,
-            answer: elements.caseAnswer.value,
-            threadId: state.activeThreadId,
-            turnId: selection.turnId,
-            itemId: selection.itemId,
+            sourceThreadId: state.activeThreadId,
+            startItemId: selection.startItemId,
+            endItemId: selection.itemId,
         })
-        state.datasets = await window.rollingSkill.listDatasets()
-        elements.caseDialog.close()
-        showToast(`Saved as ${caseType}`)
+        upsertCuration(session)
+        state.activeCurationId = session.id
+        setCurationOpen(true)
+        showToast("Frozen episode sent to Curator")
     } catch (error) {
         showError(error)
     } finally {
         elements.confirmSaveCase.disabled = false
+        state.caseSelection = null
     }
 }
 
@@ -626,8 +853,67 @@ async function loadTrace() {
 
 function setTraceOpen(open) {
     state.traceOpen = open
+    if (open) {
+        state.curationOpen = false
+        elements.curationDrawer.classList.remove("visible")
+    }
     elements.traceDrawer.classList.toggle("visible", open)
     if (open) void loadTrace()
+}
+
+function setCurationOpen(open) {
+    state.curationOpen = open
+    if (open) {
+        state.traceOpen = false
+        elements.traceDrawer.classList.remove("visible")
+        if (!state.activeCurationId && state.curationSessions.length) {
+            state.activeCurationId = state.curationSessions[0].id
+        }
+    }
+    renderCurations()
+}
+
+function upsertCuration(session) {
+    const index = state.curationSessions.findIndex((entry) => entry.id === session.id)
+    if (index >= 0) state.curationSessions[index] = session
+    else state.curationSessions.unshift(session)
+    state.curationSessions.sort((left, right) =>
+        String(right.updatedAt).localeCompare(String(left.updatedAt)),
+    )
+}
+
+async function sendCurationMessage(sessionId, text) {
+    if (!String(text).trim()) return
+    try {
+        const session = await window.rollingSkill.sendCurationMessage(sessionId, text)
+        upsertCuration(session)
+        renderCurations()
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function retryCuration(sessionId) {
+    try {
+        const session = await window.rollingSkill.retryCuration(sessionId)
+        upsertCuration(session)
+        renderCurations()
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function archiveCuration(sessionId) {
+    try {
+        await window.rollingSkill.archiveCuration(sessionId)
+        const session = await window.rollingSkill.getCuration(sessionId)
+        upsertCuration(session)
+        state.datasets = await window.rollingSkill.listDatasets()
+        renderCurations()
+        showToast("Case saved and Curator archived")
+    } catch (error) {
+        showError(error)
+    }
 }
 
 function handleNotification(message) {
@@ -730,14 +1016,17 @@ elements.workspaceButton.addEventListener("click", async () => {
 elements.showLocalData.addEventListener("click", () => window.rollingSkill.revealLocalData())
 elements.chooseRuntime.addEventListener("click", openRuntimeDialog)
 elements.openTrace.addEventListener("click", () => setTraceOpen(true))
+elements.topbarCurations.addEventListener("click", () => setCurationOpen(true))
 elements.topbarTrace.addEventListener("click", () => setTraceOpen(true))
 elements.closeTrace.addEventListener("click", () => setTraceOpen(false))
+elements.closeCurations.addEventListener("click", () => setCurationOpen(false))
 elements.refreshTrace.addEventListener("click", loadTrace)
 elements.openTraceFolder.addEventListener("click", () => window.rollingSkill.openTraceFolder())
 elements.runtimeStatus.addEventListener("click", async () => {
     openRuntimeDialog()
 })
 elements.closeRuntimeDialog.addEventListener("click", () => elements.runtimeDialog.close())
+elements.confirmRuntime.addEventListener("click", () => elements.runtimeDialog.close())
 elements.runtimeOptions.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-runtime-id]")
     if (!button || button.dataset.runtimeId === state.runtime?.runtime?.runtimeId) return
@@ -778,10 +1067,50 @@ elements.conversation.addEventListener("click", (event) => {
 })
 elements.closeCaseDialog.addEventListener("click", () => elements.caseDialog.close())
 elements.cancelSaveCase.addEventListener("click", () => elements.caseDialog.close())
+elements.caseStartItem.addEventListener("change", updateEpisodeStartPreview)
 elements.createDataset.addEventListener("click", createDataset)
 elements.caseForm.addEventListener("submit", (event) => {
     event.preventDefault()
-    void saveCase()
+    void createCuration()
+})
+elements.curationList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-curation-id]")
+    if (!button) return
+    state.activeCurationId = button.dataset.curationId
+    renderCurations()
+})
+elements.curationDetail.addEventListener("click", (event) => {
+    const retry = event.target.closest("[data-retry-curation]")
+    if (retry) void retryCuration(retry.dataset.retryCuration)
+    const archive = event.target.closest("[data-archive-curation]")
+    if (archive) void archiveCuration(archive.dataset.archiveCuration)
+})
+elements.curationDetail.addEventListener("submit", (event) => {
+    const form = event.target.closest("[data-curation-form]")
+    if (!form) return
+    event.preventDefault()
+    const input = form.querySelector("[data-curation-input]")
+    const text = input?.value ?? ""
+    if (input) input.value = ""
+    void sendCurationMessage(form.dataset.curationForm, text)
+})
+elements.saveCuratorProfile.addEventListener("click", async () => {
+    elements.saveCuratorProfile.disabled = true
+    try {
+        state.curatorProfile = await window.rollingSkill.updateCuratorProfile({
+            modelId: elements.curatorModelId.value,
+        })
+        showToast(
+            state.curatorProfile.modelId
+                ? `Curator model set to ${state.curatorProfile.modelId}`
+                : "Curator will follow the source/runtime model",
+        )
+    } catch (error) {
+        showError(error)
+    } finally {
+        elements.saveCuratorProfile.disabled = false
+        renderCurations()
+    }
 })
 
 window.rollingSkill.onRuntimeState((runtime) => {
@@ -791,6 +1120,11 @@ window.rollingSkill.onRuntimeState((runtime) => {
     renderComposer()
 })
 window.rollingSkill.onRuntimeNotification(handleNotification)
+window.rollingSkill.onCurationChanged((session) => {
+    upsertCuration(session)
+    if (!state.activeCurationId) state.activeCurationId = session.id
+    renderCurations()
+})
 window.rollingSkill.onWorkspaceChanged(async ({workspaceRoot}) => {
     state.workspaceRoot = workspaceRoot
     state.activeThread = null
@@ -811,7 +1145,11 @@ async function bootstrap() {
         state.runtime = initial.runtime
         state.workspaceRoot = initial.workspaceRoot
         state.datasets = initial.datasets ?? []
+        state.curationSessions = initial.curationSessions ?? []
+        state.curatorProfile = initial.curatorProfile ?? state.curatorProfile
+        state.activeCurationId = state.curationSessions[0]?.id ?? null
         renderAll()
+        renderCurations()
         if (state.runtime?.status !== "unavailable") {
             await refreshThreads(true)
         } else {

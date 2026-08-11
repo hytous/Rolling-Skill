@@ -1,10 +1,11 @@
 const assert = require("node:assert/strict")
-const {mkdtempSync, readFileSync, rmSync} = require("node:fs")
+const {mkdtempSync, readFileSync, rmSync, writeFileSync} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {afterEach, describe, it} = require("node:test")
 
 const {LocalEvaluationStore} = require("../src/local-store.cjs")
+const {CURATED_CASE_SCHEMA} = require("../src/episode-curation.cjs")
 
 const temporaryDirectories = []
 
@@ -21,14 +22,79 @@ function fixture() {
     return {path, store: new LocalEvaluationStore(path)}
 }
 
+function episode(question = "帮我随便看看这个账单呗？") {
+    return {
+        schemaVersion: "rolling-skill-episode/v1",
+        originalQuestion: question,
+        source: {
+            threadId: "thread-source",
+            startTurnId: "turn-1",
+            startItemId: "user-1",
+            endTurnId: "turn-1",
+            endItemId: "agent-2",
+            runtimeId: "codex:source",
+            modelProvider: "openai",
+            modelId: null,
+            traceReference: "trace://source.jsonl#L10",
+        },
+        items: [
+            {id: "user-1", turnId: "turn-1", type: "userMessage", text: question},
+            {id: "agent-2", turnId: "turn-1", type: "agentMessage", text: "结果"},
+        ],
+        toolActivity: [],
+        capturedAt: "2026-08-11T00:00:00.000Z",
+    }
+}
+
+function curatedDraft() {
+    return {
+        schemaVersion: CURATED_CASE_SCHEMA,
+        referenceAnswer: {
+            summary: "给出账单结论。",
+            requiredFacts: ["包含实际数值"],
+            requiredSteps: ["查询账单"],
+            requiredOutputFormat: ["数值必须带币种"],
+            evidence: [],
+        },
+        grading: {
+            hardRequirements: [
+                {
+                    id: "H1",
+                    criterion: "数值有币种",
+                    passCondition: "每个数值都标明币种",
+                    evidenceBasis: "账单结果需要可解释",
+                },
+            ],
+            softCriteria: [],
+            automaticFailures: ["缺少账单结论"],
+        },
+        badCaseAnalysis: null,
+    }
+}
+
 describe("local evaluation store", () => {
     it("starts with manual capture disabled and a default dataset", () => {
         const {store} = fixture()
         const snapshot = store.read()
         assert.equal(snapshot.settings.autoCapture, false)
+        assert.deepEqual(snapshot.settings.curatorProfile, {
+            runtimePolicy: "active",
+            modelId: null,
+        })
         assert.equal(snapshot.datasets.length, 1)
         assert.equal(snapshot.datasets[0].name, "Skill evaluation cases")
         assert.deepEqual(snapshot.cases, [])
+        assert.deepEqual(snapshot.curationSessions, [])
+    })
+
+    it("stores an optional Curator model override without enabling automatic capture", () => {
+        const {store} = fixture()
+        assert.deepEqual(store.updateCuratorProfile({modelId: "  gpt-5.6-sol  "}), {
+            runtimePolicy: "active",
+            modelId: "gpt-5.6-sol",
+        })
+        assert.equal(store.read().settings.autoCapture, false)
+        assert.equal(store.updateCuratorProfile({modelId: ""}).modelId, null)
     })
 
     it("atomically persists a classified case with full local provenance", () => {
@@ -113,5 +179,90 @@ describe("local evaluation store", () => {
         assert.equal(summary.caseCount, 1)
         assert.equal(summary.goodcaseCount, 1)
         assert.equal(summary.badcaseCount, 0)
+    })
+
+    it("migrates v1 data without rewriting existing cases", () => {
+        const {path} = fixture()
+        writeFileSync(
+            path,
+            `${JSON.stringify({
+                schemaVersion: "rolling-skill-local/v1",
+                settings: {autoCapture: false},
+                datasets: [{id: "dataset-old", name: "Old", createdAt: "then"}],
+                cases: [{id: "case-old", datasetId: "dataset-old", question: "q", answer: "a"}],
+            })}\n`,
+        )
+        const migrated = new LocalEvaluationStore(path).read()
+
+        assert.equal(migrated.schemaVersion, "rolling-skill-local/v2")
+        assert.equal(migrated.cases[0].id, "case-old")
+        assert.deepEqual(migrated.curationSessions, [])
+        assert.equal(migrated.settings.curatorProfile.runtimePolicy, "active")
+    })
+
+    it("persists a reviewable curation conversation and archives one approved revision", () => {
+        const {store} = fixture()
+        const dataset = store.read().datasets[0]
+        const question = "帮我随便看看这个账单呗？  别漏啦"
+        const session = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            episode: episode(question),
+            curator: {
+                runtimeId: "codex:curator",
+                modelProvider: "openai",
+                modelId: null,
+                promptVersion: "rolling-skill-curator/v1",
+            },
+        })
+
+        assert.equal(session.status, "queued")
+        assert.equal(session.episode.originalQuestion, question)
+        store.updateCurationSession(session.id, {
+            status: "running",
+            curator: {threadId: "thread-curator", currentTurnId: "turn-curator-1"},
+        })
+        store.appendCurationMessage(session.id, {
+            role: "user",
+            text: "请让硬判定更明确。",
+            turnId: "turn-curator-2",
+        })
+        const reviewed = store.recordCurationRevision(session.id, {
+            draft: curatedDraft(),
+            assistantText: "已经补充硬判定。",
+            turnId: "turn-curator-2",
+        })
+
+        assert.equal(reviewed.status, "needs_review")
+        assert.equal(reviewed.revisions.length, 1)
+        assert.deepEqual(
+            reviewed.conversation.map((message) => message.role),
+            ["user", "assistant"],
+        )
+
+        const saved = store.archiveCurationSession(session.id)
+        const archived = store.getCurationSession(session.id)
+
+        assert.equal(saved.question, question)
+        assert.match(saved.answer, /## Hard requirements/)
+        assert.equal(saved.curated.schemaVersion, CURATED_CASE_SCHEMA)
+        assert.equal(saved.source.curationSessionId, session.id)
+        assert.equal(saved.source.startItemId, "user-1")
+        assert.equal(archived.status, "archived")
+        assert.equal(archived.caseId, saved.id)
+    })
+
+    it("does not archive a curation session before a valid draft exists", () => {
+        const {store} = fixture()
+        const dataset = store.read().datasets[0]
+        const session = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "badcase",
+            episode: episode(),
+            curator: {runtimeId: "codex:local"},
+        })
+
+        assert.throws(() => store.archiveCurationSession(session.id), /valid.*draft|review/i)
+        assert.equal(store.read().cases.length, 0)
     })
 })

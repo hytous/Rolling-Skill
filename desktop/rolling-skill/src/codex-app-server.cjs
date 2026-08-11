@@ -100,7 +100,7 @@ class CodexAppServerClient extends EventEmitter {
         })
 
         const initialized = await this.request("initialize", {
-            clientInfo: {name: "rolling-skill", title: "Rolling Skill", version: "0.4.0"},
+            clientInfo: {name: "rolling-skill", title: "Rolling Skill", version: "0.5.0"},
             capabilities: {experimentalApi: true, requestAttestation: false},
         })
         this.notify("initialized")
@@ -178,23 +178,25 @@ class CodexAppServerClient extends EventEmitter {
         return this.request("thread/read", {threadId, includeTurns: true})
     }
 
-    startThread() {
+    startThread(options = {}) {
         return this.request("thread/start", {
             cwd: this.workspaceRoot,
-            approvalPolicy: "never",
-            sandbox: "workspace-write",
-            ephemeral: false,
+            approvalPolicy: options.approvalPolicy ?? "never",
+            sandbox: options.sandbox ?? "workspace-write",
+            ephemeral: options.ephemeral ?? false,
             sessionStartSource: "startup",
-            threadSource: "user",
+            threadSource: options.threadSource ?? "user",
+            ...(options.model ? {model: options.model} : {}),
         })
     }
 
-    resumeThread(threadId) {
+    resumeThread(threadId, options = {}) {
         return this.request("thread/resume", {
             threadId,
-            cwd: this.workspaceRoot,
-            approvalPolicy: "never",
-            sandbox: "workspace-write",
+            cwd: options.cwd ?? this.workspaceRoot,
+            approvalPolicy: options.approvalPolicy ?? "never",
+            sandbox: options.sandbox ?? "workspace-write",
+            ...(options.model ? {model: options.model} : {}),
         })
     }
 
@@ -207,6 +209,10 @@ class CodexAppServerClient extends EventEmitter {
 
     interruptTurn(threadId, turnId) {
         return this.request("turn/interrupt", {threadId, turnId})
+    }
+
+    archiveThread(threadId) {
+        return this.request("thread/archive", {threadId})
     }
 
     recentTrace(limit) {

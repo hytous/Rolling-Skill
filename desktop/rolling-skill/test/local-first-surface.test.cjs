@@ -25,12 +25,22 @@ describe("local-first desktop surface", () => {
         assert.doesNotMatch(defaultPath, /\bdocker\b|\bcompose\b|\blogin\b|localhost/i)
     })
 
-    it("keeps automatic capture disabled and exposes manual case controls", () => {
+    it("keeps automatic capture disabled and exposes episode curation controls", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")
+        const preload = source("src/preload.cjs")
+        const main = source("src/main.cjs")
 
         assert.match(html, /Automatic capture is off/i)
-        assert.match(renderer, /saveCase/)
+        assert.match(html, /id="curation-drawer"/)
+        assert.match(html, /id="case-start-item"/)
+        assert.match(html, /id="case-question"[^>]*readonly/)
+        assert.match(renderer, /createCuration/)
+        assert.match(preload, /createCuration/)
+        assert.match(main, /curation:create/)
+        assert.match(main, /hiddenThreadIds/)
+        assert.doesNotMatch(preload, /saveCase/)
+        assert.doesNotMatch(main, /datasets:save-case/)
         assert.match(renderer, /goodcase/)
         assert.match(renderer, /badcase/)
     })
@@ -56,5 +66,16 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /runtimeOperationInProgress/)
         assert.match(renderer, /changeRuntime/)
         assert.match(main, /enqueueRuntimeOperation/)
+    })
+
+    it("uses Done as the runtime dialog primary action", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const runtimeDialog = html.match(/<dialog id="runtime-dialog"[\s\S]*?<\/dialog>/)?.[0] ?? ""
+
+        assert.match(runtimeDialog, /id="choose-runtime-file"[^>]*>Add executable…<\/button>/)
+        assert.doesNotMatch(runtimeDialog, /id="choose-runtime-file"[^>]*class="primary"/)
+        assert.match(runtimeDialog, /id="confirm-runtime" class="primary"[^>]*>Done<\/button>/)
+        assert.match(renderer, /confirmRuntime\.addEventListener\("click", \(\) => elements\.runtimeDialog\.close\(\)\)/)
     })
 })

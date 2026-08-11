@@ -81,25 +81,41 @@ specific local Codex should be used without saving it through the UI.
 1. Select a workspace and active runtime.
 2. Start a new task or open an existing workspace-scoped task.
 3. Inspect the streamed conversation and raw local trace.
-4. Select **Save case** beside an assistant message.
-5. Choose or create a dataset, classify it as `goodcase` or `badcase`, review the question and
-   answer, and save it.
+4. Select **Curate case** beside the assistant message that ends the useful problem-solving episode.
+5. Choose the source user message where the episode begins, a dataset, and `goodcase` or `badcase`.
+   The displayed dataset question is read-only and is preserved verbatim.
+6. Select **Start curation**. Rolling Skill freezes the selected conversation/trace range while the
+   original task remains live, then starts an independent read-only Curator task.
+7. Review the Curator conversation and structured reference answer in **Case drafts**. Ask follow-up
+   questions or request revisions, use **Retry** after a failed draft, and select **Done** only when
+   the hard requirements and reference result are ready.
 
-Automatic capture is disabled by default. Saved cases include thread, turn, item, trace, and
-`runtimeId` provenance.
+The Curator output has a fixed agent-grading contract: reference summary, required facts, required
+steps, required output format, evidence links, hard pass/fail requirements, soft criteria, and
+automatic failures. Badcases also record the first divergence, root causes, compact loop summary,
+and expected recovery. Shell activity is grouped by CLI/subcommand (for example `git status` and
+`billing-cli cost query`) while repeated CLI and MCP calls are compacted with counts and status
+distributions.
+
+Automatic capture is disabled by default. No case is written until **Done**. Approved cases retain
+the exact user question, structured grading data, source and Curator runtime provenance, immutable
+Episode evidence, and the append-only trace range. The optional Curator model override lives in the
+**Case drafts → Curator model** setting; otherwise the source model is reused when the runtime
+exposes it, with the active runtime default as fallback.
 
 Local state is stored under `~/Library/Application Support/Rolling Skill/`:
 
 | Path | Contents |
 | --- | --- |
-| `evaluation-store.json` | Dataset definitions, goodcases, badcases, and capture settings |
+| `evaluation-store.json` | Datasets, cases, Curator sessions/revisions, and capture settings |
 | `preferences.json` | Selected workspace and optional runtime selection |
 | `traces/*.jsonl` | Append-only runtime events with runtime identity metadata |
 
 ## Security model
 
 - Runtime probes and launches use fixed executable/argument arrays with `shell: false`.
-- Codex threads default to `workspace-write` and `approvalPolicy: never`.
+- Source Codex threads default to `workspace-write`; Curator threads are forced to `read-only`.
+  Both use `approvalPolicy: never`.
 - The renderer has Node integration disabled, context isolation enabled, and Chromium sandboxing
   enabled.
 - The preload bridge exposes only runtime, workspace, thread, turn, dataset, and trace operations;
@@ -115,5 +131,6 @@ capabilities and are not inspected, started, or required by `Rolling Skill.app`.
 
 `npm test` covers provider discovery priority and de-duplication, compatibility probing, registry
 selection/client delegation, a real locally discovered app-server smoke, protocol framing, Git
-workspace discovery, local-first surface invariants, atomic dataset persistence, case
-classification, runtime attribution, and trace provenance.
+workspace discovery, local-first surface invariants, episode boundaries, verbatim questions,
+CLI/MCP compaction, Curator lifecycle/retries/revisions, atomic dataset persistence, fixed grading
+contracts, runtime attribution, and trace provenance.

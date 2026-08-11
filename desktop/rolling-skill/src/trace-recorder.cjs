@@ -62,6 +62,39 @@ class TraceRecorder {
             return []
         }
     }
+
+    referenceForEpisode({threadId, startItemId, endItemId}) {
+        try {
+            const lines = readFileSync(this.path, "utf8").trim().split("\n").filter(Boolean)
+            let startLine = null
+            let endLine = null
+            for (const line of lines) {
+                const event = JSON.parse(line)
+                const params = event.message?.params ?? {}
+                const historicalThread = event.message?.result?.thread ?? null
+                const eventThreadId =
+                    params.threadId ?? params.thread?.id ?? historicalThread?.id ?? null
+                if (eventThreadId !== threadId) continue
+                const historicalItemIds = (historicalThread?.turns ?? []).flatMap((turn) =>
+                    (turn.items ?? []).map((item) => item.id),
+                )
+                const itemIds = new Set([
+                    params.itemId,
+                    params.item?.id,
+                    ...(params.turn?.items ?? []).map((item) => item.id),
+                    ...historicalItemIds,
+                ])
+                if (startLine === null && itemIds.has(startItemId)) startLine = event.sequence
+                if (itemIds.has(endItemId)) endLine = event.sequence
+            }
+            if (startLine !== null && endLine !== null && startLine <= endLine) {
+                return `trace://${this.fileName}#L${startLine}-L${endLine}`
+            }
+        } catch {
+            // Fall back to the last immutable append position when a range cannot be recovered.
+        }
+        return this.latestReference
+    }
 }
 
 module.exports = {TraceRecorder, safeSessionId}

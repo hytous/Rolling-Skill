@@ -67,6 +67,7 @@
                         <span class="runtime-dot" aria-hidden="true"></span>
                         <span id="runtime-label">Starting local runtime</span>
                     </button>
+                    <button id="topbar-curations" class="topbar-button" type="button">Case drafts</button>
                     <button id="topbar-trace" class="topbar-button" type="button">Trace</button>
                 </header>
 
@@ -124,6 +125,28 @@
                 <div id="trace-meta" class="trace-meta">Trace begins when the local runtime starts.</div>
                 <div id="trace-events" class="trace-events"></div>
             </aside>
+
+            <aside id="curation-drawer" class="right-drawer curation-drawer" aria-label="Case drafts">
+                <header class="drawer-header">
+                    <div>
+                        <div class="drawer-eyebrow">CURATOR TASKS</div>
+                        <h2>Case drafts</h2>
+                    </div>
+                    <button id="close-curations" class="icon-button large" type="button" title="Close case drafts">×</button>
+                </header>
+                <details class="curator-settings">
+                    <summary>Curator model</summary>
+                    <p>Use the source model when available, then the active runtime default.</p>
+                    <div class="curator-model-row">
+                        <input id="curator-model-id" maxlength="200" placeholder="Optional model override" />
+                        <button id="save-curator-profile" type="button">Save</button>
+                    </div>
+                </details>
+                <nav id="curation-list" class="curation-list" aria-label="Curation sessions"></nav>
+                <section id="curation-detail" class="curation-detail">
+                    <div class="sidebar-placeholder">Select a case draft to review it.</div>
+                </section>
+            </aside>
         </div>
 
         <dialog id="runtime-dialog" class="case-dialog runtime-dialog">
@@ -142,7 +165,8 @@
                 <div class="runtime-dialog-actions">
                     <button id="detect-runtimes" type="button">Rescan</button>
                     <button id="automatic-runtime" type="button">Use automatic selection</button>
-                    <button id="choose-runtime-file" class="primary" type="button">Choose executable…</button>
+                    <button id="choose-runtime-file" type="button">Add executable…</button>
+                    <button id="confirm-runtime" class="primary" type="button">Done</button>
                 </div>
             </div>
         </dialog>
@@ -152,7 +176,7 @@
                 <div class="dialog-header">
                     <div>
                         <div class="drawer-eyebrow">CURATE EVALUATION DATA</div>
-                        <h2>Save this response</h2>
+                        <h2>Curate a problem-solving episode</h2>
                     </div>
                     <button id="close-case-dialog" class="icon-button large" type="button">×</button>
                 </div>
@@ -179,18 +203,23 @@
                 </fieldset>
 
                 <label class="field">
-                    <span>Question</span>
-                    <textarea id="case-question" rows="4" required></textarea>
+                    <span>Episode starts at</span>
+                    <select id="case-start-item" required></select>
                 </label>
                 <label class="field">
-                    <span>Answer</span>
-                    <textarea id="case-answer" rows="7" required></textarea>
+                    <span>Verbatim dataset question</span>
+                    <textarea id="case-question" rows="4" readonly required></textarea>
+                </label>
+                <div id="case-scope" class="case-scope"></div>
+                <label class="field">
+                    <span>Selected ending response</span>
+                    <textarea id="case-end-preview" rows="5" readonly></textarea>
                 </label>
 
                 <div class="dialog-footer">
-                    <span>Trace provenance is attached automatically.</span>
+                    <span>A frozen copy goes to Curator; the original task stays live.</span>
                     <button id="cancel-save-case" type="button">Cancel</button>
-                    <button id="confirm-save-case" class="primary" type="submit">Save case</button>
+                    <button id="confirm-save-case" class="primary" type="submit">Start curation</button>
                 </div>
             </form>
         </dialog>
