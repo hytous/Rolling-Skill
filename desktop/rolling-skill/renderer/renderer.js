@@ -2417,6 +2417,7 @@ function resizeComposer() {
 async function submitTurn() {
     const text = elements.composerInput.value.trim()
     if (!text || state.sending || state.activeTurnId || state.activeThreadArchived) return
+    const submittedRuntimeEpoch = state.runtimeEpoch
     state.sending = true
     state.error = null
     renderAll()
@@ -2426,22 +2427,39 @@ async function submitTurn() {
                 state.selectedTaskModelId,
                 state.selectedTaskEffort,
             )
+            if (
+                submittedRuntimeEpoch !== state.runtimeEpoch ||
+                !state.newTaskMode ||
+                state.activeThread
+            ) {
+                state.sending = false
+                renderAll()
+                return
+            }
             state.activeThread = response.thread
             state.activeThreadId = response.thread.id
             state.newTaskMode = false
             upsertThreadSummary(response.thread)
         }
+        const submittedThreadId = state.activeThreadId
         const response = await window.rollingSkill.startTurn(
-            state.activeThreadId,
+            submittedThreadId,
             text,
             state.selectedTaskModelId,
             state.selectedTaskEffort,
         )
+        state.sending = false
+        if (
+            submittedRuntimeEpoch !== state.runtimeEpoch ||
+            state.activeThreadId !== submittedThreadId
+        ) {
+            renderAll()
+            return
+        }
         state.activeTurnId = response.turn.id
         upsertTurn(response.turn)
         elements.composerInput.value = ""
         resizeComposer()
-        state.sending = false
         renderAll({forceBottom: true})
     } catch (error) {
         state.sending = false

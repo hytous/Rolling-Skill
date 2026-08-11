@@ -153,6 +153,8 @@ describe("local-first desktop surface", () => {
         assert.match(handler, /state\.selectedTaskModelId/)
         assert.doesNotMatch(handler, /updateSettings/)
         assert.match(renderer, /rollingSkillProfile/)
+        assert.match(renderer, /submittedRuntimeEpoch/)
+        assert.match(renderer, /state\.activeThreadId !== submittedThreadId/)
     })
 
     it("routes core runtime and Curator chrome through localization keys", () => {
