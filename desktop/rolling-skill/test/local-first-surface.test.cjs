@@ -10,6 +10,22 @@ function source(path) {
 }
 
 describe("local-first desktop surface", () => {
+    it("ships the Rolling Skill blue trace-merge icon for macOS and in-app marks", () => {
+        const appIcon = source("assets/icon.svg")
+        const inAppLogo = source("renderer/logo.svg")
+        const styles = source("renderer/styles.css")
+        const png = readFileSync(join(root, "assets/icon.svg.png"))
+
+        assert.match(appIcon, /#78B8FF/)
+        assert.match(appIcon, /M244 338H348/)
+        assert.match(inAppLogo, /M76 132H170/)
+        assert.doesNotMatch(`${appIcon}\n${inAppLogo}`, /#F2F25C/i)
+        assert.doesNotMatch(styles, /filter:\s*hue-rotate/)
+        assert.equal(png.subarray(1, 4).toString("ascii"), "PNG")
+        assert.equal(png.readUInt32BE(16), 1024)
+        assert.equal(png.readUInt32BE(20), 1024)
+    })
+
     it("ships a task client instead of a login or Docker bootstrap screen", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")

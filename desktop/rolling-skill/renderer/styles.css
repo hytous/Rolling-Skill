@@ -2769,15 +2769,6 @@ kbd {
     color: var(--danger);
 }
 
-:root[data-theme="codex-light"] .brand img,
-:root[data-theme="codex-light"] .assistant-avatar img,
-:root[data-theme="codex-light"] .welcome-mark img,
-:root[data-theme="codex-dark"] .brand img,
-:root[data-theme="codex-dark"] .assistant-avatar img,
-:root[data-theme="codex-dark"] .welcome-mark img {
-    filter: hue-rotate(178deg) saturate(1.2);
-}
-
 :root[data-theme="codex-light"] .new-task-button,
 :root[data-theme="codex-light"] .runtime-status,
 :root[data-theme="codex-light"] .topbar-button,
