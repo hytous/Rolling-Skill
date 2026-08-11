@@ -46,6 +46,7 @@ function completion(threadId = "thread-1") {
                 status: "completed",
                 items: [
                     {id: "user-1", type: "userMessage", content: [{type: "text", text: "question"}]},
+                    {id: "empty-answer", type: "agentMessage", text: ""},
                     {id: "answer-1", type: "agentMessage", text: "answer"},
                 ],
             },
@@ -80,11 +81,15 @@ describe("automatic capture manager", () => {
                 sourceThreadId: "thread-1",
                 startItemId: null,
                 endItemId: "answer-1",
+                endTurnId: "turn-1",
+                endMessagePosition: "last",
                 traceReference: "trace://thread-1#answer-1",
                 modelId: "gpt-5.6-terra",
                 skillPath: "/runtime/skills/billing-cost-management/SKILL.md",
             },
         ])
+        assert.equal(await manager.handleNotification(completion()), false)
+        assert.equal(created.length, 1)
     })
 
     it("reports an explicit error instead of creating a draft without a configured Skill", async () => {

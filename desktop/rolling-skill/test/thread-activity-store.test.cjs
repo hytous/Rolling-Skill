@@ -212,6 +212,36 @@ describe("thread activity persistence", () => {
         assert.equal(persisted.includes("/bin/zsh -lc"), false)
     })
 
+    it("preserves repeated same-CLI invocation counts after reloading persisted activity", () => {
+        const {path, store} = temporaryStore()
+        store.recordNotification(
+            "codex:alpha",
+            notification(
+                "item/completed",
+                "commandExecution",
+                {
+                    commandActions: [
+                        {command: "git status"},
+                        {command: "git diff"},
+                    ],
+                    status: "completed",
+                    exitCode: 0,
+                },
+                {itemId: "repeated-git"},
+            ),
+        )
+
+        const reloaded = new ThreadActivityStore(path)
+        assert.deepEqual(reloaded.list("codex:alpha", "thread-1")[0].item, {
+            id: "repeated-git",
+            type: "commandExecution",
+            status: "completed",
+            command: "git status\ngit diff",
+            commandInvocationCount: 2,
+            exitCode: 0,
+        })
+    })
+
     it("replaces a legacy shell placeholder when completed actions arrive", () => {
         const {store} = temporaryStore()
         store.recordNotification(

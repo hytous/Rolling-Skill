@@ -909,7 +909,17 @@ function installIpc() {
         const startItemId = input.startItemId
             ? requireIdentifier(input.startItemId, "episode start item")
             : null
+        const startTurnId = optionalIdentifier(input.startTurnId, "episode start turn")
+        const startMessageOrdinal = optionalMessageOrdinal(
+            input.startMessageOrdinal,
+            "episode start message",
+        )
         const endItemId = requireIdentifier(input.endItemId, "episode end item")
+        const endTurnId = optionalIdentifier(input.endTurnId, "episode end turn")
+        const endMessageOrdinal = optionalMessageOrdinal(
+            input.endMessageOrdinal,
+            "episode end message",
+        )
         const traceReference = client?.recorder?.referenceForEpisode({
             threadId: sourceThreadId,
             startItemId,
@@ -921,7 +931,11 @@ function installIpc() {
             caseType: input.caseType,
             sourceThreadId,
             startItemId,
+            startTurnId,
+            startMessageOrdinal,
             endItemId,
+            endTurnId,
+            endMessageOrdinal,
             datasetQuestion:
                 "datasetQuestion" in input
                     ? requireDatasetQuestion(input.datasetQuestion)
@@ -1018,6 +1032,14 @@ function requireIdentifier(value, label) {
 function optionalIdentifier(value, label) {
     if (value === null || value === undefined || String(value).trim() === "") return null
     return requireIdentifier(String(value).trim(), label)
+}
+
+function optionalMessageOrdinal(value, label) {
+    if (value === null || value === undefined) return null
+    if (!Number.isSafeInteger(value) || value < 0 || value > 100_000) {
+        throw new Error(`A valid ${label} ordinal is required`)
+    }
+    return value
 }
 
 function optionalEffort(value) {

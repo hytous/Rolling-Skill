@@ -215,6 +215,32 @@ describe("curation manager", () => {
         assert.equal(changed.at(-1).status, "running")
     })
 
+    it("forwards stable message locators when live ids differ from thread/read ids", async () => {
+        runtime.readThread = async (threadId) => {
+            assert.equal(threadId, "source-thread")
+            const thread = sourceThread()
+            thread.turns[0].items[0].id = "item-12"
+            thread.turns[0].items.at(-1).id = "item-16"
+            return {thread}
+        }
+        const datasetId = store.listDatasets()[0].id
+
+        const session = await manager.createSession({
+            datasetId,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            startItemId: "live-user-id",
+            startTurnId: "turn-1",
+            startMessageOrdinal: 0,
+            endItemId: "live-assistant-id",
+            endTurnId: "turn-1",
+            endMessageOrdinal: 0,
+        })
+
+        assert.equal(session.episode.source.startItemId, "item-12")
+        assert.equal(session.episode.source.endItemId, "item-16")
+    })
+
     it("reserves the target Dataset while source evidence is still loading", async () => {
         const datasetId = store.listDatasets()[0].id
         const originalReadThread = runtime.readThread.bind(runtime)

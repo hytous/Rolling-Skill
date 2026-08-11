@@ -101,6 +101,50 @@ async function run() {
         throw new Error(`Conversation scrolling is animated: ${markdownAndActivity.scrollBehavior}`)
     }
 
+    await inspect(window, `(() => {
+        window.rollingSkill.smokeFailNextCuration()
+        document.querySelector("[data-save-case]")?.click()
+    })()`)
+    await waitFor(window, 'document.querySelector("#save-case-dialog")?.open')
+    await inspect(window, `(() => {
+        const skill = document.querySelector("#case-skill")
+        skill.value = "/tmp/rolling-skill-renderer-smoke/billing-cost-management/SKILL.md"
+        skill.dispatchEvent(new Event("change", {bubbles: true}))
+        document.querySelector("#confirm-save-case")?.click()
+    })()`)
+    await waitFor(window, 'document.querySelector("#confirm-save-case")?.disabled')
+    const curationCloseLocked = await inspect(window, `(() => ({
+        close: document.querySelector("#close-case-dialog")?.disabled,
+        cancel: document.querySelector("#cancel-save-case")?.disabled,
+    }))()`)
+    if (!curationCloseLocked.close || !curationCloseLocked.cancel) {
+        throw new Error("Case dialog can close while curation creation is pending")
+    }
+    await waitFor(window, '!document.querySelector("#case-create-error")?.classList.contains("hidden")')
+    const curationFailure = await inspect(window, `(() => ({
+        dialogOpen: document.querySelector("#save-case-dialog")?.open,
+        inlineError: document.querySelector("#case-create-error")?.textContent,
+        globalErrorHidden: document.querySelector("#error-banner")?.classList.contains("hidden"),
+        input: window.rollingSkill.smokeLastCurationInput(),
+    }))()`)
+    if (!curationFailure.dialogOpen || !curationFailure.inlineError.includes("smoke curation failure")) {
+        throw new Error("Curation failure was not kept inside the open Case dialog")
+    }
+    if (!curationFailure.globalErrorHidden) throw new Error("Curation failure leaked to global banner")
+    for (const [key, expected] of Object.entries({
+        sourceThreadId: "thread-a",
+        startTurnId: "thread-a-turn-0",
+        startMessageOrdinal: 0,
+        endTurnId: "thread-a-turn-0",
+        endMessageOrdinal: 0,
+    })) {
+        if (curationFailure.input?.[key] !== expected) {
+            throw new Error(`Curation locator mismatch for ${key}`)
+        }
+    }
+    await inspect(window, 'document.querySelector("#close-case-dialog")?.click()')
+    await waitFor(window, '!document.querySelector("#save-case-dialog")?.open')
+
     const alphaPosition = await inspect(
         window,
         `(() => {
@@ -262,6 +306,7 @@ async function run() {
             readFailureRecovered: true,
             emptyArchiveLoadCancelled: true,
             staleRuntimeModelsIgnored: true,
+            inlineCurationFailure: true,
             rendererErrors: 0,
         })}\n`,
     )

@@ -10,17 +10,26 @@ function source(path) {
 }
 
 describe("local-first desktop surface", () => {
-    it("ships the Rolling Skill blue trace-merge icon for macOS and in-app marks", () => {
-        const appIcon = source("assets/icon.svg")
+    it("ships a reversible spinning S keycap app icon and keeps the trace-merge original", () => {
+        const previousAppIcon = source("assets/icon.svg")
+        const appIcon = source("assets/icon-spin-keycap.svg")
         const inAppLogo = source("renderer/logo.svg")
         const styles = source("renderer/styles.css")
-        const png = readFileSync(join(root, "assets/icon.svg.png"))
+        const packageJson = source("package.json")
+        const previousPng = readFileSync(join(root, "assets/icon.svg.png"))
+        const png = readFileSync(join(root, "assets/icon-spin-keycap.png"))
 
-        assert.match(appIcon, /#78B8FF/)
-        assert.match(appIcon, /M244 338H348/)
+        assert.match(previousAppIcon, /#78B8FF/)
+        assert.match(previousAppIcon, /M244 338H348/)
+        assert.match(appIcon, /rotate\(-9 512 512\)/)
+        assert.match(appIcon, />S<\/text>/)
+        assert.match(appIcon, />放<\/text>/)
+        assert.match(packageJson, /assets\/icon-spin-keycap\.png/)
+        assert.match(packageJson, /"pack:mac":\s*"npm run render:icon && electron-builder/)
         assert.match(inAppLogo, /M76 132H170/)
-        assert.doesNotMatch(`${appIcon}\n${inAppLogo}`, /#F2F25C/i)
+        assert.doesNotMatch(`${previousAppIcon}\n${appIcon}\n${inAppLogo}`, /#F2F25C/i)
         assert.doesNotMatch(styles, /filter:\s*hue-rotate/)
+        assert.equal(previousPng.subarray(1, 4).toString("ascii"), "PNG")
         assert.equal(png.subarray(1, 4).toString("ascii"), "PNG")
         assert.equal(png.readUInt32BE(16), 1024)
         assert.equal(png.readUInt32BE(20), 1024)
@@ -55,6 +64,7 @@ describe("local-first desktop surface", () => {
         assert.match(html, /id="curation-drawer"/)
         assert.match(html, /id="case-start-item"/)
         assert.match(html, /id="case-question"/)
+        assert.match(html, /id="case-create-error"[^>]*role="alert"/)
         assert.doesNotMatch(html, /id="case-question"[^>]*readonly/)
         assert.match(renderer, /createCuration/)
         assert.match(renderer, /datasetQuestion:\s*elements\.caseQuestion\.value/)
@@ -67,8 +77,17 @@ describe("local-first desktop surface", () => {
             createHandler.indexOf("elements.caseDialog.close()") >
                 createHandler.indexOf("await window.rollingSkill.createCuration"),
         )
+        assert.match(createHandler, /sourceThreadId:\s*selection\.sourceThreadId/)
+        assert.match(createHandler, /startTurnId:\s*selection\.startTurnId/)
+        assert.match(createHandler, /startMessageOrdinal:\s*selection\.startMessageOrdinal/)
+        assert.match(createHandler, /endTurnId:\s*selection\.endTurnId/)
+        assert.match(createHandler, /endMessageOrdinal:\s*selection\.endMessageOrdinal/)
+        assert.match(createHandler, /catch \(error\)[\s\S]*showCaseError\(error\)/)
+        assert.doesNotMatch(createHandler, /catch \(error\)[\s\S]*showError\(error\)/)
         assert.match(preload, /createCuration/)
         assert.match(main, /curation:create/)
+        assert.match(main, /startTurnId[\s\S]{0,500}startMessageOrdinal/)
+        assert.match(main, /endTurnId[\s\S]{0,500}endMessageOrdinal/)
         assert.match(main, /hiddenThreadIds/)
         assert.doesNotMatch(preload, /saveCase/)
         assert.doesNotMatch(main, /datasets:save-case/)

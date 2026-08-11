@@ -5,6 +5,7 @@ class AutomaticCaptureManager {
         this.getTraceReference = getTraceReference
         this.onError = onError
         this.pending = new Set()
+        this.completed = new Set()
     }
 
     async handleNotification(message) {
@@ -12,12 +13,17 @@ class AutomaticCaptureManager {
         const settings = this.store.read().settings
         if (!settings.autoCapture || method !== "turn/completed" || !params.threadId) return false
         if (this.curationManager.hiddenThreadIds().has(params.threadId)) return false
-        const finalMessage = [...(params.turn?.items ?? [])]
-            .reverse()
-            .find((item) => item.type === "agentMessage" && String(item.text ?? "").trim())
+        const agentMessages = (params.turn?.items ?? []).filter(
+            (item) => item.type === "agentMessage" && String(item.text ?? "").trim(),
+        )
+        const finalMessage = agentMessages.at(-1)
         if (!finalMessage?.id) return false
         const key = `${params.threadId}:${finalMessage.id}`
-        if (this.pending.has(key) || this.store.hasCurationForSource(params.threadId, finalMessage.id)) {
+        if (
+            this.pending.has(key) ||
+            this.completed.has(key) ||
+            this.store.hasCurationForSource(params.threadId, finalMessage.id)
+        ) {
             return false
         }
         const profile = settings.autoCaptureProfile
@@ -42,6 +48,8 @@ class AutomaticCaptureManager {
                 sourceThreadId: params.threadId,
                 startItemId: null,
                 endItemId: finalMessage.id,
+                endTurnId: params.turn?.id ?? null,
+                endMessagePosition: "last",
                 traceReference: this.getTraceReference({
                     threadId: params.threadId,
                     startItemId: null,
@@ -51,6 +59,7 @@ class AutomaticCaptureManager {
                 ...(profile.effort ? {effort: profile.effort} : {}),
                 skillPath: profile.skillPath,
             })
+            this.completed.add(key)
             return true
         } catch (error) {
             this.onError(error)

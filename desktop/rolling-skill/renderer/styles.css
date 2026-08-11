@@ -2273,6 +2273,18 @@ kbd {
     padding: 0 20px 18px;
 }
 
+.case-dialog-error {
+    margin: 12px 0 0;
+    padding: 9px 11px;
+    border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border));
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--danger) 7%, transparent);
+    color: var(--danger);
+    font-size: 10.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
 .runtime-dialog {
     width: min(680px, calc(100vw - 80px));
 }

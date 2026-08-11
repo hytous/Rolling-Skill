@@ -480,6 +480,7 @@ const state = {
     runtimeOperationInProgress: false,
     runtimeEpoch: 0,
     caseSelection: null,
+    caseCreationInProgress: false,
     curationSessions: [],
     activeCurationId: null,
     curationOpen: false,
@@ -660,6 +661,7 @@ const elements = {
     caseQuestion: document.querySelector("#case-question"),
     caseScope: document.querySelector("#case-scope"),
     caseEndPreview: document.querySelector("#case-end-preview"),
+    caseCreateError: document.querySelector("#case-create-error"),
     closeCaseDialog: document.querySelector("#close-case-dialog"),
     cancelSaveCase: document.querySelector("#cancel-save-case"),
     confirmSaveCase: document.querySelector("#confirm-save-case"),
@@ -1941,6 +1943,28 @@ function showError(error) {
     renderRuntime()
 }
 
+function clearCaseError() {
+    elements.caseCreateError.textContent = ""
+    elements.caseCreateError.classList.add("hidden")
+}
+
+function showCaseError(error) {
+    const message = error?.message || String(error)
+    elements.caseCreateError.textContent = message.replace(
+        /^Error invoking remote method '[^']+': Error:\s*/u,
+        "",
+    )
+    elements.caseCreateError.classList.remove("hidden")
+    elements.caseCreateError.scrollIntoView({block: "nearest"})
+}
+
+function setCaseCreationInProgress(inProgress) {
+    state.caseCreationInProgress = Boolean(inProgress)
+    elements.confirmSaveCase.disabled = state.caseCreationInProgress
+    elements.closeCaseDialog.disabled = state.caseCreationInProgress
+    elements.cancelSaveCase.disabled = state.caseCreationInProgress
+}
+
 let toastTimer = null
 function showToast(message) {
     clearTimeout(toastTimer)
@@ -2870,7 +2894,19 @@ function updateDatasetOptions(selectedId) {
 function flattenedActiveItems() {
     const items = []
     for (const turn of getTurns()) {
-        for (const item of turn.items ?? []) items.push({turnId: turn.id, item})
+        let userMessageOrdinal = 0
+        let agentMessageOrdinal = 0
+        for (const item of turn.items ?? []) {
+            let messageOrdinal = null
+            if (item.type === "userMessage") {
+                messageOrdinal = userMessageOrdinal
+                userMessageOrdinal += 1
+            } else if (item.type === "agentMessage") {
+                messageOrdinal = agentMessageOrdinal
+                agentMessageOrdinal += 1
+            }
+            items.push({turnId: turn.id, item, messageOrdinal})
+        }
     }
     return items
 }
@@ -2883,6 +2919,8 @@ function updateEpisodeStartPreview() {
     )
     if (!selected) return
     selection.startItemId = selected.item.id
+    selection.startTurnId = selected.turnId
+    selection.startMessageOrdinal = selected.messageOrdinal
     selection.datasetQuestionDirty = false
     elements.caseQuestion.value = textFromUserInput(selected.item.content)
     const flattened = flattenedActiveItems()
@@ -2894,11 +2932,13 @@ function updateEpisodeStartPreview() {
 }
 
 async function openCaseDialog(turnId, itemId) {
+    const sourceThreadId = state.activeThreadId
     const turn = findTurn(turnId)
     const item = turn?.items?.find((entry) => entry.id === itemId)
     if (!turn || !item || item.type !== "agentMessage") return
     const flattened = flattenedActiveItems()
     const endIndex = flattened.findIndex(({item: entry}) => entry.id === itemId)
+    const endSelection = flattened[endIndex]
     const startCandidates = flattened
         .slice(0, endIndex + 1)
         .filter(({item: entry}) => entry.type === "userMessage")
@@ -2912,15 +2952,21 @@ async function openCaseDialog(turnId, itemId) {
         showError(error)
         return
     }
+    if (state.activeThreadId !== sourceThreadId) return
     if (!state.evaluationSkills.length) {
         showError(new Error(t("noSkills")))
         return
     }
     state.caseSelection = {
+        sourceThreadId,
         turnId,
         itemId,
+        endTurnId: endSelection.turnId,
+        endMessageOrdinal: endSelection.messageOrdinal,
         startCandidates,
         startItemId: startCandidates.at(-1).item.id,
+        startTurnId: startCandidates.at(-1).turnId,
+        startMessageOrdinal: startCandidates.at(-1).messageOrdinal,
         datasetQuestionDirty: false,
     }
     elements.caseStartItem.replaceChildren()
@@ -2939,6 +2985,7 @@ async function openCaseDialog(turnId, itemId) {
         state.evaluationSkillByThread[state.activeThreadId] ?? null,
     )
     renderCaseSkillStatus()
+    clearCaseError()
     elements.caseDialog.showModal()
 }
 
@@ -2953,7 +3000,7 @@ async function createDataset() {
         elements.newDatasetName.value = ""
         showToast(formatMessage("createdDataset", {name: created.name}))
     } catch (error) {
-        showError(error)
+        showCaseError(error)
     } finally {
         elements.createDataset.disabled = false
     }
@@ -2962,20 +3009,25 @@ async function createDataset() {
 async function createCuration() {
     const selection = state.caseSelection
     if (!selection) return
+    clearCaseError()
     const caseType = new FormData(elements.caseForm).get("case-type")
     const skill = runtimeSkillByPath(elements.caseSkill.value)
     if (!skill) {
-        showError(new Error(t("selectSkill")))
+        showCaseError(new Error(t("selectSkill")))
         return
     }
-    elements.confirmSaveCase.disabled = true
+    setCaseCreationInProgress(true)
     try {
         const session = await window.rollingSkill.createCuration({
             datasetId: elements.caseDataset.value,
             caseType,
-            sourceThreadId: state.activeThreadId,
+            sourceThreadId: selection.sourceThreadId,
             startItemId: selection.startItemId,
+            startTurnId: selection.startTurnId,
+            startMessageOrdinal: selection.startMessageOrdinal,
             endItemId: selection.itemId,
+            endTurnId: selection.endTurnId,
+            endMessageOrdinal: selection.endMessageOrdinal,
             ...(selection.datasetQuestionDirty
                 ? {datasetQuestion: elements.caseQuestion.value}
                 : {}),
@@ -2988,9 +3040,9 @@ async function createCuration() {
         setCurationOpen(true)
         showToast(t("episodeSent"))
     } catch (error) {
-        showError(error)
+        showCaseError(error)
     } finally {
-        elements.confirmSaveCase.disabled = false
+        setCaseCreationInProgress(false)
     }
 }
 
@@ -3469,6 +3521,13 @@ elements.conversation.addEventListener("click", (event) => {
 })
 elements.closeCaseDialog.addEventListener("click", () => elements.caseDialog.close())
 elements.cancelSaveCase.addEventListener("click", () => elements.caseDialog.close())
+elements.caseDialog.addEventListener("close", () => {
+    state.caseSelection = null
+    clearCaseError()
+})
+elements.caseDialog.addEventListener("cancel", (event) => {
+    if (state.caseCreationInProgress) event.preventDefault()
+})
 elements.caseStartItem.addEventListener("change", updateEpisodeStartPreview)
 elements.caseQuestion.addEventListener("input", () => {
     if (state.caseSelection) state.caseSelection.datasetQuestionDirty = true

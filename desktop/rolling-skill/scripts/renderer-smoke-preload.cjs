@@ -80,6 +80,8 @@ const threads = {
 const noOpSubscription = () => () => {}
 let readCount = 0
 let nextReadFailureThreadId = null
+let failNextCuration = false
+let lastCurationInput = null
 const notificationListeners = new Set()
 const runtimeStateListeners = new Set()
 const modelDelayByRuntime = new Map()
@@ -101,7 +103,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
             availableRuntimes: [],
         },
         workspaceRoot: "/tmp/rolling-skill-renderer-smoke",
-        datasets: [],
+        datasets: [{id: "dataset-smoke", name: "Smoke Dataset", caseCount: 0}],
         curationSessions: [],
         settings,
     }),
@@ -131,6 +133,27 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         }
         return {thread: threads[threadId]}
     },
+    listSkills: async () => ({
+        data: [{
+            cwd: "/tmp/rolling-skill-renderer-smoke",
+            skills: [{
+                name: "billing-cost-management",
+                path: "/tmp/rolling-skill-renderer-smoke/billing-cost-management/SKILL.md",
+                scope: "user",
+                description: "Smoke Skill",
+                enabled: true,
+            }],
+        }],
+    }),
+    createCuration: async (input) => {
+        lastCurationInput = input
+        if (failNextCuration) {
+            failNextCuration = false
+            await new Promise((resolve) => setTimeout(resolve, 80))
+            throw new Error("smoke curation failure")
+        }
+        return {id: "curation-smoke", status: "queued", episode: {originalQuestion: "Smoke"}}
+    },
     onRuntimeState: (listener) => {
         runtimeStateListeners.add(listener)
         return () => runtimeStateListeners.delete(listener)
@@ -145,6 +168,10 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     smokeFailNextRead: (threadId) => {
         nextReadFailureThreadId = threadId
     },
+    smokeFailNextCuration: () => {
+        failNextCuration = true
+    },
+    smokeLastCurationInput: () => lastCurationInput,
     smokeEmitRuntimeState: (runtimeId, modelDelayMs = 0) => {
         currentRuntimeId = runtimeId
         modelDelayByRuntime.set(runtimeId, modelDelayMs)

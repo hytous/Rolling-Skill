@@ -148,7 +148,12 @@ class CurationManager {
         const curatorModelId = input.modelId ?? response.thread.model ?? null
         const episode = buildEpisodeSnapshot(response.thread, {
             startItemId: input.startItemId,
+            startTurnId: input.startTurnId,
+            startMessageOrdinal: input.startMessageOrdinal,
             endItemId: input.endItemId,
+            endTurnId: input.endTurnId,
+            endMessageOrdinal: input.endMessageOrdinal,
+            endMessagePosition: input.endMessagePosition,
             runtimeId: runtimeDescriptor?.runtimeId ?? null,
             modelId: input.sourceModelId ?? response.thread.model ?? null,
             traceReference: input.traceReference ?? null,

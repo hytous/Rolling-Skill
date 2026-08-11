@@ -117,6 +117,40 @@ function flattenThread(thread) {
     return flattened
 }
 
+function messageBoundaryIndex(flattened, {
+    itemId,
+    turnId,
+    messageOrdinal,
+    messagePosition,
+    type,
+}) {
+    const exactIndex = flattened.findIndex(
+        ({item}) => item.id === itemId && item.type === type,
+    )
+    if (exactIndex >= 0) return exactIndex
+    if (typeof turnId !== "string" || !turnId) return -1
+    if (messagePosition === "last") {
+        let lastIndex = -1
+        for (let index = 0; index < flattened.length; index += 1) {
+            const entry = flattened[index]
+            if (entry.turnId === turnId && entry.item.type === type) lastIndex = index
+        }
+        return lastIndex
+    }
+    if (
+        !Number.isSafeInteger(messageOrdinal) ||
+        messageOrdinal < 0
+    ) {
+        return -1
+    }
+    let currentOrdinal = -1
+    return flattened.findIndex((entry) => {
+        if (entry.turnId !== turnId || entry.item.type !== type) return false
+        currentOrdinal += 1
+        return currentOrdinal === messageOrdinal
+    })
+}
+
 function stripOuterQuotes(value) {
     const text = String(value ?? "").trim()
     if (text.length < 2) return text
@@ -366,12 +400,23 @@ function compactEpisodeForCurator(episode) {
 
 function buildEpisodeSnapshot(thread, options = {}) {
     const flattened = flattenThread(thread)
-    const endIndex = flattened.findIndex(({item}) => item.id === options.endItemId)
-    if (endIndex < 0 || flattened[endIndex].item.type !== "agentMessage") {
+    const endIndex = messageBoundaryIndex(flattened, {
+        itemId: options.endItemId,
+        turnId: options.endTurnId,
+        messageOrdinal: options.endMessageOrdinal,
+        messagePosition: options.endMessagePosition,
+        type: "agentMessage",
+    })
+    if (endIndex < 0) {
         throw new Error("Episode end must be an assistant message in the source thread")
     }
     let startIndex = options.startItemId
-        ? flattened.findIndex(({item}) => item.id === options.startItemId)
+        ? messageBoundaryIndex(flattened, {
+              itemId: options.startItemId,
+              turnId: options.startTurnId,
+              messageOrdinal: options.startMessageOrdinal,
+              type: "userMessage",
+          })
         : -1
     if (startIndex < 0) {
         for (let index = endIndex; index >= 0; index -= 1) {

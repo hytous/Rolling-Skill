@@ -105,6 +105,40 @@ describe("episode curation evidence", () => {
         assert.equal(episode.originalQuestion, "帮我瞅瞅 7月账单？混元3 各业务到底花了多少呀")
     })
 
+    it("resolves live notification ids to canonical thread/read message ids", () => {
+        const thread = sourceThread()
+        thread.turns[0].items[0].id = "item-12"
+        thread.turns[0].items.at(-1).id = "item-16"
+
+        const episode = buildEpisodeSnapshot(thread, {
+            startItemId: "019ff0e9-live-user-id",
+            startTurnId: "turn-1",
+            startMessageOrdinal: 0,
+            endItemId: "msg_live-assistant-id",
+            endTurnId: "turn-1",
+            endMessageOrdinal: 1,
+        })
+
+        assert.equal(episode.source.startItemId, "item-12")
+        assert.equal(episode.source.endItemId, "item-16")
+        assert.equal(episode.items[0].type, "userMessage")
+        assert.equal(episode.items.at(-1).type, "agentMessage")
+    })
+
+    it("resolves automatic capture to the last assistant in the completed turn", () => {
+        const thread = sourceThread()
+        thread.turns[0].items.at(-1).id = "canonical-final-answer"
+
+        const episode = buildEpisodeSnapshot(thread, {
+            endItemId: "live-final-answer",
+            endTurnId: "turn-1",
+            endMessagePosition: "last",
+        })
+
+        assert.equal(episode.source.endItemId, "canonical-final-answer")
+        assert.equal(episode.items.at(-1).id, "canonical-final-answer")
+    })
+
     it("keeps command input but bounds long shell output in the frozen Case episode", () => {
         const thread = sourceThread()
         const command = thread.turns[0].items.find((item) => item.id === "command-1")
