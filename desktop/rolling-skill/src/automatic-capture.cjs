@@ -48,6 +48,7 @@ class AutomaticCaptureManager {
                     endItemId: finalMessage.id,
                 }),
                 modelId: profile.modelId,
+                ...(profile.effort ? {effort: profile.effort} : {}),
                 skillPath: profile.skillPath,
             })
             return true

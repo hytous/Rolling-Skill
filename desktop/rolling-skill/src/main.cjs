@@ -5,9 +5,11 @@ const {join} = require("node:path")
 const {pathToFileURL} = require("node:url")
 
 const {CodexRuntimeProvider} = require("./codex-runtime-provider.cjs")
+const {CodeBuddyRuntimeProvider} = require("./codebuddy-runtime-provider.cjs")
 const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
-const {LocalEvaluationStore} = require("./local-store.cjs")
+const {EvaluationRunner} = require("./evaluation-runner.cjs")
+const {LocalEvaluationStore, reasoningEffort} = require("./local-store.cjs")
 const {RuntimeRegistry} = require("./runtime-registry.cjs")
 const {findGitWorkspace} = require("./workspace.cjs")
 
@@ -22,6 +24,7 @@ let availableRuntimes = []
 let store = null
 let curationManager = null
 let automaticCaptureManager = null
+let evaluationRunner = null
 let workspaceRoot = null
 let rendererUrl = null
 let runtimeStart = null
@@ -257,6 +260,7 @@ async function chooseWorkspace() {
     writePreferences({workspaceRoot})
     loadedThreads.clear()
     client?.setWorkspace(workspaceRoot)
+    if (evaluationRunner) evaluationRunner.workspaceRoot = workspaceRoot
     send("workspace:changed", {workspaceRoot})
     return workspaceRoot
 }
@@ -426,6 +430,29 @@ function installIpc() {
         if (typeof runtime.listModels !== "function") return {data: [], nextCursor: null}
         return runtime.listModels()
     })
+    ipcMain.handle("models:list-for-runtime", async (_event, runtimeId) => {
+        runtimeId = requireIdentifier(runtimeId, "runtime")
+        const descriptor = availableRuntimes.find((entry) => entry.runtimeId === runtimeId)
+        if (!descriptor) throw new Error("The selected local runtime is no longer available")
+        if (descriptor.runtimeId === runtimeDescriptor?.runtimeId) {
+            const runtime = await ensureRuntime()
+            return typeof runtime.listModels === "function"
+                ? runtime.listModels()
+                : {data: [], nextCursor: null}
+        }
+        const temporaryClient = runtimeRegistry.createClient(descriptor, {
+            traceDirectory: join(app.getPath("userData"), "traces", "catalogs"),
+            workspaceRoot,
+        })
+        try {
+            await temporaryClient.start()
+            return typeof temporaryClient.listModels === "function"
+                ? temporaryClient.listModels()
+                : {data: [], nextCursor: null}
+        } finally {
+            await temporaryClient.stop().catch(() => {})
+        }
+    })
     ipcMain.handle("skills:list", async (_event, input = {}) => {
         const runtime = await ensureRuntime()
         if (typeof runtime.listSkills !== "function") return {data: []}
@@ -464,20 +491,29 @@ function installIpc() {
     })
     ipcMain.handle("runtime:start-thread", async (_event, input = {}) => {
         const model = optionalIdentifier(input.modelId, "model")
-        const response = await (await ensureRuntime()).startThread(model ? {model} : {})
+        const effort = optionalEffort(input.effort)
+        const response = await (await ensureRuntime()).startThread({
+            ...(model ? {model} : {}),
+            ...(effort ? {effort} : {}),
+        })
         loadedThreads.add(response.thread.id)
         return response
     })
-    ipcMain.handle("runtime:start-turn", async (_event, {threadId, text, modelId}) => {
+    ipcMain.handle("runtime:start-turn", async (_event, {threadId, text, modelId, effort}) => {
         threadId = requireIdentifier(threadId, "thread")
         const input = normalizeTurnInput(text)
         const model = optionalIdentifier(modelId, "model")
+        effort = optionalEffort(effort)
+        const options = {
+            ...(model ? {model} : {}),
+            ...(effort ? {effort} : {}),
+        }
         const runtime = await ensureRuntime()
         if (!loadedThreads.has(threadId)) {
-            await runtime.resumeThread(threadId, model ? {model} : {})
+            await runtime.resumeThread(threadId, options)
             loadedThreads.add(threadId)
         }
-        return runtime.startTurn(threadId, input, model ? {model} : {})
+        return runtime.startTurn(threadId, input, options)
     })
     ipcMain.handle("runtime:interrupt-turn", async (_event, input) =>
         (await ensureRuntime()).interruptTurn(
@@ -490,10 +526,17 @@ function installIpc() {
         store.listCases(requireIdentifier(datasetId, "dataset")),
     )
     ipcMain.handle("datasets:create", (_event, name) => store.createDataset(name))
+    ipcMain.handle("datasets:delete-case", (_event, input = {}) =>
+        store.deleteCase(
+            requireIdentifier(input.datasetId, "dataset"),
+            requireIdentifier(input.caseId, "Case"),
+        ),
+    )
     ipcMain.handle("datasets:reveal", revealLocalData)
     ipcMain.handle("settings:update", (_event, input) => store.updateSettings(input))
 
     ipcMain.handle("curation:list", () => store.listCurationSessions())
+    ipcMain.handle("curation:list-archived", () => store.listArchivedCurationSessions())
     ipcMain.handle("curation:get", (_event, sessionId) =>
         store.getCurationSession(requireIdentifier(sessionId, "curation session")),
     )
@@ -517,6 +560,7 @@ function installIpc() {
             endItemId,
             traceReference,
             modelId: profile.modelId,
+            effort: profile.effort,
             skillPath: requireAbsolutePath(input.skillPath, "Skill"),
         })
     })
@@ -541,9 +585,56 @@ function installIpc() {
             optionalIdentifier(input.modelId, "model"),
         ),
     )
+    ipcMain.handle("curation:update-effort", (_event, input = {}) =>
+        curationManager.updateEffort(
+            requireIdentifier(input.sessionId, "curation session"),
+            optionalEffort(input.effort),
+        ),
+    )
     ipcMain.handle("curation:update-profile", (_event, input) =>
         store.updateCuratorProfile(input),
     )
+
+    ipcMain.handle("evaluations:list", (_event, datasetId) =>
+        store.listEvaluationRuns(
+            datasetId ? requireIdentifier(datasetId, "dataset") : null,
+        ),
+    )
+    ipcMain.handle("evaluations:get", (_event, runId) =>
+        store.getEvaluationRun(requireIdentifier(runId, "evaluation run")),
+    )
+    ipcMain.handle("evaluations:start", (_event, input = {}) => {
+        const runtimeConfigurations = (input.runtimeConfigurations ?? []).map((requested) => {
+            const runtimeId = requireIdentifier(requested.runtimeId, "runtime")
+            const descriptor = availableRuntimes.find((entry) => entry.runtimeId === runtimeId)
+            if (!descriptor) throw new Error(`Runtime ${runtimeId} is no longer available`)
+            return {
+                ...descriptor,
+                modelId: optionalIdentifier(requested.modelId, "model"),
+                effort: optionalEffort(requested.effort),
+            }
+        })
+        const skillName = requireIdentifier(input.skillReference?.name, "Skill")
+        const skillPath = requireAbsolutePath(input.skillReference?.path, "Skill")
+        const run = store.createEvaluationRun({
+            datasetId: requireIdentifier(input.datasetId, "dataset"),
+            caseIds: (input.caseIds ?? []).map((caseId) =>
+                requireIdentifier(caseId, "Case"),
+            ),
+            selectionMode: input.selectionMode,
+            activationMode: input.activationMode,
+            skillReference: {name: skillName, path: skillPath},
+            runtimeConfigurations,
+        })
+        void evaluationRunner.run(run).catch((error) => {
+            store.updateEvaluationRun(run.id, {
+                status: "failed",
+                completedAt: new Date().toISOString(),
+            })
+            send("evaluation:changed", {runId: run.id, status: "failed", error: error.message})
+        })
+        return run
+    })
 }
 
 function requireIdentifier(value, label) {
@@ -556,6 +647,10 @@ function requireIdentifier(value, label) {
 function optionalIdentifier(value, label) {
     if (value === null || value === undefined || String(value).trim() === "") return null
     return requireIdentifier(String(value).trim(), label)
+}
+
+function optionalEffort(value) {
+    return reasoningEffort(value, "Reasoning effort")
 }
 
 function requireAbsolutePath(value, label) {
@@ -624,7 +719,17 @@ if (!hasLock) {
                 error: `Automatic capture failed: ${error.message}`,
             }),
         })
-        runtimeRegistry = new RuntimeRegistry([new CodexRuntimeProvider()])
+        runtimeRegistry = new RuntimeRegistry([
+            new CodexRuntimeProvider(),
+            new CodeBuddyRuntimeProvider(),
+        ])
+        evaluationRunner = new EvaluationRunner({
+            store,
+            runtimeRegistry,
+            workspaceRoot,
+            traceDirectory: join(app.getPath("userData"), "traces", "evaluations"),
+            onChanged: (update) => send("evaluation:changed", update),
+        })
         discoverLocalRuntimes()
         client = createClient()
         installIpc()
@@ -649,10 +754,13 @@ if (!hasLock) {
     })
 
     app.on("before-quit", (event) => {
-        if (!client?.child || quitAfterRuntimeStops) return
+        if (quitAfterRuntimeStops) return
         event.preventDefault()
         quitAfterRuntimeStops = true
-        void client.stop().finally(() => app.quit())
+        void Promise.all([
+            client?.stop?.() ?? Promise.resolve(),
+            evaluationRunner?.stopAll?.() ?? Promise.resolve(),
+        ]).finally(() => app.quit())
     })
 
     app.on("window-all-closed", () => {

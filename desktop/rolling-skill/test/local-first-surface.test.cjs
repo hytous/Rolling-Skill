@@ -192,4 +192,30 @@ describe("local-first desktop surface", () => {
         assert.match(settings, /id="open-trace"/)
         assert.match(settings, /id="choose-runtime"/)
     })
+
+    it("exposes effort controls, dataset runs, runtime matrices, run history, deletion, and archived drafts", () => {
+        const html = source("renderer/index.html")
+        const preload = source("src/preload.cjs")
+        const main = source("src/main.cjs")
+
+        for (const id of [
+            "composer-effort",
+            "settings-task-effort",
+            "settings-curator-effort",
+            "settings-auto-capture-effort",
+            "evaluation-runtime-list",
+            "start-dataset-evaluation",
+            "evaluation-runs",
+            "archived-curations",
+        ]) {
+            assert.match(html, new RegExp(`id="${id}"`))
+        }
+        assert.match(preload, /deleteCase/)
+        assert.match(preload, /startEvaluationRun/)
+        assert.match(preload, /listEvaluationRuns/)
+        assert.match(preload, /listArchivedCurations/)
+        assert.match(main, /CodeBuddyRuntimeProvider/)
+        assert.match(main, /datasets:delete-case/)
+        assert.match(main, /evaluations:start/)
+    })
 })

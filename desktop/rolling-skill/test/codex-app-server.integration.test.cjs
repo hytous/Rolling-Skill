@@ -64,7 +64,7 @@ describe("Codex app-server request construction", () => {
         })
     })
 
-    it("can override the model for this turn and subsequent turns", async () => {
+    it("can override the model and reasoning effort for this turn and subsequent turns", async () => {
         const client = new CodexAppServerClient({
             binaryPath: "/tmp/codex",
             traceDirectory: "/tmp",
@@ -76,11 +76,16 @@ describe("Codex app-server request construction", () => {
             return {turn: {id: "turn-1"}}
         }
 
-        await client.startTurn("thread-1", "hello", {model: "gpt-5.6-sol"})
+        await client.startTurn("thread-1", "hello", {
+            model: "gpt-5.6-sol",
+            effort: "high",
+        })
 
         assert.equal(request.method, "turn/start")
         assert.equal(request.params.threadId, "thread-1")
         assert.equal(request.params.model, "gpt-5.6-sol")
+        assert.equal(request.params.effort, "high")
+        assert.equal("reasoningEffort" in request.params, false)
     })
 
     it("allows a read-only subagent thread and a caller-selected model", async () => {
@@ -186,5 +191,42 @@ describe("Codex app-server request construction", () => {
         await client.startTurn("thread-1", input)
 
         assert.deepEqual(request.params.input, input)
+    })
+
+    it("removes its evaluation listener when turn startup fails", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        client.startThread = async () => ({thread: {id: "evaluation-thread"}})
+        client.startTurn = async () => {
+            throw new Error("turn startup failed")
+        }
+
+        await assert.rejects(
+            client.runEvaluationCase({question: "hello"}),
+            /turn startup failed/,
+        )
+
+        assert.equal(client.listenerCount("notification"), 0)
+    })
+
+    it("ends an evaluation immediately when the runtime stops", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        client.startThread = async () => ({thread: {id: "evaluation-thread"}})
+        client.startTurn = async () => ({turn: {id: "evaluation-turn"}})
+
+        const operation = client.runEvaluationCase({question: "hello"})
+        await new Promise((resolve) => setImmediate(resolve))
+        client.emit("state", {status: "stopped"})
+
+        await assert.rejects(operation, /stopped before completion/)
+        assert.equal(client.listenerCount("notification"), 0)
+        assert.equal(client.listenerCount("state"), 0)
     })
 })

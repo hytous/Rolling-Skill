@@ -37,6 +37,8 @@ const translations = {
         runtimeDefault: "Runtime default",
         sourceOrRuntimeModel: "Source / runtime model",
         model: "Model",
+        reasoningEffort: "Reasoning effort",
+        runtimeDefaultEffort: "Runtime default effort",
         send: "Send",
         doneSaveCase: "Done · save case",
         done: "Done",
@@ -146,7 +148,7 @@ const translations = {
         skillEvaluation: "Skill evaluation",
         evaluationWorkbench: "SKILL EVALUATION WORKBENCH",
         evaluateSkills: "Evaluate Skills against real language",
-        evaluationWorkbenchHelp: "Keep questions verbatim, preflight the active runtime, and launch a test without forcing Skill activation.",
+        evaluationWorkbenchHelp: "Keep questions verbatim and compare the same Skill across local runtime configurations.",
         cases: "Cases",
         verbatimQuestions: "Questions stay verbatim",
         testRun: "Test run",
@@ -156,17 +158,30 @@ const translations = {
         automaticTrigger: "Automatic trigger",
         automaticTriggerHelp: "Send only the original question. This is the scored path.",
         explicitDiagnostic: "Explicit diagnostic",
-        explicitDiagnosticHelp: "Attach a structured Skill mention to isolate trigger failures.",
+        explicitDiagnosticHelp: "Use the provider's explicit Skill instruction to isolate trigger failures.",
         startSelectedCase: "Start selected case",
-        evaluationLaunchHelp: "The target task runs in the selected runtime. Automated grading is not applied yet; review the native task and its trace.",
+        evaluationLaunchHelp: "Selected runtimes execute in parallel and save durable evidence here. Automated grading is not applied yet.",
         noDatasets: "No datasets yet.",
         noCases: "This dataset has no saved cases yet.",
-        noSkills: "The active runtime reported no enabled Skills for this workspace.",
+        noSkills: "No Skill reference is available from runtime inventory or saved Cases.",
         selectCase: "Select one case to run.",
         skillReady: "Installed and enabled in {runtime}",
+        skillSelected: "Selected Skill reference",
         originalQuestionOnly: "Original question only",
         explicitSkillAttached: "Structured Skill mention attached",
-        evaluationStarted: "Test task started in Chat",
+        evaluationRuns: "Evaluation runs",
+        runtimeConfigurations: "Runtime configurations",
+        startDataset: "Run entire dataset",
+        noRuns: "No evaluation runs yet.",
+        runQueued: "Evaluation run queued",
+        runResults: "Case × runtime results",
+        deleteCase: "Delete Case?",
+        deleteCaseHelp: "The Case will be removed from the dataset. Existing run snapshots stay available.",
+        delete: "Delete",
+        caseDeleted: "Case deleted",
+        archivedDrafts: "Archived Case drafts",
+        noArchivedDrafts: "No archived Case drafts.",
+        skillInventoryUnavailable: "Skill inventory is unavailable for this runtime",
         localRuntimeAndData: "Local runtime & data",
         localRuntimeAndDataHelp: "Runtime discovery, raw trace, and the local evaluation store stay on this Mac.",
         openDatasetFile: "Open dataset file",
@@ -209,6 +224,8 @@ const translations = {
         runtimeDefault: "运行时默认模型",
         sourceOrRuntimeModel: "沿用来源 / 运行时模型",
         model: "模型",
+        reasoningEffort: "推理强度",
+        runtimeDefaultEffort: "运行时默认强度",
         send: "发送",
         doneSaveCase: "完成并保存 Case",
         done: "完成",
@@ -318,7 +335,7 @@ const translations = {
         skillEvaluation: "Skill 评测",
         evaluationWorkbench: "SKILL 评测工作台",
         evaluateSkills: "用真实自然语言评测 Skill",
-        evaluationWorkbenchHelp: "保留原始问题，预检当前运行时，并在不强制唤起 Skill 的情况下启动测试。",
+        evaluationWorkbenchHelp: "保留原始问题，在多个本地运行时配置间对比同一个 Skill。",
         cases: "Cases",
         verbatimQuestions: "问题保持原文",
         testRun: "测试运行",
@@ -328,17 +345,30 @@ const translations = {
         automaticTrigger: "自动触发",
         automaticTriggerHelp: "只发送原始问题；这是正式评测路径。",
         explicitDiagnostic: "显式诊断",
-        explicitDiagnosticHelp: "附加结构化 Skill mention，用于区分触发失败和执行失败。",
+        explicitDiagnosticHelp: "使用对应运行时的显式 Skill 指令，用于区分触发失败和执行失败。",
         startSelectedCase: "启动选中 Case",
-        evaluationLaunchHelp: "目标任务会在所选运行时执行。当前尚未自动判分，请在原生任务及 Trace 中审核结果。",
+        evaluationLaunchHelp: "所选运行时会并行执行，并在这里保存持久证据；当前尚未自动判分。",
         noDatasets: "还没有数据集。",
         noCases: "这个数据集还没有已保存的 Case。",
-        noSkills: "当前运行时在此工作目录下没有报告已启用的 Skill。",
+        noSkills: "运行时清单和已保存 Case 中都没有可用的 Skill 引用。",
         selectCase: "请选择一个 Case 运行。",
         skillReady: "已安装并在 {runtime} 中启用",
+        skillSelected: "已选择 Skill 引用",
         originalQuestionOnly: "仅发送原始问题",
         explicitSkillAttached: "已附加结构化 Skill mention",
-        evaluationStarted: "测试任务已在对话页启动",
+        evaluationRuns: "评测记录",
+        runtimeConfigurations: "运行时配置",
+        startDataset: "运行整个数据集",
+        noRuns: "还没有评测记录。",
+        runQueued: "评测任务已进入队列",
+        runResults: "Case × Runtime 结果",
+        deleteCase: "删除 Case？",
+        deleteCaseHelp: "该 Case 会从数据集中移除；已有评测记录中的快照仍会保留。",
+        delete: "删除",
+        caseDeleted: "Case 已删除",
+        archivedDrafts: "已归档 Case 草稿",
+        noArchivedDrafts: "还没有已归档的 Case 草稿。",
+        skillInventoryUnavailable: "该运行时不提供 Skill 清单",
         localRuntimeAndData: "本地运行时与数据",
         localRuntimeAndDataHelp: "运行时发现、原始 Trace 和本地评测数据都保存在这台 Mac。",
         openDatasetFile: "打开数据集文件",
@@ -370,11 +400,12 @@ const state = {
         autoCapture: false,
         language: "zh-CN",
         theme: "codex-light",
-        taskProfile: {runtimePolicy: "active", modelId: null},
-        curatorProfile: {runtimePolicy: "active", modelId: null},
+        taskProfile: {runtimePolicy: "active", modelId: null, effort: null},
+        curatorProfile: {runtimePolicy: "active", modelId: null, effort: null},
         autoCaptureProfile: {
             runtimePolicy: "active",
             modelId: null,
+            effort: null,
             datasetId: null,
             caseType: "goodcase",
             skillName: null,
@@ -383,6 +414,7 @@ const state = {
     },
     models: [],
     selectedTaskModelId: null,
+    selectedTaskEffort: null,
     discardCurationId: null,
     traceOpen: false,
     surface: "chat",
@@ -390,6 +422,13 @@ const state = {
     evaluationSkills: [],
     evaluationDatasetId: null,
     evaluationCaseId: null,
+    evaluationView: "cases",
+    evaluationRuns: [],
+    activeEvaluationRunId: null,
+    evaluationRuntimeConfigurations: {},
+    archivedCurations: [],
+    archivedCurationsOpen: false,
+    deleteCaseId: null,
     evaluationLoading: false,
     evaluationError: null,
     evaluationSkillByThread: {},
@@ -425,8 +464,14 @@ const elements = {
     evaluationCaseList: document.querySelector("#evaluation-case-list"),
     evaluationSkill: document.querySelector("#evaluation-skill"),
     evaluationSkillStatus: document.querySelector("#evaluation-skill-status"),
-    evaluationModel: document.querySelector("#evaluation-model"),
+    evaluationRuntimeList: document.querySelector("#evaluation-runtime-list"),
     startEvaluation: document.querySelector("#start-evaluation"),
+    startDatasetEvaluation: document.querySelector("#start-dataset-evaluation"),
+    evaluationCasesView: document.querySelector("#evaluation-cases-view"),
+    evaluationRuns: document.querySelector("#evaluation-runs"),
+    evaluationRunCount: document.querySelector("#evaluation-run-count"),
+    evaluationRunList: document.querySelector("#evaluation-run-list"),
+    evaluationRunDetail: document.querySelector("#evaluation-run-detail"),
     errorBanner: document.querySelector("#error-banner"),
     errorMessage: document.querySelector("#error-message"),
     dismissError: document.querySelector("#dismiss-error"),
@@ -435,6 +480,7 @@ const elements = {
     composer: document.querySelector("#composer"),
     composerInput: document.querySelector("#composer-input"),
     composerModel: document.querySelector("#composer-model"),
+    composerEffort: document.querySelector("#composer-effort"),
     sendTurn: document.querySelector("#send-turn"),
     stopTurn: document.querySelector("#stop-turn"),
     traceDrawer: document.querySelector("#trace-drawer"),
@@ -455,9 +501,12 @@ const elements = {
     settingsLanguage: document.querySelector("#settings-language"),
     settingsTheme: document.querySelector("#settings-theme"),
     settingsTaskModel: document.querySelector("#settings-task-model"),
+    settingsTaskEffort: document.querySelector("#settings-task-effort"),
     settingsCuratorModel: document.querySelector("#settings-curator-model"),
+    settingsCuratorEffort: document.querySelector("#settings-curator-effort"),
     settingsAutoCapture: document.querySelector("#settings-auto-capture"),
     settingsAutoCaptureModel: document.querySelector("#settings-auto-capture-model"),
+    settingsAutoCaptureEffort: document.querySelector("#settings-auto-capture-effort"),
     settingsAutoCaptureSkill: document.querySelector("#settings-auto-capture-skill"),
     settingsAutoCaptureDataset: document.querySelector("#settings-auto-capture-dataset"),
     settingsAutoCaptureCaseType: document.querySelector("#settings-auto-capture-case-type"),
@@ -472,6 +521,12 @@ const elements = {
     automaticRuntime: document.querySelector("#automatic-runtime"),
     chooseRuntimeFile: document.querySelector("#choose-runtime-file"),
     confirmRuntime: document.querySelector("#confirm-runtime"),
+    archivedCurations: document.querySelector("#archived-curations"),
+    archivedCurationList: document.querySelector("#archived-curation-list"),
+    deleteCaseDialog: document.querySelector("#delete-case-dialog"),
+    closeDeleteCaseDialog: document.querySelector("#close-delete-case-dialog"),
+    cancelDeleteCase: document.querySelector("#cancel-delete-case"),
+    confirmDeleteCase: document.querySelector("#confirm-delete-case"),
     caseDialog: document.querySelector("#save-case-dialog"),
     caseForm: document.querySelector("#save-case-form"),
     caseDataset: document.querySelector("#case-dataset"),
@@ -521,9 +576,14 @@ function modelValue(model) {
     return String(model?.model ?? model?.id ?? "").trim()
 }
 
-function populateModelSelect(select, selectedModelId, defaultLabel = t("runtimeDefault")) {
+function populateModelSelect(
+    select,
+    selectedModelId,
+    defaultLabel = t("runtimeDefault"),
+    sourceModels = state.models,
+) {
     const selected = String(selectedModelId ?? "").trim()
-    const catalog = state.models
+    const catalog = sourceModels
         .map((model) => ({
             value: modelValue(model),
             label: model.displayName || modelValue(model),
@@ -555,6 +615,65 @@ function populateModelSelect(select, selectedModelId, defaultLabel = t("runtimeD
     select.dataset.modelSignature = signature
 }
 
+function effortValue(entry) {
+    return String(entry?.reasoningEffort ?? entry?.effort ?? entry?.value ?? entry ?? "").trim()
+}
+
+function modelEfforts(model) {
+    const values =
+        model?.reasoningEfforts ??
+        model?.supportedReasoningEfforts ??
+        model?.supportedEfforts ??
+        []
+    return [...new Set(values.map(effortValue).filter(Boolean))]
+}
+
+function effortsForModel(models, modelId, fallback = []) {
+    const selected = String(modelId ?? "").trim()
+    const model = selected
+        ? models.find((entry) => modelValue(entry) === selected)
+        : models.find((entry) => entry.isDefault) ?? models[0]
+    const efforts = modelEfforts(model)
+    return efforts.length ? efforts : [...new Set((fallback ?? []).map(effortValue).filter(Boolean))]
+}
+
+function populateEffortSelect(
+    select,
+    selectedEffort,
+    modelId,
+    sourceModels = state.models,
+    fallbackEfforts = state.runtime?.runtime?.efforts ?? [],
+) {
+    const selected = String(selectedEffort ?? "").trim()
+    const efforts = effortsForModel(sourceModels, modelId, fallbackEfforts)
+    const selectedModel = modelId
+        ? sourceModels.find((entry) => modelValue(entry) === modelId)
+        : sourceModels.find((entry) => entry.isDefault) ?? sourceModels[0]
+    const defaultEffort = effortValue(selectedModel?.defaultReasoningEffort)
+    const signature = JSON.stringify({selected, modelId, efforts, defaultEffort, language: state.settings.language})
+    if (select.dataset.effortSignature === signature) return
+    select.replaceChildren()
+    const runtimeDefault = node(
+        "option",
+        "",
+        defaultEffort ? `${t("runtimeDefaultEffort")} · ${defaultEffort}` : t("runtimeDefaultEffort"),
+    )
+    runtimeDefault.value = ""
+    select.append(runtimeDefault)
+    for (const effort of efforts) {
+        const option = node("option", "", effort)
+        option.value = effort
+        select.append(option)
+    }
+    if (selected && !efforts.length) {
+        const custom = node("option", "", selected)
+        custom.value = selected
+        select.append(custom)
+    }
+    select.value = selected
+    select.dataset.effortSignature = signature
+}
+
 function renderCaptureStatus() {
     const enabled = Boolean(state.settings.autoCapture)
     elements.captureStatus.textContent = t(enabled ? "autoCaptureOn" : "autoCaptureOff")
@@ -562,7 +681,15 @@ function renderCaptureStatus() {
 }
 
 function applySettings(settings) {
-    state.settings = settings
+    state.settings = {
+        ...settings,
+        taskProfile: {...settings.taskProfile, effort: settings.taskProfile?.effort ?? null},
+        curatorProfile: {...settings.curatorProfile, effort: settings.curatorProfile?.effort ?? null},
+        autoCaptureProfile: {
+            ...settings.autoCaptureProfile,
+            effort: settings.autoCaptureProfile?.effort ?? null,
+        },
+    }
     state.curatorProfile = settings.curatorProfile
     document.documentElement.dataset.theme = settings.theme
     applyLocalization()
@@ -571,6 +698,12 @@ function applySettings(settings) {
 
 function renderTaskModelPicker() {
     populateModelSelect(elements.composerModel, state.selectedTaskModelId)
+    populateEffortSelect(
+        elements.composerEffort,
+        state.selectedTaskEffort,
+        state.selectedTaskModelId,
+    )
+    state.selectedTaskEffort = elements.composerEffort.value || null
 }
 
 function runtimeSkillByPath(path) {
@@ -629,15 +762,30 @@ function renderSettingsForm() {
     elements.settingsLanguage.value = settings.language
     elements.settingsTheme.value = settings.theme
     populateModelSelect(elements.settingsTaskModel, settings.taskProfile?.modelId)
+    populateEffortSelect(
+        elements.settingsTaskEffort,
+        settings.taskProfile?.effort,
+        settings.taskProfile?.modelId,
+    )
     populateModelSelect(
         elements.settingsCuratorModel,
         settings.curatorProfile?.modelId,
         t("sourceOrRuntimeModel"),
     )
+    populateEffortSelect(
+        elements.settingsCuratorEffort,
+        settings.curatorProfile?.effort,
+        settings.curatorProfile?.modelId,
+    )
     populateModelSelect(
         elements.settingsAutoCaptureModel,
         settings.autoCaptureProfile?.modelId,
         t("sourceOrRuntimeModel"),
+    )
+    populateEffortSelect(
+        elements.settingsAutoCaptureEffort,
+        settings.autoCaptureProfile?.effort,
+        settings.autoCaptureProfile?.modelId,
     )
     populateSkillSelect(
         elements.settingsAutoCaptureSkill,
@@ -678,9 +826,12 @@ async function saveSettings() {
             language: elements.settingsLanguage.value,
             theme: elements.settingsTheme.value,
             taskModelId: elements.settingsTaskModel.value,
+            taskEffort: elements.settingsTaskEffort.value,
             curatorModelId: elements.settingsCuratorModel.value,
+            curatorEffort: elements.settingsCuratorEffort.value,
             autoCapture: elements.settingsAutoCapture.checked,
             autoCaptureModelId: elements.settingsAutoCaptureModel.value,
+            autoCaptureEffort: elements.settingsAutoCaptureEffort.value,
             autoCaptureDatasetId: elements.settingsAutoCaptureDataset.value || null,
             autoCaptureCaseType: elements.settingsAutoCaptureCaseType.value,
             autoCaptureSkillName: captureSkill?.name ?? null,
@@ -689,6 +840,7 @@ async function saveSettings() {
         applySettings(settings)
         if (state.newTaskMode || !state.activeThread) {
             state.selectedTaskModelId = settings.taskProfile?.modelId ?? null
+            state.selectedTaskEffort = settings.taskProfile?.effort ?? null
         }
         renderAll()
         renderCurations()
@@ -1035,6 +1187,7 @@ function renderComposer() {
     elements.sendTurn.disabled = state.runtime?.status !== "ready" || !elements.composerInput.value.trim()
     elements.composerInput.disabled = state.sending
     elements.composerModel.disabled = running || state.runtime?.status !== "ready"
+    elements.composerEffort.disabled = running || state.runtime?.status !== "ready"
     renderTaskModelPicker()
 }
 
@@ -1219,10 +1372,19 @@ function renderCurations() {
         modelPicker.setAttribute("aria-label", t("model"))
         modelPicker.disabled = input.disabled
         populateModelSelect(modelPicker, session.curator.modelId, t("sourceOrRuntimeModel"))
+        const effortPicker = node("select", "effort-picker curation-effort-picker")
+        effortPicker.setAttribute("data-curation-effort", session.id)
+        effortPicker.setAttribute("aria-label", t("reasoningEffort"))
+        effortPicker.disabled = input.disabled
+        populateEffortSelect(
+            effortPicker,
+            session.curator.effort,
+            session.curator.modelId,
+        )
         const send = node("button", "", t("send"))
         send.type = "submit"
         send.disabled = input.disabled
-        footer.append(modelPicker, send)
+        footer.append(modelPicker, effortPicker, send)
         form.append(input, footer)
         composerWrap.append(form)
         const actions = node("div", "curation-actions")
@@ -1287,6 +1449,12 @@ function renderEvaluationWorkbench() {
     }
     if (!evaluation) return
 
+    for (const button of elements.evaluationWorkbench.querySelectorAll("[data-evaluation-view]")) {
+        button.classList.toggle("active", button.dataset.evaluationView === state.evaluationView)
+    }
+    elements.evaluationCasesView.classList.toggle("hidden", state.evaluationView !== "cases")
+    elements.evaluationRuns.classList.toggle("hidden", state.evaluationView !== "runs")
+
     elements.evaluationDatasetCount.textContent = String(state.datasets.length)
     elements.evaluationDatasetList.replaceChildren()
     if (!state.datasets.length) {
@@ -1316,6 +1484,7 @@ function renderEvaluationWorkbench() {
         elements.evaluationCaseList.append(node("div", "evaluation-empty", t("noCases")))
     }
     for (const caseEntry of state.evaluationCases) {
+        const row = node("article", "evaluation-case-row")
         const button = node("button", "evaluation-case")
         button.type = "button"
         button.dataset.evaluationCaseId = caseEntry.id
@@ -1325,7 +1494,13 @@ function renderEvaluationWorkbench() {
             node("strong", "", caseEntry.question),
             node("small", "", caseEntry.curated?.referenceAnswer?.summary || caseEntry.answer || ""),
         )
-        elements.evaluationCaseList.append(button)
+        const remove = node("button", "evaluation-case-delete", "×")
+        remove.type = "button"
+        remove.title = t("deleteCase")
+        remove.setAttribute("aria-label", t("deleteCase"))
+        remove.dataset.deleteEvaluationCase = caseEntry.id
+        row.append(button, remove)
+        elements.evaluationCaseList.append(row)
     }
 
     const selectedPath = elements.evaluationSkill.value
@@ -1341,17 +1516,197 @@ function renderEvaluationWorkbench() {
     const skill = selectedEvaluationSkill()
     elements.evaluationSkillStatus.className = `skill-preflight ${skill ? "ready" : "missing"}`
     elements.evaluationSkillStatus.textContent = skill
-        ? `${formatMessage("skillReady", {runtime: state.runtime?.runtime?.displayName ?? t("localRuntime")})} · ${skill.scope}`
+        ? `${t("skillSelected")} · ${skill.scope ?? "dataset"}`
         : t("noSkills")
-    populateModelSelect(
-        elements.evaluationModel,
-        elements.evaluationModel.value || state.settings.taskProfile?.modelId,
-    )
+    renderEvaluationRuntimeConfigurations(skill)
+    renderEvaluationRuns()
+    const selectedRuntimeCount = Object.values(state.evaluationRuntimeConfigurations).filter(
+        (configuration) => configuration.selected,
+    ).length
     elements.startEvaluation.disabled =
         state.evaluationLoading ||
-        state.runtime?.status !== "ready" ||
         !state.evaluationCaseId ||
-        !skill
+        !skill ||
+        !selectedRuntimeCount
+    elements.startDatasetEvaluation.disabled =
+        state.evaluationLoading ||
+        !state.evaluationCases.length ||
+        !skill ||
+        !selectedRuntimeCount
+}
+
+function ensureEvaluationRuntimeConfigurations() {
+    const runtimes = state.runtime?.availableRuntimes ?? []
+    const availableIds = new Set(runtimes.map((runtime) => runtime.runtimeId))
+    for (const runtimeId of Object.keys(state.evaluationRuntimeConfigurations)) {
+        if (!availableIds.has(runtimeId)) delete state.evaluationRuntimeConfigurations[runtimeId]
+    }
+    for (const runtime of runtimes) {
+        if (state.evaluationRuntimeConfigurations[runtime.runtimeId]) continue
+        const active = runtime.runtimeId === state.runtime?.runtime?.runtimeId
+        state.evaluationRuntimeConfigurations[runtime.runtimeId] = {
+            runtime,
+            selected: active,
+            modelId: active ? state.settings.taskProfile?.modelId ?? null : null,
+            effort: active ? state.settings.taskProfile?.effort ?? null : null,
+            models: (runtime.models ?? []).map((model, index) => ({
+                id: model,
+                model,
+                displayName: model,
+                isDefault: index === 0 || model === "default-model",
+                reasoningEfforts: (runtime.efforts ?? []).map((effort) => ({reasoningEffort: effort})),
+            })),
+            loading: false,
+            error: null,
+        }
+    }
+}
+
+async function refreshEvaluationRuntimeModels(forceReload = false) {
+    ensureEvaluationRuntimeConfigurations()
+    await Promise.all(
+        Object.values(state.evaluationRuntimeConfigurations).map(async (configuration) => {
+            if (!forceReload && configuration.models.length) return
+            configuration.loading = true
+            configuration.error = null
+            try {
+                const response = await window.rollingSkill.listModelsForRuntime(
+                    configuration.runtime.runtimeId,
+                )
+                configuration.models = response.data ?? []
+            } catch (error) {
+                configuration.error = error?.message ?? String(error)
+            } finally {
+                configuration.loading = false
+            }
+        }),
+    )
+}
+
+function renderEvaluationRuntimeConfigurations(skill) {
+    ensureEvaluationRuntimeConfigurations()
+    elements.evaluationRuntimeList.replaceChildren()
+    const configurations = Object.values(state.evaluationRuntimeConfigurations)
+    if (!configurations.length) {
+        elements.evaluationRuntimeList.append(
+            node("div", "sidebar-placeholder", t("noCompatibleRuntime")),
+        )
+        return
+    }
+    for (const configuration of configurations) {
+        const runtime = configuration.runtime
+        const row = node("article", `evaluation-runtime-row${configuration.selected ? " selected" : ""}`)
+        row.dataset.evaluationRuntimeId = runtime.runtimeId
+        const heading = node("label", "evaluation-runtime-heading")
+        const checkbox = document.createElement("input")
+        checkbox.type = "checkbox"
+        checkbox.checked = configuration.selected
+        checkbox.dataset.evaluationRuntimeToggle = runtime.runtimeId
+        const title = node("span")
+        title.append(
+            node("strong", "", `${runtime.displayName} ${runtime.version ?? ""}`.trim()),
+            node("small", "", runtime.executablePath),
+        )
+        heading.append(checkbox, title)
+        const controls = node("div", "evaluation-runtime-controls")
+        const modelSelect = node("select")
+        modelSelect.dataset.evaluationRuntimeModel = runtime.runtimeId
+        populateModelSelect(
+            modelSelect,
+            configuration.modelId,
+            t("runtimeDefault"),
+            configuration.models,
+        )
+        const effortSelect = node("select")
+        effortSelect.dataset.evaluationRuntimeEffort = runtime.runtimeId
+        populateEffortSelect(
+            effortSelect,
+            configuration.effort,
+            configuration.modelId,
+            configuration.models,
+            runtime.efforts,
+        )
+        configuration.effort = effortSelect.value || null
+        modelSelect.disabled = !configuration.selected || configuration.loading
+        effortSelect.disabled = !configuration.selected || configuration.loading
+        controls.append(modelSelect, effortSelect)
+        const preflight = runtime.capabilities?.includes("skills")
+            ? skill
+                ? skill.name
+                : t("noSkills")
+            : t("skillInventoryUnavailable")
+        row.append(heading, controls, node("small", "evaluation-runtime-preflight", preflight))
+        if (configuration.error) row.append(node("small", "error", configuration.error))
+        elements.evaluationRuntimeList.append(row)
+    }
+}
+
+function renderEvaluationRuns() {
+    elements.evaluationRunCount.textContent = String(state.evaluationRuns.length)
+    elements.evaluationRunList.replaceChildren()
+    if (!state.evaluationRuns.length) {
+        elements.evaluationRunList.append(node("div", "evaluation-empty", t("noRuns")))
+    }
+    for (const run of state.evaluationRuns) {
+        const button = node("button", "evaluation-run-item")
+        button.type = "button"
+        button.dataset.evaluationRunId = run.id
+        if (run.id === state.activeEvaluationRunId) button.classList.add("active")
+        button.append(
+            node("span", `run-status ${run.status}`, run.status),
+            node("strong", "", run.datasetSnapshot?.name ?? run.datasetId),
+            node(
+                "small",
+                "",
+                `${run.caseSnapshots?.length ?? 0} Cases · ${run.runtimeConfigurations?.length ?? 0} runtimes · ${new Date(run.createdAt).toLocaleString(state.settings.language)}`,
+            ),
+        )
+        elements.evaluationRunList.append(button)
+    }
+    elements.evaluationRunDetail.replaceChildren()
+    const run = state.evaluationRuns.find((entry) => entry.id === state.activeEvaluationRunId)
+    if (!run) {
+        elements.evaluationRunDetail.append(node("div", "evaluation-empty", t("noRuns")))
+        return
+    }
+    const header = node("header", "evaluation-run-detail-header")
+    header.append(
+        node("span", `run-status ${run.status}`, run.status),
+        node("h2", "", run.datasetSnapshot?.name ?? run.datasetId),
+        node("p", "", `${run.skillReference?.name ?? "Skill"} · ${run.activationMode}`),
+    )
+    const results = node("div", "evaluation-result-list")
+    for (const result of run.results ?? []) {
+        const card = node("article", "evaluation-result-card")
+        const resultHeader = node("div", "evaluation-result-head")
+        resultHeader.append(
+            node("span", `run-status ${result.status}`, result.status),
+            node("strong", "", result.runtimeConfiguration?.displayName ?? result.runtimeId),
+            node(
+                "small",
+                "",
+                [
+                    result.runtimeConfiguration?.modelId || t("runtimeDefault"),
+                    result.runtimeConfiguration?.effort || t("runtimeDefaultEffort"),
+                    result.durationMs === null ? null : `${result.durationMs} ms`,
+                ].filter(Boolean).join(" · "),
+            ),
+        )
+        card.append(
+            resultHeader,
+            node("p", "evaluation-result-question", result.caseSnapshot?.question ?? ""),
+        )
+        if (result.response || result.error) {
+            const detail = document.createElement("details")
+            detail.append(
+                node("summary", "", result.error ? t("failed") : t("completed")),
+                node("pre", "", result.error ?? result.response),
+            )
+            card.append(detail)
+        }
+        results.append(card)
+    }
+    elements.evaluationRunDetail.append(header, node("h3", "", t("runResults")), results)
 }
 
 function flattenRuntimeSkills(response) {
@@ -1371,9 +1726,21 @@ function flattenRuntimeSkills(response) {
 }
 
 async function refreshRuntimeSkills(forceReload = false) {
-    state.evaluationSkills = state.runtime?.status === "ready"
+    const runtimeSkills = state.runtime?.status === "ready"
         ? flattenRuntimeSkills(await window.rollingSkill.listSkills(forceReload))
         : []
+    const byPath = new Map(runtimeSkills.map((skill) => [skill.path, skill]))
+    for (const caseEntry of state.evaluationCases) {
+        const reference = caseEntry.skillReference
+        if (!reference?.path || !reference?.name || byPath.has(reference.path)) continue
+        byPath.set(reference.path, {
+            ...reference,
+            enabled: true,
+            scope: "dataset",
+            interface: {displayName: reference.name},
+        })
+    }
+    state.evaluationSkills = [...byPath.values()]
     return state.evaluationSkills
 }
 
@@ -1392,7 +1759,20 @@ async function loadEvaluationWorkbench(forceReload = false) {
         if (!state.evaluationCases.some((entry) => entry.id === state.evaluationCaseId)) {
             state.evaluationCaseId = state.evaluationCases[0]?.id ?? null
         }
-        await refreshRuntimeSkills(forceReload)
+        const previousSkillPath = elements.evaluationSkill.value
+        await Promise.all([
+            refreshRuntimeSkills(forceReload),
+            refreshEvaluationRuntimeModels(forceReload),
+        ])
+        state.evaluationRuns = state.evaluationDatasetId
+            ? await window.rollingSkill.listEvaluationRuns(state.evaluationDatasetId)
+            : []
+        if (!state.evaluationRuns.some((entry) => entry.id === state.activeEvaluationRunId)) {
+            state.activeEvaluationRunId = state.evaluationRuns[0]?.id ?? null
+        }
+        if (previousSkillPath && state.evaluationSkills.some((skill) => skill.path === previousSkillPath)) {
+            elements.evaluationSkill.value = previousSkillPath
+        }
     } catch (error) {
         state.evaluationError = error?.message || String(error)
     } finally {
@@ -1422,44 +1802,94 @@ async function createEvaluationDataset() {
     }
 }
 
-async function startSelectedEvaluation() {
-    const caseEntry = state.evaluationCases.find((entry) => entry.id === state.evaluationCaseId)
-    if (!caseEntry) return
-    const selectedPath = elements.evaluationSkill.value
-    elements.startEvaluation.disabled = true
+function openDeleteCaseDialog(caseId) {
+    state.deleteCaseId = caseId
+    elements.deleteCaseDialog.showModal()
+}
+
+async function deleteEvaluationCase() {
+    if (!state.deleteCaseId || !state.evaluationDatasetId) return
+    elements.confirmDeleteCase.disabled = true
     try {
-        state.evaluationSkills = flattenRuntimeSkills(await window.rollingSkill.listSkills(true))
-        elements.evaluationSkill.value = selectedPath
+        await window.rollingSkill.deleteCase(state.evaluationDatasetId, state.deleteCaseId)
+        state.deleteCaseId = null
+        elements.deleteCaseDialog.close()
+        await loadEvaluationWorkbench(false)
+        showToast(t("caseDeleted"))
+    } catch (error) {
+        showError(error)
+    } finally {
+        elements.confirmDeleteCase.disabled = false
+    }
+}
+
+async function toggleArchivedCurations() {
+    state.archivedCurationsOpen = !state.archivedCurationsOpen
+    elements.archivedCurationList.classList.toggle("hidden", !state.archivedCurationsOpen)
+    if (!state.archivedCurationsOpen) return
+    elements.archivedCurationList.replaceChildren(
+        node("div", "sidebar-placeholder", t("loadingTask")),
+    )
+    try {
+        state.archivedCurations = await window.rollingSkill.listArchivedCurations()
+        elements.archivedCurationList.replaceChildren()
+        if (!state.archivedCurations.length) {
+            elements.archivedCurationList.append(
+                node("div", "sidebar-placeholder", t("noArchivedDrafts")),
+            )
+            return
+        }
+        for (const session of state.archivedCurations) {
+            const card = node("article", "archived-curation-card")
+            card.append(
+                node("strong", "", session.episode?.originalQuestion ?? t("untitledCase")),
+                node(
+                    "small",
+                    "",
+                    `${session.caseType} · ${session.skillReference?.name ?? t("none")} · ${new Date(session.updatedAt).toLocaleString(state.settings.language)}`,
+                ),
+            )
+            elements.archivedCurationList.append(card)
+        }
+    } catch (error) {
+        elements.archivedCurationList.replaceChildren(
+            node("div", "sidebar-placeholder", error?.message ?? String(error)),
+        )
+    }
+}
+
+async function startEvaluation(selectionMode) {
+    const caseEntry = state.evaluationCases.find((entry) => entry.id === state.evaluationCaseId)
+    if (selectionMode === "selected" && !caseEntry) return
+    elements.startEvaluation.disabled = true
+    elements.startDatasetEvaluation.disabled = true
+    try {
         const skill = selectedEvaluationSkill()
         if (!skill) throw new Error(t("noSkills"))
-        const modelId = elements.evaluationModel.value || null
+        const runtimeConfigurations = Object.values(state.evaluationRuntimeConfigurations)
+            .filter((configuration) => configuration.selected)
+            .map((configuration) => ({
+                runtimeId: configuration.runtime.runtimeId,
+                modelId: configuration.modelId || null,
+                effort: configuration.effort || null,
+            }))
+        if (!runtimeConfigurations.length) throw new Error(t("noCompatibleRuntime"))
         const activationMode = elements.evaluationWorkbench.querySelector(
             'input[name="activation-mode"]:checked',
         )?.value ?? "automatic"
-        const threadResponse = await window.rollingSkill.startThread(modelId)
-        state.activeThread = threadResponse.thread
-        state.activeThreadId = threadResponse.thread.id
-        state.evaluationSkillByThread[state.activeThreadId] = skill.path
-        state.activeTurnId = null
-        state.newTaskMode = false
-        state.selectedTaskModelId = modelId
-        upsertThreadSummary(threadResponse.thread)
-        const input = activationMode === "explicit"
-            ? [
-                  {type: "skill", name: skill.name, path: skill.path},
-                  {type: "text", text: caseEntry.question, text_elements: []},
-              ]
-            : caseEntry.question
-        const turnResponse = await window.rollingSkill.startTurn(
-            state.activeThreadId,
-            input,
-            modelId,
-        )
-        state.activeTurnId = turnResponse.turn.id
-        upsertTurn(turnResponse.turn)
-        state.surface = "chat"
-        renderAll({forceBottom: true})
-        showToast(t("evaluationStarted"))
+        const run = await window.rollingSkill.startEvaluationRun({
+            datasetId: state.evaluationDatasetId,
+            caseIds: selectionMode === "selected" ? [caseEntry.id] : [],
+            selectionMode,
+            activationMode,
+            skillReference: {name: skill.name, path: skill.path},
+            runtimeConfigurations,
+        })
+        state.evaluationRuns.unshift(run)
+        state.activeEvaluationRunId = run.id
+        state.evaluationView = "runs"
+        renderEvaluationWorkbench()
+        showToast(t("runQueued"))
     } catch (error) {
         showError(error)
         renderEvaluationWorkbench()
@@ -1521,6 +1951,8 @@ async function loadThread(threadId) {
         state.activeThread = response.thread
         state.selectedTaskModelId =
             response.thread.model ?? state.settings.taskProfile?.modelId ?? null
+        state.selectedTaskEffort =
+            response.thread.effort ?? state.settings.taskProfile?.effort ?? null
         state.activeTurnId =
             response.thread.turns?.find((turn) => turn.status === "inProgress")?.id ?? null
         state.loadingThread = false
@@ -1542,6 +1974,7 @@ function beginNewTask() {
     state.loadingThread = false
     state.newTaskMode = true
     state.selectedTaskModelId = state.settings.taskProfile?.modelId ?? null
+    state.selectedTaskEffort = state.settings.taskProfile?.effort ?? null
     state.error = null
     renderAll()
     elements.composerInput.focus()
@@ -1561,7 +1994,10 @@ async function submitTurn() {
     renderAll()
     try {
         if (!state.activeThread) {
-            const response = await window.rollingSkill.startThread(state.selectedTaskModelId)
+            const response = await window.rollingSkill.startThread(
+                state.selectedTaskModelId,
+                state.selectedTaskEffort,
+            )
             state.activeThread = response.thread
             state.activeThreadId = response.thread.id
             state.newTaskMode = false
@@ -1571,6 +2007,7 @@ async function submitTurn() {
             state.activeThreadId,
             text,
             state.selectedTaskModelId,
+            state.selectedTaskEffort,
         )
         state.activeTurnId = response.turn.id
         upsertTurn(response.turn)
@@ -1774,7 +2211,7 @@ function setCurationOpen(open) {
 
 function upsertCuration(session) {
     const index = state.curationSessions.findIndex((entry) => entry.id === session.id)
-    if (session.status === "cancelled") {
+    if (session.status === "cancelled" || session.status === "archived") {
         if (index >= 0) state.curationSessions.splice(index, 1)
         if (state.activeCurationId === session.id) {
             state.activeCurationId = state.curationSessions[0]?.id ?? null
@@ -1854,6 +2291,19 @@ async function updateCurationModel(sessionId, selectedModelId) {
         upsertCuration(session)
         renderCurations()
         showToast(t("curatorModelUpdated"))
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function updateCurationEffort(sessionId, selectedEffort) {
+    try {
+        const session = await window.rollingSkill.updateCurationEffort(
+            sessionId,
+            selectedEffort || null,
+        )
+        upsertCuration(session)
+        renderCurations()
     } catch (error) {
         showError(error)
     }
@@ -1968,6 +2418,16 @@ elements.settingsForm.addEventListener("submit", (event) => {
     event.preventDefault()
     void saveSettings()
 })
+for (const [modelSelect, effortSelect] of [
+    [elements.settingsTaskModel, elements.settingsTaskEffort],
+    [elements.settingsCuratorModel, elements.settingsCuratorEffort],
+    [elements.settingsAutoCaptureModel, elements.settingsAutoCaptureEffort],
+]) {
+    modelSelect.addEventListener("change", () => {
+        populateEffortSelect(effortSelect, effortSelect.value, modelSelect.value)
+    })
+}
+elements.archivedCurations.addEventListener("click", () => void toggleArchivedCurations())
 elements.showLocalData.addEventListener("click", () => window.rollingSkill.revealLocalData())
 elements.chooseRuntime.addEventListener("click", () => {
     elements.settingsDialog.close()
@@ -1978,14 +2438,46 @@ elements.openTrace.addEventListener("click", () => {
     setTraceOpen(true)
 })
 elements.refreshEvaluation.addEventListener("click", () => loadEvaluationWorkbench(true))
+elements.evaluationWorkbench.addEventListener("click", (event) => {
+    const view = event.target.closest("[data-evaluation-view]")
+    if (!view) return
+    state.evaluationView = view.dataset.evaluationView
+    renderEvaluationWorkbench()
+})
 elements.evaluationDatasetList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-evaluation-dataset-id]")
     if (button) void selectEvaluationDataset(button.dataset.evaluationDatasetId)
 })
 elements.evaluationCaseList.addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-delete-evaluation-case]")
+    if (remove) {
+        openDeleteCaseDialog(remove.dataset.deleteEvaluationCase)
+        return
+    }
     const button = event.target.closest("[data-evaluation-case-id]")
     if (!button) return
     state.evaluationCaseId = button.dataset.evaluationCaseId
+    renderEvaluationWorkbench()
+})
+elements.evaluationRuntimeList.addEventListener("change", (event) => {
+    const toggle = event.target.closest("[data-evaluation-runtime-toggle]")
+    const model = event.target.closest("[data-evaluation-runtime-model]")
+    const effort = event.target.closest("[data-evaluation-runtime-effort]")
+    const runtimeId =
+        toggle?.dataset.evaluationRuntimeToggle ??
+        model?.dataset.evaluationRuntimeModel ??
+        effort?.dataset.evaluationRuntimeEffort
+    const configuration = state.evaluationRuntimeConfigurations[runtimeId]
+    if (!configuration) return
+    if (toggle) configuration.selected = toggle.checked
+    if (model) configuration.modelId = model.value || null
+    if (effort) configuration.effort = effort.value || null
+    renderEvaluationWorkbench()
+})
+elements.evaluationRunList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-evaluation-run-id]")
+    if (!button) return
+    state.activeEvaluationRunId = button.dataset.evaluationRunId
     renderEvaluationWorkbench()
 })
 elements.evaluationCreateDataset.addEventListener("submit", (event) => {
@@ -1993,7 +2485,8 @@ elements.evaluationCreateDataset.addEventListener("submit", (event) => {
     void createEvaluationDataset()
 })
 elements.evaluationSkill.addEventListener("change", renderEvaluationWorkbench)
-elements.startEvaluation.addEventListener("click", startSelectedEvaluation)
+elements.startEvaluation.addEventListener("click", () => void startEvaluation("selected"))
+elements.startDatasetEvaluation.addEventListener("click", () => void startEvaluation("dataset"))
 elements.topbarCurations.addEventListener("click", () => setCurationOpen(true))
 elements.topbarTrace.addEventListener("click", () => setTraceOpen(true))
 elements.closeTrace.addEventListener("click", () => setTraceOpen(false))
@@ -2042,6 +2535,10 @@ elements.composerModel.addEventListener("change", () => {
     state.selectedTaskModelId = elements.composerModel.value || null
     renderComposer()
 })
+elements.composerEffort.addEventListener("change", () => {
+    state.selectedTaskEffort = elements.composerEffort.value || null
+    renderComposer()
+})
 elements.stopTurn.addEventListener("click", stopTurn)
 elements.conversation.addEventListener("click", (event) => {
     const button = event.target.closest("[data-save-case]")
@@ -2073,6 +2570,8 @@ elements.curationDetail.addEventListener("click", (event) => {
 elements.curationDetail.addEventListener("change", (event) => {
     const picker = event.target.closest("[data-curation-model]")
     if (picker) void updateCurationModel(picker.dataset.curationModel, picker.value)
+    const effort = event.target.closest("[data-curation-effort]")
+    if (effort) void updateCurationEffort(effort.dataset.curationEffort, effort.value)
 })
 elements.curationDetail.addEventListener("submit", (event) => {
     const form = event.target.closest("[data-curation-form]")
@@ -2086,6 +2585,9 @@ elements.curationDetail.addEventListener("submit", (event) => {
 elements.closeDiscardDialog.addEventListener("click", () => elements.discardDialog.close())
 elements.cancelDiscard.addEventListener("click", () => elements.discardDialog.close())
 elements.confirmDiscard.addEventListener("click", discardCuration)
+elements.closeDeleteCaseDialog.addEventListener("click", () => elements.deleteCaseDialog.close())
+elements.cancelDeleteCase.addEventListener("click", () => elements.deleteCaseDialog.close())
+elements.confirmDeleteCase.addEventListener("click", () => void deleteEvaluationCase())
 
 window.rollingSkill.onRuntimeState((runtime) => {
     state.runtime = runtime
@@ -2101,6 +2603,18 @@ window.rollingSkill.onCurationChanged((session) => {
     if (!state.activeCurationId) state.activeCurationId = session.id
     renderCurations()
 })
+window.rollingSkill.onEvaluationChanged(async ({runId}) => {
+    if (!runId) return
+    try {
+        const run = await window.rollingSkill.getEvaluationRun(runId)
+        const index = state.evaluationRuns.findIndex((entry) => entry.id === runId)
+        if (index >= 0) state.evaluationRuns[index] = run
+        else state.evaluationRuns.unshift(run)
+        renderEvaluationWorkbench()
+    } catch {
+        // The next explicit refresh will reconcile local run history.
+    }
+})
 window.rollingSkill.onWorkspaceChanged(async ({workspaceRoot}) => {
     state.workspaceRoot = workspaceRoot
     state.activeThread = null
@@ -2108,6 +2622,7 @@ window.rollingSkill.onWorkspaceChanged(async ({workspaceRoot}) => {
     state.activeTurnId = null
     state.newTaskMode = false
     state.selectedTaskModelId = state.settings.taskProfile?.modelId ?? null
+    state.selectedTaskEffort = state.settings.taskProfile?.effort ?? null
     renderAll()
     if (state.runtime?.status === "ready") await refreshThreads(true)
     else {
@@ -2127,6 +2642,7 @@ async function bootstrap() {
         state.curationSessions = initial.curationSessions ?? []
         applySettings(initial.settings ?? state.settings)
         state.selectedTaskModelId = state.settings.taskProfile?.modelId ?? null
+        state.selectedTaskEffort = state.settings.taskProfile?.effort ?? null
         state.activeCurationId = state.curationSessions[0]?.id ?? null
         renderAll()
         renderCurations()

@@ -18,22 +18,28 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     openTraceFolder: () => ipcRenderer.invoke("runtime:open-traces"),
     listThreads: () => ipcRenderer.invoke("runtime:list-threads"),
     listModels: () => ipcRenderer.invoke("models:list"),
+    listModelsForRuntime: (runtimeId) =>
+        ipcRenderer.invoke("models:list-for-runtime", runtimeId),
     listSkills: (forceReload = false) => ipcRenderer.invoke("skills:list", {forceReload}),
     listPlugins: () => ipcRenderer.invoke("plugins:list"),
     listInstalledPlugins: () => ipcRenderer.invoke("plugins:installed"),
     installPlugin: (input) => ipcRenderer.invoke("plugins:install", input),
     readThread: (threadId) => ipcRenderer.invoke("runtime:read-thread", threadId),
-    startThread: (modelId = null) => ipcRenderer.invoke("runtime:start-thread", {modelId}),
-    startTurn: (threadId, text, modelId = null) =>
-        ipcRenderer.invoke("runtime:start-turn", {threadId, text, modelId}),
+    startThread: (modelId = null, effort = null) =>
+        ipcRenderer.invoke("runtime:start-thread", {modelId, effort}),
+    startTurn: (threadId, text, modelId = null, effort = null) =>
+        ipcRenderer.invoke("runtime:start-turn", {threadId, text, modelId, effort}),
     interruptTurn: (threadId, turnId) =>
         ipcRenderer.invoke("runtime:interrupt-turn", {threadId, turnId}),
     listDatasets: () => ipcRenderer.invoke("datasets:list"),
     listCases: (datasetId) => ipcRenderer.invoke("datasets:list-cases", datasetId),
+    deleteCase: (datasetId, caseId) =>
+        ipcRenderer.invoke("datasets:delete-case", {datasetId, caseId}),
     createDataset: (name) => ipcRenderer.invoke("datasets:create", name),
     revealLocalData: () => ipcRenderer.invoke("datasets:reveal"),
     updateSettings: (input) => ipcRenderer.invoke("settings:update", input),
     listCurations: () => ipcRenderer.invoke("curation:list"),
+    listArchivedCurations: () => ipcRenderer.invoke("curation:list-archived"),
     getCuration: (sessionId) => ipcRenderer.invoke("curation:get", sessionId),
     createCuration: (input) => ipcRenderer.invoke("curation:create", input),
     sendCurationMessage: (sessionId, text) =>
@@ -43,10 +49,16 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     discardCuration: (sessionId) => ipcRenderer.invoke("curation:discard", sessionId),
     updateCurationModel: (sessionId, modelId) =>
         ipcRenderer.invoke("curation:update-model", {sessionId, modelId}),
+    updateCurationEffort: (sessionId, effort) =>
+        ipcRenderer.invoke("curation:update-effort", {sessionId, effort}),
     updateCuratorProfile: (input) => ipcRenderer.invoke("curation:update-profile", input),
+    listEvaluationRuns: (datasetId = null) => ipcRenderer.invoke("evaluations:list", datasetId),
+    getEvaluationRun: (runId) => ipcRenderer.invoke("evaluations:get", runId),
+    startEvaluationRun: (input) => ipcRenderer.invoke("evaluations:start", input),
     onRuntimeState: (listener) => subscribe("runtime:state", listener),
     onRuntimeNotification: (listener) => subscribe("runtime:notification", listener),
     onCurationChanged: (listener) => subscribe("curation:changed", listener),
+    onEvaluationChanged: (listener) => subscribe("evaluation:changed", listener),
     onWorkspaceChanged: (listener) => subscribe("workspace:changed", listener),
     onNewTask: (listener) => subscribe("app:new-task", listener),
 })

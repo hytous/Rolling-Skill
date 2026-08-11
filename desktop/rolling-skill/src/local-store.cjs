@@ -11,7 +11,7 @@ const {randomUUID} = require("node:crypto")
 
 const {formatCuratedAnswer, validateCuratorDraft} = require("./episode-curation.cjs")
 
-const LOCAL_SCHEMA = "rolling-skill-local/v3"
+const LOCAL_SCHEMA = "rolling-skill-local/v4"
 const CURATION_STATUSES = new Set([
     "queued",
     "running",
@@ -22,6 +22,24 @@ const CURATION_STATUSES = new Set([
 ])
 const LANGUAGES = new Set(["zh-CN", "en"])
 const THEMES = new Set(["codex-light", "codex-dark", "graphite"])
+const REASONING_EFFORTS = new Set([
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+])
+const EVALUATION_RUN_STATUSES = new Set([
+    "queued",
+    "running",
+    "completed",
+    "partial",
+    "failed",
+    "cancelled",
+])
+const EVALUATION_RESULT_STATUSES = new Set(["queued", "running", "completed", "failed"])
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
@@ -33,16 +51,24 @@ function modelId(value, label = "Model id") {
     return normalized || null
 }
 
+function reasoningEffort(value, label = "Reasoning effort") {
+    const normalized = value === null || value === undefined ? null : String(value).trim()
+    if (!normalized) return null
+    if (!REASONING_EFFORTS.has(normalized)) throw new Error(`${label} is unsupported`)
+    return normalized
+}
+
 function defaultSettings() {
     return {
         autoCapture: false,
         language: "zh-CN",
         theme: "codex-light",
-        taskProfile: {runtimePolicy: "active", modelId: null},
-        curatorProfile: {runtimePolicy: "active", modelId: null},
+        taskProfile: {runtimePolicy: "active", modelId: null, effort: null},
+        curatorProfile: {runtimePolicy: "active", modelId: null, effort: null},
         autoCaptureProfile: {
             runtimePolicy: "active",
             modelId: null,
+            effort: null,
             datasetId: null,
             caseType: "goodcase",
             skillName: null,
@@ -65,6 +91,7 @@ function initialState() {
         ],
         cases: [],
         curationSessions: [],
+        evaluationRuns: [],
     }
 }
 
@@ -89,17 +116,18 @@ function migrateState(input) {
         changed = true
     }
     if (!state.settings.taskProfile) {
-        state.settings.taskProfile = {runtimePolicy: "active", modelId: null}
+        state.settings.taskProfile = {runtimePolicy: "active", modelId: null, effort: null}
         changed = true
     }
     if (!state.settings.curatorProfile) {
-        state.settings.curatorProfile = {runtimePolicy: "active", modelId: null}
+        state.settings.curatorProfile = {runtimePolicy: "active", modelId: null, effort: null}
         changed = true
     }
     if (!state.settings.autoCaptureProfile) {
         state.settings.autoCaptureProfile = {
             runtimePolicy: "active",
             modelId: null,
+            effort: null,
             datasetId: null,
             caseType: "goodcase",
             skillName: null,
@@ -115,6 +143,19 @@ function migrateState(input) {
         state.settings.autoCaptureProfile.skillPath = null
         changed = true
     }
+    for (const profile of [
+        state.settings.taskProfile,
+        state.settings.curatorProfile,
+        state.settings.autoCaptureProfile,
+    ]) {
+        if (
+            !("effort" in profile) ||
+            (profile.effort !== null && !REASONING_EFFORTS.has(profile.effort))
+        ) {
+            profile.effort = null
+            changed = true
+        }
+    }
     if (!Array.isArray(state.datasets)) {
         state.datasets = []
         changed = true
@@ -127,9 +168,17 @@ function migrateState(input) {
         state.curationSessions = []
         changed = true
     }
+    if (!Array.isArray(state.evaluationRuns)) {
+        state.evaluationRuns = []
+        changed = true
+    }
     for (const session of state.curationSessions) {
         if (!("skillReference" in session)) {
             session.skillReference = null
+            changed = true
+        }
+        if (session.curator && !("effort" in session.curator)) {
+            session.curator.effort = null
             changed = true
         }
     }
@@ -254,6 +303,7 @@ class LocalEvaluationStore {
         state.settings.curatorProfile = {
             runtimePolicy: "active",
             modelId: normalizedModelId,
+            effort: reasoningEffort(input.effort, "Curator reasoning effort"),
         }
         this.persist()
         return copy(state.settings.curatorProfile)
@@ -272,20 +322,37 @@ class LocalEvaluationStore {
         }
         if (input.taskModelId !== undefined) {
             settings.taskProfile = {
+                ...settings.taskProfile,
                 runtimePolicy: "active",
                 modelId: modelId(input.taskModelId, "Task model id"),
             }
         }
+        if (input.taskEffort !== undefined) {
+            settings.taskProfile.effort = reasoningEffort(input.taskEffort, "Task reasoning effort")
+        }
         if (input.curatorModelId !== undefined) {
             settings.curatorProfile = {
+                ...settings.curatorProfile,
                 runtimePolicy: "active",
                 modelId: modelId(input.curatorModelId, "Curator model id"),
             }
+        }
+        if (input.curatorEffort !== undefined) {
+            settings.curatorProfile.effort = reasoningEffort(
+                input.curatorEffort,
+                "Curator reasoning effort",
+            )
         }
         if (input.autoCapture !== undefined) settings.autoCapture = Boolean(input.autoCapture)
         const automatic = {...settings.autoCaptureProfile, runtimePolicy: "active"}
         if (input.autoCaptureModelId !== undefined) {
             automatic.modelId = modelId(input.autoCaptureModelId, "Automatic capture model id")
+        }
+        if (input.autoCaptureEffort !== undefined) {
+            automatic.effort = reasoningEffort(
+                input.autoCaptureEffort,
+                "Automatic capture reasoning effort",
+            )
         }
         if (input.autoCaptureDatasetId !== undefined) {
             const datasetId = modelId(input.autoCaptureDatasetId, "Automatic capture dataset id")
@@ -348,7 +415,19 @@ class LocalEvaluationStore {
     listCurationSessions() {
         return copy(
             this.load()
-                .curationSessions.filter((entry) => entry.status !== "cancelled")
+                .curationSessions.filter(
+                    (entry) => entry.status !== "cancelled" && entry.status !== "archived",
+                )
+                .sort((left, right) =>
+                    String(right.updatedAt).localeCompare(String(left.updatedAt)),
+                ),
+        )
+    }
+
+    listArchivedCurationSessions() {
+        return copy(
+            this.load()
+                .curationSessions.filter((entry) => entry.status === "archived")
                 .sort((left, right) =>
                     String(right.updatedAt).localeCompare(String(left.updatedAt)),
                 ),
@@ -393,6 +472,7 @@ class LocalEvaluationStore {
                 runtimeId: input.curator?.runtimeId ?? null,
                 modelProvider: input.curator?.modelProvider ?? null,
                 modelId: input.curator?.modelId ?? null,
+                effort: reasoningEffort(input.curator?.effort, "Curator reasoning effort"),
                 promptVersion: input.curator?.promptVersion ?? null,
                 threadId: null,
                 currentTurnId: null,
@@ -443,6 +523,18 @@ class LocalEvaluationStore {
             throw new Error("This curation session is no longer editable")
         }
         session.curator.modelId = modelId(value, "Curator model id")
+        session.updatedAt = new Date().toISOString()
+        this.persist()
+        return copy(session)
+    }
+
+    updateCurationEffort(id, value) {
+        const state = this.load()
+        const session = requireCurationSession(state, id)
+        if (session.status === "archived" || session.status === "cancelled") {
+            throw new Error("This curation session is no longer editable")
+        }
+        session.curator.effort = reasoningEffort(value, "Curator reasoning effort")
         session.updatedAt = new Date().toISOString()
         this.persist()
         return copy(session)
@@ -578,6 +670,197 @@ class LocalEvaluationStore {
         this.persist()
         return copy(entry)
     }
+
+    deleteCase(datasetId, caseId) {
+        const state = this.load()
+        requireDataset(state, datasetId)
+        const index = state.cases.findIndex(
+            (entry) => entry.datasetId === datasetId && entry.id === caseId,
+        )
+        if (index < 0) throw new Error("Unknown Case")
+        const [deleted] = state.cases.splice(index, 1)
+        this.persist()
+        return copy(deleted)
+    }
+
+    createEvaluationRun(input = {}) {
+        const state = this.load()
+        requireDataset(state, input.datasetId)
+        if (input.selectionMode !== "selected" && input.selectionMode !== "dataset") {
+            throw new Error("Evaluation selection mode must be selected or dataset")
+        }
+        if (input.activationMode !== "automatic" && input.activationMode !== "explicit") {
+            throw new Error("Evaluation activation mode must be automatic or explicit")
+        }
+        const requestedCaseIds = Array.isArray(input.caseIds) ? input.caseIds : []
+        const caseSnapshots = state.cases.filter(
+            (entry) =>
+                entry.datasetId === input.datasetId &&
+                (input.selectionMode === "dataset" || requestedCaseIds.includes(entry.id)),
+        )
+        if (!caseSnapshots.length) throw new Error("At least one Case is required")
+        if (
+            input.selectionMode === "selected" &&
+            caseSnapshots.length !== new Set(requestedCaseIds).size
+        ) {
+            throw new Error("One or more selected Cases are unavailable")
+        }
+        const runtimeConfigurations = (input.runtimeConfigurations ?? []).map((configuration) => {
+            const runtimeId = modelId(configuration.runtimeId, "Runtime id")
+            const providerId = modelId(configuration.providerId, "Runtime provider id")
+            const executablePath = skillIdentity(
+                configuration.executablePath,
+                "Runtime executable path",
+            )
+            if (!runtimeId || !providerId || !executablePath?.startsWith("/")) {
+                throw new Error("Every evaluation runtime requires an id, provider, and executable")
+            }
+            return {
+                runtimeId,
+                providerId,
+                displayName: modelId(configuration.displayName, "Runtime name") ?? providerId,
+                version: modelId(configuration.version, "Runtime version"),
+                executablePath,
+                source: modelId(configuration.source, "Runtime source"),
+                transport: modelId(configuration.transport, "Runtime transport"),
+                capabilities: copy(configuration.capabilities ?? []),
+                models: copy(configuration.models ?? []),
+                efforts: copy(configuration.efforts ?? []),
+                modelId: modelId(configuration.modelId, "Evaluation model id"),
+                effort: reasoningEffort(configuration.effort, "Evaluation reasoning effort"),
+            }
+        })
+        if (!runtimeConfigurations.length) throw new Error("At least one runtime is required")
+        const duplicateRuntimes = new Set()
+        for (const configuration of runtimeConfigurations) {
+            if (duplicateRuntimes.has(configuration.runtimeId)) {
+                throw new Error("Each runtime may only appear once in an evaluation")
+            }
+            duplicateRuntimes.add(configuration.runtimeId)
+        }
+        const dataset = state.datasets.find((entry) => entry.id === input.datasetId)
+        const now = new Date().toISOString()
+        const run = {
+            id: randomUUID(),
+            datasetId: input.datasetId,
+            datasetSnapshot: copy(dataset),
+            selectionMode: input.selectionMode,
+            selectedCaseIds: caseSnapshots.map((entry) => entry.id),
+            caseSnapshots: copy(caseSnapshots),
+            skillReference: input.skillReference
+                ? {
+                      name: modelId(input.skillReference.name, "Skill name"),
+                      path: skillIdentity(input.skillReference.path, "Skill path"),
+                  }
+                : null,
+            activationMode: input.activationMode,
+            runtimeConfigurations,
+            status: "queued",
+            results: [],
+            createdAt: now,
+            startedAt: null,
+            completedAt: null,
+        }
+        for (const configuration of runtimeConfigurations) {
+            for (const caseSnapshot of caseSnapshots) {
+                run.results.push({
+                    id: randomUUID(),
+                    caseId: caseSnapshot.id,
+                    runtimeId: configuration.runtimeId,
+                    caseSnapshot: copy(caseSnapshot),
+                    runtimeConfiguration: copy(configuration),
+                    status: "queued",
+                    durationMs: null,
+                    response: null,
+                    error: null,
+                    threadId: null,
+                    turnId: null,
+                    traceReference: null,
+                    startedAt: null,
+                    completedAt: null,
+                })
+            }
+        }
+        state.evaluationRuns.push(run)
+        this.persist()
+        return copy(run)
+    }
+
+    listEvaluationRuns(datasetId = null) {
+        const state = this.load()
+        if (datasetId) requireDataset(state, datasetId)
+        return copy(
+            state.evaluationRuns
+                .filter((entry) => !datasetId || entry.datasetId === datasetId)
+                .sort((left, right) =>
+                    String(right.createdAt).localeCompare(String(left.createdAt)),
+                ),
+        )
+    }
+
+    getEvaluationRun(id) {
+        const run = this.load().evaluationRuns.find((entry) => entry.id === id)
+        if (!run) throw new Error("Unknown evaluation run")
+        return copy(run)
+    }
+
+    updateEvaluationRun(id, patch = {}) {
+        const state = this.load()
+        const run = state.evaluationRuns.find((entry) => entry.id === id)
+        if (!run) throw new Error("Unknown evaluation run")
+        if (patch.status !== undefined) {
+            if (!EVALUATION_RUN_STATUSES.has(patch.status)) {
+                throw new Error("Invalid evaluation run status")
+            }
+            run.status = patch.status
+        }
+        for (const field of ["startedAt", "completedAt"]) {
+            if (patch[field] !== undefined) run[field] = patch[field] ? String(patch[field]) : null
+        }
+        this.persist()
+        return copy(run)
+    }
+
+    updateEvaluationResult(runId, resultId, patch = {}) {
+        const state = this.load()
+        const run = state.evaluationRuns.find((entry) => entry.id === runId)
+        if (!run) throw new Error("Unknown evaluation run")
+        const result = run.results.find((entry) => entry.id === resultId)
+        if (!result) throw new Error("Unknown evaluation result")
+        if (patch.status !== undefined) {
+            if (!EVALUATION_RESULT_STATUSES.has(patch.status)) {
+                throw new Error("Invalid evaluation result status")
+            }
+            result.status = patch.status
+        }
+        if (patch.durationMs !== undefined) {
+            const duration = Number(patch.durationMs)
+            if (!Number.isFinite(duration) || duration < 0) throw new Error("Invalid duration")
+            result.durationMs = Math.round(duration)
+        }
+        for (const field of [
+            "response",
+            "error",
+            "threadId",
+            "turnId",
+            "traceReference",
+            "startedAt",
+            "completedAt",
+        ]) {
+            if (patch[field] !== undefined) {
+                result[field] = patch[field] === null ? null : String(patch[field])
+            }
+        }
+        this.persist()
+        return copy(run)
+    }
 }
 
-module.exports = {LOCAL_SCHEMA, LocalEvaluationStore, initialState, migrateState}
+module.exports = {
+    LOCAL_SCHEMA,
+    LocalEvaluationStore,
+    REASONING_EFFORTS,
+    initialState,
+    migrateState,
+    reasoningEffort,
+}

@@ -146,6 +146,7 @@ class CurationManager {
                 runtimeId: runtimeDescriptor?.runtimeId ?? null,
                 modelProvider: response.thread.modelProvider ?? runtimeDescriptor?.providerId ?? null,
                 modelId: curatorModelId,
+                effort: input.effort ?? null,
                 promptVersion: CURATOR_PROMPT_VERSION,
             },
         })
@@ -167,6 +168,7 @@ class CurationManager {
                 ephemeral: false,
                 threadSource: "subagent",
                 ...(session.curator.modelId ? {model: session.curator.modelId} : {}),
+                ...(session.curator.effort ? {effort: session.curator.effort} : {}),
             }
             const response = await runtime.startThread(options)
             this.threadSessions.set(response.thread.id, sessionId)
@@ -205,7 +207,10 @@ class CurationManager {
                       {type: "text", text: prompt, text_elements: []},
                   ]
                 : prompt
-            const turnResponse = await runtime.startTurn(response.thread.id, turnInput)
+            const turnResponse = await runtime.startTurn(response.thread.id, turnInput, {
+                ...(session.curator.modelId ? {model: session.curator.modelId} : {}),
+                ...(session.curator.effort ? {effort: session.curator.effort} : {}),
+            })
             session = this.store.getCurationSession(sessionId)
             if (session.status === "cancelled") {
                 await this.interruptRuntimeTurn(runtime, response.thread.id, turnResponse.turn.id)
@@ -313,7 +318,14 @@ class CurationManager {
             })
             session = this.store.getCurationSession(sessionId)
             if (session.status === "cancelled") return session
-            const response = await runtime.startTurn(session.curator.threadId, String(text).trim())
+            const response = await runtime.startTurn(
+                session.curator.threadId,
+                String(text).trim(),
+                {
+                    ...(session.curator.modelId ? {model: session.curator.modelId} : {}),
+                    ...(session.curator.effort ? {effort: session.curator.effort} : {}),
+                },
+            )
             session = this.store.getCurationSession(sessionId)
             if (session.status === "cancelled") {
                 await this.interruptRuntimeTurn(
@@ -355,6 +367,10 @@ class CurationManager {
 
     updateModel(sessionId, modelId) {
         return this.emitChanged(this.store.updateCurationModel(sessionId, modelId))
+    }
+
+    updateEffort(sessionId, effort) {
+        return this.emitChanged(this.store.updateCurationEffort(sessionId, effort))
     }
 
     async discard(sessionId) {

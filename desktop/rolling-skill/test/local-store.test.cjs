@@ -82,14 +82,17 @@ describe("local evaluation store", () => {
         assert.deepEqual(snapshot.settings.taskProfile, {
             runtimePolicy: "active",
             modelId: null,
+            effort: null,
         })
         assert.deepEqual(snapshot.settings.curatorProfile, {
             runtimePolicy: "active",
             modelId: null,
+            effort: null,
         })
         assert.deepEqual(snapshot.settings.autoCaptureProfile, {
             runtimePolicy: "active",
             modelId: null,
+            effort: null,
             datasetId: null,
             caseType: "goodcase",
             skillName: null,
@@ -99,6 +102,7 @@ describe("local evaluation store", () => {
         assert.equal(snapshot.datasets[0].name, "Skill evaluation cases")
         assert.deepEqual(snapshot.cases, [])
         assert.deepEqual(snapshot.curationSessions, [])
+        assert.deepEqual(snapshot.evaluationRuns, [])
     })
 
     it("stores an optional Curator model override without enabling automatic capture", () => {
@@ -106,6 +110,7 @@ describe("local evaluation store", () => {
         assert.deepEqual(store.updateCuratorProfile({modelId: "  gpt-5.6-sol  "}), {
             runtimePolicy: "active",
             modelId: "gpt-5.6-sol",
+            effort: null,
         })
         assert.equal(store.read().settings.autoCapture, false)
         assert.equal(store.updateCuratorProfile({modelId: ""}).modelId, null)
@@ -134,6 +139,7 @@ describe("local evaluation store", () => {
         assert.deepEqual(settings.autoCaptureProfile, {
             runtimePolicy: "active",
             modelId: "gpt-5.6-terra",
+            effort: null,
             datasetId: dataset.id,
             caseType: "badcase",
             skillName: "billing-cost-management",
@@ -261,7 +267,7 @@ describe("local evaluation store", () => {
         )
         const migrated = new LocalEvaluationStore(path).read()
 
-        assert.equal(migrated.schemaVersion, "rolling-skill-local/v3")
+        assert.equal(migrated.schemaVersion, "rolling-skill-local/v4")
         assert.equal(migrated.cases[0].id, "case-old")
         assert.deepEqual(migrated.curationSessions, [])
         assert.equal(migrated.settings.curatorProfile.runtimePolicy, "active")

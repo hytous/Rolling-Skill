@@ -100,6 +100,7 @@
                         <div class="composer-footer">
                             <div class="composer-context">
                                 <select id="composer-model" class="model-picker" aria-label="Task model"></select>
+                                <select id="composer-effort" class="effort-picker" aria-label="Reasoning effort"></select>
                                 <span aria-hidden="true">·</span>
                                 <span>workspace-write</span>
                             </div>
@@ -123,7 +124,11 @@
                         </div>
                         <button id="refresh-evaluation" type="button" data-i18n="refresh">Refresh</button>
                     </header>
-                    <div class="evaluation-grid">
+                    <div class="evaluation-view-tabs" role="tablist">
+                        <button class="active" type="button" data-evaluation-view="cases" data-i18n="cases">Cases</button>
+                        <button type="button" data-evaluation-view="runs" data-i18n="evaluationRuns">Evaluation runs</button>
+                    </div>
+                    <div id="evaluation-cases-view" class="evaluation-grid">
                         <aside class="evaluation-panel dataset-panel">
                             <div class="evaluation-panel-head">
                                 <div>
@@ -172,14 +177,26 @@
                                     <span><strong data-i18n="explicitDiagnostic">Explicit diagnostic</strong><small data-i18n="explicitDiagnosticHelp">Attach a structured Skill mention to isolate trigger failures.</small></span>
                                 </label>
                             </fieldset>
-                            <label class="settings-field">
-                                <span data-i18n="model">Model</span>
-                                <select id="evaluation-model"></select>
-                            </label>
-                            <button id="start-evaluation" class="primary evaluation-start" type="button" data-i18n="startSelectedCase">Start selected case</button>
+                            <div class="settings-field">
+                                <span data-i18n="runtimeConfigurations">Runtime configurations</span>
+                                <div id="evaluation-runtime-list" class="evaluation-runtime-list"></div>
+                            </div>
+                            <div class="evaluation-launch-actions">
+                                <button id="start-evaluation" type="button" data-i18n="startSelectedCase">Start selected case</button>
+                                <button id="start-dataset-evaluation" class="primary" type="button" data-i18n="startDataset">Run entire dataset</button>
+                            </div>
                             <p class="evaluation-note" data-i18n="evaluationLaunchHelp">The target task runs in the selected runtime. Automated grading is not applied yet; review the native task and its trace.</p>
                         </aside>
                     </div>
+                    <section id="evaluation-runs" class="evaluation-runs hidden">
+                        <div class="evaluation-run-list-panel">
+                            <div class="evaluation-panel-head">
+                                <div><span class="panel-kicker" data-i18n="evaluationRuns">Evaluation runs</span><strong id="evaluation-run-count">0</strong></div>
+                            </div>
+                            <div id="evaluation-run-list" class="evaluation-run-list"></div>
+                        </div>
+                        <div id="evaluation-run-detail" class="evaluation-run-detail"></div>
+                    </section>
                 </section>
             </main>
 
@@ -269,14 +286,24 @@
 
                 <section class="settings-section">
                     <h3 data-i18n="models">Models</h3>
-                    <label class="settings-field">
-                        <span data-i18n="taskModel">New task model</span>
-                        <select id="settings-task-model"></select>
-                    </label>
-                    <label class="settings-field">
-                        <span data-i18n="curatorModel">Default Curator model</span>
-                        <select id="settings-curator-model"></select>
-                    </label>
+                    <div class="settings-grid">
+                        <label class="settings-field">
+                            <span data-i18n="taskModel">New task model</span>
+                            <select id="settings-task-model"></select>
+                        </label>
+                        <label class="settings-field">
+                            <span data-i18n="reasoningEffort">Reasoning effort</span>
+                            <select id="settings-task-effort"></select>
+                        </label>
+                        <label class="settings-field">
+                            <span data-i18n="curatorModel">Default Curator model</span>
+                            <select id="settings-curator-model"></select>
+                        </label>
+                        <label class="settings-field">
+                            <span data-i18n="reasoningEffort">Reasoning effort</span>
+                            <select id="settings-curator-effort"></select>
+                        </label>
+                    </div>
                 </section>
 
                 <section class="settings-section">
@@ -287,6 +314,8 @@
                         <button id="open-trace" type="button" data-i18n="trace">Trace</button>
                         <button id="show-local-data" type="button" data-i18n="openDatasetFile">Open dataset file</button>
                     </div>
+                    <button id="archived-curations" class="settings-disclosure" type="button" data-i18n="archivedDrafts">Archived Case drafts</button>
+                    <div id="archived-curation-list" class="archived-curation-list hidden"></div>
                 </section>
 
                 <section class="settings-section automatic-capture-settings">
@@ -300,10 +329,16 @@
                             <span aria-hidden="true"></span>
                         </label>
                     </div>
-                    <label class="settings-field">
-                        <span data-i18n="captureModel">Capture Curator model</span>
-                        <select id="settings-auto-capture-model"></select>
-                    </label>
+                    <div class="settings-grid">
+                        <label class="settings-field">
+                            <span data-i18n="captureModel">Capture Curator model</span>
+                            <select id="settings-auto-capture-model"></select>
+                        </label>
+                        <label class="settings-field">
+                            <span data-i18n="reasoningEffort">Reasoning effort</span>
+                            <select id="settings-auto-capture-effort"></select>
+                        </label>
+                    </div>
                     <label class="settings-field">
                         <span data-i18n="captureSkill">Skill used by the Curator</span>
                         <select id="settings-auto-capture-skill"></select>
@@ -329,6 +364,21 @@
                     <button id="save-settings" class="primary" type="submit" data-i18n="save">Save</button>
                 </div>
             </form>
+        </dialog>
+
+        <dialog id="delete-case-dialog" class="case-dialog confirm-dialog">
+            <div class="confirm-dialog-body">
+                <div class="dialog-header">
+                    <div><div class="drawer-eyebrow">DATASET CASE</div><h2 data-i18n="deleteCase">Delete Case?</h2></div>
+                    <button id="close-delete-case-dialog" class="icon-button large" type="button">×</button>
+                </div>
+                <p data-i18n="deleteCaseHelp">The Case will be removed from the dataset. Existing run snapshots stay available.</p>
+                <div class="dialog-footer">
+                    <span></span>
+                    <button id="cancel-delete-case" type="button" data-i18n="cancel">Cancel</button>
+                    <button id="confirm-delete-case" class="danger" type="button" data-i18n="delete">Delete</button>
+                </div>
+            </div>
         </dialog>
 
         <dialog id="discard-curation-dialog" class="case-dialog confirm-dialog">

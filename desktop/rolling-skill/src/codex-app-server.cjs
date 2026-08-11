@@ -236,7 +236,96 @@ class CodexAppServerClient extends EventEmitter {
             threadId,
             input,
             ...(options.model ? {model: options.model} : {}),
+            ...(options.effort ? {effort: options.effort} : {}),
         })
+    }
+
+    async runEvaluationCase(input = {}) {
+        const startedAt = Date.now()
+        const threadResponse = await this.startThread({
+            model: input.modelId,
+            threadSource: "subagent",
+            ephemeral: false,
+        })
+        const threadId = threadResponse.thread.id
+        const prompt =
+            input.activationMode === "explicit" && input.skillReference?.name && input.skillReference?.path
+                ? [
+                      {
+                          type: "skill",
+                          name: input.skillReference.name,
+                          path: input.skillReference.path,
+                      },
+                      {type: "text", text: input.question, text_elements: []},
+                  ]
+                : input.question
+        let turnId = null
+        let responseText = ""
+        let cleanup = () => {}
+        const completed = new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                cleanup()
+                reject(new Error("The evaluation turn timed out"))
+            }, input.timeoutMs ?? 30 * 60 * 1000)
+            const onNotification = (message) => {
+                const params = message?.params ?? {}
+                if (params.threadId !== threadId) return
+                if (message.method === "item/agentMessage/delta") {
+                    responseText += params.delta ?? ""
+                } else if (
+                    message.method === "item/completed" &&
+                    params.item?.type === "agentMessage" &&
+                    params.item.text
+                ) {
+                    responseText = params.item.text
+                } else if (message.method === "turn/completed") {
+                    turnId = params.turn?.id ?? turnId
+                    cleanup()
+                    if (params.turn?.status === "failed") {
+                        reject(
+                            new Error(
+                                params.turn.error?.message ?? "The evaluation turn failed",
+                            ),
+                        )
+                    } else {
+                        resolve()
+                    }
+                } else if (message.method === "error" && !params.willRetry) {
+                    cleanup()
+                    reject(new Error(params.error?.message ?? "The evaluation turn failed"))
+                }
+            }
+            const onState = (state) => {
+                if (state?.status !== "stopped") return
+                cleanup()
+                reject(new Error("The evaluation runtime stopped before completion"))
+            }
+            cleanup = () => {
+                clearTimeout(timeout)
+                this.off("notification", onNotification)
+                this.off("state", onState)
+            }
+            this.on("notification", onNotification)
+            this.on("state", onState)
+        })
+        try {
+            const turnResponse = await this.startTurn(threadId, prompt, {
+                model: input.modelId,
+                effort: input.effort,
+            })
+            turnId = turnResponse.turn.id
+            await completed
+        } catch (error) {
+            cleanup()
+            throw error
+        }
+        return {
+            threadId,
+            turnId,
+            response: responseText,
+            durationMs: Date.now() - startedAt,
+            traceReference: this.recorder?.latestReference ?? null,
+        }
     }
 
     interruptTurn(threadId, turnId) {

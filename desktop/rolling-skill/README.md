@@ -2,9 +2,9 @@
 
 Rolling Skill is a local-first macOS client for running and evaluating Skill tasks through agent
 runtimes already installed on the machine. It opens directly into a task interface, discovers
-compatible runtimes, and connects through a provider adapter. The application does not package
-Codex and does not require Docker, Compose, Postgres, Redis, Traefik, an Agenta service, or a browser
-session.
+compatible runtimes, and connects through a provider adapter. The application does not package an
+agent runtime and does not require Docker, Compose, Postgres, Redis, Traefik, an Agenta service, or
+a browser session.
 
 ## Open the app
 
@@ -17,7 +17,8 @@ request, only that turn reports the runtime error.
 
 ## Runtime discovery
 
-The first provider supports Codex app-server. It probes candidates in this order:
+The built-in provider adapters support Codex app-server and CodeBuddy ACP. Codex candidates are
+probed in this order:
 
 1. A runtime explicitly selected by the operator.
 2. `ROLLING_SKILL_CODEX_BIN`.
@@ -25,8 +26,11 @@ The first provider supports Codex app-server. It probes candidates in this order
 4. Codex resources inside known local applications such as ChatGPT.app.
 5. Homebrew, system, and common user-local installation paths.
 
-Every candidate must identify itself as Codex and expose `app-server` before it can be selected.
-Rolling Skill records its provider, version, source, path, capabilities, and stable `runtimeId`.
+CodeBuddy checks an explicitly selected executable, `ROLLING_SKILL_CODEBUDDY_BIN`, `PATH`,
+Homebrew/system paths, common user-local paths, and compatible `.sre-codex` installations. A
+candidate must identify its provider and pass the provider's compatibility probe: Codex must expose
+`app-server`; CodeBuddy must expose stdio ACP. Rolling Skill records the provider, version, source,
+path, capabilities, and stable `runtimeId` of every compatible result.
 
 Use **Settings → Runtime…** or the native **Runtime** menu to:
 
@@ -38,9 +42,10 @@ Use **Settings → Runtime…** or the native **Runtime** menu to:
 If no compatible runtime is found, the desktop shell and local datasets still open. Rolling Skill
 does not download, install, upgrade, or authenticate a runtime.
 
-The active runtime's model catalog is loaded through its provider adapter. The task composer can
-select a model for the next and subsequent turns, while each editable Case Draft has its own
-Curator model selector. No model names are bundled into the desktop application.
+The active runtime's model catalog is loaded through its provider adapter. The task composer and
+each editable Case Draft can select both a model and reasoning effort. Settings provides defaults
+for new tasks, Curator tasks, and Automatic Capture. No model names are bundled into the desktop
+application.
 
 ## Settings and appearance
 
@@ -48,9 +53,9 @@ Open **Settings** in the lower-left sidebar to configure:
 
 - Simplified Chinese or English interface text;
 - Codex Light (the default white-and-blue theme), Codex Dark, or the original Graphite theme;
-- the default model for new tasks and the default Curator model; and
-- Automatic Capture, including its Curator model, current runtime Skill, destination dataset, and
-  default case type.
+- the default model and reasoning effort for new tasks and Curator tasks; and
+- Automatic Capture, including its Curator model and effort, current runtime Skill, destination
+  dataset, and default case type.
 
 All settings are stored locally. Automatic Capture remains disabled until explicitly enabled.
 Runtime selection, raw Trace access, and the local dataset file are also grouped in **Settings**.
@@ -62,22 +67,25 @@ Use the switch below the Rolling Skill logo to move between the native **Chat** 
 
 - create and browse local datasets;
 - inspect the verbatim questions and curated references saved in each dataset;
-- query the selected runtime's `skills/list` API for the current workspace;
-- reject a launch when the selected Skill is not installed and enabled; and
-- launch the selected Case as a native runtime task using either automatic activation or an
-  explicit diagnostic activation.
+- delete a Case without invalidating older evaluation snapshots;
+- query a provider's path-precise Skill inventory when it exposes one;
+- run one selected Case or an entire dataset;
+- select multiple runtime/model/reasoning-effort configurations for one run; and
+- inspect durable Case × Runtime results under **Evaluation runs / 评测记录**.
 
 Automatic activation sends only the dataset question, byte-for-byte as saved. This is the path to
 use when measuring whether the runtime can discover and activate a Skill by itself. Explicit
-diagnostic activation attaches the runtime protocol's structured Skill input (`name` and absolute
-`SKILL.md` path) alongside the unchanged question. It is useful for separating an activation
-failure from a Skill execution failure; it is not equivalent to the automatic-trigger score. Do
-not prepend `/skill` to automatic-trigger cases.
+diagnostic activation attaches the provider's explicit Skill input alongside the unchanged
+question: a structured `name` plus absolute `SKILL.md` path for Codex, or `/<skill-name>` for
+CodeBuddy. It is useful for separating an activation failure from a Skill execution failure; it is
+not equivalent to the automatic-trigger score. Do not prepend `/skill` to automatic-trigger cases.
 
-This version launches and opens one selected target Case in Chat, where its native task history and
-Trace remain inspectable. It does not yet batch-run a dataset or apply the Curator grading contract
-automatically, so the workbench labels the result as requiring review rather than presenting a
-pass/fail score.
+Different runtime configurations execute concurrently; Cases remain sequential within each runtime
+to keep provider state isolated and predictable. Every run snapshots its dataset, Cases, Skill,
+runtime paths and versions, models, efforts, responses/errors, duration, session/thread identifiers,
+and Trace references. Deleting a current Case therefore does not damage historical evidence. The
+Curator grading contract is not yet applied automatically, so results remain reviewable evidence
+rather than a numeric pass/fail score.
 
 Codex app-server currently exposes `skills/list`, `skills/config/write`, `plugin/list`,
 `plugin/installed`, `plugin/read`, `plugin/install`, and `plugin/uninstall`. Rolling Skill's Codex
@@ -86,7 +94,9 @@ does not copy Skills or Plugins into an application-owned directory. A future pl
 keep this boundary for every provider: Rolling Skill presents a common inventory and explicit
 install action, while the selected runtime remains the source of truth. Installation must happen
 before an evaluation snapshot is created and must require an operator action; silently installing
-a missing Plugin during a run would contaminate reproducibility.
+a missing Plugin during a run would contaminate reproducibility. CodeBuddy ACP does not currently
+provide a path-precise Skill inventory, so Rolling Skill says that explicitly instead of fabricating
+one; the operator is responsible for confirming the selected Skill is available to CodeBuddy.
 
 ## Provider architecture
 
@@ -96,10 +106,10 @@ operations:
 - `discover(options)` returns compatible runtime descriptors;
 - `createClient(descriptor, options)` creates the runtime-specific client.
 
-`src/codex-runtime-provider.cjs` is the first adapter. The registry retains every compatible
-descriptor even though this version selects one active runtime. A future evaluation orchestrator
-can create clients for multiple selected descriptors and run the same Skill case in parallel while
-attributing traces and case results by `runtimeId`.
+`src/codex-runtime-provider.cjs` implements Codex app-server and
+`src/codebuddy-runtime-provider.cjs` implements CodeBuddy's native ACP transport. Chat remains bound
+to one active runtime, while `src/evaluation-runner.cjs` creates isolated clients for every selected
+evaluation configuration and attributes results and traces by `runtimeId`.
 
 ## Build the double-clickable app
 
@@ -123,8 +133,9 @@ npm test
 npm start
 ```
 
-Development and packaged builds use the same discovery path. Set `ROLLING_SKILL_CODEX_BIN` when a
-specific local Codex should be used without saving it through the UI.
+Development and packaged builds use the same discovery path. Set `ROLLING_SKILL_CODEX_BIN` or
+`ROLLING_SKILL_CODEBUDDY_BIN` when a specific executable should be used without saving it through
+the UI.
 
 ## Local evaluation workflow
 
@@ -141,7 +152,8 @@ specific local Codex should be used without saving it through the UI.
 7. Review the Curator conversation and structured reference answer in **Case drafts**. Ask follow-up
    questions or request revisions, change the model used by subsequent Curator turns, use **Retry**
    after a failed draft, and select **Done** only when the hard requirements and reference result
-   are ready. **Discard** stops and archives the Curator task without saving a Case.
+   are ready. **Discard** stops and archives the Curator task without saving a Case. Both actions
+   remove the item from active Case Drafts; archived history is available only in **Settings**.
 
 Before the Curator starts, Rolling Skill force-refreshes the selected runtime's Skill inventory and
 rejects a Skill that is missing or disabled. The Curator prompt names that Skill and requires the
@@ -172,7 +184,7 @@ Local state is stored under `~/Library/Application Support/Rolling Skill/`:
 
 | Path | Contents |
 | --- | --- |
-| `evaluation-store.json` | Datasets, cases, Curator sessions/revisions, and capture settings |
+| `evaluation-store.json` | Datasets, cases, Curator sessions/revisions, settings, and immutable evaluation runs |
 | `preferences.json` | Selected workspace and optional runtime selection |
 | `traces/*.jsonl` | Append-only runtime events with runtime identity metadata |
 
@@ -198,5 +210,7 @@ capabilities and are not inspected, started, or required by `Rolling Skill.app`.
 selection/client delegation, a real locally discovered app-server smoke, protocol framing, Git
 workspace discovery, local-first surface invariants, episode boundaries, verbatim questions,
 CLI/MCP compaction, Curator lifecycle/retries/revisions/discard, Automatic Capture gating, model
-catalog and turn overrides, settings migration, atomic dataset persistence, fixed grading contracts,
-runtime attribution, and trace provenance.
+catalog and turn overrides, reasoning-effort propagation, settings migration, atomic dataset
+persistence, Case deletion and immutable run snapshots, fixed grading contracts, multi-runtime
+parallel queues, CodeBuddy ACP configuration, runtime attribution, shutdown cleanup, and trace
+provenance.
