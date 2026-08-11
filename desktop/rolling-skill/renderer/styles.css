@@ -19,6 +19,44 @@
     --drawer-width: 430px;
 }
 
+:root[data-theme="codex-light"] {
+    color-scheme: light;
+    --app: #e9f0fa;
+    --sidebar: #f3f6fb;
+    --surface: #ffffff;
+    --surface-raised: #edf4ff;
+    --surface-hover: #e6eef9;
+    --border: rgba(38, 61, 91, 0.13);
+    --border-strong: rgba(38, 61, 91, 0.22);
+    --text: #172033;
+    --muted: #5f6f85;
+    --faint: #8997aa;
+    --accent: #2f6feb;
+    --accent-ink: #ffffff;
+    --success: #16865c;
+    --warning: #b66a12;
+    --danger: #c53f49;
+}
+
+:root[data-theme="codex-dark"] {
+    color-scheme: dark;
+    --app: #111722;
+    --sidebar: #17202d;
+    --surface: #0d1420;
+    --surface-raised: #1a2636;
+    --surface-hover: #223248;
+    --border: rgba(183, 205, 232, 0.11);
+    --border-strong: rgba(183, 205, 232, 0.2);
+    --text: #eef5ff;
+    --muted: #a9b8ca;
+    --faint: #71839a;
+    --accent: #67a4ff;
+    --accent-ink: #081528;
+    --success: #71d5a2;
+    --warning: #eeb963;
+    --danger: #f08b94;
+}
+
 * {
     box-sizing: border-box;
 }
@@ -252,6 +290,30 @@ kbd {
     border-top: 1px solid var(--border);
 }
 
+.settings-button {
+    display: grid;
+    width: 100%;
+    height: 34px;
+    margin-top: 3px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    align-items: center;
+    color: var(--muted);
+    text-align: left;
+}
+
+.settings-button:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text);
+}
+
+.settings-icon {
+    font-size: 13px;
+}
+
 .workspace-button {
     display: grid;
     width: 100%;
@@ -338,6 +400,15 @@ kbd {
     height: 5px;
     border-radius: 50%;
     background: var(--faint);
+}
+
+.capture-note.active {
+    color: var(--muted);
+}
+
+.capture-note.active .capture-dot {
+    background: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .workbench {
@@ -710,6 +781,29 @@ kbd {
     font-size: 9px;
 }
 
+.model-picker {
+    min-width: 0;
+    height: 26px;
+    padding: 0 22px 0 7px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    outline: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 9.5px;
+}
+
+.model-picker:hover,
+.model-picker:focus {
+    border-color: var(--border);
+    background: var(--surface-raised);
+    color: var(--text);
+}
+
+.model-picker:disabled {
+    opacity: 0.58;
+}
+
 .send-button,
 .stop-button {
     display: grid;
@@ -778,7 +872,7 @@ kbd {
 
 .curation-drawer {
     display: grid;
-    grid-template-rows: 74px auto auto minmax(0, 1fr);
+    grid-template-rows: 74px auto minmax(0, 1fr);
 }
 
 .drawer-header {
@@ -1131,21 +1225,49 @@ kbd {
 .curation-followup {
     display: grid;
     margin: 0;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: end;
+    grid-template-rows: auto auto;
     gap: 6px;
 }
 
 .curation-followup textarea {
+    width: 100%;
     padding: 8px;
     resize: vertical;
     font-size: 10px;
     line-height: 1.45;
 }
 
-.curation-done.primary {
-    width: 100%;
+.curation-followup-footer,
+.curation-actions {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.curation-followup-footer .model-picker {
+    max-width: 230px;
+    margin-right: auto;
+}
+
+.curation-actions {
     margin-top: 8px;
+}
+
+.curation-actions > button {
+    flex: 1;
+}
+
+.curation-discard {
+    min-height: 29px;
+    padding: 0 9px;
+    border: 1px solid rgba(241, 141, 134, 0.2);
+    border-radius: 7px;
+    background: transparent;
+    color: var(--danger);
+    font-size: 9.5px;
+}
+
+.curation-done.primary {
     border-color: transparent;
     background: var(--accent);
     color: var(--accent-ink);
@@ -1471,6 +1593,262 @@ kbd {
     background: var(--accent);
     color: var(--accent-ink);
     font-weight: 650;
+}
+
+.dialog-footer button.danger {
+    border-color: transparent;
+    background: var(--danger);
+    color: #ffffff;
+    font-weight: 650;
+}
+
+.settings-dialog {
+    width: min(690px, calc(100vw - 80px));
+}
+
+.settings-section {
+    padding: 3px 0 17px;
+    border-bottom: 1px solid var(--border);
+}
+
+.settings-section + .settings-section {
+    padding-top: 17px;
+}
+
+.settings-section h3 {
+    margin: 0 0 11px;
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.settings-section-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.settings-section-heading h3 {
+    margin-bottom: 4px;
+}
+
+.settings-section-heading p {
+    max-width: 500px;
+    margin: 0 0 12px;
+    color: var(--faint);
+    font-size: 10px;
+    line-height: 1.5;
+}
+
+.settings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.settings-field {
+    display: flex;
+    margin-top: 9px;
+    flex-direction: column;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 580;
+}
+
+.settings-field select {
+    width: 100%;
+    height: 34px;
+    padding: 0 30px 0 9px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    outline: 0;
+    background: #151514;
+    color: var(--text);
+    font-size: 10.5px;
+}
+
+.settings-field select:focus {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.switch {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+}
+
+.switch input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.switch span {
+    position: relative;
+    width: 38px;
+    height: 22px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--surface-hover);
+    transition: 140ms ease;
+}
+
+.switch span::after {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--muted);
+    content: "";
+    transition: 140ms ease;
+}
+
+.switch input:checked + span {
+    border-color: var(--accent);
+    background: var(--accent);
+}
+
+.switch input:checked + span::after {
+    background: var(--accent-ink);
+    transform: translateX(16px);
+}
+
+.settings-actions {
+    margin-top: 0;
+}
+
+.confirm-dialog {
+    width: min(460px, calc(100vw - 80px));
+}
+
+.confirm-dialog-body {
+    padding: 0 20px 18px;
+}
+
+.confirm-dialog-body > p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.55;
+}
+
+:root[data-theme="codex-light"] .brand img,
+:root[data-theme="codex-light"] .assistant-avatar img,
+:root[data-theme="codex-light"] .welcome-mark img,
+:root[data-theme="codex-dark"] .brand img,
+:root[data-theme="codex-dark"] .assistant-avatar img,
+:root[data-theme="codex-dark"] .welcome-mark img {
+    filter: hue-rotate(178deg) saturate(1.2);
+}
+
+:root[data-theme="codex-light"] .new-task-button,
+:root[data-theme="codex-light"] .runtime-status,
+:root[data-theme="codex-light"] .topbar-button,
+:root[data-theme="codex-light"] .trace-toolbar button,
+:root[data-theme="codex-light"] .new-dataset-row button,
+:root[data-theme="codex-light"] .dialog-footer button:not(.primary):not(.danger),
+:root[data-theme="codex-light"] .runtime-dialog-actions button:not(.primary),
+:root[data-theme="codex-light"] .curation-list-item,
+:root[data-theme="codex-light"] .trace-event,
+:root[data-theme="codex-light"] .activity-card,
+:root[data-theme="codex-light"] .save-case-button {
+    background: rgba(47, 111, 235, 0.035);
+}
+
+:root[data-theme="codex-light"] button:focus-visible,
+:root[data-theme="codex-light"] select:focus-visible,
+:root[data-theme="codex-light"] textarea:focus-visible,
+:root[data-theme="codex-light"] input:focus-visible {
+    outline: 2px solid rgba(47, 111, 235, 0.45);
+    outline-offset: 1px;
+}
+
+:root[data-theme="codex-light"] .new-task-button:hover,
+:root[data-theme="codex-light"] .thread-button:hover,
+:root[data-theme="codex-light"] .workspace-button:hover,
+:root[data-theme="codex-light"] .settings-button:hover,
+:root[data-theme="codex-light"] .sidebar-link:hover,
+:root[data-theme="codex-light"] .runtime-status:hover,
+:root[data-theme="codex-light"] .topbar-button:hover {
+    background: rgba(47, 111, 235, 0.075);
+}
+
+:root[data-theme="codex-light"] .thread-button.active,
+:root[data-theme="codex-light"] .curation-list-item.active,
+:root[data-theme="codex-light"] .runtime-option.selected,
+:root[data-theme="codex-light"] .case-type-field label:has(input:checked) {
+    border-color: rgba(47, 111, 235, 0.28);
+    background: rgba(47, 111, 235, 0.09);
+}
+
+:root[data-theme="codex-light"] .welcome-mark {
+    background: linear-gradient(145deg, #ffffff, #e9f2ff);
+    box-shadow: 0 14px 40px rgba(44, 83, 135, 0.13);
+}
+
+:root[data-theme="codex-light"] .assistant-avatar,
+:root[data-theme="codex-light"] .composer,
+:root[data-theme="codex-light"] .case-dialog,
+:root[data-theme="codex-light"] .dialog-header {
+    background: #ffffff;
+}
+
+:root[data-theme="codex-light"] .message-body,
+:root[data-theme="codex-light"] .draft-summary,
+:root[data-theme="codex-light"] .curation-value-list,
+:root[data-theme="codex-light"] .requirement-card,
+:root[data-theme="codex-light"] .curator-message {
+    color: var(--text);
+}
+
+:root[data-theme="codex-light"] .trace-drawer,
+:root[data-theme="codex-light"] .curation-drawer,
+:root[data-theme="codex-light"] .curation-composer-wrap {
+    background: #f8fbff;
+}
+
+:root[data-theme="codex-light"] .curation-followup textarea,
+:root[data-theme="codex-light"] .settings-field select,
+:root[data-theme="codex-light"] .field select,
+:root[data-theme="codex-light"] .field textarea,
+:root[data-theme="codex-light"] .new-dataset-row input {
+    background: #ffffff;
+}
+
+:root[data-theme="codex-light"] .curator-message.assistant {
+    background: #f4f8fd;
+}
+
+:root[data-theme="codex-light"] .curator-message.user,
+:root[data-theme="codex-light"] .frozen-question,
+:root[data-theme="codex-light"] .requirement-card {
+    background: #edf4ff;
+}
+
+:root[data-theme="codex-light"] .runtime-option,
+:root[data-theme="codex-light"] .case-type-field label {
+    background: #f8fbff;
+}
+
+:root[data-theme="codex-light"] .runtime-option:hover {
+    background: #edf4ff;
+}
+
+:root[data-theme="codex-light"] .toast {
+    background: #172033;
+    color: #ffffff;
+}
+
+:root[data-theme="codex-dark"] .composer,
+:root[data-theme="codex-dark"] .case-dialog,
+:root[data-theme="codex-dark"] .dialog-header,
+:root[data-theme="codex-dark"] .trace-drawer,
+:root[data-theme="codex-dark"] .curation-drawer,
+:root[data-theme="codex-dark"] .curation-composer-wrap {
+    background: #141e2c;
 }
 
 .toast {

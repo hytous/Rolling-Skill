@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN" data-theme="codex-light">
     <head>
         <meta charset="UTF-8" />
         <meta
@@ -21,13 +21,13 @@
                     </div>
                     <button id="new-task" class="new-task-button" type="button">
                         <span aria-hidden="true">＋</span>
-                        New task
+                        <span data-i18n="newTask">New task</span>
                         <kbd>⌘N</kbd>
                     </button>
                 </div>
 
                 <div class="task-heading">
-                    <span>Tasks</span>
+                    <span data-i18n="tasks">Tasks</span>
                     <button id="refresh-threads" class="icon-button" type="button" title="Refresh tasks">
                         ↻
                     </button>
@@ -40,19 +40,24 @@
                     <button id="workspace-button" class="workspace-button" type="button">
                         <span class="workspace-icon" aria-hidden="true">⌁</span>
                         <span class="workspace-copy">
-                            <span class="workspace-label">Workspace</span>
+                            <span class="workspace-label" data-i18n="workspace">Workspace</span>
                             <span id="workspace-name" class="workspace-name">Loading…</span>
                         </span>
                         <span aria-hidden="true">›</span>
                     </button>
+                    <button id="settings-button" class="settings-button" type="button">
+                        <span class="settings-icon" aria-hidden="true">⚙</span>
+                        <span data-i18n="settings">Settings</span>
+                        <span aria-hidden="true">›</span>
+                    </button>
                     <div class="evaluation-row">
-                        <button id="show-local-data" class="sidebar-link" type="button">Datasets</button>
-                        <button id="open-trace" class="sidebar-link" type="button">Trace</button>
-                        <button id="choose-runtime" class="sidebar-link" type="button">Runtime…</button>
+                        <button id="show-local-data" class="sidebar-link" type="button" data-i18n="datasets">Datasets</button>
+                        <button id="open-trace" class="sidebar-link" type="button" data-i18n="trace">Trace</button>
+                        <button id="choose-runtime" class="sidebar-link" type="button" data-i18n="runtime">Runtime…</button>
                     </div>
                     <div class="capture-note">
                         <span class="capture-dot" aria-hidden="true"></span>
-                        Automatic capture is off
+                        <span id="capture-status" data-i18n="autoCaptureOff">Automatic capture is off</span>
                     </div>
                 </div>
             </aside>
@@ -60,23 +65,23 @@
             <main class="workbench">
                 <header class="topbar">
                     <div class="task-title-wrap">
-                        <div id="active-title" class="active-title">New task</div>
+                        <div id="active-title" class="active-title" data-i18n="newTask">New task</div>
                         <div id="workspace-path" class="workspace-path"></div>
                     </div>
                     <button id="runtime-status" class="runtime-status starting" type="button">
                         <span class="runtime-dot" aria-hidden="true"></span>
-                        <span id="runtime-label">Starting local runtime</span>
+                        <span id="runtime-label" data-i18n="detectingRuntimes">Detecting local runtimes</span>
                     </button>
-                    <button id="topbar-curations" class="topbar-button" type="button">Case drafts</button>
-                    <button id="topbar-trace" class="topbar-button" type="button">Trace</button>
+                    <button id="topbar-curations" class="topbar-button" type="button" data-i18n="caseDrafts">Case drafts</button>
+                    <button id="topbar-trace" class="topbar-button" type="button" data-i18n="trace">Trace</button>
                 </header>
 
                 <div id="error-banner" class="error-banner hidden" role="alert">
                     <div>
-                        <strong>Task could not continue</strong>
+                        <strong data-i18n="taskCouldNotContinue">Task could not continue</strong>
                         <span id="error-message"></span>
                     </div>
-                    <button id="dismiss-error" type="button">Dismiss</button>
+                    <button id="dismiss-error" type="button" data-i18n="dismiss">Dismiss</button>
                 </div>
 
                 <section id="conversation-scroll" class="conversation-scroll">
@@ -90,11 +95,12 @@
                             rows="1"
                             maxlength="120000"
                             placeholder="Ask Rolling Skill to evaluate or run a task"
+                            data-i18n-placeholder="taskPlaceholder"
                             aria-label="Task prompt"
                         ></textarea>
                         <div class="composer-footer">
                             <div class="composer-context">
-                                <span id="runtime-context-name">Detecting local runtime</span>
+                                <select id="composer-model" class="model-picker" aria-label="Task model"></select>
                                 <span aria-hidden="true">·</span>
                                 <span>workspace-write</span>
                             </div>
@@ -106,45 +112,37 @@
                             </button>
                         </div>
                     </form>
-                    <p class="composer-hint">Enter to send · Shift+Enter for a new line</p>
+                    <p class="composer-hint" data-i18n="composerHint">Enter to send · Shift+Enter for a new line</p>
                 </section>
             </main>
 
             <aside id="trace-drawer" class="trace-drawer" aria-label="Local trace">
                 <header class="drawer-header">
                     <div>
-                        <div class="drawer-eyebrow">LOCAL EVIDENCE</div>
-                        <h2>Runtime trace</h2>
+                        <div class="drawer-eyebrow" data-i18n="localEvidence">LOCAL EVIDENCE</div>
+                        <h2 data-i18n="runtimeTrace">Runtime trace</h2>
                     </div>
                     <button id="close-trace" class="icon-button large" type="button" title="Close trace">×</button>
                 </header>
                 <div class="trace-toolbar">
-                    <button id="refresh-trace" type="button">Refresh</button>
-                    <button id="open-trace-folder" type="button">Open folder</button>
+                    <button id="refresh-trace" type="button" data-i18n="refresh">Refresh</button>
+                    <button id="open-trace-folder" type="button" data-i18n="openFolder">Open folder</button>
                 </div>
-                <div id="trace-meta" class="trace-meta">Trace begins when the local runtime starts.</div>
+                <div id="trace-meta" class="trace-meta" data-i18n="traceInitial">Trace begins when the local runtime starts.</div>
                 <div id="trace-events" class="trace-events"></div>
             </aside>
 
             <aside id="curation-drawer" class="right-drawer curation-drawer" aria-label="Case drafts">
                 <header class="drawer-header">
                     <div>
-                        <div class="drawer-eyebrow">CURATOR TASKS</div>
-                        <h2>Case drafts</h2>
+                        <div class="drawer-eyebrow" data-i18n="curatorTasks">CURATOR TASKS</div>
+                        <h2 data-i18n="caseDrafts">Case drafts</h2>
                     </div>
                     <button id="close-curations" class="icon-button large" type="button" title="Close case drafts">×</button>
                 </header>
-                <details class="curator-settings">
-                    <summary>Curator model</summary>
-                    <p>Use the source model when available, then the active runtime default.</p>
-                    <div class="curator-model-row">
-                        <input id="curator-model-id" maxlength="200" placeholder="Optional model override" />
-                        <button id="save-curator-profile" type="button">Save</button>
-                    </div>
-                </details>
                 <nav id="curation-list" class="curation-list" aria-label="Curation sessions"></nav>
                 <section id="curation-detail" class="curation-detail">
-                    <div class="sidebar-placeholder">Select a case draft to review it.</div>
+                    <div class="sidebar-placeholder" data-i18n="selectDraft">Select a case draft to review it.</div>
                 </section>
             </aside>
         </div>
@@ -153,20 +151,119 @@
             <div class="runtime-dialog-body">
                 <div class="dialog-header">
                     <div>
-                        <div class="drawer-eyebrow">LOCAL PROVIDERS</div>
-                        <h2>Agent runtimes</h2>
+                        <div class="drawer-eyebrow" data-i18n="localProviders">LOCAL PROVIDERS</div>
+                        <h2 data-i18n="agentRuntimes">Agent runtimes</h2>
                     </div>
                     <button id="close-runtime-dialog" class="icon-button large" type="button">×</button>
                 </div>
-                <p class="runtime-dialog-copy">
+                <p class="runtime-dialog-copy" data-i18n="runtimeDialogCopy">
                     Compatible runtimes are discovered locally and are not installed or upgraded by Rolling Skill.
                 </p>
                 <div id="runtime-options" class="runtime-options"></div>
                 <div class="runtime-dialog-actions">
-                    <button id="detect-runtimes" type="button">Rescan</button>
-                    <button id="automatic-runtime" type="button">Use automatic selection</button>
-                    <button id="choose-runtime-file" type="button">Add executable…</button>
-                    <button id="confirm-runtime" class="primary" type="button">Done</button>
+                    <button id="detect-runtimes" type="button" data-i18n="rescan">Rescan</button>
+                    <button id="automatic-runtime" type="button" data-i18n="automaticRuntime">Use automatic selection</button>
+                    <button id="choose-runtime-file" type="button" data-i18n="addExecutable">Add executable…</button>
+                    <button id="confirm-runtime" class="primary" type="button" data-i18n="done">Done</button>
+                </div>
+            </div>
+        </dialog>
+
+        <dialog id="settings-dialog" class="case-dialog settings-dialog">
+            <form id="settings-form">
+                <div class="dialog-header">
+                    <div>
+                        <div class="drawer-eyebrow">ROLLING SKILL</div>
+                        <h2 data-i18n="settings">Settings</h2>
+                    </div>
+                    <button id="close-settings-dialog" class="icon-button large" type="button">×</button>
+                </div>
+
+                <section class="settings-section">
+                    <h3 data-i18n="appearance">Appearance</h3>
+                    <div class="settings-grid">
+                        <label class="settings-field">
+                            <span data-i18n="language">Language</span>
+                            <select id="settings-language">
+                                <option value="zh-CN">简体中文</option>
+                                <option value="en">English</option>
+                            </select>
+                        </label>
+                        <label class="settings-field">
+                            <span data-i18n="theme">Theme</span>
+                            <select id="settings-theme">
+                                <option value="codex-light">Codex Light</option>
+                                <option value="codex-dark">Codex Dark</option>
+                                <option value="graphite">Graphite</option>
+                            </select>
+                        </label>
+                    </div>
+                </section>
+
+                <section class="settings-section">
+                    <h3 data-i18n="models">Models</h3>
+                    <label class="settings-field">
+                        <span data-i18n="taskModel">New task model</span>
+                        <select id="settings-task-model"></select>
+                    </label>
+                    <label class="settings-field">
+                        <span data-i18n="curatorModel">Default Curator model</span>
+                        <select id="settings-curator-model"></select>
+                    </label>
+                </section>
+
+                <section class="settings-section automatic-capture-settings">
+                    <div class="settings-section-heading">
+                        <div>
+                            <h3 data-i18n="automaticCapture">Automatic capture</h3>
+                            <p data-i18n="automaticCaptureHelp">Create a reviewable draft after each completed response. Nothing is saved until Done.</p>
+                        </div>
+                        <label class="switch">
+                            <input id="settings-auto-capture" type="checkbox" />
+                            <span aria-hidden="true"></span>
+                        </label>
+                    </div>
+                    <label class="settings-field">
+                        <span data-i18n="captureModel">Capture Curator model</span>
+                        <select id="settings-auto-capture-model"></select>
+                    </label>
+                    <div class="settings-grid">
+                        <label class="settings-field">
+                            <span data-i18n="destinationDataset">Destination dataset</span>
+                            <select id="settings-auto-capture-dataset"></select>
+                        </label>
+                        <label class="settings-field">
+                            <span data-i18n="defaultClassification">Default classification</span>
+                            <select id="settings-auto-capture-case-type">
+                                <option value="goodcase">Goodcase</option>
+                                <option value="badcase">Badcase</option>
+                            </select>
+                        </label>
+                    </div>
+                </section>
+
+                <div class="dialog-footer settings-actions">
+                    <span data-i18n="settingsLocalOnly">Settings stay on this Mac.</span>
+                    <button id="cancel-settings" type="button" data-i18n="cancel">Cancel</button>
+                    <button id="save-settings" class="primary" type="submit" data-i18n="save">Save</button>
+                </div>
+            </form>
+        </dialog>
+
+        <dialog id="discard-curation-dialog" class="case-dialog confirm-dialog">
+            <div class="confirm-dialog-body">
+                <div class="dialog-header">
+                    <div>
+                        <div class="drawer-eyebrow" data-i18n="caseDraft">CASE DRAFT</div>
+                        <h2 data-i18n="discardDraft">Discard this draft?</h2>
+                    </div>
+                    <button id="close-discard-dialog" class="icon-button large" type="button">×</button>
+                </div>
+                <p data-i18n="discardDraftHelp">The Curator task will be stopped and archived. No case will be saved.</p>
+                <div class="dialog-footer">
+                    <span></span>
+                    <button id="cancel-discard" type="button" data-i18n="cancel">Cancel</button>
+                    <button id="confirm-discard" class="danger" type="button" data-i18n="discard">Discard</button>
                 </div>
             </div>
         </dialog>
@@ -175,51 +272,51 @@
             <form id="save-case-form">
                 <div class="dialog-header">
                     <div>
-                        <div class="drawer-eyebrow">CURATE EVALUATION DATA</div>
-                        <h2>Curate a problem-solving episode</h2>
+                            <div class="drawer-eyebrow" data-i18n="curateEvaluationData">CURATE EVALUATION DATA</div>
+                        <h2 data-i18n="curateEpisode">Curate a problem-solving episode</h2>
                     </div>
                     <button id="close-case-dialog" class="icon-button large" type="button">×</button>
                 </div>
 
                 <label class="field">
-                    <span>Dataset</span>
+                    <span data-i18n="dataset">Dataset</span>
                     <select id="case-dataset" required></select>
                 </label>
                 <div class="new-dataset-row">
-                    <input id="new-dataset-name" type="text" placeholder="Create a new dataset" maxlength="100" />
-                    <button id="create-dataset" type="button">Create</button>
+                    <input id="new-dataset-name" type="text" placeholder="Create a new dataset" data-i18n-placeholder="createDataset" maxlength="100" />
+                    <button id="create-dataset" type="button" data-i18n="create">Create</button>
                 </div>
 
                 <fieldset class="case-type-field">
-                    <legend>Classification</legend>
+                    <legend data-i18n="classification">Classification</legend>
                     <label>
                         <input type="radio" name="case-type" value="goodcase" checked />
-                        <span><strong>Goodcase</strong><small>Expected Skill behavior</small></span>
+                        <span><strong>Goodcase</strong><small data-i18n="expectedSkill">Expected Skill behavior</small></span>
                     </label>
                     <label>
                         <input type="radio" name="case-type" value="badcase" />
-                        <span><strong>Badcase</strong><small>Needs improvement</small></span>
+                        <span><strong>Badcase</strong><small data-i18n="needsImprovement">Needs improvement</small></span>
                     </label>
                 </fieldset>
 
                 <label class="field">
-                    <span>Episode starts at</span>
+                    <span data-i18n="episodeStartsAt">Episode starts at</span>
                     <select id="case-start-item" required></select>
                 </label>
                 <label class="field">
-                    <span>Verbatim dataset question</span>
+                    <span data-i18n="datasetQuestion">Verbatim dataset question</span>
                     <textarea id="case-question" rows="4" readonly required></textarea>
                 </label>
                 <div id="case-scope" class="case-scope"></div>
                 <label class="field">
-                    <span>Selected ending response</span>
+                    <span data-i18n="endingResponse">Selected ending response</span>
                     <textarea id="case-end-preview" rows="5" readonly></textarea>
                 </label>
 
                 <div class="dialog-footer">
-                    <span>A frozen copy goes to Curator; the original task stays live.</span>
-                    <button id="cancel-save-case" type="button">Cancel</button>
-                    <button id="confirm-save-case" class="primary" type="submit">Start curation</button>
+                    <span data-i18n="frozenCopyHelp">A frozen copy goes to Curator; the original task stays live.</span>
+                    <button id="cancel-save-case" type="button" data-i18n="cancel">Cancel</button>
+                    <button id="confirm-save-case" class="primary" type="submit" data-i18n="startCuration">Start curation</button>
                 </div>
             </form>
         </dialog>

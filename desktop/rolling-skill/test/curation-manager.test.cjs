@@ -61,12 +61,34 @@ function sourceThread() {
     }
 }
 
+async function completeInitialDraft(manager, store, session) {
+    const turnId = store.getCurationSession(session.id).curator.currentTurnId
+    await manager.handleNotification({
+        method: "turn/completed",
+        params: {
+            threadId: "curator-1",
+            turn: {
+                id: turnId,
+                status: "completed",
+                items: [
+                    {
+                        id: "curator-answer-1",
+                        type: "agentMessage",
+                        text: `\`\`\`json\n${JSON.stringify(validDraft())}\n\`\`\``,
+                    },
+                ],
+            },
+        },
+    })
+}
+
 class FakeRuntime {
     constructor() {
         this.startedThreads = []
         this.startedTurns = []
         this.resumedThreads = []
         this.archivedThreads = []
+        this.interruptedTurns = []
     }
 
     async readThread(threadId) {
@@ -98,6 +120,10 @@ class FakeRuntime {
 
     async archiveThread(threadId) {
         this.archivedThreads.push(threadId)
+    }
+
+    async interruptTurn(threadId, turnId) {
+        this.interruptedTurns.push({threadId, turnId})
     }
 }
 
@@ -271,5 +297,290 @@ describe("curation manager", () => {
         assert.match(recovered.error, /interrupted/i)
         assert.equal(recovered.curator.currentTurnId, null)
         assert.equal(restarted.hiddenThreadIds().has("curator-before-restart"), true)
+    })
+
+    it("changes the next Curator model and discards a draft without creating a case", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const session = await manager.createSession({
+            datasetId,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+            modelId: "gpt-5.6-sol",
+        })
+        await manager.waitForIdle(session.id)
+
+        const changed = manager.updateModel(session.id, "gpt-5.6-terra")
+        assert.equal(changed.curator.modelId, "gpt-5.6-terra")
+
+        const discarded = await manager.discard(session.id)
+        assert.equal(discarded.status, "cancelled")
+        assert.equal(store.read().cases.length, 0)
+        assert.deepEqual(runtime.interruptedTurns, [
+            {threadId: "curator-1", turnId: "curator-turn-1"},
+        ])
+        assert.deepEqual(runtime.archivedThreads, ["curator-1"])
+    })
+
+    it("still archives a discarded Curator thread when interrupting its turn fails", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const session = await manager.createSession({
+            datasetId,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+        runtime.interruptTurn = async () => {
+            throw new Error("turn already completed")
+        }
+
+        await manager.discard(session.id)
+
+        assert.equal(store.getCurationSession(session.id).status, "cancelled")
+        assert.deepEqual(runtime.archivedThreads, ["curator-1"])
+    })
+
+    it("does not start a queued Curator after the draft is discarded", async () => {
+        const scheduled = []
+        const deferredManager = new CurationManager({
+            store,
+            getRuntime: async () => runtime,
+            getRuntimeDescriptor: () => ({runtimeId: "codex-alpha"}),
+            onChanged: (session) => changed.push(session),
+            schedule: (task) => {
+                scheduled.push(task)
+            },
+        })
+        const datasetId = store.listDatasets()[0].id
+        const session = await deferredManager.createSession({
+            datasetId,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+
+        await deferredManager.discard(session.id)
+        await scheduled[0]()
+
+        assert.equal(store.getCurationSession(session.id).status, "cancelled")
+        assert.deepEqual(runtime.startedThreads, [])
+        assert.deepEqual(runtime.startedTurns, [])
+    })
+
+    it("archives a Curator thread that finishes starting after the draft is discarded", async () => {
+        const slowRuntime = new FakeRuntime()
+        let markStarted
+        let releaseStart
+        const startEntered = new Promise((resolve) => {
+            markStarted = resolve
+        })
+        const startReleased = new Promise((resolve) => {
+            releaseStart = resolve
+        })
+        slowRuntime.startThread = async (options) => {
+            slowRuntime.startedThreads.push(options)
+            markStarted()
+            await startReleased
+            return {
+                thread: {
+                    id: "curator-1",
+                    modelProvider: "openai",
+                    model: options.model ?? "runtime-default",
+                },
+            }
+        }
+        const slowManager = new CurationManager({
+            store,
+            getRuntime: async () => slowRuntime,
+            getRuntimeDescriptor: () => ({runtimeId: "codex-alpha"}),
+            schedule: (task) => task(),
+        })
+        const session = await slowManager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await startEntered
+
+        await slowManager.discard(session.id)
+        releaseStart()
+        await slowManager.waitForIdle(session.id)
+
+        assert.equal(store.getCurationSession(session.id).status, "cancelled")
+        assert.deepEqual(slowRuntime.startedTurns, [])
+        assert.deepEqual(slowRuntime.archivedThreads, ["curator-1"])
+    })
+
+    it("interrupts a Curator turn that finishes starting after the draft is discarded", async () => {
+        const slowRuntime = new FakeRuntime()
+        let markTurnStarted
+        let releaseTurn
+        const turnEntered = new Promise((resolve) => {
+            markTurnStarted = resolve
+        })
+        const turnReleased = new Promise((resolve) => {
+            releaseTurn = resolve
+        })
+        slowRuntime.startTurn = async (threadId, text) => {
+            const turn = {id: "curator-turn-1", items: []}
+            slowRuntime.startedTurns.push({threadId, text, turn})
+            markTurnStarted()
+            await turnReleased
+            return {turn}
+        }
+        const slowManager = new CurationManager({
+            store,
+            getRuntime: async () => slowRuntime,
+            getRuntimeDescriptor: () => ({runtimeId: "codex-alpha"}),
+            schedule: (task) => task(),
+        })
+        const session = await slowManager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await turnEntered
+
+        await slowManager.discard(session.id)
+        releaseTurn()
+        await slowManager.waitForIdle(session.id)
+
+        assert.equal(store.getCurationSession(session.id).status, "cancelled")
+        assert.deepEqual(slowRuntime.interruptedTurns, [
+            {threadId: "curator-1", turnId: "curator-turn-1"},
+        ])
+        assert.deepEqual(slowRuntime.archivedThreads, ["curator-1"])
+    })
+
+    it("retries archiving after an in-flight initial turn blocked the first attempt", async () => {
+        const slowRuntime = new FakeRuntime()
+        let markTurnStarted
+        let releaseTurn
+        let archiveAttempts = 0
+        const turnEntered = new Promise((resolve) => {
+            markTurnStarted = resolve
+        })
+        const turnReleased = new Promise((resolve) => {
+            releaseTurn = resolve
+        })
+        slowRuntime.startTurn = async (threadId, text) => {
+            const turn = {id: "curator-turn-1", items: []}
+            slowRuntime.startedTurns.push({threadId, text, turn})
+            markTurnStarted()
+            await turnReleased
+            return {turn}
+        }
+        slowRuntime.archiveThread = async (threadId) => {
+            archiveAttempts += 1
+            if (archiveAttempts === 1) throw new Error("thread still has an active turn")
+            slowRuntime.archivedThreads.push(threadId)
+        }
+        const slowManager = new CurationManager({
+            store,
+            getRuntime: async () => slowRuntime,
+            getRuntimeDescriptor: () => ({runtimeId: "codex-alpha"}),
+            schedule: (task) => task(),
+        })
+        const session = await slowManager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await turnEntered
+
+        await slowManager.discard(session.id)
+        releaseTurn()
+        await slowManager.waitForIdle(session.id)
+
+        assert.equal(store.getCurationSession(session.id).status, "cancelled")
+        assert.equal(archiveAttempts, 2)
+        assert.deepEqual(slowRuntime.interruptedTurns, [
+            {threadId: "curator-1", turnId: "curator-turn-1"},
+        ])
+        assert.deepEqual(slowRuntime.archivedThreads, ["curator-1"])
+    })
+
+    it("does not start a follow-up turn after discard wins during resume", async () => {
+        const session = await manager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+        await completeInitialDraft(manager, store, session)
+        let markResumeStarted
+        let releaseResume
+        const resumeEntered = new Promise((resolve) => {
+            markResumeStarted = resolve
+        })
+        const resumeReleased = new Promise((resolve) => {
+            releaseResume = resolve
+        })
+        runtime.resumeThread = async (threadId, options) => {
+            runtime.resumedThreads.push({threadId, options})
+            markResumeStarted()
+            await resumeReleased
+            return {thread: {id: threadId}}
+        }
+
+        const followUp = manager.sendMessage(session.id, "revise the draft")
+        await resumeEntered
+        await manager.discard(session.id)
+        releaseResume()
+        await followUp
+
+        assert.equal(store.getCurationSession(session.id).status, "cancelled")
+        assert.equal(runtime.startedTurns.length, 1)
+        assert.deepEqual(runtime.archivedThreads, ["curator-1"])
+    })
+
+    it("cleans up a follow-up turn that finishes starting after discard", async () => {
+        const session = await manager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+        await completeInitialDraft(manager, store, session)
+        let markTurnStarted
+        let releaseTurn
+        let archiveAttempts = 0
+        const turnEntered = new Promise((resolve) => {
+            markTurnStarted = resolve
+        })
+        const turnReleased = new Promise((resolve) => {
+            releaseTurn = resolve
+        })
+        runtime.startTurn = async (threadId, text) => {
+            const turn = {id: "follow-up-turn", items: []}
+            runtime.startedTurns.push({threadId, text, turn})
+            markTurnStarted()
+            await turnReleased
+            return {turn}
+        }
+        runtime.archiveThread = async (threadId) => {
+            archiveAttempts += 1
+            if (archiveAttempts === 1) throw new Error("thread still has an active turn")
+            runtime.archivedThreads.push(threadId)
+        }
+
+        const followUp = manager.sendMessage(session.id, "revise the draft")
+        await turnEntered
+        await manager.discard(session.id)
+        releaseTurn()
+        await followUp
+
+        assert.equal(store.getCurationSession(session.id).status, "cancelled")
+        assert.equal(archiveAttempts, 2)
+        assert.deepEqual(runtime.interruptedTurns, [
+            {threadId: "curator-1", turnId: "follow-up-turn"},
+        ])
+        assert.deepEqual(runtime.archivedThreads, ["curator-1"])
     })
 })

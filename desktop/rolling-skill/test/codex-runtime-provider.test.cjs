@@ -157,6 +157,12 @@ describe("Codex runtime provider", () => {
         assert.equal(results[0].version, "0.147.0")
         assert.equal(results[0].executablePath, compatible)
         assert.match(results[0].runtimeId, /^codex:/)
-        assert.deepEqual(results[0].capabilities, ["threads", "turns", "streaming", "raw-trace"])
+        assert.deepEqual(results[0].capabilities, [
+            "threads",
+            "turns",
+            "models",
+            "streaming",
+            "raw-trace",
+        ])
     })
 })

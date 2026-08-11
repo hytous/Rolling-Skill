@@ -20,19 +20,40 @@ const CURATION_STATUSES = new Set([
     "archived",
     "cancelled",
 ])
+const LANGUAGES = new Set(["zh-CN", "en"])
+const THEMES = new Set(["codex-light", "codex-dark", "graphite"])
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
+}
+
+function modelId(value, label = "Model id") {
+    const normalized = value === null || value === undefined ? null : String(value).trim()
+    if (normalized && normalized.length > 200) throw new Error(`${label} is too long`)
+    return normalized || null
+}
+
+function defaultSettings() {
+    return {
+        autoCapture: false,
+        language: "zh-CN",
+        theme: "codex-light",
+        taskProfile: {runtimePolicy: "active", modelId: null},
+        curatorProfile: {runtimePolicy: "active", modelId: null},
+        autoCaptureProfile: {
+            runtimePolicy: "active",
+            modelId: null,
+            datasetId: null,
+            caseType: "goodcase",
+        },
+    }
 }
 
 function initialState() {
     const now = new Date().toISOString()
     return {
         schemaVersion: LOCAL_SCHEMA,
-        settings: {
-            autoCapture: false,
-            curatorProfile: {runtimePolicy: "active", modelId: null},
-        },
+        settings: defaultSettings(),
         datasets: [
             {
                 id: randomUUID(),
@@ -50,11 +71,36 @@ function migrateState(input) {
     let changed = state.schemaVersion !== LOCAL_SCHEMA
     state.schemaVersion = LOCAL_SCHEMA
     if (!state.settings || typeof state.settings !== "object") {
-        state.settings = {autoCapture: false}
+        state.settings = defaultSettings()
+        changed = true
+    }
+    if (typeof state.settings.autoCapture !== "boolean") {
+        state.settings.autoCapture = false
+        changed = true
+    }
+    if (!LANGUAGES.has(state.settings.language)) {
+        state.settings.language = "zh-CN"
+        changed = true
+    }
+    if (!THEMES.has(state.settings.theme)) {
+        state.settings.theme = "codex-light"
+        changed = true
+    }
+    if (!state.settings.taskProfile) {
+        state.settings.taskProfile = {runtimePolicy: "active", modelId: null}
         changed = true
     }
     if (!state.settings.curatorProfile) {
         state.settings.curatorProfile = {runtimePolicy: "active", modelId: null}
+        changed = true
+    }
+    if (!state.settings.autoCaptureProfile) {
+        state.settings.autoCaptureProfile = {
+            runtimePolicy: "active",
+            modelId: null,
+            datasetId: null,
+            caseType: "goodcase",
+        }
         changed = true
     }
     if (!Array.isArray(state.datasets)) {
@@ -147,15 +193,55 @@ class LocalEvaluationStore {
 
     updateCuratorProfile(input = {}) {
         const state = this.load()
-        const rawModelId = input.modelId
-        const modelId = rawModelId === null || rawModelId === undefined ? null : String(rawModelId).trim()
-        if (modelId && modelId.length > 200) throw new Error("Curator model id is too long")
+        const normalizedModelId = modelId(input.modelId, "Curator model id")
         state.settings.curatorProfile = {
             runtimePolicy: "active",
-            modelId: modelId || null,
+            modelId: normalizedModelId,
         }
         this.persist()
         return copy(state.settings.curatorProfile)
+    }
+
+    updateSettings(input = {}) {
+        const state = this.load()
+        const settings = state.settings
+        if (input.language !== undefined) {
+            if (!LANGUAGES.has(input.language)) throw new Error("Unsupported interface language")
+            settings.language = input.language
+        }
+        if (input.theme !== undefined) {
+            if (!THEMES.has(input.theme)) throw new Error("Unsupported interface theme")
+            settings.theme = input.theme
+        }
+        if (input.taskModelId !== undefined) {
+            settings.taskProfile = {
+                runtimePolicy: "active",
+                modelId: modelId(input.taskModelId, "Task model id"),
+            }
+        }
+        if (input.curatorModelId !== undefined) {
+            settings.curatorProfile = {
+                runtimePolicy: "active",
+                modelId: modelId(input.curatorModelId, "Curator model id"),
+            }
+        }
+        if (input.autoCapture !== undefined) settings.autoCapture = Boolean(input.autoCapture)
+        const automatic = {...settings.autoCaptureProfile, runtimePolicy: "active"}
+        if (input.autoCaptureModelId !== undefined) {
+            automatic.modelId = modelId(input.autoCaptureModelId, "Automatic capture model id")
+        }
+        if (input.autoCaptureDatasetId !== undefined) {
+            const datasetId = modelId(input.autoCaptureDatasetId, "Automatic capture dataset id")
+            if (datasetId) requireDataset(state, datasetId)
+            automatic.datasetId = datasetId
+        }
+        if (input.autoCaptureCaseType !== undefined) {
+            requireCaseType(input.autoCaptureCaseType)
+            automatic.caseType = input.autoCaptureCaseType
+        }
+        settings.autoCaptureProfile = automatic
+        this.persist()
+        return copy(settings)
     }
 
     saveCase(input) {
@@ -188,9 +274,19 @@ class LocalEvaluationStore {
 
     listCurationSessions() {
         return copy(
-            [...this.load().curationSessions].sort((left, right) =>
-                String(right.updatedAt).localeCompare(String(left.updatedAt)),
-            ),
+            this.load()
+                .curationSessions.filter((entry) => entry.status !== "cancelled")
+                .sort((left, right) =>
+                    String(right.updatedAt).localeCompare(String(left.updatedAt)),
+                ),
+        )
+    }
+
+    hasCurationForSource(threadId, endItemId) {
+        return this.load().curationSessions.some(
+            (entry) =>
+                entry.episode?.source?.threadId === threadId &&
+                entry.episode?.source?.endItemId === endItemId,
         )
     }
 
@@ -261,6 +357,31 @@ class LocalEvaluationStore {
                   )
                 : null
         }
+        session.updatedAt = new Date().toISOString()
+        this.persist()
+        return copy(session)
+    }
+
+    updateCurationModel(id, value) {
+        const state = this.load()
+        const session = requireCurationSession(state, id)
+        if (session.status === "archived" || session.status === "cancelled") {
+            throw new Error("This curation session is no longer editable")
+        }
+        session.curator.modelId = modelId(value, "Curator model id")
+        session.updatedAt = new Date().toISOString()
+        this.persist()
+        return copy(session)
+    }
+
+    cancelCurationSession(id) {
+        const state = this.load()
+        const session = requireCurationSession(state, id)
+        if (session.status === "archived") throw new Error("A saved case cannot be discarded")
+        if (session.status === "cancelled") throw new Error("Curation session is already discarded")
+        session.status = "cancelled"
+        session.error = null
+        session.curator.currentTurnId = null
         session.updatedAt = new Date().toISOString()
         this.persist()
         return copy(session)

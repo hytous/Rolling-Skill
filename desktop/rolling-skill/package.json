@@ -1,6 +1,6 @@
 {
     "name": "rolling-skill-desktop",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "private": true,
     "author": "Rolling Skill",
     "description": "Native-window macOS client for the Rolling Skill evaluation workbench",

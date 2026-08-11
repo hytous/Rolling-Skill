@@ -38,6 +38,21 @@ Use the sidebar **Runtime…** control or the native **Runtime** menu to:
 If no compatible runtime is found, the desktop shell and local datasets still open. Rolling Skill
 does not download, install, upgrade, or authenticate a runtime.
 
+The active runtime's model catalog is loaded through its provider adapter. The task composer can
+select a model for the next and subsequent turns, while each editable Case Draft has its own
+Curator model selector. No model names are bundled into the desktop application.
+
+## Settings and appearance
+
+Open **Settings** in the lower-left sidebar to configure:
+
+- Simplified Chinese or English interface text;
+- Codex Light (the default white-and-blue theme), Codex Dark, or the original Graphite theme;
+- the default model for new tasks and the default Curator model; and
+- Automatic Capture, including its Curator model, destination dataset, and default case type.
+
+All settings are stored locally. Automatic Capture remains disabled until explicitly enabled.
+
 ## Provider architecture
 
 `src/runtime-registry.cjs` contains the provider-neutral registry. Providers implement two
@@ -87,8 +102,9 @@ specific local Codex should be used without saving it through the UI.
 6. Select **Start curation**. Rolling Skill freezes the selected conversation/trace range while the
    original task remains live, then starts an independent read-only Curator task.
 7. Review the Curator conversation and structured reference answer in **Case drafts**. Ask follow-up
-   questions or request revisions, use **Retry** after a failed draft, and select **Done** only when
-   the hard requirements and reference result are ready.
+   questions or request revisions, change the model used by subsequent Curator turns, use **Retry**
+   after a failed draft, and select **Done** only when the hard requirements and reference result
+   are ready. **Discard** stops and archives the Curator task without saving a Case.
 
 The Curator output has a fixed agent-grading contract: reference summary, required facts, required
 steps, required output format, evidence links, hard pass/fail requirements, soft criteria, and
@@ -97,11 +113,13 @@ and expected recovery. Shell activity is grouped by CLI/subcommand (for example 
 `billing-cli cost query`) while repeated CLI and MCP calls are compacted with counts and status
 distributions.
 
-Automatic capture is disabled by default. No case is written until **Done**. Approved cases retain
+Automatic Capture is disabled by default. When enabled it creates reviewable Case Drafts after
+completed assistant responses; it never saves them automatically. No case is written until
+**Done**. Approved cases retain
 the exact user question, structured grading data, source and Curator runtime provenance, immutable
-Episode evidence, and the append-only trace range. The optional Curator model override lives in the
-**Case drafts → Curator model** setting; otherwise the source model is reused when the runtime
-exposes it, with the active runtime default as fallback.
+Episode evidence, and the append-only trace range. The default Curator model lives in **Settings**;
+each editable Case Draft can override it for subsequent follow-up turns. If no override is set, the
+source model is reused when the runtime exposes it, with the active runtime default as fallback.
 
 Local state is stored under `~/Library/Application Support/Rolling Skill/`:
 
@@ -132,5 +150,6 @@ capabilities and are not inspected, started, or required by `Rolling Skill.app`.
 `npm test` covers provider discovery priority and de-duplication, compatibility probing, registry
 selection/client delegation, a real locally discovered app-server smoke, protocol framing, Git
 workspace discovery, local-first surface invariants, episode boundaries, verbatim questions,
-CLI/MCP compaction, Curator lifecycle/retries/revisions, atomic dataset persistence, fixed grading
-contracts, runtime attribution, and trace provenance.
+CLI/MCP compaction, Curator lifecycle/retries/revisions/discard, Automatic Capture gating, model
+catalog and turn overrides, settings migration, atomic dataset persistence, fixed grading contracts,
+runtime attribution, and trace provenance.

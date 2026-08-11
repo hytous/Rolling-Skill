@@ -32,6 +32,7 @@ class CurationManager {
         this.schedule = schedule
         this.tasks = new Map()
         this.threadSessions = new Map()
+        this.archivedThreadIds = new Set()
         for (const session of this.store.listCurationSessions()) {
             if (session.curator.threadId) this.threadSessions.set(session.curator.threadId, session.id)
             if (session.status === "queued" || session.status === "running") {
@@ -66,6 +67,27 @@ class CurationManager {
         await this.tasks.get(sessionId)
     }
 
+    async interruptRuntimeTurn(runtime, threadId, turnId) {
+        if (!turnId) return false
+        try {
+            await runtime.interruptTurn(threadId, turnId)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    async archiveRuntimeThread(runtime, threadId) {
+        if (this.archivedThreadIds.has(threadId)) return true
+        try {
+            await runtime.archiveThread(threadId)
+            this.archivedThreadIds.add(threadId)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     async createSession(input) {
         const runtime = await this.getRuntime()
         const response = await runtime.readThread(input.sourceThreadId)
@@ -97,7 +119,10 @@ class CurationManager {
     async startInitialTurn(sessionId) {
         try {
             let session = this.store.getCurationSession(sessionId)
+            if (session.status === "cancelled") return session
             const runtime = await this.getRuntime()
+            session = this.store.getCurationSession(sessionId)
+            if (session.status === "cancelled") return session
             const options = {
                 sandbox: "read-only",
                 approvalPolicy: "never",
@@ -107,6 +132,11 @@ class CurationManager {
             }
             const response = await runtime.startThread(options)
             this.threadSessions.set(response.thread.id, sessionId)
+            session = this.store.getCurationSession(sessionId)
+            if (session.status === "cancelled") {
+                await this.archiveRuntimeThread(runtime, response.thread.id)
+                return session
+            }
             session = this.store.updateCurationSession(sessionId, {
                 status: "running",
                 error: null,
@@ -127,12 +157,20 @@ class CurationManager {
                 modelId: session.curator.modelId,
             })
             const turnResponse = await runtime.startTurn(response.thread.id, prompt)
+            session = this.store.getCurationSession(sessionId)
+            if (session.status === "cancelled") {
+                await this.interruptRuntimeTurn(runtime, response.thread.id, turnResponse.turn.id)
+                await this.archiveRuntimeThread(runtime, response.thread.id)
+                return session
+            }
             session = this.store.updateCurationSession(sessionId, {
                 status: "running",
                 curator: {currentTurnId: turnResponse.turn.id},
             })
             this.emitChanged(session)
         } catch (error) {
+            const current = this.store.getCurationSession(sessionId)
+            if (current.status === "cancelled") return current
             const failed = this.store.updateCurationSession(sessionId, {
                 status: "failed",
                 error: error.message,
@@ -216,19 +254,35 @@ class CurationManager {
         this.emitChanged(session)
         try {
             const runtime = await this.getRuntime()
+            session = this.store.getCurationSession(sessionId)
+            if (session.status === "cancelled") return session
             await runtime.resumeThread(session.curator.threadId, {
                 cwd: session.episode.source.cwd,
                 approvalPolicy: "never",
                 sandbox: "read-only",
                 ...(session.curator.modelId ? {model: session.curator.modelId} : {}),
             })
+            session = this.store.getCurationSession(sessionId)
+            if (session.status === "cancelled") return session
             const response = await runtime.startTurn(session.curator.threadId, String(text).trim())
+            session = this.store.getCurationSession(sessionId)
+            if (session.status === "cancelled") {
+                await this.interruptRuntimeTurn(
+                    runtime,
+                    session.curator.threadId,
+                    response.turn.id,
+                )
+                await this.archiveRuntimeThread(runtime, session.curator.threadId)
+                return session
+            }
             session = this.store.updateCurationSession(sessionId, {
                 status: "running",
                 curator: {currentTurnId: response.turn.id},
             })
             return this.emitChanged(session)
         } catch (error) {
+            const current = this.store.getCurationSession(sessionId)
+            if (current.status === "cancelled") return current
             const failed = this.store.updateCurationSession(sessionId, {
                 status: "failed",
                 error: error.message,
@@ -250,6 +304,33 @@ class CurationManager {
         return this.sendMessage(sessionId, RETRY_PROMPT)
     }
 
+    updateModel(sessionId, modelId) {
+        return this.emitChanged(this.store.updateCurationModel(sessionId, modelId))
+    }
+
+    async discard(sessionId) {
+        const current = this.store.getCurationSession(sessionId)
+        const discarded = this.store.cancelCurationSession(sessionId)
+        this.emitChanged(discarded)
+        if (current.curator.threadId) {
+            let runtime
+            try {
+                runtime = await this.getRuntime()
+            } catch {
+                return discarded
+            }
+            if (current.curator.currentTurnId) {
+                await this.interruptRuntimeTurn(
+                    runtime,
+                    current.curator.threadId,
+                    current.curator.currentTurnId,
+                )
+            }
+            await this.archiveRuntimeThread(runtime, current.curator.threadId)
+        }
+        return discarded
+    }
+
     async archive(sessionId) {
         const entry = this.store.archiveCurationSession(sessionId)
         const session = this.store.getCurationSession(sessionId)
@@ -257,7 +338,7 @@ class CurationManager {
         if (session.curator.threadId) {
             try {
                 const runtime = await this.getRuntime()
-                await runtime.archiveThread(session.curator.threadId)
+                await this.archiveRuntimeThread(runtime, session.curator.threadId)
             } catch {
                 // The dataset commit is authoritative; an unavailable runtime must not undo Done.
             }

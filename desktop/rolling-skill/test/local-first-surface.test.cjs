@@ -96,4 +96,61 @@ describe("local-first desktop surface", () => {
         assert.match(styles, /\.curation-detail-scroll\s*\{[^}]*overflow-y:\s*auto/s)
         assert.match(styles, /\.curation-composer-wrap\s*\{[^}]*border-top:/s)
     })
+
+    it("offers runtime-backed model pickers, discard, localization, themes, and capture settings", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+        const preload = source("src/preload.cjs")
+        const main = source("src/main.cjs")
+
+        assert.match(html, /id="composer-model"/)
+        assert.match(html, /id="settings-button"/)
+        assert.match(html, /id="settings-dialog"/)
+        assert.match(html, /id="settings-language"/)
+        assert.match(html, /id="settings-theme"/)
+        assert.match(html, /id="settings-auto-capture"/)
+        assert.match(html, /id="settings-auto-capture-model"/)
+        assert.match(renderer, /data-curation-model/)
+        assert.match(renderer, /data-discard-curation/)
+        assert.match(renderer, /translations/)
+        assert.match(styles, /data-theme="codex-light"/)
+        assert.match(styles, /data-theme="codex-dark"/)
+        assert.match(preload, /listModels/)
+        assert.match(preload, /updateSettings/)
+        assert.match(preload, /discardCuration/)
+        assert.match(main, /models:list/)
+        assert.match(main, /settings:update/)
+        assert.match(main, /curation:discard/)
+    })
+
+    it("keeps per-task model selection separate from the new-task default", () => {
+        const renderer = source("renderer/renderer.js")
+        const start = renderer.indexOf('elements.composerModel.addEventListener("change"')
+        const end = renderer.indexOf("elements.stopTurn.addEventListener", start)
+        const handler = renderer.slice(start, end)
+
+        assert.ok(start >= 0 && end > start)
+        assert.match(handler, /state\.selectedTaskModelId/)
+        assert.doesNotMatch(handler, /updateSettings/)
+    })
+
+    it("routes core runtime and Curator chrome through localization keys", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+
+        assert.match(html, /data-i18n="localEvidence"/)
+        assert.match(html, /data-i18n="curatorTasks"/)
+        assert.match(renderer, /t\("structuredReference"\)/)
+        assert.match(renderer, /t\("hardRequirements"\)/)
+        assert.match(renderer, /t\("runtimeReady"\)/)
+        assert.match(renderer, /thread\?\.preview \|\| t\("newTask"\)/)
+    })
+
+    it("reports the package version to the runtime", () => {
+        const appServer = source("src/codex-app-server.cjs")
+
+        assert.match(appServer, /version:\s*clientVersion/)
+        assert.doesNotMatch(appServer, /version:\s*"0\.5\.0"/)
+    })
 })

@@ -133,6 +133,7 @@ class CodexRuntimeProvider {
                     capabilities: Object.freeze([
                         "threads",
                         "turns",
+                        "models",
                         "streaming",
                         "raw-trace",
                     ]),

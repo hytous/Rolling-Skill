@@ -77,9 +77,21 @@ describe("local evaluation store", () => {
         const {store} = fixture()
         const snapshot = store.read()
         assert.equal(snapshot.settings.autoCapture, false)
+        assert.equal(snapshot.settings.language, "zh-CN")
+        assert.equal(snapshot.settings.theme, "codex-light")
+        assert.deepEqual(snapshot.settings.taskProfile, {
+            runtimePolicy: "active",
+            modelId: null,
+        })
         assert.deepEqual(snapshot.settings.curatorProfile, {
             runtimePolicy: "active",
             modelId: null,
+        })
+        assert.deepEqual(snapshot.settings.autoCaptureProfile, {
+            runtimePolicy: "active",
+            modelId: null,
+            datasetId: null,
+            caseType: "goodcase",
         })
         assert.equal(snapshot.datasets.length, 1)
         assert.equal(snapshot.datasets[0].name, "Skill evaluation cases")
@@ -95,6 +107,34 @@ describe("local evaluation store", () => {
         })
         assert.equal(store.read().settings.autoCapture, false)
         assert.equal(store.updateCuratorProfile({modelId: ""}).modelId, null)
+    })
+
+    it("persists appearance, task model, and opt-in automatic capture settings", () => {
+        const {store} = fixture()
+        const dataset = store.listDatasets()[0]
+
+        const settings = store.updateSettings({
+            language: "en",
+            theme: "codex-dark",
+            taskModelId: " gpt-5.6-sol ",
+            autoCapture: true,
+            autoCaptureModelId: " gpt-5.6-terra ",
+            autoCaptureDatasetId: dataset.id,
+            autoCaptureCaseType: "badcase",
+        })
+
+        assert.equal(settings.language, "en")
+        assert.equal(settings.theme, "codex-dark")
+        assert.equal(settings.taskProfile.modelId, "gpt-5.6-sol")
+        assert.equal(settings.autoCapture, true)
+        assert.deepEqual(settings.autoCaptureProfile, {
+            runtimePolicy: "active",
+            modelId: "gpt-5.6-terra",
+            datasetId: dataset.id,
+            caseType: "badcase",
+        })
+        assert.throws(() => store.updateSettings({language: "fr"}), /language/i)
+        assert.throws(() => store.updateSettings({theme: "neon"}), /theme/i)
     })
 
     it("atomically persists a classified case with full local provenance", () => {
@@ -264,5 +304,25 @@ describe("local evaluation store", () => {
 
         assert.throws(() => store.archiveCurationSession(session.id), /valid.*draft|review/i)
         assert.equal(store.read().cases.length, 0)
+    })
+
+    it("changes an editable Curator model and cancels a discarded draft without saving a case", () => {
+        const {store} = fixture()
+        const dataset = store.read().datasets[0]
+        const session = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            episode: episode(),
+            curator: {runtimeId: "codex:local", modelId: "gpt-5.6-sol"},
+        })
+
+        const changed = store.updateCurationModel(session.id, "gpt-5.6-terra")
+        assert.equal(changed.curator.modelId, "gpt-5.6-terra")
+
+        const cancelled = store.cancelCurationSession(session.id)
+        assert.equal(cancelled.status, "cancelled")
+        assert.equal(store.read().cases.length, 0)
+        assert.equal(store.hasCurationForSource("thread-source", "agent-2"), true)
+        assert.equal(store.listCurationSessions().some((entry) => entry.id === session.id), false)
     })
 })

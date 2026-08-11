@@ -5,6 +5,7 @@ const {join} = require("node:path")
 const {pathToFileURL} = require("node:url")
 
 const {CodexRuntimeProvider} = require("./codex-runtime-provider.cjs")
+const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
 const {LocalEvaluationStore} = require("./local-store.cjs")
 const {RuntimeRegistry} = require("./runtime-registry.cjs")
@@ -20,6 +21,7 @@ let runtimeDescriptor = null
 let availableRuntimes = []
 let store = null
 let curationManager = null
+let automaticCaptureManager = null
 let workspaceRoot = null
 let rendererUrl = null
 let runtimeStart = null
@@ -64,6 +66,7 @@ function installClientEvents(nextClient) {
     nextClient.on("state", (state) => send("runtime:state", enrichRuntimeState(state)))
     nextClient.on("notification", (message) => {
         void curationManager?.handleNotification(message)
+        void automaticCaptureManager?.handleNotification(message)
         const params = message?.params ?? {}
         const threadId = params.threadId ?? params.thread?.id ?? null
         const hidden =
@@ -391,6 +394,7 @@ function installIpc() {
             datasets: store.listDatasets(),
             curationSessions: store.listCurationSessions(),
             curatorProfile: store.read().settings.curatorProfile,
+            settings: store.read().settings,
         }
     })
     ipcMain.handle("workspace:choose", chooseWorkspace)
@@ -411,6 +415,11 @@ function installIpc() {
         const hidden = curationManager.hiddenThreadIds()
         return {...response, data: (response.data ?? []).filter((thread) => !hidden.has(thread.id))}
     })
+    ipcMain.handle("models:list", async () => {
+        const runtime = await ensureRuntime()
+        if (typeof runtime.listModels !== "function") return {data: [], nextCursor: null}
+        return runtime.listModels()
+    })
     ipcMain.handle("runtime:read-thread", async (_event, threadId) => {
         threadId = requireIdentifier(threadId, "thread")
         if (curationManager.hiddenThreadIds().has(threadId)) {
@@ -418,21 +427,23 @@ function installIpc() {
         }
         return (await ensureRuntime()).readThread(threadId)
     })
-    ipcMain.handle("runtime:start-thread", async () => {
-        const response = await (await ensureRuntime()).startThread()
+    ipcMain.handle("runtime:start-thread", async (_event, input = {}) => {
+        const model = optionalIdentifier(input.modelId, "model")
+        const response = await (await ensureRuntime()).startThread(model ? {model} : {})
         loadedThreads.add(response.thread.id)
         return response
     })
-    ipcMain.handle("runtime:start-turn", async (_event, {threadId, text}) => {
+    ipcMain.handle("runtime:start-turn", async (_event, {threadId, text, modelId}) => {
         threadId = requireIdentifier(threadId, "thread")
         text = String(text ?? "").trim()
+        const model = optionalIdentifier(modelId, "model")
         if (!text) throw new Error("Task text is required")
         const runtime = await ensureRuntime()
         if (!loadedThreads.has(threadId)) {
-            await runtime.resumeThread(threadId)
+            await runtime.resumeThread(threadId, model ? {model} : {})
             loadedThreads.add(threadId)
         }
-        return runtime.startTurn(threadId, text)
+        return runtime.startTurn(threadId, text, model ? {model} : {})
     })
     ipcMain.handle("runtime:interrupt-turn", async (_event, input) =>
         (await ensureRuntime()).interruptTurn(
@@ -443,6 +454,7 @@ function installIpc() {
     ipcMain.handle("datasets:list", () => store.listDatasets())
     ipcMain.handle("datasets:create", (_event, name) => store.createDataset(name))
     ipcMain.handle("datasets:reveal", revealLocalData)
+    ipcMain.handle("settings:update", (_event, input) => store.updateSettings(input))
 
     ipcMain.handle("curation:list", () => store.listCurationSessions())
     ipcMain.handle("curation:get", (_event, sessionId) =>
@@ -482,6 +494,15 @@ function installIpc() {
     ipcMain.handle("curation:archive", (_event, sessionId) =>
         curationManager.archive(requireIdentifier(sessionId, "curation session")),
     )
+    ipcMain.handle("curation:discard", (_event, sessionId) =>
+        curationManager.discard(requireIdentifier(sessionId, "curation session")),
+    )
+    ipcMain.handle("curation:update-model", (_event, input = {}) =>
+        curationManager.updateModel(
+            requireIdentifier(input.sessionId, "curation session"),
+            optionalIdentifier(input.modelId, "model"),
+        ),
+    )
     ipcMain.handle("curation:update-profile", (_event, input) =>
         store.updateCuratorProfile(input),
     )
@@ -492,6 +513,11 @@ function requireIdentifier(value, label) {
         throw new Error(`A valid ${label} identifier is required`)
     }
     return value
+}
+
+function optionalIdentifier(value, label) {
+    if (value === null || value === undefined || String(value).trim() === "") return null
+    return requireIdentifier(String(value).trim(), label)
 }
 
 const hasLock = app.requestSingleInstanceLock()
@@ -516,6 +542,15 @@ if (!hasLock) {
             getRuntime: ensureRuntime,
             getRuntimeDescriptor: () => runtimeDescriptor,
             onChanged: (session) => send("curation:changed", session),
+        })
+        automaticCaptureManager = new AutomaticCaptureManager({
+            store,
+            curationManager,
+            getTraceReference: (episode) => client?.recorder?.referenceForEpisode(episode) ?? null,
+            onError: (error) => send("runtime:state", {
+                ...enrichRuntimeState(client?.state() ?? {workspaceRoot}),
+                error: `Automatic capture failed: ${error.message}`,
+            }),
         })
         runtimeRegistry = new RuntimeRegistry([new CodexRuntimeProvider()])
         discoverLocalRuntimes()

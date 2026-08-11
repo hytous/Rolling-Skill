@@ -2,6 +2,7 @@ const {EventEmitter} = require("node:events")
 const {spawn} = require("node:child_process")
 const {existsSync} = require("node:fs")
 const {dirname, join} = require("node:path")
+const {version: clientVersion} = require("../package.json")
 
 const {JsonLineDecoder, RpcRequestTracker} = require("./json-rpc.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
@@ -100,7 +101,7 @@ class CodexAppServerClient extends EventEmitter {
         })
 
         const initialized = await this.request("initialize", {
-            clientInfo: {name: "rolling-skill", title: "Rolling Skill", version: "0.5.0"},
+            clientInfo: {name: "rolling-skill", title: "Rolling Skill", version: clientVersion},
             capabilities: {experimentalApi: true, requestAttestation: false},
         })
         this.notify("initialized")
@@ -174,6 +175,10 @@ class CodexAppServerClient extends EventEmitter {
         })
     }
 
+    listModels() {
+        return this.request("model/list", {limit: 100, includeHidden: false})
+    }
+
     readThread(threadId) {
         return this.request("thread/read", {threadId, includeTurns: true})
     }
@@ -200,10 +205,11 @@ class CodexAppServerClient extends EventEmitter {
         })
     }
 
-    startTurn(threadId, text) {
+    startTurn(threadId, text, options = {}) {
         return this.request("turn/start", {
             threadId,
             input: [{type: "text", text, text_elements: []}],
+            ...(options.model ? {model: options.model} : {}),
         })
     }
 

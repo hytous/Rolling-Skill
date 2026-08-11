@@ -41,6 +41,45 @@ describe("discovered local Codex app-server smoke", {skip: !descriptor}, () => {
 })
 
 describe("Codex app-server request construction", () => {
+    it("lists the active runtime model catalog", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        let request
+        client.request = async (method, params) => {
+            request = {method, params}
+            return {data: []}
+        }
+
+        await client.listModels()
+
+        assert.deepEqual(request, {
+            method: "model/list",
+            params: {limit: 100, includeHidden: false},
+        })
+    })
+
+    it("can override the model for this turn and subsequent turns", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        let request
+        client.request = async (method, params) => {
+            request = {method, params}
+            return {turn: {id: "turn-1"}}
+        }
+
+        await client.startTurn("thread-1", "hello", {model: "gpt-5.6-sol"})
+
+        assert.equal(request.method, "turn/start")
+        assert.equal(request.params.threadId, "thread-1")
+        assert.equal(request.params.model, "gpt-5.6-sol")
+    })
+
     it("allows a read-only subagent thread and a caller-selected model", async () => {
         const client = new CodexAppServerClient({
             binaryPath: "/tmp/codex",
