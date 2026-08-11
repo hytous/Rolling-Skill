@@ -2159,6 +2159,15 @@ kbd {
     outline-offset: 1px;
 }
 
+:root[data-theme="codex-light"] .composer textarea:focus-visible {
+    outline: 0;
+}
+
+:root[data-theme="codex-light"] .composer:focus-within {
+    border-color: var(--border-strong);
+    box-shadow: 0 13px 38px rgba(44, 83, 135, 0.12);
+}
+
 :root[data-theme="codex-light"] .new-task-button:hover,
 :root[data-theme="codex-light"] .thread-button:hover,
 :root[data-theme="codex-light"] .workspace-button:hover,

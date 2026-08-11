@@ -20,6 +20,10 @@ describe("local-first desktop surface", () => {
         assert.match(html, /id="thread-list"/)
         assert.match(html, /id="conversation"/)
         assert.match(html, /id="composer-input"/)
+        assert.doesNotMatch(
+            `${html}\n${renderer}`,
+            /Ask Rolling Skill to evaluate or run a task|让 Rolling Skill 评测或执行一个任务/,
+        )
         assert.match(html, /id="save-case-dialog"/)
         assert.match(html, /id="trace-drawer"/)
         assert.doesNotMatch(defaultPath, /\bdocker\b|\bcompose\b|\blogin\b|localhost/i)
