@@ -87,8 +87,10 @@ path beside the conversation list and in Settings. For example, a thread created
 `/Users/example/project/agenta`. Choose the exact intended workspace before creating the thread;
 existing threads are not silently moved between workspaces.
 
-Web URLs, Markdown links, and absolute local file references in messages are clickable. Web links
-are restricted to HTTP/HTTPS and handed to the default browser. Local links are validated as
+HTTP(S) URLs, HTTP(S) Markdown links, and high-confidence absolute local file references in messages
+are clickable. Bare local paths must sit below the active workspace or a standard macOS filesystem
+root, so slash commands, API routes, dates, ratios, and prose containing `/` remain plain text. Web
+links are handed to the default browser. Local links are validated as
 absolute existing paths and revealed in Finder through a narrow main-process bridge; they are not
 executed directly. Message HTML is never injected into the renderer.
 

@@ -9,6 +9,8 @@ const translations = {
         archiveHistoryUnavailable: "Archive history is unavailable for this runtime.",
         archivedThreadReadOnly: "Archived tasks are read-only. Restore this task to continue.",
         runningThreadCannotArchive: "Stop the running task before archiving it.",
+        externalLinkUnavailable: "Could not open this link.",
+        localFileUnavailable: "Could not open this file. It may have been moved or deleted.",
         settings: "Settings",
         datasets: "Datasets",
         trace: "Trace",
@@ -219,6 +221,8 @@ const translations = {
         archiveHistoryUnavailable: "当前运行时不支持会话归档历史。",
         archivedThreadReadOnly: "已归档任务为只读；恢复后才能继续对话。",
         runningThreadCannotArchive: "请先停止正在运行的任务，再将其归档。",
+        externalLinkUnavailable: "无法打开这个链接。",
+        localFileUnavailable: "无法打开这个文件，它可能已被移动或删除。",
         settings: "设置",
         datasets: "数据集",
         trace: "Trace",
@@ -622,58 +626,30 @@ function node(tag, className, text) {
     return element
 }
 
-const messageLinkPattern = /\[([^\]\n]+)\]\(<?(https?:\/\/[^)>\s]+|\/[^)>\n]+)>?\)|(https?:\/\/[^\s<]+)|(\/(?:[^\s<>()]+\/)*[^\s<>()]+)/g
-
-function localPathReference(value) {
-    const match = String(value ?? "").match(/^(\/.*?)(?::(\d+))?$/)
-    if (!match) return null
-    return {path: match[1], line: match[2] ? Number(match[2]) : null}
-}
-
-function trimBareLinkSuffix(value) {
-    const suffix = String(value).match(/[.,;!?]+$/)?.[0] ?? ""
-    return {target: suffix ? value.slice(0, -suffix.length) : value, suffix}
-}
-
-function messageLink(label, target) {
-    const external = /^https?:\/\//i.test(target)
-    const local = external ? null : localPathReference(target)
-    if (!external && !local) return null
-    const link = node("a", "message-link", label)
-    link.href = external ? target : "#"
-    if (external) {
+function messageLink(token) {
+    const link = node("a", "message-link", token.label)
+    link.href = token.type === "external" ? token.target : "#"
+    if (token.type === "external") {
         link.rel = "noreferrer"
-        link.dataset.externalUrl = target
+        link.dataset.externalUrl = token.target
     } else {
-        link.dataset.localPath = local.path
-        if (local.line !== null) {
-            link.dataset.line = String(local.line)
-            link.title = `${local.path}:${local.line}`
+        link.dataset.localPath = token.target
+        if (token.line !== null) {
+            link.dataset.line = String(token.line)
+            link.title = `${token.target}:${token.line}`
         }
     }
     return link
 }
 
 function appendSafeMessageText(container, value) {
-    const text = String(value ?? "")
-    messageLinkPattern.lastIndex = 0
-    let cursor = 0
-    for (const match of text.matchAll(messageLinkPattern)) {
-        if (match.index > cursor) {
-            container.append(document.createTextNode(text.slice(cursor, match.index)))
-        }
-        const markdown = match[1] !== undefined
-        const rawTarget = match[2] ?? match[3] ?? match[4]
-        const {target, suffix} = markdown
-            ? {target: rawTarget, suffix: ""}
-            : trimBareLinkSuffix(rawTarget)
-        const link = messageLink(markdown ? match[1] : target, target)
-        if (link) container.append(link)
-        else container.append(document.createTextNode(match[0]))
-        if (suffix) container.append(document.createTextNode(suffix))
-        cursor = match.index + match[0].length
+    const tokens = globalThis.RollingSkillMessageLinks.tokenizeMessageLinks(value, {
+        workspaceRoot: state.workspaceRoot,
+    })
+    for (const token of tokens) {
+        if (token.type === "text") container.append(document.createTextNode(token.text))
+        else container.append(messageLink(token))
     }
-    if (cursor < text.length) container.append(document.createTextNode(text.slice(cursor)))
 }
 
 function t(key) {
@@ -1648,6 +1624,11 @@ function showToast(message) {
     elements.toast.textContent = message
     elements.toast.classList.remove("hidden")
     toastTimer = setTimeout(() => elements.toast.classList.add("hidden"), 2600)
+}
+
+function reportLinkOpenFailure(error, messageKey) {
+    console.error("Unable to open message link", error)
+    showToast(t(messageKey))
 }
 
 function selectedEvaluationSkill() {
@@ -3004,13 +2985,17 @@ elements.conversation.addEventListener("click", (event) => {
     const external = event.target.closest("[data-external-url]")
     if (external) {
         event.preventDefault()
-        void window.rollingSkill.openExternal(external.dataset.externalUrl).catch(showError)
+        void window.rollingSkill
+            .openExternal(external.dataset.externalUrl)
+            .catch((error) => reportLinkOpenFailure(error, "externalLinkUnavailable"))
         return
     }
     const local = event.target.closest("[data-local-path]")
     if (local) {
         event.preventDefault()
-        void window.rollingSkill.openLocalPath(local.dataset.localPath).catch(showError)
+        void window.rollingSkill
+            .openLocalPath(local.dataset.localPath)
+            .catch((error) => reportLinkOpenFailure(error, "localFileUnavailable"))
         return
     }
     const button = event.target.closest("[data-save-case]")

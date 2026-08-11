@@ -260,14 +260,20 @@ describe("local-first desktop surface", () => {
     })
 
     it("renders web and absolute local-path links with safe DOM nodes and narrow preload calls", () => {
+        const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")
 
+        assert.match(html, /<script src="message-links\.js"><\/script>\s*<script src="renderer\.js"><\/script>/)
         assert.match(renderer, /appendSafeMessageText/)
-        assert.match(renderer, /localPathReference/)
+        assert.match(renderer, /tokenizeMessageLinks/)
         assert.match(renderer, /dataset\.externalUrl/)
         assert.match(renderer, /dataset\.localPath/)
-        assert.match(renderer, /window\.rollingSkill\.openExternal\(/)
-        assert.match(renderer, /window\.rollingSkill\.openLocalPath\(/)
+        assert.match(renderer, /window\.rollingSkill\s*\.openExternal\(/)
+        assert.match(renderer, /window\.rollingSkill\s*\.openLocalPath\(/)
+        assert.doesNotMatch(renderer, /openLocalPath\([^)]*\)\.catch\(showError\)/)
+        assert.match(renderer, /reportLinkOpenFailure/)
+        assert.match(renderer, /localFileUnavailable/)
+        assert.match(renderer, /externalLinkUnavailable/)
         assert.doesNotMatch(renderer, /\.innerHTML\s*=/)
     })
 
