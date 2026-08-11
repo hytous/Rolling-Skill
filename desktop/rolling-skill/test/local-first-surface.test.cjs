@@ -277,7 +277,9 @@ describe("local-first desktop surface", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")
 
-        assert.match(html, /<script src="message-links\.js"><\/script>\s*<script src="renderer\.js"><\/script>/)
+        assert.match(html, /<script src="message-links\.js"><\/script>/)
+        assert.match(html, /<script src="message-markdown\.js"><\/script>/)
+        assert.match(html, /<script src="renderer\.js"><\/script>/)
         assert.match(renderer, /appendSafeMessageText/)
         assert.match(renderer, /tokenizeMessageLinks/)
         assert.match(renderer, /dataset\.externalUrl/)
@@ -289,6 +291,67 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /localFileUnavailable/)
         assert.match(renderer, /externalLinkUnavailable/)
         assert.doesNotMatch(renderer, /\.innerHTML\s*=/)
+    })
+
+    it("restores per-conversation drafts and reading positions without animated catch-up", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        assert.match(html, /<script src="thread-view-state\.js"><\/script>/)
+        assert.match(renderer, /RollingSkillThreadViewState/)
+        assert.match(renderer, /snapshotActiveThreadView/)
+        assert.match(renderer, /restoreActiveThreadView/)
+        assert.match(renderer, /NEW_TASK_CONVERSATION_ID/)
+        assert.match(renderer, /threadLoadToken/)
+        assert.match(renderer, /modelRefreshToken/)
+        assert.match(renderer, /state\.loadingThread[\s\S]{0,160}updateDraft/)
+        assert.match(renderer, /state\.activeThread\?\.id === state\.activeThreadId/)
+        assert.match(renderer, /runtimeId !== runtimeViewId\(\)/)
+        assert.match(renderer, /const loading = state\.loadingThread/)
+        assert.match(renderer, /threadLoadFailed/)
+        assert.match(renderer, /migrate\(/)
+        assert.match(renderer, /clearDraft\(/)
+        assert.match(renderer, /conversationScroll\.addEventListener\("scroll"/)
+        assert.match(renderer, /composerInput\.addEventListener\("input"/)
+        assert.doesNotMatch(renderer, /forceBottom:\s*method === "item\/agentMessage\/delta"/)
+        assert.doesNotMatch(styles, /scroll-behavior:\s*smooth/)
+    })
+
+    it("renders assistant and user Markdown through a safe DOM renderer", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        assert.match(html, /marked\.umd\.js/)
+        assert.match(html, /node_modules\/he\/he\.js/)
+        assert.match(html, /<script src="message-markdown\.js"><\/script>/)
+        assert.match(renderer, /appendSafeMessageMarkdown/)
+        assert.match(renderer, /RollingSkillMessageMarkdown/)
+        assert.match(renderer, /renderedItemCache/)
+        assert.match(styles, /\.message-body\s+pre/)
+        assert.match(styles, /\.message-body\s+table/)
+        assert.match(styles, /\.message-body\s+blockquote/)
+        assert.doesNotMatch(renderer, /\.innerHTML\s*=/)
+    })
+
+    it("shows compact command, tool, subagent, and context activity in conversation history", () => {
+        const renderer = source("renderer/renderer.js")
+
+        for (const type of [
+            "commandExecution",
+            "fileChange",
+            "mcpToolCall",
+            "dynamicToolCall",
+            "collabAgentToolCall",
+            "subAgentActivity",
+            "contextCompaction",
+        ]) {
+            assert.match(renderer, new RegExp(type))
+        }
+        assert.match(renderer, /activityText/)
+        assert.match(renderer, /activity-card/)
+        assert.match(renderer, /runtimeMayOmitItems[\s\S]{0,200}getTurns\(\)\.length/)
     })
 
     it("keeps the composer pinned in short viewports and shows the exact workspace path", () => {

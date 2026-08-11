@@ -1,0 +1,346 @@
+const {
+    chmodSync,
+    mkdirSync,
+    readFileSync,
+    renameSync,
+    unlinkSync,
+    writeFileSync,
+} = require("node:fs")
+const {randomUUID} = require("node:crypto")
+const {dirname} = require("node:path")
+
+const THREAD_ACTIVITY_SCHEMA = "rolling-skill-thread-activity/v1"
+const SUPPORTED_ACTIVITY_TYPES = new Set([
+    "commandExecution",
+    "fileChange",
+    "mcpToolCall",
+    "dynamicToolCall",
+    "collabAgentToolCall",
+    "subAgentActivity",
+    "contextCompaction",
+])
+
+const DEFAULT_MAX_THREADS = 500
+const DEFAULT_MAX_RECORDS = 5_000
+const DEFAULT_MAX_TEXT_LENGTH = 1_000
+const DEFAULT_MAX_FILE_CHANGES = 20
+const DEFAULT_FLUSH_DELAY_MS = 1_000
+const MAX_IDENTIFIER_LENGTH = 500
+
+function positiveInteger(value, fallback) {
+    return Number.isSafeInteger(value) && value > 0 ? value : fallback
+}
+
+function identifier(value) {
+    if (typeof value !== "string") return null
+    const normalized = value.trim()
+    if (!normalized || normalized.length > MAX_IDENTIFIER_LENGTH) return null
+    return normalized
+}
+
+function compactText(value, limit) {
+    if (value === null || value === undefined) return null
+    const text = String(value)
+    if (!text) return null
+    if (text.length <= limit) return text
+    return limit === 1 ? "…" : `${text.slice(0, limit - 1)}…`
+}
+
+function finiteNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function compactCommand(value, limit) {
+    const command = String(value ?? "").trim()
+    if (!command) return null
+    const tokens = command.match(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s]+/gu) ?? []
+    let executableIndex = 0
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(tokens[executableIndex] ?? "")) {
+        executableIndex += 1
+    }
+    const rawExecutable = String(tokens[executableIndex] ?? "")
+        .replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/u, "$1$2")
+        .split(/[\\/]/u)
+        .at(-1)
+    const executable = /^[A-Za-z0-9][A-Za-z0-9_.+-]{0,199}$/u.test(rawExecutable)
+        ? rawExecutable
+        : "command"
+    const omittedArguments = executableIndex > 0 || tokens.length > executableIndex + 1
+    return compactText(
+        omittedArguments ? `${executable} … [arguments omitted]` : executable,
+        limit,
+    )
+}
+
+function compactActivity(item, options) {
+    const id = identifier(item?.id)
+    const type = identifier(item?.type)
+    if (!id || !type || !SUPPORTED_ACTIVITY_TYPES.has(type)) return null
+
+    const compact = {id, type}
+    const status = compactText(item.status, 100)
+    if (status) compact.status = status
+
+    if (type === "commandExecution") {
+        const command = compactCommand(item.command, options.maxTextLength)
+        const exitCode = finiteNumber(item.exitCode)
+        if (command) compact.command = command
+        if (exitCode !== null) compact.exitCode = exitCode
+        return compact
+    }
+
+    if (type === "fileChange") return compact
+
+    if (type === "mcpToolCall") {
+        const server = compactText(item.server, 200)
+        const tool = compactText(item.tool, 200)
+        if (server) compact.server = server
+        if (tool) compact.tool = tool
+        return compact
+    }
+
+    if (type === "dynamicToolCall" || type === "collabAgentToolCall") {
+        const tool = compactText(item.tool, 200)
+        if (tool) compact.tool = tool
+        return compact
+    }
+
+    if (type === "subAgentActivity") {
+        const kind = compactText(item.kind, 100)
+        const agentPath = compactText(item.agentPath, options.maxTextLength)
+        if (kind) compact.kind = kind
+        if (agentPath) compact.agentPath = agentPath
+        return compact
+    }
+
+    return compact
+}
+
+function emptyState() {
+    return {schemaVersion: THREAD_ACTIVITY_SCHEMA, sequence: 0, records: []}
+}
+
+function recordKey(record) {
+    return `${record.runtimeId}\u0000${record.threadId}\u0000${record.turnId}\u0000${record.item.id}`
+}
+
+function threadKey(record) {
+    return `${record.runtimeId}\u0000${record.threadId}`
+}
+
+class ThreadActivityStore {
+    constructor(path, options = {}) {
+        if (typeof path !== "string" || !path.trim()) {
+            throw new Error("Thread activity store path is required")
+        }
+        this.path = path
+        this.options = {
+            maxThreads: positiveInteger(options.maxThreads, DEFAULT_MAX_THREADS),
+            maxRecords: positiveInteger(options.maxRecords, DEFAULT_MAX_RECORDS),
+            maxTextLength: positiveInteger(options.maxTextLength, DEFAULT_MAX_TEXT_LENGTH),
+            maxFileChanges: positiveInteger(options.maxFileChanges, DEFAULT_MAX_FILE_CHANGES),
+            flushDelayMs: positiveInteger(options.flushDelayMs, DEFAULT_FLUSH_DELAY_MS),
+        }
+        this.state = this.load()
+        this.dirty = false
+        this.flushTimer = null
+        this.lastPersistError = null
+    }
+
+    load() {
+        try {
+            const parsed = JSON.parse(readFileSync(this.path, "utf8"))
+            const records = Array.isArray(parsed?.records) ? parsed.records : []
+            const byKey = new Map()
+            let sequence = 0
+            for (const candidate of records) {
+                const runtimeId = identifier(candidate?.runtimeId)
+                const threadId = identifier(candidate?.threadId)
+                const turnId = identifier(candidate?.turnId)
+                const item = compactActivity(candidate?.item, this.options)
+                if (!runtimeId || !threadId || !turnId || !item) continue
+                const recordSequence = positiveInteger(candidate.sequence, sequence + 1)
+                sequence = Math.max(sequence, recordSequence)
+                const record = {
+                    runtimeId,
+                    threadId,
+                    turnId,
+                    item,
+                    sequence: recordSequence,
+                    order: positiveInteger(candidate.order, recordSequence),
+                    updatedAt: compactText(candidate.updatedAt, 100) ?? "",
+                }
+                const key = recordKey(record)
+                const previous = byKey.get(key)
+                if (!previous || previous.sequence <= record.sequence) byKey.set(key, record)
+            }
+            this.state = {
+                schemaVersion: THREAD_ACTIVITY_SCHEMA,
+                sequence: Math.max(positiveInteger(parsed?.sequence, 1), sequence),
+                records: [...byKey.values()],
+            }
+            this.prune()
+            return this.state
+        } catch {
+            return emptyState()
+        }
+    }
+
+    persist() {
+        mkdirSync(dirname(this.path), {recursive: true, mode: 0o700})
+        const temporaryPath = `${this.path}.${process.pid}.${randomUUID()}.tmp`
+        try {
+            writeFileSync(temporaryPath, `${JSON.stringify(this.state)}\n`, {
+                encoding: "utf8",
+                mode: 0o600,
+            })
+            chmodSync(temporaryPath, 0o600)
+            renameSync(temporaryPath, this.path)
+            chmodSync(this.path, 0o600)
+            this.dirty = false
+            this.lastPersistError = null
+        } catch (error) {
+            try {
+                unlinkSync(temporaryPath)
+            } catch {
+                // The temporary file may not have been created.
+            }
+            throw error
+        }
+    }
+
+    prune() {
+        const latestByThread = new Map()
+        for (const record of this.state.records) {
+            const key = threadKey(record)
+            latestByThread.set(key, Math.max(latestByThread.get(key) ?? 0, record.sequence))
+        }
+        const retainedThreads = new Set(
+            [...latestByThread.entries()]
+                .sort((left, right) => right[1] - left[1])
+                .slice(0, this.options.maxThreads)
+                .map(([key]) => key),
+        )
+        this.state.records = this.state.records
+            .filter((record) => retainedThreads.has(threadKey(record)))
+            .sort((left, right) => left.sequence - right.sequence)
+            .slice(-this.options.maxRecords)
+    }
+
+    updateNotification(runtimeId, message, updatedAt = new Date().toISOString()) {
+        if (message?.method !== "item/started" && message?.method !== "item/completed") return null
+        runtimeId = identifier(runtimeId)
+        const threadId = identifier(message.params?.threadId)
+        const turnId = identifier(message.params?.turnId)
+        const nextItem = compactActivity(message.params?.item, this.options)
+        if (!runtimeId || !threadId || !turnId || !nextItem) return null
+
+        const key = recordKey({runtimeId, threadId, turnId, item: nextItem})
+        const previousIndex = this.state.records.findIndex((record) => recordKey(record) === key)
+        const previous = previousIndex >= 0 ? this.state.records[previousIndex] : null
+        const mergedItem = compactActivity({...previous?.item, ...nextItem}, this.options)
+        const record = {
+            runtimeId,
+            threadId,
+            turnId,
+            item: mergedItem,
+            sequence: (this.state.sequence += 1),
+            order: previous?.order ?? this.state.sequence,
+            updatedAt: compactText(updatedAt, 100) ?? "",
+        }
+        if (previousIndex >= 0) this.state.records.splice(previousIndex, 1)
+        this.state.records.push(record)
+        this.prune()
+        this.dirty = true
+        return {...record, item: {...record.item}}
+    }
+
+    recordNotification(runtimeId, message, updatedAt) {
+        const record = this.updateNotification(runtimeId, message, updatedAt)
+        if (record) this.flush()
+        return record
+    }
+
+    captureNotification(runtimeId, message, updatedAt) {
+        const record = this.updateNotification(runtimeId, message, updatedAt)
+        if (!record || this.flushTimer) return record
+        this.flushTimer = setTimeout(() => {
+            this.flushTimer = null
+            if (!this.dirty) return
+            try {
+                this.persist()
+            } catch (error) {
+                this.lastPersistError = error
+            }
+        }, this.options.flushDelayMs)
+        this.flushTimer.unref?.()
+        return record
+    }
+
+    list(runtimeId, threadId) {
+        runtimeId = identifier(runtimeId)
+        threadId = identifier(threadId)
+        if (!runtimeId || !threadId) return []
+        return this.state.records
+            .filter((record) => record.runtimeId === runtimeId && record.threadId === threadId)
+            .sort((left, right) => left.order - right.order)
+            .map((record) => ({...record, item: {...record.item}}))
+    }
+
+    mergeThread(runtimeId, thread) {
+        const threadId = identifier(thread?.id)
+        const activities = this.list(runtimeId, threadId)
+        const byTurn = new Map()
+        for (const activity of activities) {
+            const turnActivities = byTurn.get(activity.turnId) ?? []
+            turnActivities.push(activity.item)
+            byTurn.set(activity.turnId, turnActivities)
+        }
+
+        return {
+            ...(thread ?? {}),
+            turns: (thread?.turns ?? []).map((turn) => {
+                const items = [...(turn.items ?? [])]
+                const existingIds = new Set(items.map((item) => item?.id).filter(Boolean))
+                const turnFinished = turn.status && turn.status !== "inProgress"
+                const missing = (byTurn.get(turn.id) ?? [])
+                    .filter((item) => !existingIds.has(item.id))
+                    .map((item) =>
+                        turnFinished && ["inProgress", "running", "working"].includes(item.status)
+                            ? {...item, status: "unknown"}
+                            : item,
+                    )
+                let insertionIndex = -1
+                for (let index = items.length - 1; index >= 0; index -= 1) {
+                    if (items[index]?.type === "agentMessage") {
+                        insertionIndex = index
+                        break
+                    }
+                }
+                if (insertionIndex < 0) insertionIndex = items.length
+                items.splice(insertionIndex, 0, ...missing.map((item) => ({...item})))
+                return {...turn, items}
+            }),
+        }
+    }
+
+    mergeThreadResponse(runtimeId, response) {
+        if (!response || typeof response !== "object" || !response.thread) return response
+        return {...response, thread: this.mergeThread(runtimeId, response.thread)}
+    }
+
+    flush() {
+        if (this.flushTimer) {
+            clearTimeout(this.flushTimer)
+            this.flushTimer = null
+        }
+        if (this.dirty || this.lastPersistError) this.persist()
+        return this.path
+    }
+}
+
+module.exports = {
+    SUPPORTED_ACTIVITY_TYPES,
+    THREAD_ACTIVITY_SCHEMA,
+    ThreadActivityStore,
+}

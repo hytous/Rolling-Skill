@@ -1308,7 +1308,6 @@ kbd {
     overflow-y: auto;
     min-height: 0;
     grid-row: 3;
-    scroll-behavior: smooth;
     scrollbar-width: thin;
 }
 
@@ -1425,7 +1424,126 @@ kbd {
     font-size: 13.5px;
     line-height: 1.65;
     overflow-wrap: anywhere;
-    white-space: pre-wrap;
+    white-space: normal;
+}
+
+.message-body > :first-child {
+    margin-top: 0;
+}
+
+.message-body > :last-child {
+    margin-bottom: 0;
+}
+
+.message-body p,
+.message-body ul,
+.message-body ol,
+.message-body blockquote,
+.message-body pre,
+.message-body table {
+    margin: 0 0 12px;
+}
+
+.message-body ul,
+.message-body ol {
+    padding-left: 22px;
+}
+
+.message-body li + li {
+    margin-top: 4px;
+}
+
+.message-body h1,
+.message-body h2,
+.message-body h3,
+.message-body h4,
+.message-body h5,
+.message-body h6 {
+    margin: 18px 0 8px;
+    color: var(--text);
+    font-weight: 650;
+    line-height: 1.3;
+}
+
+.message-body h1 {
+    font-size: 1.45em;
+}
+
+.message-body h2 {
+    font-size: 1.28em;
+}
+
+.message-body h3 {
+    font-size: 1.12em;
+}
+
+.message-body blockquote {
+    padding-left: 12px;
+    border-left: 3px solid var(--border-strong);
+    color: var(--muted);
+}
+
+.message-body code {
+    padding: 1px 4px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--surface-raised) 78%, transparent);
+    font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    white-space: break-spaces;
+}
+
+.message-body pre {
+    max-width: 100%;
+    padding: 12px 14px;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--surface-raised) 72%, var(--surface));
+}
+
+.message-body pre code {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    white-space: pre;
+}
+
+.message-body table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+}
+
+.message-body th,
+.message-body td {
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    text-align: left;
+    white-space: nowrap;
+}
+
+.message-body th {
+    background: var(--surface-raised);
+    color: var(--text);
+    font-weight: 620;
+}
+
+.message-body th[data-align="center"],
+.message-body td[data-align="center"] {
+    text-align: center;
+}
+
+.message-body th[data-align="right"],
+.message-body td[data-align="right"] {
+    text-align: right;
+}
+
+.message-body hr {
+    margin: 16px 0;
+    border: 0;
+    border-top: 1px solid var(--border);
 }
 
 .message-link {
@@ -1485,6 +1603,13 @@ kbd {
     line-height: 1.5;
 }
 
+.activity-history-note {
+    margin: -8px 0 24px 34px;
+    color: var(--faint);
+    font-size: 10.5px;
+    line-height: 1.5;
+}
+
 .turn-error {
     margin: 10px 0 0 34px;
     padding: 9px 11px;
@@ -1498,6 +1623,16 @@ kbd {
 .loading-conversation {
     padding-top: 80px;
     color: var(--faint);
+    text-align: center;
+}
+
+.thread-load-failed {
+    margin: auto;
+    max-width: 420px;
+    padding: 18px 20px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.6;
     text-align: center;
 }
 

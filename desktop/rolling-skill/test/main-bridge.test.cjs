@@ -53,4 +53,17 @@ describe("desktop main/preload bridge", () => {
         assert.match(preload, /openLocalPath/)
         assert.doesNotMatch(preload, /shell\./)
     })
+
+    it("persists compact observed runtime activity and merges it into thread history", () => {
+        const main = source("src/main.cjs")
+
+        assert.match(main, /ThreadActivityStore/)
+        assert.match(main, /thread-activity-store\.json/)
+        assert.match(main, /activityStore\?\.captureNotification\(/)
+        assert.match(main, /activityStore\.mergeThreadResponse\(/)
+        assert.match(main, /activityStore\?\.flush\(/)
+        assert.match(main, /rollingSkillActivityHistory/)
+        assert.match(main, /Promise\.allSettled/)
+        assert.doesNotMatch(main, /Promise\.all\([\s\S]{0,200}\.then\(\(\) => activityStore\?\.flush/)
+    })
 })

@@ -100,6 +100,7 @@ const translations = {
         noTasks: "No tasks in this workspace yet. Start one below.",
         noArchivedThreads: "No archived tasks in this workspace.",
         loadingTask: "Loading task…",
+        threadLoadFailed: "Task history could not be loaded. Select this task again to retry.",
         curateCase: "Curate case",
         curatorPromptPlaceholder: "Ask Curator to explain or revise this draft",
         you: "You",
@@ -133,6 +134,10 @@ const translations = {
         command: "command",
         fileChanges: "file changes",
         planUpdated: "Plan updated",
+        subagentActivity: "Subagent activity",
+        contextCompacted: "Context compacted",
+        activityStatusUnknown: "status unavailable",
+        activityHistoryLimited: "Tool and command history may be incomplete because Codex does not always return earlier activity.",
         completed: "completed",
         structuredReference: "Structured reference",
         referenceAnswer: "Reference answer",
@@ -313,6 +318,7 @@ const translations = {
         noTasks: "此工作目录还没有任务，请从下方开始。",
         noArchivedThreads: "此工作目录没有已归档任务。",
         loadingTask: "正在加载任务…",
+        threadLoadFailed: "无法加载这条任务的历史记录。请再次选择该任务重试。",
         curateCase: "沉淀 Case",
         curatorPromptPlaceholder: "询问 Curator，或要求它解释、修改这个草稿",
         you: "你",
@@ -346,6 +352,10 @@ const translations = {
         command: "命令",
         fileChanges: "文件变更",
         planUpdated: "计划已更新",
+        subagentActivity: "子 Agent 活动",
+        contextCompacted: "上下文已压缩",
+        activityStatusUnknown: "状态不可恢复",
+        activityHistoryLimited: "Codex 不一定返回较早的工具和命令活动，因此此处历史可能不完整。",
         completed: "已完成",
         structuredReference: "结构化参考结果",
         referenceAnswer: "参考答案",
@@ -433,6 +443,8 @@ const state = {
     threads: [],
     threadView: "current",
     threadRefreshToken: 0,
+    threadLoadToken: 0,
+    modelRefreshToken: 0,
     activeThreadId: null,
     activeThread: null,
     activeThreadArchived: false,
@@ -440,6 +452,7 @@ const state = {
     datasets: [],
     loadingThreads: true,
     loadingThread: false,
+    threadLoadFailed: false,
     sending: false,
     newTaskMode: false,
     error: null,
@@ -493,6 +506,17 @@ const state = {
     evaluationSkillByThread: {},
     renderQueued: false,
 }
+
+const {
+    NEW_TASK_CONVERSATION_ID,
+    createThreadViewStateStore,
+    keyFor: threadViewStateKey,
+} = globalThis.RollingSkillThreadViewState
+const threadViewState = createThreadViewStateStore()
+const VIEW_BOTTOM_THRESHOLD = 90
+let viewScrollFrame = null
+let pendingViewScroll = null
+let activeViewRestoreKey = null
 
 const elements = {
     newTask: document.querySelector("#new-task"),
@@ -652,6 +676,104 @@ function appendSafeMessageText(container, value) {
         if (token.type === "text") container.append(document.createTextNode(token.text))
         else container.append(messageLink(token))
     }
+}
+
+function appendSafeMessageMarkdown(container, value) {
+    globalThis.RollingSkillMessageMarkdown.appendSafeMessageMarkdown(container, value, {
+        marked: globalThis.marked,
+        workspaceRoot: state.workspaceRoot,
+    })
+}
+
+function runtimeViewId(runtime = state.runtime) {
+    return runtime?.runtime?.runtimeId || "__runtime_pending__"
+}
+
+function threadViewIdentity({
+    runtimeId = runtimeViewId(),
+    workspaceRoot = state.workspaceRoot || "__workspace_pending__",
+    conversationId = state.activeThreadId || NEW_TASK_CONVERSATION_ID,
+} = {}) {
+    return {runtimeId, workspaceRoot, conversationId}
+}
+
+function isConversationNearBottom() {
+    return (
+        elements.conversationScroll.scrollHeight -
+            elements.conversationScroll.scrollTop -
+            elements.conversationScroll.clientHeight <
+        VIEW_BOTTOM_THRESHOLD
+    )
+}
+
+function snapshotActiveThreadView(identity = threadViewIdentity()) {
+    const loadedConversation =
+        !state.loadingThread &&
+        (!state.activeThreadId || state.activeThread?.id === state.activeThreadId)
+    if (!loadedConversation) {
+        threadViewState.updateDraft(identity, elements.composerInput.value)
+        return identity
+    }
+    threadViewState.set(identity, {
+        draft: elements.composerInput.value,
+        scrollTop: elements.conversationScroll.scrollTop,
+        atBottom: isConversationNearBottom(),
+    })
+    return identity
+}
+
+function restoreActiveThreadView({restoreScroll = false, forceBottom = false} = {}) {
+    const identity = threadViewIdentity()
+    const saved = threadViewState.get(identity)
+    elements.composerInput.value = saved?.draft ?? ""
+    resizeComposer()
+    if (!restoreScroll) return
+    const expectedKey = threadViewStateKey(identity)
+    activeViewRestoreKey = expectedKey
+    requestAnimationFrame(() => {
+        if (threadViewStateKey(threadViewIdentity()) !== expectedKey) {
+            if (activeViewRestoreKey === expectedKey) activeViewRestoreKey = null
+            return
+        }
+        const scroll = elements.conversationScroll
+        if (forceBottom || !saved || saved.atBottom) {
+            scroll.scrollTop = scroll.scrollHeight
+        } else {
+            scroll.scrollTop = Math.min(
+                saved.scrollTop,
+                Math.max(0, scroll.scrollHeight - scroll.clientHeight),
+            )
+        }
+        threadViewState.updateScroll(identity, scroll.scrollTop, isConversationNearBottom())
+        if (activeViewRestoreKey === expectedKey) activeViewRestoreKey = null
+    })
+}
+
+function queueActiveScrollSnapshot() {
+    const identity = threadViewIdentity()
+    const identityKey = threadViewStateKey(identity)
+    const loadedConversation =
+        !state.loadingThread &&
+        (!state.activeThreadId || state.activeThread?.id === state.activeThreadId)
+    if (!loadedConversation || activeViewRestoreKey === identityKey) return
+    pendingViewScroll = {
+        identity,
+        scrollTop: elements.conversationScroll.scrollTop,
+        atBottom: isConversationNearBottom(),
+    }
+    if (viewScrollFrame !== null) return
+    viewScrollFrame = requestAnimationFrame(() => {
+        viewScrollFrame = null
+        const pending = pendingViewScroll
+        pendingViewScroll = null
+        if (pending) {
+            threadViewState.updateScroll(
+                pending.identity,
+                pending.scrollTop,
+                pending.atBottom,
+            )
+        }
+    })
 }
 
 function t(key) {
@@ -816,6 +938,16 @@ function renderTaskModelPicker() {
     state.selectedTaskEffort = elements.composerEffort.value || null
 }
 
+function configuredTaskProfile() {
+    const configuredModelId = state.settings.taskProfile?.modelId ?? null
+    const modelAvailable =
+        !configuredModelId || state.models.some((model) => modelValue(model) === configuredModelId)
+    return {
+        modelId: modelAvailable ? configuredModelId : null,
+        effort: modelAvailable ? state.settings.taskProfile?.effort ?? null : null,
+    }
+}
+
 function runtimeSkillByPath(path) {
     return state.evaluationSkills.find((skill) => skill.path === path) ?? null
 }
@@ -970,16 +1102,34 @@ async function saveSettings() {
 }
 
 async function refreshModels() {
+    const runtimeEpoch = state.runtimeEpoch
+    const runtimeId = runtimeViewId()
+    const requestToken = ++state.modelRefreshToken
+    let models
     try {
         const response = await window.rollingSkill.listModels()
-        state.models = response.data ?? []
+        models = response.data ?? []
     } catch {
-        state.models = []
+        models = []
+    }
+    if (
+        runtimeEpoch !== state.runtimeEpoch ||
+        runtimeId !== runtimeViewId() ||
+        requestToken !== state.modelRefreshToken
+    ) {
+        return false
+    }
+    state.models = models
+    if (!state.activeThread && !state.loadingThread) {
+        const profile = configuredTaskProfile()
+        state.selectedTaskModelId = profile.modelId
+        state.selectedTaskEffort = profile.effort
     }
     renderTaskModelPicker()
     renderEvaluationWorkbench()
     if (elements.settingsDialog.open) renderSettingsForm()
     if (state.curationOpen) renderCurations()
+    return true
 }
 
 function baseName(path) {
@@ -1269,8 +1419,25 @@ function activityStatus(status, fallbackKey) {
         running: "running",
         inProgress: "running",
         working: "working",
+        unknown: "activityStatusUnknown",
     }
     return keys[status] ? t(keys[status]) : String(status || t(fallbackKey))
+}
+
+function commandActivityLabel(value) {
+    const source = String(Array.isArray(value) ? value.join(" ") : value ?? "").trim()
+    const tokens = source.match(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s]+/gu) ?? []
+    let executableIndex = 0
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(tokens[executableIndex] ?? "")) {
+        executableIndex += 1
+    }
+    const executable = String(tokens[executableIndex] ?? "")
+        .replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/u, "$1$2")
+        .split(/[\\/]/u)
+        .at(-1)
+    return /^[A-Za-z0-9][A-Za-z0-9_.+-]{0,199}$/u.test(executable)
+        ? executable
+        : t("command")
 }
 
 function activityText(item) {
@@ -1278,7 +1445,7 @@ function activityText(item) {
         return `${t("reasoning")} · ${(item.summary ?? []).join(" ") || t("working")}`
     }
     if (item.type === "commandExecution") {
-        return `${activityStatus(item.status, "running")} · ${item.command || t("command")}`
+        return `${activityStatus(item.status, "running")} · ${commandActivityLabel(item.command)}`
     }
     if (item.type === "fileChange") {
         return `${activityStatus(item.status, "working")} · ${t("fileChanges")}`
@@ -1292,15 +1459,38 @@ function activityText(item) {
     if (item.type === "collabAgentToolCall") {
         return `${activityStatus(item.status, "running")} · ${item.tool}`
     }
+    if (item.type === "subAgentActivity") {
+        const detail = item.agentPath || item.kind || item.status || t("working")
+        return `${t("subagentActivity")} · ${detail}`
+    }
+    if (item.type === "contextCompaction") return t("contextCompacted")
     if (item.type === "plan") return item.text || t("planUpdated")
     return null
+}
+
+const renderedItemCache = new Map()
+
+function renderItemSignature(item, turn) {
+    const content =
+        item.type === "userMessage"
+            ? textFromUserInput(item.content)
+            : item.type === "agentMessage"
+              ? item.text || ""
+              : activityText(item)
+    return JSON.stringify([
+        state.settings.language,
+        state.workspaceRoot,
+        turn.status,
+        item.type,
+        content,
+    ])
 }
 
 function renderItem(item, turn) {
     if (item.type === "userMessage") {
         const wrapper = node("article", "message user")
         const body = node("div", "message-body")
-        appendSafeMessageText(body, textFromUserInput(item.content))
+        appendSafeMessageMarkdown(body, textFromUserInput(item.content))
         wrapper.append(body)
         return wrapper
     }
@@ -1312,7 +1502,7 @@ function renderItem(item, turn) {
         image.alt = ""
         avatar.append(image)
         const body = node("div", "message-body")
-        appendSafeMessageText(body, item.text || "")
+        appendSafeMessageMarkdown(body, item.text || "")
         wrapper.append(avatar, body)
         if (turn.status !== "inProgress") {
             const actions = node("div", "message-actions")
@@ -1331,29 +1521,49 @@ function renderItem(item, turn) {
 }
 
 function renderConversation(options = {}) {
-    const wasNearBottom =
-        elements.conversationScroll.scrollHeight -
-            elements.conversationScroll.scrollTop -
-            elements.conversationScroll.clientHeight <
-        90
+    const wasNearBottom = isConversationNearBottom()
     elements.conversation.replaceChildren()
     if (state.loadingThread) {
         elements.conversation.append(node("div", "loading-conversation", t("loadingTask")))
         return
     }
+    if (state.threadLoadFailed) {
+        renderedItemCache.clear()
+        elements.conversation.append(node("div", "thread-load-failed", t("threadLoadFailed")))
+        return
+    }
     if (!state.activeThread || getTurns().length === 0) {
+        renderedItemCache.clear()
         renderWelcome()
         return
     }
 
+    const visibleItemKeys = new Set()
     for (const turn of getTurns()) {
         const block = node("section", "turn-block")
-        for (const item of turn.items ?? []) {
-            const rendered = renderItem(item, turn)
+        for (let index = 0; index < (turn.items ?? []).length; index += 1) {
+            const item = turn.items[index]
+            const cacheKey = `${turn.id}:${item.id || `${item.type}-${index}`}`
+            const signature = renderItemSignature(item, turn)
+            const cached = renderedItemCache.get(cacheKey)
+            const rendered =
+                cached?.signature === signature ? cached.rendered : renderItem(item, turn)
+            renderedItemCache.set(cacheKey, {signature, rendered})
+            visibleItemKeys.add(cacheKey)
             if (rendered) block.append(rendered)
         }
         if (turn.error?.message) block.append(node("div", "turn-error", turn.error.message))
         elements.conversation.append(block)
+    }
+    for (const key of renderedItemCache.keys()) {
+        if (!visibleItemKeys.has(key)) renderedItemCache.delete(key)
+    }
+
+    const activityHistory = state.activeThread.rollingSkillActivityHistory
+    if (activityHistory?.runtimeMayOmitItems && getTurns().length) {
+        elements.conversation.append(
+            node("div", "activity-history-note", t("activityHistoryLimited")),
+        )
     }
 
     if (options.forceBottom || wasNearBottom) {
@@ -1366,13 +1576,17 @@ function renderConversation(options = {}) {
 function renderComposer() {
     const running = Boolean(state.activeTurnId) || state.sending
     const readOnly = state.activeThreadArchived
+    const loading = state.loadingThread
+    const loadFailed = state.threadLoadFailed
     elements.stopTurn.classList.toggle("hidden", !running)
     elements.sendTurn.classList.toggle("hidden", running || readOnly)
     elements.sendTurn.disabled =
-        readOnly || state.runtime?.status !== "ready" || !elements.composerInput.value.trim()
-    elements.composerInput.disabled = state.sending || readOnly
-    elements.composerModel.disabled = readOnly || running || state.runtime?.status !== "ready"
-    elements.composerEffort.disabled = readOnly || running || state.runtime?.status !== "ready"
+        readOnly || loading || loadFailed || state.runtime?.status !== "ready" || !elements.composerInput.value.trim()
+    elements.composerInput.disabled = state.sending || readOnly || loading || loadFailed
+    elements.composerModel.disabled =
+        readOnly || loading || loadFailed || running || state.runtime?.status !== "ready"
+    elements.composerEffort.disabled =
+        readOnly || loading || loadFailed || running || state.runtime?.status !== "ready"
     elements.composer.classList.toggle("archived-readonly", readOnly)
     elements.archivedThreadNotice.classList.toggle("hidden", !readOnly)
     elements.composerAccess.textContent = supportsLocalAccessPolicy()
@@ -2258,6 +2472,10 @@ async function setThreadView(view) {
     if (view !== "current" && view !== "archived") return
     if (view === "archived" && !supportsThreadArchive()) return
     if (view === state.threadView) return
+    snapshotActiveThreadView()
+    state.threadLoadToken += 1
+    state.loadingThread = false
+    state.threadLoadFailed = false
     state.threadView = view
     state.activeThreadId = null
     state.activeThread = null
@@ -2265,6 +2483,7 @@ async function setThreadView(view) {
     state.activeTurnId = null
     state.newTaskMode = false
     state.loadingThreads = true
+    restoreActiveThreadView()
     renderAll()
     await refreshThreads(true)
 }
@@ -2279,9 +2498,14 @@ async function archiveThread(threadId) {
     try {
         await window.rollingSkill.archiveThread(threadId)
         if (state.activeThreadId === threadId) {
+            snapshotActiveThreadView()
+            state.threadLoadToken += 1
+            state.loadingThread = false
+            state.threadLoadFailed = false
             state.activeThreadId = null
             state.activeThread = null
             state.activeThreadArchived = false
+            restoreActiveThreadView()
         }
         await refreshThreads(true)
     } catch (error) {
@@ -2294,9 +2518,14 @@ async function unarchiveThread(threadId) {
     try {
         await window.rollingSkill.unarchiveThread(threadId)
         if (state.activeThreadId === threadId) {
+            snapshotActiveThreadView()
+            state.threadLoadToken += 1
+            state.loadingThread = false
+            state.threadLoadFailed = false
             state.activeThreadId = null
             state.activeThread = null
             state.activeThreadArchived = false
+            restoreActiveThreadView()
         }
         await refreshThreads(true)
     } catch (error) {
@@ -2354,18 +2583,29 @@ async function refreshThreads(selectFirst = false) {
 
 async function loadThread(threadId) {
     if (!threadId) return
+    snapshotActiveThreadView()
     state.surface = "chat"
     const runtimeEpoch = state.runtimeEpoch
+    const loadToken = ++state.threadLoadToken
     state.activeThreadId = threadId
+    state.activeThread = null
     state.activeThreadArchived = state.threadView === "archived"
     state.newTaskMode = false
     state.loadingThread = true
+    state.threadLoadFailed = false
     state.error = null
     state.activeTurnId = null
+    restoreActiveThreadView()
     renderAll()
     try {
         const response = await window.rollingSkill.readThread(threadId)
-        if (runtimeEpoch !== state.runtimeEpoch || state.activeThreadId !== threadId) return
+        if (
+            runtimeEpoch !== state.runtimeEpoch ||
+            loadToken !== state.threadLoadToken ||
+            state.activeThreadId !== threadId
+        ) {
+            return
+        }
         state.activeThread = response.thread
         const rememberedProfile = response.thread.rollingSkillProfile
         state.selectedTaskModelId =
@@ -2379,17 +2619,28 @@ async function loadThread(threadId) {
         state.activeTurnId =
             response.thread.turns?.find((turn) => turn.status === "inProgress")?.id ?? null
         state.loadingThread = false
+        state.threadLoadFailed = false
         upsertThreadSummary(response.thread)
-        renderAll({forceBottom: true})
+        renderAll()
+        restoreActiveThreadView({restoreScroll: true})
     } catch (error) {
-        if (runtimeEpoch !== state.runtimeEpoch || state.activeThreadId !== threadId) return
+        if (
+            runtimeEpoch !== state.runtimeEpoch ||
+            loadToken !== state.threadLoadToken ||
+            state.activeThreadId !== threadId
+        ) {
+            return
+        }
         state.loadingThread = false
+        state.threadLoadFailed = true
         showError(error)
-        renderConversation()
+        renderAll()
     }
 }
 
 function beginNewTask() {
+    snapshotActiveThreadView()
+    state.threadLoadToken += 1
     const changedView = state.threadView !== "current"
     state.surface = "chat"
     state.threadView = "current"
@@ -2398,10 +2649,13 @@ function beginNewTask() {
     state.activeThreadArchived = false
     state.activeTurnId = null
     state.loadingThread = false
+    state.threadLoadFailed = false
     state.newTaskMode = true
-    state.selectedTaskModelId = state.settings.taskProfile?.modelId ?? null
-    state.selectedTaskEffort = state.settings.taskProfile?.effort ?? null
+    const profile = configuredTaskProfile()
+    state.selectedTaskModelId = profile.modelId
+    state.selectedTaskEffort = profile.effort
     state.error = null
+    restoreActiveThreadView()
     renderAll()
     if (changedView) void refreshThreads(false)
     elements.composerInput.focus()
@@ -2417,38 +2671,52 @@ function resizeComposer() {
 async function submitTurn() {
     const text = elements.composerInput.value.trim()
     if (!text || state.sending || state.activeTurnId || state.activeThreadArchived) return
+    const submittedSourceIdentity = snapshotActiveThreadView()
     const submittedRuntimeEpoch = state.runtimeEpoch
+    const submittedModelId = state.selectedTaskModelId
+    const submittedEffort = state.selectedTaskEffort
+    let submittedThreadId = state.activeThreadId
+    let submittedIdentity = submittedSourceIdentity
     state.sending = true
     state.error = null
     renderAll()
     try {
-        if (!state.activeThread) {
+        if (!submittedThreadId) {
             const response = await window.rollingSkill.startThread(
-                state.selectedTaskModelId,
-                state.selectedTaskEffort,
+                submittedModelId,
+                submittedEffort,
             )
-            if (
-                submittedRuntimeEpoch !== state.runtimeEpoch ||
-                !state.newTaskMode ||
-                state.activeThread
-            ) {
+            if (submittedRuntimeEpoch !== state.runtimeEpoch) {
                 state.sending = false
                 renderAll()
                 return
             }
-            state.activeThread = response.thread
-            state.activeThreadId = response.thread.id
-            state.newTaskMode = false
+            submittedThreadId = response.thread.id
+            submittedIdentity = threadViewIdentity({
+                runtimeId: submittedSourceIdentity.runtimeId,
+                workspaceRoot: submittedSourceIdentity.workspaceRoot,
+                conversationId: submittedThreadId,
+            })
+            threadViewState.migrate(submittedSourceIdentity, submittedIdentity)
             upsertThreadSummary(response.thread)
+            if (
+                !state.activeThreadId &&
+                threadViewStateKey(threadViewIdentity()) ===
+                    threadViewStateKey(submittedSourceIdentity)
+            ) {
+                state.activeThread = response.thread
+                state.activeThreadId = submittedThreadId
+                state.newTaskMode = false
+            }
         }
-        const submittedThreadId = state.activeThreadId
         const response = await window.rollingSkill.startTurn(
             submittedThreadId,
             text,
-            state.selectedTaskModelId,
-            state.selectedTaskEffort,
+            submittedModelId,
+            submittedEffort,
         )
         state.sending = false
+        threadViewState.clearDraft(submittedIdentity)
         if (
             submittedRuntimeEpoch !== state.runtimeEpoch ||
             state.activeThreadId !== submittedThreadId
@@ -2458,12 +2726,17 @@ async function submitTurn() {
         }
         state.activeTurnId = response.turn.id
         upsertTurn(response.turn)
-        elements.composerInput.value = ""
-        resizeComposer()
+        restoreActiveThreadView()
         renderAll({forceBottom: true})
+        restoreActiveThreadView({restoreScroll: true, forceBottom: true})
     } catch (error) {
         state.sending = false
         showError(error)
+        if (
+            threadViewStateKey(threadViewIdentity()) === threadViewStateKey(submittedIdentity)
+        ) {
+            restoreActiveThreadView()
+        }
         renderComposer()
     }
 }
@@ -2772,11 +3045,16 @@ function handleNotification(message) {
     } else if (method === "thread/archived" || method === "thread/unarchived") {
         const threadId = params.threadId ?? params.thread?.id ?? null
         if (threadId && state.activeThreadId === threadId) {
+            snapshotActiveThreadView()
+            state.threadLoadToken += 1
+            state.loadingThread = false
+            state.threadLoadFailed = false
             state.activeThreadId = null
             state.activeThread = null
             state.activeThreadArchived = false
             state.activeTurnId = null
             state.newTaskMode = false
+            restoreActiveThreadView()
         }
         void refreshThreads(false)
     } else if (method === "thread/name/updated") {
@@ -2827,28 +3105,39 @@ function handleNotification(message) {
             state.sending = false
         }
     }
-    queueRender({forceBottom: method === "item/agentMessage/delta"})
+    queueRender()
 }
 
 function clearRuntimeTaskState() {
     state.threads = []
     state.threadView = "current"
+    state.threadLoadToken += 1
+    state.modelRefreshToken += 1
     state.activeThreadId = null
     state.activeThread = null
     state.activeThreadArchived = false
     state.activeTurnId = null
     state.loadingThread = false
+    state.threadLoadFailed = false
     state.loadingThreads = true
     state.sending = false
     state.newTaskMode = false
+    state.models = []
+    state.selectedTaskModelId = null
+    state.selectedTaskEffort = null
 }
 
 async function changeRuntime(operation, {markStarting = true, clearBefore = true} = {}) {
     if (state.runtimeOperationInProgress) return
+    snapshotActiveThreadView()
     state.runtimeOperationInProgress = true
     state.runtimeEpoch += 1
     state.error = null
-    if (clearBefore) clearRuntimeTaskState()
+    if (clearBefore) {
+        clearRuntimeTaskState()
+        elements.composerInput.value = ""
+        resizeComposer()
+    }
     if (markStarting) state.runtime = {...state.runtime, status: "starting", error: null}
     renderAll()
     try {
@@ -2856,6 +3145,7 @@ async function changeRuntime(operation, {markStarting = true, clearBefore = true
         if (!runtime) return
         if (!clearBefore) clearRuntimeTaskState()
         state.runtime = runtime
+        restoreActiveThreadView()
         state.runtimeErrorDismissed = false
         if (runtime.status === "ready") {
             const refreshed = await refreshThreads(true)
@@ -3026,7 +3316,11 @@ elements.composer.addEventListener("submit", (event) => {
     event.preventDefault()
     void submitTurn()
 })
-elements.composerInput.addEventListener("input", resizeComposer)
+elements.composerInput.addEventListener("input", () => {
+    threadViewState.updateDraft(threadViewIdentity(), elements.composerInput.value)
+    resizeComposer()
+})
+elements.conversationScroll.addEventListener("scroll", queueActiveScrollSnapshot)
 elements.composerInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault()
@@ -3117,11 +3411,32 @@ elements.cancelDeleteEvaluationRun.addEventListener("click", () => elements.dele
 elements.confirmDeleteEvaluationRun.addEventListener("click", () => void deleteEvaluationRun())
 
 window.rollingSkill.onRuntimeState((runtime) => {
+    const previousRuntimeStatus = state.runtime?.status
+    const runtimeChanged = runtimeViewId(runtime) !== runtimeViewId(state.runtime)
+    const externalRuntimeChange = runtimeChanged && !state.runtimeOperationInProgress
+    if (externalRuntimeChange) {
+        snapshotActiveThreadView()
+        state.runtimeEpoch += 1
+        clearRuntimeTaskState()
+    }
     state.runtime = runtime
+    if (runtimeChanged) restoreActiveThreadView()
     state.runtimeErrorDismissed = false
-    renderRuntime()
-    renderComposer()
-    if (runtime.status === "ready") void refreshModels()
+    if (externalRuntimeChange) renderAll()
+    else {
+        renderRuntime()
+        renderComposer()
+    }
+    if (runtime.status === "ready") {
+        if (externalRuntimeChange || previousRuntimeStatus !== "ready") {
+            void Promise.all([refreshThreads(true), refreshModels()])
+        } else {
+            void refreshModels()
+        }
+    } else if (externalRuntimeChange) {
+        state.loadingThreads = false
+        renderThreads()
+    }
     if (state.surface === "evaluation") void loadEvaluationWorkbench(true)
 })
 window.rollingSkill.onRuntimeNotification(handleNotification)
@@ -3148,6 +3463,10 @@ window.rollingSkill.onEvaluationChanged(async ({runId, resultId, status}) => {
     }
 })
 window.rollingSkill.onWorkspaceChanged(async ({workspaceRoot}) => {
+    snapshotActiveThreadView()
+    state.threadLoadToken += 1
+    state.loadingThread = false
+    state.threadLoadFailed = false
     state.workspaceRoot = workspaceRoot
     state.threadView = "current"
     state.activeThread = null
@@ -3155,8 +3474,10 @@ window.rollingSkill.onWorkspaceChanged(async ({workspaceRoot}) => {
     state.activeThreadArchived = false
     state.activeTurnId = null
     state.newTaskMode = false
-    state.selectedTaskModelId = state.settings.taskProfile?.modelId ?? null
-    state.selectedTaskEffort = state.settings.taskProfile?.effort ?? null
+    const profile = configuredTaskProfile()
+    state.selectedTaskModelId = profile.modelId
+    state.selectedTaskEffort = profile.effort
+    restoreActiveThreadView()
     renderAll()
     if (state.runtime?.status === "ready") await refreshThreads(true)
     else {
@@ -3178,6 +3499,7 @@ async function bootstrap() {
         state.selectedTaskModelId = state.settings.taskProfile?.modelId ?? null
         state.selectedTaskEffort = state.settings.taskProfile?.effort ?? null
         state.activeCurationId = state.curationSessions[0]?.id ?? null
+        restoreActiveThreadView()
         renderAll()
         renderCurations()
         if (state.runtime?.status !== "unavailable") {
@@ -3195,4 +3517,5 @@ async function bootstrap() {
 }
 
 resizeComposer()
+window.addEventListener("beforeunload", snapshotActiveThreadView)
 void bootstrap()

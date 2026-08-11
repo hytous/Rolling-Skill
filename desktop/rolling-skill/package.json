@@ -8,6 +8,7 @@
     "scripts": {
         "start": "electron .",
         "test": "node --test test/*.test.cjs",
+        "smoke:renderer": "electron scripts/renderer-smoke.cjs",
         "pack:mac": "electron-builder --mac dir --arm64",
         "dist:mac": "electron-builder --mac dmg zip --arm64"
     },
@@ -38,5 +39,9 @@
             "icon": "assets/icon.svg.png",
             "identity": null
         }
+    },
+    "dependencies": {
+        "he": "^1.2.0",
+        "marked": "^15.0.12"
     }
 }

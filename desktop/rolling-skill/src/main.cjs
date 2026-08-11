@@ -13,6 +13,7 @@ const {LocalEvaluationStore, reasoningEffort} = require("./local-store.cjs")
 const {resolveExecutionPolicy} = require("./execution-policy.cjs")
 const {requireLocalPath, requireWebUrl} = require("./link-targets.cjs")
 const {readThreadProfile, updateThreadProfiles} = require("./thread-profile-store.cjs")
+const {ThreadActivityStore} = require("./thread-activity-store.cjs")
 const {RuntimeRegistry} = require("./runtime-registry.cjs")
 const {findGitWorkspace} = require("./workspace.cjs")
 
@@ -28,6 +29,7 @@ let store = null
 let curationManager = null
 let automaticCaptureManager = null
 let evaluationRunner = null
+let activityStore = null
 let workspaceRoot = null
 let rendererUrl = null
 let runtimeStart = null
@@ -74,8 +76,12 @@ function rememberThreadProfile(threadId, patch, runtimeId = runtimeDescriptor?.r
     return readThreadProfile({threadProfiles}, runtimeId, threadId)
 }
 
-function attachThreadProfile(response, threadId = response?.thread?.id) {
-    const rollingSkillProfile = currentThreadProfile(threadId)
+function attachThreadProfile(
+    response,
+    threadId = response?.thread?.id,
+    runtimeId = runtimeDescriptor?.runtimeId,
+) {
+    const rollingSkillProfile = currentThreadProfile(threadId, runtimeId)
     if (!response?.thread || !rollingSkillProfile) return response
     return {...response, thread: {...response.thread, rollingSkillProfile}}
 }
@@ -135,7 +141,10 @@ function installClientEvents(nextClient, sourceRuntimeId) {
         const hidden =
             (threadId && curationManager?.hiddenThreadIds().has(threadId)) ||
             params.thread?.threadSource === "subagent"
-        if (!hidden) send("runtime:notification", message)
+        if (!hidden) {
+            activityStore?.captureNotification(sourceRuntimeId, message)
+            send("runtime:notification", message)
+        }
     })
     nextClient.on("runtimeError", (error) => {
         send("runtime:state", {
@@ -603,7 +612,25 @@ function installIpc() {
         if (curationManager.hiddenThreadIds().has(threadId)) {
             throw new Error("Curator threads are available through curation sessions only")
         }
-        return attachThreadProfile(await (await ensureRuntime()).readThread(threadId), threadId)
+        const runtime = await ensureRuntime()
+        const sourceRuntimeId = runtimeDescriptor?.runtimeId
+        const sourceProviderId = runtimeDescriptor?.providerId
+        const response = await runtime.readThread(threadId)
+        const observedActivityCount = activityStore.list(sourceRuntimeId, threadId).length
+        const withActivity = activityStore.mergeThreadResponse(sourceRuntimeId, response)
+        const withCoverage = withActivity?.thread
+            ? {
+                  ...withActivity,
+                  thread: {
+                      ...withActivity.thread,
+                      rollingSkillActivityHistory: {
+                          observedActivityCount,
+                          runtimeMayOmitItems: sourceProviderId === "codex",
+                      },
+                  },
+              }
+            : withActivity
+        return attachThreadProfile(withCoverage, threadId, sourceRuntimeId)
     })
     ipcMain.handle("runtime:start-thread", async (_event, input = {}) => {
         const model = optionalIdentifier(input.modelId, "model")
@@ -846,6 +873,9 @@ if (!hasLock) {
         })
         workspaceRoot = locateInitialWorkspace()
         store = new LocalEvaluationStore(join(app.getPath("userData"), "evaluation-store.json"))
+        activityStore = new ThreadActivityStore(
+            join(app.getPath("userData"), "thread-activity-store.json"),
+        )
         curationManager = new CurationManager({
             store,
             getRuntime: ensureRuntime,
@@ -900,10 +930,20 @@ if (!hasLock) {
         if (quitAfterRuntimeStops) return
         event.preventDefault()
         quitAfterRuntimeStops = true
-        void Promise.all([
+        void Promise.allSettled([
             client?.stop?.() ?? Promise.resolve(),
             evaluationRunner?.stopAll?.() ?? Promise.resolve(),
-        ]).finally(() => app.quit())
+        ])
+            .then((results) => {
+                for (const result of results) {
+                    if (result.status === "rejected") {
+                        console.error("Rolling Skill runtime shutdown failed", result.reason)
+                    }
+                }
+                activityStore?.flush()
+            })
+            .catch((error) => console.error("Rolling Skill shutdown persistence failed", error))
+            .finally(() => app.quit())
     })
 
     app.on("window-all-closed", () => {

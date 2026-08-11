@@ -81,18 +81,35 @@ Archived conversations open read-only until restored. CodeBuddy ACP does not cur
 durable archive/list contract, so Rolling Skill reports archive history as unsupported instead of
 maintaining a conflicting local copy.
 
+Each runtime/workspace/conversation keeps its own unsent composer draft and reading position. A
+new task has an independent draft as well. Switching tasks restores the previous draft and scroll
+offset directly; it does not replay a smooth scroll from the top. Drafts are local UI state and do
+not alter runtime-native conversation history.
+
 Codex filters `thread/list` by an exact working-directory string. Rolling Skill shows that full
 path beside the conversation list and in Settings. For example, a thread created with
 `/Users/example/project` is persisted but will not appear in a Codex project view filtered to
 `/Users/example/project/agenta`. Choose the exact intended workspace before creating the thread;
 existing threads are not silently moved between workspaces.
 
-HTTP(S) URLs, HTTP(S) Markdown links, and high-confidence absolute local file references in messages
+Messages render common Markdown and GFM structures including headings, lists, quotes, code blocks,
+and tables. HTTP(S) URLs, HTTP(S) Markdown links, and high-confidence absolute local file references
 are clickable. Bare local paths must sit below the active workspace or a standard macOS filesystem
 root, so slash commands, API routes, dates, ratios, and prose containing `/` remain plain text. Web
-links are handed to the default browser. Local links are validated as
-absolute existing paths and revealed in Finder through a narrow main-process bridge; they are not
-executed directly. Message HTML is never injected into the renderer.
+links are handed to the default browser. Local links are validated as absolute existing paths and
+revealed in Finder through a narrow main-process bridge; they are not executed directly. Markdown
+is lexed and rebuilt with safe DOM nodes: message HTML and images are displayed as inert text and
+are never injected into the renderer.
+
+Reasoning and compact activity cards are shown inline for commands, file changes, MCP/dynamic
+tools, collaboration tools, subagents, plans, and context compaction. Codex may omit command items
+from a later `thread/read` response even though they were available while the turn streamed.
+Rolling Skill therefore keeps a bounded local index of activity it observes and merges that index
+back into history by item ID. The index stores only compact labels/status metadata, not command
+arguments or output, tool arguments/results, file paths, or file diffs. Persisted command cards keep
+only the executable name. Activity that predates this index and is also absent
+from the runtime's own history cannot be reconstructed; its raw trace remains available when the
+conversation originally ran through Rolling Skill.
 
 ## Chat and Skill evaluation workbench
 
