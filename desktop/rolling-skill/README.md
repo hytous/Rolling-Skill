@@ -28,7 +28,7 @@ The first provider supports Codex app-server. It probes candidates in this order
 Every candidate must identify itself as Codex and expose `app-server` before it can be selected.
 Rolling Skill records its provider, version, source, path, capabilities, and stable `runtimeId`.
 
-Use the sidebar **Runtime…** control or the native **Runtime** menu to:
+Use **Settings → Runtime…** or the native **Runtime** menu to:
 
 - rescan installed runtimes;
 - choose an executable explicitly;
@@ -52,6 +52,40 @@ Open **Settings** in the lower-left sidebar to configure:
 - Automatic Capture, including its Curator model, destination dataset, and default case type.
 
 All settings are stored locally. Automatic Capture remains disabled until explicitly enabled.
+Runtime selection, raw Trace access, and the local dataset file are also grouped in **Settings**.
+
+## Chat and Skill evaluation workbench
+
+Use the switch below the Rolling Skill logo to move between the native **Chat** client and the
+**Skill evaluation** workbench. The workbench can:
+
+- create and browse local datasets;
+- inspect the verbatim questions and curated references saved in each dataset;
+- query the selected runtime's `skills/list` API for the current workspace;
+- reject a launch when the selected Skill is not installed and enabled; and
+- launch the selected Case as a native runtime task using either automatic activation or an
+  explicit diagnostic activation.
+
+Automatic activation sends only the dataset question, byte-for-byte as saved. This is the path to
+use when measuring whether the runtime can discover and activate a Skill by itself. Explicit
+diagnostic activation attaches the runtime protocol's structured Skill input (`name` and absolute
+`SKILL.md` path) alongside the unchanged question. It is useful for separating an activation
+failure from a Skill execution failure; it is not equivalent to the automatic-trigger score. Do
+not prepend `/skill` to automatic-trigger cases.
+
+This version launches and opens one selected target Case in Chat, where its native task history and
+Trace remain inspectable. It does not yet batch-run a dataset or apply the Curator grading contract
+automatically, so the workbench labels the result as requiring review rather than presenting a
+pass/fail score.
+
+Codex app-server currently exposes `skills/list`, `skills/config/write`, `plugin/list`,
+`plugin/installed`, `plugin/read`, `plugin/install`, and `plugin/uninstall`. Rolling Skill's Codex
+adapter uses runtime-owned discovery and exposes provider hooks for listing and installation; it
+does not copy Skills or Plugins into an application-owned directory. A future plugin manager should
+keep this boundary for every provider: Rolling Skill presents a common inventory and explicit
+install action, while the selected runtime remains the source of truth. Installation must happen
+before an evaluation snapshot is created and must require an operator action; silently installing
+a missing Plugin during a run would contaminate reproducibility.
 
 ## Provider architecture
 
@@ -93,7 +127,8 @@ specific local Codex should be used without saving it through the UI.
 
 ## Local evaluation workflow
 
-1. Select a workspace and active runtime.
+1. Select a workspace and active runtime. Use the **Skill evaluation** workbench to confirm that the
+   intended Skill is installed and enabled in that exact runtime and workspace.
 2. Start a new task or open an existing workspace-scoped task.
 3. Inspect the streamed conversation and raw local trace.
 4. Select **Curate case** beside the assistant message that ends the useful problem-solving episode.

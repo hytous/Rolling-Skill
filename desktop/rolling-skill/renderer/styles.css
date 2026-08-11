@@ -148,6 +148,36 @@ button:not(:disabled) {
     height: 21px;
 }
 
+.surface-switch {
+    display: grid;
+    margin: 7px 2px 0;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--surface) 54%, transparent);
+    grid-template-columns: 1fr 1fr;
+    gap: 3px;
+}
+
+.surface-switch button {
+    min-width: 0;
+    height: 29px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 10.5px;
+    white-space: nowrap;
+}
+
+.surface-switch button.active {
+    background: var(--surface);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+    color: var(--text);
+    font-weight: 620;
+}
+
 .new-task-button {
     display: grid;
     width: 100%;
@@ -418,6 +448,356 @@ kbd {
     min-width: 0;
     background: var(--surface);
     grid-template-rows: 54px auto minmax(0, 1fr) auto;
+}
+
+.workbench.evaluation-mode > .topbar,
+.workbench.evaluation-mode > .error-banner,
+.workbench.evaluation-mode > .conversation-scroll,
+.workbench.evaluation-mode > .composer-wrap {
+    display: none;
+}
+
+.evaluation-workbench {
+    display: flex;
+    overflow: hidden;
+    min-width: 0;
+    padding: 58px 24px 24px;
+    background:
+        radial-gradient(circle at 92% 4%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 30%),
+        var(--surface);
+    flex-direction: column;
+    gap: 18px;
+    grid-row: 1 / -1;
+}
+
+.evaluation-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 24px;
+}
+
+.evaluation-header h1 {
+    margin: 4px 0 5px;
+    font-size: 24px;
+    font-weight: 670;
+    letter-spacing: -0.035em;
+}
+
+.evaluation-header p {
+    max-width: 720px;
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.55;
+}
+
+.evaluation-header > button,
+.settings-utility-row button {
+    min-height: 32px;
+    padding: 0 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-raised);
+    color: var(--muted);
+    font-size: 10.5px;
+}
+
+.evaluation-grid {
+    display: grid;
+    overflow: hidden;
+    min-height: 0;
+    flex: 1;
+    grid-template-columns: minmax(190px, 0.75fr) minmax(320px, 1.55fr) minmax(250px, 0.95fr);
+    gap: 12px;
+}
+
+.evaluation-panel {
+    display: flex;
+    overflow: hidden;
+    min-width: 0;
+    min-height: 0;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    background: color-mix(in srgb, var(--surface-raised) 54%, var(--surface));
+    flex-direction: column;
+}
+
+.evaluation-panel-head {
+    display: flex;
+    min-height: 35px;
+    margin-bottom: 10px;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--faint);
+    font-size: 9.5px;
+}
+
+.evaluation-panel-head > div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.evaluation-panel-head strong {
+    color: var(--text);
+    font-size: 16px;
+}
+
+.panel-kicker {
+    color: var(--faint);
+    font-size: 9px;
+    font-weight: 680;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+}
+
+.evaluation-create-row {
+    display: grid;
+    margin-bottom: 9px;
+    grid-template-columns: minmax(0, 1fr) 32px;
+    gap: 6px;
+}
+
+.evaluation-create-row input,
+.evaluation-create-row button {
+    height: 32px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 10.5px;
+}
+
+.evaluation-create-row input {
+    min-width: 0;
+    padding: 0 8px;
+    outline: 0;
+}
+
+.evaluation-dataset-list,
+.evaluation-case-list {
+    overflow-x: hidden;
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.evaluation-dataset,
+.evaluation-case {
+    width: 100%;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+}
+
+.evaluation-dataset {
+    display: flex;
+    min-height: 54px;
+    padding: 8px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.evaluation-dataset > span:first-child {
+    display: flex;
+    overflow: hidden;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.evaluation-dataset strong,
+.evaluation-dataset small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.evaluation-dataset strong {
+    font-size: 11px;
+}
+
+.evaluation-dataset small,
+.evaluation-case small {
+    color: var(--faint);
+    font-size: 9.5px;
+}
+
+.evaluation-dataset:hover,
+.evaluation-case:hover {
+    background: var(--surface-hover);
+}
+
+.evaluation-dataset.active,
+.evaluation-case.active {
+    border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+    background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+}
+
+.dataset-count {
+    display: grid;
+    min-width: 24px;
+    height: 24px;
+    padding: 0 5px;
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 9px;
+    place-items: center;
+}
+
+.evaluation-case {
+    display: grid;
+    min-height: 86px;
+    margin-bottom: 6px;
+    padding: 10px;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 6px 8px;
+}
+
+.evaluation-case strong,
+.evaluation-case small {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+}
+
+.evaluation-case strong {
+    font-size: 11px;
+    line-height: 1.45;
+    -webkit-line-clamp: 2;
+}
+
+.evaluation-case small {
+    grid-column: 2;
+    line-height: 1.45;
+    -webkit-line-clamp: 2;
+}
+
+.case-badge {
+    align-self: start;
+    padding: 3px 5px;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--success) 12%, transparent);
+    color: var(--success);
+    font-size: 8px;
+    font-weight: 680;
+    text-transform: uppercase;
+}
+
+.case-badge.badcase {
+    background: color-mix(in srgb, var(--danger) 11%, transparent);
+    color: var(--danger);
+}
+
+.evaluation-empty {
+    padding: 24px 10px;
+    color: var(--faint);
+    font-size: 10.5px;
+    line-height: 1.55;
+    text-align: center;
+}
+
+.evaluation-empty.error {
+    color: var(--danger);
+}
+
+.skill-preflight {
+    margin-top: 8px;
+    padding: 9px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--muted);
+    font-size: 9.5px;
+    line-height: 1.45;
+}
+
+.skill-preflight.ready {
+    border-color: color-mix(in srgb, var(--success) 26%, var(--border));
+    background: color-mix(in srgb, var(--success) 7%, transparent);
+    color: var(--success);
+}
+
+.skill-preflight.missing {
+    color: var(--warning);
+}
+
+.activation-mode {
+    display: grid;
+    margin: 15px 0 6px;
+    padding: 0;
+    border: 0;
+    gap: 7px;
+}
+
+.activation-mode legend {
+    margin-bottom: 6px;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 580;
+}
+
+.activation-mode label {
+    display: grid;
+    padding: 9px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    grid-template-columns: 16px minmax(0, 1fr);
+    gap: 6px;
+}
+
+.activation-mode label:has(input:checked) {
+    border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.activation-mode input {
+    margin: 2px 0 0;
+    accent-color: var(--accent);
+}
+
+.activation-mode span {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.activation-mode strong {
+    font-size: 10px;
+}
+
+.activation-mode small {
+    color: var(--faint);
+    font-size: 9px;
+    line-height: 1.4;
+}
+
+.evaluation-start {
+    width: 100%;
+    min-height: 36px;
+    margin-top: 16px;
+    border: 0;
+    border-radius: 9px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-size: 10.5px;
+    font-weight: 660;
+}
+
+.evaluation-start:disabled {
+    opacity: 0.42;
+}
+
+.evaluation-note {
+    margin: 8px 2px 0;
+    color: var(--faint);
+    font-size: 9px;
+    line-height: 1.5;
 }
 
 .topbar {
@@ -1619,6 +1999,19 @@ kbd {
     margin: 0 0 11px;
     font-size: 12px;
     font-weight: 650;
+}
+
+.settings-section-copy {
+    margin: -5px 0 10px;
+    color: var(--faint);
+    font-size: 10px;
+    line-height: 1.5;
+}
+
+.settings-utility-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
 }
 
 .settings-section-heading {

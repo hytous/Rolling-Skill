@@ -19,6 +19,10 @@
                         <img src="logo.svg" alt="" />
                         <span>Rolling Skill</span>
                     </div>
+                    <div id="surface-switch" class="surface-switch" role="group" aria-label="Main surface">
+                        <button class="active" type="button" data-surface="chat" data-i18n="chat">Chat</button>
+                        <button type="button" data-surface="evaluation" data-i18n="skillEvaluation">Skill evaluation</button>
+                    </div>
                     <button id="new-task" class="new-task-button" type="button">
                         <span aria-hidden="true">＋</span>
                         <span data-i18n="newTask">New task</span>
@@ -50,11 +54,6 @@
                         <span data-i18n="settings">Settings</span>
                         <span aria-hidden="true">›</span>
                     </button>
-                    <div class="evaluation-row">
-                        <button id="show-local-data" class="sidebar-link" type="button" data-i18n="datasets">Datasets</button>
-                        <button id="open-trace" class="sidebar-link" type="button" data-i18n="trace">Trace</button>
-                        <button id="choose-runtime" class="sidebar-link" type="button" data-i18n="runtime">Runtime…</button>
-                    </div>
                     <div class="capture-note">
                         <span class="capture-dot" aria-hidden="true"></span>
                         <span id="capture-status" data-i18n="autoCaptureOff">Automatic capture is off</span>
@@ -113,6 +112,74 @@
                         </div>
                     </form>
                     <p class="composer-hint" data-i18n="composerHint">Enter to send · Shift+Enter for a new line</p>
+                </section>
+
+                <section id="evaluation-workbench" class="evaluation-workbench hidden" aria-label="Skill evaluation workbench">
+                    <header class="evaluation-header">
+                        <div>
+                            <div class="drawer-eyebrow" data-i18n="evaluationWorkbench">SKILL EVALUATION WORKBENCH</div>
+                            <h1 data-i18n="evaluateSkills">Evaluate Skills against real language</h1>
+                            <p data-i18n="evaluationWorkbenchHelp">Keep questions verbatim, preflight the active runtime, and launch a test without forcing Skill activation.</p>
+                        </div>
+                        <button id="refresh-evaluation" type="button" data-i18n="refresh">Refresh</button>
+                    </header>
+                    <div class="evaluation-grid">
+                        <aside class="evaluation-panel dataset-panel">
+                            <div class="evaluation-panel-head">
+                                <div>
+                                    <span class="panel-kicker" data-i18n="datasets">Datasets</span>
+                                    <strong id="evaluation-dataset-count">0</strong>
+                                </div>
+                            </div>
+                            <form id="evaluation-create-dataset" class="evaluation-create-row">
+                                <input id="evaluation-new-dataset-name" type="text" maxlength="100" data-i18n-placeholder="createDataset" placeholder="Create a new dataset" />
+                                <button type="submit" title="Create dataset">＋</button>
+                            </form>
+                            <nav id="evaluation-dataset-list" class="evaluation-dataset-list"></nav>
+                        </aside>
+
+                        <section class="evaluation-panel case-panel">
+                            <div class="evaluation-panel-head">
+                                <div>
+                                    <span class="panel-kicker" data-i18n="cases">Cases</span>
+                                    <strong id="evaluation-case-count">0</strong>
+                                </div>
+                                <span data-i18n="verbatimQuestions">Questions stay verbatim</span>
+                            </div>
+                            <div id="evaluation-case-list" class="evaluation-case-list"></div>
+                        </section>
+
+                        <aside class="evaluation-panel launch-panel">
+                            <div class="evaluation-panel-head">
+                                <div>
+                                    <span class="panel-kicker" data-i18n="testRun">Test run</span>
+                                    <strong data-i18n="runtimePreflight">Runtime preflight</strong>
+                                </div>
+                            </div>
+                            <label class="settings-field">
+                                <span data-i18n="skillUnderTest">Skill under test</span>
+                                <select id="evaluation-skill"></select>
+                            </label>
+                            <div id="evaluation-skill-status" class="skill-preflight"></div>
+                            <fieldset class="activation-mode">
+                                <legend data-i18n="activationMode">Activation mode</legend>
+                                <label>
+                                    <input type="radio" name="activation-mode" value="automatic" checked />
+                                    <span><strong data-i18n="automaticTrigger">Automatic trigger</strong><small data-i18n="automaticTriggerHelp">Send only the original question. This is the scored path.</small></span>
+                                </label>
+                                <label>
+                                    <input type="radio" name="activation-mode" value="explicit" />
+                                    <span><strong data-i18n="explicitDiagnostic">Explicit diagnostic</strong><small data-i18n="explicitDiagnosticHelp">Attach a structured Skill mention to isolate trigger failures.</small></span>
+                                </label>
+                            </fieldset>
+                            <label class="settings-field">
+                                <span data-i18n="model">Model</span>
+                                <select id="evaluation-model"></select>
+                            </label>
+                            <button id="start-evaluation" class="primary evaluation-start" type="button" data-i18n="startSelectedCase">Start selected case</button>
+                            <p class="evaluation-note" data-i18n="evaluationLaunchHelp">The target task runs in the selected runtime. Automated grading is not applied yet; review the native task and its trace.</p>
+                        </aside>
+                    </div>
                 </section>
             </main>
 
@@ -210,6 +277,16 @@
                         <span data-i18n="curatorModel">Default Curator model</span>
                         <select id="settings-curator-model"></select>
                     </label>
+                </section>
+
+                <section class="settings-section">
+                    <h3 data-i18n="localRuntimeAndData">Local runtime & data</h3>
+                    <p class="settings-section-copy" data-i18n="localRuntimeAndDataHelp">Runtime discovery, raw trace, and the local evaluation store stay on this Mac.</p>
+                    <div class="settings-utility-row">
+                        <button id="choose-runtime" type="button" data-i18n="runtime">Runtime…</button>
+                        <button id="open-trace" type="button" data-i18n="trace">Trace</button>
+                        <button id="show-local-data" type="button" data-i18n="openDatasetFile">Open dataset file</button>
+                    </div>
                 </section>
 
                 <section class="settings-section automatic-capture-settings">

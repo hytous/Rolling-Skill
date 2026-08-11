@@ -312,6 +312,12 @@ function createWindow() {
         if (smokeScreenshot) {
             setTimeout(async () => {
                 if (!mainWindow || mainWindow.isDestroyed()) return
+                if (process.env.ROLLING_SKILL_SMOKE_SURFACE === "evaluation") {
+                    await mainWindow.webContents.executeJavaScript(
+                        'document.querySelector("[data-surface=evaluation]")?.click()',
+                    )
+                    await new Promise((resolve) => setTimeout(resolve, 800))
+                }
                 const image = await mainWindow.webContents.capturePage()
                 writeFileSync(smokeScreenshot, image.toPNG())
                 if (process.env.ROLLING_SKILL_SMOKE_QUIT === "1") app.quit()
@@ -420,6 +426,35 @@ function installIpc() {
         if (typeof runtime.listModels !== "function") return {data: [], nextCursor: null}
         return runtime.listModels()
     })
+    ipcMain.handle("skills:list", async (_event, input = {}) => {
+        const runtime = await ensureRuntime()
+        if (typeof runtime.listSkills !== "function") return {data: []}
+        return runtime.listSkills({forceReload: Boolean(input.forceReload)})
+    })
+    ipcMain.handle("plugins:list", async () => {
+        const runtime = await ensureRuntime()
+        if (typeof runtime.listPlugins !== "function") return {marketplaces: []}
+        return runtime.listPlugins()
+    })
+    ipcMain.handle("plugins:installed", async () => {
+        const runtime = await ensureRuntime()
+        if (typeof runtime.listInstalledPlugins !== "function") return {marketplaces: []}
+        return runtime.listInstalledPlugins()
+    })
+    ipcMain.handle("plugins:install", async (_event, input = {}) => {
+        const runtime = await ensureRuntime()
+        if (typeof runtime.installPlugin !== "function") {
+            throw new Error("The active runtime does not support plugin installation")
+        }
+        const pluginName = requireIdentifier(input.pluginName, "plugin")
+        const response = await runtime.installPlugin({
+            pluginName,
+            marketplacePath: input.marketplacePath ?? null,
+            remoteMarketplaceName: input.remoteMarketplaceName ?? null,
+        })
+        await runtime.listSkills({forceReload: true})
+        return response
+    })
     ipcMain.handle("runtime:read-thread", async (_event, threadId) => {
         threadId = requireIdentifier(threadId, "thread")
         if (curationManager.hiddenThreadIds().has(threadId)) {
@@ -435,15 +470,14 @@ function installIpc() {
     })
     ipcMain.handle("runtime:start-turn", async (_event, {threadId, text, modelId}) => {
         threadId = requireIdentifier(threadId, "thread")
-        text = String(text ?? "").trim()
+        const input = normalizeTurnInput(text)
         const model = optionalIdentifier(modelId, "model")
-        if (!text) throw new Error("Task text is required")
         const runtime = await ensureRuntime()
         if (!loadedThreads.has(threadId)) {
             await runtime.resumeThread(threadId, model ? {model} : {})
             loadedThreads.add(threadId)
         }
-        return runtime.startTurn(threadId, text, model ? {model} : {})
+        return runtime.startTurn(threadId, input, model ? {model} : {})
     })
     ipcMain.handle("runtime:interrupt-turn", async (_event, input) =>
         (await ensureRuntime()).interruptTurn(
@@ -452,6 +486,9 @@ function installIpc() {
         ),
     )
     ipcMain.handle("datasets:list", () => store.listDatasets())
+    ipcMain.handle("datasets:list-cases", (_event, datasetId) =>
+        store.listCases(requireIdentifier(datasetId, "dataset")),
+    )
     ipcMain.handle("datasets:create", (_event, name) => store.createDataset(name))
     ipcMain.handle("datasets:reveal", revealLocalData)
     ipcMain.handle("settings:update", (_event, input) => store.updateSettings(input))
@@ -518,6 +555,35 @@ function requireIdentifier(value, label) {
 function optionalIdentifier(value, label) {
     if (value === null || value === undefined || String(value).trim() === "") return null
     return requireIdentifier(String(value).trim(), label)
+}
+
+function normalizeTurnInput(value) {
+    if (!Array.isArray(value)) {
+        const text = String(value ?? "")
+        if (!text.trim()) throw new Error("Task text is required")
+        return text
+    }
+    if (!value.length || value.length > 20) throw new Error("Task input is invalid")
+    let hasText = false
+    const normalized = value.map((part) => {
+        if (part?.type === "text") {
+            const text = String(part.text ?? "")
+            if (!text.trim()) throw new Error("Task text is required")
+            hasText = true
+            return {type: "text", text, text_elements: []}
+        }
+        if (part?.type === "skill") {
+            const name = requireIdentifier(part.name, "Skill")
+            const path = String(part.path ?? "")
+            if (!path.startsWith("/") || path.length > 4_096) {
+                throw new Error("A valid absolute Skill path is required")
+            }
+            return {type: "skill", name, path}
+        }
+        throw new Error("Only text and Skill inputs are supported")
+    })
+    if (!hasText) throw new Error("Task input requires text")
+    return normalized
 }
 
 const hasLock = app.requestSingleInstanceLock()

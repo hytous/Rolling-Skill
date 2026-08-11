@@ -179,6 +179,29 @@ class CodexAppServerClient extends EventEmitter {
         return this.request("model/list", {limit: 100, includeHidden: false})
     }
 
+    listSkills(options = {}) {
+        return this.request("skills/list", {
+            cwds: [this.workspaceRoot],
+            forceReload: Boolean(options.forceReload),
+        })
+    }
+
+    listPlugins() {
+        return this.request("plugin/list", {cwds: [this.workspaceRoot]})
+    }
+
+    listInstalledPlugins() {
+        return this.request("plugin/installed", {cwds: [this.workspaceRoot]})
+    }
+
+    readPlugin(input) {
+        return this.request("plugin/read", input)
+    }
+
+    installPlugin(input) {
+        return this.request("plugin/install", input)
+    }
+
     readThread(threadId) {
         return this.request("thread/read", {threadId, includeTurns: true})
     }
@@ -206,9 +229,12 @@ class CodexAppServerClient extends EventEmitter {
     }
 
     startTurn(threadId, text, options = {}) {
+        const input = Array.isArray(text)
+            ? text
+            : [{type: "text", text, text_elements: []}]
         return this.request("turn/start", {
             threadId,
-            input: [{type: "text", text, text_elements: []}],
+            input,
             ...(options.model ? {model: options.model} : {}),
         })
     }

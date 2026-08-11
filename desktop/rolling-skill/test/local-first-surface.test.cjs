@@ -153,4 +153,35 @@ describe("local-first desktop surface", () => {
         assert.match(appServer, /version:\s*clientVersion/)
         assert.doesNotMatch(appServer, /version:\s*"0\.5\.0"/)
     })
+
+    it("switches between chat and a Skill evaluation workbench", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const preload = source("src/preload.cjs")
+        const main = source("src/main.cjs")
+
+        assert.match(html, /id="surface-switch"/)
+        assert.match(html, /data-surface="chat"/)
+        assert.match(html, /data-surface="evaluation"/)
+        assert.match(html, /id="evaluation-workbench"/)
+        assert.match(html, /id="evaluation-dataset-list"/)
+        assert.match(html, /id="evaluation-case-list"/)
+        assert.match(html, /id="evaluation-skill"/)
+        assert.match(html, /id="start-evaluation"/)
+        assert.match(renderer, /renderEvaluationWorkbench/)
+        assert.match(preload, /listSkills/)
+        assert.match(preload, /listCases/)
+        assert.match(main, /skills:list/)
+        assert.match(main, /datasets:list-cases/)
+    })
+
+    it("keeps runtime and trace utilities inside Settings instead of the sidebar footer", () => {
+        const html = source("renderer/index.html")
+        const footer = html.match(/<div class="sidebar-footer">[\s\S]*?<\/aside>/)?.[0] ?? ""
+        const settings = html.match(/<dialog id="settings-dialog"[\s\S]*?<\/dialog>/)?.[0] ?? ""
+
+        assert.doesNotMatch(footer, /id="open-trace"|id="choose-runtime"/)
+        assert.match(settings, /id="open-trace"/)
+        assert.match(settings, /id="choose-runtime"/)
+    })
 })

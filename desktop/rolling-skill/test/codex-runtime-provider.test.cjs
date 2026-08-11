@@ -161,6 +161,8 @@ describe("Codex runtime provider", () => {
             "threads",
             "turns",
             "models",
+            "skills",
+            "plugins",
             "streaming",
             "raw-trace",
         ])

@@ -28,10 +28,13 @@ describe("discovered local Codex app-server smoke", {skip: !descriptor}, () => {
     it("initializes and lists workspace-scoped threads without any web service", async () => {
         const state = await client.start()
         const response = await client.listThreads()
+        const skills = await client.listSkills({forceReload: true})
 
         assert.equal(state.status, "ready")
         assert.equal(state.runtime.runtimeId, descriptor.runtimeId)
         assert.equal(Array.isArray(response.data), true)
+        assert.equal(Array.isArray(skills.data), true)
+        assert.equal(skills.data.some((entry) => entry.cwd === workspaceRoot), true)
         assert.equal(response.data.every((thread) => thread.cwd === workspaceRoot), true)
         const listRequest = client
             .recentTrace(20)
@@ -142,5 +145,46 @@ describe("Codex app-server request construction", () => {
         })
         assert.equal(request.params.sandbox, "read-only")
         assert.equal(request.params.model, "gpt-5.6-sol")
+    })
+
+    it("lists runtime-owned Skills for the active workspace", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        let request
+        client.request = async (method, params) => {
+            request = {method, params}
+            return {data: []}
+        }
+
+        await client.listSkills({forceReload: true})
+
+        assert.deepEqual(request, {
+            method: "skills/list",
+            params: {cwds: ["/tmp/workspace"], forceReload: true},
+        })
+    })
+
+    it("uses a structured Skill mention only for explicit diagnostic runs", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        let request
+        client.request = async (method, params) => {
+            request = {method, params}
+            return {turn: {id: "turn-1"}}
+        }
+        const input = [
+            {type: "skill", name: "billing-cost-management", path: "/skills/billing/SKILL.md"},
+            {type: "text", text: "查一下七月账单", text_elements: []},
+        ]
+
+        await client.startTurn("thread-1", input)
+
+        assert.deepEqual(request.params.input, input)
     })
 })

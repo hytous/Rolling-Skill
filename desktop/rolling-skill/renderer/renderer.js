@@ -138,6 +138,34 @@ const translations = {
         readingTrace: "Reading local trace…",
         noEventsYet: "No events yet",
         noTraceEvents: "No trace events yet.",
+        chat: "Chat",
+        skillEvaluation: "Skill evaluation",
+        evaluationWorkbench: "SKILL EVALUATION WORKBENCH",
+        evaluateSkills: "Evaluate Skills against real language",
+        evaluationWorkbenchHelp: "Keep questions verbatim, preflight the active runtime, and launch a test without forcing Skill activation.",
+        cases: "Cases",
+        verbatimQuestions: "Questions stay verbatim",
+        testRun: "Test run",
+        runtimePreflight: "Runtime preflight",
+        skillUnderTest: "Skill under test",
+        activationMode: "Activation mode",
+        automaticTrigger: "Automatic trigger",
+        automaticTriggerHelp: "Send only the original question. This is the scored path.",
+        explicitDiagnostic: "Explicit diagnostic",
+        explicitDiagnosticHelp: "Attach a structured Skill mention to isolate trigger failures.",
+        startSelectedCase: "Start selected case",
+        evaluationLaunchHelp: "The target task runs in the selected runtime. Automated grading is not applied yet; review the native task and its trace.",
+        noDatasets: "No datasets yet.",
+        noCases: "This dataset has no saved cases yet.",
+        noSkills: "The active runtime reported no enabled Skills for this workspace.",
+        selectCase: "Select one case to run.",
+        skillReady: "Installed and enabled in {runtime}",
+        originalQuestionOnly: "Original question only",
+        explicitSkillAttached: "Structured Skill mention attached",
+        evaluationStarted: "Test task started in Chat",
+        localRuntimeAndData: "Local runtime & data",
+        localRuntimeAndDataHelp: "Runtime discovery, raw trace, and the local evaluation store stay on this Mac.",
+        openDatasetFile: "Open dataset file",
     },
     "zh-CN": {
         newTask: "新任务",
@@ -278,6 +306,34 @@ const translations = {
         readingTrace: "正在读取本地 Trace…",
         noEventsYet: "暂无事件",
         noTraceEvents: "暂无 Trace 事件。",
+        chat: "对话",
+        skillEvaluation: "Skill 评测",
+        evaluationWorkbench: "SKILL 评测工作台",
+        evaluateSkills: "用真实自然语言评测 Skill",
+        evaluationWorkbenchHelp: "保留原始问题，预检当前运行时，并在不强制唤起 Skill 的情况下启动测试。",
+        cases: "Cases",
+        verbatimQuestions: "问题保持原文",
+        testRun: "测试运行",
+        runtimePreflight: "运行时预检",
+        skillUnderTest: "被测 Skill",
+        activationMode: "唤起模式",
+        automaticTrigger: "自动触发",
+        automaticTriggerHelp: "只发送原始问题；这是正式评测路径。",
+        explicitDiagnostic: "显式诊断",
+        explicitDiagnosticHelp: "附加结构化 Skill mention，用于区分触发失败和执行失败。",
+        startSelectedCase: "启动选中 Case",
+        evaluationLaunchHelp: "目标任务会在所选运行时执行。当前尚未自动判分，请在原生任务及 Trace 中审核结果。",
+        noDatasets: "还没有数据集。",
+        noCases: "这个数据集还没有已保存的 Case。",
+        noSkills: "当前运行时在此工作目录下没有报告已启用的 Skill。",
+        selectCase: "请选择一个 Case 运行。",
+        skillReady: "已安装并在 {runtime} 中启用",
+        originalQuestionOnly: "仅发送原始问题",
+        explicitSkillAttached: "已附加结构化 Skill mention",
+        evaluationStarted: "测试任务已在对话页启动",
+        localRuntimeAndData: "本地运行时与数据",
+        localRuntimeAndDataHelp: "运行时发现、原始 Trace 和本地评测数据都保存在这台 Mac。",
+        openDatasetFile: "打开数据集文件",
     },
 }
 
@@ -314,11 +370,20 @@ const state = {
     selectedTaskModelId: null,
     discardCurationId: null,
     traceOpen: false,
+    surface: "chat",
+    evaluationCases: [],
+    evaluationSkills: [],
+    evaluationDatasetId: null,
+    evaluationCaseId: null,
+    evaluationLoading: false,
+    evaluationError: null,
     renderQueued: false,
 }
 
 const elements = {
     newTask: document.querySelector("#new-task"),
+    surfaceSwitch: document.querySelector("#surface-switch"),
+    workbench: document.querySelector(".workbench"),
     refreshThreads: document.querySelector("#refresh-threads"),
     threadList: document.querySelector("#thread-list"),
     workspaceButton: document.querySelector("#workspace-button"),
@@ -334,6 +399,18 @@ const elements = {
     openTrace: document.querySelector("#open-trace"),
     topbarCurations: document.querySelector("#topbar-curations"),
     topbarTrace: document.querySelector("#topbar-trace"),
+    evaluationWorkbench: document.querySelector("#evaluation-workbench"),
+    refreshEvaluation: document.querySelector("#refresh-evaluation"),
+    evaluationDatasetCount: document.querySelector("#evaluation-dataset-count"),
+    evaluationDatasetList: document.querySelector("#evaluation-dataset-list"),
+    evaluationCreateDataset: document.querySelector("#evaluation-create-dataset"),
+    evaluationNewDatasetName: document.querySelector("#evaluation-new-dataset-name"),
+    evaluationCaseCount: document.querySelector("#evaluation-case-count"),
+    evaluationCaseList: document.querySelector("#evaluation-case-list"),
+    evaluationSkill: document.querySelector("#evaluation-skill"),
+    evaluationSkillStatus: document.querySelector("#evaluation-skill-status"),
+    evaluationModel: document.querySelector("#evaluation-model"),
+    startEvaluation: document.querySelector("#start-evaluation"),
     errorBanner: document.querySelector("#error-banner"),
     errorMessage: document.querySelector("#error-message"),
     dismissError: document.querySelector("#dismiss-error"),
@@ -546,6 +623,7 @@ async function refreshModels() {
         state.models = []
     }
     renderTaskModelPicker()
+    renderEvaluationWorkbench()
     if (elements.settingsDialog.open) renderSettingsForm()
     if (state.curationOpen) renderCurations()
 }
@@ -1085,6 +1163,7 @@ function renderAll(options) {
     renderConversation(options)
     renderComposer()
     renderRuntimeOptions()
+    renderEvaluationWorkbench()
 }
 
 function queueRender(options = {}) {
@@ -1107,6 +1186,203 @@ function showToast(message) {
     elements.toast.textContent = message
     elements.toast.classList.remove("hidden")
     toastTimer = setTimeout(() => elements.toast.classList.add("hidden"), 2600)
+}
+
+function selectedEvaluationSkill() {
+    return state.evaluationSkills.find((skill) => skill.path === elements.evaluationSkill.value) ?? null
+}
+
+function renderEvaluationWorkbench() {
+    const evaluation = state.surface === "evaluation"
+    elements.workbench.classList.toggle("evaluation-mode", evaluation)
+    elements.evaluationWorkbench.classList.toggle("hidden", !evaluation)
+    for (const button of elements.surfaceSwitch.querySelectorAll("[data-surface]")) {
+        button.classList.toggle("active", button.dataset.surface === state.surface)
+    }
+    if (!evaluation) return
+
+    elements.evaluationDatasetCount.textContent = String(state.datasets.length)
+    elements.evaluationDatasetList.replaceChildren()
+    if (!state.datasets.length) {
+        elements.evaluationDatasetList.append(node("div", "sidebar-placeholder", t("noDatasets")))
+    }
+    for (const dataset of state.datasets) {
+        const button = node("button", "evaluation-dataset")
+        button.type = "button"
+        button.dataset.evaluationDatasetId = dataset.id
+        if (dataset.id === state.evaluationDatasetId) button.classList.add("active")
+        const copy = node("span")
+        copy.append(
+            node("strong", "", dataset.name),
+            node("small", "", `${dataset.goodcaseCount ?? 0} good · ${dataset.badcaseCount ?? 0} bad`),
+        )
+        button.append(copy, node("span", "dataset-count", String(dataset.caseCount ?? 0)))
+        elements.evaluationDatasetList.append(button)
+    }
+
+    elements.evaluationCaseCount.textContent = String(state.evaluationCases.length)
+    elements.evaluationCaseList.replaceChildren()
+    if (state.evaluationLoading) {
+        elements.evaluationCaseList.append(node("div", "sidebar-placeholder", t("loadingTask")))
+    } else if (state.evaluationError) {
+        elements.evaluationCaseList.append(node("div", "evaluation-empty error", state.evaluationError))
+    } else if (!state.evaluationCases.length) {
+        elements.evaluationCaseList.append(node("div", "evaluation-empty", t("noCases")))
+    }
+    for (const caseEntry of state.evaluationCases) {
+        const button = node("button", "evaluation-case")
+        button.type = "button"
+        button.dataset.evaluationCaseId = caseEntry.id
+        if (caseEntry.id === state.evaluationCaseId) button.classList.add("active")
+        button.append(
+            node("span", `case-badge ${caseEntry.caseType}`, caseEntry.caseType),
+            node("strong", "", caseEntry.question),
+            node("small", "", caseEntry.curated?.referenceAnswer?.summary || caseEntry.answer || ""),
+        )
+        elements.evaluationCaseList.append(button)
+    }
+
+    const selectedPath = elements.evaluationSkill.value
+    elements.evaluationSkill.replaceChildren()
+    for (const skill of state.evaluationSkills) {
+        const option = node("option", "", skill.interface?.displayName || skill.name)
+        option.value = skill.path
+        elements.evaluationSkill.append(option)
+    }
+    if (selectedPath && state.evaluationSkills.some((skill) => skill.path === selectedPath)) {
+        elements.evaluationSkill.value = selectedPath
+    }
+    const skill = selectedEvaluationSkill()
+    elements.evaluationSkillStatus.className = `skill-preflight ${skill ? "ready" : "missing"}`
+    elements.evaluationSkillStatus.textContent = skill
+        ? `${formatMessage("skillReady", {runtime: state.runtime?.runtime?.displayName ?? t("localRuntime")})} · ${skill.scope}`
+        : t("noSkills")
+    populateModelSelect(
+        elements.evaluationModel,
+        elements.evaluationModel.value || state.settings.taskProfile?.modelId,
+    )
+    elements.startEvaluation.disabled =
+        state.evaluationLoading ||
+        state.runtime?.status !== "ready" ||
+        !state.evaluationCaseId ||
+        !skill
+}
+
+function flattenRuntimeSkills(response) {
+    const byPath = new Map()
+    for (const entry of response?.data ?? []) {
+        for (const skill of entry.skills ?? []) {
+            if (!skill?.path || !skill.enabled) continue
+            byPath.set(skill.path, skill)
+        }
+    }
+    return [...byPath.values()].sort((left, right) =>
+        String(left.interface?.displayName || left.name).localeCompare(
+            String(right.interface?.displayName || right.name),
+            state.settings.language,
+        ),
+    )
+}
+
+async function loadEvaluationWorkbench(forceReload = false) {
+    state.evaluationLoading = true
+    state.evaluationError = null
+    renderEvaluationWorkbench()
+    try {
+        state.datasets = await window.rollingSkill.listDatasets()
+        if (!state.datasets.some((dataset) => dataset.id === state.evaluationDatasetId)) {
+            state.evaluationDatasetId = state.datasets[0]?.id ?? null
+        }
+        state.evaluationCases = state.evaluationDatasetId
+            ? await window.rollingSkill.listCases(state.evaluationDatasetId)
+            : []
+        if (!state.evaluationCases.some((entry) => entry.id === state.evaluationCaseId)) {
+            state.evaluationCaseId = state.evaluationCases[0]?.id ?? null
+        }
+        state.evaluationSkills = state.runtime?.status === "ready"
+            ? flattenRuntimeSkills(await window.rollingSkill.listSkills(forceReload))
+            : []
+    } catch (error) {
+        state.evaluationError = error?.message || String(error)
+    } finally {
+        state.evaluationLoading = false
+        renderEvaluationWorkbench()
+    }
+}
+
+async function selectEvaluationDataset(datasetId) {
+    if (!datasetId || datasetId === state.evaluationDatasetId) return
+    state.evaluationDatasetId = datasetId
+    state.evaluationCaseId = null
+    await loadEvaluationWorkbench(false)
+}
+
+async function createEvaluationDataset() {
+    const name = elements.evaluationNewDatasetName.value.trim()
+    if (!name) return
+    try {
+        const dataset = await window.rollingSkill.createDataset(name)
+        elements.evaluationNewDatasetName.value = ""
+        state.evaluationDatasetId = dataset.id
+        await loadEvaluationWorkbench(false)
+        showToast(formatMessage("createdDataset", {name: dataset.name}))
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function startSelectedEvaluation() {
+    const caseEntry = state.evaluationCases.find((entry) => entry.id === state.evaluationCaseId)
+    if (!caseEntry) return
+    const selectedPath = elements.evaluationSkill.value
+    elements.startEvaluation.disabled = true
+    try {
+        state.evaluationSkills = flattenRuntimeSkills(await window.rollingSkill.listSkills(true))
+        elements.evaluationSkill.value = selectedPath
+        const skill = selectedEvaluationSkill()
+        if (!skill) throw new Error(t("noSkills"))
+        const modelId = elements.evaluationModel.value || null
+        const activationMode = elements.evaluationWorkbench.querySelector(
+            'input[name="activation-mode"]:checked',
+        )?.value ?? "automatic"
+        const threadResponse = await window.rollingSkill.startThread(modelId)
+        state.activeThread = threadResponse.thread
+        state.activeThreadId = threadResponse.thread.id
+        state.activeTurnId = null
+        state.newTaskMode = false
+        state.selectedTaskModelId = modelId
+        upsertThreadSummary(threadResponse.thread)
+        const input = activationMode === "explicit"
+            ? [
+                  {type: "skill", name: skill.name, path: skill.path},
+                  {type: "text", text: caseEntry.question, text_elements: []},
+              ]
+            : caseEntry.question
+        const turnResponse = await window.rollingSkill.startTurn(
+            state.activeThreadId,
+            input,
+            modelId,
+        )
+        state.activeTurnId = turnResponse.turn.id
+        upsertTurn(turnResponse.turn)
+        state.surface = "chat"
+        renderAll({forceBottom: true})
+        showToast(t("evaluationStarted"))
+    } catch (error) {
+        showError(error)
+        renderEvaluationWorkbench()
+    }
+}
+
+function setSurface(surface) {
+    if (surface !== "chat" && surface !== "evaluation") return
+    state.surface = surface
+    if (surface === "evaluation") {
+        setTraceOpen(false)
+        setCurationOpen(false)
+        void loadEvaluationWorkbench(true)
+    }
+    renderAll()
 }
 
 async function refreshThreads(selectFirst = false) {
@@ -1139,6 +1415,7 @@ async function refreshThreads(selectFirst = false) {
 
 async function loadThread(threadId) {
     if (!threadId) return
+    state.surface = "chat"
     const runtimeEpoch = state.runtimeEpoch
     state.activeThreadId = threadId
     state.newTaskMode = false
@@ -1166,6 +1443,7 @@ async function loadThread(threadId) {
 }
 
 function beginNewTask() {
+    state.surface = "chat"
     state.activeThreadId = null
     state.activeThread = null
     state.activeTurnId = null
@@ -1553,6 +1831,10 @@ async function changeRuntime(operation, {markStarting = true, clearBefore = true
     }
 }
 
+elements.surfaceSwitch.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-surface]")
+    if (button) setSurface(button.dataset.surface)
+})
 elements.newTask.addEventListener("click", beginNewTask)
 elements.refreshThreads.addEventListener("click", () => refreshThreads(false))
 elements.threadList.addEventListener("click", (event) => {
@@ -1574,8 +1856,31 @@ elements.settingsForm.addEventListener("submit", (event) => {
     void saveSettings()
 })
 elements.showLocalData.addEventListener("click", () => window.rollingSkill.revealLocalData())
-elements.chooseRuntime.addEventListener("click", openRuntimeDialog)
-elements.openTrace.addEventListener("click", () => setTraceOpen(true))
+elements.chooseRuntime.addEventListener("click", () => {
+    elements.settingsDialog.close()
+    openRuntimeDialog()
+})
+elements.openTrace.addEventListener("click", () => {
+    elements.settingsDialog.close()
+    setTraceOpen(true)
+})
+elements.refreshEvaluation.addEventListener("click", () => loadEvaluationWorkbench(true))
+elements.evaluationDatasetList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-evaluation-dataset-id]")
+    if (button) void selectEvaluationDataset(button.dataset.evaluationDatasetId)
+})
+elements.evaluationCaseList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-evaluation-case-id]")
+    if (!button) return
+    state.evaluationCaseId = button.dataset.evaluationCaseId
+    renderEvaluationWorkbench()
+})
+elements.evaluationCreateDataset.addEventListener("submit", (event) => {
+    event.preventDefault()
+    void createEvaluationDataset()
+})
+elements.evaluationSkill.addEventListener("change", renderEvaluationWorkbench)
+elements.startEvaluation.addEventListener("click", startSelectedEvaluation)
 elements.topbarCurations.addEventListener("click", () => setCurationOpen(true))
 elements.topbarTrace.addEventListener("click", () => setTraceOpen(true))
 elements.closeTrace.addEventListener("click", () => setTraceOpen(false))
@@ -1674,6 +1979,7 @@ window.rollingSkill.onRuntimeState((runtime) => {
     renderRuntime()
     renderComposer()
     if (runtime.status === "ready") void refreshModels()
+    if (state.surface === "evaluation") void loadEvaluationWorkbench(true)
 })
 window.rollingSkill.onRuntimeNotification(handleNotification)
 window.rollingSkill.onCurationChanged((session) => {
@@ -1694,6 +2000,7 @@ window.rollingSkill.onWorkspaceChanged(async ({workspaceRoot}) => {
         state.loadingThreads = false
         renderThreads()
     }
+    if (state.surface === "evaluation") await loadEvaluationWorkbench(true)
 })
 window.rollingSkill.onNewTask(beginNewTask)
 async function bootstrap() {
@@ -1702,6 +2009,7 @@ async function bootstrap() {
         state.runtime = initial.runtime
         state.workspaceRoot = initial.workspaceRoot
         state.datasets = initial.datasets ?? []
+        state.evaluationDatasetId = state.datasets[0]?.id ?? null
         state.curationSessions = initial.curationSessions ?? []
         applySettings(initial.settings ?? state.settings)
         state.selectedTaskModelId = state.settings.taskProfile?.modelId ?? null

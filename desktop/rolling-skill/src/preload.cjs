@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     openTraceFolder: () => ipcRenderer.invoke("runtime:open-traces"),
     listThreads: () => ipcRenderer.invoke("runtime:list-threads"),
     listModels: () => ipcRenderer.invoke("models:list"),
+    listSkills: (forceReload = false) => ipcRenderer.invoke("skills:list", {forceReload}),
+    listPlugins: () => ipcRenderer.invoke("plugins:list"),
+    listInstalledPlugins: () => ipcRenderer.invoke("plugins:installed"),
+    installPlugin: (input) => ipcRenderer.invoke("plugins:install", input),
     readThread: (threadId) => ipcRenderer.invoke("runtime:read-thread", threadId),
     startThread: (modelId = null) => ipcRenderer.invoke("runtime:start-thread", {modelId}),
     startTurn: (threadId, text, modelId = null) =>
@@ -25,6 +29,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     interruptTurn: (threadId, turnId) =>
         ipcRenderer.invoke("runtime:interrupt-turn", {threadId, turnId}),
     listDatasets: () => ipcRenderer.invoke("datasets:list"),
+    listCases: (datasetId) => ipcRenderer.invoke("datasets:list-cases", datasetId),
     createDataset: (name) => ipcRenderer.invoke("datasets:create", name),
     revealLocalData: () => ipcRenderer.invoke("datasets:reveal"),
     updateSettings: (input) => ipcRenderer.invoke("settings:update", input),

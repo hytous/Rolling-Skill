@@ -191,6 +191,18 @@ class LocalEvaluationStore {
         return copy(dataset)
     }
 
+    listCases(datasetId) {
+        const state = this.load()
+        requireDataset(state, datasetId)
+        return copy(
+            state.cases
+                .filter((entry) => entry.datasetId === datasetId)
+                .sort((left, right) =>
+                    String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? "")),
+                ),
+        )
+    }
+
     updateCuratorProfile(input = {}) {
         const state = this.load()
         const normalizedModelId = modelId(input.modelId, "Curator model id")

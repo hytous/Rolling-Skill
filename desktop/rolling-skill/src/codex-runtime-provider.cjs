@@ -134,6 +134,8 @@ class CodexRuntimeProvider {
                         "threads",
                         "turns",
                         "models",
+                        "skills",
+                        "plugins",
                         "streaming",
                         "raw-trace",
                     ]),

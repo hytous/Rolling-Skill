@@ -221,6 +221,27 @@ describe("local evaluation store", () => {
         assert.equal(summary.badcaseCount, 0)
     })
 
+    it("lists the curated cases that belong to one dataset", () => {
+        const {store} = fixture()
+        const first = store.createDataset("First")
+        const second = store.createDataset("Second")
+        const saved = store.saveCase({
+            datasetId: first.id,
+            caseType: "goodcase",
+            question: "自然语言问题",
+            answer: "参考答案",
+        })
+        store.saveCase({
+            datasetId: second.id,
+            caseType: "badcase",
+            question: "另一个问题",
+            answer: "另一个答案",
+        })
+
+        assert.deepEqual(store.listCases(first.id).map((entry) => entry.id), [saved.id])
+        assert.throws(() => store.listCases("missing"), /dataset/i)
+    })
+
     it("migrates v1 data without rewriting existing cases", () => {
         const {path} = fixture()
         writeFileSync(
