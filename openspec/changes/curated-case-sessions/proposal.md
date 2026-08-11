@@ -9,8 +9,9 @@ badcases noisy or misleading.
 
 - Replace immediate per-message case persistence with immutable episode snapshots and asynchronous
   curation sessions.
-- Preserve the user's selected source question verbatim while a Curator agent extracts a concise,
-  structured reference answer and grading rubric.
+- Preserve source wording verbatim in immutable episode provenance, initialize an operator-editable
+  dataset question from it, and never let the Curator silently normalize either while extracting a
+  concise, structured reference answer and grading rubric.
 - Distinguish shell/CLI, MCP, and dynamic tool invocations and collapse repeated activity without
   deleting the append-only source evidence.
 - Add a right-side Case drafts workspace where curation jobs run independently, can be questioned

@@ -1,6 +1,7 @@
 ## 1. Specification and evidence model
 
-- [x] 1.1 Add failing tests for episode boundaries, exact question preservation, CLI/MCP compaction, and fixed Curator schema.
+- [x] 1.1 Add failing tests for episode boundaries, source-question immutability, editable
+  dataset-question persistence/migration, CLI/MCP compaction, and fixed Curator schema.
 - [x] 1.2 Implement episode snapshots, tool signatures, Curator prompts, parsing, and formatted answers.
 - [x] 1.3 Migrate the local store and persist queued/running/review/archived curation sessions.
 
@@ -15,6 +16,8 @@
 - [x] 3.1 Replace immediate Save case with source episode selection and Start curation.
 - [x] 3.2 Add the right-side Case drafts list, review conversation, revision composer, and Done archive action.
 - [x] 3.3 Keep source chat usable while multiple drafts queue or run.
+- [x] 3.4 Allow dataset-question editing before curation and provide both the selected input and
+  immutable source wording to the Curator.
 
 ## 4. Delivery
 

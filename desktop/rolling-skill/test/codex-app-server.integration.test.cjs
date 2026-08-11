@@ -157,6 +157,25 @@ describe("Codex app-server request construction", () => {
         assert.equal("reasoningEffort" in request.params, false)
     })
 
+    it("sends explicit nulls when the user resets turn settings to runtime defaults", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        let request
+        client.request = async (method, params) => {
+            request = {method, params}
+            return {turn: {id: "turn-default"}}
+        }
+
+        await client.startTurn("thread-1", "hello", {model: null, effort: null})
+
+        assert.equal(request.method, "turn/start")
+        assert.equal(request.params.model, null)
+        assert.equal(request.params.effort, null)
+    })
+
     it("allows a read-only subagent thread and a caller-selected model", async () => {
         const client = new CodexAppServerClient({
             binaryPath: "/tmp/codex",

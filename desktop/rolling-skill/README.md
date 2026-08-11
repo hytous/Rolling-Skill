@@ -100,19 +100,21 @@ Use the switch below the Rolling Skill logo to move between the native **Chat** 
 **Skill evaluation** workbench. The workbench can:
 
 - create, browse, and delete local datasets;
-- inspect the verbatim questions and curated references saved in each dataset;
+- inspect current dataset questions, immutable source wording, and curated references;
 - delete a Case without invalidating older evaluation snapshots;
 - query a provider's path-precise Skill inventory when it exposes one;
 - run one selected Case or an entire dataset;
 - select multiple runtime/model/reasoning-effort configurations for one run; and
 - inspect and delete durable Case × Runtime results under **Evaluation runs / 评测记录**.
 
-Automatic activation sends only the dataset question, byte-for-byte as saved. This is the path to
-use when measuring whether the runtime can discover and activate a Skill by itself. Explicit
-diagnostic activation attaches the provider's explicit Skill input alongside the unchanged
-question: a structured `name` plus absolute `SKILL.md` path for Codex, or `/<skill-name>` for
-CodeBuddy. It is useful for separating an activation failure from a Skill execution failure; it is
-not equivalent to the automatic-trigger score. Do not prepend `/skill` to automatic-trigger cases.
+Automatic activation sends only the current dataset question, byte-for-byte as saved. That input
+may be an operator edit made before curation; the frozen source wording remains separate
+provenance. This is the path to use when measuring whether the runtime can discover and activate a
+Skill by itself. Explicit diagnostic activation attaches the provider's explicit Skill input
+alongside the same saved dataset question: a structured `name` plus absolute `SKILL.md` path for
+Codex, or `/<skill-name>` for CodeBuddy. It is useful for separating an activation failure from a
+Skill execution failure; it is not equivalent to the automatic-trigger score. Do not prepend
+`/skill` to automatic-trigger cases.
 
 Different runtime configurations execute concurrently; Cases remain sequential within each runtime
 to keep provider state isolated and predictable. Every run snapshots its dataset, Cases, Skill,
@@ -185,8 +187,9 @@ the UI.
 3. Inspect the streamed conversation and raw local trace.
 4. Select **Curate case** beside the assistant message that ends the useful problem-solving episode.
 5. Choose the source user message where the episode begins, the enabled Skill under review, a
-   dataset, and `goodcase` or `badcase`. The displayed dataset question is read-only and is
-   preserved verbatim.
+   dataset, and `goodcase` or `badcase`. The dataset question starts with the exact source wording
+   and remains editable until curation starts. Editing it changes the evaluation input only; the
+   frozen source conversation and its original question remain unchanged for audit.
 6. Select **Start curation**. Rolling Skill freezes the selected conversation/trace range while the
    original task remains live, then starts an independent read-only Curator task.
 7. Review the Curator conversation and structured reference answer in **Case drafts**. Ask follow-up
@@ -214,9 +217,9 @@ Automatic Capture is disabled by default. When enabled it requires a default ena
 creates reviewable Case Drafts after completed assistant responses; it never saves them
 automatically. A missing or disabled Skill produces an explicit capture error instead of a
 Skill-less draft. No case is written until
-**Done**. Approved cases retain
-the exact user question, structured grading data, source and Curator runtime provenance, immutable
-Episode evidence, and the append-only trace range. The default Curator model lives in **Settings**;
+**Done**. Approved cases retain the selected dataset question and the exact source question
+separately in provenance, plus structured grading data, source and Curator runtime provenance,
+immutable Episode evidence, and the append-only trace range. The default Curator model lives in **Settings**;
 each editable Case Draft can override it for subsequent follow-up turns. If no override is set, the
 source model is reused when the runtime exposes it, with the active runtime default as fallback.
 
@@ -248,7 +251,7 @@ Local state is stored under `~/Library/Application Support/Rolling Skill/`:
 
 `npm test` covers provider discovery priority and de-duplication, compatibility probing, registry
 selection/client delegation, a real locally discovered app-server smoke, protocol framing, Git
-workspace discovery, local-first surface invariants, episode boundaries, verbatim questions,
+workspace discovery, local-first surface invariants, episode boundaries, dataset/source questions,
 CLI/MCP compaction, Curator lifecycle/retries/revisions/discard, Automatic Capture gating, model
 catalog and turn overrides, reasoning-effort propagation, settings migration, atomic dataset
 persistence, Case deletion and immutable run snapshots, fixed grading contracts, multi-runtime

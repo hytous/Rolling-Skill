@@ -10,7 +10,7 @@ normalized away.
 **Goals**
 
 - Snapshot a contiguous source episode without locking or mutating its conversation.
-- Keep the exact source question as the dataset input.
+- Initialize the dataset input from the exact source question and allow explicit human edits.
 - Deterministically summarize tool activity before asking a Curator agent to reason over it.
 - Produce a fixed, agent-readable reference-answer and grading schema with hard requirements.
 - Let users review and revise Curator output conversationally before committing it.
@@ -31,11 +31,13 @@ Creating a curation session copies a bounded, immutable episode from the selecte
 through the selected assistant message. The source thread remains live and future messages do not
 change the copy.
 
-### Exact questions and structured answers
+### Editable dataset questions and structured answers
 
-The dataset question always comes from the selected source `userMessage` byte-for-byte. The
-Curator produces only the reference answer, required facts/steps/output format, hard requirements,
-soft criteria, automatic failures, evidence links, and (for badcases) failure analysis.
+The dataset question starts from the selected source `userMessage` byte-for-byte. The user may edit
+that evaluation input before curation starts, but the Curator must not normalize or rewrite it. The
+frozen episode keeps the original source wording as immutable evidence. The Curator produces only
+the reference answer, required facts/steps/output format, hard requirements, soft criteria,
+automatic failures, evidence links, and (for badcases) failure analysis.
 
 ### Deterministic tool compaction
 

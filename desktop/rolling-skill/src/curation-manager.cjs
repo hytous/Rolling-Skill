@@ -5,10 +5,17 @@ const {
     parseCuratorDraft,
 } = require("./episode-curation.cjs")
 
-const RETRY_PROMPT = `The previous response did not satisfy the Curator JSON contract. Re-read the
-frozen episode already present in this conversation and return a corrected draft. Preserve the
-source question verbatim, do not invent numerical truth, and include every required hard-gating
-field. Return a short review note followed by exactly one JSON code block.`
+function retryPrompt(datasetQuestion) {
+    return `The previous response did not satisfy the Curator JSON contract. Re-read the frozen
+episode already present in this conversation and return a corrected draft. Use the user-selected
+dataset question below verbatim; the original source wording is immutable evidence, not a
+replacement evaluation input.
+
+<dataset-question>${String(datasetQuestion ?? "")}</dataset-question>
+
+Do not invent numerical truth, and include every required hard-gating field. Return a short review
+note followed by exactly one JSON code block.`
+}
 
 function assistantTextFromTurn(turn) {
     return (turn?.items ?? [])
@@ -149,6 +156,7 @@ class CurationManager {
         const session = this.store.createCurationSession({
             datasetId: input.datasetId,
             caseType: input.caseType,
+            datasetQuestion: input.datasetQuestion ?? episode.originalQuestion,
             episode,
             skillReference,
             curator: {
@@ -197,11 +205,12 @@ class CurationManager {
                     promptVersion: CURATOR_PROMPT_VERSION,
                 },
             })
-            const kickoff = `Curate this ${session.caseType} episode. The frozen source question is:\n\n${session.episode.originalQuestion}`
+            const kickoff = `Curate this ${session.caseType} episode. The user-selected dataset question is:\n\n${session.datasetQuestion}\n\nThe immutable source wording remains available in the frozen evidence.`
             session = this.store.appendCurationMessage(sessionId, {role: "user", text: kickoff})
             this.emitChanged(session)
             const prompt = buildCuratorPrompt({
                 episode: session.episode,
+                datasetQuestion: session.datasetQuestion,
                 caseType: session.caseType,
                 modelId: session.curator.modelId,
                 skillReference: session.skillReference,
@@ -371,7 +380,7 @@ class CurationManager {
             await this.waitForIdle(sessionId)
             return this.store.getCurationSession(sessionId)
         }
-        return this.sendMessage(sessionId, RETRY_PROMPT)
+        return this.sendMessage(sessionId, retryPrompt(session.datasetQuestion))
     }
 
     updateModel(sessionId, modelId) {
@@ -425,4 +434,4 @@ class CurationManager {
     }
 }
 
-module.exports = {CurationManager, RETRY_PROMPT, assistantTextFromTurn, resolveRuntimeSkill}
+module.exports = {CurationManager, retryPrompt, assistantTextFromTurn, resolveRuntimeSkill}

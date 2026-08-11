@@ -9,14 +9,22 @@ selected assistant message and SHALL NOT lock or mutate the source conversation.
 - **WHEN** a user starts curation and then continues the original task
 - **THEN** the Curator receives the frozen episode while the original task accepts new turns
 
-### Requirement: Verbatim dataset question
+### Requirement: Editable dataset question with immutable source evidence
 
-The system SHALL preserve the selected user question verbatim as the approved case question and
-SHALL NOT replace it with a normalized Curator rewrite.
+The system SHALL initialize the dataset question from the selected user message byte-for-byte,
+allow the user to edit that evaluation input before starting curation, and preserve the original
+source wording separately in immutable evidence. The Curator SHALL NOT normalize or rewrite the
+selected dataset question.
 
 #### Scenario: Natural language is irregular
 - **WHEN** the source question contains colloquial wording, typos, or unusual structure
+- **AND** the user does not edit the dataset question
 - **THEN** the approved dataset input contains that same wording
+
+#### Scenario: User edits the evaluation input
+- **WHEN** the user edits the dataset question before starting curation
+- **THEN** the Curator and approved case use the edited text verbatim
+- **AND** the frozen episode retains the original source question unchanged
 
 ### Requirement: Tool-aware evidence compaction
 

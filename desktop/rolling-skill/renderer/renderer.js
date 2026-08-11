@@ -86,7 +86,8 @@ const translations = {
         expectedSkill: "Expected Skill behavior",
         needsImprovement: "Needs improvement",
         episodeStartsAt: "Episode starts at",
-        datasetQuestion: "Verbatim dataset question",
+        datasetQuestion: "Dataset question",
+        datasetQuestionHelp: "Defaults to the exact source wording. Manual edits change the evaluation input without changing frozen evidence.",
         endingResponse: "Selected ending response",
         frozenCopyHelp: "A frozen copy goes to Curator; the original task stays live.",
         startCuration: "Start curation",
@@ -298,7 +299,8 @@ const translations = {
         expectedSkill: "符合预期的 Skill 行为",
         needsImprovement: "需要改进",
         episodeStartsAt: "片段起点",
-        datasetQuestion: "数据集中的原始问题",
+        datasetQuestion: "数据集问题（默认原文）",
+        datasetQuestionHelp: "可以人工编辑评测输入；冻结的原始对话和 Trace 不会改变。",
         endingResponse: "选中的结束回答",
         frozenCopyHelp: "冻结副本会交给 Curator，原任务仍可继续使用。",
         startCuration: "开始沉淀",
@@ -1482,7 +1484,9 @@ function renderCurations() {
             button.type = "button"
             button.dataset.curationId = session.id
             if (session.id === state.activeCurationId) button.classList.add("active")
-            const title = String(session.episode?.originalQuestion ?? t("untitledCase")).trim()
+            const title = String(
+                session.datasetQuestion ?? session.episode?.originalQuestion ?? t("untitledCase"),
+            ).trim()
             button.append(
                 node("span", "curation-list-title", title || t("untitledCase")),
                 node(
@@ -1511,6 +1515,11 @@ function renderCurations() {
     )
     const question = node("section", "frozen-question")
     question.append(
+        node("span", "curation-label", t("datasetQuestion")),
+        node("div", "", session.datasetQuestion ?? session.episode.originalQuestion),
+    )
+    const sourceQuestion = node("section", "frozen-question")
+    sourceQuestion.append(
         node("span", "curation-label", t("verbatimQuestion")),
         node("div", "", session.episode.originalQuestion),
     )
@@ -1519,7 +1528,9 @@ function renderCurations() {
         "curation-provenance",
         `${session.episode.items.length} episode items · ${session.episode.toolActivity.length} tool signatures · ${session.skillReference?.name || t("none")} · ${session.curator.modelId || t("runtimeDefault")}`,
     )
-    scroll.append(overview, question, provenance)
+    scroll.append(overview, question)
+    if (session.datasetQuestion !== session.episode.originalQuestion) scroll.append(sourceQuestion)
+    scroll.append(provenance)
 
     const conversation = node("section", "curator-conversation")
     conversation.append(node("h3", "", t("curatorConversation")))
@@ -2171,7 +2182,13 @@ async function toggleArchivedCurations() {
         for (const session of state.archivedCurations) {
             const card = node("article", "archived-curation-card")
             card.append(
-                node("strong", "", session.episode?.originalQuestion ?? t("untitledCase")),
+                node(
+                    "strong",
+                    "",
+                    session.datasetQuestion ??
+                        session.episode?.originalQuestion ??
+                        t("untitledCase"),
+                ),
                 node(
                     "small",
                     "",
@@ -2350,10 +2367,15 @@ async function loadThread(threadId) {
         const response = await window.rollingSkill.readThread(threadId)
         if (runtimeEpoch !== state.runtimeEpoch || state.activeThreadId !== threadId) return
         state.activeThread = response.thread
+        const rememberedProfile = response.thread.rollingSkillProfile
         state.selectedTaskModelId =
-            response.thread.model ?? state.settings.taskProfile?.modelId ?? null
+            rememberedProfile && Object.hasOwn(rememberedProfile, "modelId")
+                ? rememberedProfile.modelId
+                : response.thread.model ?? state.settings.taskProfile?.modelId ?? null
         state.selectedTaskEffort =
-            response.thread.effort ?? state.settings.taskProfile?.effort ?? null
+            rememberedProfile && Object.hasOwn(rememberedProfile, "effort")
+                ? rememberedProfile.effort
+                : response.thread.effort ?? state.settings.taskProfile?.effort ?? null
         state.activeTurnId =
             response.thread.turns?.find((turn) => turn.status === "inProgress")?.id ?? null
         state.loadingThread = false
@@ -2464,6 +2486,7 @@ function updateEpisodeStartPreview() {
     )
     if (!selected) return
     selection.startItemId = selected.item.id
+    selection.datasetQuestionDirty = false
     elements.caseQuestion.value = textFromUserInput(selected.item.content)
     const flattened = flattenedActiveItems()
     const startIndex = flattened.findIndex(({item}) => item.id === selected.item.id)
@@ -2496,7 +2519,13 @@ async function openCaseDialog(turnId, itemId) {
         showError(new Error(t("noSkills")))
         return
     }
-    state.caseSelection = {turnId, itemId, startCandidates, startItemId: startCandidates.at(-1).item.id}
+    state.caseSelection = {
+        turnId,
+        itemId,
+        startCandidates,
+        startItemId: startCandidates.at(-1).item.id,
+        datasetQuestionDirty: false,
+    }
     elements.caseStartItem.replaceChildren()
     for (const candidate of [...startCandidates].reverse()) {
         const question = textFromUserInput(candidate.item.content)
@@ -2543,7 +2572,6 @@ async function createCuration() {
         return
     }
     elements.confirmSaveCase.disabled = true
-    elements.caseDialog.close()
     try {
         const session = await window.rollingSkill.createCuration({
             datasetId: elements.caseDataset.value,
@@ -2551,8 +2579,13 @@ async function createCuration() {
             sourceThreadId: state.activeThreadId,
             startItemId: selection.startItemId,
             endItemId: selection.itemId,
+            ...(selection.datasetQuestionDirty
+                ? {datasetQuestion: elements.caseQuestion.value}
+                : {}),
             skillPath: skill.path,
         })
+        elements.caseDialog.close()
+        state.caseSelection = null
         upsertCuration(session)
         state.activeCurationId = session.id
         setCurationOpen(true)
@@ -2561,7 +2594,6 @@ async function createCuration() {
         showError(error)
     } finally {
         elements.confirmSaveCase.disabled = false
-        state.caseSelection = null
     }
 }
 
@@ -2736,6 +2768,17 @@ function handleNotification(message) {
     } else if (method === "thread/status/changed") {
         const thread = state.threads.find((entry) => entry.id === params.threadId)
         if (thread) thread.status = params.status
+    } else if (method === "thread/settings/updated" && params.threadId === state.activeThreadId) {
+        const threadSettings = params.threadSettings ?? params.settings ?? {}
+        if ("model" in threadSettings) {
+            state.selectedTaskModelId = threadSettings.model || null
+            if (state.activeThread) state.activeThread.model = threadSettings.model || null
+        }
+        if ("effort" in threadSettings || "reasoningEffort" in threadSettings) {
+            const effort = threadSettings.effort ?? threadSettings.reasoningEffort ?? null
+            state.selectedTaskEffort = effort || null
+            if (state.activeThread) state.activeThread.effort = effort || null
+        }
     } else if (method === "turn/started" && params.threadId === state.activeThreadId) {
         state.activeTurnId = params.turn.id
         state.sending = false
@@ -3004,6 +3047,9 @@ elements.conversation.addEventListener("click", (event) => {
 elements.closeCaseDialog.addEventListener("click", () => elements.caseDialog.close())
 elements.cancelSaveCase.addEventListener("click", () => elements.caseDialog.close())
 elements.caseStartItem.addEventListener("change", updateEpisodeStartPreview)
+elements.caseQuestion.addEventListener("input", () => {
+    if (state.caseSelection) state.caseSelection.datasetQuestionDirty = true
+})
 elements.caseSkill.addEventListener("change", renderCaseSkillStatus)
 elements.createDataset.addEventListener("click", createDataset)
 elements.caseForm.addEventListener("submit", (event) => {

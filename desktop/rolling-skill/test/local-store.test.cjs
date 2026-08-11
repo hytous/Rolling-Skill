@@ -290,6 +290,62 @@ describe("local evaluation store", () => {
         assert.equal(migrated.settings.curatorProfile.runtimePolicy, "active")
     })
 
+    it("migrates old Curator sessions to a dataset question without changing source evidence", () => {
+        const {path} = fixture()
+        const sourceEpisode = episode("原始自然语言问题")
+        writeFileSync(
+            path,
+            `${JSON.stringify({
+                schemaVersion: "rolling-skill-local/v4",
+                settings: {autoCapture: false},
+                datasets: [{id: "dataset-old", name: "Old", createdAt: "then"}],
+                cases: [],
+                curationSessions: [
+                    {
+                        id: "curation-old",
+                        datasetId: "dataset-old",
+                        caseType: "goodcase",
+                        status: "failed",
+                        episode: sourceEpisode,
+                        curator: {},
+                    },
+                ],
+                evaluationRuns: [],
+            })}\n`,
+        )
+
+        const migrated = new LocalEvaluationStore(path).read()
+        assert.equal(migrated.curationSessions[0].datasetQuestion, "原始自然语言问题")
+        assert.equal(migrated.curationSessions[0].episode.originalQuestion, "原始自然语言问题")
+    })
+
+    it("preserves deliberate dataset-question whitespace while rejecting blank input", () => {
+        const {store} = fixture()
+        const dataset = store.read().datasets[0]
+        const datasetQuestion = "  保留用户输入的首尾空格  \n"
+
+        const session = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            datasetQuestion,
+            episode: episode("不可变的原始问题"),
+            curator: {},
+        })
+
+        assert.equal(session.datasetQuestion, datasetQuestion)
+        assert.throws(
+            () =>
+                store.createCurationSession({
+                    datasetId: dataset.id,
+                    caseType: "goodcase",
+                    datasetQuestion: " \n\t ",
+                    episode: episode("不可变的原始问题"),
+                    curator: {},
+                }),
+            /dataset question is required/i,
+        )
+    })
+
     it("persists a reviewable curation conversation and archives one approved revision", () => {
         const {store} = fixture()
         const dataset = store.read().datasets[0]

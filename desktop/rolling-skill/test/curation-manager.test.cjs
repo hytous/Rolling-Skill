@@ -241,6 +241,31 @@ describe("curation manager", () => {
         assert.doesNotThrow(() => store.deleteDataset(datasetId))
     })
 
+    it("keeps immutable source wording while curating an edited dataset question", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const datasetQuestion = "请查询七月各业务的混元 3 成本，并按业务列出。"
+        const session = await manager.createSession({
+            datasetId,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            startItemId: "user-1",
+            endItemId: "answer-1",
+            datasetQuestion,
+        })
+        await manager.waitForIdle(session.id)
+
+        const persisted = store.getCurationSession(session.id)
+        assert.equal(persisted.episode.originalQuestion, "查一下7月份账单，各业务混元3多少成本？")
+        assert.equal(persisted.datasetQuestion, datasetQuestion)
+        assert.match(runtime.startedTurns[0].text, new RegExp(datasetQuestion))
+        assert.match(runtime.startedTurns[0].text, /查一下7月份账单，各业务混元3多少成本？/)
+
+        await completeInitialDraft(manager, store, persisted)
+        const saved = await manager.archive(session.id)
+        assert.equal(saved.question, datasetQuestion)
+        assert.equal(saved.source.originalQuestion, persisted.episode.originalQuestion)
+    })
+
     it("rejects a Skill that the current runtime no longer reports as enabled", async () => {
         runtime.listSkills = async () => ({
             data: [
@@ -333,11 +358,13 @@ describe("curation manager", () => {
 
     it("isolates malformed Curator output and can retry it without changing the source", async () => {
         const datasetId = store.listDatasets()[0].id
+        const datasetQuestion = "编辑后的评测问题，必须保持这个版本。"
         const session = await manager.createSession({
             datasetId,
             caseType: "goodcase",
             sourceThreadId: "source-thread",
             endItemId: "answer-1",
+            datasetQuestion,
         })
         await manager.waitForIdle(session.id)
         const turnId = store.getCurationSession(session.id).curator.currentTurnId
@@ -357,11 +384,14 @@ describe("curation manager", () => {
         assert.equal(failed.status, "failed")
         assert.match(failed.error, /JSON draft/i)
         assert.equal(failed.episode.originalQuestion, "查一下7月份账单，各业务混元3多少成本？")
+        assert.equal(failed.datasetQuestion, datasetQuestion)
 
         await manager.retry(session.id)
         const retried = store.getCurationSession(session.id)
         assert.equal(retried.status, "running")
         assert.match(runtime.startedTurns.at(-1).text, /previous response did not satisfy/i)
+        assert.match(runtime.startedTurns.at(-1).text, new RegExp(datasetQuestion))
+        assert.match(runtime.startedTurns.at(-1).text, /original source wording is immutable evidence/i)
         assert.equal(runtime.resumedThreads.at(-1).threadId, "curator-1")
     })
 

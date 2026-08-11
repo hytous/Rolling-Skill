@@ -399,11 +399,19 @@ function buildEpisodeSnapshot(thread, options = {}) {
     return deepFreeze(copy(episode))
 }
 
-function buildCuratorPrompt({episode, caseType, modelId = null, skillReference = null}) {
+function buildCuratorPrompt({
+    episode,
+    datasetQuestion = episode?.originalQuestion,
+    caseType,
+    modelId = null,
+    skillReference = null,
+}) {
     if (caseType !== "goodcase" && caseType !== "badcase") {
         throw new Error("Curation case type must be goodcase or badcase")
     }
     const curatorEvidence = compactEpisodeForCurator(episode)
+    const question = String(datasetQuestion ?? "")
+    if (!question.trim()) throw new Error("A dataset question is required")
     const skillName = skillReference ? JSON.stringify(String(skillReference.name)) : null
     const skillGuidance = skillReference
         ? `The Skill under review is named ${skillName}. Before curating, use the runtime's
@@ -469,7 +477,10 @@ Rules:
 - Curator model id requested by profile: ${modelId ?? "runtime default (exact model unavailable)"}.
 
 Case classification: ${caseType}
-Verbatim source question (read-only):
+Dataset question selected by the user (keep verbatim; do not normalize):
+<dataset-question>${question}</dataset-question>
+
+Immutable source question from the frozen conversation:
 <source-question>${episode.originalQuestion}</source-question>
 
 Frozen episode evidence (compacted working view; the app retains the immutable full audit snapshot

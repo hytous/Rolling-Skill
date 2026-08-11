@@ -38,8 +38,19 @@ describe("local-first desktop surface", () => {
         assert.match(html, /Automatic capture is off/i)
         assert.match(html, /id="curation-drawer"/)
         assert.match(html, /id="case-start-item"/)
-        assert.match(html, /id="case-question"[^>]*readonly/)
+        assert.match(html, /id="case-question"/)
+        assert.doesNotMatch(html, /id="case-question"[^>]*readonly/)
         assert.match(renderer, /createCuration/)
+        assert.match(renderer, /datasetQuestion:\s*elements\.caseQuestion\.value/)
+        assert.match(renderer, /datasetQuestionDirty/)
+        const createStart = renderer.indexOf("async function createCuration()")
+        const createEnd = renderer.indexOf("async function loadTrace()", createStart)
+        const createHandler = renderer.slice(createStart, createEnd)
+        assert.ok(createStart >= 0 && createEnd > createStart)
+        assert.ok(
+            createHandler.indexOf("elements.caseDialog.close()") >
+                createHandler.indexOf("await window.rollingSkill.createCuration"),
+        )
         assert.match(preload, /createCuration/)
         assert.match(main, /curation:create/)
         assert.match(main, /hiddenThreadIds/)
@@ -141,6 +152,7 @@ describe("local-first desktop surface", () => {
         assert.ok(start >= 0 && end > start)
         assert.match(handler, /state\.selectedTaskModelId/)
         assert.doesNotMatch(handler, /updateSettings/)
+        assert.match(renderer, /rollingSkillProfile/)
     })
 
     it("routes core runtime and Curator chrome through localization keys", () => {

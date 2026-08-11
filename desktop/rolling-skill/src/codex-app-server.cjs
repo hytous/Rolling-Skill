@@ -255,8 +255,8 @@ class CodexAppServerClient extends EventEmitter {
         return this.request("turn/start", {
             threadId,
             input,
-            ...(options.model ? {model: options.model} : {}),
-            ...(options.effort ? {effort: options.effort} : {}),
+            ...(Object.hasOwn(options, "model") ? {model: options.model ?? null} : {}),
+            ...(Object.hasOwn(options, "effort") ? {effort: options.effort ?? null} : {}),
         })
     }
 

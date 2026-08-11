@@ -12,6 +12,7 @@ const {EvaluationRunner} = require("./evaluation-runner.cjs")
 const {LocalEvaluationStore, reasoningEffort} = require("./local-store.cjs")
 const {resolveExecutionPolicy} = require("./execution-policy.cjs")
 const {requireLocalPath, requireWebUrl} = require("./link-targets.cjs")
+const {readThreadProfile, updateThreadProfiles} = require("./thread-profile-store.cjs")
 const {RuntimeRegistry} = require("./runtime-registry.cjs")
 const {findGitWorkspace} = require("./workspace.cjs")
 
@@ -56,6 +57,29 @@ function writePreferences(patch) {
     chmodSync(preferencesFile(), 0o600)
 }
 
+function currentThreadProfile(threadId, runtimeId = runtimeDescriptor?.runtimeId) {
+    return readThreadProfile(readPreferences(), runtimeId, threadId)
+}
+
+function rememberThreadProfile(threadId, patch, runtimeId = runtimeDescriptor?.runtimeId) {
+    if (!runtimeId || !threadId) return null
+    const preferences = readPreferences()
+    const threadProfiles = updateThreadProfiles(
+        preferences.threadProfiles,
+        runtimeId,
+        threadId,
+        patch,
+    )
+    writePreferences({threadProfiles})
+    return readThreadProfile({threadProfiles}, runtimeId, threadId)
+}
+
+function attachThreadProfile(response, threadId = response?.thread?.id) {
+    const rollingSkillProfile = currentThreadProfile(threadId)
+    if (!response?.thread || !rollingSkillProfile) return response
+    return {...response, thread: {...response.thread, rollingSkillProfile}}
+}
+
 function locateInitialWorkspace() {
     const saved = readPreferences().workspaceRoot
     if (typeof saved === "string" && existsSync(saved)) return saved
@@ -68,7 +92,7 @@ function send(channel, payload) {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
 }
 
-function installClientEvents(nextClient) {
+function installClientEvents(nextClient, sourceRuntimeId) {
     nextClient.on("state", (state) => {
         if (state.status === "stopped" || state.status === "error") activeThreads.clear()
         send("runtime:state", enrichRuntimeState(state))
@@ -95,6 +119,18 @@ function installClientEvents(nextClient) {
         if (threadId && message.method === "thread/archived") {
             activeThreads.delete(threadId)
             loadedThreads.delete(threadId)
+        }
+        if (threadId && message.method === "thread/settings/updated") {
+            const threadSettings = params.threadSettings ?? params.settings ?? {}
+            const patch = {}
+            if ("model" in threadSettings) patch.modelId = threadSettings.model
+            if ("effort" in threadSettings) patch.effort = threadSettings.effort
+            else if ("reasoningEffort" in threadSettings) {
+                patch.effort = threadSettings.reasoningEffort
+            }
+            if (Object.keys(patch).length) {
+                rememberThreadProfile(threadId, patch, sourceRuntimeId)
+            }
         }
         const hidden =
             (threadId && curationManager?.hiddenThreadIds().has(threadId)) ||
@@ -153,7 +189,7 @@ function createClient() {
         workspaceRoot,
         executionPolicy: currentExecutionPolicy(),
     })
-    installClientEvents(nextClient)
+    installClientEvents(nextClient, runtimeDescriptor.runtimeId)
     return nextClient
 }
 
@@ -567,7 +603,7 @@ function installIpc() {
         if (curationManager.hiddenThreadIds().has(threadId)) {
             throw new Error("Curator threads are available through curation sessions only")
         }
-        return (await ensureRuntime()).readThread(threadId)
+        return attachThreadProfile(await (await ensureRuntime()).readThread(threadId), threadId)
     })
     ipcMain.handle("runtime:start-thread", async (_event, input = {}) => {
         const model = optionalIdentifier(input.modelId, "model")
@@ -577,17 +613,16 @@ function installIpc() {
             ...(effort ? {effort} : {}),
         })
         loadedThreads.add(response.thread.id)
-        return response
+        rememberThreadProfile(response.thread.id, {modelId: model, effort})
+        return attachThreadProfile(response)
     })
     ipcMain.handle("runtime:start-turn", async (_event, {threadId, text, modelId, effort}) => {
         threadId = requireIdentifier(threadId, "thread")
         const input = normalizeTurnInput(text)
         const model = optionalIdentifier(modelId, "model")
         effort = optionalEffort(effort)
-        const options = {
-            ...(model ? {model} : {}),
-            ...(effort ? {effort} : {}),
-        }
+        const options = {model, effort}
+        rememberThreadProfile(threadId, {modelId: model, effort})
         const runtime = await ensureRuntime()
         if (!loadedThreads.has(threadId)) {
             await runtime.resumeThread(threadId, options)
@@ -651,6 +686,10 @@ function installIpc() {
             sourceThreadId,
             startItemId,
             endItemId,
+            datasetQuestion:
+                "datasetQuestion" in input
+                    ? requireDatasetQuestion(input.datasetQuestion)
+                    : undefined,
             traceReference,
             modelId: profile.modelId,
             effort: profile.effort,
@@ -755,6 +794,13 @@ function requireAbsolutePath(value, label) {
         throw new Error(`A valid absolute ${label} path is required`)
     }
     return path
+}
+
+function requireDatasetQuestion(value) {
+    const question = String(value ?? "")
+    if (!question.trim()) throw new Error("Dataset question is required")
+    if (question.length > 120_000) throw new Error("Dataset question is too large")
+    return question
 }
 
 function normalizeTurnInput(value) {

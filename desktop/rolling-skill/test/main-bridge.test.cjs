@@ -31,6 +31,15 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /getExecutionPolicy:\s*currentExecutionPolicy/)
     })
 
+    it("persists the selected task profile per runtime thread", () => {
+        const main = source("src/main.cjs")
+
+        assert.match(main, /readThreadProfile/)
+        assert.match(main, /updateThreadProfiles/)
+        assert.match(main, /rollingSkillProfile/)
+        assert.match(main, /rememberThreadProfile/)
+    })
+
     it("opens message links only through validated IPC handlers", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")

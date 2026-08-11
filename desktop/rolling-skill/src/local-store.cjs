@@ -179,6 +179,10 @@ function migrateState(input) {
         changed = true
     }
     for (const session of state.curationSessions) {
+        if (typeof session.datasetQuestion !== "string" || !session.datasetQuestion.trim()) {
+            session.datasetQuestion = String(session.episode?.originalQuestion ?? "")
+            changed = true
+        }
         if (!("skillReference" in session)) {
             session.skillReference = null
             changed = true
@@ -535,6 +539,9 @@ class LocalEvaluationStore {
         if (typeof episode.originalQuestion !== "string" || !episode.originalQuestion.trim()) {
             throw new Error("The episode must contain the original question")
         }
+        const datasetQuestion = String(input.datasetQuestion ?? episode.originalQuestion)
+        if (!datasetQuestion.trim()) throw new Error("The dataset question is required")
+        if (datasetQuestion.length > 120_000) throw new Error("The dataset question is too large")
         if (JSON.stringify(episode).length > 1_500_000) {
             throw new Error("The selected episode is too large to curate locally")
         }
@@ -543,6 +550,7 @@ class LocalEvaluationStore {
             id: randomUUID(),
             datasetId: input.datasetId,
             caseType: input.caseType,
+            datasetQuestion,
             status: "queued",
             episode,
             skillReference: normalizeSkillReference(input.skillReference),
@@ -707,7 +715,7 @@ class LocalEvaluationStore {
             id: randomUUID(),
             datasetId: session.datasetId,
             caseType: session.caseType,
-            question: session.episode.originalQuestion,
+            question: session.datasetQuestion ?? session.episode.originalQuestion,
             answer: formatCuratedAnswer(draft),
             curated: draft,
             skillReference: copy(session.skillReference),
@@ -733,6 +741,7 @@ class LocalEvaluationStore {
                 skillName: session.skillReference?.name ?? null,
                 skillPath: session.skillReference?.path ?? null,
                 skillRuntimeId: session.skillReference?.runtimeId ?? null,
+                originalQuestion: session.episode.originalQuestion,
                 skillConfirmedAt: session.skillReference?.confirmedAt ?? null,
             },
             evidence: {

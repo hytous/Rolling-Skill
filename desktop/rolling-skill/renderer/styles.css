@@ -2552,6 +2552,12 @@ kbd {
     line-height: 1.45;
 }
 
+.field-help {
+    color: var(--faint);
+    font-size: 9px;
+    line-height: 1.45;
+}
+
 .switch {
     position: relative;
     display: inline-flex;
