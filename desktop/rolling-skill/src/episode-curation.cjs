@@ -3,6 +3,7 @@ const {basename} = require("node:path")
 const CURATED_CASE_SCHEMA = "rolling-skill-curated-case/v1"
 const CURATOR_PROMPT_VERSION = "rolling-skill-curator/v2"
 const MAX_ITEM_TEXT = 24_000
+const MAX_COMMAND_OUTPUT_TEXT = 4_000
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
@@ -19,14 +20,26 @@ function truncate(value, limit = MAX_ITEM_TEXT) {
     return text.length <= limit ? text : `${text.slice(0, limit)}\n…[truncated]`
 }
 
-function serialized(value) {
+function truncateMiddle(value, limit) {
+    const text = String(value ?? "")
+    if (text.length <= limit) return text
+    const marker = "\n…[output truncated]…\n"
+    const retained = Math.max(0, limit - marker.length)
+    const headLength = Math.ceil(retained / 2)
+    const tailLength = Math.floor(retained / 2)
+    return `${text.slice(0, headLength)}${marker}${text.slice(-tailLength)}`
+}
+
+function serialized(value, limit = MAX_ITEM_TEXT, keepTail = false) {
     if (value === undefined || value === null) return null
-    if (typeof value === "string") return truncate(value)
+    let text
+    if (typeof value === "string") text = value
     try {
-        return truncate(JSON.stringify(value))
+        text ??= JSON.stringify(value)
     } catch {
         return "[unserializable]"
     }
+    return keepTail ? truncateMiddle(text, limit) : truncate(text, limit)
 }
 
 function userMessageText(content) {
@@ -56,11 +69,15 @@ function normalizeItem(item, turnId) {
     if (item.type === "commandExecution") {
         return {
             ...base,
-            command: truncate(item.command),
+            command: String(item.command ?? ""),
             status: item.status ?? null,
             exitCode: item.exitCode ?? null,
             durationMs: item.durationMs ?? null,
-            output: serialized(item.aggregatedOutput ?? item.output),
+            output: serialized(
+                item.aggregatedOutput ?? item.output,
+                MAX_COMMAND_OUTPUT_TEXT,
+                true,
+            ),
         }
     }
     if (item.type === "mcpToolCall") {

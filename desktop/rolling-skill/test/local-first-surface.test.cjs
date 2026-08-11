@@ -351,8 +351,11 @@ describe("local-first desktop surface", () => {
         assert.doesNotMatch(renderer, /\.innerHTML\s*=/)
     })
 
-    it("shows compact command, tool, subagent, and context activity in conversation history", () => {
+    it("shows full command input plus compact tool, subagent, and context activity", () => {
+        const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")
+        const commandActivity = source("renderer/command-activity.js")
+        const styles = source("renderer/styles.css")
 
         for (const type of [
             "commandExecution",
@@ -367,6 +370,12 @@ describe("local-first desktop surface", () => {
         }
         assert.match(renderer, /activityText/)
         assert.match(renderer, /activity-card/)
+        assert.match(html, /<script src="command-activity\.js"><\/script>/)
+        assert.match(renderer, /RollingSkillCommandActivity/)
+        assert.match(renderer, /commandActivityDetail\(item/)
+        assert.match(commandActivity, /commandActions/)
+        assert.match(commandActivity, /LEGACY_SHELL_PLACEHOLDER/)
+        assert.match(styles, /\.activity-card[\s\S]{0,500}white-space:\s*pre-wrap/)
         assert.match(renderer, /runtimeMayOmitItems[\s\S]{0,200}getTurns\(\)\.length/)
     })
 

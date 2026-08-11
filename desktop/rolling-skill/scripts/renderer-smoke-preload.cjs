@@ -35,6 +35,7 @@ function conversationThread(id, name, marker) {
                           type: "commandExecution",
                           status: "completed",
                           command: "billing-cli cost query",
+                          aggregatedOutput: "huge-noisy-shell-output",
                       },
                       {
                           id: `${id}-mcp`,

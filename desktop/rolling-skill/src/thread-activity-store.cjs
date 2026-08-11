@@ -8,6 +8,7 @@ const {
 } = require("node:fs")
 const {randomUUID} = require("node:crypto")
 const {dirname} = require("node:path")
+const {commandActivityDetail} = require("../renderer/command-activity.js")
 
 const THREAD_ACTIVITY_SCHEMA = "rolling-skill-thread-activity/v1"
 const SUPPORTED_ACTIVITY_TYPES = new Set([
@@ -50,26 +51,13 @@ function finiteNumber(value) {
     return typeof value === "number" && Number.isFinite(value) ? value : null
 }
 
-function compactCommand(value, limit) {
-    const command = String(value ?? "").trim()
-    if (!command) return null
-    const tokens = command.match(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s]+/gu) ?? []
-    let executableIndex = 0
-    while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(tokens[executableIndex] ?? "")) {
-        executableIndex += 1
+function compactCommand(item) {
+    const detail = commandActivityDetail(item)
+    return {
+        command: detail.command || null,
+        invocationCount: detail.invocationCount,
+        detailUnavailable: detail.detailUnavailable,
     }
-    const rawExecutable = String(tokens[executableIndex] ?? "")
-        .replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/u, "$1$2")
-        .split(/[\\/]/u)
-        .at(-1)
-    const executable = /^[A-Za-z0-9][A-Za-z0-9_.+-]{0,199}$/u.test(rawExecutable)
-        ? rawExecutable
-        : "command"
-    const omittedArguments = executableIndex > 0 || tokens.length > executableIndex + 1
-    return compactText(
-        omittedArguments ? `${executable} … [arguments omitted]` : executable,
-        limit,
-    )
 }
 
 function compactActivity(item, options) {
@@ -82,9 +70,13 @@ function compactActivity(item, options) {
     if (status) compact.status = status
 
     if (type === "commandExecution") {
-        const command = compactCommand(item.command, options.maxTextLength)
+        const commandDetail = compactCommand(item)
         const exitCode = finiteNumber(item.exitCode)
-        if (command) compact.command = command
+        if (commandDetail.command) compact.command = commandDetail.command
+        if (commandDetail.invocationCount) {
+            compact.commandInvocationCount = commandDetail.invocationCount
+        }
+        if (commandDetail.detailUnavailable) compact.commandDetailUnavailable = true
         if (exitCode !== null) compact.exitCode = exitCode
         return compact
     }
@@ -238,7 +230,11 @@ class ThreadActivityStore {
         const key = recordKey({runtimeId, threadId, turnId, item: nextItem})
         const previousIndex = this.state.records.findIndex((record) => recordKey(record) === key)
         const previous = previousIndex >= 0 ? this.state.records[previousIndex] : null
-        const mergedItem = compactActivity({...previous?.item, ...nextItem}, this.options)
+        const mergedSource = {...previous?.item, ...nextItem}
+        if (nextItem.type === "commandExecution" && nextItem.command) {
+            delete mergedSource.commandDetailUnavailable
+        }
+        const mergedItem = compactActivity(mergedSource, this.options)
         const record = {
             runtimeId,
             threadId,

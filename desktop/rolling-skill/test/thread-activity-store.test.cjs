@@ -36,7 +36,7 @@ afterEach(() => {
 })
 
 describe("thread activity persistence", () => {
-    it("captures supported started/completed items and keeps only compact safe fields", () => {
+    it("captures command inputs without persisting tool outputs or results", () => {
         const {path, store} = temporaryStore({maxTextLength: 80})
         assert.deepEqual(
             [...SUPPORTED_ACTIVITY_TYPES].sort(),
@@ -100,7 +100,8 @@ describe("thread activity persistence", () => {
             id: "commandExecution-1",
             type: "commandExecution",
             status: "completed",
-            command: "billing-cli \u2026 [arguments omitted]",
+            command: "billing-cli query --token top-secret-value",
+            commandInvocationCount: 1,
             exitCode: 0,
         })
         assert.deepEqual(activities[1].item, {
@@ -117,13 +118,15 @@ describe("thread activity persistence", () => {
         })
 
         const persisted = readFileSync(path, "utf8")
-        for (const secret of ["aggregatedOutput", "accountToken", "must never", "secret diff", "top-secret-value", "permission denied", "/workspace/a.js", '"arguments"', '"result"']) {
-            assert.equal(persisted.includes(secret), false, `persisted forbidden content: ${secret}`)
+        assert.equal(persisted.includes("billing-cli query --token top-secret-value"), true)
+        for (const excluded of ["aggregatedOutput", "accountToken", "must never", "secret diff", "permission denied", "/workspace/a.js", '"arguments"', '"result"']) {
+            assert.equal(persisted.includes(excluded), false, `persisted noisy content: ${excluded}`)
         }
     })
 
-    it("never persists command arguments or environment-assignment values", () => {
+    it("persists full command input while excluding command output", () => {
         const {path, store} = temporaryStore()
+        const longCommand = `billing-cli query ${"x".repeat(1_200)}`
         store.recordNotification(
             "codex:alpha",
             notification(
@@ -131,6 +134,7 @@ describe("thread activity persistence", () => {
                 "commandExecution",
                 {
                     command: "billing-cli --token sk-abc123 query",
+                    aggregatedOutput: "many output rows that should not be stored",
                     status: "completed",
                 },
                 {itemId: "token-flag"},
@@ -148,14 +152,143 @@ describe("thread activity persistence", () => {
                 {itemId: "environment-secret"},
             ),
         )
+        store.recordNotification(
+            "codex:alpha",
+            notification(
+                "item/completed",
+                "commandExecution",
+                {command: longCommand, status: "completed"},
+                {itemId: "long-command"},
+            ),
+        )
 
         assert.deepEqual(
             store.list("codex:alpha", "thread-1").map((entry) => entry.item.command),
-            ["billing-cli \u2026 [arguments omitted]", "cost-query \u2026 [arguments omitted]"],
+            [
+                "billing-cli --token sk-abc123 query",
+                "AWS_ACCESS_KEY_ID=AKIAEXAMPLE /opt/tools/cost-query account-42",
+                longCommand,
+            ],
         )
         const persisted = readFileSync(path, "utf8")
-        for (const secret of ["sk-abc123", "AKIAEXAMPLE", "account-42", "/opt/tools"]) {
-            assert.equal(persisted.includes(secret), false, `persisted command argument: ${secret}`)
+        assert.equal(persisted.includes("sk-abc123"), true)
+        assert.equal(persisted.includes("AKIAEXAMPLE"), true)
+        assert.equal(persisted.includes("many output rows"), false)
+    })
+
+    it("uses command actions instead of showing only the outer shell wrapper", () => {
+        const {path, store} = temporaryStore()
+        store.recordNotification(
+            "codex:alpha",
+            notification(
+                "item/completed",
+                "commandExecution",
+                {
+                    command: "/bin/zsh -lc \"sed -n '1p' /private/token.txt && rg secret /private/token.txt\"",
+                    commandActions: [
+                        {type: "read", command: "sed -n '1p' /private/token.txt"},
+                        {type: "search", command: "rg secret /private/token.txt"},
+                    ],
+                    status: "completed",
+                    exitCode: 0,
+                },
+                {itemId: "wrapped-actions"},
+            ),
+        )
+        const commands = store
+            .list("codex:alpha", "thread-1")
+            .map((entry) => entry.item)
+        assert.deepEqual(commands[0], {
+            id: "wrapped-actions",
+            type: "commandExecution",
+            status: "completed",
+            command: "sed -n '1p' /private/token.txt\nrg secret /private/token.txt",
+            commandInvocationCount: 2,
+            exitCode: 0,
+        })
+        const persisted = readFileSync(path, "utf8")
+        assert.equal(persisted.includes("sed -n '1p' /private/token.txt"), true)
+        assert.equal(persisted.includes("rg secret /private/token.txt"), true)
+        assert.equal(persisted.includes("/bin/zsh -lc"), false)
+    })
+
+    it("replaces a legacy shell placeholder when completed actions arrive", () => {
+        const {store} = temporaryStore()
+        store.recordNotification(
+            "codex:alpha",
+            notification(
+                "item/started",
+                "commandExecution",
+                {command: "zsh … [arguments omitted]", status: "inProgress"},
+                {itemId: "legacy-command"},
+            ),
+        )
+        store.recordNotification(
+            "codex:alpha",
+            notification(
+                "item/completed",
+                "commandExecution",
+                {
+                    commandActions: [
+                        {command: "git status"},
+                        {command: "git diff"},
+                    ],
+                    status: "completed",
+                },
+                {itemId: "legacy-command"},
+            ),
+        )
+
+        assert.deepEqual(store.list("codex:alpha", "thread-1")[0].item, {
+            id: "legacy-command",
+            type: "commandExecution",
+            status: "completed",
+            command: "git status\ngit diff",
+            commandInvocationCount: 2,
+        })
+    })
+
+    it("preserves argv input without interpreting its operands as shell syntax", () => {
+        const {path, store} = temporaryStore()
+        for (const [itemId, command] of [
+            ["argv", ["/usr/bin/printf", "%s", "public|sk-argv-secret"]],
+            [
+                "wrapped-argv",
+                ["env", "-i", "billing-cli", "literal|sk-wrapper-argv-secret"],
+            ],
+            [
+                "clobber",
+                ["/bin/zsh", "-lc", "cat >| /private/sk-clobber-secret"],
+            ],
+        ]) {
+            store.recordNotification(
+                "codex:alpha",
+                notification(
+                    "item/completed",
+                    "commandExecution",
+                    {command, status: "completed"},
+                    {itemId},
+                ),
+            )
+        }
+
+        const items = store.list("codex:alpha", "thread-1").map((entry) => entry.item)
+        assert.equal(items[0].command, "/usr/bin/printf %s public|sk-argv-secret")
+        assert.equal(items[1].command, "env -i billing-cli literal|sk-wrapper-argv-secret")
+        assert.equal(
+            items[2].command,
+            "/bin/zsh -lc cat >| /private/sk-clobber-secret",
+        )
+        for (const item of items) assert.equal(item.commandInvocationCount, 1)
+
+        const persisted = readFileSync(path, "utf8")
+        for (const commandInput of [
+            "sk-argv-secret",
+            "sk-wrapper-argv-secret",
+            "sk-clobber-secret",
+            "/private",
+        ]) {
+            assert.equal(persisted.includes(commandInput), true)
         }
     })
 

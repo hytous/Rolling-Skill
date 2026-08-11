@@ -1601,6 +1601,8 @@ kbd {
     font-family: "SFMono-Regular", Menlo, monospace;
     font-size: 9.5px;
     line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 .activity-history-note {

@@ -89,13 +89,13 @@ async function run() {
         throw new Error("Rejected route link did not remain text")
     }
     if (markdownAndActivity.rightAligned !== "right") throw new Error("GFM table alignment missing")
-    for (const expected of ["billing-cli", "billing/query_cost", "/root/reviewer", "上下文已压缩"]) {
+    for (const expected of ["billing-cli cost query", "billing/query_cost", "/root/reviewer", "上下文已压缩"]) {
         if (!markdownAndActivity.activity.some((entry) => entry.includes(expected))) {
             throw new Error(`Activity card missing: ${expected}`)
         }
     }
-    if (markdownAndActivity.activity.some((entry) => entry.includes("cost query"))) {
-        throw new Error("Command activity exposed arguments instead of a compact executable label")
+    if (markdownAndActivity.activity.some((entry) => entry.includes("huge-noisy-shell-output"))) {
+        throw new Error("Command activity exposed shell output")
     }
     if (markdownAndActivity.scrollBehavior !== "auto") {
         throw new Error(`Conversation scrolling is animated: ${markdownAndActivity.scrollBehavior}`)

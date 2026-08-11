@@ -1,3 +1,5 @@
+const commandActivity = globalThis.RollingSkillCommandActivity
+
 const translations = {
     en: {
         newTask: "New task",
@@ -132,6 +134,8 @@ const translations = {
         reasoning: "Reasoning",
         working: "working",
         command: "command",
+        commandHistoryUnavailable: "Historical command details were not recorded",
+        commandInvocations: "{count} calls",
         fileChanges: "file changes",
         planUpdated: "Plan updated",
         subagentActivity: "Subagent activity",
@@ -357,6 +361,8 @@ const translations = {
         reasoning: "推理",
         working: "处理中",
         command: "命令",
+        commandHistoryUnavailable: "历史命令详情未记录",
+        commandInvocations: "{count} 次调用",
         fileChanges: "文件变更",
         planUpdated: "计划已更新",
         subagentActivity: "子 Agent 活动",
@@ -1521,28 +1527,23 @@ function activityStatus(status, fallbackKey) {
     return keys[status] ? t(keys[status]) : String(status || t(fallbackKey))
 }
 
-function commandActivityLabel(value) {
-    const source = String(Array.isArray(value) ? value.join(" ") : value ?? "").trim()
-    const tokens = source.match(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s]+/gu) ?? []
-    let executableIndex = 0
-    while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(tokens[executableIndex] ?? "")) {
-        executableIndex += 1
-    }
-    const executable = String(tokens[executableIndex] ?? "")
-        .replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/u, "$1$2")
-        .split(/[\\/]/u)
-        .at(-1)
-    return /^[A-Za-z0-9][A-Za-z0-9_.+-]{0,199}$/u.test(executable)
-        ? executable
-        : t("command")
-}
-
 function activityText(item) {
     if (item.type === "reasoning") {
         return `${t("reasoning")} · ${(item.summary ?? []).join(" ") || t("working")}`
     }
     if (item.type === "commandExecution") {
-        return `${activityStatus(item.status, "running")} · ${commandActivityLabel(item.command)}`
+        const detail = commandActivity.commandActivityDetail(item)
+        const header = [
+            activityStatus(item.status, "running"),
+            detail.invocationCount > 1
+                ? formatMessage("commandInvocations", {count: detail.invocationCount})
+                : null,
+            Number.isFinite(item.exitCode) ? `exit ${item.exitCode}` : null,
+        ].filter(Boolean).join(" · ")
+        const command = detail.detailUnavailable
+            ? t("commandHistoryUnavailable")
+            : detail.command || t("command")
+        return `${header}\n${command}`
     }
     if (item.type === "fileChange") {
         return `${activityStatus(item.status, "working")} · ${t("fileChanges")}`

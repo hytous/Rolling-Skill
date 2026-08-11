@@ -105,6 +105,30 @@ describe("episode curation evidence", () => {
         assert.equal(episode.originalQuestion, "帮我瞅瞅 7月账单？混元3 各业务到底花了多少呀")
     })
 
+    it("keeps command input but bounds long shell output in the frozen Case episode", () => {
+        const thread = sourceThread()
+        const command = thread.turns[0].items.find((item) => item.id === "command-1")
+        command.command = `billing-cli query --payload ${"input".repeat(6_000)}`
+        command.aggregatedOutput = `output-start\n${"x".repeat(12_000)}\noutput-end-error`
+
+        const episode = buildEpisodeSnapshot(thread, {
+            startItemId: "user-1",
+            endItemId: "agent-2",
+            traceReference: "trace://full-output-remains-in-trace.jsonl#L1-L2",
+        })
+        const frozenCommand = episode.items.find((item) => item.id === "command-1")
+
+        assert.equal(frozenCommand.command, command.command)
+        assert.equal(frozenCommand.output.length, 4_000)
+        assert.match(frozenCommand.output, /^output-start/u)
+        assert.match(frozenCommand.output, /output-end-error$/u)
+        assert.match(frozenCommand.output, /output truncated/u)
+        assert.equal(
+            episode.source.traceReference,
+            "trace://full-output-remains-in-trace.jsonl#L1-L2",
+        )
+    })
+
     it("distinguishes shell CLI operations and compacts repeated tool signatures", () => {
         assert.deepEqual(
             parseCliInvocations("bash -lc 'git status && billing-cli cost query --month 7'").map(
