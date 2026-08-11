@@ -3,8 +3,7 @@
 Rolling Skill is a local-first macOS client for running and evaluating Skill tasks through agent
 runtimes already installed on the machine. It opens directly into a task interface, discovers
 compatible runtimes, and connects through a provider adapter. The application does not package an
-agent runtime and does not require Docker, Compose, Postgres, Redis, Traefik, an Agenta service, or
-a browser session.
+agent runtime and does not require Docker or a separate backend service.
 
 ## Open the app
 
@@ -201,9 +200,6 @@ Local state is stored under `~/Library/Application Support/Rolling Skill/`:
   to macOS and all other navigation is blocked.
 - Dataset writes are atomic and trace files are append-only with owner-only permissions.
 
-The wider Agenta repository still contains server deployment options. Those are independent
-capabilities and are not inspected, started, or required by `Rolling Skill.app`.
-
 ## Tests
 
 `npm test` covers provider discovery priority and de-duplication, compatibility probing, registry
@@ -214,3 +210,16 @@ catalog and turn overrides, reasoning-effort propagation, settings migration, at
 persistence, Case deletion and immutable run snapshots, fixed grading contracts, multi-runtime
 parallel queues, CodeBuddy ACP configuration, runtime attribution, shutdown cleanup, and trace
 provenance.
+
+## Troubleshooting
+
+### Codex returns `403 Forbidden: unsupported Codex client originator`
+
+Codex app-server copies `initialize.params.clientInfo.name` into the `originator` header of model
+requests. Rolling Skill identifies itself as `rolling-skill`. Some enterprise Codex endpoints only
+accept a registered list of clients and reject any other value before model execution.
+
+This error is not an authentication, model, or reasoning-effort failure. Ask the service owner to
+register `rolling-skill` as an allowed Codex client/originator, or use an explicitly approved
+Runtime Driver. Do not impersonate `codex_exec`, `Codex Desktop`, `codex_vscode`, or another allowed
+client: originator is also used for enterprise compliance attribution.

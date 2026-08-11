@@ -1,437 +1,158 @@
+# Rolling Skill
 
-<p align="center">
-  <a href="https://agenta.ai?utm_source=github&utm_medium=referral&utm_campaign=readme">
-      <picture >
-        <source width="275" media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/97e31bfc-b1fc-4d19-b443-5aedf6029017"  >
-        <source width="275" media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/fdc5f23f-2095-4cfc-9511-14c6851c1262"  >
-        <img alt="Shows the logo of agenta" src="https://github.com/user-attachments/assets/fdc5f23f-2095-4cfc-9511-14c6851c1262" >
-      </picture>
-  </a>
-  
-<div align="center">
-  <strong> <h1> The open-source workspace for building and running agents </h1></strong>
+Rolling Skill 是一个本地优先的 macOS Agent 客户端和 Skill 评测工作台。它连接电脑上
+已经安装的 Agent Runtime，在同一个桌面应用中完成对话、Trace 查看、Case 沉淀、数据集
+管理以及跨 Runtime 的 Skill 评测。
 
-  Build agents that **automate your work** by chatting with them. Share them with **your team**, connect them to the apps you use, and run them in the **background**.
-  
-  ---
-  
-<a href="https://youtu.be/Y5l2BPRkKC8?si=HoIflTHFhXKEgyo3">
-  <img
-    width="900"
-    alt="Watch the Agenta platform demo"
-    src="https://github.com/user-attachments/assets/93e894fb-2b7a-4190-a1e5-b2c84a907c29"
-  />
-</a>
+Rolling Skill 不捆绑 Codex、CodeBuddy 或其他 Runtime，不要求 Docker，也不依赖单独的
+后端服务。应用本身没有登录系统；模型服务所需的认证仍由对应 Runtime 管理。
 
-  ---
+## 快速开始
 
+双击仓库根目录的 `Rolling Skill.app`。本地构建使用 ad-hoc 签名，首次打开时 macOS 可能
+要求先按住 Control 点击应用，再选择 **打开**。
 
+应用启动后会自动发现兼容的本机 Runtime。也可以在 **设置 → Runtime** 中重新扫描、
+选择指定的可执行文件或恢复自动选择。
 
-</div>
+当前构建目标：
 
-</div>
+- macOS 13 或更高版本；
+- Apple Silicon；
+- 至少安装一个受支持的 Runtime，才能实际发起 Agent 请求。
 
+没有可用 Runtime 时，应用、本地数据集和历史评测记录仍可正常打开。
 
-<h3 align="center">
-  <a href="https://agenta.ai/docs/?utm_source=github&utm_medium=referral&utm_campaign=readme"><b>Documentation</b></a> &bull;
-  <a href="https://agenta.ai?utm_source=github&utm_medium=referral&utm_campaign=readme"><b>Website</b></a> &bull;
-  <a href="https://cloud.agenta.ai?utm_source=github&utm_medium=referral&utm_campaign=readme"><b>Agenta Cloud</b></a>
-</h3>
+## 核心能力
 
-<p align="center">
-  <a href="./README.md"><img alt="README in English" src="https://img.shields.io/badge/English-d9d9d9"></a>
-  <a href="./README.cn.md"><img alt="简体中文版自述文件" src="https://img.shields.io/badge/简体中文-d9d9d9"></a>
-  <a href="./README.ja.md"><img alt="日本語のREADME" src="https://img.shields.io/badge/日本語-d9d9d9"></a>
-  <a href="./README.kr.md"><img alt="README in Korean" src="https://img.shields.io/badge/한국어-d9d9d9"></a>
-</p>
-<div align="center">
+- 像本地 Codex 客户端一样创建和继续 Agent 对话；
+- 从 Runtime 的模型清单中选择模型和推理强度；
+- 查看并保存 Runtime 原始 Trace；
+- 从一段连续的问题解决过程创建 `goodcase` 或 `badcase`；
+- 保留用户问题原文，不把自然语言问题标准化成固定问法；
+- 使用独立 Curator 会话提炼参考答案、硬判定条件、输出格式和失败原因；
+- 将已完成或丢弃的 Case Draft 从活动列表移出，并在设置中查看归档记录；
+- 创建、浏览和删除数据集 Case；
+- 运行单个 Case 或整个数据集；
+- 为一次评测选择多个 Runtime、模型和推理强度，并让不同 Runtime 并行执行；
+- 在 **Skill 评测 → 评测记录** 中查看持久化的 Case × Runtime 结果；
+- 删除当前 Case 后继续保留历史评测使用的不可变快照；
+- 可选 Automatic Capture，默认关闭且只创建待审核草稿，不会自动写入数据集。
 
-<a href="https://trendshift.io/repositories/46?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-46" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/46" alt="Agenta-AI%2Fagenta | Trendshift" width="250" height="55"/></a>
-</div>
+当前自动评测重点是 Skill 工作流和输出格式。数字结论暂不作为自动硬门槛，仍保留给人工
+或后续 Agent Judge 审核。
 
----
+## Runtime 支持
 
-<p align="center">
-  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license." />
-  <a href="https://agenta.ai/docs/?utm_source=github&utm_medium=referral&utm_campaign=readme">
-    <img src="https://img.shields.io/badge/Doc-online-green" alt="Doc">
-  </a>
-  <a href="https://github.com/Agenta-AI/agenta/blob/main/CONTRIBUTING.md">
-    <img src="https://img.shields.io/badge/PRs-Welcome-brightgreen" alt="PRs welcome" />
-  </a>
-  <a href="https://pypi.org/project/agenta/">
-    <img src="https://img.shields.io/pypi/dm/agenta" alt="PyPI - Downloads">
-  </a>
-</br>
-</p>
+| Runtime | 接入协议 | 当前能力 |
+| --- | --- | --- |
+| Codex | app-server JSONL | 对话、历史任务、模型、推理强度、Skills、Plugins、Trace、评测 |
+| CodeBuddy | ACP stdio JSONL | 对话、模型、推理强度、流式输出、Trace、评测 |
 
-<p align="center">
-    <a href="https://join.slack.com/t/agenta-hq/shared_invite/zt-37pnbp5s6-mbBrPL863d_oLB61GSNFjw">
-        <img src="https://custom-icon-badges.demolab.com/badge/Slack-4A154B?logo=slack&logoColor=fff" alt="Join us on Slack" />
-    </a>
-    <a href="https://www.linkedin.com/company/agenta-ai/">
-        <img src="https://custom-icon-badges.demolab.com/badge/LinkedIn-0A66C2?logo=linkedin-white&logoColor=fff" alt="Follow Agenta on LinkedIn" />
-    </a>
-    <a  href="https://twitter.com/agenta_ai">
-        <img src="https://img.shields.io/twitter/follow/agenta_ai?style=social" height="28" alt="Follow @agenta_ai on X" />
-    </a>
-</p>
+Chat 始终绑定一个活动 Runtime。Skill 评测使用隔离的 Runtime 客户端，因此可以让多个
+Runtime 配置并行运行，而不会共享活动对话的客户端状态。同一个 Runtime 内的 Cases 顺序
+执行，避免会话状态互相干扰。
 
-<p align="center">
-  <a href="https://cloud.agenta.ai?utm_source=github&utm_medium=referral&utm_campaign=readme">
-      <picture >
-        <source width="200" media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/a2069e7b-c3e0-4a5e-9e41-8ddc4660d1f2"  >
-        <source width="200" media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/a2069e7b-c3e0-4a5e-9e41-8ddc4660d1f2"  >
-        <img alt="Try Agenta Live Demo" src="https://github.com/user-attachments/assets/a2069e7b-c3e0-4a5e-9e41-8ddc4660d1f2" >
-      </picture>
-  </a>
-</p>
+Runtime 自己负责 Skills、MCP、Plugins、上下文和模型认证。Rolling Skill 负责统一发现、
+会话呈现、数据集、评测编排和证据记录，不复制 Runtime 的 Skill 内容，也不会静默安装或
+升级 Runtime。
 
----
+### 本机发现
 
-## What is Agenta?
+Codex 会检查已保存路径、`ROLLING_SKILL_CODEX_BIN`、`PATH`、ChatGPT/Codex.app 资源、
+Homebrew 和常见用户目录。候选文件必须能标识为 Codex 并支持 `app-server`。
 
-Agenta is an open-source workspace where you build specialized agents that automate and augment your work.
+CodeBuddy 会检查已保存路径、`ROLLING_SKILL_CODEBUDDY_BIN`、`PATH`、Homebrew、常见用户
+目录和兼容的 `.sre-codex` 安装。候选文件必须支持 stdio ACP。
 
-You build agents by chatting with them. You describe the work, connect the apps they need, and improve them through feedback.
+每个候选 Runtime 都必须通过对应 Provider 的兼容性探测，不能仅凭文件名被选中。
 
-You can work with your agents directly in chat and share them with your team.
+## Codex 403：unsupported client originator
 
-For recurring work, you can build background agents. These agents run on a schedule or when an event occurs.
+Codex app-server 会把初始化请求中的 `clientInfo.name` 作为后续模型请求的 `originator`
+header。Rolling Skill 使用自己的身份 `rolling-skill`。如果企业 Codex 服务只允许固定的
+known clients，可能返回：
 
-## Why use Agenta?
+```text
+403 Forbidden: unsupported Codex client originator
+```
 
-### Use your Claude or ChatGPT subscription
+这不是账号未登录，也与模型或推理强度无关。正确处理方式是让服务提供方把
+`rolling-skill` 注册到允许的 Codex client/originator 清单，或者使用企业明确批准的
+Runtime Driver。不要把 Rolling Skill 伪装成 `codex_exec`、`Codex Desktop`、
+`codex_vscode` 或其他白名单客户端；originator 同时用于企业合规日志，伪装会造成错误归因。
 
-When you self-host Agenta, you can run agents locally with your existing Claude or ChatGPT subscription. You do not need to move every task to metered API billing.
+## Case 沉淀流程
 
-### Choose your harness and model
+1. 在 Chat 中完成一次问题解决过程。
+2. 在结束该过程的 Assistant 消息旁选择 **沉淀 Case**。
+3. 选择作为起点的 User 消息、目标数据集、被测 Skill 和 `goodcase`/`badcase`。
+4. Rolling Skill 冻结所选对话及 Trace 范围；原对话仍可继续使用。
+5. 独立、只读的 Curator 会话根据当前 Runtime 中的 Skill 整理必要证据。
+6. 可以继续向 Curator 提问、要求修改、切换模型或推理强度。
+7. 选择 **Done** 后保存 Case；选择 **丢弃** 则不写入数据集。
 
-Switch harnesses and models without rebuilding your agent. Agenta already supports almost any model, whether self-hosted or accessed through an API. Agenta supports Claude Code, Pi, and Codex as harnesses today, with [more harnesses planned](https://agenta.ai/docs/?utm_source=github&utm_medium=referral&utm_campaign=readme).
+Curator 的结构化结果包含参考答案摘要、必要事实、必要步骤、输出格式、证据引用、硬性
+通过条件、软性标准和自动失败条件。Badcase 还包含首次偏离点、根因、重复循环摘要和正确
+恢复方式。
 
-### Build with open agent standards
+## Skill 评测
 
-Define your agent with `AGENTS.md`, skills, and MCP servers. You can bring skills and MCP servers from the agent ecosystem into Agenta.
+在左上角切换到 **Skill 评测**：
 
-### Make your agents more reliable over time
+1. 选择数据集和被测 Skill；
+2. 选择自动触发或显式诊断模式；
+3. 勾选一个或多个 Runtime；
+4. 分别选择模型和推理强度；
+5. 启动选中 Case 或整个数据集；
+6. 在 **评测记录** 中查看状态、回答、错误、耗时、Runtime 快照、会话 ID 和 Trace 引用。
 
-Agenta traces every run and keeps a version history of each agent configuration. Use this history to understand failures, compare changes, and improve your agents over time.
+自动触发模式只发送 Case 中保存的原始问题，用于评测 Runtime 是否能自行发现并触发
+Skill。显式诊断模式使用对应 Provider 的显式 Skill 输入，用于区分“没有触发 Skill”和
+“Skill 执行错误”，不等同于自动触发成绩。
 
-## Features
+## 本地数据
 
-**Workspaces for you and your agents.** Work with your agent on files in a shared workspace. Together, you can write documents, organize research, or maintain a wiki.
+所有 Rolling Skill 数据默认保存在本机：
 
-**Human approval and permissions.** Specify permissions for each tool. Choose which actions background agents can run automatically, which need your approval, and which are blocked.
-
-**Background agents.** Run agents on a schedule or start them when an event occurs in a connected app.
-
-**Tracing, usage, and cost.** Inspect every model and tool call. Track model requests, token usage, and estimated costs for each agent.
-
-**Team access.** The open-source version lets you share agents with your team and control access by role.
-
-**Integrations.** Connect your agents to the applications you use through MCP, or integrate with more than 1,000 apps through Composio, including Gmail, Slack, Notion, and GitHub.
-
-## Get started
-
-### Run the Rolling Skill evaluation workbench on macOS
-
-This checkout includes a local-first macOS client for running and evaluating Skill tasks.
-Double-click `Rolling Skill.app` at the repository root to open the task list, conversation surface,
-local trace viewer, and goodcase/badcase curation workflow. The app discovers compatible agent
-runtimes already installed on the machine; it does not bundle an agent runtime and does not require Docker,
-Compose, Postgres, Redis, Traefik, or an Agenta HTTP service.
-
-There is no application login page or startup authentication gate. Runtime startup, workspace
-selection, and local task browsing remain available without provider credentials. If credentials
-are missing, only a model turn reports the normal runtime error.
-
-Use the sidebar workspace control or **Runtime → Choose Workspace…** to select the folder whose
-tasks should be shown. This exact working-directory filter prevents unrelated Codex sessions from
-other products from appearing in Rolling Skill.
-
-Runtime discovery currently supports Codex app-server and CodeBuddy ACP. It checks saved
-executables, provider environment variables, `PATH`, known application resources,
-Homebrew/system paths, and common user-local installs. Every candidate is compatibility-probed
-before use. Use the sidebar
-**Runtime…** control or native **Runtime** menu to rescan, choose an executable, or return to
-automatic selection. If no compatible runtime exists, the application and its local datasets still
-open.
-
-Local files are stored here:
-
-| Path | Contents |
+| 路径 | 内容 |
 | --- | --- |
-| `~/Library/Application Support/Rolling Skill/evaluation-store.json` | Local datasets, cases, Curator sessions/revisions, settings, and immutable evaluation runs |
-| `~/Library/Application Support/Rolling Skill/preferences.json` | Selected workspace and optional runtime selection |
-| `~/Library/Application Support/Rolling Skill/traces/*.jsonl` | Append-only runtime events with runtime identity |
+| `~/Library/Application Support/Rolling Skill/evaluation-store.json` | 设置、数据集、Cases、Curator 会话和评测记录 |
+| `~/Library/Application Support/Rolling Skill/preferences.json` | 工作目录和 Runtime 选择 |
+| `~/Library/Application Support/Rolling Skill/traces/*.jsonl` | 带 Runtime 身份的追加式 Trace |
 
-The renderer has Node integration disabled, context isolation and sandboxing enabled, and only a
-narrow IPC bridge for runtime, workspace, thread, turn, dataset, curation, and trace operations.
-Runtime probes and launches use fixed executable/argument arrays with `shell: false`; source Codex
-threads use `workspace-write`, Curator threads use `read-only`, and neither enables automatic
-approval escalation.
+## 构建与开发
 
-To rebuild the Finder-double-clickable application from source:
+在仓库根目录构建可双击应用：
 
 ```bash
 bash desktop/rolling-skill/scripts/build-macos-app.sh
 ```
 
-This installs the desktop dependencies, runs unit and locally discovered app-server smoke tests,
-packages the Apple Silicon Electron client without an agent runtime, applies an ad-hoc local
-signature, and replaces the ignored root `Rolling Skill.app`. Desktop source and its lockfile are
-tracked; the generated Electron bundle is intentionally not committed. For development, run
-`npm ci && npm start` from `desktop/rolling-skill/`.
+开发模式：
 
-For a completed problem-solving episode, select **Curate case** beside its ending assistant message.
-Choose the earlier source user message, dataset, and `goodcase` or `badcase`, then start curation.
-The original question remains verbatim and read-only; the selected Episode and trace range are
-frozen without locking the source task. An independent read-only Curator produces a structured
-reference answer and explicit hard/soft grading contract in the right-side **Case drafts** panel.
-You can question it, request revisions, retry failures, and select **Done** to save one approved
-revision and archive the Curator task.
-
-Capture remains manual and automatic capture is off by default. Starting curation never writes a
-dataset case by itself. The Agenta server deployment options elsewhere in this repository remain
-available for other use cases, but the desktop client's default path does not inspect or start them.
-
-Runtime discovery is provider-based. Chat selects one active runtime. In the Skill evaluation
-workbench, one Case or an entire dataset can run against multiple selected runtime/model/reasoning
-effort configurations in parallel. Durable **Evaluation runs / 评测记录** preserve Case × Runtime
-responses, errors, timings, identities, and Trace references even if a source Case is later deleted.
-
-### Try Agenta Cloud
-
-The fastest way to try Agenta.
-
-<p align="center">
-  <a href="https://cloud.agenta.ai?utm_source=github&utm_medium=referral&utm_campaign=readme">
-      <picture >
-        <source width="200" media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/3aa96780-b7e5-4b6f-bfee-8feaa36ff3b2"  >
-        <source width="200" media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/3aa96780-b7e5-4b6f-bfee-8feaa36ff3b2"  >
-        <img alt="Try Agenta Cloud" src="https://github.com/user-attachments/assets/3aa96780-b7e5-4b6f-bfee-8feaa36ff3b2" >
-      </picture>
-  </a>
-</p>
-
-### Self-host Agenta
-
-Paste this into your agent and it will walk you through setup and testing:
-
-```text
-1. Install the Agenta self-hosting skill: npx skills add Agenta-AI/agenta-skills
-2. Help me self-host Agenta with its repository.
+```bash
+cd desktop/rolling-skill
+npm ci
+npm test
+npm start
 ```
 
-For more details, read the [self-hosting documentation](https://agenta.ai/docs/self-host/quick-start?utm_source=github&utm_medium=referral&utm_campaign=readme).
+构建脚本会运行测试、生成 Apple Silicon Electron 应用、确认包内没有 Agent Runtime、
+应用 ad-hoc 签名，并将结果写到仓库根目录的 `Rolling Skill.app`。
 
-## Roadmap
+## 安全边界
 
-**Harnesses**
+- Runtime 探测和启动使用固定参数数组及 `shell: false`；
+- Renderer 禁用 Node integration，启用 context isolation 和 Chromium sandbox；
+- Preload 只暴露受限的 Runtime、会话、数据集、Curator、评测和 Trace IPC；
+- 外部 HTTPS 链接交给 macOS 打开，其他内部跳转会被阻止；
+- 数据集使用原子写入，Trace 使用仅当前用户可读的追加式文件；
+- Rolling Skill 不静默安装 Skill、Plugin 或 Runtime，避免污染评测可复现性。
 
-- [x] Claude Code
-- [x] Pi
-- [x] Codex
-- [ ] Gemini
-- [ ] OpenCode
-- [ ] [Create an issue to prioritize yours](https://github.com/Agenta-AI/agenta/issues)
+更详细的架构、协议和测试说明见
+[desktop/rolling-skill/README.md](desktop/rolling-skill/README.md)。
 
-**Models**
+## License
 
-- [x] OpenAI
-- [x] Anthropic
-- [x] OpenRouter
-- [x] Mistral AI
-- [x] Cohere
-- [x] Anyscale
-- [x] Perplexity AI
-- [x] DeepInfra
-- [x] Together AI
-- [x] Groq
-- [x] Google Gemini
-- [x] Azure
-- [x] AWS Bedrock
-- [x] MiniMax
-- [x] OpenAI-compatible models
-- [x] Self-hosted models (Ollama)
-- [ ] [Create an issue to prioritize yours](https://github.com/Agenta-AI/agenta/issues)
-
-**Agent runtimes**
-
-- [x] Local runtime
-- [x] Daytona sandboxes
-- [x] Docker sandboxes
-- [ ] E2B sandboxes
-- [ ] AgentComputer
-- [ ] Vercel
-- [ ] Cloudflare
-- [ ] Modal
-- [ ] BoxLite
-- [ ] [Create an issue to prioritize yours](https://github.com/Agenta-AI/agenta/issues)
-
-**Features**
-
-- [x] Schedules
-- [x] Events from connected apps
-- [x] MCP servers (API key + unauthenticated)
-- [ ] Generic webhook triggers
-- [ ] Additional MCP transports (OAuth)
-- [ ] Channels (Slack, Telegram, Discord, Teams)
-- [ ] Mobile version
-
-See the [complete roadmap](https://agenta.ai/docs/?utm_source=github&utm_medium=referral&utm_campaign=readme). Want to help with one of these items? [Open a discussion](https://github.com/Agenta-AI/agenta/discussions) or contribute.
-
-## How Agenta compares
-
-### n8n, Activepieces, and Zapier
-
-These products are designed for building workflows with predefined steps. Agenta is designed for work that requires an agent to plan, use tools, and adapt its approach. Use a workflow builder for predictable processes. Use Agenta when the work needs judgment, or when you want the same agent to work with you in chat and run in the background.
-
-### Claude Cowork
-
-Claude Cowork provides a workspace built around Claude. Agenta is open source and lets you choose your harness and model, inspect the components of your agents, and run them interactively or in the background.
-
-### Claude Code, Codex, Pi, and OpenCode
-
-These coding agents provide the execution layer that plans work and uses tools. Agenta adds the shared workspace around that execution layer: files, team access, triggers, versions, and traces. Agenta supports Claude Code, Pi, and Codex today. Support for more harnesses is on the roadmap.
-
-## Community and contributing
-
-Agenta is open source under the MIT License. You can inspect the code, run it yourself, and help shape what we build next.
-
-- [Read the documentation](https://agenta.ai/docs/?utm_source=github&utm_medium=referral&utm_campaign=readme)
-- [Report a bug](https://github.com/Agenta-AI/agenta/issues)
-- [Request a feature or share an idea](https://github.com/Agenta-AI/agenta/discussions)
-- [Read the contributing guide](CONTRIBUTING.md)
-- [Join the Slack community](https://join.slack.com/t/agenta-hq/shared_invite/zt-37pnbp5s6-mbBrPL863d_oLB61GSNFjw)
-
-If Agenta is useful to you, star the repository and tell us what you build.
-
-## ⭐ Star Agenta
-
-**Consider giving us a star!** It helps us grow our community and gets Agenta in front of more developers.
-</br>
-</br>
-<p align="center">
-    <a href="https://github.com/agenta-ai/agenta">
-
-  <img width="300" alt="Star us" src="https://github.com/user-attachments/assets/2c8e580a-c930-4312-bf1b-08f631b41c62" />
-    <a href="https://cloud.agenta.ai?utm_source=github&utm_medium=referral&utm_campaign=readme">
-
-</p>
-
-## Contributors ✨
-
-<!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
-[![All Contributors](https://img.shields.io/badge/all_contributors-71-orange.svg?style=flat-square)](#contributors-)
-<!-- ALL-CONTRIBUTORS-BADGE:END -->
-
-Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/docs/en/emoji-key)):
-
-<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
-<!-- prettier-ignore-start -->
-<!-- markdownlint-disable -->
-<table>
-  <tbody>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/SamMethnani"><img src="https://avatars.githubusercontent.com/u/57623556?v=4?s=100" width="100px;" alt="Sameh Methnani"/><br /><sub><b>Sameh Methnani</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=SamMethnani" title="Code">💻</a> <a href="https://github.com/Agenta-AI/agenta/commits?author=SamMethnani" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/suadsuljovic"><img src="https://avatars.githubusercontent.com/u/8658374?v=4?s=100" width="100px;" alt="Suad Suljovic"/><br /><sub><b>Suad Suljovic</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=suadsuljovic" title="Code">💻</a> <a href="#design-suadsuljovic" title="Design">🎨</a> <a href="#mentoring-suadsuljovic" title="Mentoring">🧑‍🏫</a> <a href="https://github.com/Agenta-AI/agenta/pulls?q=is%3Apr+reviewed-by%3Asuadsuljovic" title="Reviewed Pull Requests">👀</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/burtenshaw"><img src="https://avatars.githubusercontent.com/u/19620375?v=4?s=100" width="100px;" alt="burtenshaw"/><br /><sub><b>burtenshaw</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=burtenshaw" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="http://abram.tech"><img src="https://avatars.githubusercontent.com/u/55067204?v=4?s=100" width="100px;" alt="Abram"/><br /><sub><b>Abram</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=aybruhm" title="Code">💻</a> <a href="https://github.com/Agenta-AI/agenta/commits?author=aybruhm" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="http://israelabebe.com"><img src="https://avatars.githubusercontent.com/u/7479824?v=4?s=100" width="100px;" alt="Israel Abebe"/><br /><sub><b>Israel Abebe</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/issues?q=author%3Avernu" title="Bug reports">🐛</a> <a href="#design-vernu" title="Design">🎨</a> <a href="https://github.com/Agenta-AI/agenta/commits?author=vernu" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/SohaibAnwaar"><img src="https://avatars.githubusercontent.com/u/29427728?v=4?s=100" width="100px;" alt="Master X"/><br /><sub><b>Master X</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=SohaibAnwaar" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://main-portfolio-26wv6oglp-witehound.vercel.app/"><img src="https://avatars.githubusercontent.com/u/26417477?v=4?s=100" width="100px;" alt="corinthian"/><br /><sub><b>corinthian</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=witehound" title="Code">💻</a> <a href="#design-witehound" title="Design">🎨</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Pajko97"><img src="https://avatars.githubusercontent.com/u/25198892?v=4?s=100" width="100px;" alt="Pavle Janjusevic"/><br /><sub><b>Pavle Janjusevic</b></sub></a><br /><a href="#infra-Pajko97" title="Infrastructure (Hosting, Build-Tools, etc)">🚇</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="http://kaosiso-ezealigo.netlify.app"><img src="https://avatars.githubusercontent.com/u/99529776?v=4?s=100" width="100px;" alt="Kaosi Ezealigo"/><br /><sub><b>Kaosi Ezealigo</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/issues?q=author%3Abekossy" title="Bug reports">🐛</a> <a href="https://github.com/Agenta-AI/agenta/commits?author=bekossy" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/albnunes"><img src="https://avatars.githubusercontent.com/u/46302915?v=4?s=100" width="100px;" alt="Alberto Nunes"/><br /><sub><b>Alberto Nunes</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/issues?q=author%3Aalbnunes" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://www.linkedin.com/in/mohammed-maaz-6290b0116/"><img src="https://avatars.githubusercontent.com/u/17180132?v=4?s=100" width="100px;" alt="Maaz Bin Khawar"/><br /><sub><b>Maaz Bin Khawar</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=MohammedMaaz" title="Code">💻</a> <a href="https://github.com/Agenta-AI/agenta/pulls?q=is%3Apr+reviewed-by%3AMohammedMaaz" title="Reviewed Pull Requests">👀</a> <a href="#mentoring-MohammedMaaz" title="Mentoring">🧑‍🏫</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/devgenix"><img src="https://avatars.githubusercontent.com/u/56418363?v=4?s=100" width="100px;" alt="Nehemiah Onyekachukwu Emmanuel"/><br /><sub><b>Nehemiah Onyekachukwu Emmanuel</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=devgenix" title="Code">💻</a> <a href="#example-devgenix" title="Examples">💡</a> <a href="https://github.com/Agenta-AI/agenta/commits?author=devgenix" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/philipokiokio"><img src="https://avatars.githubusercontent.com/u/55271518?v=4?s=100" width="100px;" alt="Philip Okiokio"/><br /><sub><b>Philip Okiokio</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=philipokiokio" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://sweetdevil144.github.io/My-Website/"><img src="https://avatars.githubusercontent.com/u/117591942?v=4?s=100" width="100px;" alt="Abhinav Pandey"/><br /><sub><b>Abhinav Pandey</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=Sweetdevil144" title="Code">💻</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/RamchandraWarang9822"><img src="https://avatars.githubusercontent.com/u/92023869?v=4?s=100" width="100px;" alt="Ramchandra Warang"/><br /><sub><b>Ramchandra Warang</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=RamchandraWarang9822" title="Code">💻</a> <a href="https://github.com/Agenta-AI/agenta/issues?q=author%3ARamchandraWarang9822" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/lazyfuhrer"><img src="https://avatars.githubusercontent.com/u/64888892?v=4?s=100" width="100px;" alt="Biswarghya Biswas"/><br /><sub><b>Biswarghya Biswas</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=lazyfuhrer" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/okieLoki"><img src="https://avatars.githubusercontent.com/u/96105929?v=4?s=100" width="100px;" alt="Uddeepta Raaj Kashyap"/><br /><sub><b>Uddeepta Raaj Kashyap</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=okieLoki" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="http://www.linkedin.com/in/nayeem-abdullah-317098141"><img src="https://avatars.githubusercontent.com/u/32274108?v=4?s=100" width="100px;" alt="Nayeem Abdullah"/><br /><sub><b>Nayeem Abdullah</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=nayeem01" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/kangsuhyun-yanolja"><img src="https://avatars.githubusercontent.com/u/124246127?v=4?s=100" width="100px;" alt="Kang Suhyun"/><br /><sub><b>Kang Suhyun</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=kangsuhyun-yanolja" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/yeokyeong-yanolja"><img src="https://avatars.githubusercontent.com/u/128676129?v=4?s=100" width="100px;" alt="Yoon"/><br /><sub><b>Yoon</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=yeokyeong-yanolja" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://mrkirthi24.netlify.app/"><img src="https://avatars.githubusercontent.com/u/53830546?v=4?s=100" width="100px;" alt="Kirthi Bagrecha Jain"/><br /><sub><b>Kirthi Bagrecha Jain</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=mrkirthi-24" title="Code">💻</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/navdeep1840"><img src="https://avatars.githubusercontent.com/u/80774259?v=4?s=100" width="100px;" alt="Navdeep"/><br /><sub><b>Navdeep</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=navdeep1840" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://www.linkedin.com/in/rhythm-sharma-708a421a8/"><img src="https://avatars.githubusercontent.com/u/64489317?v=4?s=100" width="100px;" alt="Rhythm Sharma"/><br /><sub><b>Rhythm Sharma</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=Rhythm-08" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://osinachi.me"><img src="https://avatars.githubusercontent.com/u/40396070?v=4?s=100" width="100px;" alt="Osinachi Chukwujama "/><br /><sub><b>Osinachi Chukwujama </b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=vicradon" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://liduos.com/"><img src="https://avatars.githubusercontent.com/u/47264881?v=4?s=100" width="100px;" alt="莫尔索"/><br /><sub><b>莫尔索</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=morsoli" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="http://luccithedev.com"><img src="https://avatars.githubusercontent.com/u/22600781?v=4?s=100" width="100px;" alt="Agunbiade Adedeji"/><br /><sub><b>Agunbiade Adedeji</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=dejongbaba" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://techemmy.github.io/"><img src="https://avatars.githubusercontent.com/u/43725109?v=4?s=100" width="100px;" alt="Emmanuel Oloyede"/><br /><sub><b>Emmanuel Oloyede</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=techemmy" title="Code">💻</a> <a href="https://github.com/Agenta-AI/agenta/commits?author=techemmy" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Dhaneshwarguiyan"><img src="https://avatars.githubusercontent.com/u/116065351?v=4?s=100" width="100px;" alt="Dhaneshwarguiyan"/><br /><sub><b>Dhaneshwarguiyan</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=Dhaneshwarguiyan" title="Code">💻</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/PentesterPriyanshu"><img src="https://avatars.githubusercontent.com/u/98478305?v=4?s=100" width="100px;" alt="Priyanshu Prajapati"/><br /><sub><b>Priyanshu Prajapati</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=PentesterPriyanshu" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://venkataravitejagullapudi.github.io/"><img src="https://avatars.githubusercontent.com/u/70102577?v=4?s=100" width="100px;" alt="Raviteja"/><br /><sub><b>Raviteja</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=VenkataRavitejaGullapudi" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/ArijitCloud"><img src="https://avatars.githubusercontent.com/u/81144422?v=4?s=100" width="100px;" alt="Arijit"/><br /><sub><b>Arijit</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=ArijitCloud" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Yachika9925"><img src="https://avatars.githubusercontent.com/u/147185379?v=4?s=100" width="100px;" alt="Yachika9925"/><br /><sub><b>Yachika9925</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=Yachika9925" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Dhoni77"><img src="https://avatars.githubusercontent.com/u/53973174?v=4?s=100" width="100px;" alt="Aldrin"/><br /><sub><b>Aldrin</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=Dhoni77" title="Tests">⚠️</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/seungduk-yanolja"><img src="https://avatars.githubusercontent.com/u/115020208?v=4?s=100" width="100px;" alt="seungduk.kim.2304"/><br /><sub><b>seungduk.kim.2304</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=seungduk-yanolja" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://dandrei.com/"><img src="https://avatars.githubusercontent.com/u/59015981?v=4?s=100" width="100px;" alt="Andrei Dragomir"/><br /><sub><b>Andrei Dragomir</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=andreiwebdev" title="Code">💻</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://diegolikescode.me/"><img src="https://avatars.githubusercontent.com/u/57499868?v=4?s=100" width="100px;" alt="diego"/><br /><sub><b>diego</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=diegolikescode" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/brockWith"><img src="https://avatars.githubusercontent.com/u/105627491?v=4?s=100" width="100px;" alt="brockWith"/><br /><sub><b>brockWith</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=brockWith" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="http://denniszelada.wordpress.com/"><img src="https://avatars.githubusercontent.com/u/219311?v=4?s=100" width="100px;" alt="Dennis Zelada"/><br /><sub><b>Dennis Zelada</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=denniszelada" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/romainrbr"><img src="https://avatars.githubusercontent.com/u/10381609?v=4?s=100" width="100px;" alt="Romain Brucker"/><br /><sub><b>Romain Brucker</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=romainrbr" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="http://heonheo.com"><img src="https://avatars.githubusercontent.com/u/76820291?v=4?s=100" width="100px;" alt="Heon Heo"/><br /><sub><b>Heon Heo</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=HeonHeo23" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Drewski2222"><img src="https://avatars.githubusercontent.com/u/39228951?v=4?s=100" width="100px;" alt="Drew Reisner"/><br /><sub><b>Drew Reisner</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=Drewski2222" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://speakerdeck.com/eltociear"><img src="https://avatars.githubusercontent.com/u/22633385?v=4?s=100" width="100px;" alt="Ikko Eltociear Ashimine"/><br /><sub><b>Ikko Eltociear Ashimine</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=eltociear" title="Documentation">📖</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/vishalvanpariya"><img src="https://avatars.githubusercontent.com/u/27823328?v=4?s=100" width="100px;" alt="Vishal Vanpariya"/><br /><sub><b>Vishal Vanpariya</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=vishalvanpariya" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/youcefs21"><img src="https://avatars.githubusercontent.com/u/34604972?v=4?s=100" width="100px;" alt="Youcef Boumar"/><br /><sub><b>Youcef Boumar</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=youcefs21" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/LucasTrg"><img src="https://avatars.githubusercontent.com/u/47852577?v=4?s=100" width="100px;" alt="LucasTrg"/><br /><sub><b>LucasTrg</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=LucasTrg" title="Code">💻</a> <a href="https://github.com/Agenta-AI/agenta/issues?q=author%3ALucasTrg" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://ashrafchowdury.me"><img src="https://avatars.githubusercontent.com/u/87828904?v=4?s=100" width="100px;" alt="Ashraf Chowdury"/><br /><sub><b>Ashraf Chowdury</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/issues?q=author%3Aashrafchowdury" title="Bug reports">🐛</a> <a href="https://github.com/Agenta-AI/agenta/commits?author=ashrafchowdury" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/jp-agenta"><img src="https://avatars.githubusercontent.com/u/174311389?v=4?s=100" width="100px;" alt="jp-agenta"/><br /><sub><b>jp-agenta</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=jp-agenta" title="Code">💻</a> <a href="https://github.com/Agenta-AI/agenta/issues?q=author%3Ajp-agenta" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://mrunhap.github.io"><img src="https://avatars.githubusercontent.com/u/24653356?v=4?s=100" width="100px;" alt="Mr Unhappy"/><br /><sub><b>Mr Unhappy</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/issues?q=author%3Amrunhap" title="Bug reports">🐛</a> <a href="#infra-mrunhap" title="Infrastructure (Hosting, Build-Tools, etc)">🚇</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/morenobonaventura"><img src="https://avatars.githubusercontent.com/u/2118854?v=4?s=100" width="100px;" alt="Moreno Bonaventura"/><br /><sub><b>Moreno Bonaventura</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/issues?q=author%3Amorenobonaventura" title="Bug reports">🐛</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://ikazoy.me/"><img src="https://avatars.githubusercontent.com/u/385109?v=4?s=100" width="100px;" alt="Yoshiki Ozaki"/><br /><sub><b>Yoshiki Ozaki</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/issues?q=author%3Aikazoy" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/ahmed-agenta"><img src="https://avatars.githubusercontent.com/u/194256084?v=4?s=100" width="100px;" alt="ahmed-agenta"/><br /><sub><b>ahmed-agenta</b></sub></a><br /><a href="#design-ahmed-agenta" title="Design">🎨</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/VahantSharma"><img src="https://avatars.githubusercontent.com/u/172914890?v=4?s=100" width="100px;" alt="Vahant Sharma"/><br /><sub><b>Vahant Sharma</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=VahantSharma" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/muzman123"><img src="https://avatars.githubusercontent.com/u/66068301?v=4?s=100" width="100px;" alt="Muhammad Muzammil"/><br /><sub><b>Muhammad Muzammil</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=muzman123" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/CyrusNamjoo"><img src="https://avatars.githubusercontent.com/u/209579763?v=4?s=100" width="100px;" alt="Sirous Namjoo"/><br /><sub><b>Sirous Namjoo</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=CyrusNamjoo" title="Documentation">📖</a> <a href="#example-CyrusNamjoo" title="Examples">💡</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/adityadewan22-hub"><img src="https://avatars.githubusercontent.com/u/225586510?v=4?s=100" width="100px;" alt="adityadewan22-hub"/><br /><sub><b>adityadewan22-hub</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=adityadewan22-hub" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/majiayu000"><img src="https://avatars.githubusercontent.com/u/19658300?v=4?s=100" width="100px;" alt="lif"/><br /><sub><b>lif</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=majiayu000" title="Code">💻</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="http://karimkohel.com"><img src="https://avatars.githubusercontent.com/u/46066647?v=4?s=100" width="100px;" alt="karim kohel"/><br /><sub><b>karim kohel</b></sub></a><br /><a href="#example-karimkohel" title="Examples">💡</a> <a href="https://github.com/Agenta-AI/agenta/commits?author=karimkohel" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Vishesh-Paliwal"><img src="https://avatars.githubusercontent.com/u/142072830?v=4?s=100" width="100px;" alt="Vishesh Paliwal"/><br /><sub><b>Vishesh Paliwal</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=Vishesh-Paliwal" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/aviu16"><img src="https://avatars.githubusercontent.com/u/162624394?v=4?s=100" width="100px;" alt="Eve"/><br /><sub><b>Eve</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=aviu16" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://endoze.github.io"><img src="https://avatars.githubusercontent.com/u/997161?v=4?s=100" width="100px;" alt="Endoze"/><br /><sub><b>Endoze</b></sub></a><br /><a href="#infra-endoze" title="Infrastructure (Hosting, Build-Tools, etc)">🚇</a> <a href="https://github.com/Agenta-AI/agenta/commits?author=endoze" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/anshk8"><img src="https://avatars.githubusercontent.com/u/141085661?v=4?s=100" width="100px;" alt="Ansh Kakkar"/><br /><sub><b>Ansh Kakkar</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/issues?q=author%3Aanshk8" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Devarsh05"><img src="https://avatars.githubusercontent.com/u/116822773?v=4?s=100" width="100px;" alt="Devarsh Prajapati"/><br /><sub><b>Devarsh Prajapati</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/issues?q=author%3ADevarsh05" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/axelray-dev"><img src="https://avatars.githubusercontent.com/u/110029405?v=4?s=100" width="100px;" alt="AxelRay"/><br /><sub><b>AxelRay</b></sub></a><br /><a href="#platform-axelray-dev" title="Packaging/porting to new platform">📦</a> <a href="https://github.com/Agenta-AI/agenta/commits?author=axelray-dev" title="Documentation">📖</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Sanket2329"><img src="https://avatars.githubusercontent.com/u/196506711?v=4?s=100" width="100px;" alt="Sanket Shakya"/><br /><sub><b>Sanket Shakya</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=Sanket2329" title="Code">💻</a> <a href="#platform-Sanket2329" title="Packaging/porting to new platform">📦</a> <a href="https://github.com/Agenta-AI/agenta/commits?author=Sanket2329" title="Documentation">📖</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/unfitcoder101"><img src="https://avatars.githubusercontent.com/u/175036458?v=4?s=100" width="100px;" alt="unfitcoder101"/><br /><sub><b>unfitcoder101</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/issues?q=author%3Aunfitcoder101" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Shunmuka"><img src="https://avatars.githubusercontent.com/u/137101604?v=4?s=100" width="100px;" alt="Shunmuka Valsa"/><br /><sub><b>Shunmuka Valsa</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=Shunmuka" title="Code">💻</a> <a href="#platform-Shunmuka" title="Packaging/porting to new platform">📦</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/NamHT4Devlop"><img src="https://avatars.githubusercontent.com/u/122743792?v=4?s=100" width="100px;" alt="Hồ Trung Nam"/><br /><sub><b>Hồ Trung Nam</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=NamHT4Devlop" title="Code">💻</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/Koushik-Salammagari"><img src="https://avatars.githubusercontent.com/u/138836560?v=4?s=100" width="100px;" alt="Koushik-Salammagari"/><br /><sub><b>Koushik-Salammagari</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/issues?q=author%3AKoushik-Salammagari" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/truecallerabreham"><img src="https://avatars.githubusercontent.com/u/180291642?v=4?s=100" width="100px;" alt="Abreham Melese"/><br /><sub><b>Abreham Melese</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/issues?q=author%3Atruecallerabreham" title="Bug reports">🐛</a></td>
-      <td align="center" valign="top" width="14.28%"><a href="https://kunaal-portfolio.vercel.app"><img src="https://avatars.githubusercontent.com/u/126342173?v=4?s=100" width="100px;" alt="Boggavarapu Yuva Satya Kunaal"/><br /><sub><b>Boggavarapu Yuva Satya Kunaal</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=Yuvakunaal" title="Tests">⚠️</a></td>
-    </tr>
-    <tr>
-      <td align="center" valign="top" width="14.28%"><a href="https://github.com/MarceloAdan73"><img src="https://avatars.githubusercontent.com/u/112431764?v=4?s=100" width="100px;" alt="Marcelo-Palma"/><br /><sub><b>Marcelo-Palma</b></sub></a><br /><a href="https://github.com/Agenta-AI/agenta/commits?author=MarceloAdan73" title="Code">💻</a></td>
-    </tr>
-  </tbody>
-</table>
-
-<!-- markdownlint-restore -->
-<!-- prettier-ignore-end -->
-
-<!-- ALL-CONTRIBUTORS-LIST:END -->
-
-This project follows the [all-contributors](https://github.com/all-contributors/all-contributors) specification. Contributions of any kind are welcome!
+见 [LICENSE](LICENSE)。
