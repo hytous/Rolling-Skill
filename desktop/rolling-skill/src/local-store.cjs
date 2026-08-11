@@ -11,7 +11,7 @@ const {randomUUID} = require("node:crypto")
 
 const {formatCuratedAnswer, validateCuratorDraft} = require("./episode-curation.cjs")
 
-const LOCAL_SCHEMA = "rolling-skill-local/v2"
+const LOCAL_SCHEMA = "rolling-skill-local/v3"
 const CURATION_STATUSES = new Set([
     "queued",
     "running",
@@ -45,6 +45,8 @@ function defaultSettings() {
             modelId: null,
             datasetId: null,
             caseType: "goodcase",
+            skillName: null,
+            skillPath: null,
         },
     }
 }
@@ -100,7 +102,17 @@ function migrateState(input) {
             modelId: null,
             datasetId: null,
             caseType: "goodcase",
+            skillName: null,
+            skillPath: null,
         }
+        changed = true
+    }
+    if (!("skillName" in state.settings.autoCaptureProfile)) {
+        state.settings.autoCaptureProfile.skillName = null
+        changed = true
+    }
+    if (!("skillPath" in state.settings.autoCaptureProfile)) {
+        state.settings.autoCaptureProfile.skillPath = null
         changed = true
     }
     if (!Array.isArray(state.datasets)) {
@@ -114,6 +126,12 @@ function migrateState(input) {
     if (!Array.isArray(state.curationSessions)) {
         state.curationSessions = []
         changed = true
+    }
+    for (const session of state.curationSessions) {
+        if (!("skillReference" in session)) {
+            session.skillReference = null
+            changed = true
+        }
     }
     return {state, changed}
 }
@@ -134,6 +152,33 @@ function requireCurationSession(state, id) {
     const session = state.curationSessions.find((entry) => entry.id === id)
     if (!session) throw new Error("Unknown curation session")
     return session
+}
+
+function skillIdentity(value, label) {
+    const normalized = value === null || value === undefined ? null : String(value).trim()
+    if (normalized && normalized.length > 4_096) throw new Error(`${label} is too long`)
+    return normalized || null
+}
+
+function normalizeSkillReference(value) {
+    if (value === null || value === undefined) return null
+    if (value.schemaVersion !== "rolling-skill-skill-reference/v1") {
+        throw new Error("A valid runtime Skill reference is required")
+    }
+    const name = skillIdentity(value.name, "Skill name")
+    const path = skillIdentity(value.path, "Skill path")
+    if (!name || !path || !path.startsWith("/")) {
+        throw new Error("A valid runtime Skill name and absolute path are required")
+    }
+    return {
+        schemaVersion: value.schemaVersion,
+        name,
+        path,
+        scope: skillIdentity(value.scope, "Skill scope"),
+        description: skillIdentity(value.description, "Skill description"),
+        runtimeId: skillIdentity(value.runtimeId, "Skill runtime id"),
+        confirmedAt: skillIdentity(value.confirmedAt, "Skill confirmation time"),
+    }
 }
 
 class LocalEvaluationStore {
@@ -251,6 +296,22 @@ class LocalEvaluationStore {
             requireCaseType(input.autoCaptureCaseType)
             automatic.caseType = input.autoCaptureCaseType
         }
+        if (input.autoCaptureSkillName !== undefined) {
+            automatic.skillName = skillIdentity(
+                input.autoCaptureSkillName,
+                "Automatic capture Skill name",
+            )
+        }
+        if (input.autoCaptureSkillPath !== undefined) {
+            const path = skillIdentity(
+                input.autoCaptureSkillPath,
+                "Automatic capture Skill path",
+            )
+            if (path && !path.startsWith("/")) {
+                throw new Error("Automatic capture Skill path must be absolute")
+            }
+            automatic.skillPath = path
+        }
         settings.autoCaptureProfile = automatic
         this.persist()
         return copy(settings)
@@ -327,6 +388,7 @@ class LocalEvaluationStore {
             caseType: input.caseType,
             status: "queued",
             episode,
+            skillReference: normalizeSkillReference(input.skillReference),
             curator: {
                 runtimeId: input.curator?.runtimeId ?? null,
                 modelProvider: input.curator?.modelProvider ?? null,
@@ -478,6 +540,7 @@ class LocalEvaluationStore {
             question: session.episode.originalQuestion,
             answer: formatCuratedAnswer(draft),
             curated: draft,
+            skillReference: copy(session.skillReference),
             source: {
                 threadId: session.episode.source.threadId,
                 turnId: session.episode.source.endTurnId,
@@ -497,6 +560,10 @@ class LocalEvaluationStore {
                 curatorModelProvider: session.curator.modelProvider,
                 curatorModelId: session.curator.modelId,
                 curatorPromptVersion: session.curator.promptVersion,
+                skillName: session.skillReference?.name ?? null,
+                skillPath: session.skillReference?.path ?? null,
+                skillRuntimeId: session.skillReference?.runtimeId ?? null,
+                skillConfirmedAt: session.skillReference?.confirmedAt ?? null,
             },
             evidence: {
                 episodeSchemaVersion: session.episode.schemaVersion,

@@ -166,12 +166,27 @@ describe("episode curation evidence", () => {
             startItemId: "user-1",
             endItemId: "agent-2",
         })
-        const prompt = buildCuratorPrompt({episode, caseType: "goodcase"})
+        const prompt = buildCuratorPrompt({
+            episode,
+            caseType: "goodcase",
+            skillReference: {
+                name: "billing-cost-management",
+                path: "/runtime/skills/billing-cost-management/SKILL.md",
+                scope: "user",
+                description: "Billing cost queries and analysis",
+                runtimeId: "codex-alpha",
+                confirmedAt: "2026-08-11T00:00:00.000Z",
+            },
+        })
 
         assert.match(prompt, /verbatim/i)
         assert.match(prompt, /hardRequirements/)
         assert.match(prompt, /requiredOutputFormat/)
         assert.match(prompt, /Skill requirement/)
+        assert.match(prompt, /billing-cost-management/)
+        assert.match(prompt, /currently installed Skill/i)
+        assert.match(prompt, /activation failure.*execution failure/is)
+        assert.doesNotMatch(prompt, /\/runtime\/skills\/billing-cost-management\/SKILL\.md/)
         assert.match(prompt, /numerical conclusions as soft\/diagnostic/i)
         assert.match(prompt, /帮我瞅瞅 7月账单？混元3 各业务到底花了多少呀/)
 

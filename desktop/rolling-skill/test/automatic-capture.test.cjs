@@ -19,6 +19,7 @@ function fixture() {
     const store = new LocalEvaluationStore(join(directory, "store.json"))
     const created = []
     const hidden = new Set()
+    const errors = []
     const curationManager = {
         hiddenThreadIds: () => hidden,
         createSession: async (input) => {
@@ -30,8 +31,9 @@ function fixture() {
         store,
         curationManager,
         getTraceReference: ({threadId, endItemId}) => `trace://${threadId}#${endItemId}`,
+        onError: (error) => errors.push(error),
     })
-    return {store, created, hidden, manager}
+    return {store, created, hidden, errors, manager}
 }
 
 function completion(threadId = "thread-1") {
@@ -66,6 +68,8 @@ describe("automatic capture manager", () => {
             autoCaptureModelId: "gpt-5.6-terra",
             autoCaptureDatasetId: dataset.id,
             autoCaptureCaseType: "goodcase",
+            autoCaptureSkillName: "billing-cost-management",
+            autoCaptureSkillPath: "/runtime/skills/billing-cost-management/SKILL.md",
         })
 
         assert.equal(await manager.handleNotification(completion()), true)
@@ -78,13 +82,27 @@ describe("automatic capture manager", () => {
                 endItemId: "answer-1",
                 traceReference: "trace://thread-1#answer-1",
                 modelId: "gpt-5.6-terra",
+                skillPath: "/runtime/skills/billing-cost-management/SKILL.md",
             },
         ])
     })
 
+    it("reports an explicit error instead of creating a draft without a configured Skill", async () => {
+        const {store, created, errors, manager} = fixture()
+        store.updateSettings({autoCapture: true})
+
+        assert.equal(await manager.handleNotification(completion()), false)
+        assert.deepEqual(created, [])
+        assert.match(errors[0].message, /Skill.*not configured/i)
+    })
+
     it("ignores Curator threads", async () => {
         const {store, created, hidden, manager} = fixture()
-        store.updateSettings({autoCapture: true})
+        store.updateSettings({
+            autoCapture: true,
+            autoCaptureSkillName: "billing-cost-management",
+            autoCaptureSkillPath: "/runtime/skills/billing-cost-management/SKILL.md",
+        })
         hidden.add("curator-thread")
 
         assert.equal(await manager.handleNotification(completion("curator-thread")), false)

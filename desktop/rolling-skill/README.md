@@ -49,7 +49,8 @@ Open **Settings** in the lower-left sidebar to configure:
 - Simplified Chinese or English interface text;
 - Codex Light (the default white-and-blue theme), Codex Dark, or the original Graphite theme;
 - the default model for new tasks and the default Curator model; and
-- Automatic Capture, including its Curator model, destination dataset, and default case type.
+- Automatic Capture, including its Curator model, current runtime Skill, destination dataset, and
+  default case type.
 
 All settings are stored locally. Automatic Capture remains disabled until explicitly enabled.
 Runtime selection, raw Trace access, and the local dataset file are also grouped in **Settings**.
@@ -132,14 +133,23 @@ specific local Codex should be used without saving it through the UI.
 2. Start a new task or open an existing workspace-scoped task.
 3. Inspect the streamed conversation and raw local trace.
 4. Select **Curate case** beside the assistant message that ends the useful problem-solving episode.
-5. Choose the source user message where the episode begins, a dataset, and `goodcase` or `badcase`.
-   The displayed dataset question is read-only and is preserved verbatim.
+5. Choose the source user message where the episode begins, the enabled Skill under review, a
+   dataset, and `goodcase` or `badcase`. The displayed dataset question is read-only and is
+   preserved verbatim.
 6. Select **Start curation**. Rolling Skill freezes the selected conversation/trace range while the
    original task remains live, then starts an independent read-only Curator task.
 7. Review the Curator conversation and structured reference answer in **Case drafts**. Ask follow-up
    questions or request revisions, change the model used by subsequent Curator turns, use **Retry**
    after a failed draft, and select **Done** only when the hard requirements and reference result
    are ready. **Discard** stops and archives the Curator task without saving a Case.
+
+Before the Curator starts, Rolling Skill force-refreshes the selected runtime's Skill inventory and
+rejects a Skill that is missing or disabled. The Curator prompt names that Skill and requires the
+agent to read the currently installed version as its evaluation rubric without executing the
+Skill's workflow. A runtime-native structured Skill reference pins the exact selected path when
+several installed Skills share a name. Rolling Skill does not copy or cache `SKILL.md`; the runtime
+remains the source of truth. Each draft and approved Case records the Skill name/path, scope,
+runtime identity, and confirmation time as provenance.
 
 The Curator output has a fixed agent-grading contract: reference summary, required facts, required
 steps, required output format, evidence links, hard pass/fail requirements, soft criteria, and
@@ -148,8 +158,10 @@ and expected recovery. Shell activity is grouped by CLI/subcommand (for example 
 `billing-cli cost query`) while repeated CLI and MCP calls are compacted with counts and status
 distributions.
 
-Automatic Capture is disabled by default. When enabled it creates reviewable Case Drafts after
-completed assistant responses; it never saves them automatically. No case is written until
+Automatic Capture is disabled by default. When enabled it requires a default enabled Skill and
+creates reviewable Case Drafts after completed assistant responses; it never saves them
+automatically. A missing or disabled Skill produces an explicit capture error instead of a
+Skill-less draft. No case is written until
 **Done**. Approved cases retain
 the exact user question, structured grading data, source and Curator runtime provenance, immutable
 Episode evidence, and the append-only trace range. The default Curator model lives in **Settings**;

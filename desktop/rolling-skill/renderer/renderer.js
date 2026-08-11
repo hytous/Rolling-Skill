@@ -20,6 +20,10 @@ const translations = {
         automaticCapture: "Automatic capture",
         automaticCaptureHelp: "Create a reviewable draft after each completed response. Nothing is saved until Done.",
         captureModel: "Capture Curator model",
+        captureSkill: "Skill used by the Curator",
+        selectSkill: "Select an enabled Skill",
+        unavailableSkill: "Previously selected Skill is unavailable",
+        skillRequiredForCapture: "Automatic capture requires an enabled Skill from the current runtime.",
         destinationDataset: "Destination dataset",
         defaultClassification: "Default classification",
         settingsLocalOnly: "Settings stay on this Mac.",
@@ -188,6 +192,10 @@ const translations = {
         automaticCapture: "自动沉淀",
         automaticCaptureHelp: "每次回答完成后自动创建待审核草稿；只有点击 Done 才会保存 Case。",
         captureModel: "自动沉淀 Curator 模型",
+        captureSkill: "Curator 使用的 Skill",
+        selectSkill: "请选择一个已启用的 Skill",
+        unavailableSkill: "之前选择的 Skill 当前不可用",
+        skillRequiredForCapture: "自动沉淀必须选择当前运行时中已启用的 Skill。",
         destinationDataset: "目标数据集",
         defaultClassification: "默认分类",
         settingsLocalOnly: "设置仅保存在这台 Mac。",
@@ -364,7 +372,14 @@ const state = {
         theme: "codex-light",
         taskProfile: {runtimePolicy: "active", modelId: null},
         curatorProfile: {runtimePolicy: "active", modelId: null},
-        autoCaptureProfile: {runtimePolicy: "active", modelId: null, datasetId: null, caseType: "goodcase"},
+        autoCaptureProfile: {
+            runtimePolicy: "active",
+            modelId: null,
+            datasetId: null,
+            caseType: "goodcase",
+            skillName: null,
+            skillPath: null,
+        },
     },
     models: [],
     selectedTaskModelId: null,
@@ -377,6 +392,7 @@ const state = {
     evaluationCaseId: null,
     evaluationLoading: false,
     evaluationError: null,
+    evaluationSkillByThread: {},
     renderQueued: false,
 }
 
@@ -442,6 +458,7 @@ const elements = {
     settingsCuratorModel: document.querySelector("#settings-curator-model"),
     settingsAutoCapture: document.querySelector("#settings-auto-capture"),
     settingsAutoCaptureModel: document.querySelector("#settings-auto-capture-model"),
+    settingsAutoCaptureSkill: document.querySelector("#settings-auto-capture-skill"),
     settingsAutoCaptureDataset: document.querySelector("#settings-auto-capture-dataset"),
     settingsAutoCaptureCaseType: document.querySelector("#settings-auto-capture-case-type"),
     discardDialog: document.querySelector("#discard-curation-dialog"),
@@ -458,6 +475,8 @@ const elements = {
     caseDialog: document.querySelector("#save-case-dialog"),
     caseForm: document.querySelector("#save-case-form"),
     caseDataset: document.querySelector("#case-dataset"),
+    caseSkill: document.querySelector("#case-skill"),
+    caseSkillStatus: document.querySelector("#case-skill-status"),
     newDatasetName: document.querySelector("#new-dataset-name"),
     createDataset: document.querySelector("#create-dataset"),
     caseStartItem: document.querySelector("#case-start-item"),
@@ -554,6 +573,57 @@ function renderTaskModelPicker() {
     populateModelSelect(elements.composerModel, state.selectedTaskModelId)
 }
 
+function runtimeSkillByPath(path) {
+    return state.evaluationSkills.find((skill) => skill.path === path) ?? null
+}
+
+function skillBaseLabel(skill) {
+    return skill.interface?.displayName || skill.name
+}
+
+function skillDisplayLabel(skill) {
+    const base = skillBaseLabel(skill)
+    const duplicate = state.evaluationSkills.some(
+        (entry) => entry.path !== skill.path && skillBaseLabel(entry) === base,
+    )
+    if (!duplicate) return base
+    const directory = String(skill.path).split("/").filter(Boolean).at(-2) || skill.scope || "runtime"
+    return `${base} · ${directory}`
+}
+
+function populateSkillSelect(select, selectedPath = null, {allowEmpty = true} = {}) {
+    select.replaceChildren()
+    if (allowEmpty) {
+        const empty = node("option", "", t("selectSkill"))
+        empty.value = ""
+        select.append(empty)
+    }
+    for (const skill of state.evaluationSkills) {
+        const option = node("option", "", skillDisplayLabel(skill))
+        option.value = skill.path
+        select.append(option)
+    }
+    if (selectedPath && runtimeSkillByPath(selectedPath)) {
+        select.value = selectedPath
+    } else if (selectedPath) {
+        const unavailable = node("option", "", t("unavailableSkill"))
+        unavailable.value = selectedPath
+        unavailable.disabled = true
+        select.append(unavailable)
+        select.value = selectedPath
+    } else {
+        select.value = allowEmpty ? "" : state.evaluationSkills[0]?.path ?? ""
+    }
+}
+
+function renderCaseSkillStatus() {
+    const skill = runtimeSkillByPath(elements.caseSkill.value)
+    elements.caseSkillStatus.className = `skill-preflight ${skill ? "ready" : "missing"}`
+    elements.caseSkillStatus.textContent = skill
+        ? `${formatMessage("skillReady", {runtime: state.runtime?.runtime?.displayName ?? t("localRuntime")})} · ${skill.scope}`
+        : t("selectSkill")
+}
+
 function renderSettingsForm() {
     const settings = state.settings
     elements.settingsLanguage.value = settings.language
@@ -569,6 +639,10 @@ function renderSettingsForm() {
         settings.autoCaptureProfile?.modelId,
         t("sourceOrRuntimeModel"),
     )
+    populateSkillSelect(
+        elements.settingsAutoCaptureSkill,
+        settings.autoCaptureProfile?.skillPath,
+    )
     elements.settingsAutoCapture.checked = Boolean(settings.autoCapture)
     elements.settingsAutoCaptureDataset.replaceChildren()
     for (const dataset of state.datasets) {
@@ -582,14 +656,24 @@ function renderSettingsForm() {
         settings.autoCaptureProfile?.caseType ?? "goodcase"
 }
 
-function openSettings() {
+async function openSettings() {
     renderSettingsForm()
     elements.settingsDialog.showModal()
+    try {
+        await refreshRuntimeSkills(true)
+        if (elements.settingsDialog.open) renderSettingsForm()
+    } catch (error) {
+        showError(error)
+    }
 }
 
 async function saveSettings() {
     elements.saveSettings.disabled = true
     try {
+        const captureSkill = runtimeSkillByPath(elements.settingsAutoCaptureSkill.value)
+        if (elements.settingsAutoCapture.checked && !captureSkill) {
+            throw new Error(t("skillRequiredForCapture"))
+        }
         const settings = await window.rollingSkill.updateSettings({
             language: elements.settingsLanguage.value,
             theme: elements.settingsTheme.value,
@@ -599,6 +683,8 @@ async function saveSettings() {
             autoCaptureModelId: elements.settingsAutoCaptureModel.value,
             autoCaptureDatasetId: elements.settingsAutoCaptureDataset.value || null,
             autoCaptureCaseType: elements.settingsAutoCaptureCaseType.value,
+            autoCaptureSkillName: captureSkill?.name ?? null,
+            autoCaptureSkillPath: captureSkill?.path ?? null,
         })
         applySettings(settings)
         if (state.newTaskMode || !state.activeThread) {
@@ -1088,7 +1174,7 @@ function renderCurations() {
     const provenance = node(
         "div",
         "curation-provenance",
-        `${session.episode.items.length} episode items · ${session.episode.toolActivity.length} tool signatures · ${session.curator.modelId || t("runtimeDefault")}`,
+        `${session.episode.items.length} episode items · ${session.episode.toolActivity.length} tool signatures · ${session.skillReference?.name || t("none")} · ${session.curator.modelId || t("runtimeDefault")}`,
     )
     scroll.append(overview, question, provenance)
 
@@ -1245,7 +1331,7 @@ function renderEvaluationWorkbench() {
     const selectedPath = elements.evaluationSkill.value
     elements.evaluationSkill.replaceChildren()
     for (const skill of state.evaluationSkills) {
-        const option = node("option", "", skill.interface?.displayName || skill.name)
+        const option = node("option", "", skillDisplayLabel(skill))
         option.value = skill.path
         elements.evaluationSkill.append(option)
     }
@@ -1284,6 +1370,13 @@ function flattenRuntimeSkills(response) {
     )
 }
 
+async function refreshRuntimeSkills(forceReload = false) {
+    state.evaluationSkills = state.runtime?.status === "ready"
+        ? flattenRuntimeSkills(await window.rollingSkill.listSkills(forceReload))
+        : []
+    return state.evaluationSkills
+}
+
 async function loadEvaluationWorkbench(forceReload = false) {
     state.evaluationLoading = true
     state.evaluationError = null
@@ -1299,9 +1392,7 @@ async function loadEvaluationWorkbench(forceReload = false) {
         if (!state.evaluationCases.some((entry) => entry.id === state.evaluationCaseId)) {
             state.evaluationCaseId = state.evaluationCases[0]?.id ?? null
         }
-        state.evaluationSkills = state.runtime?.status === "ready"
-            ? flattenRuntimeSkills(await window.rollingSkill.listSkills(forceReload))
-            : []
+        await refreshRuntimeSkills(forceReload)
     } catch (error) {
         state.evaluationError = error?.message || String(error)
     } finally {
@@ -1348,6 +1439,7 @@ async function startSelectedEvaluation() {
         const threadResponse = await window.rollingSkill.startThread(modelId)
         state.activeThread = threadResponse.thread
         state.activeThreadId = threadResponse.thread.id
+        state.evaluationSkillByThread[state.activeThreadId] = skill.path
         state.activeTurnId = null
         state.newTaskMode = false
         state.selectedTaskModelId = modelId
@@ -1538,7 +1630,7 @@ function updateEpisodeStartPreview() {
     })
 }
 
-function openCaseDialog(turnId, itemId) {
+async function openCaseDialog(turnId, itemId) {
     const turn = findTurn(turnId)
     const item = turn?.items?.find((entry) => entry.id === itemId)
     if (!turn || !item || item.type !== "agentMessage") return
@@ -1549,6 +1641,16 @@ function openCaseDialog(turnId, itemId) {
         .filter(({item: entry}) => entry.type === "userMessage")
     if (!startCandidates.length) {
         showError(new Error(t("noSourceQuestion")))
+        return
+    }
+    try {
+        await refreshRuntimeSkills(true)
+    } catch (error) {
+        showError(error)
+        return
+    }
+    if (!state.evaluationSkills.length) {
+        showError(new Error(t("noSkills")))
         return
     }
     state.caseSelection = {turnId, itemId, startCandidates, startItemId: startCandidates.at(-1).item.id}
@@ -1563,6 +1665,11 @@ function openCaseDialog(turnId, itemId) {
     elements.caseEndPreview.value = item.text || ""
     updateEpisodeStartPreview()
     updateDatasetOptions(state.datasets[0]?.id)
+    populateSkillSelect(
+        elements.caseSkill,
+        state.evaluationSkillByThread[state.activeThreadId] ?? null,
+    )
+    renderCaseSkillStatus()
     elements.caseDialog.showModal()
 }
 
@@ -1587,6 +1694,11 @@ async function createCuration() {
     const selection = state.caseSelection
     if (!selection) return
     const caseType = new FormData(elements.caseForm).get("case-type")
+    const skill = runtimeSkillByPath(elements.caseSkill.value)
+    if (!skill) {
+        showError(new Error(t("selectSkill")))
+        return
+    }
     elements.confirmSaveCase.disabled = true
     elements.caseDialog.close()
     try {
@@ -1596,6 +1708,7 @@ async function createCuration() {
             sourceThreadId: state.activeThreadId,
             startItemId: selection.startItemId,
             endItemId: selection.itemId,
+            skillPath: skill.path,
         })
         upsertCuration(session)
         state.activeCurationId = session.id
@@ -1848,7 +1961,7 @@ elements.workspaceButton.addEventListener("click", async () => {
         showError(error)
     }
 })
-elements.settingsButton.addEventListener("click", openSettings)
+elements.settingsButton.addEventListener("click", () => void openSettings())
 elements.closeSettingsDialog.addEventListener("click", () => elements.settingsDialog.close())
 elements.cancelSettings.addEventListener("click", () => elements.settingsDialog.close())
 elements.settingsForm.addEventListener("submit", (event) => {
@@ -1932,11 +2045,12 @@ elements.composerModel.addEventListener("change", () => {
 elements.stopTurn.addEventListener("click", stopTurn)
 elements.conversation.addEventListener("click", (event) => {
     const button = event.target.closest("[data-save-case]")
-    if (button) openCaseDialog(button.dataset.turnId, button.dataset.itemId)
+    if (button) void openCaseDialog(button.dataset.turnId, button.dataset.itemId)
 })
 elements.closeCaseDialog.addEventListener("click", () => elements.caseDialog.close())
 elements.cancelSaveCase.addEventListener("click", () => elements.caseDialog.close())
 elements.caseStartItem.addEventListener("change", updateEpisodeStartPreview)
+elements.caseSkill.addEventListener("change", renderCaseSkillStatus)
 elements.createDataset.addEventListener("click", createDataset)
 elements.caseForm.addEventListener("submit", (event) => {
     event.preventDefault()

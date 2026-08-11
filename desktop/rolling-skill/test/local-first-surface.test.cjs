@@ -115,8 +115,11 @@ describe("local-first desktop surface", () => {
         assert.match(html, /id="settings-theme"/)
         assert.match(html, /id="settings-auto-capture"/)
         assert.match(html, /id="settings-auto-capture-model"/)
+        assert.match(html, /id="settings-auto-capture-skill"/)
+        assert.match(html, /id="case-skill"/)
         assert.match(renderer, /data-curation-model/)
         assert.match(renderer, /data-discard-curation/)
+        assert.match(renderer, /skillDisplayLabel/)
         assert.match(renderer, /translations/)
         assert.match(styles, /data-theme="codex-light"/)
         assert.match(styles, /data-theme="codex-dark"/)
@@ -126,6 +129,7 @@ describe("local-first desktop surface", () => {
         assert.match(main, /models:list/)
         assert.match(main, /settings:update/)
         assert.match(main, /curation:discard/)
+        assert.match(main, /skillPath/)
     })
 
     it("keeps per-task model selection separate from the new-task default", () => {

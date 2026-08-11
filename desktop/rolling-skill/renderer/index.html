@@ -304,6 +304,10 @@
                         <span data-i18n="captureModel">Capture Curator model</span>
                         <select id="settings-auto-capture-model"></select>
                     </label>
+                    <label class="settings-field">
+                        <span data-i18n="captureSkill">Skill used by the Curator</span>
+                        <select id="settings-auto-capture-skill"></select>
+                    </label>
                     <div class="settings-grid">
                         <label class="settings-field">
                             <span data-i18n="destinationDataset">Destination dataset</span>
@@ -363,6 +367,12 @@
                     <input id="new-dataset-name" type="text" placeholder="Create a new dataset" data-i18n-placeholder="createDataset" maxlength="100" />
                     <button id="create-dataset" type="button" data-i18n="create">Create</button>
                 </div>
+
+                <label class="field">
+                    <span data-i18n="skillUnderTest">Skill under test</span>
+                    <select id="case-skill" required></select>
+                </label>
+                <div id="case-skill-status" class="skill-preflight"></div>
 
                 <fieldset class="case-type-field">
                     <legend data-i18n="classification">Classification</legend>

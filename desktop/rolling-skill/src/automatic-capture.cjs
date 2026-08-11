@@ -21,6 +21,14 @@ class AutomaticCaptureManager {
             return false
         }
         const profile = settings.autoCaptureProfile
+        if (!profile.skillPath) {
+            this.onError(
+                new Error(
+                    "Automatic capture Skill is not configured. Select an enabled Skill in Settings.",
+                ),
+            )
+            return false
+        }
         const datasets = this.store.listDatasets()
         const datasetId = datasets.some((dataset) => dataset.id === profile.datasetId)
             ? profile.datasetId
@@ -40,6 +48,7 @@ class AutomaticCaptureManager {
                     endItemId: finalMessage.id,
                 }),
                 modelId: profile.modelId,
+                skillPath: profile.skillPath,
             })
             return true
         } catch (error) {

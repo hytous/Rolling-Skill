@@ -92,6 +92,8 @@ describe("local evaluation store", () => {
             modelId: null,
             datasetId: null,
             caseType: "goodcase",
+            skillName: null,
+            skillPath: null,
         })
         assert.equal(snapshot.datasets.length, 1)
         assert.equal(snapshot.datasets[0].name, "Skill evaluation cases")
@@ -121,6 +123,8 @@ describe("local evaluation store", () => {
             autoCaptureModelId: " gpt-5.6-terra ",
             autoCaptureDatasetId: dataset.id,
             autoCaptureCaseType: "badcase",
+            autoCaptureSkillName: "billing-cost-management",
+            autoCaptureSkillPath: "/runtime/skills/billing-cost-management/SKILL.md",
         })
 
         assert.equal(settings.language, "en")
@@ -132,6 +136,8 @@ describe("local evaluation store", () => {
             modelId: "gpt-5.6-terra",
             datasetId: dataset.id,
             caseType: "badcase",
+            skillName: "billing-cost-management",
+            skillPath: "/runtime/skills/billing-cost-management/SKILL.md",
         })
         assert.throws(() => store.updateSettings({language: "fr"}), /language/i)
         assert.throws(() => store.updateSettings({theme: "neon"}), /theme/i)
@@ -255,7 +261,7 @@ describe("local evaluation store", () => {
         )
         const migrated = new LocalEvaluationStore(path).read()
 
-        assert.equal(migrated.schemaVersion, "rolling-skill-local/v2")
+        assert.equal(migrated.schemaVersion, "rolling-skill-local/v3")
         assert.equal(migrated.cases[0].id, "case-old")
         assert.deepEqual(migrated.curationSessions, [])
         assert.equal(migrated.settings.curatorProfile.runtimePolicy, "active")
@@ -269,6 +275,15 @@ describe("local evaluation store", () => {
             datasetId: dataset.id,
             caseType: "goodcase",
             episode: episode(question),
+            skillReference: {
+                schemaVersion: "rolling-skill-skill-reference/v1",
+                name: "billing-cost-management",
+                path: "/runtime/skills/billing-cost-management/SKILL.md",
+                scope: "user",
+                description: "Billing cost queries and analysis",
+                runtimeId: "codex-alpha",
+                confirmedAt: "2026-08-11T00:00:00.000Z",
+            },
             curator: {
                 runtimeId: "codex:curator",
                 modelProvider: "openai",
@@ -279,6 +294,7 @@ describe("local evaluation store", () => {
 
         assert.equal(session.status, "queued")
         assert.equal(session.episode.originalQuestion, question)
+        assert.equal(session.skillReference.name, "billing-cost-management")
         store.updateCurationSession(session.id, {
             status: "running",
             curator: {threadId: "thread-curator", currentTurnId: "turn-curator-1"},
@@ -309,6 +325,9 @@ describe("local evaluation store", () => {
         assert.equal(saved.curated.schemaVersion, CURATED_CASE_SCHEMA)
         assert.equal(saved.source.curationSessionId, session.id)
         assert.equal(saved.source.startItemId, "user-1")
+        assert.equal(saved.skillReference.name, "billing-cost-management")
+        assert.equal(saved.source.skillRuntimeId, "codex-alpha")
+        assert.equal(saved.source.skillName, "billing-cost-management")
         assert.equal(archived.status, "archived")
         assert.equal(archived.caseId, saved.id)
     })

@@ -96,6 +96,26 @@ class FakeRuntime {
         return {thread: sourceThread()}
     }
 
+    async listSkills(options) {
+        assert.deepEqual(options, {forceReload: true})
+        return {
+            data: [
+                {
+                    cwd: "/workspace",
+                    skills: [
+                        {
+                            name: "billing-cost-management",
+                            path: "/runtime/skills/billing-cost-management/SKILL.md",
+                            scope: "user",
+                            description: "Billing cost queries and analysis",
+                            enabled: true,
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
     async startThread(options) {
         this.startedThreads.push(options)
         return {
@@ -160,6 +180,7 @@ describe("curation manager", () => {
             endItemId: "answer-1",
             traceReference: "trace.ndjson#42",
             modelId: "gpt-5.6-sol",
+            skillPath: "/runtime/skills/billing-cost-management/SKILL.md",
         })
         await manager.waitForIdle(session.id)
 
@@ -168,6 +189,8 @@ describe("curation manager", () => {
         assert.equal(persisted.status, "running")
         assert.equal(persisted.curator.threadId, "curator-1")
         assert.equal(persisted.curator.modelId, "gpt-5.6-sol")
+        assert.equal(persisted.skillReference.name, "billing-cost-management")
+        assert.equal(persisted.skillReference.runtimeId, "codex-alpha")
         assert.deepEqual(runtime.startedThreads[0], {
             sandbox: "read-only",
             approvalPolicy: "never",
@@ -175,9 +198,50 @@ describe("curation manager", () => {
             threadSource: "subagent",
             model: "gpt-5.6-sol",
         })
-        assert.match(runtime.startedTurns[0].text, /must remain\s+verbatim/i)
-        assert.match(runtime.startedTurns[0].text, /billing-cli cost query/)
+        assert.deepEqual(runtime.startedTurns[0].text[0], {
+            type: "skill",
+            name: "billing-cost-management",
+            path: persisted.skillReference.path,
+        })
+        const initialPrompt = runtime.startedTurns[0].text[1].text
+        assert.match(initialPrompt, /must remain\s+verbatim/i)
+        assert.match(initialPrompt, /billing-cli cost query/)
+        assert.match(initialPrompt, /billing-cost-management/)
+        assert.match(initialPrompt, /currently installed Skill/i)
+        assert.doesNotMatch(
+            initialPrompt,
+            /\/runtime\/skills\/billing-cost-management\/SKILL\.md/,
+        )
         assert.equal(changed.at(-1).status, "running")
+    })
+
+    it("rejects a Skill that the current runtime no longer reports as enabled", async () => {
+        runtime.listSkills = async () => ({
+            data: [
+                {
+                    cwd: "/workspace",
+                    skills: [
+                        {
+                            name: "billing-cost-management",
+                            path: "/runtime/skills/billing-cost-management/SKILL.md",
+                            enabled: false,
+                        },
+                    ],
+                },
+            ],
+        })
+
+        await assert.rejects(
+            manager.createSession({
+                datasetId: store.listDatasets()[0].id,
+                caseType: "badcase",
+                sourceThreadId: "source-thread",
+                endItemId: "answer-1",
+                skillPath: "/runtime/skills/billing-cost-management/SKILL.md",
+            }),
+            /not installed and enabled.*current runtime/i,
+        )
+        assert.equal(store.listCurationSessions().length, 0)
     })
 
     it("records a valid draft, supports follow-up revision, and archives only on Done", async () => {
@@ -236,6 +300,7 @@ describe("curation manager", () => {
         const saved = await manager.archive(session.id)
         assert.equal(saved.question, "查一下7月份账单，各业务混元3多少成本？")
         assert.equal(saved.curated.referenceAnswer.summary, "修订后的参考答案")
+        assert.equal(saved.skillReference, null)
         assert.equal(store.getCurationSession(session.id).status, "archived")
         assert.deepEqual(runtime.archivedThreads, ["curator-1"])
     })

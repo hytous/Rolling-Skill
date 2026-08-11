@@ -517,6 +517,7 @@ function installIpc() {
             endItemId,
             traceReference,
             modelId: profile.modelId,
+            skillPath: requireAbsolutePath(input.skillPath, "Skill"),
         })
     })
     ipcMain.handle("curation:send", (_event, input = {}) =>
@@ -557,6 +558,14 @@ function optionalIdentifier(value, label) {
     return requireIdentifier(String(value).trim(), label)
 }
 
+function requireAbsolutePath(value, label) {
+    const path = String(value ?? "")
+    if (!path.startsWith("/") || path.length > 4_096) {
+        throw new Error(`A valid absolute ${label} path is required`)
+    }
+    return path
+}
+
 function normalizeTurnInput(value) {
     if (!Array.isArray(value)) {
         const text = String(value ?? "")
@@ -574,10 +583,7 @@ function normalizeTurnInput(value) {
         }
         if (part?.type === "skill") {
             const name = requireIdentifier(part.name, "Skill")
-            const path = String(part.path ?? "")
-            if (!path.startsWith("/") || path.length > 4_096) {
-                throw new Error("A valid absolute Skill path is required")
-            }
+            const path = requireAbsolutePath(part.path, "Skill")
             return {type: "skill", name, path}
         }
         throw new Error("Only text and Skill inputs are supported")
