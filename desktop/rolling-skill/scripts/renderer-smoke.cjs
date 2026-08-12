@@ -216,6 +216,9 @@ async function run() {
         const skill = document.querySelector("#case-skill")
         skill.value = "/tmp/rolling-skill-renderer-smoke/billing-cost-management/SKILL.md"
         skill.dispatchEvent(new Event("change", {bubbles: true}))
+        const question = document.querySelector("#case-question")
+        question.value = "  \\n\\t"
+        question.dispatchEvent(new Event("input", {bubbles: true}))
         document.querySelector("#confirm-save-case")?.click()
     })()`)
     await waitFor(window, 'document.querySelector("#confirm-save-case")?.disabled')
@@ -247,6 +250,9 @@ async function run() {
         if (curationFailure.input?.[key] !== expected) {
             throw new Error(`Curation locator mismatch for ${key}`)
         }
+    }
+    if ("datasetQuestion" in curationFailure.input) {
+        throw new Error("A blank optional Case note was sent as the evaluation question")
     }
     await inspect(window, 'document.querySelector("#close-case-dialog")?.click()')
     await waitFor(window, '!document.querySelector("#save-case-dialog")?.open')

@@ -214,8 +214,9 @@ the UI.
 3. Inspect the streamed conversation and raw local trace.
 4. Select **Curate case** beside the assistant message that ends the useful problem-solving episode.
 5. Choose the source user message where the episode begins, the enabled Skill under review, a
-   dataset, and `goodcase` or `badcase`. The dataset question starts with the exact source wording
-   and remains editable until curation starts. Editing it changes the evaluation input only; the
+   dataset, and `goodcase` or `badcase`. The optional dataset-question field starts with the exact
+   source wording and remains editable until curation starts. Clear it to use the frozen source
+   question unchanged. Editing it changes the evaluation input only; the
    frozen source conversation and its original question remain unchanged for audit.
 6. Select **Start curation**. Rolling Skill freezes the selected conversation/trace range while the
    original task remains live, then starts an independent read-only Curator task.

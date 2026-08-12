@@ -102,8 +102,8 @@ const translations = {
         expectedSkill: "Expected Skill behavior",
         needsImprovement: "Needs improvement",
         episodeStartsAt: "Episode starts at",
-        datasetQuestion: "Dataset question",
-        datasetQuestionHelp: "Defaults to the exact source wording. Manual edits change the evaluation input without changing frozen evidence.",
+        datasetQuestion: "Dataset question (optional)",
+        datasetQuestionHelp: "Leave blank to use the exact source wording. Manual edits change the evaluation input without changing frozen evidence.",
         endingResponse: "Selected ending response",
         frozenCopyHelp: "A frozen copy goes to Curator; the original task stays live.",
         startCuration: "Start curation",
@@ -343,8 +343,8 @@ const translations = {
         expectedSkill: "符合预期的 Skill 行为",
         needsImprovement: "需要改进",
         episodeStartsAt: "片段起点",
-        datasetQuestion: "数据集问题（默认原文）",
-        datasetQuestionHelp: "可以人工编辑评测输入；冻结的原始对话和 Trace 不会改变。",
+        datasetQuestion: "数据集问题（可选）",
+        datasetQuestionHelp: "留空时使用冻结范围内的原始问题；人工编辑只会改变评测输入，不会改变冻结的原始对话和 Trace。",
         endingResponse: "选中的结束回答",
         frozenCopyHelp: "冻结副本会交给 Curator，原任务仍可继续使用。",
         startCuration: "开始沉淀",
@@ -3156,6 +3156,7 @@ async function createCuration() {
     clearCaseError()
     const caseType = new FormData(elements.caseForm).get("case-type")
     const skill = runtimeSkillByPath(elements.caseSkill.value)
+    const datasetQuestion = elements.caseQuestion.value.trim()
     if (!skill) {
         showCaseError(new Error(t("selectSkill")))
         return
@@ -3172,7 +3173,7 @@ async function createCuration() {
             endItemId: selection.itemId,
             endTurnId: selection.endTurnId,
             endMessageOrdinal: selection.endMessageOrdinal,
-            ...(selection.datasetQuestionDirty
+            ...(selection.datasetQuestionDirty && datasetQuestion
                 ? {datasetQuestion: elements.caseQuestion.value}
                 : {}),
             skillPath: skill.path,

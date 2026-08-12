@@ -3,8 +3,8 @@ const {writeFileSync} = require("node:fs")
 const {resolve} = require("node:path")
 const {pathToFileURL} = require("node:url")
 
-const source = resolve(process.argv[2] ?? "assets/icon-spin-keycap.svg")
-const target = resolve(process.argv[3] ?? "assets/icon-spin-keycap.png")
+const source = resolve(process.argv[2] ?? "assets/icon-s-keycap-orange.svg")
+const target = resolve(process.argv[3] ?? "assets/icon-s-keycap-orange.png")
 
 app.whenReady().then(async () => {
     const window = new BrowserWindow({

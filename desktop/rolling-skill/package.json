@@ -7,7 +7,7 @@
     "main": "src/main.cjs",
     "scripts": {
         "start": "electron .",
-        "render:icon": "electron scripts/render-icon.cjs assets/icon-spin-keycap.svg assets/icon-spin-keycap.png",
+        "render:icon": "electron scripts/render-icon.cjs assets/icon-s-keycap-orange.svg assets/icon-s-keycap-orange.png",
         "test": "node --test test/*.test.cjs",
         "smoke:renderer": "electron scripts/renderer-smoke.cjs",
         "pack:mac": "npm run render:icon && electron-builder --mac dir --arm64",
@@ -37,7 +37,7 @@
             "category": "public.app-category.developer-tools",
             "minimumSystemVersion": "13.0",
             "darkModeSupport": true,
-            "icon": "assets/icon-spin-keycap.png",
+            "icon": "assets/icon-s-keycap-orange.png",
             "identity": null
         }
     },
