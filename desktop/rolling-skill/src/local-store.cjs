@@ -10,8 +10,9 @@ const {dirname} = require("node:path")
 const {randomUUID} = require("node:crypto")
 
 const {formatCuratedAnswer, validateCuratorDraft} = require("./episode-curation.cjs")
+const {validateSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 
-const LOCAL_SCHEMA = "rolling-skill-local/v4"
+const LOCAL_SCHEMA = "rolling-skill-local/v5"
 const CURATION_STATUSES = new Set([
     "queued",
     "running",
@@ -41,6 +42,14 @@ const EVALUATION_RUN_STATUSES = new Set([
     "cancelled",
 ])
 const EVALUATION_RESULT_STATUSES = new Set(["queued", "running", "completed", "failed"])
+const EVALUATION_GRADING_STATUSES = new Set([
+    "not_requested",
+    "queued",
+    "running",
+    "completed",
+    "failed",
+    "skipped",
+])
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
@@ -67,6 +76,7 @@ function defaultSettings() {
         localAccess: "full",
         taskProfile: {runtimePolicy: "active", modelId: null, effort: null},
         curatorProfile: {runtimePolicy: "active", modelId: null, effort: null},
+        judgeProfile: {runtimePolicy: "active", modelId: null, effort: null},
         autoCaptureProfile: {
             runtimePolicy: "active",
             modelId: null,
@@ -99,6 +109,7 @@ function initialState() {
 
 function migrateState(input) {
     const state = copy(input ?? {})
+    const sourceSchema = state.schemaVersion
     let changed = state.schemaVersion !== LOCAL_SCHEMA
     state.schemaVersion = LOCAL_SCHEMA
     if (!state.settings || typeof state.settings !== "object") {
@@ -129,6 +140,10 @@ function migrateState(input) {
         state.settings.curatorProfile = {runtimePolicy: "active", modelId: null, effort: null}
         changed = true
     }
+    if (!state.settings.judgeProfile) {
+        state.settings.judgeProfile = {runtimePolicy: "active", modelId: null, effort: null}
+        changed = true
+    }
     if (!state.settings.autoCaptureProfile) {
         state.settings.autoCaptureProfile = {
             runtimePolicy: "active",
@@ -152,6 +167,7 @@ function migrateState(input) {
     for (const profile of [
         state.settings.taskProfile,
         state.settings.curatorProfile,
+        state.settings.judgeProfile,
         state.settings.autoCaptureProfile,
     ]) {
         if (
@@ -214,6 +230,45 @@ function migrateState(input) {
             changed = true
         }
     }
+    for (const run of state.evaluationRuns) {
+        if (!("judgeProfile" in run)) {
+            run.judgeProfile = null
+            changed = true
+        }
+        if (!("judgeConfiguration" in run)) {
+            run.judgeConfiguration = null
+            changed = true
+        }
+        if (!("skillEvidence" in run)) {
+            run.skillEvidence = null
+            changed = true
+        }
+        for (const result of run.results ?? []) {
+            if (!("gradingStatus" in result)) {
+                if (result.computedScore || result.judgment) result.gradingStatus = "completed"
+                else if (result.status === "failed") result.gradingStatus = "skipped"
+                else if (result.status === "queued") result.gradingStatus = "queued"
+                else result.gradingStatus = "not_requested"
+                changed = true
+            }
+            for (const field of ["scoreContract", "judgment", "computedScore", "judge"]) {
+                if (!(field in result)) {
+                    result[field] = null
+                    changed = true
+                }
+            }
+            if (!("traceEvidence" in result)) {
+                result.traceEvidence = null
+                changed = true
+            }
+            for (const field of ["gradingError", "gradingStartedAt", "gradingCompletedAt"]) {
+                if (!(field in result)) {
+                    result[field] = null
+                    changed = true
+                }
+            }
+        }
+    }
     return {state, changed}
 }
 
@@ -239,6 +294,46 @@ function skillIdentity(value, label) {
     const normalized = value === null || value === undefined ? null : String(value).trim()
     if (normalized && normalized.length > 4_096) throw new Error(`${label} is too long`)
     return normalized || null
+}
+
+function structuredObject(value, label) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} must be an object`)
+    }
+    const normalized = copy(value)
+    if (!normalized || typeof normalized !== "object" || Array.isArray(normalized)) {
+        throw new Error(`${label} must be an object`)
+    }
+    return normalized
+}
+
+function evaluationRuntimeConfiguration(configuration, labels = {}) {
+    const runtimeId = modelId(configuration?.runtimeId, labels.runtimeId ?? "Runtime id")
+    const providerId = modelId(
+        configuration?.providerId,
+        labels.providerId ?? "Runtime provider id",
+    )
+    const executablePath = skillIdentity(
+        configuration?.executablePath,
+        labels.executablePath ?? "Runtime executable path",
+    )
+    if (!runtimeId || !providerId || !executablePath?.startsWith("/")) {
+        throw new Error("Every evaluation runtime requires an id, provider, and executable")
+    }
+    return {
+        runtimeId,
+        providerId,
+        displayName: modelId(configuration.displayName, labels.displayName ?? "Runtime name") ?? providerId,
+        version: modelId(configuration.version, labels.version ?? "Runtime version"),
+        executablePath,
+        source: modelId(configuration.source, labels.source ?? "Runtime source"),
+        transport: modelId(configuration.transport, labels.transport ?? "Runtime transport"),
+        capabilities: copy(configuration.capabilities ?? []),
+        models: copy(configuration.models ?? []),
+        efforts: copy(configuration.efforts ?? []),
+        modelId: modelId(configuration.modelId, labels.modelId ?? "Evaluation model id"),
+        effort: reasoningEffort(configuration.effort, labels.effort ?? "Evaluation reasoning effort"),
+    }
 }
 
 function normalizeSkillReference(value) {
@@ -445,6 +540,19 @@ class LocalEvaluationStore {
             settings.curatorProfile.effort = reasoningEffort(
                 input.curatorEffort,
                 "Curator reasoning effort",
+            )
+        }
+        if (input.judgeModelId !== undefined) {
+            settings.judgeProfile = {
+                ...settings.judgeProfile,
+                runtimePolicy: "active",
+                modelId: modelId(input.judgeModelId, "Judge model id"),
+            }
+        }
+        if (input.judgeEffort !== undefined) {
+            settings.judgeProfile.effort = reasoningEffort(
+                input.judgeEffort,
+                "Judge reasoning effort",
             )
         }
         if (input.autoCapture !== undefined) settings.autoCapture = Boolean(input.autoCapture)
@@ -822,31 +930,11 @@ class LocalEvaluationStore {
         ) {
             throw new Error("One or more selected Cases are unavailable")
         }
-        const runtimeConfigurations = (input.runtimeConfigurations ?? []).map((configuration) => {
-            const runtimeId = modelId(configuration.runtimeId, "Runtime id")
-            const providerId = modelId(configuration.providerId, "Runtime provider id")
-            const executablePath = skillIdentity(
-                configuration.executablePath,
-                "Runtime executable path",
-            )
-            if (!runtimeId || !providerId || !executablePath?.startsWith("/")) {
-                throw new Error("Every evaluation runtime requires an id, provider, and executable")
-            }
-            return {
-                runtimeId,
-                providerId,
-                displayName: modelId(configuration.displayName, "Runtime name") ?? providerId,
-                version: modelId(configuration.version, "Runtime version"),
-                executablePath,
-                source: modelId(configuration.source, "Runtime source"),
-                transport: modelId(configuration.transport, "Runtime transport"),
-                capabilities: copy(configuration.capabilities ?? []),
-                models: copy(configuration.models ?? []),
-                efforts: copy(configuration.efforts ?? []),
-                modelId: modelId(configuration.modelId, "Evaluation model id"),
-                effort: reasoningEffort(configuration.effort, "Evaluation reasoning effort"),
-            }
-        })
+        const runtimeConfigurations = (input.runtimeConfigurations ?? []).map((configuration) => ({
+            ...evaluationRuntimeConfiguration(configuration),
+            skillEvidenceBinding:
+                configuration.skillEvidenceBinding === "verified" ? "verified" : "unverified",
+        }))
         if (!runtimeConfigurations.length) throw new Error("At least one runtime is required")
         const duplicateRuntimes = new Set()
         for (const configuration of runtimeConfigurations) {
@@ -857,6 +945,25 @@ class LocalEvaluationStore {
         }
         const dataset = state.datasets.find((entry) => entry.id === input.datasetId)
         const now = new Date().toISOString()
+        const requestedJudgeProfile = input.judgeProfile ?? state.settings.judgeProfile
+        const judgeProfile = {
+            runtimePolicy: "active",
+            modelId: modelId(requestedJudgeProfile?.modelId, "Judge model id"),
+            effort: reasoningEffort(requestedJudgeProfile?.effort, "Judge reasoning effort"),
+        }
+        const judgeConfiguration = input.judgeConfiguration
+            ? evaluationRuntimeConfiguration(input.judgeConfiguration, {
+                  runtimeId: "Judge runtime id",
+                  providerId: "Judge runtime provider id",
+                  executablePath: "Judge runtime executable path",
+                  displayName: "Judge runtime name",
+                  version: "Judge runtime version",
+                  source: "Judge runtime source",
+                  transport: "Judge runtime transport",
+                  modelId: "Judge model id",
+                  effort: "Judge reasoning effort",
+              })
+            : null
         const run = {
             id: randomUUID(),
             datasetId: input.datasetId,
@@ -870,7 +977,13 @@ class LocalEvaluationStore {
                       path: skillIdentity(input.skillReference.path, "Skill path"),
                   }
                 : null,
+            skillEvidence: validateSkillEvidence(input.skillEvidence, {
+                expectedName: modelId(input.skillReference?.name, "Skill name"),
+                requireComplete: true,
+            }),
             activationMode: input.activationMode,
+            judgeProfile,
+            judgeConfiguration,
             runtimeConfigurations,
             status: "queued",
             results: [],
@@ -887,12 +1000,21 @@ class LocalEvaluationStore {
                     caseSnapshot: copy(caseSnapshot),
                     runtimeConfiguration: copy(configuration),
                     status: "queued",
+                    gradingStatus: "queued",
+                    scoreContract: null,
+                    judgment: null,
+                    computedScore: null,
+                    judge: null,
+                    gradingError: null,
+                    gradingStartedAt: null,
+                    gradingCompletedAt: null,
                     durationMs: null,
                     response: null,
                     error: null,
                     threadId: null,
                     turnId: null,
                     traceReference: null,
+                    traceEvidence: null,
                     startedAt: null,
                     completedAt: null,
                 })
@@ -981,11 +1103,32 @@ class LocalEvaluationStore {
         if (!run) throw new Error("Unknown evaluation run")
         const result = run.results.find((entry) => entry.id === resultId)
         if (!result) throw new Error("Unknown evaluation result")
+        if (
+            patch.gradingStatus !== undefined &&
+            !EVALUATION_GRADING_STATUSES.has(patch.gradingStatus)
+        ) {
+            throw new Error("Invalid evaluation grading status")
+        }
+        const structuredFields = {}
+        for (const field of ["scoreContract", "judgment", "computedScore", "judge", "traceEvidence"]) {
+            if (patch[field] !== undefined) {
+                structuredFields[field] = structuredObject(
+                    patch[field],
+                    `Evaluation result ${field}`,
+                )
+            }
+        }
         if (patch.status !== undefined) {
             if (!EVALUATION_RESULT_STATUSES.has(patch.status)) {
                 throw new Error("Invalid evaluation result status")
             }
             result.status = patch.status
+        }
+        if (patch.gradingStatus !== undefined) {
+            result.gradingStatus = patch.gradingStatus
+        }
+        for (const [field, value] of Object.entries(structuredFields)) {
+            result[field] = value
         }
         if (patch.durationMs !== undefined) {
             const duration = Number(patch.durationMs)
@@ -1000,6 +1143,9 @@ class LocalEvaluationStore {
             "traceReference",
             "startedAt",
             "completedAt",
+            "gradingError",
+            "gradingStartedAt",
+            "gradingCompletedAt",
         ]) {
             if (patch[field] !== undefined) {
                 result[field] = patch[field] === null ? null : String(patch[field])

@@ -277,6 +277,8 @@ describe("local-first desktop surface", () => {
             "composer-effort",
             "settings-task-effort",
             "settings-curator-effort",
+            "settings-judge-model",
+            "settings-judge-effort",
             "settings-auto-capture-effort",
             "evaluation-runtime-list",
             "start-dataset-evaluation",
@@ -302,6 +304,62 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /data-delete-evaluation-run/)
         assert.match(renderer, /state\.evaluationRuns\s*=\s*await window\.rollingSkill\.listEvaluationRuns\(\)/)
         assert.match(styles, /\.evaluation-case-row:hover\s+\.evaluation-case-delete/)
+    })
+
+    it("configures an independent Judge and renders deterministic 60/40 grading records", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        for (const id of [
+            "evaluation-judge-runtime",
+            "evaluation-judge-model",
+            "evaluation-judge-effort",
+        ]) {
+            assert.match(html, new RegExp(`id="${id}"`))
+        }
+        assert.match(renderer, /judgeConfiguration:\s*evaluationJudgeRequestConfiguration\(\)/)
+        assert.match(renderer, /judgeModelId:\s*elements\.settingsJudgeModel\.value/)
+        assert.match(renderer, /evaluationRunQualitySummary/)
+        assert.match(renderer, /executionCompleted:\s*"Execution completed"/)
+        assert.match(renderer, /qualityPassed:\s*"Passed"/)
+        assert.match(renderer, /qualityFailed:\s*"Not passed"/)
+        assert.match(renderer, /qualityIndeterminate:\s*"Indeterminate"/)
+        assert.match(renderer, /qualityPending:\s*"Pending grading"/)
+        assert.match(renderer, /qualityGradingFailed:\s*"Grading failed"/)
+        assert.match(renderer, /judgeModelsLoading/)
+        assert.match(renderer, /judgeModelsUnavailable/)
+        assert.match(renderer, /judge\.displayName \|\| run\.judgeConfiguration\?\.displayName/)
+        assert.match(renderer, /settings\.judgeProfile/)
+        assert.match(renderer, /gradingStatus/)
+        assert.match(renderer, /computedScore\.dimensionScores/)
+        assert.match(renderer, /computedScore\.bCriterionScores/)
+        assert.match(renderer, /result\.scoreContract/)
+        assert.match(renderer, /skillBindingDiagnostic/)
+        assert.match(renderer, /skillEvidenceBinding === "unverified"/)
+        assert.match(renderer, /result\.judgment/)
+        assert.match(renderer, /judge\.runtimeId/)
+        assert.match(renderer, /gradingFailed/)
+        assert.match(renderer, /verificationStatus/)
+        assert.match(renderer, /verifiableFields/)
+        assert.match(renderer, /crossChecks/)
+        for (const dimension of [
+            "skill_activation",
+            "required_references",
+            "tool_policy",
+            "workflow_order",
+            "completeness_artifacts",
+            "deterministic_processing",
+            "evidence_output",
+            "error_recovery",
+        ]) {
+            assert.match(renderer, new RegExp(`${dimension}:`))
+        }
+        assert.match(styles, /\.evaluation-score-summary/)
+        assert.match(styles, /\.evaluation-grading-breakdown/)
+        assert.match(styles, /@media \(max-width: 900px\)[\s\S]*\.evaluation-grid/)
+        assert.match(styles, /@media \(max-width: 900px\)[\s\S]*\.evaluation-runs/)
+        assert.doesNotMatch(`${html}\n${renderer}`, /Automated grading is not applied yet|自动评分尚未应用/)
     })
 
     it("offers capability-gated Current and Archived thread history with read-only archived sessions", () => {

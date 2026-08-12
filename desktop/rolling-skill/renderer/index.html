@@ -189,11 +189,30 @@
                                 <span data-i18n="runtimeConfigurations">Runtime configurations</span>
                                 <div id="evaluation-runtime-list" class="evaluation-runtime-list"></div>
                             </div>
+                            <fieldset class="evaluation-judge-configuration">
+                                <legend data-i18n="judgeConfiguration">Independent Judge</legend>
+                                <p data-i18n="judgeConfigurationHelp">Choose the runtime, model, and reasoning effort used only to grade saved answers and Trace evidence.</p>
+                                <label>
+                                    <span data-i18n="judgeRuntime">Judge runtime</span>
+                                    <select id="evaluation-judge-runtime"></select>
+                                </label>
+                                <div class="evaluation-judge-profile">
+                                    <label>
+                                        <span data-i18n="model">Model</span>
+                                        <select id="evaluation-judge-model"></select>
+                                    </label>
+                                    <label>
+                                        <span data-i18n="reasoningEffort">Reasoning effort</span>
+                                        <select id="evaluation-judge-effort"></select>
+                                    </label>
+                                </div>
+                                <p id="evaluation-judge-model-status" class="evaluation-judge-model-status" role="status"></p>
+                            </fieldset>
                             <div class="evaluation-launch-actions">
                                 <button id="start-evaluation" type="button" data-i18n="startSelectedCase">Start selected case</button>
                                 <button id="start-dataset-evaluation" class="primary" type="button" data-i18n="startDataset">Run entire dataset</button>
                             </div>
-                            <p class="evaluation-note" data-i18n="evaluationLaunchHelp">The target task runs in the selected runtime. Automated grading is not applied yet; review the native task and its trace.</p>
+                            <p class="evaluation-note" data-i18n="evaluationLaunchHelp">Selected runtimes execute in parallel. The independent Judge grades A Skill compliance out of 60 and B answer quality out of 40.</p>
                         </aside>
                     </div>
                     <section id="evaluation-runs" class="evaluation-runs hidden">
@@ -310,6 +329,14 @@
                         <label class="settings-field">
                             <span data-i18n="reasoningEffort">Reasoning effort</span>
                             <select id="settings-curator-effort"></select>
+                        </label>
+                        <label class="settings-field">
+                            <span data-i18n="judgeModel">Default Judge model</span>
+                            <select id="settings-judge-model"></select>
+                        </label>
+                        <label class="settings-field">
+                            <span data-i18n="reasoningEffort">Reasoning effort</span>
+                            <select id="settings-judge-effort"></select>
                         </label>
                     </div>
                 </section>

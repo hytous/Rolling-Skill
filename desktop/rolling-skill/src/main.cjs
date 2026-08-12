@@ -9,6 +9,8 @@ const {CodeBuddyRuntimeProvider} = require("./codebuddy-runtime-provider.cjs")
 const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
 const {EvaluationRunner} = require("./evaluation-runner.cjs")
+const {resolveSkillEvidenceBinding} = require("./evaluation-skill-binding.cjs")
+const {snapshotSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 const {LocalEvaluationStore, reasoningEffort} = require("./local-store.cjs")
 const {resolveExecutionPolicy, resolveRuntimePermission} = require("./execution-policy.cjs")
 const {requireLocalPath, requireWebUrl} = require("./link-targets.cjs")
@@ -317,6 +319,21 @@ function discoverLocalRuntimes(options = {}) {
 
 function enrichRuntimeState(state) {
     return {...state, availableRuntimes}
+}
+
+async function skillEvidenceBindingForRuntime(descriptor, skillReference) {
+    return resolveSkillEvidenceBinding({
+        descriptor,
+        selectedRuntimeId: runtimeDescriptor?.runtimeId,
+        getSelectedRuntime: ensureRuntime,
+        createClient: (candidate, options) => runtimeRegistry.createClient(candidate, options),
+        clientOptions: {
+            traceDirectory: join(app.getPath("userData"), "traces", "catalogs"),
+            workspaceRoot,
+            executionPolicy: currentExecutionPolicy(),
+        },
+        skillReference,
+    })
 }
 
 function unavailableRuntimeState(error = null) {
@@ -988,8 +1005,11 @@ function installIpc() {
     ipcMain.handle("evaluations:delete", (_event, runId) =>
         store.deleteEvaluationRun(requireIdentifier(runId, "evaluation run")),
     )
-    ipcMain.handle("evaluations:start", (_event, input = {}) => {
-        const runtimeConfigurations = (input.runtimeConfigurations ?? []).map((requested) => {
+    ipcMain.handle("evaluations:start", async (_event, input = {}) => {
+        const skillName = requireIdentifier(input.skillReference?.name, "Skill")
+        const skillPath = requireAbsolutePath(input.skillReference?.path, "Skill")
+        const skillReference = {name: skillName, path: skillPath}
+        const runtimeConfigurations = await Promise.all((input.runtimeConfigurations ?? []).map(async (requested) => {
             const runtimeId = requireIdentifier(requested.runtimeId, "runtime")
             const descriptor = availableRuntimes.find((entry) => entry.runtimeId === runtimeId)
             if (!descriptor) throw new Error(`Runtime ${runtimeId} is no longer available`)
@@ -997,10 +1017,26 @@ function installIpc() {
                 ...descriptor,
                 modelId: optionalIdentifier(requested.modelId, "model"),
                 effort: optionalEffort(requested.effort),
+                skillEvidenceBinding: await skillEvidenceBindingForRuntime(
+                    descriptor,
+                    skillReference,
+                ),
             }
-        })
-        const skillName = requireIdentifier(input.skillReference?.name, "Skill")
-        const skillPath = requireAbsolutePath(input.skillReference?.path, "Skill")
+        }))
+        const skillEvidence = snapshotSkillEvidence(skillReference)
+        const requestedJudge = input.judgeConfiguration ?? {}
+        const judgeRuntimeId = requireIdentifier(requestedJudge.runtimeId, "Judge runtime")
+        const judgeDescriptor = availableRuntimes.find(
+            (entry) => entry.runtimeId === judgeRuntimeId,
+        )
+        if (!judgeDescriptor) {
+            throw new Error(`Judge runtime ${judgeRuntimeId} is no longer available`)
+        }
+        const judgeConfiguration = {
+            ...judgeDescriptor,
+            modelId: optionalIdentifier(requestedJudge.modelId, "Judge model"),
+            effort: optionalEffort(requestedJudge.effort),
+        }
         const run = store.createEvaluationRun({
             datasetId: requireIdentifier(input.datasetId, "dataset"),
             caseIds: (input.caseIds ?? []).map((caseId) =>
@@ -1008,7 +1044,14 @@ function installIpc() {
             ),
             selectionMode: input.selectionMode,
             activationMode: input.activationMode,
-            skillReference: {name: skillName, path: skillPath},
+            skillReference,
+            skillEvidence,
+            judgeProfile: {
+                runtimePolicy: "active",
+                modelId: judgeConfiguration.modelId,
+                effort: judgeConfiguration.effort,
+            },
+            judgeConfiguration,
             runtimeConfigurations,
         })
         void evaluationRunner.run(run).catch((error) => {

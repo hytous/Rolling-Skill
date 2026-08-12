@@ -31,6 +31,19 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /getExecutionPolicy:\s*currentExecutionPolicy/)
     })
 
+    it("freezes an independently selected Judge runtime, model, and effort into each run", () => {
+        const main = source("src/main.cjs")
+
+        assert.match(main, /input\.judgeConfiguration/)
+        assert.match(main, /const judgeConfiguration = \{[\s\S]{0,160}\.\.\.judgeDescriptor/)
+        assert.match(main, /const judgeConfiguration = \{[\s\S]{0,300}modelId/)
+        assert.match(main, /const judgeConfiguration = \{[\s\S]{0,400}effort/)
+        assert.match(main, /snapshotSkillEvidence/)
+        assert.match(main, /skillEvidence/)
+        assert.match(main, /skillEvidenceBinding/)
+        assert.match(main, /runtimeId === runtimeDescriptor\?\.runtimeId/)
+    })
+
     it("persists the selected task profile per runtime thread", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")

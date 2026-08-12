@@ -632,6 +632,10 @@ kbd {
     flex-direction: column;
 }
 
+.launch-panel {
+    overflow-y: auto;
+}
+
 .evaluation-panel-head {
     display: flex;
     min-height: 35px;
@@ -1036,6 +1040,77 @@ kbd {
     font-size: 9px;
 }
 
+.evaluation-judge-configuration {
+    display: grid;
+    margin: 11px 0 0;
+    padding: 9px;
+    border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+    gap: 7px;
+}
+
+.evaluation-judge-configuration legend {
+    padding: 0 4px;
+    color: var(--text);
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.evaluation-judge-configuration > p {
+    margin: 0;
+    color: var(--faint);
+    font-size: 8.5px;
+    line-height: 1.4;
+}
+
+.evaluation-judge-configuration label {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+}
+
+.evaluation-judge-configuration label > span {
+    color: var(--muted);
+    font-size: 8.5px;
+}
+
+.evaluation-judge-configuration select {
+    min-width: 0;
+    height: 28px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface-raised);
+    color: var(--text);
+    font-size: 9px;
+}
+
+.evaluation-judge-profile {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr);
+    gap: 5px;
+}
+
+.evaluation-judge-model-status {
+    min-height: 13px;
+    margin: 0;
+    color: var(--faint);
+    font-size: 8.5px;
+    line-height: 1.4;
+}
+
+.evaluation-judge-model-status.loading {
+    color: var(--warning);
+}
+
+.evaluation-judge-model-status.ready {
+    color: var(--success);
+}
+
+.evaluation-judge-model-status.error {
+    color: var(--danger);
+}
+
 .evaluation-runs {
     display: grid;
     overflow: hidden;
@@ -1093,6 +1168,40 @@ kbd {
     font-size: 8.5px;
 }
 
+.evaluation-run-quality {
+    display: flex;
+    grid-column: 1 / -1;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.quality-status {
+    padding: 2px 5px;
+    border-radius: 5px;
+    background: var(--surface-raised);
+    color: var(--faint);
+    font-size: 7.5px;
+    font-weight: 650;
+}
+
+.quality-status.passed {
+    background: color-mix(in srgb, var(--success) 10%, transparent);
+    color: var(--success);
+}
+
+.quality-status.failed,
+.quality-status.grading_failed {
+    background: color-mix(in srgb, var(--danger) 9%, transparent);
+    color: var(--danger);
+}
+
+.quality-status.indeterminate,
+.quality-status.diagnostic,
+.quality-status.pending {
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    color: var(--warning);
+}
+
 @media (hover: none) {
     .hover-delete-button {
         opacity: 1;
@@ -1113,8 +1222,8 @@ kbd {
 }
 
 .run-status.completed {
-    background: color-mix(in srgb, var(--success) 10%, transparent);
-    color: var(--success);
+    background: var(--surface-raised);
+    color: var(--muted);
 }
 
 .run-status.failed,
@@ -1154,6 +1263,38 @@ kbd {
     gap: 7px;
 }
 
+.evaluation-result-statuses {
+    display: flex;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.grading-status {
+    padding: 2px 5px;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    color: var(--warning);
+    font-size: 7.5px;
+    font-weight: 700;
+}
+
+.grading-status.completed {
+    background: color-mix(in srgb, var(--success) 10%, transparent);
+    color: var(--success);
+}
+
+.grading-status.failed,
+.grading-status.skipped {
+    background: color-mix(in srgb, var(--danger) 9%, transparent);
+    color: var(--danger);
+}
+
+.grading-status.legacy {
+    background: var(--surface-raised);
+    color: var(--faint);
+}
+
 .evaluation-result-head strong {
     font-size: 10.5px;
 }
@@ -1167,6 +1308,175 @@ kbd {
     margin: 9px 0;
     font-size: 10px;
     line-height: 1.45;
+}
+
+.evaluation-grading {
+    display: grid;
+    margin: 10px 0;
+    gap: 8px;
+}
+
+.evaluation-score-summary {
+    display: grid;
+    padding: 9px;
+    border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--accent) 4%, var(--surface-raised));
+    grid-template-columns: 0.72fr 1.2fr 1fr;
+    gap: 7px;
+}
+
+.evaluation-score-total,
+.evaluation-score-part {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.evaluation-score-total {
+    padding-right: 7px;
+    border-right: 1px solid var(--border);
+}
+
+.evaluation-score-summary small {
+    overflow: hidden;
+    color: var(--faint);
+    font-size: 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.evaluation-score-summary strong {
+    color: var(--text);
+    font-size: 15px;
+}
+
+.evaluation-gate {
+    width: fit-content;
+    padding: 2px 5px;
+    border-radius: 5px;
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    font-size: 7.5px;
+    font-weight: 700;
+}
+
+.evaluation-gate.pass {
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 10%, transparent);
+}
+
+.evaluation-gate.fail {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 9%, transparent);
+}
+
+.evaluation-grading-breakdown {
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-raised);
+}
+
+.evaluation-grading-breakdown > summary {
+    cursor: pointer;
+    color: var(--text);
+    font-weight: 650;
+}
+
+.evaluation-judge-meta {
+    margin: 8px 0;
+    color: var(--faint);
+    font-family: "SFMono-Regular", Menlo, monospace;
+    font-size: 8px;
+}
+
+.evaluation-score-section {
+    display: grid;
+    gap: 6px;
+}
+
+.evaluation-score-section + .evaluation-score-section {
+    margin-top: 10px;
+}
+
+.evaluation-score-section h4 {
+    margin: 3px 0 0;
+    color: var(--muted);
+    font-size: 9px;
+}
+
+.evaluation-score-item {
+    padding: 7px;
+    border-left: 2px solid var(--accent);
+    border-radius: 0 7px 7px 0;
+    background: var(--surface);
+}
+
+.evaluation-score-item.b {
+    border-left-color: var(--success);
+}
+
+.evaluation-score-item-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 3px 8px;
+}
+
+.evaluation-score-item-head strong {
+    font-size: 8.8px;
+    line-height: 1.35;
+}
+
+.evaluation-score-item-head small {
+    color: var(--faint);
+    font-size: 7.5px;
+    grid-column: 1 / -1;
+}
+
+.evaluation-score-points {
+    color: var(--text);
+    font-size: 9px;
+    font-weight: 700;
+}
+
+.evaluation-score-criterion,
+.evaluation-score-rationale,
+.evaluation-score-evidence,
+.evaluation-score-verification {
+    margin: 5px 0 0;
+    color: var(--muted);
+    font-size: 8px;
+    line-height: 1.45;
+}
+
+.evaluation-score-evidence {
+    color: var(--faint);
+    font-family: "SFMono-Regular", Menlo, monospace;
+}
+
+.evaluation-score-verification {
+    padding-top: 4px;
+    border-top: 1px dashed var(--border);
+    color: var(--muted);
+    font-family: "SFMono-Regular", Menlo, monospace;
+}
+
+.evaluation-grading-error,
+.evaluation-legacy-grading {
+    margin: 8px 0;
+    padding: 7px 9px;
+    border-radius: 7px;
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 7%, transparent);
+    font-size: 8.5px;
+}
+
+.evaluation-legacy-grading {
+    color: var(--faint);
+    background: var(--surface-raised);
 }
 
 .evaluation-result-card details {
@@ -3056,5 +3366,33 @@ kbd {
 
     .runtime-status span:last-child {
         display: none;
+    }
+
+    .evaluation-workbench {
+        overflow-y: auto;
+        padding: 16px;
+    }
+
+    .evaluation-grid,
+    .evaluation-runs {
+        display: grid;
+        overflow: visible;
+        min-height: auto;
+        flex: 0 0 auto;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .evaluation-panel,
+    .evaluation-run-list-panel,
+    .evaluation-run-detail {
+        overflow: visible;
+        min-height: auto;
+    }
+
+    .evaluation-dataset-list,
+    .evaluation-case-list,
+    .evaluation-runtime-list {
+        max-height: 280px;
+        overflow-y: auto;
     }
 }

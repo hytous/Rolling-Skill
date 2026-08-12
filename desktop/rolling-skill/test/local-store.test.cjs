@@ -90,6 +90,11 @@ describe("local evaluation store", () => {
             modelId: null,
             effort: null,
         })
+        assert.deepEqual(snapshot.settings.judgeProfile, {
+            runtimePolicy: "active",
+            modelId: null,
+            effort: null,
+        })
         assert.deepEqual(snapshot.settings.autoCaptureProfile, {
             runtimePolicy: "active",
             modelId: null,
@@ -126,6 +131,8 @@ describe("local evaluation store", () => {
             theme: "codex-dark",
             localAccess: "workspace",
             taskModelId: " gpt-5.6-sol ",
+            judgeModelId: " gpt-5.6-sol-judge ",
+            judgeEffort: "max",
             autoCapture: true,
             autoCaptureModelId: " gpt-5.6-terra ",
             autoCaptureDatasetId: dataset.id,
@@ -138,6 +145,11 @@ describe("local evaluation store", () => {
         assert.equal(settings.theme, "codex-dark")
         assert.equal(settings.localAccess, "workspace")
         assert.equal(settings.taskProfile.modelId, "gpt-5.6-sol")
+        assert.deepEqual(settings.judgeProfile, {
+            runtimePolicy: "active",
+            modelId: "gpt-5.6-sol-judge",
+            effort: "max",
+        })
         assert.equal(settings.autoCapture, true)
         assert.deepEqual(settings.autoCaptureProfile, {
             runtimePolicy: "active",
@@ -151,19 +163,31 @@ describe("local evaluation store", () => {
         assert.throws(() => store.updateSettings({language: "fr"}), /language/i)
         assert.throws(() => store.updateSettings({theme: "neon"}), /theme/i)
         assert.throws(() => store.updateSettings({localAccess: "container"}), /local access/i)
+        assert.throws(() => store.updateSettings({judgeEffort: "impossible"}), /effort/i)
     })
 
     it("migrates existing stores to full local access without changing other settings", () => {
         const {path} = fixture()
         const legacy = new LocalEvaluationStore(path).read()
         delete legacy.settings.localAccess
+        delete legacy.settings.judgeProfile
         writeFileSync(path, `${JSON.stringify(legacy, null, 2)}\n`)
 
         const migrated = new LocalEvaluationStore(path).read()
 
         assert.equal(migrated.settings.localAccess, "full")
+        assert.deepEqual(migrated.settings.judgeProfile, {
+            runtimePolicy: "active",
+            modelId: null,
+            effort: null,
+        })
         assert.equal(migrated.settings.language, "zh-CN")
         assert.equal(JSON.parse(readFileSync(path, "utf8")).settings.localAccess, "full")
+        assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).settings.judgeProfile, {
+            runtimePolicy: "active",
+            modelId: null,
+            effort: null,
+        })
     })
 
     it("atomically persists a classified case with full local provenance", () => {
@@ -284,7 +308,7 @@ describe("local evaluation store", () => {
         )
         const migrated = new LocalEvaluationStore(path).read()
 
-        assert.equal(migrated.schemaVersion, "rolling-skill-local/v4")
+        assert.equal(migrated.schemaVersion, "rolling-skill-local/v5")
         assert.equal(migrated.cases[0].id, "case-old")
         assert.deepEqual(migrated.curationSessions, [])
         assert.equal(migrated.settings.curatorProfile.runtimePolicy, "active")
@@ -319,6 +343,91 @@ describe("local evaluation store", () => {
         assert.equal(migrated.curationSessions[0].episode.originalQuestion, "原始自然语言问题")
         assert.equal(migrated.curationSessions[0].curator.effectiveModelId, null)
         assert.equal(migrated.curationSessions[0].curator.effectiveEffort, null)
+    })
+
+    it("migrates legacy evaluation runs to ungraded Judge-compatible results", () => {
+        const {path} = fixture()
+        writeFileSync(
+            path,
+            `${JSON.stringify({
+                schemaVersion: "rolling-skill-local/v4",
+                settings: {autoCapture: false},
+                datasets: [{id: "dataset-old", name: "Old", createdAt: "then"}],
+                cases: [],
+                curationSessions: [],
+                evaluationRuns: [
+                    {
+                        id: "run-old",
+                        datasetId: "dataset-old",
+                        results: [{id: "result-old", status: "completed", response: "answer"}],
+                    },
+                ],
+            })}\n`,
+        )
+
+        const migrated = new LocalEvaluationStore(path).read()
+        const run = migrated.evaluationRuns[0]
+        assert.equal(run.judgeProfile, null)
+        assert.equal(run.judgeConfiguration, null)
+        assert.deepEqual(run.results[0], {
+            id: "result-old",
+            status: "completed",
+            response: "answer",
+            gradingStatus: "not_requested",
+            scoreContract: null,
+            judgment: null,
+            computedScore: null,
+            judge: null,
+            traceEvidence: null,
+            gradingError: null,
+            gradingStartedAt: null,
+            gradingCompletedAt: null,
+        })
+        const persisted = JSON.parse(readFileSync(path, "utf8")).evaluationRuns[0]
+        assert.equal(persisted.judgeProfile, null)
+        assert.equal(persisted.judgeConfiguration, null)
+        assert.equal(persisted.results[0].gradingStatus, "not_requested")
+    })
+
+    it("does not strand a malformed v5 completed result in the grading queue", () => {
+        const {path} = fixture()
+        writeFileSync(path, `${JSON.stringify({
+            schemaVersion: "rolling-skill-local/v5",
+            settings: {autoCapture: false},
+            datasets: [{id: "dataset-old", name: "Old", createdAt: "then"}],
+            cases: [],
+            curationSessions: [],
+            evaluationRuns: [{
+                id: "run-old",
+                datasetId: "dataset-old",
+                judgeConfiguration: null,
+                results: [{id: "result-old", status: "completed", response: "answer"}],
+            }],
+        })}\n`)
+
+        const result = new LocalEvaluationStore(path).read().evaluationRuns[0].results[0]
+        assert.equal(result.gradingStatus, "not_requested")
+    })
+
+    it("does not strand a completed malformed v5 result even when a Judge was configured", () => {
+        const {path} = fixture()
+        writeFileSync(path, `${JSON.stringify({
+            schemaVersion: "rolling-skill-local/v5",
+            settings: {autoCapture: false},
+            datasets: [{id: "dataset-old", name: "Old", createdAt: "then"}],
+            cases: [],
+            curationSessions: [],
+            evaluationRuns: [{
+                id: "run-old",
+                datasetId: "dataset-old",
+                status: "completed",
+                judgeConfiguration: {runtimeId: "judge"},
+                results: [{id: "result-old", status: "completed", response: "answer"}],
+            }],
+        })}\n`)
+
+        const result = new LocalEvaluationStore(path).read().evaluationRuns[0].results[0]
+        assert.equal(result.gradingStatus, "not_requested")
     })
 
     it("preserves deliberate dataset-question whitespace while rejecting blank input", () => {

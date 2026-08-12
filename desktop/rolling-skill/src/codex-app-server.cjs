@@ -283,6 +283,7 @@ class CodexAppServerClient extends EventEmitter {
 
     async runEvaluationCase(input = {}) {
         const startedAt = Date.now()
+        const traceMark = this.recorder?.mark?.() ?? null
         const threadResponse = await this.startThread({
             model: input.modelId,
             threadSource: "subagent",
@@ -360,12 +361,109 @@ class CodexAppServerClient extends EventEmitter {
             cleanup()
             throw error
         }
+        const traceReference = traceMark
+            ? this.recorder.referenceFrom(traceMark)
+            : this.recorder?.latestReference ?? null
         return {
             threadId,
             turnId,
             response: responseText,
             durationMs: Date.now() - startedAt,
-            traceReference: this.recorder?.latestReference ?? null,
+            attempt: input.attempt ?? null,
+            traceReference,
+            traceEvidence: traceReference
+                ? this.recorder?.evidenceForReference?.(traceReference) ?? null
+                : null,
+        }
+    }
+
+    async runEvaluationJudge(input = {}) {
+        const startedAt = Date.now()
+        const traceMark = this.recorder?.mark?.() ?? null
+        const threadResponse = await this.startThread({
+            model: input.modelId,
+            threadSource: "subagent",
+            ephemeral: true,
+            sandbox: "read-only",
+            approvalPolicy: "never",
+        })
+        const threadId = threadResponse.thread.id
+        let turnId = null
+        let responseText = ""
+        let cleanup = () => {}
+        const completed = new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                cleanup()
+                if (turnId) void this.interruptTurn(threadId, turnId).catch(() => {})
+                reject(new Error("The evaluation Judge turn timed out"))
+            }, input.timeoutMs ?? 30 * 60 * 1000)
+            const onNotification = (message) => {
+                const params = message?.params ?? {}
+                if (params.threadId !== threadId) return
+                if (message.method === "item/agentMessage/delta") {
+                    responseText += params.delta ?? ""
+                } else if (
+                    message.method === "item/completed" &&
+                    params.item?.type === "agentMessage" &&
+                    params.item.text
+                ) {
+                    responseText = params.item.text
+                } else if (message.method === "turn/completed") {
+                    turnId = params.turn?.id ?? turnId
+                    cleanup()
+                    if (params.turn?.status === "failed") {
+                        reject(
+                            new Error(
+                                params.turn.error?.message ?? "The evaluation Judge turn failed",
+                            ),
+                        )
+                    } else {
+                        resolve()
+                    }
+                } else if (message.method === "error" && !params.willRetry) {
+                    cleanup()
+                    reject(new Error(params.error?.message ?? "The evaluation Judge turn failed"))
+                }
+            }
+            const onState = (state) => {
+                if (state?.status !== "stopped") return
+                cleanup()
+                reject(new Error("The evaluation Judge runtime stopped before completion"))
+            }
+            cleanup = () => {
+                clearTimeout(timeout)
+                this.off("notification", onNotification)
+                this.off("state", onState)
+            }
+            this.on("notification", onNotification)
+            this.on("state", onState)
+        })
+        try {
+            const turnResponse = await this.startTurn(threadId, input.prompt, {
+                model: input.modelId,
+                effort: input.effort,
+                sandbox: "read-only",
+                approvalPolicy: "never",
+            })
+            turnId = turnResponse.turn.id
+            await completed
+        } catch (error) {
+            cleanup()
+            throw error
+        }
+        const traceReference = traceMark
+            ? this.recorder.referenceFrom(traceMark)
+            : this.recorder?.latestReference ?? null
+        return {
+            threadId,
+            turnId,
+            response: responseText,
+            durationMs: Date.now() - startedAt,
+            attempt: input.attempt ?? null,
+            traceReference,
+            traceEvidence: traceReference
+                ? this.recorder?.evidenceForReference?.(traceReference) ?? null
+                : null,
         }
     }
 

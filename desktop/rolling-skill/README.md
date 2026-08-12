@@ -146,9 +146,34 @@ Skill execution failure; it is not equivalent to the automatic-trigger score. Do
 Different runtime configurations execute concurrently; Cases remain sequential within each runtime
 to keep provider state isolated and predictable. Every run snapshots its dataset, Cases, Skill,
 runtime paths and versions, models, efforts, responses/errors, duration, session/thread identifiers,
-and Trace references. Deleting a current Case therefore does not damage historical evidence. The
-Curator grading contract is not yet applied automatically, so results remain reviewable evidence
-rather than a numeric pass/fail score.
+and Case-scoped Trace references. Deleting a current Case therefore does not damage historical
+evidence.
+
+Each `Case × runtime` result is scored out of 100. Layer A is a fixed 60-point Skill-compliance
+rubric covering activation, required references, tool/CLI policy, workflow order,
+pagination/completeness/artifacts, deterministic processing, evidence/output requirements, and
+error recovery. The application requires the Judge to assess every fixed item and computes the A
+score itself; A passes at 48 points unless the activation gate fails. Layer B is a 40-point
+Case-specific subjective assessment built from the Curator contract. It records verifiable fields,
+cross-checks, verification status, and Judge confidence, but never reverses the A verdict.
+
+Target execution, grading execution, and quality verdict remain separate states. Explicit activation
+runs are diagnostic: they retain A/B component scores but do not produce a formal total or pass/fail
+quality verdict. After every target
+client has stopped, one independently selected read-only Judge runtime grades the saved response,
+bounded Trace evidence, and a digest-pinned snapshot of the selected `SKILL.md` plus its recursively
+linked local Markdown references. A typed evidence catalog prevents positive A ratings from citing
+unrelated response or Trace entries when stronger activation, reference-read, command/tool, output,
+or error evidence exists. The Skill digest is checked again immediately before and after every Case;
+a changed installation rejects that target result instead of grading against a stale snapshot.
+Invalid or incomplete Judge JSON is retried once with the fixed validator error. A final Judge failure keeps
+the target response and Trace intact and marks only grading as failed. Legacy runs remain explicitly
+ungraded rather than receiving guessed scores.
+
+A formal score also requires the target runtime's Skill inventory to confirm the exact frozen Skill
+path. Providers without path-precise inventory support still execute and retain A/B diagnostics, but
+produce no formal total or pass verdict; this prevents a different same-named Skill installation from
+being graded against the selected snapshot.
 
 Deleting a dataset removes its current Cases and finished Curator records but preserves immutable
 evaluation-run snapshots. An unfinished Curator draft blocks dataset deletion. Only terminal

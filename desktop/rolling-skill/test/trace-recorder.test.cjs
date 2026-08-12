@@ -44,6 +44,60 @@ describe("local app-server trace recorder", () => {
         })
     })
 
+    it("freezes an exact range from a mark and produces bounded Judge evidence", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-traces-"))
+        temporaryDirectories.push(directory)
+        const recorder = new TraceRecorder(directory, {sessionId: "evaluation-range"})
+        recorder.record("outbound", {id: 1, method: "initialize"})
+        const mark = recorder.mark()
+        recorder.record("outbound", {
+            id: 2,
+            method: "turn/start",
+            params: {threadId: "thread-1", input: [{type: "text", text: "question"}]},
+        })
+        recorder.record("inbound", {
+            method: "item/completed",
+            params: {
+                threadId: "thread-1",
+                item: {
+                    type: "commandExecution",
+                    command: "billing-cli query --month 2026-07",
+                    status: "completed",
+                    aggregatedOutput: "x".repeat(20_000),
+                },
+            },
+        })
+
+        const reference = recorder.referenceFrom(mark)
+        assert.equal(reference, "trace://evaluation-range.jsonl#L2-L3")
+        const evidence = recorder.evidenceForReference(reference, {
+            maxEntryCharacters: 500,
+            maxTotalCharacters: 2_000,
+        })
+        assert.equal(evidence.reference, reference)
+        assert.equal(evidence.entries.length, 2)
+        assert.equal(evidence.entries[1].sequence, 3)
+        assert.equal(evidence.entries[1].truncated, true)
+        assert.match(evidence.digest, /^sha256:[a-f0-9]{64}$/)
+        assert.ok(JSON.stringify(evidence).length < 3_000)
+    })
+
+    it("rejects trace references that do not belong to this recorder", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-traces-"))
+        temporaryDirectories.push(directory)
+        const recorder = new TraceRecorder(directory, {sessionId: "safe-range"})
+        recorder.record("inbound", {method: "turn/completed"})
+
+        assert.throws(
+            () => recorder.evidenceForReference("trace://../other.jsonl#L1-L2"),
+            /trace reference/i,
+        )
+        assert.throws(
+            () => recorder.evidenceForReference("trace://safe-range.jsonl#L0-L999999"),
+            /trace reference/i,
+        )
+    })
+
     it("freezes a stable line range for the selected source episode", () => {
         const directory = mkdtempSync(join(tmpdir(), "rolling-skill-traces-"))
         temporaryDirectories.push(directory)

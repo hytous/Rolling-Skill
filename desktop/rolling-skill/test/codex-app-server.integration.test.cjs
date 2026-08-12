@@ -379,6 +379,129 @@ describe("Codex app-server request construction", () => {
         assert.deepEqual(request.params.input, input)
     })
 
+    it("runs an evaluation Judge in a fresh ephemeral read-only subagent thread", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        const threadOptions = []
+        const turnCalls = []
+        client.recorder = {
+            latestReference: "trace://judge.jsonl#L9",
+            mark: () => ({line: 2}),
+            referenceFrom: () => "trace://judge.jsonl#L3-L9",
+            evidenceForReference: (reference) => ({reference, events: [{sequence: 3}]}),
+        }
+        client.startThread = async (options) => {
+            threadOptions.push(options)
+            return {thread: {id: `judge-thread-${threadOptions.length}`}}
+        }
+        client.startTurn = async (threadId, prompt, options) => {
+            turnCalls.push({threadId, prompt, options})
+            const turnId = `judge-turn-${turnCalls.length}`
+            setImmediate(() => {
+                client.emit("notification", {
+                    method: "item/completed",
+                    params: {
+                        threadId,
+                        item: {type: "agentMessage", text: '{"schemaVersion":"judge/v1"}'},
+                    },
+                })
+                client.emit("notification", {
+                    method: "turn/completed",
+                    params: {threadId, turn: {id: turnId, status: "completed"}},
+                })
+            })
+            return {turn: {id: turnId}}
+        }
+
+        const first = await client.runEvaluationJudge({
+            prompt: "judge this",
+            modelId: "gpt-5.6-sol",
+            effort: "xhigh",
+            timeoutMs: 1_000,
+        })
+        const second = await client.runEvaluationJudge({
+            prompt: "judge that",
+            modelId: "gpt-5.6-sol",
+            effort: "xhigh",
+            timeoutMs: 1_000,
+        })
+
+        assert.deepEqual(threadOptions, [
+            {
+                model: "gpt-5.6-sol",
+                threadSource: "subagent",
+                ephemeral: true,
+                sandbox: "read-only",
+                approvalPolicy: "never",
+            },
+            {
+                model: "gpt-5.6-sol",
+                threadSource: "subagent",
+                ephemeral: true,
+                sandbox: "read-only",
+                approvalPolicy: "never",
+            },
+        ])
+        assert.deepEqual(turnCalls[0], {
+            threadId: "judge-thread-1",
+            prompt: "judge this",
+            options: {
+                model: "gpt-5.6-sol",
+                effort: "xhigh",
+                sandbox: "read-only",
+                approvalPolicy: "never",
+            },
+        })
+        assert.equal(first.threadId, "judge-thread-1")
+        assert.equal(first.turnId, "judge-turn-1")
+        assert.equal(first.response, '{"schemaVersion":"judge/v1"}')
+        assert.equal(first.traceReference, "trace://judge.jsonl#L3-L9")
+        assert.deepEqual(first.traceEvidence, {
+            reference: "trace://judge.jsonl#L3-L9",
+            events: [{sequence: 3}],
+        })
+        assert.equal(typeof first.durationMs, "number")
+        assert.equal(second.threadId, "judge-thread-2")
+        assert.notEqual(second.threadId, first.threadId)
+    })
+
+    it("returns a Case-scoped trace range and bounded evidence", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        client.recorder = {
+            mark: () => ({line: 10}),
+            referenceFrom: () => "trace://case.jsonl#L11-L18",
+            evidenceForReference: (reference) => ({reference, entries: [{sequence: 11}]}),
+        }
+        client.startThread = async () => ({thread: {id: "evaluation-thread"}})
+        client.startTurn = async () => {
+            setImmediate(() => {
+                client.emit("notification", {
+                    method: "turn/completed",
+                    params: {
+                        threadId: "evaluation-thread",
+                        turn: {id: "evaluation-turn", status: "completed"},
+                    },
+                })
+            })
+            return {turn: {id: "evaluation-turn"}}
+        }
+
+        const result = await client.runEvaluationCase({question: "hello", timeoutMs: 1_000})
+
+        assert.equal(result.traceReference, "trace://case.jsonl#L11-L18")
+        assert.deepEqual(result.traceEvidence, {
+            reference: "trace://case.jsonl#L11-L18",
+            entries: [{sequence: 11}],
+        })
+    })
+
     it("removes its evaluation listener when turn startup fails", async () => {
         const client = new CodexAppServerClient({
             binaryPath: "/tmp/codex",

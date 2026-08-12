@@ -353,6 +353,165 @@ describe("CodeBuddy ACP client", () => {
         assert.deepEqual(newWrites, [])
     })
 
+    it("runs an evaluation Judge in a fresh dontAsk session and rejects its tool requests", async () => {
+        const permissionRequests = []
+        const client = new CodeBuddyAcpClient({
+            binaryPath: "/bin/codebuddy",
+            workspaceRoot: "/workspace",
+            traceDirectory: "/tmp",
+            requestPermission: async (request) => {
+                permissionRequests.push(request)
+                return "allow"
+            },
+        })
+        const threadOptions = []
+        const turnCalls = []
+        const finishTurns = []
+        client.recorder = {
+            latestReference: "trace://codebuddy-judge.jsonl#L12",
+            record() {},
+            mark: () => ({line: 4}),
+            referenceFrom: () => "trace://codebuddy-judge.jsonl#L5-L12",
+            evidenceForReference: (reference) => ({reference, events: [{sequence: 5}]}),
+        }
+        client.startThread = async (options) => {
+            threadOptions.push(options)
+            const id = `judge-session-${threadOptions.length}`
+            client.sessions.set(id, {id, turns: [], status: {type: "idle"}})
+            return {thread: {id}}
+        }
+        client.startTurn = async (threadId, prompt, options) => {
+            turnCalls.push({threadId, prompt, options})
+            const turnId = `judge-turn-${turnCalls.length}`
+            finishTurns.push(() => {
+                client.emitNotification("turn/completed", {
+                    threadId,
+                    turn: {
+                        id: turnId,
+                        status: "completed",
+                        items: [{type: "agentMessage", text: '{"schemaVersion":"judge/v1"}'}],
+                    },
+                })
+            })
+            return {turn: {id: turnId}}
+        }
+
+        const firstOperation = client.runEvaluationJudge({
+            prompt: "judge this",
+            modelId: "gpt-5.6-sol",
+            effort: "high",
+            timeoutMs: 1_000,
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+        const writes = []
+        const child = {stdin: {writable: true, write: (value) => writes.push(JSON.parse(value))}}
+        client.processEpoch = 1
+        client.child = child
+        await client.handlePermissionRequest(
+            {
+                jsonrpc: "2.0",
+                id: 19,
+                method: "session/request_permission",
+                params: {
+                    sessionId: "judge-session-1",
+                    options: [
+                        {kind: "allow_once", optionId: "allow", name: "Allow"},
+                        {kind: "reject_once", optionId: "reject", name: "Reject"},
+                    ],
+                },
+            },
+            {sourceChild: child, processEpoch: 1},
+        )
+        finishTurns.shift()()
+        const first = await firstOperation
+        const secondOperation = client.runEvaluationJudge({
+            prompt: "judge that",
+            modelId: "gpt-5.6-sol",
+            effort: "high",
+            timeoutMs: 1_000,
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+        finishTurns.shift()()
+        const second = await secondOperation
+
+        assert.deepEqual(threadOptions, [
+            {
+                model: "gpt-5.6-sol",
+                effort: "high",
+                permissionMode: "dontAsk",
+                threadSource: "subagent",
+            },
+            {
+                model: "gpt-5.6-sol",
+                effort: "high",
+                permissionMode: "dontAsk",
+                threadSource: "subagent",
+            },
+        ])
+        assert.deepEqual(turnCalls[0], {
+            threadId: "judge-session-1",
+            prompt: "judge this",
+            options: {
+                model: "gpt-5.6-sol",
+                effort: "high",
+                permissionMode: "dontAsk",
+            },
+        })
+        assert.deepEqual(writes, [
+            {jsonrpc: "2.0", id: 19, result: {outcome: {outcome: "selected", optionId: "reject"}}},
+        ])
+        assert.deepEqual(permissionRequests, [])
+        assert.equal(first.threadId, "judge-session-1")
+        assert.equal(first.turnId, "judge-turn-1")
+        assert.equal(first.response, '{"schemaVersion":"judge/v1"}')
+        assert.equal(first.traceReference, "trace://codebuddy-judge.jsonl#L5-L12")
+        assert.deepEqual(first.traceEvidence, {
+            reference: "trace://codebuddy-judge.jsonl#L5-L12",
+            events: [{sequence: 5}],
+        })
+        assert.equal(typeof first.durationMs, "number")
+        assert.equal(second.threadId, "judge-session-2")
+        assert.notEqual(second.threadId, first.threadId)
+        assert.equal(client.sessions.has(first.threadId), false)
+        assert.equal(client.sessions.has(second.threadId), false)
+        assert.equal(client.evaluationJudgeSessions.size, 0)
+    })
+
+    it("returns a Case-scoped trace range and bounded evidence", async () => {
+        const client = new CodeBuddyAcpClient({
+            binaryPath: "/bin/codebuddy",
+            workspaceRoot: "/workspace",
+            traceDirectory: "/tmp",
+        })
+        client.recorder = {
+            mark: () => ({line: 20}),
+            referenceFrom: () => "trace://case.jsonl#L21-L29",
+            evidenceForReference: (reference) => ({reference, entries: [{sequence: 21}]}),
+        }
+        client.startThread = async () => ({thread: {id: "evaluation-session"}})
+        client.startTurn = async () => {
+            setImmediate(() => {
+                client.emitNotification("turn/completed", {
+                    threadId: "evaluation-session",
+                    turn: {
+                        id: "evaluation-turn",
+                        status: "completed",
+                        items: [{type: "agentMessage", text: "answer"}],
+                    },
+                })
+            })
+            return {turn: {id: "evaluation-turn"}}
+        }
+
+        const result = await client.runEvaluationCase({question: "hello", timeoutMs: 1_000})
+
+        assert.equal(result.traceReference, "trace://case.jsonl#L21-L29")
+        assert.deepEqual(result.traceEvidence, {
+            reference: "trace://case.jsonl#L21-L29",
+            entries: [{sequence: 21}],
+        })
+    })
+
     it("removes its evaluation listener when turn startup fails", async () => {
         const client = new CodeBuddyAcpClient({
             binaryPath: "/bin/codebuddy",

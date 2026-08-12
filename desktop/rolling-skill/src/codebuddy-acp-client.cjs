@@ -41,6 +41,7 @@ class CodeBuddyAcpClient extends EventEmitter {
         this.sessionModes = new Map()
         this.processEpoch = 0
         this.pendingPermissionRequests = new Map()
+        this.evaluationJudgeSessions = new Set()
     }
 
     state() {
@@ -211,6 +212,13 @@ class CodeBuddyAcpClient extends EventEmitter {
         )
         if (!fallback) {
             this.settlePermissionRequest(pending, {outcome: "cancelled"})
+            return
+        }
+        if (this.evaluationJudgeSessions.has(pending.sessionId)) {
+            this.settlePermissionRequest(pending, {
+                outcome: "selected",
+                optionId: fallback.optionId ?? fallback.name,
+            })
             return
         }
         let optionId = null
@@ -557,6 +565,7 @@ class CodeBuddyAcpClient extends EventEmitter {
 
     async runEvaluationCase(input = {}) {
         const startedAt = Date.now()
+        const traceMark = this.recorder?.mark?.() ?? null
         const response = await this.startThread({model: input.modelId, effort: input.effort})
         const threadId = response.thread.id
         const prompt =
@@ -610,12 +619,107 @@ class CodeBuddyAcpClient extends EventEmitter {
         const responseText = [...(completedTurn.items ?? [])]
             .reverse()
             .find((item) => item.type === "agentMessage")?.text ?? ""
+        const traceReference = traceMark
+            ? this.recorder.referenceFrom(traceMark)
+            : this.recorder?.latestReference ?? null
         return {
             threadId,
             turnId,
             response: responseText,
             durationMs: Date.now() - startedAt,
-            traceReference: this.recorder?.latestReference ?? null,
+            attempt: input.attempt ?? null,
+            traceReference,
+            traceEvidence: traceReference
+                ? this.recorder?.evidenceForReference?.(traceReference) ?? null
+                : null,
+        }
+    }
+
+    async runEvaluationJudge(input = {}) {
+        const startedAt = Date.now()
+        const traceMark = this.recorder?.mark?.() ?? null
+        const response = await this.startThread({
+            model: input.modelId,
+            effort: input.effort,
+            permissionMode: "dontAsk",
+            threadSource: "subagent",
+        })
+        const threadId = response.thread.id
+        this.evaluationJudgeSessions.add(threadId)
+        let turnId = null
+        let cleanup = () => {}
+        const completed = new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                cleanup()
+                try {
+                    void Promise.resolve(this.interruptTurn(threadId)).catch(() => {})
+                } catch {
+                    // The timeout result remains authoritative if the ACP process already stopped.
+                }
+                reject(new Error("The evaluation Judge turn timed out"))
+            }, input.timeoutMs ?? 30 * 60 * 1000)
+            const onNotification = (message) => {
+                const params = message?.params ?? {}
+                if (params.threadId !== threadId) return
+                if (message.method === "turn/completed") {
+                    cleanup()
+                    if (params.turn?.status === "failed") {
+                        reject(
+                            new Error(
+                                params.turn.error?.message ?? "The evaluation Judge turn failed",
+                            ),
+                        )
+                    } else {
+                        resolve(params.turn)
+                    }
+                }
+            }
+            const onState = (state) => {
+                if (state?.status !== "stopped") return
+                cleanup()
+                reject(new Error("The evaluation Judge runtime stopped before completion"))
+            }
+            cleanup = () => {
+                clearTimeout(timeout)
+                this.off("notification", onNotification)
+                this.off("state", onState)
+            }
+            this.on("notification", onNotification)
+            this.on("state", onState)
+        })
+        let completedTurn
+        try {
+            const turn = await this.startTurn(threadId, input.prompt, {
+                model: input.modelId,
+                effort: input.effort,
+                permissionMode: "dontAsk",
+            })
+            turnId = turn.turn.id
+            completedTurn = await completed
+            const responseText = [...(completedTurn.items ?? [])]
+                .reverse()
+                .find((item) => item.type === "agentMessage")?.text ?? ""
+            const traceReference = traceMark
+                ? this.recorder.referenceFrom(traceMark)
+                : this.recorder?.latestReference ?? null
+            return {
+                threadId,
+                turnId,
+                response: responseText,
+                durationMs: Date.now() - startedAt,
+                attempt: input.attempt ?? null,
+                traceReference,
+                traceEvidence: traceReference
+                    ? this.recorder?.evidenceForReference?.(traceReference) ?? null
+                    : null,
+            }
+        } finally {
+            cleanup()
+            this.cancelPendingPermissionRequests(threadId)
+            this.evaluationJudgeSessions.delete(threadId)
+            this.pendingTurns.delete(threadId)
+            this.sessionModes.delete(threadId)
+            this.sessions.delete(threadId)
         }
     }
 

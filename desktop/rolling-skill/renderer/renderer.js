@@ -29,6 +29,7 @@ const translations = {
         models: "Models",
         taskModel: "New task model",
         curatorModel: "Default Curator model",
+        judgeModel: "Default Judge model",
         automaticCapture: "Automatic capture",
         automaticCaptureHelp: "Create a reviewable draft after each completed response. Nothing is saved until Done.",
         captureModel: "Capture Curator model",
@@ -195,7 +196,58 @@ const translations = {
         explicitDiagnostic: "Explicit diagnostic",
         explicitDiagnosticHelp: "Use the provider's explicit Skill instruction to isolate trigger failures.",
         startSelectedCase: "Start selected case",
-        evaluationLaunchHelp: "Selected runtimes execute in parallel and save durable evidence here. Automated grading is not applied yet.",
+        evaluationLaunchHelp: "Selected runtimes execute in parallel. The independent Judge grades A Skill compliance out of 60 and B answer quality out of 40.",
+        judgeConfiguration: "Independent Judge",
+        judgeConfigurationHelp: "This runtime reads the saved answer and Trace evidence only; it does not execute the tested Case.",
+        judgeRuntime: "Judge runtime",
+        executionStatus: "Execution",
+        gradingStatus: "Grading",
+        gradingQueued: "Waiting to grade",
+        gradingRunning: "Judge is grading",
+        gradingCompleted: "Grading completed",
+        gradingFailed: "Grading failed",
+        gradingSkipped: "Grading skipped",
+        legacyUngraded: "Legacy record · no grading data",
+        executionQueued: "Execution queued",
+        executionRunning: "Executing",
+        executionCompleted: "Execution completed",
+        executionPartial: "Execution partially completed",
+        executionFailed: "Execution failed",
+        executionCancelled: "Execution cancelled",
+        qualityPassed: "Passed",
+        qualityFailed: "Not passed",
+        qualityIndeterminate: "Indeterminate",
+        qualityPending: "Pending grading",
+        qualityGradingFailed: "Grading failed",
+        qualityDiagnostic: "Diagnostic",
+        skillBindingDiagnostic: "Diagnostic only: this runtime could not bind execution to the frozen Skill path, so no formal total or pass verdict is produced.",
+        judgeModelsLoading: "Loading Judge model catalog…",
+        judgeModelsReady: "Judge model catalog ready",
+        judgeModelsUnavailable: "Judge model catalog unavailable: {message}",
+        totalScore: "Total",
+        skillComplianceScore: "A · Skill compliance",
+        answerQualityScore: "B · Answer quality",
+        gatePass: "A gate passed",
+        gateFail: "A gate failed",
+        gateIndeterminate: "A gate indeterminate",
+        diagnosticOnly: "Diagnostic only",
+        judgeDetails: "Judge and grading details",
+        scoreReason: "Reason",
+        scoreEvidence: "Evidence",
+        confidence: "Confidence",
+        verificationStatus: "Verification",
+        verifiableFields: "Verifiable fields",
+        crossChecks: "Cross-checks",
+        notObservable: "Not observable",
+        notApplicable: "Not applicable",
+        aSkillActivation: "Skill activation",
+        aRequiredReferences: "Required references",
+        aToolPolicy: "Tool and CLI policy",
+        aWorkflowOrder: "Workflow order",
+        aCompletenessArtifacts: "Pagination, completeness, and artifacts",
+        aDeterministicProcessing: "Deterministic processing",
+        aEvidenceOutput: "Evidence and output specification",
+        aErrorRecovery: "Error recovery",
         noDatasets: "No datasets yet.",
         noCases: "This dataset has no saved cases yet.",
         noSkills: "No Skill reference is available from runtime inventory or saved Cases.",
@@ -270,6 +322,7 @@ const translations = {
         models: "模型",
         taskModel: "新任务默认模型",
         curatorModel: "Curator 默认模型",
+        judgeModel: "Judge 默认模型",
         automaticCapture: "自动沉淀",
         automaticCaptureHelp: "每次回答完成后自动创建待审核草稿；只有点击 Done 才会保存 Case。",
         captureModel: "自动沉淀 Curator 模型",
@@ -436,7 +489,58 @@ const translations = {
         explicitDiagnostic: "显式诊断",
         explicitDiagnosticHelp: "使用对应运行时的显式 Skill 指令，用于区分触发失败和执行失败。",
         startSelectedCase: "启动选中 Case",
-        evaluationLaunchHelp: "所选运行时会并行执行，并在这里保存持久证据；当前尚未自动判分。",
+        evaluationLaunchHelp: "所选运行时会并行执行；独立 Judge 将 Skill 执行合规评为 A（60 分），将数字与结论质量评为 B（40 分）。",
+        judgeConfiguration: "独立 Judge",
+        judgeConfigurationHelp: "该运行时只读取已保存回答和 Trace 证据进行判分，不执行被测 Case。",
+        judgeRuntime: "Judge 运行时",
+        executionStatus: "执行状态",
+        gradingStatus: "判分状态",
+        gradingQueued: "等待判分",
+        gradingRunning: "Judge 判分中",
+        gradingCompleted: "判分完成",
+        gradingFailed: "判分失败",
+        gradingSkipped: "已跳过判分",
+        legacyUngraded: "旧评测记录 · 无判分数据",
+        executionQueued: "等待执行",
+        executionRunning: "执行中",
+        executionCompleted: "执行完成",
+        executionPartial: "部分执行完成",
+        executionFailed: "执行失败",
+        executionCancelled: "执行已取消",
+        qualityPassed: "通过",
+        qualityFailed: "未通过",
+        qualityIndeterminate: "无法判定",
+        qualityPending: "待判",
+        qualityGradingFailed: "判分失败",
+        qualityDiagnostic: "诊断",
+        skillBindingDiagnostic: "仅诊断：该 Runtime 无法确认执行的是冻结 Skill 路径，因此不生成正式总分或通过结论。",
+        judgeModelsLoading: "正在加载 Judge 模型目录…",
+        judgeModelsReady: "Judge 模型目录已就绪",
+        judgeModelsUnavailable: "Judge 模型目录不可用：{message}",
+        totalScore: "总分",
+        skillComplianceScore: "A · Skill 执行合规",
+        answerQualityScore: "B · 数字与结论正确性",
+        gatePass: "A 硬门槛通过",
+        gateFail: "A 硬门槛未通过",
+        gateIndeterminate: "A 硬门槛无法判定",
+        diagnosticOnly: "仅作诊断",
+        judgeDetails: "Judge 与评分明细",
+        scoreReason: "理由",
+        scoreEvidence: "证据",
+        confidence: "置信度",
+        verificationStatus: "验证状态",
+        verifiableFields: "可验证字段",
+        crossChecks: "交叉校验",
+        notObservable: "无法观察",
+        notApplicable: "不适用",
+        aSkillActivation: "Skill 激活",
+        aRequiredReferences: "必读 Reference",
+        aToolPolicy: "工具与 CLI 策略",
+        aWorkflowOrder: "工作流顺序",
+        aCompletenessArtifacts: "分页、完整性与落盘",
+        aDeterministicProcessing: "确定性处理",
+        aEvidenceOutput: "证据与输出规范",
+        aErrorRecovery: "错误恢复",
         noDatasets: "还没有数据集。",
         noCases: "这个数据集还没有已保存的 Case。",
         noSkills: "运行时清单和已保存 Case 中都没有可用的 Skill 引用。",
@@ -523,6 +627,7 @@ const state = {
         localAccess: "full",
         taskProfile: {runtimePolicy: "active", modelId: null, effort: null},
         curatorProfile: {runtimePolicy: "active", modelId: null, effort: null},
+        judgeProfile: {runtimePolicy: "active", modelId: null, effort: null},
         autoCaptureProfile: {
             runtimePolicy: "active",
             modelId: null,
@@ -546,9 +651,11 @@ const state = {
     evaluationCaseId: null,
     evaluationView: "cases",
     evaluationRuns: [],
+    evaluationRunDetails: {},
     activeEvaluationRunId: null,
     activeEvaluationRun: null,
     evaluationRuntimeConfigurations: {},
+    evaluationJudgeConfiguration: {runtimeId: null, modelId: null, effort: null},
     archivedCurations: [],
     archivedCurationsOpen: false,
     deleteCaseId: null,
@@ -605,6 +712,10 @@ const elements = {
     evaluationSkill: document.querySelector("#evaluation-skill"),
     evaluationSkillStatus: document.querySelector("#evaluation-skill-status"),
     evaluationRuntimeList: document.querySelector("#evaluation-runtime-list"),
+    evaluationJudgeRuntime: document.querySelector("#evaluation-judge-runtime"),
+    evaluationJudgeModel: document.querySelector("#evaluation-judge-model"),
+    evaluationJudgeEffort: document.querySelector("#evaluation-judge-effort"),
+    evaluationJudgeModelStatus: document.querySelector("#evaluation-judge-model-status"),
     startEvaluation: document.querySelector("#start-evaluation"),
     startDatasetEvaluation: document.querySelector("#start-dataset-evaluation"),
     evaluationCasesView: document.querySelector("#evaluation-cases-view"),
@@ -648,6 +759,8 @@ const elements = {
     settingsTaskEffort: document.querySelector("#settings-task-effort"),
     settingsCuratorModel: document.querySelector("#settings-curator-model"),
     settingsCuratorEffort: document.querySelector("#settings-curator-effort"),
+    settingsJudgeModel: document.querySelector("#settings-judge-model"),
+    settingsJudgeEffort: document.querySelector("#settings-judge-effort"),
     settingsAutoCapture: document.querySelector("#settings-auto-capture"),
     settingsAutoCaptureModel: document.querySelector("#settings-auto-capture-model"),
     settingsAutoCaptureEffort: document.querySelector("#settings-auto-capture-effort"),
@@ -963,6 +1076,10 @@ function applySettings(settings) {
         localAccess: settings.localAccess ?? "full",
         taskProfile: {...settings.taskProfile, effort: settings.taskProfile?.effort ?? null},
         curatorProfile: {...settings.curatorProfile, effort: settings.curatorProfile?.effort ?? null},
+        judgeProfile: {
+            ...(settings.judgeProfile ?? {runtimePolicy: "active", modelId: null}),
+            effort: settings.judgeProfile?.effort ?? null,
+        },
         autoCaptureProfile: {
             ...settings.autoCaptureProfile,
             effort: settings.autoCaptureProfile?.effort ?? null,
@@ -1071,6 +1188,16 @@ function renderSettingsForm() {
         settings.curatorProfile?.modelId,
     )
     populateModelSelect(
+        elements.settingsJudgeModel,
+        settings.judgeProfile?.modelId,
+        t("runtimeDefault"),
+    )
+    populateEffortSelect(
+        elements.settingsJudgeEffort,
+        settings.judgeProfile?.effort,
+        settings.judgeProfile?.modelId,
+    )
+    populateModelSelect(
         elements.settingsAutoCaptureModel,
         settings.autoCaptureProfile?.modelId,
         t("sourceOrRuntimeModel"),
@@ -1103,6 +1230,8 @@ function refreshOpenSettingsOptions() {
     const taskEffort = elements.settingsTaskEffort.value
     const curatorModel = elements.settingsCuratorModel.value
     const curatorEffort = elements.settingsCuratorEffort.value
+    const judgeModel = elements.settingsJudgeModel.value
+    const judgeEffort = elements.settingsJudgeEffort.value
     const captureModel = elements.settingsAutoCaptureModel.value
     const captureEffort = elements.settingsAutoCaptureEffort.value
     const captureSkill = elements.settingsAutoCaptureSkill.value
@@ -1110,6 +1239,8 @@ function refreshOpenSettingsOptions() {
     populateEffortSelect(elements.settingsTaskEffort, taskEffort, taskModel)
     populateModelSelect(elements.settingsCuratorModel, curatorModel, t("sourceOrRuntimeModel"))
     populateEffortSelect(elements.settingsCuratorEffort, curatorEffort, curatorModel)
+    populateModelSelect(elements.settingsJudgeModel, judgeModel)
+    populateEffortSelect(elements.settingsJudgeEffort, judgeEffort, judgeModel)
     populateModelSelect(elements.settingsAutoCaptureModel, captureModel, t("sourceOrRuntimeModel"))
     populateEffortSelect(elements.settingsAutoCaptureEffort, captureEffort, captureModel)
     populateSkillSelect(elements.settingsAutoCaptureSkill, captureSkill)
@@ -1141,6 +1272,8 @@ async function saveSettings() {
             taskEffort: elements.settingsTaskEffort.value,
             curatorModelId: elements.settingsCuratorModel.value,
             curatorEffort: elements.settingsCuratorEffort.value,
+            judgeModelId: elements.settingsJudgeModel.value,
+            judgeEffort: elements.settingsJudgeEffort.value,
             autoCapture: elements.settingsAutoCapture.checked,
             autoCaptureModelId: elements.settingsAutoCaptureModel.value,
             autoCaptureEffort: elements.settingsAutoCaptureEffort.value,
@@ -1150,6 +1283,11 @@ async function saveSettings() {
             autoCaptureSkillPath: captureSkill?.path ?? null,
         })
         applySettings(settings)
+        state.evaluationJudgeConfiguration = {
+            ...state.evaluationJudgeConfiguration,
+            modelId: settings.judgeProfile?.modelId ?? null,
+            effort: settings.judgeProfile?.effort ?? null,
+        }
         if (state.newTaskMode || !state.activeThread) {
             state.selectedTaskModelId = settings.taskProfile?.modelId ?? null
             state.selectedTaskEffort = settings.taskProfile?.effort ?? null
@@ -2212,20 +2350,28 @@ function renderEvaluationWorkbench() {
         ? `${t("skillSelected")} · ${skill.scope ?? "dataset"}`
         : t("noSkills")
     renderEvaluationRuntimeConfigurations(skill)
+    renderEvaluationJudgeConfiguration()
     renderEvaluationRuns()
     const selectedRuntimeCount = Object.values(state.evaluationRuntimeConfigurations).filter(
         (configuration) => configuration.selected,
     ).length
+    const judgeRuntime = selectedEvaluationJudgeRuntime()
+    const judgeCatalog = judgeRuntime
+        ? state.evaluationRuntimeConfigurations[judgeRuntime.runtimeId]
+        : null
+    const judgeReady = Boolean(judgeRuntime) && !judgeCatalog?.loading && !judgeCatalog?.error
     elements.startEvaluation.disabled =
         state.evaluationLoading ||
         !state.evaluationCaseId ||
         !skill ||
-        !selectedRuntimeCount
+        !selectedRuntimeCount ||
+        !judgeReady
     elements.startDatasetEvaluation.disabled =
         state.evaluationLoading ||
         !state.evaluationCases.length ||
         !skill ||
-        !selectedRuntimeCount
+        !selectedRuntimeCount ||
+        !judgeReady
 }
 
 function ensureEvaluationRuntimeConfigurations() {
@@ -2255,13 +2401,118 @@ function ensureEvaluationRuntimeConfigurations() {
     }
 }
 
+function ensureEvaluationJudgeConfiguration() {
+    ensureEvaluationRuntimeConfigurations()
+    const runtimes = state.runtime?.availableRuntimes ?? []
+    const current = state.evaluationJudgeConfiguration
+    if (!runtimes.some((runtime) => runtime.runtimeId === current.runtimeId)) {
+        const activeRuntimeId = state.runtime?.runtime?.runtimeId
+        const runtime =
+            runtimes.find((entry) => entry.runtimeId === activeRuntimeId) ?? runtimes[0] ?? null
+        state.evaluationJudgeConfiguration = {
+            runtimeId: runtime?.runtimeId ?? null,
+            modelId: state.settings.judgeProfile?.modelId ?? null,
+            effort: state.settings.judgeProfile?.effort ?? null,
+        }
+    }
+    return state.evaluationJudgeConfiguration
+}
+
+function selectedEvaluationJudgeRuntime() {
+    const configuration = ensureEvaluationJudgeConfiguration()
+    return (state.runtime?.availableRuntimes ?? []).find(
+        (runtime) => runtime.runtimeId === configuration.runtimeId,
+    ) ?? null
+}
+
+function renderEvaluationJudgeConfiguration() {
+    const configuration = ensureEvaluationJudgeConfiguration()
+    const runtimes = state.runtime?.availableRuntimes ?? []
+    const selectedRuntime = selectedEvaluationJudgeRuntime()
+    elements.evaluationJudgeRuntime.replaceChildren()
+    for (const runtime of runtimes) {
+        const option = node(
+            "option",
+            "",
+            `${runtime.displayName ?? runtime.providerId ?? runtime.runtimeId}${runtime.version ? ` ${runtime.version}` : ""}`,
+        )
+        option.value = runtime.runtimeId
+        elements.evaluationJudgeRuntime.append(option)
+    }
+    elements.evaluationJudgeRuntime.value = configuration.runtimeId ?? ""
+
+    const runtimeModels = selectedRuntime
+        ? state.evaluationRuntimeConfigurations[selectedRuntime.runtimeId]?.models ?? []
+        : []
+    populateModelSelect(
+        elements.evaluationJudgeModel,
+        configuration.modelId,
+        t("runtimeDefault"),
+        runtimeModels,
+    )
+    populateEffortSelect(
+        elements.evaluationJudgeEffort,
+        configuration.effort,
+        configuration.modelId,
+        runtimeModels,
+        selectedRuntime?.efforts ?? [],
+    )
+    configuration.modelId = elements.evaluationJudgeModel.value || null
+    configuration.effort = elements.evaluationJudgeEffort.value || null
+    const runtimeConfiguration = selectedRuntime
+        ? state.evaluationRuntimeConfigurations[selectedRuntime.runtimeId]
+        : null
+    const disabled = !selectedRuntime || Boolean(runtimeConfiguration?.loading)
+    elements.evaluationJudgeRuntime.disabled = !runtimes.length
+    elements.evaluationJudgeModel.disabled = disabled
+    elements.evaluationJudgeEffort.disabled = disabled
+    elements.evaluationJudgeModelStatus.className = "evaluation-judge-model-status"
+    if (runtimeConfiguration?.loading) {
+        elements.evaluationJudgeModelStatus.classList.add("loading")
+        elements.evaluationJudgeModelStatus.textContent = t("judgeModelsLoading")
+    } else if (runtimeConfiguration?.error) {
+        elements.evaluationJudgeModelStatus.classList.add("error")
+        elements.evaluationJudgeModelStatus.textContent = formatMessage("judgeModelsUnavailable", {
+            message: runtimeConfiguration.error,
+        })
+    } else if (selectedRuntime) {
+        elements.evaluationJudgeModelStatus.classList.add("ready")
+        elements.evaluationJudgeModelStatus.textContent = t("judgeModelsReady")
+    } else {
+        elements.evaluationJudgeModelStatus.textContent = t("noCompatibleRuntime")
+    }
+}
+
+function evaluationJudgeRequestConfiguration() {
+    const requested = ensureEvaluationJudgeConfiguration()
+    const runtime = selectedEvaluationJudgeRuntime()
+    if (!runtime) throw new Error(t("noCompatibleRuntime"))
+    const catalog = state.evaluationRuntimeConfigurations[runtime.runtimeId]
+    if (catalog?.loading) throw new Error(t("judgeModelsLoading"))
+    if (catalog?.error) {
+        throw new Error(formatMessage("judgeModelsUnavailable", {message: catalog.error}))
+    }
+    return {
+        runtimeId: runtime.runtimeId,
+        modelId: requested.modelId || null,
+        effort: requested.effort || null,
+    }
+}
+
 async function refreshEvaluationRuntimeModels(forceReload = false) {
     ensureEvaluationRuntimeConfigurations()
+    const configurations = Object.values(state.evaluationRuntimeConfigurations).filter(
+        (configuration) => forceReload || !configuration.models.length,
+    )
+    for (const configuration of configurations) {
+        configuration.loading = true
+        configuration.error = null
+    }
+    if (configurations.length && state.surface === "evaluation") {
+        renderEvaluationJudgeConfiguration()
+    }
     await Promise.all(
-        Object.values(state.evaluationRuntimeConfigurations).map(async (configuration) => {
-            if (!forceReload && configuration.models.length) return
-            configuration.loading = true
-            configuration.error = null
+        configurations.map(async (configuration) => {
             try {
                 const response = await window.rollingSkill.listModelsForRuntime(
                     configuration.runtime.runtimeId,
@@ -2342,6 +2593,251 @@ function renderEvaluationRuntimeConfigurations(skill) {
     }
 }
 
+function gradingStatusLabel(status) {
+    return t(
+        {
+            queued: "gradingQueued",
+            running: "gradingRunning",
+            completed: "gradingCompleted",
+            failed: "gradingFailed",
+            skipped: "gradingSkipped",
+        }[status] ?? "legacyUngraded",
+    )
+}
+
+function evaluationRunStatusLabel(status) {
+    return t(
+        {
+            queued: "executionQueued",
+            running: "executionRunning",
+            completed: "executionCompleted",
+            partial: "executionPartial",
+            failed: "executionFailed",
+            cancelled: "executionCancelled",
+        }[status] ?? "executionQueued",
+    )
+}
+
+function evaluationResultQuality(result) {
+    if (result.gradingStatus === "failed" || result.gradingStatus === "skipped") {
+        return "grading_failed"
+    }
+    if (result.gradingStatus !== "completed" || !result.computedScore) return "pending"
+    if (result.computedScore.overallVerdict === "pass") return "passed"
+    if (result.computedScore.overallVerdict === "fail") return "failed"
+    if (result.computedScore.overallVerdict === "diagnostic") return "diagnostic"
+    return "indeterminate"
+}
+
+function evaluationRunQualitySummary(run) {
+    const counts = {passed: 0, failed: 0, indeterminate: 0, diagnostic: 0, pending: 0, grading_failed: 0}
+    for (const result of run?.results ?? []) counts[evaluationResultQuality(result)] += 1
+    const labels = {
+        passed: "qualityPassed",
+        failed: "qualityFailed",
+        indeterminate: "qualityIndeterminate",
+        pending: "qualityPending",
+        grading_failed: "qualityGradingFailed",
+        diagnostic: "qualityDiagnostic",
+    }
+    const entries = Object.entries(counts)
+        .filter(([, count]) => count > 0)
+        .map(([status, count]) => ({status, text: `${t(labels[status])} ${count}`}))
+    if (!entries.length) entries.push({status: "pending", text: t("qualityPending")})
+    return entries
+}
+
+function appendEvaluationQualitySummary(parent, run) {
+    const summary = node("span", "evaluation-run-quality")
+    for (const entry of evaluationRunQualitySummary(run)) {
+        summary.append(node("span", `quality-status ${entry.status}`, entry.text))
+    }
+    parent.append(summary)
+}
+
+function resultScoreText(value, maxScore, range = null) {
+    if (value !== null && value !== undefined) return `${value}/${maxScore}`
+    if (range && range.min !== undefined && range.max !== undefined) {
+        return `${range.min}–${range.max}/${maxScore}`
+    }
+    return `—/${maxScore}`
+}
+
+function aVerdictLabel(verdict) {
+    return t(
+        {
+            pass: "gatePass",
+            fail: "gateFail",
+            indeterminate: "gateIndeterminate",
+            diagnostic: "diagnosticOnly",
+        }[verdict] ?? "gateIndeterminate",
+    )
+}
+
+function evidenceText(refs) {
+    return Array.isArray(refs) && refs.length ? refs.join(" · ") : t("none")
+}
+
+function assessmentStatusText(status) {
+    if (status === "not_observable") return t("notObservable")
+    if (status === "not_applicable") return t("notApplicable")
+    return status
+}
+
+const aDimensionLabels = {
+    skill_activation: "aSkillActivation",
+    required_references: "aRequiredReferences",
+    tool_policy: "aToolPolicy",
+    workflow_order: "aWorkflowOrder",
+    completeness_artifacts: "aCompletenessArtifacts",
+    deterministic_processing: "aDeterministicProcessing",
+    evidence_output: "aEvidenceOutput",
+    error_recovery: "aErrorRecovery",
+}
+
+function aDimensionTitle(dimension, id) {
+    return aDimensionLabels[id] ? t(aDimensionLabels[id]) : dimension?.criterion ?? id
+}
+
+function verificationLines(assessment) {
+    const lines = []
+    if (assessment?.verificationStatus) {
+        lines.push(`${t("verificationStatus")}: ${assessment.verificationStatus}`)
+    }
+    if (Array.isArray(assessment?.verifiableFields) && assessment.verifiableFields.length) {
+        lines.push(`${t("verifiableFields")}: ${assessment.verifiableFields.map((entry) =>
+            typeof entry === "string" ? entry : JSON.stringify(entry),
+        ).join(" · ")}`)
+    }
+    if (Array.isArray(assessment?.crossChecks) && assessment.crossChecks.length) {
+        lines.push(`${t("crossChecks")}: ${assessment.crossChecks.map((entry) =>
+            typeof entry === "string" ? entry : JSON.stringify(entry),
+        ).join(" · ")}`)
+    }
+    return lines
+}
+
+function renderScoreCriterion({section, title, scoreText, weightText, assessment, criterion, verification = []}) {
+    const item = node("article", `evaluation-score-item ${section}`)
+    const heading = node("div", "evaluation-score-item-head")
+    heading.append(
+        node("strong", "", title),
+        node("span", "evaluation-score-points", scoreText),
+        node("small", "", weightText),
+    )
+    const rationale = node("p", "evaluation-score-rationale")
+    rationale.append(node("b", "", `${t("scoreReason")}: `), document.createTextNode(assessment?.rationale ?? t("none")))
+    const evidence = node("p", "evaluation-score-evidence")
+    evidence.append(node("b", "", `${t("scoreEvidence")}: `), document.createTextNode(evidenceText(assessment?.evidenceRefs)))
+    item.append(heading)
+    if (criterion) item.append(node("p", "evaluation-score-criterion", criterion))
+    item.append(rationale, evidence)
+    for (const line of verification) item.append(node("p", "evaluation-score-verification", line))
+    return item
+}
+
+function renderCompletedGrading(result, run) {
+    const computedScore = result.computedScore
+    if (!computedScore) return null
+    const scoreContract = result.scoreContract ?? {}
+    const judgment = result.judgment ?? {}
+    const block = node("section", "evaluation-grading")
+    const summary = node("div", "evaluation-score-summary")
+    const total = node("div", "evaluation-score-total")
+    total.append(
+        node("small", "", t("totalScore")),
+        node("strong", "", resultScoreText(computedScore.totalScore, 100)),
+    )
+    const a = node("div", "evaluation-score-part")
+    a.append(
+        node("small", "", t("skillComplianceScore")),
+        node("strong", "", resultScoreText(computedScore.aScore, 60, computedScore.aScoreRange)),
+        node("span", `evaluation-gate ${computedScore.aVerdict ?? "indeterminate"}`, aVerdictLabel(computedScore.aVerdict)),
+    )
+    const b = node("div", "evaluation-score-part")
+    b.append(
+        node("small", "", t("answerQualityScore")),
+        node("strong", "", resultScoreText(computedScore.bScore, 40)),
+    )
+    summary.append(total, a, b)
+
+    const detail = document.createElement("details")
+    detail.className = "evaluation-grading-breakdown"
+    detail.append(node("summary", "", t("judgeDetails")))
+    const judge = result.judge ?? {}
+    if (result.runtimeConfiguration?.skillEvidenceBinding === "unverified") {
+        detail.append(
+            node(
+                "p",
+                "evaluation-judge-meta",
+                t("skillBindingDiagnostic"),
+            ),
+        )
+    }
+    detail.append(
+        node(
+            "p",
+            "evaluation-judge-meta",
+            [
+                judge.displayName || run.judgeConfiguration?.displayName || judge.runtimeId,
+                judge.modelId || t("runtimeDefault"),
+                judge.effort || t("runtimeDefaultEffort"),
+            ].filter(Boolean).join(" · "),
+        ),
+    )
+
+    const aList = node("section", "evaluation-score-section")
+    aList.append(node("h4", "", t("skillComplianceScore")))
+    for (const score of computedScore.dimensionScores ?? []) {
+        const dimension = scoreContract.a?.dimensions?.find((entry) => entry.id === score.id)
+        const assessment = judgment.aAssessments?.find((entry) => entry.dimensionId === score.id)
+        aList.append(renderScoreCriterion({
+            section: "a",
+            title: aDimensionTitle(dimension, score.id),
+            scoreText: score.points === null || score.points === undefined
+                ? assessmentStatusText(score.status)
+                : `${score.points}/${score.maxPoints}`,
+            weightText: `${t("weight").replace("{value}", score.maxPoints ?? dimension?.weight ?? "—")}`,
+            assessment,
+        }))
+    }
+
+    const bList = node("section", "evaluation-score-section")
+    bList.append(node("h4", "", t("answerQualityScore")))
+    const bKnownWeight = (computedScore.bCriterionScores ?? []).reduce((sum, entry) => {
+        if (entry.status !== "scored") return sum
+        const criterion = scoreContract.b?.criteria?.find((candidate) => candidate.id === entry.id)
+        return sum + (Number(criterion?.weight) || 0)
+    }, 0)
+    for (const score of computedScore.bCriterionScores ?? []) {
+        const criterion = scoreContract.b?.criteria?.find((entry) => entry.id === score.id)
+        const assessment = judgment.bAssessments?.find((entry) => entry.criterionId === score.id)
+        const maximum = bKnownWeight > 0
+            ? Math.round(400 * (Number(criterion?.weight) || 0) / bKnownWeight) / 10
+            : 40
+        const confidence = assessment?.confidence === undefined
+            ? null
+            : `${t("confidence")} ${Math.round(assessment.confidence * 100)}%`
+        bList.append(renderScoreCriterion({
+            section: "b",
+            title: criterion?.criterion ?? score.id,
+            scoreText: score.points === null || score.points === undefined
+                ? assessmentStatusText(score.status)
+                : `${score.points}/${maximum}`,
+            weightText: [
+                `${t("weight").replace("{value}", criterion?.weight ?? "—")}`,
+                score.rating === undefined ? null : `${score.rating}/10`,
+                confidence,
+            ].filter(Boolean).join(" · "),
+            assessment,
+            verification: verificationLines(assessment),
+        }))
+    }
+    detail.append(aList, bList)
+    block.append(summary, detail)
+    return block
+}
+
 function renderEvaluationRuns() {
     elements.evaluationRunCount.textContent = String(state.evaluationRuns.length)
     elements.evaluationRunList.replaceChildren()
@@ -2349,13 +2845,14 @@ function renderEvaluationRuns() {
         elements.evaluationRunList.append(node("div", "evaluation-empty", t("noRuns")))
     }
     for (const run of state.evaluationRuns) {
+        const detailedRun = state.evaluationRunDetails[run.id] ?? run
         const row = node("article", "evaluation-run-row")
         const button = node("button", "evaluation-run-item")
         button.type = "button"
         button.dataset.evaluationRunId = run.id
         if (run.id === state.activeEvaluationRunId) button.classList.add("active")
         button.append(
-            node("span", `run-status ${run.status}`, run.status),
+            node("span", `run-status ${run.status}`, evaluationRunStatusLabel(run.status)),
             node("strong", "", run.datasetSnapshot?.name ?? run.datasetId),
             node(
                 "small",
@@ -2363,6 +2860,7 @@ function renderEvaluationRuns() {
                 `${run.caseCount ?? 0} Cases · ${run.runtimeCount ?? 0} runtimes · ${new Date(run.createdAt).toLocaleString(state.settings.language)}`,
             ),
         )
+        appendEvaluationQualitySummary(button, detailedRun)
         row.append(button)
         if (run.status !== "queued" && run.status !== "running") {
             const remove = node("button", "hover-delete-button evaluation-run-delete", "×")
@@ -2390,16 +2888,35 @@ function renderEvaluationRuns() {
     }
     const header = node("header", "evaluation-run-detail-header")
     header.append(
-        node("span", `run-status ${run.status}`, run.status),
+        node("span", `run-status ${run.status}`, evaluationRunStatusLabel(run.status)),
         node("h2", "", run.datasetSnapshot?.name ?? run.datasetId),
         node("p", "", `${run.skillReference?.name ?? "Skill"} · ${run.activationMode}`),
     )
+    appendEvaluationQualitySummary(header, run)
     const results = node("div", "evaluation-result-list")
     for (const result of run.results ?? []) {
         const card = node("article", "evaluation-result-card")
         const resultHeader = node("div", "evaluation-result-head")
+        const statuses = node("div", "evaluation-result-statuses")
+        const executionStatus = node(
+            "span",
+            `run-status ${result.status}`,
+            `${t("executionStatus")} · ${evaluationRunStatusLabel(result.status)}`,
+        )
+        executionStatus.title = t("executionStatus")
+        const hasGradingData = ["queued", "running", "completed", "failed", "skipped"].includes(
+            result.gradingStatus,
+        )
+        const gradingStatus = hasGradingData ? result.gradingStatus : null
+        const gradingBadge = node(
+            "span",
+            `grading-status ${gradingStatus ?? "legacy"}`,
+            gradingStatusLabel(gradingStatus),
+        )
+        gradingBadge.title = t("gradingStatus")
+        statuses.append(executionStatus, gradingBadge)
         resultHeader.append(
-            node("span", `run-status ${result.status}`, result.status),
+            statuses,
             node("strong", "", result.runtimeConfiguration?.displayName ?? result.runtimeId),
             node(
                 "small",
@@ -2415,6 +2932,20 @@ function renderEvaluationRuns() {
             resultHeader,
             node("p", "evaluation-result-question", result.caseSnapshot?.question ?? ""),
         )
+        if (gradingStatus === "completed") {
+            const grading = renderCompletedGrading(result, run)
+            if (grading) card.append(grading)
+        } else if (gradingStatus === "failed" || gradingStatus === "skipped") {
+            card.append(
+                node(
+                    "p",
+                    "evaluation-grading-error",
+                    `${gradingStatusLabel(gradingStatus)}${result.gradingError || result.judge?.error ? ` · ${result.gradingError ?? result.judge.error}` : ""}`,
+                ),
+            )
+        } else if (!hasGradingData) {
+            card.append(node("p", "evaluation-legacy-grading", t("legacyUngraded")))
+        }
         if (result.response || result.error) {
             const detail = document.createElement("details")
             detail.append(
@@ -2501,11 +3032,15 @@ async function loadEvaluationWorkbench(forceReload = false) {
             refreshEvaluationRuntimeModels(forceReload),
         ])
         state.evaluationRuns = await window.rollingSkill.listEvaluationRuns()
+        const runDetails = await Promise.all(
+            state.evaluationRuns.map((run) => window.rollingSkill.getEvaluationRun(run.id)),
+        )
+        state.evaluationRunDetails = Object.fromEntries(runDetails.map((run) => [run.id, run]))
         if (!state.evaluationRuns.some((entry) => entry.id === state.activeEvaluationRunId)) {
             state.activeEvaluationRunId = state.evaluationRuns[0]?.id ?? null
         }
         state.activeEvaluationRun = state.activeEvaluationRunId
-            ? await window.rollingSkill.getEvaluationRun(state.activeEvaluationRunId)
+            ? state.evaluationRunDetails[state.activeEvaluationRunId] ?? null
             : null
         if (previousSkillPath && state.evaluationSkills.some((skill) => skill.path === previousSkillPath)) {
             elements.evaluationSkill.value = previousSkillPath
@@ -2534,6 +3069,7 @@ async function selectEvaluationRun(runId) {
         const run = await window.rollingSkill.getEvaluationRun(runId)
         if (state.activeEvaluationRunId !== runId) return
         state.activeEvaluationRun = run
+        state.evaluationRunDetails[runId] = run
     } catch (error) {
         if (state.activeEvaluationRunId === runId) {
             state.activeEvaluationRunId = null
@@ -2710,8 +3246,10 @@ async function startEvaluation(selectionMode) {
             activationMode,
             skillReference: {name: skill.name, path: skill.path},
             runtimeConfigurations,
+            judgeConfiguration: evaluationJudgeRequestConfiguration(),
         })
         state.evaluationRuns.unshift(evaluationRunSummary(run))
+        state.evaluationRunDetails[run.id] = run
         state.activeEvaluationRunId = run.id
         state.activeEvaluationRun = run
         state.evaluationView = "runs"
@@ -3508,6 +4046,7 @@ elements.settingsForm.addEventListener("submit", (event) => {
 for (const [modelSelect, effortSelect] of [
     [elements.settingsTaskModel, elements.settingsTaskEffort],
     [elements.settingsCuratorModel, elements.settingsCuratorEffort],
+    [elements.settingsJudgeModel, elements.settingsJudgeEffort],
     [elements.settingsAutoCaptureModel, elements.settingsAutoCaptureEffort],
 ]) {
     modelSelect.addEventListener("change", () => {
@@ -3565,6 +4104,22 @@ elements.evaluationRuntimeList.addEventListener("change", (event) => {
     if (model) configuration.modelId = model.value || null
     if (effort) configuration.effort = effort.value || null
     renderEvaluationWorkbench()
+})
+elements.evaluationJudgeRuntime.addEventListener("change", () => {
+    state.evaluationJudgeConfiguration = {
+        runtimeId: elements.evaluationJudgeRuntime.value || null,
+        modelId: null,
+        effort: null,
+    }
+    renderEvaluationWorkbench()
+})
+elements.evaluationJudgeModel.addEventListener("change", () => {
+    state.evaluationJudgeConfiguration.modelId = elements.evaluationJudgeModel.value || null
+    state.evaluationJudgeConfiguration.effort = null
+    renderEvaluationWorkbench()
+})
+elements.evaluationJudgeEffort.addEventListener("change", () => {
+    state.evaluationJudgeConfiguration.effort = elements.evaluationJudgeEffort.value || null
 })
 elements.evaluationRunList.addEventListener("click", (event) => {
     const remove = event.target.closest("[data-delete-evaluation-run]")
@@ -3779,9 +4334,9 @@ window.rollingSkill.onEvaluationChanged(async ({runId, resultId, status}) => {
         } else if (!resultId && status) {
             state.evaluationRuns[index] = {...state.evaluationRuns[index], status}
         }
-        if (state.activeEvaluationRunId === runId) {
-            state.activeEvaluationRun = await window.rollingSkill.getEvaluationRun(runId)
-        }
+        const run = await window.rollingSkill.getEvaluationRun(runId)
+        state.evaluationRunDetails[runId] = run
+        if (state.activeEvaluationRunId === runId) state.activeEvaluationRun = run
         renderEvaluationWorkbench()
     } catch {
         // The next explicit refresh will reconcile local run history.
