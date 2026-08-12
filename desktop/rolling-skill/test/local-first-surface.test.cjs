@@ -233,6 +233,7 @@ describe("local-first desktop surface", () => {
         assert.match(html, /id="evaluation-skill"/)
         assert.match(html, /id="start-evaluation"/)
         assert.match(renderer, /renderEvaluationWorkbench/)
+        assert.match(renderer, /caseEntry\.source\?\.originalQuestion \|\| caseEntry\.question/)
         assert.match(preload, /listSkills/)
         assert.match(preload, /listCases/)
         assert.match(main, /skills:list/)

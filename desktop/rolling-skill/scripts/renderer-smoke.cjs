@@ -101,6 +101,20 @@ async function run() {
         throw new Error(`Conversation scrolling is animated: ${markdownAndActivity.scrollBehavior}`)
     }
 
+    await inspect(window, 'document.querySelector("[data-surface=evaluation]").click()')
+    await waitFor(window, 'document.querySelector("[data-evaluation-case-id=case-smoke] strong")')
+    const caseCard = await inspect(window, `(() => ({
+        title: document.querySelector("[data-evaluation-case-id=case-smoke] strong")?.textContent,
+        text: document.querySelector("[data-evaluation-case-id=case-smoke]")?.textContent,
+    }))()`)
+    if (caseCard.title !== "查一下7月份账单，各业务混元3多少成本？") {
+        throw new Error(`Case card did not use the first source question: ${caseCard.title}`)
+    }
+    if (caseCard.title.includes("用户后来对这个 Case 的评价")) {
+        throw new Error("Case card used the later user review as its title")
+    }
+    await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
+
     await inspect(window, 'document.querySelector("#topbar-curations").click()')
     await waitFor(window, 'document.querySelector("#curation-drawer").classList.contains("visible") && document.querySelector(".curation-live-activity")')
     await inspect(window, `window.rollingSkill.smokeEmitCurationActivity({
@@ -399,6 +413,7 @@ async function run() {
             emptyArchiveLoadCancelled: true,
             staleRuntimeModelsIgnored: true,
             inlineCurationFailure: true,
+            caseCardUsesInitialQuestion: true,
             curatorLiveActivity: true,
             curatorReferenceCard: true,
             curatorDraftRemainsSaveable: true,

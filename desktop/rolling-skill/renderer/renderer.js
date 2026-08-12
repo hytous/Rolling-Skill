@@ -2181,9 +2181,10 @@ function renderEvaluationWorkbench() {
         button.type = "button"
         button.dataset.evaluationCaseId = caseEntry.id
         if (caseEntry.id === state.evaluationCaseId) button.classList.add("active")
+        const caseTitle = caseEntry.source?.originalQuestion || caseEntry.question
         button.append(
             node("span", `case-badge ${caseEntry.caseType}`, caseEntry.caseType),
-            node("strong", "", caseEntry.question),
+            node("strong", "", caseTitle),
             node("small", "", caseEntry.curated?.referenceAnswer?.summary || caseEntry.answer || ""),
         )
         const remove = node("button", "hover-delete-button evaluation-case-delete", "×")

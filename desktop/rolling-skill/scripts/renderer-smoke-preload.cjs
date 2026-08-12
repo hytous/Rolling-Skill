@@ -138,6 +138,17 @@ function curationSession(overrides = {}) {
 }
 
 let smokeCurationSession = curationSession()
+const smokeEvaluationCase = {
+    id: "case-smoke",
+    datasetId: "dataset-smoke",
+    caseType: "goodcase",
+    question: "用户后来对这个 Case 的评价，不应成为卡片标题",
+    answer: "Structured reference answer",
+    curated: curatedDraft("Verified case summary"),
+    source: {
+        originalQuestion: "查一下7月份账单，各业务混元3多少成本？",
+    },
+}
 const noOpSubscription = () => () => {}
 let readCount = 0
 let nextReadFailureThreadId = null
@@ -166,7 +177,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
             availableRuntimes: [],
         },
         workspaceRoot: "/tmp/rolling-skill-renderer-smoke",
-        datasets: [{id: "dataset-smoke", name: "Smoke Dataset", caseCount: 0}],
+        datasets: [{id: "dataset-smoke", name: "Smoke Dataset", caseCount: 1}],
         curationSessions: [smokeCurationSession],
         settings,
     }),
@@ -208,6 +219,15 @@ contextBridge.exposeInMainWorld("rollingSkill", {
             }],
         }],
     }),
+    listDatasets: async () => [{
+        id: "dataset-smoke",
+        name: "Smoke Dataset",
+        caseCount: 1,
+        goodcaseCount: 1,
+        badcaseCount: 0,
+    }],
+    listCases: async () => [smokeEvaluationCase],
+    listEvaluationRuns: async () => [],
     createCuration: async (input) => {
         lastCurationInput = input
         if (failNextCuration) {
