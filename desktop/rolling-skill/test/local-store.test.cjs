@@ -307,7 +307,7 @@ describe("local evaluation store", () => {
                         caseType: "goodcase",
                         status: "failed",
                         episode: sourceEpisode,
-                        curator: {},
+                        curator: {modelId: "gpt-old", effort: "max"},
                     },
                 ],
                 evaluationRuns: [],
@@ -317,6 +317,8 @@ describe("local evaluation store", () => {
         const migrated = new LocalEvaluationStore(path).read()
         assert.equal(migrated.curationSessions[0].datasetQuestion, "原始自然语言问题")
         assert.equal(migrated.curationSessions[0].episode.originalQuestion, "原始自然语言问题")
+        assert.equal(migrated.curationSessions[0].curator.effectiveModelId, null)
+        assert.equal(migrated.curationSessions[0].curator.effectiveEffort, null)
     })
 
     it("preserves deliberate dataset-question whitespace while rejecting blank input", () => {
@@ -366,7 +368,10 @@ describe("local evaluation store", () => {
             curator: {
                 runtimeId: "codex:curator",
                 modelProvider: "openai",
-                modelId: null,
+                modelId: "gpt-requested",
+                effort: "max",
+                effectiveModelId: "gpt-effective",
+                effectiveEffort: "xhigh",
                 promptVersion: "rolling-skill-curator/v1",
             },
         })
@@ -407,6 +412,10 @@ describe("local evaluation store", () => {
         assert.equal(saved.skillReference.name, "billing-cost-management")
         assert.equal(saved.source.skillRuntimeId, "codex-alpha")
         assert.equal(saved.source.skillName, "billing-cost-management")
+        assert.equal(saved.source.curatorModelId, "gpt-requested")
+        assert.equal(saved.source.curatorEffort, "max")
+        assert.equal(saved.source.curatorEffectiveModelId, "gpt-effective")
+        assert.equal(saved.source.curatorEffectiveEffort, "xhigh")
         assert.equal(archived.status, "archived")
         assert.equal(archived.caseId, saved.id)
     })

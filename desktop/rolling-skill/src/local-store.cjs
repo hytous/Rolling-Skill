@@ -191,6 +191,28 @@ function migrateState(input) {
             session.curator.effort = null
             changed = true
         }
+        if (session.curator && !("effectiveModelId" in session.curator)) {
+            session.curator.effectiveModelId = null
+            changed = true
+        }
+        if (session.curator && !("effectiveEffort" in session.curator)) {
+            session.curator.effectiveEffort = null
+            changed = true
+        }
+        if (session.status === "failed" && session.draft) {
+            const latestAssistant = [...(session.conversation ?? [])]
+                .reverse()
+                .find((entry) => entry.role === "assistant")
+            const attemptedContract = /```json|schemaVersion|referenceAnswer|hardRequirements|grading/iu.test(
+                String(latestAssistant?.text ?? ""),
+            )
+            session.status = "needs_review"
+            session.error = attemptedContract && session.error
+                ? `The last Curator response did not replace the valid reference answer: ${session.error}`
+                : null
+            if (session.curator) session.curator.currentTurnId = null
+            changed = true
+        }
     }
     return {state, changed}
 }
@@ -559,6 +581,11 @@ class LocalEvaluationStore {
                 modelProvider: input.curator?.modelProvider ?? null,
                 modelId: input.curator?.modelId ?? null,
                 effort: reasoningEffort(input.curator?.effort, "Curator reasoning effort"),
+                effectiveModelId: input.curator?.effectiveModelId ?? null,
+                effectiveEffort: reasoningEffort(
+                    input.curator?.effectiveEffort,
+                    "Effective Curator reasoning effort",
+                ),
                 promptVersion: input.curator?.promptVersion ?? null,
                 threadId: null,
                 currentTurnId: null,
@@ -737,6 +764,9 @@ class LocalEvaluationStore {
                 curatorRuntimeId: session.curator.runtimeId,
                 curatorModelProvider: session.curator.modelProvider,
                 curatorModelId: session.curator.modelId,
+                curatorEffort: session.curator.effort,
+                curatorEffectiveModelId: session.curator.effectiveModelId,
+                curatorEffectiveEffort: session.curator.effectiveEffort,
                 curatorPromptVersion: session.curator.promptVersion,
                 skillName: session.skillReference?.name ?? null,
                 skillPath: session.skillReference?.path ?? null,

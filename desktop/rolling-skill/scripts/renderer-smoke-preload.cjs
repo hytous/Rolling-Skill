@@ -77,6 +77,67 @@ const threads = {
     "thread-a": conversationThread("thread-a", "Thread A", "Alpha"),
     "thread-b": conversationThread("thread-b", "Thread B", "Beta"),
 }
+
+function curatedDraft(summary) {
+    return {
+        schemaVersion: "rolling-skill-curated-case/v1",
+        referenceAnswer: {
+            summary,
+            requiredFacts: ["July is the billing period."],
+            requiredSteps: ["Query and verify the billing source."],
+            requiredOutputFormat: ["State amount and currency."],
+            evidence: [{claim: "The question asks for July.", sourceItemIds: ["thread-a-user-0"]}],
+        },
+        grading: {
+            hardRequirements: [{
+                id: "H1",
+                criterion: "Uses July billing data",
+                passCondition: "The answer explicitly identifies July.",
+                evidenceBasis: "The source question asks for July.",
+            }],
+            softCriteria: [{id: "S1", criterion: "Concise", weight: 1}],
+            automaticFailures: ["Invents an unverified amount"],
+        },
+        badCaseAnalysis: null,
+    }
+}
+
+function curationSession(overrides = {}) {
+    const draft = overrides.draft ?? curatedDraft("Initial verified reference")
+    return {
+        id: "curation-live-smoke",
+        caseType: "goodcase",
+        status: "running",
+        datasetQuestion: "查一下7月份账单，各业务混元3多少成本？",
+        episode: {
+            originalQuestion: "查一下7月份账单，各业务混元3多少成本？",
+            items: [{id: "thread-a-user-0", type: "userMessage"}],
+            toolActivity: [{signature: "billing-cli cost query"}],
+        },
+        skillReference: {name: "billing-cost-management"},
+        curator: {
+            modelId: null,
+            effort: null,
+            effectiveModelId: "gpt-5.6-sol",
+            effectiveEffort: "xhigh",
+            threadId: "curator-live-thread",
+            currentTurnId: "curator-live-turn",
+        },
+        conversation: [{
+            role: "assistant",
+            text: `Initial review note.\n\n\`\`\`\n${JSON.stringify(draft)}\n\`\`\``,
+            turnId: "curator-initial-turn",
+        }],
+        draft,
+        revisions: [{createdAt: "2026-08-12T10:00:00.000Z"}],
+        createdAt: "2026-08-12T10:00:00.000Z",
+        updatedAt: "2026-08-12T10:01:00.000Z",
+        error: null,
+        ...overrides,
+    }
+}
+
+let smokeCurationSession = curationSession()
 const noOpSubscription = () => () => {}
 let readCount = 0
 let nextReadFailureThreadId = null
@@ -84,6 +145,8 @@ let failNextCuration = false
 let lastCurationInput = null
 const notificationListeners = new Set()
 const runtimeStateListeners = new Set()
+const curationChangedListeners = new Set()
+const curationActivityListeners = new Set()
 const modelDelayByRuntime = new Map()
 let currentRuntimeId = "codex:renderer-smoke"
 
@@ -104,7 +167,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         },
         workspaceRoot: "/tmp/rolling-skill-renderer-smoke",
         datasets: [{id: "dataset-smoke", name: "Smoke Dataset", caseCount: 0}],
-        curationSessions: [],
+        curationSessions: [smokeCurationSession],
         settings,
     }),
     listModels: async () => {
@@ -191,7 +254,21 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         }
         for (const listener of runtimeStateListeners) listener(runtime)
     },
-    onCurationChanged: noOpSubscription,
+    onCurationChanged: (listener) => {
+        curationChangedListeners.add(listener)
+        return () => curationChangedListeners.delete(listener)
+    },
+    smokeEmitCurationChanged: (patch) => {
+        smokeCurationSession = {...smokeCurationSession, ...patch}
+        for (const listener of curationChangedListeners) listener(smokeCurationSession)
+    },
+    onCurationActivity: (listener) => {
+        curationActivityListeners.add(listener)
+        return () => curationActivityListeners.delete(listener)
+    },
+    smokeEmitCurationActivity: (activity) => {
+        for (const listener of curationActivityListeners) listener(activity)
+    },
     onEvaluationChanged: noOpSubscription,
     onWorkspaceChanged: noOpSubscription,
     onNewTask: noOpSubscription,

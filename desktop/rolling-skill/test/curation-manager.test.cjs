@@ -122,8 +122,9 @@ class FakeRuntime {
             thread: {
                 id: `curator-${this.startedThreads.length}`,
                 modelProvider: "openai",
-                model: options.model ?? "runtime-default",
             },
+            model: options.model ?? "runtime-default",
+            reasoningEffort: options.effort ?? "xhigh",
         }
     }
 
@@ -189,6 +190,8 @@ describe("curation manager", () => {
         assert.equal(persisted.status, "running")
         assert.equal(persisted.curator.threadId, "curator-1")
         assert.equal(persisted.curator.modelId, "gpt-5.6-sol")
+        assert.equal(persisted.curator.effectiveModelId, "gpt-5.6-sol")
+        assert.equal(persisted.curator.effectiveEffort, "xhigh")
         assert.equal(persisted.skillReference.name, "billing-cost-management")
         assert.equal(persisted.skillReference.runtimeId, "codex-alpha")
         assert.deepEqual(runtime.startedThreads[0], {
@@ -213,6 +216,82 @@ describe("curation manager", () => {
             /\/runtime\/skills\/billing-cost-management\/SKILL\.md/,
         )
         assert.equal(changed.at(-1).status, "running")
+    })
+
+    it("keeps requested settings separate from runtime-effective settings", async () => {
+        const session = await manager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+
+        let persisted = store.getCurationSession(session.id)
+        assert.equal(persisted.curator.modelId, null)
+        assert.equal(persisted.curator.effort, null)
+        assert.equal(persisted.curator.effectiveModelId, "runtime-default")
+        assert.equal(persisted.curator.effectiveEffort, "xhigh")
+
+        await manager.handleNotification({
+            method: "thread/settings/updated",
+            params: {
+                threadId: "curator-1",
+                threadSettings: {model: "gpt-5.6-sol", effort: "max"},
+            },
+        })
+        persisted = store.getCurationSession(session.id)
+        assert.equal(persisted.curator.modelId, null)
+        assert.equal(persisted.curator.effort, null)
+        assert.equal(persisted.curator.effectiveModelId, "gpt-5.6-sol")
+        assert.equal(persisted.curator.effectiveEffort, "max")
+    })
+
+    it("emits compact live activity without command output or response deltas", async () => {
+        const activity = []
+        manager = new CurationManager({
+            store,
+            getRuntime: async () => runtime,
+            getRuntimeDescriptor: () => ({runtimeId: "codex-alpha"}),
+            onChanged: (session) => changed.push(session),
+            onActivity: (entry) => activity.push(entry),
+            schedule: (task) => task(),
+        })
+        const session = await manager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+
+        await manager.handleNotification({
+            method: "item/started",
+            params: {
+                threadId: "curator-1",
+                turnId: "curator-turn-1",
+                item: {
+                    type: "commandExecution",
+                    commandActions: [{command: `sed ${"x".repeat(400)}`}],
+                    aggregatedOutput: "huge-noisy-shell-output",
+                },
+            },
+        })
+        await manager.handleNotification({
+            method: "item/agentMessage/delta",
+            params: {
+                threadId: "curator-1",
+                turnId: "curator-turn-1",
+                delta: "private streamed answer",
+            },
+        })
+
+        const latest = activity.at(-1)
+        assert.equal(latest.sessionId, session.id)
+        assert.equal(latest.stage, "command")
+        assert.ok(latest.summary.length <= 240)
+        assert.equal(JSON.stringify(activity).includes("huge-noisy-shell-output"), false)
+        assert.equal(JSON.stringify(activity).includes("private streamed answer"), false)
     })
 
     it("forwards stable message locators when live ids differ from thread/read ids", async () => {
@@ -380,6 +459,193 @@ describe("curation manager", () => {
         assert.equal(saved.skillReference, null)
         assert.equal(store.getCurationSession(session.id).status, "archived")
         assert.deepEqual(runtime.archivedThreads, ["curator-1"])
+    })
+
+    it("keeps the last valid draft reviewable when a follow-up is conversational", async () => {
+        const session = await manager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+        await completeInitialDraft(manager, store, session)
+        await manager.sendMessage(session.id, "补充查询计划")
+        const revising = store.getCurationSession(session.id)
+
+        await manager.handleNotification({
+            method: "turn/completed",
+            params: {
+                threadId: "curator-1",
+                turn: {
+                    id: revising.curator.currentTurnId,
+                    status: "completed",
+                    items: [{id: "invalid", type: "agentMessage", text: "只有说明，没有契约 JSON。"}],
+                },
+            },
+        })
+
+        const recovered = store.getCurationSession(session.id)
+        assert.equal(recovered.status, "needs_review")
+        assert.equal(recovered.draft.referenceAnswer.summary, "Use the verified billing result.")
+        assert.equal(recovered.error, null)
+        assert.equal(recovered.conversation.at(-1).role, "assistant")
+    })
+
+    it("keeps the last valid draft and explains an invalid attempted revision", async () => {
+        const session = await manager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+        await completeInitialDraft(manager, store, session)
+        await manager.sendMessage(session.id, "请修改参考答案")
+        const revising = store.getCurationSession(session.id)
+
+        await manager.handleNotification({
+            method: "turn/completed",
+            params: {
+                threadId: "curator-1",
+                turn: {
+                    id: revising.curator.currentTurnId,
+                    status: "completed",
+                    items: [{
+                        id: "invalid-contract",
+                        type: "agentMessage",
+                        text: "```json\n{\"schemaVersion\":\"wrong\",\"referenceAnswer\":{}}\n```",
+                    }],
+                },
+            },
+        })
+
+        const recovered = store.getCurationSession(session.id)
+        assert.equal(recovered.status, "needs_review")
+        assert.equal(recovered.draft.referenceAnswer.summary, "Use the verified billing result.")
+        assert.match(recovered.error, /not applied/i)
+    })
+
+    it("keeps the last valid draft saveable when a follow-up runtime turn fails", async () => {
+        const session = await manager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+        await completeInitialDraft(manager, store, session)
+        await manager.sendMessage(session.id, "请解释一下这个参考答案")
+
+        await manager.handleNotification({
+            method: "error",
+            params: {
+                threadId: "curator-1",
+                willRetry: false,
+                error: {message: "runtime disconnected"},
+            },
+        })
+
+        const recovered = store.getCurationSession(session.id)
+        assert.equal(recovered.status, "needs_review")
+        assert.equal(recovered.draft.referenceAnswer.summary, "Use the verified billing result.")
+        assert.match(recovered.error, /runtime disconnected/)
+        assert.equal(recovered.curator.currentTurnId, null)
+    })
+
+    it("does not apply a draft carried by a failed completed turn", async () => {
+        const session = await manager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+        await completeInitialDraft(manager, store, session)
+        await manager.sendMessage(session.id, "请修改参考答案")
+        const revising = store.getCurationSession(session.id)
+
+        await manager.handleNotification({
+            method: "error",
+            params: {
+                threadId: "curator-1",
+                turnId: revising.curator.currentTurnId,
+                willRetry: false,
+                error: {message: "CodeBuddy prompt failed"},
+            },
+        })
+        const handledCompletion = await manager.handleNotification({
+            method: "turn/completed",
+            params: {
+                threadId: "curator-1",
+                turn: {
+                    id: revising.curator.currentTurnId,
+                    status: "failed",
+                    error: {message: "CodeBuddy prompt failed"},
+                    items: [{
+                        id: "partial-contract",
+                        type: "agentMessage",
+                        text: `\`\`\`json\n${JSON.stringify(validDraft("Must not be applied"))}\n\`\`\``,
+                    }],
+                },
+            },
+        })
+
+        const recovered = store.getCurationSession(session.id)
+        assert.equal(recovered.status, "needs_review")
+        assert.equal(recovered.draft.referenceAnswer.summary, "Use the verified billing result.")
+        assert.equal(recovered.revisions.length, 1)
+        assert.match(recovered.error, /CodeBuddy prompt failed/)
+        assert.equal(handledCompletion, false)
+    })
+
+    it("ignores a stale runtime error from a previous Curator turn", async () => {
+        const session = await manager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+        await completeInitialDraft(manager, store, session)
+        await manager.sendMessage(session.id, "请修改参考答案")
+        const revising = store.getCurationSession(session.id)
+
+        const handled = await manager.handleNotification({
+            method: "error",
+            params: {
+                threadId: "curator-1",
+                turnId: "older-turn",
+                willRetry: false,
+                error: {message: "stale error"},
+            },
+        })
+
+        const current = store.getCurationSession(session.id)
+        assert.equal(handled, false)
+        assert.equal(current.status, "running")
+        assert.equal(current.curator.currentTurnId, revising.curator.currentTurnId)
+        assert.equal(current.error, null)
+    })
+
+    it("restores an interrupted follow-up with a valid draft as reviewable on restart", async () => {
+        const session = await manager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+        await completeInitialDraft(manager, store, session)
+        await manager.sendMessage(session.id, "请解释一下这个参考答案")
+
+        new CurationManager({store, getRuntime: async () => runtime})
+
+        const recovered = store.getCurationSession(session.id)
+        assert.equal(recovered.status, "needs_review")
+        assert.equal(recovered.draft.referenceAnswer.summary, "Use the verified billing result.")
+        assert.match(recovered.error, /interrupted/i)
+        assert.equal(recovered.curator.currentTurnId, null)
     })
 
     it("isolates malformed Curator output and can retry it without changing the source", async () => {

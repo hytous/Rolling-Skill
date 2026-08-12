@@ -51,6 +51,10 @@ const translations = {
         model: "Model",
         reasoningEffort: "Reasoning effort",
         runtimeDefaultEffort: "Runtime default effort",
+        inheritRuntimeEffort: "Inherit runtime setting",
+        actualRuntimeSetting: "Actual this run: {value}",
+        requestedRuntimeSetting: "Requested: {value}",
+        actualRuntimeUnknown: "actual setting unavailable",
         send: "Send",
         doneSaveCase: "Done · save case",
         done: "Done",
@@ -59,6 +63,16 @@ const translations = {
         noDrafts: "No drafts yet. Use Curate case under an assistant response.",
         curatorConversation: "Curator conversation",
         curatorWorking: "Curator is working…",
+        curatorStarting: "Starting Curator",
+        curatorAnalyzing: "Analyzing the episode and Skill",
+        curatorCommand: "Reading local evaluation material",
+        curatorTool: "Checking an evaluation tool",
+        curatorDrafting: "Writing the reference answer",
+        curatorElapsed: "Elapsed {value}",
+        curatorLastActive: "last active {value}",
+        referenceReady: "Reference answer ready",
+        referenceUpdated: "Reference answer updated",
+        expandReference: "Expand to review the structured reference",
         verbatimQuestion: "Verbatim question",
         queued: "Queued",
         running: "Running",
@@ -278,6 +292,10 @@ const translations = {
         model: "模型",
         reasoningEffort: "推理强度",
         runtimeDefaultEffort: "运行时默认强度",
+        inheritRuntimeEffort: "沿用运行时设置",
+        actualRuntimeSetting: "本轮实际：{value}",
+        requestedRuntimeSetting: "请求：{value}",
+        actualRuntimeUnknown: "实际设置未知",
         send: "发送",
         doneSaveCase: "完成并保存 Case",
         done: "完成",
@@ -286,6 +304,16 @@ const translations = {
         noDrafts: "还没有草稿，请在助手回答下方点击 Curate case。",
         curatorConversation: "Curator 对话",
         curatorWorking: "Curator 正在处理…",
+        curatorStarting: "正在启动 Curator",
+        curatorAnalyzing: "正在分析会话与 Skill",
+        curatorCommand: "正在读取本地评测材料",
+        curatorTool: "正在检查评测工具",
+        curatorDrafting: "正在整理参考答案",
+        curatorElapsed: "已用时 {value}",
+        curatorLastActive: "最近活动于 {value}",
+        referenceReady: "参考答案已生成",
+        referenceUpdated: "参考答案已更新",
+        expandReference: "展开查看结构化参考答案",
         verbatimQuestion: "原始问题",
         queued: "排队中",
         running: "处理中",
@@ -482,6 +510,9 @@ const state = {
     caseSelection: null,
     caseCreationInProgress: false,
     curationSessions: [],
+    curationActivities: new Map(),
+    curationRevisionCounts: new Map(),
+    flashingCurationReferences: new Set(),
     activeCurationId: null,
     curationOpen: false,
     curatorProfile: {runtimePolicy: "active", modelId: null},
@@ -900,18 +931,10 @@ function populateEffortSelect(
 ) {
     const selected = String(selectedEffort ?? "").trim()
     const efforts = effortsForModel(sourceModels, modelId, fallbackEfforts)
-    const selectedModel = modelId
-        ? sourceModels.find((entry) => modelValue(entry) === modelId)
-        : sourceModels.find((entry) => entry.isDefault) ?? sourceModels[0]
-    const defaultEffort = effortValue(selectedModel?.defaultReasoningEffort)
-    const signature = JSON.stringify({selected, modelId, efforts, defaultEffort, language: state.settings.language})
+    const signature = JSON.stringify({selected, modelId, efforts, language: state.settings.language})
     if (select.dataset.effortSignature === signature) return
     select.replaceChildren()
-    const runtimeDefault = node(
-        "option",
-        "",
-        defaultEffort ? `${t("runtimeDefaultEffort")} · ${defaultEffort}` : t("runtimeDefaultEffort"),
-    )
+    const runtimeDefault = node("option", "", t("inheritRuntimeEffort"))
     runtimeDefault.value = ""
     select.append(runtimeDefault)
     for (const effort of efforts) {
@@ -919,7 +942,7 @@ function populateEffortSelect(
         option.value = effort
         select.append(option)
     }
-    if (selected && !efforts.length) {
+    if (selected && !efforts.includes(selected)) {
         const custom = node("option", "", selected)
         custom.value = selected
         select.append(custom)
@@ -1074,12 +1097,30 @@ function renderSettingsForm() {
         settings.autoCaptureProfile?.caseType ?? "goodcase"
 }
 
+function refreshOpenSettingsOptions() {
+    if (!elements.settingsDialog.open) return
+    const taskModel = elements.settingsTaskModel.value
+    const taskEffort = elements.settingsTaskEffort.value
+    const curatorModel = elements.settingsCuratorModel.value
+    const curatorEffort = elements.settingsCuratorEffort.value
+    const captureModel = elements.settingsAutoCaptureModel.value
+    const captureEffort = elements.settingsAutoCaptureEffort.value
+    const captureSkill = elements.settingsAutoCaptureSkill.value
+    populateModelSelect(elements.settingsTaskModel, taskModel)
+    populateEffortSelect(elements.settingsTaskEffort, taskEffort, taskModel)
+    populateModelSelect(elements.settingsCuratorModel, curatorModel, t("sourceOrRuntimeModel"))
+    populateEffortSelect(elements.settingsCuratorEffort, curatorEffort, curatorModel)
+    populateModelSelect(elements.settingsAutoCaptureModel, captureModel, t("sourceOrRuntimeModel"))
+    populateEffortSelect(elements.settingsAutoCaptureEffort, captureEffort, captureModel)
+    populateSkillSelect(elements.settingsAutoCaptureSkill, captureSkill)
+}
+
 async function openSettings() {
     renderSettingsForm()
     elements.settingsDialog.showModal()
     try {
         await refreshRuntimeSkills(true)
-        if (elements.settingsDialog.open) renderSettingsForm()
+        refreshOpenSettingsOptions()
     } catch (error) {
         showError(error)
     }
@@ -1152,7 +1193,7 @@ async function refreshModels() {
     }
     renderTaskModelPicker()
     renderEvaluationWorkbench()
-    if (elements.settingsDialog.open) renderSettingsForm()
+    refreshOpenSettingsOptions()
     if (state.curationOpen) renderCurations()
     return true
 }
@@ -1782,6 +1823,77 @@ function renderDraft(draft) {
     return wrapper
 }
 
+function curatorConversationText(message) {
+    if (message.role !== "assistant") return message.text
+    const text = String(message.text ?? "")
+    const marker = text.search(
+        /```(?:json)?\s*\{|\{\s*"schemaVersion"\s*:\s*"rolling-skill-curated-case\/v1"/iu,
+    )
+    if (marker < 0) return message.text
+    return text.slice(0, marker).trim() || t("referenceUpdated")
+}
+
+function curatorActivityStage(activity) {
+    const keys = {
+        starting: "curatorStarting",
+        analyzing: "curatorAnalyzing",
+        command: "curatorCommand",
+        tool: "curatorTool",
+        drafting: "curatorDrafting",
+    }
+    return t(keys[activity?.stage] ?? "curatorWorking")
+}
+
+function shortElapsed(milliseconds) {
+    const seconds = Math.max(0, Math.floor(Number(milliseconds ?? 0) / 1000))
+    if (seconds < 60) return `${seconds}s`
+    return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`
+}
+
+function renderCurationActivity(container, session) {
+    if (session.status !== "queued" && session.status !== "running") return
+    const activity = state.curationActivities.get(session.id) ?? {
+        sessionId: session.id,
+        stage: "starting",
+        summary: "",
+        startedAt: Date.parse(session.updatedAt || session.createdAt || new Date().toISOString()),
+        lastActivityAt: Date.now(),
+    }
+    const card = node("div", "curation-live-activity")
+    card.dataset.curationActivity = session.id
+    const heading = node("div", "curation-live-heading")
+    heading.append(
+        node("span", "curation-live-dot"),
+        node("strong", "curation-live-stage", curatorActivityStage(activity)),
+    )
+    const detail = node("div", "curation-live-detail", activity.summary || "")
+    detail.classList.toggle("hidden", !activity.summary)
+    card.append(heading, detail, node("small", "curation-live-timing"))
+    container.append(card)
+    patchCurationActivityCard(activity)
+}
+
+function patchCurationActivityCard(activity) {
+    const card = elements.curationDetail.querySelector(
+        `[data-curation-activity="${CSS.escape(String(activity?.sessionId ?? ""))}"]`,
+    )
+    if (!card) return
+    if (activity.terminal) {
+        card.remove()
+        return
+    }
+    const now = Date.now()
+    card.querySelector(".curation-live-stage").textContent = curatorActivityStage(activity)
+    const detail = card.querySelector(".curation-live-detail")
+    detail.textContent = activity.summary || ""
+    detail.classList.toggle("hidden", !activity.summary)
+    card.querySelector(".curation-live-timing").textContent = `${formatMessage("curatorElapsed", {
+        value: shortElapsed(now - activity.startedAt),
+    })} · ${formatMessage("curatorLastActive", {
+        value: shortElapsed(now - activity.lastActivityAt),
+    })}`
+}
+
 function renderCurations() {
     elements.curationDrawer.classList.toggle("visible", state.curationOpen)
     elements.curationList.replaceChildren()
@@ -1837,26 +1949,54 @@ function renderCurations() {
         node("span", "curation-label", t("verbatimQuestion")),
         node("div", "", session.episode.originalQuestion),
     )
+    const curatorModel = session.curator.effectiveModelId
+        ? formatMessage("actualRuntimeSetting", {value: session.curator.effectiveModelId})
+        : session.curator.modelId
+          ? `${formatMessage("requestedRuntimeSetting", {value: session.curator.modelId})} · ${t("actualRuntimeUnknown")}`
+          : t("inheritRuntimeEffort")
+    const curatorEffort = session.curator.effectiveEffort
+        ? formatMessage("actualRuntimeSetting", {value: session.curator.effectiveEffort})
+        : session.curator.effort
+          ? `${formatMessage("requestedRuntimeSetting", {value: session.curator.effort})} · ${t("actualRuntimeUnknown")}`
+          : t("inheritRuntimeEffort")
     const provenance = node(
         "div",
         "curation-provenance",
-        `${session.episode.items.length} episode items · ${session.episode.toolActivity.length} tool signatures · ${session.skillReference?.name || t("none")} · ${session.curator.modelId || t("runtimeDefault")}`,
+        `${session.episode.items.length} episode items · ${session.episode.toolActivity.length} tool signatures · ${session.skillReference?.name || t("none")} · ${curatorModel} · ${curatorEffort}`,
     )
     scroll.append(overview, question)
     if (session.datasetQuestion !== session.episode.originalQuestion) scroll.append(sourceQuestion)
     scroll.append(provenance)
+
+    if (session.draft) {
+        const reference = document.createElement("details")
+        reference.className = "curation-reference-card"
+        if (state.flashingCurationReferences.delete(session.id)) {
+            reference.classList.add("just-updated")
+        }
+        const summary = document.createElement("summary")
+        summary.append(
+            node("span", "curation-reference-check", "✓"),
+            node(
+                "strong",
+                "",
+                session.revisions?.length > 1 ? t("referenceUpdated") : t("referenceReady"),
+            ),
+            node("small", "", t("expandReference")),
+        )
+        reference.append(summary, renderDraft(session.draft))
+        scroll.append(reference)
+    }
 
     const conversation = node("section", "curator-conversation")
     conversation.append(node("h3", "", t("curatorConversation")))
     for (const message of session.conversation) {
         const bubble = node("article", `curator-message ${message.role}`)
         bubble.append(node("span", "curator-role", message.role === "assistant" ? "Curator" : t("you")))
-        bubble.append(node("div", "", message.text))
+        bubble.append(node("div", "", curatorConversationText(message)))
         conversation.append(bubble)
     }
-    if (session.status === "queued" || session.status === "running") {
-        conversation.append(node("div", "curator-working", t("curatorWorking")))
-    }
+    renderCurationActivity(conversation, session)
     if (session.error) {
         const error = node("div", "curation-error")
         error.append(node("span", "", session.error))
@@ -1869,7 +2009,6 @@ function renderCurations() {
         conversation.append(error)
     }
     scroll.append(conversation)
-    if (session.draft) scroll.append(renderDraft(session.draft))
 
     if (session.status !== "archived" && session.status !== "cancelled") {
         const composerWrap = node("div", "curation-composer-wrap")
@@ -1896,6 +2035,10 @@ function renderCurations() {
             session.curator.effort,
             session.curator.modelId,
         )
+        const inheritOption = effortPicker.querySelector('option[value=""]')
+        if (inheritOption && session.curator.effectiveEffort) {
+            inheritOption.textContent = `${t("inheritRuntimeEffort")} · ${formatMessage("actualRuntimeSetting", {value: session.curator.effectiveEffort})}`
+        }
         const send = node("button", "", t("send"))
         send.type = "submit"
         send.disabled = input.disabled
@@ -3611,9 +3754,19 @@ window.rollingSkill.onRuntimeState((runtime) => {
 })
 window.rollingSkill.onRuntimeNotification(handleNotification)
 window.rollingSkill.onCurationChanged((session) => {
+    const revisionCount = session.revisions?.length ?? 0
+    const previousCount = state.curationRevisionCounts.get(session.id) ?? 0
+    if (revisionCount > previousCount) state.flashingCurationReferences.add(session.id)
+    state.curationRevisionCounts.set(session.id, revisionCount)
     upsertCuration(session)
     if (!state.activeCurationId) state.activeCurationId = session.id
     renderCurations()
+})
+window.rollingSkill.onCurationActivity((activity) => {
+    if (!activity?.sessionId) return
+    if (activity.terminal) state.curationActivities.delete(activity.sessionId)
+    else state.curationActivities.set(activity.sessionId, activity)
+    patchCurationActivityCard(activity)
 })
 window.rollingSkill.onEvaluationChanged(async ({runId, resultId, status}) => {
     if (!runId) return
@@ -3666,6 +3819,9 @@ async function bootstrap() {
         state.datasets = initial.datasets ?? []
         state.evaluationDatasetId = state.datasets[0]?.id ?? null
         state.curationSessions = initial.curationSessions ?? []
+        state.curationRevisionCounts = new Map(
+            state.curationSessions.map((session) => [session.id, session.revisions?.length ?? 0]),
+        )
         applySettings(initial.settings ?? state.settings)
         state.selectedTaskModelId = state.settings.taskProfile?.modelId ?? null
         state.selectedTaskEffort = state.settings.taskProfile?.effort ?? null
@@ -3689,5 +3845,9 @@ async function bootstrap() {
 }
 
 resizeComposer()
+setInterval(() => {
+    if (!state.curationOpen) return
+    for (const activity of state.curationActivities.values()) patchCurationActivityCard(activity)
+}, 1_000)
 window.addEventListener("beforeunload", snapshotActiveThreadView)
 void bootstrap()

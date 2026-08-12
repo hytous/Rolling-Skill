@@ -71,6 +71,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     onRuntimeState: (listener) => subscribe("runtime:state", listener),
     onRuntimeNotification: (listener) => subscribe("runtime:notification", listener),
     onCurationChanged: (listener) => subscribe("curation:changed", listener),
+    onCurationActivity: (listener) => subscribe("curation:activity", listener),
     onEvaluationChanged: (listener) => subscribe("evaluation:changed", listener),
     onWorkspaceChanged: (listener) => subscribe("workspace:changed", listener),
     onNewTask: (listener) => subscribe("app:new-task", listener),

@@ -101,6 +101,98 @@ async function run() {
         throw new Error(`Conversation scrolling is animated: ${markdownAndActivity.scrollBehavior}`)
     }
 
+    await inspect(window, 'document.querySelector("#topbar-curations").click()')
+    await waitFor(window, 'document.querySelector("#curation-drawer").classList.contains("visible") && document.querySelector(".curation-live-activity")')
+    await inspect(window, `window.rollingSkill.smokeEmitCurationActivity({
+        sessionId: "curation-live-smoke",
+        stage: "command",
+        summary: "sed -n 1,632p billing-cost-management/SKILL.md",
+        startedAt: Date.now() - 2_000,
+        lastActivityAt: Date.now(),
+        noisyOutput: "huge-noisy-curator-output",
+    })`)
+    const liveCuration = await inspect(window, `(() => ({
+        text: document.querySelector(".curation-live-activity")?.textContent,
+        effort: document.querySelector("[data-curation-effort=curation-live-smoke] option[value='']")?.textContent,
+        referenceOpen: document.querySelector(".curation-reference-card")?.open,
+        referenceBeforeConversation:
+            Boolean(document.querySelector(".curation-reference-card")?.compareDocumentPosition(
+                document.querySelector(".curator-conversation"),
+            ) & Node.DOCUMENT_POSITION_FOLLOWING),
+        conversation: document.querySelector(".curator-conversation")?.textContent,
+    }))()`)
+    if (!liveCuration.text.includes("sed -n 1,632p billing-cost-management/SKILL.md")) {
+        throw new Error("Curator live command summary missing")
+    }
+    if (!liveCuration.text.includes("已用时") || liveCuration.text.includes("huge-noisy-curator-output")) {
+        throw new Error("Curator live activity timing or output filtering is incorrect")
+    }
+    if (!liveCuration.effort.includes("本轮实际：xhigh") || liveCuration.effort.includes("low")) {
+        throw new Error(`Curator effective effort label is incorrect: ${liveCuration.effort}`)
+    }
+    if (liveCuration.referenceOpen || !liveCuration.referenceBeforeConversation) {
+        throw new Error("Curator reference answer is not collapsed above the conversation")
+    }
+    if (liveCuration.conversation.includes("rolling-skill-curated-case/v1")) {
+        throw new Error("Structured reference JSON was repeated in the Curator conversation")
+    }
+
+    await inspect(window, `window.rollingSkill.smokeEmitCurationChanged({
+        status: "needs_review",
+        curator: {
+            modelId: null,
+            effort: null,
+            effectiveModelId: "gpt-5.6-sol",
+            effectiveEffort: "xhigh",
+            threadId: "curator-live-thread",
+            currentTurnId: null,
+        },
+        draft: {
+            schemaVersion: "rolling-skill-curated-case/v1",
+            referenceAnswer: {
+                summary: "Updated verified reference",
+                requiredFacts: ["July is the billing period."],
+                requiredSteps: ["Query and verify the billing source."],
+                requiredOutputFormat: ["State amount and currency."],
+                evidence: [{claim: "The question asks for July.", sourceItemIds: ["thread-a-user-0"]}],
+            },
+            grading: {
+                hardRequirements: [{
+                    id: "H1",
+                    criterion: "Uses July billing data",
+                    passCondition: "The answer explicitly identifies July.",
+                    evidenceBasis: "The source question asks for July.",
+                }],
+                softCriteria: [{id: "S1", criterion: "Concise", weight: 1}],
+                automaticFailures: ["Invents an unverified amount"],
+            },
+            badCaseAnalysis: null,
+        },
+        revisions: [{createdAt: "2026-08-12T10:00:00.000Z"}, {createdAt: "2026-08-12T10:02:00.000Z"}],
+        conversation: [
+            {role: "assistant", text: "Initial review note.", turnId: "curator-initial-turn"},
+            {role: "user", text: "请解释一下查询计划"},
+            {role: "assistant", text: "查询计划已包含语义定位和账期校验。", turnId: "curator-followup-turn"},
+        ],
+        error: null,
+    })`)
+    await waitFor(window, 'document.querySelector(".curation-reference-card.just-updated") && document.querySelector("[data-archive-curation=curation-live-smoke]")')
+    const reviewedCuration = await inspect(window, `(() => ({
+        reference: document.querySelector(".curation-reference-card")?.textContent,
+        conversation: document.querySelector(".curator-conversation")?.textContent,
+        done: document.querySelector("[data-archive-curation=curation-live-smoke]")?.textContent,
+    }))()`)
+    if (!reviewedCuration.reference.includes("Updated verified reference")) {
+        throw new Error("Updated Curator reference answer missing")
+    }
+    if (!reviewedCuration.conversation.includes("查询计划已包含语义定位和账期校验。")) {
+        throw new Error("Conversational Curator follow-up missing")
+    }
+    if (!reviewedCuration.done.includes("完成并保存")) {
+        throw new Error("Valid Curator draft lost its Done and save action")
+    }
+    await inspect(window, 'document.querySelector("#topbar-curations").click()')
+
     await inspect(window, `(() => {
         window.rollingSkill.smokeFailNextCuration()
         document.querySelector("[data-save-case]")?.click()
@@ -307,6 +399,9 @@ async function run() {
             emptyArchiveLoadCancelled: true,
             staleRuntimeModelsIgnored: true,
             inlineCurationFailure: true,
+            curatorLiveActivity: true,
+            curatorReferenceCard: true,
+            curatorDraftRemainsSaveable: true,
             rendererErrors: 0,
         })}\n`,
     )

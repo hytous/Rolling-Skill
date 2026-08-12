@@ -93,6 +93,12 @@ describe("local-first desktop surface", () => {
         assert.doesNotMatch(main, /datasets:save-case/)
         assert.match(renderer, /goodcase/)
         assert.match(renderer, /badcase/)
+        assert.match(renderer, /curation-reference-card/)
+        assert.match(renderer, /curation-live-activity/)
+        assert.match(renderer, /effectiveEffort/)
+        assert.match(renderer, /actualRuntimeUnknown/)
+        assert.match(renderer, /rolling-skill-curated-case\\\/v1/)
+        assert.doesNotMatch(renderer, /defaultEffort \? `\$\{t\("runtimeDefaultEffort"\)\} · \$\{defaultEffort\}`/)
     })
 
     it("contains no bundled agent runtime dependency", () => {

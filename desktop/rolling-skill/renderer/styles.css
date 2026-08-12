@@ -2101,6 +2101,110 @@ kbd {
     font-size: 9px;
 }
 
+.curation-live-activity {
+    display: grid;
+    margin: 8px 0 4px;
+    padding: 10px;
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+    gap: 5px;
+}
+
+.curation-live-heading {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 10px;
+}
+
+.curation-live-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--accent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 38%, transparent);
+    animation: curator-pulse 1.4s ease-out infinite;
+}
+
+.curation-live-detail {
+    overflow: hidden;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 8.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.curation-live-timing {
+    color: var(--faint);
+    font-size: 8px;
+}
+
+.curation-reference-card {
+    margin: 5px 0 17px;
+    border: 1px solid color-mix(in srgb, #2fba72 28%, var(--border));
+    border-radius: 10px;
+    background: color-mix(in srgb, #2fba72 4%, var(--surface));
+}
+
+.curation-reference-card > summary {
+    display: grid;
+    padding: 10px 11px;
+    cursor: pointer;
+    grid-template-columns: 18px minmax(0, 1fr);
+    gap: 2px 7px;
+    align-items: center;
+    list-style: none;
+}
+
+.curation-reference-card > summary::-webkit-details-marker {
+    display: none;
+}
+
+.curation-reference-card > summary strong {
+    color: color-mix(in srgb, #2fba72 82%, var(--text));
+    font-size: 10px;
+}
+
+.curation-reference-card > summary small {
+    grid-column: 2;
+    color: var(--faint);
+    font-size: 8px;
+}
+
+.curation-reference-check {
+    display: grid;
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    background: #2fba72;
+    place-items: center;
+    color: white;
+    font-size: 10px;
+}
+
+.curation-reference-card .curation-draft {
+    margin: 0 11px 11px;
+    padding-top: 11px;
+}
+
+.curation-reference-card.just-updated {
+    animation: curator-reference-ready 700ms ease-in-out 3;
+}
+
+@keyframes curator-pulse {
+    70% { box-shadow: 0 0 0 7px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+@keyframes curator-reference-ready {
+    50% {
+        border-color: #2fba72;
+        box-shadow: 0 0 0 3px color-mix(in srgb, #2fba72 14%, transparent);
+    }
+}
+
 .curation-error {
     display: flex;
     margin: 9px 0;

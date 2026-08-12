@@ -4,6 +4,46 @@ const {
     buildEpisodeSnapshot,
     parseCuratorDraft,
 } = require("./episode-curation.cjs")
+const {commandActivityDetail} = require("../renderer/command-activity.js")
+
+const ACTIVITY_SUMMARY_LIMIT = 240
+
+function compactActivityText(value, limit = ACTIVITY_SUMMARY_LIMIT) {
+    const text = String(value ?? "").replace(/\s+/gu, " ").trim()
+    if (text.length <= limit) return text
+    return `${text.slice(0, Math.max(0, limit - 1))}…`
+}
+
+function commandSummary(item) {
+    return compactActivityText(commandActivityDetail(item).command)
+}
+
+function toolSummary(item) {
+    return compactActivityText(
+        [item?.server, item?.tool ?? item?.name].filter(Boolean).join(" / "),
+    )
+}
+
+function looksLikeContractRevision(text) {
+    return /```json[\s\S]*(?:schemaVersion|referenceAnswer|hardRequirements|grading)/iu.test(
+        String(text ?? ""),
+    )
+}
+
+function failureState(session) {
+    return session.draft ? "needs_review" : "failed"
+}
+
+function followUpPrompt(text) {
+    return `Respond to the user's Curator review message below.
+
+If the user is asking a question about the current reference answer, answer conversationally and
+do not return JSON. If the user asks to revise the reference answer or grading contract, return a
+short review note followed by exactly one complete rolling-skill-curated-case/v1 JSON code block.
+Never return a partial contract fragment.
+
+<user-review-message>${String(text ?? "").trim()}</user-review-message>`
+}
 
 function retryPrompt(datasetQuestion) {
     return `The previous response did not satisfy the Curator JSON contract. Re-read the frozen
@@ -52,21 +92,24 @@ class CurationManager {
         getRuntime,
         getRuntimeDescriptor = () => null,
         onChanged = () => {},
+        onActivity = () => {},
         schedule = (task) => Promise.resolve().then(task),
     }) {
         this.store = store
         this.getRuntime = getRuntime
         this.getRuntimeDescriptor = getRuntimeDescriptor
         this.onChanged = onChanged
+        this.onActivity = onActivity
         this.schedule = schedule
         this.tasks = new Map()
         this.threadSessions = new Map()
         this.archivedThreadIds = new Set()
+        this.activities = new Map()
         for (const session of this.store.listCurationSessions()) {
             if (session.curator.threadId) this.threadSessions.set(session.curator.threadId, session.id)
             if (session.status === "queued" || session.status === "running") {
                 this.store.updateCurationSession(session.id, {
-                    status: "failed",
+                    status: failureState(session),
                     error: "The Curator task was interrupted when Rolling Skill stopped. Retry to continue.",
                     curator: {currentTurnId: null},
                 })
@@ -81,6 +124,27 @@ class CurationManager {
                 : sessionOrId
         this.onChanged(session)
         return session
+    }
+
+    emitActivity(sessionOrId, patch = {}) {
+        const session =
+            typeof sessionOrId === "string"
+                ? this.store.getCurationSession(sessionOrId)
+                : sessionOrId
+        const now = Date.now()
+        const previous = this.activities.get(session.id)
+        const activity = {
+            sessionId: session.id,
+            stage: patch.stage ?? previous?.stage ?? "starting",
+            summary: compactActivityText(patch.summary ?? previous?.summary ?? ""),
+            startedAt: previous?.startedAt ?? now,
+            lastActivityAt: now,
+            terminal: Boolean(patch.terminal),
+        }
+        if (activity.terminal) this.activities.delete(session.id)
+        else this.activities.set(session.id, activity)
+        this.onActivity(activity)
+        return activity
     }
 
     queue(sessionId, operation) {
@@ -145,7 +209,7 @@ class CurationManager {
                 throw new Error("The selected runtime Skill does not have a valid name")
             }
         }
-        const curatorModelId = input.modelId ?? response.thread.model ?? null
+        const curatorModelId = input.modelId ?? response.model ?? response.thread.model ?? null
         const episode = buildEpisodeSnapshot(response.thread, {
             startItemId: input.startItemId,
             startTurnId: input.startTurnId,
@@ -181,6 +245,7 @@ class CurationManager {
         try {
             let session = this.store.getCurationSession(sessionId)
             if (session.status === "cancelled") return session
+            this.emitActivity(session, {stage: "starting"})
             const runtime = await this.getRuntime()
             session = this.store.getCurationSession(sessionId)
             if (session.status === "cancelled") return session
@@ -206,7 +271,14 @@ class CurationManager {
                     threadId: response.thread.id,
                     modelProvider:
                         response.thread.modelProvider ?? session.curator.modelProvider ?? null,
-                    modelId: session.curator.modelId ?? response.thread.model ?? null,
+                    effectiveModelId:
+                        response.model ?? response.thread.model ?? session.curator.modelId ?? null,
+                    effectiveEffort:
+                        response.reasoningEffort ??
+                        response.thread.reasoningEffort ??
+                        response.thread.effort ??
+                        session.curator.effort ??
+                        null,
                     promptVersion: CURATOR_PROMPT_VERSION,
                 },
             })
@@ -245,6 +317,7 @@ class CurationManager {
                 curator: {currentTurnId: turnResponse.turn.id},
             })
             this.emitChanged(session)
+            this.emitActivity(session, {stage: "analyzing"})
         } catch (error) {
             const current = this.store.getCurationSession(sessionId)
             if (current.status === "cancelled") return current
@@ -254,6 +327,7 @@ class CurationManager {
                 curator: {currentTurnId: null},
             })
             this.emitChanged(failed)
+            this.emitActivity(failed, {stage: "failed", summary: error.message, terminal: true})
         }
     }
 
@@ -268,11 +342,73 @@ class CurationManager {
         const session = this.sessionForThread(params.threadId)
         if (!session || session.status === "archived" || session.status === "cancelled") return false
 
+        if (method === "thread/settings/updated") {
+            const settings = params.threadSettings ?? params.settings ?? {}
+            const curator = {}
+            if ("model" in settings) curator.effectiveModelId = settings.model ?? null
+            if ("effort" in settings || "reasoningEffort" in settings) {
+                curator.effectiveEffort = settings.effort ?? settings.reasoningEffort ?? null
+            }
+            if (Object.keys(curator).length) {
+                const updated = this.store.updateCurationSession(session.id, {curator})
+                this.emitChanged(updated)
+            }
+            return true
+        }
+
+        if (method === "turn/started") {
+            this.emitActivity(session, {stage: "analyzing"})
+            return true
+        }
+
+        if (method === "item/started" || method === "item/completed") {
+            const item = params.item ?? {}
+            if (item.type === "reasoning") {
+                this.emitActivity(session, {stage: "analyzing", summary: ""})
+                return true
+            }
+            if (item.type === "commandExecution") {
+                this.emitActivity(session, {
+                    stage: "command",
+                    summary: commandSummary(item),
+                })
+                return true
+            }
+            if (
+                item.type === "mcpToolCall" ||
+                item.type === "dynamicToolCall" ||
+                item.type === "collabAgentToolCall"
+            ) {
+                this.emitActivity(session, {stage: "tool", summary: toolSummary(item)})
+                return true
+            }
+            if (item.type === "agentMessage") {
+                this.emitActivity(session, {stage: "drafting", summary: ""})
+                return true
+            }
+        }
+
         if (method === "turn/completed") {
             const turn = params.turn
             if (!turn?.id) return false
-            if (session.curator.currentTurnId && session.curator.currentTurnId !== turn.id) return false
+            if (session.curator.currentTurnId !== turn.id) return false
             if (session.conversation.some((entry) => entry.role === "assistant" && entry.turnId === turn.id)) {
+                return true
+            }
+            if (turn.status && turn.status !== "completed") {
+                const status = failureState(session)
+                const error = turn.error?.message ?? `The Curator runtime turn ended with status ${turn.status}`
+                const failed = this.store.updateCurationSession(session.id, {
+                    status,
+                    error,
+                    curator: {currentTurnId: null},
+                })
+                this.emitChanged(failed)
+                this.emitActivity(failed, {
+                    stage: status === "failed" ? "failed" : "completed",
+                    summary: error,
+                    terminal: true,
+                })
                 return true
             }
             const assistantText = assistantTextFromTurn(turn)
@@ -288,6 +424,7 @@ class CurationManager {
                     turnId: turn.id,
                 })
                 this.emitChanged(reviewed)
+                this.emitActivity(reviewed, {stage: "completed", terminal: true})
             } catch (error) {
                 let failed = session
                 if (assistantText) {
@@ -297,23 +434,43 @@ class CurationManager {
                         turnId: turn.id,
                     })
                 }
+                const hasValidDraft = Boolean(session.draft)
                 failed = this.store.updateCurationSession(session.id, {
-                    status: "failed",
-                    error: error.message,
+                    status: hasValidDraft ? "needs_review" : "failed",
+                    error:
+                        hasValidDraft && !looksLikeContractRevision(assistantText)
+                            ? null
+                            : hasValidDraft
+                              ? `The last Curator revision was not applied: ${error.message}`
+                              : error.message,
                     curator: {currentTurnId: null},
                 })
                 this.emitChanged(failed)
+                this.emitActivity(failed, {
+                    stage: hasValidDraft ? "completed" : "failed",
+                    summary: hasValidDraft ? "" : error.message,
+                    terminal: true,
+                })
             }
             return true
         }
 
         if (method === "error" && !params.willRetry) {
+            if (params.turnId && params.turnId !== session.curator.currentTurnId) {
+                return false
+            }
+            const status = failureState(session)
             const failed = this.store.updateCurationSession(session.id, {
-                status: "failed",
+                status,
                 error: params.error?.message ?? "The Curator runtime turn failed",
                 curator: {currentTurnId: null},
             })
             this.emitChanged(failed)
+            this.emitActivity(failed, {
+                stage: status === "failed" ? "failed" : "completed",
+                summary: params.error?.message ?? "The Curator runtime turn failed",
+                terminal: true,
+            })
             return true
         }
         return false
@@ -329,6 +486,7 @@ class CurationManager {
         session = this.store.appendCurationMessage(sessionId, {role: "user", text})
         session = this.store.updateCurationSession(sessionId, {status: "running", error: null})
         this.emitChanged(session)
+        this.emitActivity(session, {stage: "starting", summary: ""})
         try {
             const runtime = await this.getRuntime()
             session = this.store.getCurationSession(sessionId)
@@ -343,7 +501,7 @@ class CurationManager {
             if (session.status === "cancelled") return session
             const response = await runtime.startTurn(
                 session.curator.threadId,
-                String(text).trim(),
+                followUpPrompt(text),
                 {
                     ...(session.curator.modelId ? {model: session.curator.modelId} : {}),
                     ...(session.curator.effort ? {effort: session.curator.effort} : {}),
@@ -367,12 +525,18 @@ class CurationManager {
         } catch (error) {
             const current = this.store.getCurationSession(sessionId)
             if (current.status === "cancelled") return current
+            const status = failureState(current)
             const failed = this.store.updateCurationSession(sessionId, {
-                status: "failed",
+                status,
                 error: error.message,
                 curator: {currentTurnId: null},
             })
             this.emitChanged(failed)
+            this.emitActivity(failed, {
+                stage: status === "failed" ? "failed" : "completed",
+                summary: error.message,
+                terminal: true,
+            })
             return failed
         }
     }
@@ -400,6 +564,7 @@ class CurationManager {
         const current = this.store.getCurationSession(sessionId)
         const discarded = this.store.cancelCurationSession(sessionId)
         this.emitChanged(discarded)
+        this.emitActivity(discarded, {stage: "cancelled", terminal: true})
         if (current.curator.threadId) {
             let runtime
             try {

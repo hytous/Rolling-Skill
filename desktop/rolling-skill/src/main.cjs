@@ -1112,6 +1112,7 @@ if (!hasLock) {
             getRuntime: ensureRuntime,
             getRuntimeDescriptor: () => runtimeDescriptor,
             onChanged: (session) => send("curation:changed", session),
+            onActivity: (activity) => send("curation:activity", activity),
         })
         automaticCaptureManager = new AutomaticCaptureManager({
             store,
