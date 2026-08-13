@@ -101,7 +101,7 @@ not alter runtime-native conversation history.
 Codex filters `thread/list` by an exact working-directory string. Rolling Skill shows that full
 path beside the conversation list and in Settings. For example, a thread created with
 `/Users/example/project` is persisted but will not appear in a Codex project view filtered to
-`/Users/example/project/agenta`. Choose the exact intended workspace before creating the thread;
+`/Users/example/project/rolling-skill`. Choose the exact intended workspace before creating the thread;
 existing threads are not silently moved between workspaces.
 
 Messages render common Markdown and GFM structures including headings, lists, quotes, code blocks,
@@ -129,18 +129,18 @@ Use the switch below the Rolling Skill logo to move between the native **Chat** 
 **Skill evaluation** workbench. The workbench can:
 
 - create, browse, and delete local datasets;
-- inspect current dataset questions, immutable source wording, and curated references;
+- inspect original evaluation questions, optional answer-issue descriptions, and curated references;
 - delete a Case without invalidating older evaluation snapshots;
 - query a provider's path-precise Skill inventory when it exposes one;
 - run one selected Case or an entire dataset;
 - select multiple runtime/model/reasoning-effort configurations for one run; and
 - inspect and delete durable Case × Runtime results under **Evaluation runs / 评测记录**.
 
-Automatic activation sends only the current dataset question, byte-for-byte as saved. That input
-may be an operator edit made before curation; the frozen source wording remains separate
-provenance. This is the path to use when measuring whether the runtime can discover and activate a
-Skill by itself. Explicit diagnostic activation attaches the provider's explicit Skill input
-alongside the same saved dataset question: a structured `name` plus absolute `SKILL.md` path for
+Automatic activation sends only the frozen original user question, byte-for-byte as captured. The
+optional answer-issue description is Curator and Judge context only and can never replace the
+evaluation input. This is the path to use when measuring whether the runtime can discover and
+activate a Skill by itself. Explicit diagnostic activation attaches the provider's explicit Skill input
+alongside the same original question: a structured `name` plus absolute `SKILL.md` path for
 Codex, or `/<skill-name>` for CodeBuddy. It is useful for separating an activation failure from a
 Skill execution failure; it is not equivalent to the automatic-trigger score. Do not prepend
 `/skill` to automatic-trigger cases.
@@ -242,10 +242,9 @@ the UI.
 3. Inspect the streamed conversation and raw local trace.
 4. Select **Curate case** beside the assistant message that ends the useful problem-solving episode.
 5. Choose the source user message where the episode begins, the enabled Skill under review, a
-   dataset, and `goodcase` or `badcase`. The optional dataset-question field starts with the exact
-   source wording and remains editable until curation starts. Clear it to use the frozen source
-   question unchanged. Editing it changes the evaluation input only; the
-   frozen source conversation and its original question remain unchanged for audit.
+   dataset, and `goodcase` or `badcase`. The optional answer-issue field starts empty and records
+   what went wrong in the captured Agent answer. It never changes the frozen original question
+   used as the evaluation input.
 6. Select **Start curation**. Rolling Skill freezes the selected conversation/trace range while the
    original task remains live, then starts an independent read-only Curator task.
 7. Review the Curator conversation and structured reference answer in **Case drafts**. Ask follow-up
@@ -273,8 +272,8 @@ Automatic Capture is disabled by default. When enabled it requires a default ena
 creates reviewable Case Drafts after completed assistant responses; it never saves them
 automatically. A missing or disabled Skill produces an explicit capture error instead of a
 Skill-less draft. No case is written until
-**Done**. Approved cases retain the selected dataset question and the exact source question
-separately in provenance, plus structured grading data, source and Curator runtime provenance,
+**Done**. Approved cases retain the exact source question as evaluation input and store the optional
+answer-issue description separately, plus structured grading data, source and Curator runtime provenance,
 immutable Episode evidence, and the append-only trace range. The default Curator model lives in **Settings**;
 each editable Case Draft can override it for subsequent follow-up turns. If no override is set, the
 source model is reused when the runtime exposes it, with the active runtime default as fallback.

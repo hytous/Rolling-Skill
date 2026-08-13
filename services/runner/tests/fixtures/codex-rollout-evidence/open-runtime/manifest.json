@@ -1,9 +1,0 @@
-{
-  "schema_version": 1,
-  "trace_id": "trace-open",
-  "rollout_id": "rollout-open",
-  "root_thread_id": "thread-root",
-  "started_at_unix_ms": 3000,
-  "raw_event_log": "trace.jsonl",
-  "payloads_dir": "payloads"
-}

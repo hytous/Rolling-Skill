@@ -1,1 +1,0 @@
-{"call_id":"tool-open","process_id":"pty-open","turn_id":"turn-open","command":["sleep","60"],"cwd":"/workspace","stdout":"","stderr":"","exit_code":0,"formatted_output":"","status":"completed"}

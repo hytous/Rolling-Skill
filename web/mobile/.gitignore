@@ -1,5 +1,0 @@
-.next/
-.turbo/
-tsconfig.tsbuildinfo
-# runtime config written by web/entrypoint.sh (dev mounts this dir from the host)
-public/__env.js

@@ -9,8 +9,8 @@ Rolling Skill 不捆绑 Codex、CodeBuddy 或其他 Runtime，不要求 Docker�
 
 ## 快速开始
 
-双击仓库根目录的 `Rolling Skill.app`。本地构建使用 ad-hoc 签名，首次打开时 macOS 可能
-要求先按住 Control 点击应用，再选择 **打开**。
+双击仓库根目录的 `Rolling Skill.app`。本地构建使用钥匙串中的稳定本地签名证书，首次打开时
+macOS 可能要求先按住 Control 点击应用，再选择 **打开**。
 
 应用启动后会自动发现兼容的本机 Runtime。也可以在 **设置 → Runtime** 中重新扫描、
 选择指定的可执行文件或恢复自动选择。

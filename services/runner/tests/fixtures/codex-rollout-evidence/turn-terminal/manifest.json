@@ -1,9 +1,0 @@
-{
-  "schema_version": 1,
-  "trace_id": "trace-turn",
-  "rollout_id": "rollout-turn",
-  "root_thread_id": "thread-root",
-  "started_at_unix_ms": 2000,
-  "raw_event_log": "trace.jsonl",
-  "payloads_dir": "payloads"
-}
