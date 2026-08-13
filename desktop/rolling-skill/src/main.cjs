@@ -953,9 +953,9 @@ function installIpc() {
             endItemId,
             endTurnId,
             endMessageOrdinal,
-            datasetQuestion:
-                "datasetQuestion" in input
-                    ? requireDatasetQuestion(input.datasetQuestion)
+            issueDescription:
+                "issueDescription" in input
+                    ? optionalIssueDescription(input.issueDescription)
                     : undefined,
             traceReference,
             modelId: profile.modelId,
@@ -1097,11 +1097,10 @@ function requireAbsolutePath(value, label) {
     return path
 }
 
-function requireDatasetQuestion(value) {
-    const question = String(value ?? "")
-    if (!question.trim()) throw new Error("Dataset question is required")
-    if (question.length > 120_000) throw new Error("Dataset question is too large")
-    return question
+function optionalIssueDescription(value) {
+    const description = String(value ?? "")
+    if (description.length > 120_000) throw new Error("Issue description is too large")
+    return description.trim() ? description : ""
 }
 
 function normalizeTurnInput(value) {

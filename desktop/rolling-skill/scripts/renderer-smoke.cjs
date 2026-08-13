@@ -274,13 +274,16 @@ async function run() {
         document.querySelector("[data-save-case]")?.click()
     })()`)
     await waitFor(window, 'document.querySelector("#save-case-dialog")?.open')
+    if ((await inspect(window, 'document.querySelector("#case-issue-description")?.value')) !== "") {
+        throw new Error("The optional issue description was prefilled from the source question")
+    }
     await inspect(window, `(() => {
         const skill = document.querySelector("#case-skill")
         skill.value = "/tmp/rolling-skill-renderer-smoke/billing-cost-management/SKILL.md"
         skill.dispatchEvent(new Event("change", {bubbles: true}))
-        const question = document.querySelector("#case-question")
-        question.value = "  \\n\\t"
-        question.dispatchEvent(new Event("input", {bubbles: true}))
+        const issue = document.querySelector("#case-issue-description")
+        issue.value = "  \\n\\t"
+        issue.dispatchEvent(new Event("input", {bubbles: true}))
         document.querySelector("#confirm-save-case")?.click()
     })()`)
     await waitFor(window, 'document.querySelector("#confirm-save-case")?.disabled')
@@ -313,8 +316,8 @@ async function run() {
             throw new Error(`Curation locator mismatch for ${key}`)
         }
     }
-    if ("datasetQuestion" in curationFailure.input) {
-        throw new Error("A blank optional Case note was sent as the evaluation question")
+    if ("issueDescription" in curationFailure.input || "datasetQuestion" in curationFailure.input) {
+        throw new Error("A blank optional issue description was sent or confused with the evaluation question")
     }
     await inspect(window, 'document.querySelector("#close-case-dialog")?.click()')
     await waitFor(window, '!document.querySelector("#save-case-dialog")?.open')

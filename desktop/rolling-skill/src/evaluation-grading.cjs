@@ -282,6 +282,7 @@ function buildScoreContract(caseEntry, options = {}) {
     const withoutDigest = {
         schemaVersion: SCORE_CONTRACT_SCHEMA,
         calculatorVersion: CALCULATOR_VERSION,
+        issueDescription: String(caseEntry?.issueDescription ?? ""),
         referenceAnswer: copy(curated.referenceAnswer ?? null),
         evidence: {
             typed: Boolean(evidenceCatalog),
@@ -340,6 +341,8 @@ Required top-level keys:
 Activation mode: ${activationMode}
 Frozen score contract:
 <score-contract>${JSON.stringify(contract)}</score-contract>
+Reviewer issue description about the captured historical answer (context only; never a replacement question):
+<issue-description>${String(contract.issueDescription ?? "")}</issue-description>
 Question:
 <question>${String(question ?? "")}</question>
 Agent response:

@@ -29,7 +29,7 @@ Rolling Skill 不捆绑 Codex、CodeBuddy 或其他 Runtime，不要求 Docker�
 - 从 Runtime 的模型清单中选择模型和推理强度；
 - 查看并保存 Runtime 原始 Trace；
 - 从一段连续的问题解决过程创建 `goodcase` 或 `badcase`；
-- 冻结证据保留用户问题原文；数据集问题默认复制原文，也可在沉淀前人工编辑；
+- 冻结证据与评测输入始终保留用户问题原文；可选问题描述只记录 Agent 回答中发生了什么；
 - 使用独立 Curator 会话提炼参考答案、硬判定条件、输出格式和失败原因；
 - 将已完成或丢弃的 Case Draft 从活动列表移出，并在设置中查看归档记录；
 - 创建、浏览和删除数据集及其中的 Case；
@@ -96,10 +96,10 @@ header。如果企业 Codex 服务只允许固定的 known clients，未登记�
 
 1. 在 Chat 中完成一次问题解决过程。
 2. 在结束该过程的 Assistant 消息旁选择 **沉淀 Case**。
-3. 选择作为起点的 User 消息、目标数据集、被测 Skill 和 `goodcase`/`badcase`；数据集问题
-   默认使用原文，也可在开始沉淀前编辑。
-4. Rolling Skill 冻结所选对话及 Trace 范围；人工编辑只改变评测输入，冻结证据中的原始
-   问题不变，原对话仍可继续使用。
+3. 选择作为起点的 User 消息、目标数据集、被测 Skill 和 `goodcase`/`badcase`；可选填写
+   “Agent 回答中的问题”，描述本次回答发生了什么问题，默认留空。
+4. Rolling Skill 冻结所选对话及 Trace 范围；起点 User 消息始终作为评测输入，问题描述
+   只供 Curator 和 Judge 分析，不能替换原始问题，原对话仍可继续使用。
 5. 独立、只读的 Curator 会话根据当前 Runtime 中的 Skill 整理必要证据。
 6. 可以继续向 Curator 提问、要求修改、切换模型或推理强度。
 7. 选择 **Done** 后保存 Case；选择 **丢弃** 则不写入数据集。
@@ -140,8 +140,8 @@ Skill 摘要，若评测期间内容发生变化则拒绝该结果。命令输�
 无法提供路径级 Skill 清单的 Runtime（例如当前 CodeBuddy 适配）仍会运行并展示 A/B 分项，
 但只标为诊断，不生成正式总分或通过结论，避免把另一份同名 Skill 当作冻结版本。
 
-自动触发模式只发送 Case 当前保存的数据集问题；未编辑时它等于原问题，冻结的原问题仅
-用于溯源。该模式用于评测 Runtime 是否能自行发现并触发 Skill。显式诊断模式使用对应
+自动触发模式只发送 Case 中冻结的原始用户问题；“Agent 回答中的问题”仅作为 Curator 和
+Judge 的分析上下文。该模式用于评测 Runtime 是否能自行发现并触发 Skill。显式诊断模式使用对应
 Provider 的显式 Skill 输入，用于区分“没有触发 Skill”和“Skill 执行错误”，不等同于
 自动触发成绩。
 

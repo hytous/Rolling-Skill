@@ -12,7 +12,7 @@ const {randomUUID} = require("node:crypto")
 const {formatCuratedAnswer, validateCuratorDraft} = require("./episode-curation.cjs")
 const {validateSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 
-const LOCAL_SCHEMA = "rolling-skill-local/v5"
+const LOCAL_SCHEMA = "rolling-skill-local/v6"
 const CURATION_STATUSES = new Set([
     "queued",
     "running",
@@ -195,8 +195,22 @@ function migrateState(input) {
         changed = true
     }
     for (const session of state.curationSessions) {
-        if (typeof session.datasetQuestion !== "string" || !session.datasetQuestion.trim()) {
-            session.datasetQuestion = String(session.episode?.originalQuestion ?? "")
+        if (!("issueDescription" in session)) {
+            const legacyQuestion = typeof session.datasetQuestion === "string"
+                ? session.datasetQuestion
+                : ""
+            const originalQuestion = String(session.episode?.originalQuestion ?? "")
+            session.issueDescription = legacyQuestion.trim() && legacyQuestion !== originalQuestion
+                ? legacyQuestion
+                : ""
+            changed = true
+        }
+        if (typeof session.issueDescription !== "string") {
+            session.issueDescription = ""
+            changed = true
+        }
+        if ("datasetQuestion" in session) {
+            delete session.datasetQuestion
             changed = true
         }
         if (!("skillReference" in session)) {
@@ -227,6 +241,19 @@ function migrateState(input) {
                 ? `The last Curator response did not replace the valid reference answer: ${session.error}`
                 : null
             if (session.curator) session.curator.currentTurnId = null
+            changed = true
+        }
+    }
+    for (const entry of state.cases) {
+        const originalQuestion = String(entry.source?.originalQuestion ?? "")
+        if (!("issueDescription" in entry)) {
+            entry.issueDescription = originalQuestion && entry.question !== originalQuestion
+                ? String(entry.question ?? "")
+                : ""
+            changed = true
+        }
+        if (originalQuestion && entry.question !== originalQuestion) {
+            entry.question = originalQuestion
             changed = true
         }
     }
@@ -669,9 +696,11 @@ class LocalEvaluationStore {
         if (typeof episode.originalQuestion !== "string" || !episode.originalQuestion.trim()) {
             throw new Error("The episode must contain the original question")
         }
-        const datasetQuestion = String(input.datasetQuestion ?? episode.originalQuestion)
-        if (!datasetQuestion.trim()) throw new Error("The dataset question is required")
-        if (datasetQuestion.length > 120_000) throw new Error("The dataset question is too large")
+        const rawIssueDescription = String(input.issueDescription ?? "")
+        if (rawIssueDescription.length > 120_000) {
+            throw new Error("The issue description is too large")
+        }
+        const issueDescription = rawIssueDescription.trim() ? rawIssueDescription : ""
         if (JSON.stringify(episode).length > 1_500_000) {
             throw new Error("The selected episode is too large to curate locally")
         }
@@ -680,7 +709,7 @@ class LocalEvaluationStore {
             id: randomUUID(),
             datasetId: input.datasetId,
             caseType: input.caseType,
-            datasetQuestion,
+            issueDescription,
             status: "queued",
             episode,
             skillReference: normalizeSkillReference(input.skillReference),
@@ -850,7 +879,8 @@ class LocalEvaluationStore {
             id: randomUUID(),
             datasetId: session.datasetId,
             caseType: session.caseType,
-            question: session.datasetQuestion ?? session.episode.originalQuestion,
+            question: session.episode.originalQuestion,
+            issueDescription: session.issueDescription,
             answer: formatCuratedAnswer(draft),
             curated: draft,
             skillReference: copy(session.skillReference),

@@ -86,6 +86,25 @@ describe("evaluation data lifecycle", () => {
         assert.deepEqual(store.listArchivedCurationSessions().map((entry) => entry.id), [session.id])
     })
 
+    it("archives the original user question as evaluation input and stores issue analysis separately", () => {
+        const store = fixture()
+        const dataset = store.listDatasets()[0]
+        const session = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            issueDescription: "回答遗漏币种并且没有给出数据来源。",
+            episode: frozenEpisode(),
+            curator: {runtimeId: "codex:source"},
+        })
+        store.recordCurationRevision(session.id, {draft: draft(), assistantText: "已整理"})
+
+        const saved = store.archiveCurationSession(session.id)
+
+        assert.equal(saved.question, frozenEpisode().originalQuestion)
+        assert.equal(saved.issueDescription, "回答遗漏币种并且没有给出数据来源。")
+        assert.equal(saved.source.originalQuestion, frozenEpisode().originalQuestion)
+    })
+
     it("persists reasoning effort for every configurable profile", () => {
         const store = fixture()
         const settings = store.updateSettings({

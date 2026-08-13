@@ -308,13 +308,13 @@ describe("local evaluation store", () => {
         )
         const migrated = new LocalEvaluationStore(path).read()
 
-        assert.equal(migrated.schemaVersion, "rolling-skill-local/v5")
+        assert.equal(migrated.schemaVersion, "rolling-skill-local/v6")
         assert.equal(migrated.cases[0].id, "case-old")
         assert.deepEqual(migrated.curationSessions, [])
         assert.equal(migrated.settings.curatorProfile.runtimePolicy, "active")
     })
 
-    it("migrates old Curator sessions to a dataset question without changing source evidence", () => {
+    it("migrates autofilled dataset questions away without changing source evidence", () => {
         const {path} = fixture()
         const sourceEpisode = episode("原始自然语言问题")
         writeFileSync(
@@ -339,10 +339,34 @@ describe("local evaluation store", () => {
         )
 
         const migrated = new LocalEvaluationStore(path).read()
-        assert.equal(migrated.curationSessions[0].datasetQuestion, "原始自然语言问题")
+        assert.equal(migrated.curationSessions[0].issueDescription, "")
+        assert.equal("datasetQuestion" in migrated.curationSessions[0], false)
         assert.equal(migrated.curationSessions[0].episode.originalQuestion, "原始自然语言问题")
         assert.equal(migrated.curationSessions[0].curator.effectiveModelId, null)
         assert.equal(migrated.curationSessions[0].curator.effectiveEffort, null)
+    })
+
+    it("restores legacy edited Case questions and preserves the edit as issue context", () => {
+        const {path} = fixture()
+        writeFileSync(path, `${JSON.stringify({
+            schemaVersion: "rolling-skill-local/v5",
+            settings: {autoCapture: false},
+            datasets: [{id: "dataset-old", name: "Old", createdAt: "then"}],
+            cases: [{
+                id: "case-old",
+                datasetId: "dataset-old",
+                caseType: "badcase",
+                question: "回答无诊断地重复调用了三次。",
+                answer: "analysis",
+                source: {originalQuestion: "查一下七月各业务成本。"},
+            }],
+            curationSessions: [],
+            evaluationRuns: [],
+        })}\n`)
+
+        const migrated = new LocalEvaluationStore(path).read().cases[0]
+        assert.equal(migrated.question, "查一下七月各业务成本。")
+        assert.equal(migrated.issueDescription, "回答无诊断地重复调用了三次。")
     })
 
     it("migrates legacy evaluation runs to ungraded Judge-compatible results", () => {
@@ -430,31 +454,28 @@ describe("local evaluation store", () => {
         assert.equal(result.gradingStatus, "not_requested")
     })
 
-    it("preserves deliberate dataset-question whitespace while rejecting blank input", () => {
+    it("preserves an optional issue description and accepts blank input", () => {
         const {store} = fixture()
         const dataset = store.read().datasets[0]
-        const datasetQuestion = "  保留用户输入的首尾空格  \n"
+        const issueDescription = "  回答遗漏了两个业务线  \n"
 
         const session = store.createCurationSession({
             datasetId: dataset.id,
             caseType: "goodcase",
-            datasetQuestion,
+            issueDescription,
             episode: episode("不可变的原始问题"),
             curator: {},
         })
 
-        assert.equal(session.datasetQuestion, datasetQuestion)
-        assert.throws(
-            () =>
-                store.createCurationSession({
-                    datasetId: dataset.id,
-                    caseType: "goodcase",
-                    datasetQuestion: " \n\t ",
-                    episode: episode("不可变的原始问题"),
-                    curator: {},
-                }),
-            /dataset question is required/i,
-        )
+        assert.equal(session.issueDescription, issueDescription)
+        const blank = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            issueDescription: " \n\t ",
+            episode: episode("不可变的原始问题"),
+            curator: {},
+        })
+        assert.equal(blank.issueDescription, "")
     })
 
     it("persists a reviewable curation conversation and archives one approved revision", () => {

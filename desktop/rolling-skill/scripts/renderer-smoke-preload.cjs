@@ -108,7 +108,7 @@ function curationSession(overrides = {}) {
         id: "curation-live-smoke",
         caseType: "goodcase",
         status: "running",
-        datasetQuestion: "查一下7月份账单，各业务混元3多少成本？",
+        issueDescription: "回答遗漏了一个业务线。",
         episode: {
             originalQuestion: "查一下7月份账单，各业务混元3多少成本？",
             items: [{id: "thread-a-user-0", type: "userMessage"}],

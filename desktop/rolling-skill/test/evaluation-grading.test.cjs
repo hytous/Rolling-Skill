@@ -49,6 +49,7 @@ function curatedCase() {
 function curatedBadCase() {
     const input = curatedCase()
     input.caseType = "badcase"
+    input.issueDescription = "The historical answer repeated a failed query without diagnosis."
     input.curated.badCaseAnalysis = {
         failureMode: "Repeated a failed query without diagnosis.",
         firstDivergence: "The first failed command was retried unchanged.",
@@ -121,6 +122,7 @@ describe("evaluation grading contract", () => {
         assert.equal(contract.schemaVersion, SCORE_CONTRACT_SCHEMA)
         assert.equal(contract.calculatorVersion, CALCULATOR_VERSION)
         assert.equal(contract.a.maxScore, 60)
+        assert.equal(contract.issueDescription, "")
         assert.equal(contract.a.passThreshold, A_PASS_THRESHOLD)
         assert.deepEqual(
             contract.a.dimensions.map(({id, weight}) => [id, weight]),
@@ -166,6 +168,7 @@ describe("evaluation grading contract", () => {
         const deduction = contract.b.criteria.find((entry) => entry.id === "D1")
 
         assert.equal(contract.a.maxScore, 60)
+        assert.equal(contract.issueDescription, curatedBadCase().issueDescription)
         assert.deepEqual(deduction, {
             id: "D1",
             criterion: "Avoid recurrence of this badcase error: Undiagnosed identical retry loop",
@@ -236,6 +239,7 @@ describe("evaluation grading contract", () => {
         assert.match(prompt, /Do not return any score or verdict field/)
         assert.match(prompt, new RegExp(JUDGE_RESULT_SCHEMA.replaceAll("/", "\\/")))
         assert.match(prompt, /<evidence-catalog>/)
+        assert.match(prompt, /Reviewer issue description.*context only/is)
         assert.match(prompt, /Skill contents/)
         assert.match(prompt, /"kind":"skill_activation"/)
     })

@@ -276,6 +276,8 @@ describe("episode curation evidence", () => {
         assert.doesNotMatch(prompt, /\/runtime\/skills\/billing-cost-management\/SKILL\.md/)
         assert.match(prompt, /numerical conclusions as soft\/diagnostic/i)
         assert.match(prompt, /帮我瞅瞅 7月账单？混元3 各业务到底花了多少呀/)
+        assert.match(prompt, /optional.*issue description/i)
+        assert.doesNotMatch(prompt, /Dataset question selected by the user/i)
 
         const parsed = parseCuratorDraft(`Here is the draft.\n\n\`\`\`json\n${JSON.stringify(goodDraft())}\n\`\`\``, {
             caseType: "goodcase",

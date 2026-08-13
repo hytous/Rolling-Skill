@@ -52,17 +52,19 @@ ${badcaseGuidance}
 <user-review-message>${String(text ?? "").trim()}</user-review-message>`
 }
 
-function retryPrompt(datasetQuestion, caseType) {
+function retryPrompt(originalQuestion, issueDescription, caseType) {
     const badcaseGuidance = caseType === "badcase"
         ? `This is a badcase: lead with failure analysis and include executable deductionRules for
 the same or materially equivalent observable errors. Do not reconstruct a polished goodcase answer.`
         : ""
     return `The previous response did not satisfy the Curator JSON contract. Re-read the frozen
-episode already present in this conversation and return a corrected draft. Use the user-selected
-dataset question below verbatim; the original source wording is immutable evidence, not a
-replacement evaluation input.
+episode already present in this conversation and return a corrected draft. The original user
+question below is the immutable evaluation input. The optional issue description is reviewer
+context about what happened in the captured agent answer; it must never replace or rewrite the
+original question.
 
-<dataset-question>${String(datasetQuestion ?? "")}</dataset-question>
+<original-question>${String(originalQuestion ?? "")}</original-question>
+<issue-description>${String(issueDescription ?? "")}</issue-description>
 
 Do not invent numerical truth, and include every required hard-gating field. Return a short review
 note followed by exactly one JSON code block.
@@ -238,7 +240,7 @@ class CurationManager {
         const session = this.store.createCurationSession({
             datasetId: input.datasetId,
             caseType: input.caseType,
-            datasetQuestion: input.datasetQuestion ?? episode.originalQuestion,
+            issueDescription: input.issueDescription ?? "",
             episode,
             skillReference,
             curator: {
@@ -295,12 +297,12 @@ class CurationManager {
                     promptVersion: CURATOR_PROMPT_VERSION,
                 },
             })
-            const kickoff = `Curate this ${session.caseType} episode. The user-selected dataset question is:\n\n${session.datasetQuestion}\n\nThe immutable source wording remains available in the frozen evidence.`
+            const kickoff = `Curate this ${session.caseType} episode. The immutable evaluation question is:\n\n${session.episode.originalQuestion}${session.issueDescription ? `\n\nThe reviewer described this issue in the captured agent answer:\n\n${session.issueDescription}` : ""}`
             session = this.store.appendCurationMessage(sessionId, {role: "user", text: kickoff})
             this.emitChanged(session)
             const prompt = buildCuratorPrompt({
                 episode: session.episode,
-                datasetQuestion: session.datasetQuestion,
+                issueDescription: session.issueDescription,
                 caseType: session.caseType,
                 modelId: session.curator.modelId,
                 skillReference: session.skillReference,
@@ -562,7 +564,14 @@ class CurationManager {
             await this.waitForIdle(sessionId)
             return this.store.getCurationSession(sessionId)
         }
-        return this.sendMessage(sessionId, retryPrompt(session.datasetQuestion, session.caseType))
+        return this.sendMessage(
+            sessionId,
+            retryPrompt(
+                session.episode.originalQuestion,
+                session.issueDescription,
+                session.caseType,
+            ),
+        )
     }
 
     updateModel(sessionId, modelId) {

@@ -87,6 +87,52 @@ function passingJudge(caseEntry, contract = buildScoreContract(caseEntry)) {
 }
 
 describe("multi-runtime evaluation runner", () => {
+    it("sends only the frozen original question to the target runtime", async () => {
+        const calls = []
+        const runner = new EvaluationRunner({
+            store: {
+                updateEvaluationRun() {},
+                updateEvaluationResult() {},
+            },
+            runtimeRegistry: {
+                createClient() {
+                    return {
+                        start: async () => {},
+                        async runEvaluationCase(input) {
+                            calls.push(input)
+                            return {response: "answer", durationMs: 1}
+                        },
+                        stop: async () => {},
+                    }
+                },
+            },
+            workspaceRoot: "/workspace",
+            traceDirectory: "/traces",
+        })
+        const caseSnapshot = {
+            ...curatedCase("case-original-question", "查一下七月各业务成本。"),
+            issueDescription: "历史回答把成本当成了预算。",
+        }
+
+        await runner.run({
+            id: "run-original-question",
+            activationMode: "automatic",
+            runtimeConfigurations: [
+                {runtimeId: "target", providerId: "codex", executablePath: "/target"},
+            ],
+            results: [{
+                id: "result",
+                runtimeId: "target",
+                status: "queued",
+                caseSnapshot,
+            }],
+        })
+
+        assert.equal(calls.length, 1)
+        assert.equal(calls[0].question, "查一下七月各业务成本。")
+        assert.equal("issueDescription" in calls[0], false)
+    })
+
     it("runs runtime queues concurrently and Cases sequentially within a runtime", async () => {
         const events = []
         const resolvers = new Map()
