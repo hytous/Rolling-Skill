@@ -172,8 +172,9 @@ npm test
 npm start
 ```
 
-构建脚本会运行测试、生成 Apple Silicon Electron 应用、确认包内没有 Agent Runtime、
-应用 ad-hoc 签名，并将结果写到仓库根目录的 `Rolling Skill.app`。
+构建脚本会运行测试、生成 Apple Silicon Electron 应用、确认包内没有 Agent Runtime，
+创建或复用登录钥匙串中的长期本地签名证书，并将签名结果写到仓库根目录的
+`Rolling Skill.app`。私钥不会写入仓库。
 
 ## 安全边界
 

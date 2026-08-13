@@ -7,8 +7,10 @@ agent runtime and does not require Docker or a separate backend service.
 
 ## Open the app
 
-Double-click `Rolling Skill.app` at the repository root. On the first launch, macOS may require a
-Control-click followed by **Open** because the local build uses an ad-hoc signature.
+Double-click `Rolling Skill.app` at the repository root. The first local build creates a persistent
+10-year code-signing identity named `Rolling Skill Local Development` in the current user's login
+keychain. Later builds reuse the same identity so macOS privacy grants remain attached to the same
+application identity while this certificate, bundle identifier, and app path remain unchanged.
 
 There is no application login screen. Runtime discovery, workspace selection, and local dataset
 access work independently of provider authentication. If the selected runtime cannot make a model
@@ -215,8 +217,9 @@ bash desktop/rolling-skill/scripts/build-macos-app.sh
 
 The script installs desktop dependencies, runs unit and discovered-runtime integration tests,
 packages the Apple Silicon Electron client, refuses any bundle containing an embedded Codex
-runtime, applies an ad-hoc signature, and writes `Rolling Skill.app` at the repository root. It
-targets macOS 13 or newer.
+runtime, creates or reuses the local keychain signing identity, and writes the signed
+`Rolling Skill.app` at the repository root. Private signing material remains in the login keychain
+and is never written to the repository. It targets macOS 13 or newer.
 
 ## Develop
 
