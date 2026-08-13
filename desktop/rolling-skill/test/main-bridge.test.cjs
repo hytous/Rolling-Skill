@@ -7,6 +7,15 @@ const root = join(__dirname, "..")
 const source = (path) => readFileSync(join(root, path), "utf8")
 
 describe("desktop main/preload bridge", () => {
+    it("exposes explicit evaluation cancellation separately from record deletion", () => {
+        const main = source("src/main.cjs")
+        const preload = source("src/preload.cjs")
+
+        assert.match(main, /evaluations:cancel[\s\S]{0,180}evaluationRunner\.cancel/)
+        assert.match(preload, /cancelEvaluationRun/)
+        assert.match(main, /evaluations:delete[\s\S]{0,160}deleteEvaluationRun/)
+    })
+
     it("wires runtime-native archive history through capability-gated IPC", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")

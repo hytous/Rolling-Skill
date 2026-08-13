@@ -737,6 +737,8 @@ kbd {
 .evaluation-dataset-row:focus-within .evaluation-dataset-delete,
 .evaluation-run-row:hover .evaluation-run-delete,
 .evaluation-run-row:focus-within .evaluation-run-delete,
+.evaluation-run-row:hover .evaluation-run-cancel,
+.evaluation-run-row:focus-within .evaluation-run-cancel,
 .hover-delete-button:focus-visible {
     opacity: 1;
     pointer-events: auto;
@@ -1197,7 +1199,8 @@ kbd {
 
 .quality-status.indeterminate,
 .quality-status.diagnostic,
-.quality-status.pending {
+.quality-status.pending,
+.quality-status.cancelled {
     background: color-mix(in srgb, var(--warning) 10%, transparent);
     color: var(--warning);
 }
@@ -1229,6 +1232,24 @@ kbd {
 .run-status.failed,
 .run-status.partial {
     background: color-mix(in srgb, var(--danger) 9%, transparent);
+    color: var(--danger);
+}
+
+.run-status.cancelled {
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    color: var(--warning);
+}
+
+.evaluation-run-detail-header {
+    position: relative;
+}
+
+.evaluation-stop-button {
+    position: absolute;
+    top: 0;
+    right: 0;
+    border-color: color-mix(in srgb, var(--danger) 32%, var(--border));
+    background: color-mix(in srgb, var(--danger) 8%, var(--surface));
     color: var(--danger);
 }
 

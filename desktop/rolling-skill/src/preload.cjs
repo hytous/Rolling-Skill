@@ -66,6 +66,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     updateCuratorProfile: (input) => ipcRenderer.invoke("curation:update-profile", input),
     listEvaluationRuns: (datasetId = null) => ipcRenderer.invoke("evaluations:list", datasetId),
     getEvaluationRun: (runId) => ipcRenderer.invoke("evaluations:get", runId),
+    cancelEvaluationRun: (runId) => ipcRenderer.invoke("evaluations:cancel", runId),
     deleteEvaluationRun: (runId) => ipcRenderer.invoke("evaluations:delete", runId),
     startEvaluationRun: (input) => ipcRenderer.invoke("evaluations:start", input),
     onRuntimeState: (listener) => subscribe("runtime:state", listener),

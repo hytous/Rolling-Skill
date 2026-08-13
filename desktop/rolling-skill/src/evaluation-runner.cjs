@@ -8,6 +8,7 @@ const {buildEvidenceCatalog} = require("./evaluation-evidence-catalog.cjs")
 const {snapshotSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 
 const SKILL_DRIFT_ERROR = "Skill changed after evaluation snapshot"
+const CANCELLATION_ERROR = "Evaluation cancelled by user"
 
 function runtimeDescriptor(configuration = {}) {
     return {
@@ -68,6 +69,7 @@ class EvaluationRunner {
         this.onChanged = onChanged
         this.snapshotSkill = snapshotSkill
         this.running = new Map()
+        this.runControls = new Map()
         this.activeClients = new Set()
         this.clientStopOperations = new WeakMap()
     }
@@ -87,24 +89,57 @@ class EvaluationRunner {
 
     run(run) {
         if (this.running.has(run.id)) return this.running.get(run.id)
-        const operation = this.execute(run).finally(() => this.running.delete(run.id))
+        const control = {
+            cancelRequested: false,
+            clients: new Set(),
+            executionStates: new Map(
+                (run.results ?? []).map((result) => [result.id, result.status ?? "queued"]),
+            ),
+            gradingStates: new Map(
+                (run.results ?? []).map((result) => [result.id, result.gradingStatus ?? "queued"]),
+            ),
+            operation: null,
+        }
+        this.runControls.set(run.id, control)
+        const operation = this.execute(run, control).finally(() => {
+            this.running.delete(run.id)
+            this.runControls.delete(run.id)
+        })
+        control.operation = operation
         this.running.set(run.id, operation)
         return operation
     }
 
-    async execute(run) {
+    async execute(run, control) {
         const startedAt = new Date().toISOString()
         this.store.updateEvaluationRun(run.id, {status: "running", startedAt})
         this.onChanged({runId: run.id, status: "running"})
         const queues = run.runtimeConfigurations.map((configuration) =>
-            this.runRuntimeQueue(run, configuration),
+            this.runRuntimeQueue(run, configuration, control),
         )
         const settled = await Promise.all(queues)
         const completedCount = settled.reduce((sum, entry) => sum + entry.completed, 0)
         const failedCount = settled.reduce((sum, entry) => sum + entry.failed, 0)
         const completedResults = settled.flatMap((entry) => entry.completedResults)
 
-        await this.runGradingPhase(run, completedResults)
+        if (!control.cancelRequested) {
+            await this.runGradingPhase(run, completedResults, control)
+        }
+
+        if (control.cancelRequested) {
+            this.cancelRemainingResults(run, control)
+            const completedAt = new Date().toISOString()
+            this.store.updateEvaluationRun(run.id, {status: "cancelled", completedAt})
+            this.onChanged({runId: run.id, status: "cancelled"})
+            return {
+                id: run.id,
+                status: "cancelled",
+                startedAt,
+                completedAt,
+                completedCount,
+                failedCount,
+            }
+        }
 
         const status = failedCount === 0 ? "completed" : completedCount === 0 ? "failed" : "partial"
         const completedAt = new Date().toISOString()
@@ -113,7 +148,7 @@ class EvaluationRunner {
         return {id: run.id, status, startedAt, completedAt, completedCount, failedCount}
     }
 
-    async runRuntimeQueue(run, configuration) {
+    async runRuntimeQueue(run, configuration, control) {
         const results = run.results.filter(
             (entry) =>
                 (entry.runtimeId ?? entry.runtimeConfiguration?.runtimeId) ===
@@ -125,6 +160,7 @@ class EvaluationRunner {
             executionPolicy: this.getExecutionPolicy(),
         })
         this.activeClients.add(client)
+        control.clients.add(client)
         let completed = 0
         let failed = 0
         const completedResults = []
@@ -134,11 +170,16 @@ class EvaluationRunner {
                 throw new Error("This runtime does not support evaluation execution")
             }
             for (const result of results) {
+                if (control.cancelRequested) {
+                    this.cancelExecutionResult(run, result, control)
+                    continue
+                }
                 const resultStartedAt = new Date().toISOString()
                 this.store.updateEvaluationResult(run.id, result.id, {
                     status: "running",
                     startedAt: resultStartedAt,
                 })
+                control.executionStates.set(result.id, "running")
                 this.onChanged({runId: run.id, resultId: result.id, status: "running"})
                 try {
                     this.assertSkillSnapshotUnchanged(run)
@@ -160,10 +201,15 @@ class EvaluationRunner {
                         ...(output.traceEvidence ? {traceEvidence: output.traceEvidence} : {}),
                         completedAt: new Date().toISOString(),
                     })
+                    control.executionStates.set(result.id, "completed")
                     completed += 1
                     completedResults.push({result, output})
                     this.onChanged({runId: run.id, resultId: result.id, status: "completed"})
                 } catch (error) {
+                    if (control.cancelRequested) {
+                        this.cancelExecutionResult(run, result, control)
+                        continue
+                    }
                     this.store.updateEvaluationResult(run.id, result.id, {
                         status: "failed",
                         gradingStatus: "skipped",
@@ -174,13 +220,19 @@ class EvaluationRunner {
                         error: error?.message ?? String(error),
                         completedAt: new Date().toISOString(),
                     })
+                    control.executionStates.set(result.id, "failed")
+                    control.gradingStates.set(result.id, "skipped")
                     failed += 1
                     this.onChanged({runId: run.id, resultId: result.id, status: "failed"})
                 }
             }
         } catch (error) {
             for (const result of results) {
-                if (result.status !== "queued") continue
+                if (control.executionStates.get(result.id) !== "queued") continue
+                if (control.cancelRequested) {
+                    this.cancelExecutionResult(run, result, control)
+                    continue
+                }
                 this.store.updateEvaluationResult(run.id, result.id, {
                     status: "failed",
                     gradingStatus: "skipped",
@@ -191,17 +243,24 @@ class EvaluationRunner {
                     error: error?.message ?? String(error),
                     completedAt: new Date().toISOString(),
                 })
+                control.executionStates.set(result.id, "failed")
+                control.gradingStates.set(result.id, "skipped")
                 failed += 1
                 this.onChanged({runId: run.id, resultId: result.id, status: "failed"})
             }
         } finally {
             await this.stopClient(client)
+            control.clients.delete(client)
         }
         return {completed, failed, completedResults}
     }
 
-    async runGradingPhase(run, completedResults) {
+    async runGradingPhase(run, completedResults, control) {
         if (!completedResults.length) return
+        if (control.cancelRequested) {
+            for (const entry of completedResults) this.cancelGradingResult(run, entry.result, control)
+            return
+        }
         const configuration = judgeConfigurationForRun(run)
         if (!configuration?.runtimeId || !configuration.providerId || !configuration.executablePath) {
             for (const entry of completedResults) {
@@ -220,12 +279,18 @@ class EvaluationRunner {
                 executionPolicy: {sandbox: "read-only", approvalPolicy: "never"},
             })
             this.activeClients.add(client)
+            control.clients.add(client)
             await client.start()
             if (typeof client.runEvaluationJudge !== "function") {
                 throw new Error("The selected runtime does not support evaluation judging")
             }
         } catch (error) {
             if (client) await this.stopClient(client)
+            if (client) control.clients.delete(client)
+            if (control.cancelRequested) {
+                for (const entry of completedResults) this.cancelGradingResult(run, entry.result, control)
+                return
+            }
             for (const entry of completedResults) {
                 this.failGrading(run, entry.result, configuration, error)
             }
@@ -234,20 +299,26 @@ class EvaluationRunner {
 
         try {
             for (const entry of completedResults) {
+                if (control.cancelRequested) {
+                    this.cancelGradingResult(run, entry.result, control)
+                    continue
+                }
                 await this.gradeCompletedResult({
                     run,
                     result: entry.result,
                     output: entry.output,
                     configuration,
                     client,
+                    control,
                 })
             }
         } finally {
             await this.stopClient(client)
+            control.clients.delete(client)
         }
     }
 
-    async gradeCompletedResult({run, result, output, configuration, client}) {
+    async gradeCompletedResult({run, result, output, configuration, client, control}) {
         const gradingStartedAt = new Date().toISOString()
         this.store.updateEvaluationResult(run.id, result.id, {
             gradingStatus: "running",
@@ -255,6 +326,7 @@ class EvaluationRunner {
             gradingCompletedAt: null,
             gradingError: null,
         })
+        control.gradingStates.set(result.id, "running")
         this.onChanged({
             runId: run.id,
             resultId: result.id,
@@ -290,6 +362,7 @@ class EvaluationRunner {
             let judgment
             let validationError = null
             for (let attempt = 1; attempt <= 2; attempt += 1) {
+                if (control.cancelRequested) throw new Error(CANCELLATION_ERROR)
                 attempts = attempt
                 const prompt = validationError
                     ? `${basePrompt}\n\nYour previous JSON was rejected by the fixed validator: <validation-error>${validationError}</validation-error>\nReturn a corrected JSON object only. Do not rerun or reinterpret the target task.`
@@ -332,6 +405,7 @@ class EvaluationRunner {
                 gradingError: null,
                 gradingCompletedAt: new Date().toISOString(),
             })
+            control.gradingStates.set(result.id, "completed")
             this.onChanged({
                 runId: run.id,
                 resultId: result.id,
@@ -340,10 +414,63 @@ class EvaluationRunner {
                 verdict: computedScore.overallVerdict,
             })
         } catch (error) {
+            if (control.cancelRequested) {
+                this.cancelGradingResult(run, result, control)
+                return
+            }
             this.failGrading(run, result, configuration, error, lastOutput, {
                 attempts,
                 scoreContract: contract,
             })
+            control.gradingStates.set(result.id, "failed")
+        }
+    }
+
+    cancelExecutionResult(run, result, control) {
+        const status = control.executionStates.get(result.id)
+        if (status === "completed" || status === "failed" || status === "cancelled") return
+        const completedAt = new Date().toISOString()
+        this.store.updateEvaluationResult(run.id, result.id, {
+            status: "cancelled",
+            gradingStatus: "skipped",
+            judge: {status: "skipped", error: `${CANCELLATION_ERROR}; grading skipped`},
+            error: CANCELLATION_ERROR,
+            completedAt,
+            gradingError: CANCELLATION_ERROR,
+            gradingCompletedAt: completedAt,
+        })
+        control.executionStates.set(result.id, "cancelled")
+        control.gradingStates.set(result.id, "skipped")
+        this.onChanged({runId: run.id, resultId: result.id, status: "cancelled"})
+    }
+
+    cancelGradingResult(run, result, control) {
+        const gradingStatus = control.gradingStates.get(result.id)
+        if (["completed", "failed", "skipped"].includes(gradingStatus)) return
+        const completedAt = new Date().toISOString()
+        this.store.updateEvaluationResult(run.id, result.id, {
+            gradingStatus: "skipped",
+            gradingError: CANCELLATION_ERROR,
+            gradingCompletedAt: completedAt,
+            judge: {status: "skipped", error: CANCELLATION_ERROR},
+        })
+        control.gradingStates.set(result.id, "skipped")
+        this.onChanged({
+            runId: run.id,
+            resultId: result.id,
+            phase: "grading",
+            gradingStatus: "skipped",
+        })
+    }
+
+    cancelRemainingResults(run, control) {
+        for (const result of run.results ?? []) {
+            const executionStatus = control.executionStates.get(result.id)
+            if (executionStatus === "queued" || executionStatus === "running") {
+                this.cancelExecutionResult(run, result, control)
+            } else if (executionStatus === "completed") {
+                this.cancelGradingResult(run, result, control)
+            }
         }
     }
 
@@ -380,7 +507,28 @@ class EvaluationRunner {
         return operation
     }
 
+    async cancel(runId) {
+        const control = this.runControls.get(runId)
+        if (!control) {
+            if (typeof this.store.cancelEvaluationRun !== "function") {
+                throw new Error("Evaluation run is not active")
+            }
+            const run = this.store.cancelEvaluationRun(runId)
+            this.onChanged({runId, status: "cancelled"})
+            return run
+        }
+        if (!control.cancelRequested) {
+            control.cancelRequested = true
+            await Promise.all([...control.clients].map((client) => this.stopClient(client)))
+        }
+        const outcome = await control.operation
+        return typeof this.store.getEvaluationRun === "function"
+            ? this.store.getEvaluationRun(runId)
+            : outcome
+    }
+
     async stopAll() {
+        for (const control of this.runControls.values()) control.cancelRequested = true
         await Promise.all([...this.activeClients].map((client) => this.stopClient(client)))
         await Promise.allSettled([...this.running.values()])
     }

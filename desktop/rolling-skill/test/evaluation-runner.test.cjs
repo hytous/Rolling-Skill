@@ -197,6 +197,269 @@ describe("multi-runtime evaluation runner", () => {
         assert.equal(events.some(([id, status]) => id === "run" && status === "completed"), true)
     })
 
+    it("cancels the active Case and every not-yet-started Case without starting a Judge", async () => {
+        const resultPatches = new Map()
+        const runStatuses = []
+        const targetQuestions = []
+        let rejectActiveCase
+        let activeCaseStarted
+        const started = new Promise((resolve) => {
+            activeCaseStarted = resolve
+        })
+        let targetStopCount = 0
+        let judgeCreated = false
+        const runner = new EvaluationRunner({
+            store: {
+                updateEvaluationRun(_runId, patch) {
+                    if (patch.status) runStatuses.push(patch.status)
+                },
+                updateEvaluationResult(_runId, resultId, patch) {
+                    resultPatches.set(resultId, {...resultPatches.get(resultId), ...patch})
+                },
+            },
+            runtimeRegistry: {
+                createClient(descriptor) {
+                    if (descriptor.runtimeId === "judge") {
+                        judgeCreated = true
+                        throw new Error("Judge must not start after cancellation")
+                    }
+                    return {
+                        start: async () => {},
+                        runEvaluationCase({question}) {
+                            targetQuestions.push(question)
+                            activeCaseStarted()
+                            return new Promise((_resolve, reject) => {
+                                rejectActiveCase = reject
+                            })
+                        },
+                        async stop() {
+                            targetStopCount += 1
+                            rejectActiveCase?.(new Error("target stopped"))
+                        },
+                    }
+                },
+            },
+            workspaceRoot: "/workspace",
+            traceDirectory: "/traces",
+        })
+        const run = {
+            id: "run-cancel-targets",
+            activationMode: "automatic",
+            judgeConfiguration: {runtimeId: "judge", providerId: "codex", executablePath: "/judge"},
+            runtimeConfigurations: [
+                {runtimeId: "target", providerId: "codex", executablePath: "/target"},
+            ],
+            results: ["q1", "q2", "q3"].map((question, index) => ({
+                id: `result-${index + 1}`,
+                runtimeId: "target",
+                status: "queued",
+                gradingStatus: "queued",
+                caseSnapshot: curatedCase(`case-${index + 1}`, question),
+            })),
+        }
+
+        const operation = runner.run(run)
+        await started
+        const cancelled = runner.cancel(run.id)
+        const [summary] = await Promise.all([operation, cancelled])
+
+        assert.equal(summary.status, "cancelled")
+        assert.deepEqual(targetQuestions, ["q1"])
+        assert.equal(targetStopCount, 1)
+        assert.equal(judgeCreated, false)
+        assert.deepEqual(runStatuses, ["running", "cancelled"])
+        for (const id of ["result-1", "result-2", "result-3"]) {
+            assert.equal(resultPatches.get(id).status, "cancelled")
+            assert.equal(resultPatches.get(id).gradingStatus, "skipped")
+            assert.match(resultPatches.get(id).error, /cancelled by user/i)
+        }
+    })
+
+    it("preserves completed target answers and skips remaining Judge work when cancelled", async () => {
+        const resultPatches = new Map()
+        let judgeStarted
+        const started = new Promise((resolve) => {
+            judgeStarted = resolve
+        })
+        let rejectJudge
+        let judgeCalls = 0
+        const runner = new EvaluationRunner({
+            store: {
+                updateEvaluationRun() {},
+                updateEvaluationResult(_runId, resultId, patch) {
+                    resultPatches.set(resultId, {...resultPatches.get(resultId), ...patch})
+                },
+            },
+            runtimeRegistry: {
+                createClient(descriptor) {
+                    if (descriptor.runtimeId === "judge") {
+                        return {
+                            start: async () => {},
+                            runEvaluationJudge() {
+                                judgeCalls += 1
+                                judgeStarted()
+                                return new Promise((_resolve, reject) => {
+                                    rejectJudge = reject
+                                })
+                            },
+                            async stop() {
+                                rejectJudge?.(new Error("judge stopped"))
+                            },
+                        }
+                    }
+                    return {
+                        start: async () => {},
+                        runEvaluationCase: async ({question}) => ({
+                            response: `answer:${question}`,
+                            durationMs: 1,
+                        }),
+                        stop: async () => {},
+                    }
+                },
+            },
+            workspaceRoot: "/workspace",
+            traceDirectory: "/traces",
+        })
+        const run = {
+            id: "run-cancel-grading",
+            activationMode: "automatic",
+            judgeConfiguration: {runtimeId: "judge", providerId: "codex", executablePath: "/judge"},
+            runtimeConfigurations: [
+                {runtimeId: "target", providerId: "codex", executablePath: "/target"},
+            ],
+            results: ["q1", "q2"].map((question, index) => ({
+                id: `result-${index + 1}`,
+                runtimeId: "target",
+                status: "queued",
+                gradingStatus: "queued",
+                caseSnapshot: curatedCase(`case-${index + 1}`, question),
+            })),
+        }
+
+        const operation = runner.run(run)
+        await started
+        const cancelled = runner.cancel(run.id)
+        const [summary] = await Promise.all([operation, cancelled])
+
+        assert.equal(summary.status, "cancelled")
+        assert.equal(judgeCalls, 1)
+        for (const id of ["result-1", "result-2"]) {
+            assert.equal(resultPatches.get(id).status, "completed")
+            assert.match(resultPatches.get(id).response, /^answer:q/)
+            assert.equal(resultPatches.get(id).gradingStatus, "skipped")
+            assert.match(resultPatches.get(id).gradingError, /cancelled by user/i)
+        }
+    })
+
+    it("cancels only the selected run and leaves another concurrent run executing", async () => {
+        const active = new Map()
+        const stopped = []
+        const runner = new EvaluationRunner({
+            store: {
+                updateEvaluationRun() {},
+                updateEvaluationResult() {},
+            },
+            runtimeRegistry: {
+                createClient(descriptor) {
+                    return {
+                        start: async () => {},
+                        runEvaluationCase() {
+                            return new Promise((resolve, reject) => {
+                                active.set(descriptor.runtimeId, {resolve, reject})
+                            })
+                        },
+                        async stop() {
+                            stopped.push(descriptor.runtimeId)
+                            active.get(descriptor.runtimeId)?.reject(new Error("runtime stopped"))
+                        },
+                    }
+                },
+            },
+            workspaceRoot: "/workspace",
+            traceDirectory: "/traces",
+        })
+        const makeRun = (runId, runtimeId) => ({
+            id: runId,
+            activationMode: "automatic",
+            runtimeConfigurations: [
+                {runtimeId, providerId: "codex", executablePath: `/${runtimeId}`},
+            ],
+            results: [{
+                id: `${runId}-result`,
+                runtimeId,
+                status: "queued",
+                gradingStatus: "queued",
+                caseSnapshot: curatedCase(`${runId}-case`, runId),
+            }],
+        })
+
+        const cancelledOperation = runner.run(makeRun("run-a", "target:a"))
+        const continuingOperation = runner.run(makeRun("run-b", "target:b"))
+        while (!active.has("target:a") || !active.has("target:b")) {
+            await new Promise((resolve) => setImmediate(resolve))
+        }
+        await runner.cancel("run-a")
+        active.get("target:b").resolve({response: "answer-b", durationMs: 1})
+
+        const [cancelled, completed] = await Promise.all([cancelledOperation, continuingOperation])
+        assert.equal(cancelled.status, "cancelled")
+        assert.equal(completed.status, "completed")
+        assert.equal(stopped.includes("target:a"), true)
+        assert.equal(stopped.filter((runtimeId) => runtimeId === "target:b").length, 1)
+    })
+
+    it("returns the persisted full run after cancellation for immediate UI rendering", async () => {
+        const persisted = {id: "run-persisted", status: "cancelled", results: [{id: "result"}]}
+        let rejectActiveCase
+        let activeCaseStarted
+        const started = new Promise((resolve) => {
+            activeCaseStarted = resolve
+        })
+        const runner = new EvaluationRunner({
+            store: {
+                updateEvaluationRun() {},
+                updateEvaluationResult() {},
+                getEvaluationRun: () => persisted,
+            },
+            runtimeRegistry: {
+                createClient() {
+                    return {
+                        start: async () => {},
+                        runEvaluationCase() {
+                            activeCaseStarted()
+                            return new Promise((_resolve, reject) => {
+                                rejectActiveCase = reject
+                            })
+                        },
+                        async stop() {
+                            rejectActiveCase?.(new Error("stopped"))
+                        },
+                    }
+                },
+            },
+            workspaceRoot: "/workspace",
+            traceDirectory: "/traces",
+        })
+        const run = {
+            id: "run-persisted",
+            activationMode: "automatic",
+            runtimeConfigurations: [
+                {runtimeId: "target", providerId: "codex", executablePath: "/target"},
+            ],
+            results: [{
+                id: "result",
+                runtimeId: "target",
+                status: "queued",
+                gradingStatus: "queued",
+                caseSnapshot: curatedCase("case", "q"),
+            }],
+        }
+
+        runner.run(run)
+        await started
+        assert.equal(await runner.cancel(run.id), persisted)
+    })
+
     it("stops every isolated runtime client during application shutdown", async () => {
         let releaseStart
         let stopCount = 0

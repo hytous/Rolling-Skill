@@ -1002,6 +1002,9 @@ function installIpc() {
     ipcMain.handle("evaluations:get", (_event, runId) =>
         store.getEvaluationRun(requireIdentifier(runId, "evaluation run")),
     )
+    ipcMain.handle("evaluations:cancel", (_event, runId) =>
+        evaluationRunner.cancel(requireIdentifier(runId, "evaluation run")),
+    )
     ipcMain.handle("evaluations:delete", (_event, runId) =>
         store.deleteEvaluationRun(requireIdentifier(runId, "evaluation run")),
     )

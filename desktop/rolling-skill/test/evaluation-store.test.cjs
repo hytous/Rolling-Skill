@@ -275,6 +275,39 @@ describe("evaluation data lifecycle", () => {
         assert.throws(() => store.getEvaluationRun(run.id), /evaluation run/i)
     })
 
+    it("stores cancelled results and allows a cancelled run to be deleted", () => {
+        const store = fixture()
+        const dataset = store.listDatasets()[0]
+        const saved = store.saveCase({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            question: "q",
+            answer: "a",
+        })
+        const run = store.createEvaluationRun({
+            datasetId: dataset.id,
+            caseIds: [saved.id],
+            selectionMode: "selected",
+            activationMode: "automatic",
+            skillReference: {name: "billing-cost-management", path: "/skills/billing/SKILL.md"},
+            skillEvidence: frozenSkillEvidence(),
+            runtimeConfigurations: [
+                {runtimeId: "codex:a", providerId: "codex", displayName: "Codex", executablePath: "/a"},
+            ],
+        })
+
+        store.updateEvaluationResult(run.id, run.results[0].id, {
+            status: "cancelled",
+            gradingStatus: "skipped",
+            error: "Evaluation cancelled by user",
+            completedAt: "now",
+        })
+        store.updateEvaluationRun(run.id, {status: "cancelled", completedAt: "now"})
+
+        assert.equal(store.getEvaluationRun(run.id).results[0].status, "cancelled")
+        assert.equal(store.deleteEvaluationRun(run.id).status, "cancelled")
+    })
+
     it("updates and lists durable Case x runtime evaluation results", () => {
         const store = fixture()
         const dataset = store.listDatasets()[0]

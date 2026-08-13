@@ -133,6 +133,8 @@ Use the switch below the Rolling Skill logo to move between the native **Chat** 
 - delete a Case without invalidating older evaluation snapshots;
 - query a provider's path-precise Skill inventory when it exposes one;
 - run one selected Case or an entire dataset;
+- stop one active evaluation without affecting Chat or other concurrent runs, preserving completed
+  answers and Trace evidence while cancelling current and queued Case/Judge work;
 - select multiple runtime/model/reasoning-effort configurations for one run; and
 - inspect and delete durable Case × Runtime results under **Evaluation runs / 评测记录**.
 

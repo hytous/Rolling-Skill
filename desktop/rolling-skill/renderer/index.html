@@ -460,6 +460,22 @@
             </div>
         </dialog>
 
+        <dialog id="cancel-evaluation-run-dialog" class="case-dialog confirm-dialog">
+            <div class="confirm-dialog-body">
+                <div class="dialog-header">
+                    <div><div class="drawer-eyebrow">EVALUATION RUN</div><h2 data-i18n="cancelEvaluationRun">Stop evaluation?</h2></div>
+                    <button id="close-cancel-evaluation-run-dialog" class="icon-button large" type="button" data-i18n-title="close" data-i18n-aria-label="close" title="Close" aria-label="Close">×</button>
+                </div>
+                <p data-i18n="cancelEvaluationRunHelp">Running target or Judge turns will be interrupted and queued Cases will not start. Completed answers and Trace evidence stay in this record.</p>
+                <p id="cancel-evaluation-run-error" class="confirm-dialog-error hidden" role="alert"></p>
+                <div class="dialog-footer">
+                    <span></span>
+                    <button id="dismiss-cancel-evaluation-run" type="button" data-i18n="keepRunning">Keep running</button>
+                    <button id="confirm-cancel-evaluation-run" class="danger" type="button" data-i18n="stopEvaluation">Stop evaluation</button>
+                </div>
+            </div>
+        </dialog>
+
         <dialog id="discard-curation-dialog" class="case-dialog confirm-dialog">
             <div class="confirm-dialog-body">
                 <div class="dialog-header">

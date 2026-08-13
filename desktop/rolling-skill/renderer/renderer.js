@@ -231,6 +231,7 @@ const translations = {
         qualityIndeterminate: "Indeterminate",
         qualityPending: "Pending grading",
         qualityGradingFailed: "Grading failed",
+        qualityCancelled: "Stopped before grading",
         qualityDiagnostic: "Diagnostic",
         skillBindingDiagnostic: "Diagnostic only: this runtime could not bind execution to the frozen Skill path, so no formal total or pass verdict is produced.",
         judgeModelsLoading: "Loading Judge model catalog…",
@@ -282,6 +283,12 @@ const translations = {
         deleteDatasetHelp: "All Cases and finished draft records in this dataset will be removed. Unfinished drafts block deletion; evaluation records keep their snapshots.",
         deleteEvaluationRun: "Delete evaluation record?",
         deleteEvaluationRunHelp: "This saved run, its results, and embedded snapshots will be permanently removed. Trace files are not deleted.",
+        cancelEvaluationRun: "Stop evaluation?",
+        cancelEvaluationRunHelp: "Running target or Judge turns will be interrupted and queued Cases will not start. Completed answers and Trace evidence stay in this record.",
+        stopEvaluation: "Stop evaluation",
+        keepRunning: "Keep running",
+        evaluationRunCancelled: "Evaluation stopped",
+        evaluationRunNotActive: "This evaluation is no longer active.",
         delete: "Delete",
         caseDeleted: "Case deleted",
         datasetDeleted: "Dataset deleted",
@@ -538,6 +545,7 @@ const translations = {
         qualityIndeterminate: "无法判定",
         qualityPending: "待判",
         qualityGradingFailed: "判分失败",
+        qualityCancelled: "停止后未判分",
         qualityDiagnostic: "诊断",
         skillBindingDiagnostic: "仅诊断：该 Runtime 无法确认执行的是冻结 Skill 路径，因此不生成正式总分或通过结论。",
         judgeModelsLoading: "正在加载 Judge 模型目录…",
@@ -589,6 +597,12 @@ const translations = {
         deleteDatasetHelp: "该数据集中的所有 Case 和已结束草稿记录都会被删除；未结束草稿会阻止删除，已有评测记录仍保留快照。",
         deleteEvaluationRun: "删除评测记录？",
         deleteEvaluationRunHelp: "本次评测、结果及内嵌快照会被永久删除；对应的原始 Trace 文件不会删除。",
+        cancelEvaluationRun: "停止评测？",
+        cancelEvaluationRunHelp: "正在执行的被测任务或 Judge 会被中断，排队中的 Case 不再启动；已经完成的回答和 Trace 会保留在评测记录中。",
+        stopEvaluation: "停止评测",
+        keepRunning: "继续运行",
+        evaluationRunCancelled: "评测已停止",
+        evaluationRunNotActive: "这次评测已经不在运行。",
         delete: "删除",
         caseDeleted: "Case 已删除",
         datasetDeleted: "数据集已删除",
@@ -690,6 +704,7 @@ const state = {
     deleteCaseId: null,
     deleteDatasetId: null,
     deleteEvaluationRunId: null,
+    cancelEvaluationRunId: null,
     evaluationLoading: false,
     evaluationError: null,
     evaluationSkillByThread: {},
@@ -823,6 +838,11 @@ const elements = {
     cancelDeleteEvaluationRun: document.querySelector("#cancel-delete-evaluation-run"),
     confirmDeleteEvaluationRun: document.querySelector("#confirm-delete-evaluation-run"),
     deleteEvaluationRunError: document.querySelector("#delete-evaluation-run-error"),
+    cancelEvaluationRunDialog: document.querySelector("#cancel-evaluation-run-dialog"),
+    closeCancelEvaluationRunDialog: document.querySelector("#close-cancel-evaluation-run-dialog"),
+    dismissCancelEvaluationRun: document.querySelector("#dismiss-cancel-evaluation-run"),
+    confirmCancelEvaluationRun: document.querySelector("#confirm-cancel-evaluation-run"),
+    cancelEvaluationRunError: document.querySelector("#cancel-evaluation-run-error"),
     caseDialog: document.querySelector("#save-case-dialog"),
     caseForm: document.querySelector("#save-case-form"),
     caseDataset: document.querySelector("#case-dataset"),
@@ -2680,6 +2700,14 @@ function evaluationRunStatusLabel(status) {
 }
 
 function evaluationResultQuality(result) {
+    if (
+        result.status === "cancelled" ||
+        (result.gradingStatus === "skipped" && /cancelled by user/i.test(
+            result.gradingError ?? result.judge?.error ?? "",
+        ))
+    ) {
+        return "cancelled"
+    }
     if (result.gradingStatus === "failed" || result.gradingStatus === "skipped") {
         return "grading_failed"
     }
@@ -2691,7 +2719,7 @@ function evaluationResultQuality(result) {
 }
 
 function evaluationRunQualitySummary(run) {
-    const counts = {passed: 0, failed: 0, indeterminate: 0, diagnostic: 0, pending: 0, grading_failed: 0}
+    const counts = {passed: 0, failed: 0, indeterminate: 0, diagnostic: 0, pending: 0, grading_failed: 0, cancelled: 0}
     for (const result of run?.results ?? []) counts[evaluationResultQuality(result)] += 1
     const labels = {
         passed: "qualityPassed",
@@ -2699,6 +2727,7 @@ function evaluationRunQualitySummary(run) {
         indeterminate: "qualityIndeterminate",
         pending: "qualityPending",
         grading_failed: "qualityGradingFailed",
+        cancelled: "qualityCancelled",
         diagnostic: "qualityDiagnostic",
     }
     const entries = Object.entries(counts)
@@ -2933,7 +2962,14 @@ function renderEvaluationRuns() {
         )
         appendEvaluationQualitySummary(button, detailedRun)
         row.append(button)
-        if (run.status !== "queued" && run.status !== "running") {
+        if (run.status === "queued" || run.status === "running") {
+            const cancel = node("button", "hover-delete-button evaluation-run-cancel", "■")
+            cancel.type = "button"
+            cancel.title = t("stopEvaluation")
+            cancel.setAttribute("aria-label", t("stopEvaluation"))
+            cancel.dataset.cancelEvaluationRun = run.id
+            row.append(cancel)
+        } else {
             const remove = node("button", "hover-delete-button evaluation-run-delete", "×")
             remove.type = "button"
             remove.title = t("deleteEvaluationRun")
@@ -2964,6 +3000,12 @@ function renderEvaluationRuns() {
         node("p", "", `${run.skillReference?.name ?? "Skill"} · ${run.activationMode}`),
     )
     appendEvaluationQualitySummary(header, run)
+    if (run.status === "queued" || run.status === "running") {
+        const stop = node("button", "evaluation-stop-button", t("stopEvaluation"))
+        stop.type = "button"
+        stop.dataset.cancelEvaluationRun = run.id
+        header.append(stop)
+    }
     const results = node("div", "evaluation-result-list")
     for (const result of run.results ?? []) {
         const card = node("article", "evaluation-result-card")
@@ -3207,6 +3249,44 @@ function openDeleteEvaluationRunDialog(runId) {
     elements.deleteEvaluationRunError.textContent = ""
     elements.deleteEvaluationRunError.classList.add("hidden")
     elements.deleteEvaluationRunDialog.showModal()
+}
+
+function openCancelEvaluationRunDialog(runId) {
+    state.cancelEvaluationRunId = runId
+    elements.cancelEvaluationRunError.textContent = ""
+    elements.cancelEvaluationRunError.classList.add("hidden")
+    elements.cancelEvaluationRunDialog.showModal()
+}
+
+async function cancelEvaluationRun() {
+    if (!state.cancelEvaluationRunId) return
+    elements.confirmCancelEvaluationRun.disabled = true
+    try {
+        const runId = state.cancelEvaluationRunId
+        const run = await window.rollingSkill.cancelEvaluationRun(runId)
+        state.cancelEvaluationRunId = null
+        state.evaluationRunDetails[runId] = run
+        if (state.activeEvaluationRunId === runId) state.activeEvaluationRun = run
+        const summaryIndex = state.evaluationRuns.findIndex((entry) => entry.id === runId)
+        if (summaryIndex >= 0) {
+            state.evaluationRuns[summaryIndex] = {
+                ...state.evaluationRuns[summaryIndex],
+                status: run.status,
+                completedAt: run.completedAt,
+            }
+        }
+        elements.cancelEvaluationRunDialog.close()
+        renderEvaluationWorkbench()
+        showToast(t("evaluationRunCancelled"))
+    } catch (error) {
+        const message = error?.message || String(error)
+        elements.cancelEvaluationRunError.textContent = /not active/i.test(message)
+            ? t("evaluationRunNotActive")
+            : message
+        elements.cancelEvaluationRunError.classList.remove("hidden")
+    } finally {
+        elements.confirmCancelEvaluationRun.disabled = false
+    }
 }
 
 async function deleteEvaluationRun() {
@@ -4198,6 +4278,11 @@ elements.evaluationJudgeEffort.addEventListener("change", () => {
     state.evaluationJudgeConfiguration.effort = elements.evaluationJudgeEffort.value || null
 })
 elements.evaluationRunList.addEventListener("click", (event) => {
+    const cancel = event.target.closest("[data-cancel-evaluation-run]")
+    if (cancel) {
+        openCancelEvaluationRunDialog(cancel.dataset.cancelEvaluationRun)
+        return
+    }
     const remove = event.target.closest("[data-delete-evaluation-run]")
     if (remove) {
         openDeleteEvaluationRunDialog(remove.dataset.deleteEvaluationRun)
@@ -4206,6 +4291,10 @@ elements.evaluationRunList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-evaluation-run-id]")
     if (!button) return
     void selectEvaluationRun(button.dataset.evaluationRunId)
+})
+elements.evaluationRunDetail.addEventListener("click", (event) => {
+    const cancel = event.target.closest("[data-cancel-evaluation-run]")
+    if (cancel) openCancelEvaluationRunDialog(cancel.dataset.cancelEvaluationRun)
 })
 elements.evaluationCreateDataset.addEventListener("submit", (event) => {
     event.preventDefault()
@@ -4357,6 +4446,9 @@ elements.confirmDeleteDataset.addEventListener("click", () => void deleteEvaluat
 elements.closeDeleteEvaluationRunDialog.addEventListener("click", () => elements.deleteEvaluationRunDialog.close())
 elements.cancelDeleteEvaluationRun.addEventListener("click", () => elements.deleteEvaluationRunDialog.close())
 elements.confirmDeleteEvaluationRun.addEventListener("click", () => void deleteEvaluationRun())
+elements.closeCancelEvaluationRunDialog.addEventListener("click", () => elements.cancelEvaluationRunDialog.close())
+elements.dismissCancelEvaluationRun.addEventListener("click", () => elements.cancelEvaluationRunDialog.close())
+elements.confirmCancelEvaluationRun.addEventListener("click", () => void cancelEvaluationRun())
 
 window.rollingSkill.onRuntimeState((runtime) => {
     const previousRuntimeStatus = state.runtime?.status

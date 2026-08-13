@@ -41,7 +41,13 @@ const EVALUATION_RUN_STATUSES = new Set([
     "failed",
     "cancelled",
 ])
-const EVALUATION_RESULT_STATUSES = new Set(["queued", "running", "completed", "failed"])
+const EVALUATION_RESULT_STATUSES = new Set([
+    "queued",
+    "running",
+    "completed",
+    "failed",
+    "cancelled",
+])
 const EVALUATION_GRADING_STATUSES = new Set([
     "not_requested",
     "queued",
@@ -273,7 +279,9 @@ function migrateState(input) {
         for (const result of run.results ?? []) {
             if (!("gradingStatus" in result)) {
                 if (result.computedScore || result.judgment) result.gradingStatus = "completed"
-                else if (result.status === "failed") result.gradingStatus = "skipped"
+                else if (result.status === "failed" || result.status === "cancelled") {
+                    result.gradingStatus = "skipped"
+                }
                 else if (result.status === "queued") result.gradingStatus = "queued"
                 else result.gradingStatus = "not_requested"
                 changed = true
@@ -1108,6 +1116,34 @@ class LocalEvaluationStore {
         const [deleted] = state.evaluationRuns.splice(index, 1)
         this.persist()
         return copy(deleted)
+    }
+
+    cancelEvaluationRun(id) {
+        const state = this.load()
+        const run = state.evaluationRuns.find((entry) => entry.id === id)
+        if (!run) throw new Error("Unknown evaluation run")
+        if (run.status !== "queued" && run.status !== "running") {
+            throw new Error("Evaluation run is not active")
+        }
+        const now = new Date().toISOString()
+        const cancellationError = "Evaluation cancelled by user"
+        for (const result of run.results ?? []) {
+            if (result.status === "queued" || result.status === "running") {
+                result.status = "cancelled"
+                result.error = cancellationError
+                result.completedAt = now
+            }
+            if (result.gradingStatus === "queued" || result.gradingStatus === "running") {
+                result.gradingStatus = "skipped"
+                result.gradingError = cancellationError
+                result.gradingCompletedAt = now
+                result.judge = {status: "skipped", error: cancellationError}
+            }
+        }
+        run.status = "cancelled"
+        run.completedAt = now
+        this.persist()
+        return copy(run)
     }
 
     updateEvaluationRun(id, patch = {}) {
