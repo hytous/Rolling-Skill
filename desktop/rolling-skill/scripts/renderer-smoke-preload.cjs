@@ -175,6 +175,34 @@ let smokeDatasets = [{
     badcaseCount: 0,
     skillReference: smokeSkillReference,
 }]
+const smokeEvaluationRun = {
+    id: "run-smoke",
+    datasetId: "dataset-smoke",
+    datasetSnapshot: {id: "dataset-smoke", name: "Smoke Dataset"},
+    selectionMode: "dataset",
+    activationMode: "automatic",
+    skillReference: smokeSkillReference,
+    status: "completed",
+    createdAt: "2026-08-13T00:00:00.000Z",
+    completedAt: "2026-08-13T00:01:05.000Z",
+    caseSnapshots: [smokeEvaluationCase],
+    runtimeConfigurations: [{runtimeId: "codex:renderer-smoke"}],
+    results: [{
+        id: "result-smoke",
+        runtimeId: "codex:renderer-smoke",
+        runtimeConfiguration: {
+            runtimeId: "codex:renderer-smoke",
+            displayName: "Codex",
+            modelId: "gpt-5.6-sol",
+            effort: "high",
+        },
+        caseSnapshot: smokeEvaluationCase,
+        status: "completed",
+        gradingStatus: "queued",
+        durationMs: 65_000,
+        response: "Smoke evaluation answer",
+    }],
+}
 
 contextBridge.exposeInMainWorld("rollingSkill", {
     bootstrap: async () => ({
@@ -255,7 +283,8 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         return smokeDatasets.find((dataset) => dataset.id === datasetId)
     },
     listCases: async () => [smokeEvaluationCase],
-    listEvaluationRuns: async () => [],
+    listEvaluationRuns: async () => [smokeEvaluationRun],
+    getEvaluationRun: async () => smokeEvaluationRun,
     createCuration: async (input) => {
         lastCurationInput = input
         if (failNextCuration) {

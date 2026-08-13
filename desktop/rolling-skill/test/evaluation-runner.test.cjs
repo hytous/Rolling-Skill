@@ -179,6 +179,11 @@ describe("multi-runtime evaluation runner", () => {
 
         const running = runner.run(run)
         await new Promise((resolve) => setImmediate(resolve))
+        assert.equal(
+            events.filter(([, status]) => status === "case:q1").length,
+            2,
+            "both Runtime queues must start their first Case before either one resolves",
+        )
         assert.equal(resolvers.has("codex:a:q1"), true)
         assert.equal(resolvers.has("codebuddy:b:q1"), true)
         assert.equal(resolvers.has("codex:a:q2"), false)
@@ -346,6 +351,81 @@ describe("multi-runtime evaluation runner", () => {
         for (const id of ["result-1", "result-2"]) {
             assert.equal(resultPatches.get(id).status, "completed")
             assert.match(resultPatches.get(id).response, /^answer:q/)
+            assert.equal(resultPatches.get(id).gradingStatus, "skipped")
+            assert.match(resultPatches.get(id).gradingError, /cancelled by user/i)
+        }
+    })
+
+    it("cancels queued Judge work without grading it after the active Judge is stopped", async () => {
+        const resultPatches = new Map()
+        let firstJudgeStarted
+        const started = new Promise((resolve) => {
+            firstJudgeStarted = resolve
+        })
+        let rejectJudge
+        let judgeCalls = 0
+        const runner = new EvaluationRunner({
+            store: {
+                updateEvaluationRun() {},
+                updateEvaluationResult(_runId, resultId, patch) {
+                    resultPatches.set(resultId, {...resultPatches.get(resultId), ...patch})
+                },
+                getEvaluationRun: () => ({id: "run-cancel-judge-queue", status: "cancelled"}),
+            },
+            runtimeRegistry: {
+                createClient(descriptor) {
+                    if (descriptor.runtimeId === "judge") {
+                        return {
+                            start: async () => {},
+                            runEvaluationJudge() {
+                                judgeCalls += 1
+                                firstJudgeStarted()
+                                return new Promise((_resolve, reject) => {
+                                    rejectJudge = reject
+                                })
+                            },
+                            async stop() {
+                                rejectJudge?.(new Error("judge stopped"))
+                            },
+                        }
+                    }
+                    return {
+                        start: async () => {},
+                        runEvaluationCase: async ({question}) => ({
+                            response: `answer:${question}`,
+                            durationMs: 1,
+                        }),
+                        stop: async () => {},
+                    }
+                },
+            },
+            workspaceRoot: "/workspace",
+            traceDirectory: "/traces",
+        })
+        const run = {
+            id: "run-cancel-judge-queue",
+            activationMode: "automatic",
+            judgeConfiguration: {runtimeId: "judge", providerId: "codex", executablePath: "/judge"},
+            runtimeConfigurations: [
+                {runtimeId: "target", providerId: "codex", executablePath: "/target"},
+            ],
+            results: ["q1", "q2", "q3"].map((question, index) => ({
+                id: `result-${index + 1}`,
+                runtimeId: "target",
+                status: "queued",
+                gradingStatus: "awaiting_execution",
+                caseSnapshot: curatedCase(`case-${index + 1}`, question),
+            })),
+        }
+
+        const operation = runner.run(run)
+        await started
+        await runner.cancel(run.id)
+        await operation
+
+        assert.equal(judgeCalls, 1)
+        for (const id of ["result-1", "result-2", "result-3"]) {
+            assert.equal(resultPatches.get(id).status, "completed")
             assert.equal(resultPatches.get(id).gradingStatus, "skipped")
             assert.match(resultPatches.get(id).gradingError, /cancelled by user/i)
         }
@@ -536,36 +616,68 @@ describe("multi-runtime evaluation runner", () => {
         })
     })
 
-    it("uses an independent read-only Judge after every target execution has finished", async () => {
+    it("starts the independent read-only Judge as soon as a result finishes and waits for grading to drain", async () => {
         const resultPatches = new Map()
         const events = []
-        let remainingTargets = 2
-        let judgeCreatedWhileTargetsRunning = false
+        let releaseSlowTarget
+        let releaseFirstJudge
+        let slowTargetCompleted = false
+        let firstJudgeCompleted = false
+        let firstJudgeStarted
+        const judgeStarted = new Promise((resolve) => {
+            firstJudgeStarted = resolve
+        })
         let judgeClientOptions = null
         const cases = [curatedCase("case-1", "q1"), curatedCase("case-2", "q2")]
-        const targetClient = {
-            start: async () => {},
-            async runEvaluationCase({question}) {
-                events.push(`target:${question}`)
-                remainingTargets -= 1
-                return {
-                    response: `answer:${question}`,
-                    durationMs: 10,
-                    traceReference: `trace://${question}`,
-                    traceEvidence: {
-                        schemaVersion: "rolling-skill-trace-evidence/v1",
-                        reference: `trace://${question}`,
-                        entries: [{sequence: question === "q1" ? 1 : 2}],
-                        truncated: false,
-                        omittedEntries: 0,
-                        digest: `sha256:${"a".repeat(64)}`,
-                    },
-                }
+        const targetClients = {
+            "target:fast": {
+                start: async () => events.push("target:fast:start"),
+                async runEvaluationCase({question}) {
+                    events.push(`target:fast:${question}`)
+                    return {
+                        response: `answer:${question}`,
+                        durationMs: 10,
+                        traceReference: `trace://${question}`,
+                        traceEvidence: {
+                            schemaVersion: "rolling-skill-trace-evidence/v1",
+                            reference: `trace://${question}`,
+                            entries: [{sequence: 1}],
+                            truncated: false,
+                            omittedEntries: 0,
+                            digest: `sha256:${"a".repeat(64)}`,
+                        },
+                    }
+                },
+                stop: async () => events.push("target:fast:stop"),
             },
-            stop: async () => events.push("target:stop"),
+            "target:slow": {
+                start: async () => events.push("target:slow:start"),
+                runEvaluationCase({question}) {
+                    events.push(`target:slow:${question}`)
+                    return new Promise((resolve) => {
+                        releaseSlowTarget = () => {
+                            slowTargetCompleted = true
+                            resolve({
+                                response: `answer:${question}`,
+                                durationMs: 11,
+                                traceReference: `trace://${question}`,
+                                traceEvidence: {
+                                    schemaVersion: "rolling-skill-trace-evidence/v1",
+                                    reference: `trace://${question}`,
+                                    entries: [{sequence: 2}],
+                                    truncated: false,
+                                    omittedEntries: 0,
+                                    digest: `sha256:${"b".repeat(64)}`,
+                                },
+                            })
+                        }
+                    })
+                },
+                stop: async () => events.push("target:slow:stop"),
+            },
         }
         const judgeClient = {
-            start: async () => events.push("judge:start"),
+            start: async () => {},
             async runEvaluationJudge({prompt, modelId, effort}) {
                 events.push("judge:run")
                 assert.match(prompt, /answer:q[12]/)
@@ -574,6 +686,15 @@ describe("multi-runtime evaluation runner", () => {
                 const caseEntry = prompt.includes("answer:q1") ? cases[0] : cases[1]
                 const contract = contractFromPrompt(prompt)
                 const judgment = passingJudge(caseEntry, contract)
+                if (caseEntry.id === "case-1") {
+                    firstJudgeStarted()
+                    await new Promise((resolve) => {
+                        releaseFirstJudge = () => {
+                            firstJudgeCompleted = true
+                            resolve()
+                        }
+                    })
+                }
                 return {
                     response: JSON.stringify(judgment),
                     threadId: `judge-${caseEntry.id}`,
@@ -593,11 +714,10 @@ describe("multi-runtime evaluation runner", () => {
             runtimeRegistry: {
                 createClient(descriptor, options) {
                     if (descriptor.runtimeId === "judge:one") {
-                        judgeCreatedWhileTargetsRunning = remainingTargets !== 0
                         judgeClientOptions = options
                         return judgeClient
                     }
-                    return targetClient
+                    return targetClients[descriptor.runtimeId]
                 },
             },
             workspaceRoot: "/workspace",
@@ -615,25 +735,41 @@ describe("multi-runtime evaluation runner", () => {
                 effort: "high",
             },
             runtimeConfigurations: [
-                {runtimeId: "target:one", providerId: "codex", executablePath: "/target", skillEvidenceBinding: "verified"},
+                {runtimeId: "target:fast", providerId: "codex", executablePath: "/target-fast", skillEvidenceBinding: "verified"},
+                {runtimeId: "target:slow", providerId: "codex", executablePath: "/target-slow", skillEvidenceBinding: "verified"},
             ],
             results: cases.map((caseSnapshot, index) => ({
                 id: `result-${index + 1}`,
-                runtimeId: "target:one",
+                runtimeId: index === 0 ? "target:fast" : "target:slow",
                 status: "queued",
                 caseSnapshot,
             })),
         }
 
-        const completed = await runner.run(run)
+        let runSettled = false
+        const operation = runner.run(run).finally(() => {
+            runSettled = true
+        })
+        await Promise.race([
+            judgeStarted,
+            new Promise((resolve) => setImmediate(resolve)),
+        ])
+        assert.equal(typeof releaseFirstJudge, "function", "Judge should start while the slow Runtime is still running")
 
-        assert.equal(completed.status, "completed")
-        assert.equal(judgeCreatedWhileTargetsRunning, false)
+        assert.equal(slowTargetCompleted, false, "Judge should start before the slow Runtime finishes")
+        assert.equal(runSettled, false)
         assert.deepEqual(judgeClientOptions.executionPolicy, {
             sandbox: "read-only",
             approvalPolicy: "never",
         })
-        assert.equal(events.indexOf("target:stop") < events.indexOf("judge:start"), true)
+        releaseFirstJudge()
+        while (!firstJudgeCompleted) await new Promise((resolve) => setImmediate(resolve))
+        assert.equal(runSettled, false, "Run should still wait for unfinished target execution")
+        releaseSlowTarget()
+
+        const completed = await operation
+
+        assert.equal(completed.status, "completed")
         assert.equal(events.filter((event) => event === "judge:run").length, 2)
         for (const id of ["result-1", "result-2"]) {
             const saved = resultPatches.get(id)

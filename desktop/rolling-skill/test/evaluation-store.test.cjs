@@ -422,6 +422,7 @@ describe("evaluation data lifecycle", () => {
         })
         assert.equal(run.runtimeConfigurations[0].skillEvidenceBinding, "unverified")
         assert.equal(run.runtimeConfigurations[1].skillEvidenceBinding, "unverified")
+        assert.equal(run.results.every((result) => result.gradingQueuedAt === null), true)
         assert.deepEqual(
             run.results.map((result) => ({
                 gradingStatus: result.gradingStatus,
@@ -431,7 +432,7 @@ describe("evaluation data lifecycle", () => {
                 judge: result.judge,
             })),
             Array.from({length: 4}, () => ({
-                gradingStatus: "queued",
+                gradingStatus: "awaiting_execution",
                 scoreContract: null,
                 judgment: null,
                 computedScore: null,
@@ -508,7 +509,7 @@ describe("evaluation data lifecycle", () => {
         )
         assert.equal(
             store.getEvaluationRun(run.id).results[1].gradingStatus,
-            "queued",
+            "awaiting_execution",
         )
         assert.throws(
             () =>

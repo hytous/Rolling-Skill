@@ -399,6 +399,17 @@ describe("local-first desktop surface", () => {
         assert.match(styles, /\.thread-row:hover\s+\.thread-action/)
     })
 
+    it("shows evaluation durations as minute-second values instead of raw milliseconds", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const formatter = source("renderer/evaluation-format.js")
+
+        assert.match(html, /<script src="evaluation-format\.js"><\/script>/)
+        assert.match(renderer, /formatEvaluationDuration\(result\.durationMs\)/)
+        assert.doesNotMatch(renderer, /result\.durationMs\}\s*ms/)
+        assert.match(formatter, /padStart\(2, "0"\)/)
+    })
+
     it("renders web and absolute local-path links with safe DOM nodes and narrow preload calls", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")

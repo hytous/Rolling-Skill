@@ -149,7 +149,10 @@ Skill execution failure; it is not equivalent to the automatic-trigger score. Do
 `/skill` to automatic-trigger cases.
 
 Different runtime configurations execute concurrently; Cases remain sequential within each runtime
-to keep provider state isolated and predictable. Every run snapshots its dataset, Cases, Skill,
+to keep provider state isolated and predictable. Each completed target result immediately enters a
+separate, single-worker Judge queue, so grading overlaps later target execution instead of waiting
+for the slowest runtime to finish. A run completes only after both the runtime queues and the Judge
+queue drain. Every run snapshots its dataset, Cases, Skill,
 runtime paths and versions, models, efforts, responses/errors, duration, session/thread identifiers,
 and Case-scoped Trace references. Deleting a current Case therefore does not damage historical
 evidence.
@@ -162,10 +165,12 @@ score itself; A passes at 48 points unless the activation gate fails. Layer B is
 Case-specific subjective assessment built from the Curator contract. It records verifiable fields,
 cross-checks, verification status, and Judge confidence, but never reverses the A verdict.
 
-Target execution, grading execution, and quality verdict remain separate states. Explicit activation
+Target execution, grading execution, and quality verdict remain separate states. A result first waits
+for target execution, then waits in the Judge queue, then moves through active and terminal grading
+states. Explicit activation
 runs are diagnostic: they retain A/B component scores but do not produce a formal total or pass/fail
-quality verdict. After every target
-client has stopped, one independently selected read-only Judge runtime grades the saved response,
+quality verdict. As each target result completes, one independently selected read-only Judge runtime
+grades the saved response,
 bounded Trace evidence, and a digest-pinned snapshot of the selected `SKILL.md` plus its recursively
 linked local Markdown references. A typed evidence catalog prevents positive A ratings from citing
 unrelated response or Trace entries when stronger activation, reference-read, command/tool, output,

@@ -10,6 +10,34 @@ const {snapshotSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 const SKILL_DRIFT_ERROR = "Skill changed after evaluation snapshot"
 const CANCELLATION_ERROR = "Evaluation cancelled by user"
 
+class AsyncTaskQueue {
+    constructor() {
+        this.items = []
+        this.waiters = []
+        this.closed = false
+    }
+
+    enqueue(item) {
+        if (this.closed) return false
+        const waiter = this.waiters.shift()
+        if (waiter) waiter(item)
+        else this.items.push(item)
+        return true
+    }
+
+    next() {
+        if (this.items.length) return Promise.resolve(this.items.shift())
+        if (this.closed) return Promise.resolve(null)
+        return new Promise((resolve) => this.waiters.push(resolve))
+    }
+
+    close() {
+        if (this.closed) return
+        this.closed = true
+        for (const waiter of this.waiters.splice(0)) waiter(null)
+    }
+}
+
 function runtimeDescriptor(configuration = {}) {
     return {
         runtimeId: configuration.runtimeId,
@@ -96,8 +124,13 @@ class EvaluationRunner {
                 (run.results ?? []).map((result) => [result.id, result.status ?? "queued"]),
             ),
             gradingStates: new Map(
-                (run.results ?? []).map((result) => [result.id, result.gradingStatus ?? "queued"]),
+                (run.results ?? []).map((result) => [
+                    result.id,
+                    result.gradingStatus ??
+                        (result.status === "completed" ? "queued" : "awaiting_execution"),
+                ]),
             ),
+            gradingQueue: new AsyncTaskQueue(),
             operation: null,
         }
         this.runControls.set(run.id, control)
@@ -114,17 +147,19 @@ class EvaluationRunner {
         const startedAt = new Date().toISOString()
         this.store.updateEvaluationRun(run.id, {status: "running", startedAt})
         this.onChanged({runId: run.id, status: "running"})
+        const gradingOperation = this.runGradingQueue(run, control.gradingQueue, control)
         const queues = run.runtimeConfigurations.map((configuration) =>
             this.runRuntimeQueue(run, configuration, control),
         )
-        const settled = await Promise.all(queues)
+        let settled
+        try {
+            settled = await Promise.all(queues)
+        } finally {
+            control.gradingQueue.close()
+        }
+        await gradingOperation
         const completedCount = settled.reduce((sum, entry) => sum + entry.completed, 0)
         const failedCount = settled.reduce((sum, entry) => sum + entry.failed, 0)
-        const completedResults = settled.flatMap((entry) => entry.completedResults)
-
-        if (!control.cancelRequested) {
-            await this.runGradingPhase(run, completedResults, control)
-        }
 
         if (control.cancelRequested) {
             this.cancelRemainingResults(run, control)
@@ -163,7 +198,6 @@ class EvaluationRunner {
         control.clients.add(client)
         let completed = 0
         let failed = 0
-        const completedResults = []
         try {
             await client.start()
             if (typeof client.runEvaluationCase !== "function") {
@@ -191,8 +225,15 @@ class EvaluationRunner {
                         effort: configuration.effort,
                     })
                     this.assertSkillSnapshotUnchanged(run)
+                    if (control.cancelRequested) {
+                        this.cancelExecutionResult(run, result, control)
+                        continue
+                    }
+                    const gradingQueuedAt = new Date().toISOString()
                     this.store.updateEvaluationResult(run.id, result.id, {
                         status: "completed",
+                        gradingStatus: "queued",
+                        gradingQueuedAt,
                         durationMs: output.durationMs,
                         response: output.response ?? "",
                         threadId: output.threadId ?? null,
@@ -202,9 +243,17 @@ class EvaluationRunner {
                         completedAt: new Date().toISOString(),
                     })
                     control.executionStates.set(result.id, "completed")
+                    control.gradingStates.set(result.id, "queued")
                     completed += 1
-                    completedResults.push({result, output})
-                    this.onChanged({runId: run.id, resultId: result.id, status: "completed"})
+                    const enqueued = control.gradingQueue.enqueue({result, output})
+                    if (!enqueued) this.cancelGradingResult(run, result, control)
+                    this.onChanged({
+                        runId: run.id,
+                        resultId: result.id,
+                        status: "completed",
+                        phase: "grading",
+                        gradingStatus: enqueued ? "queued" : "skipped",
+                    })
                 } catch (error) {
                     if (control.cancelRequested) {
                         this.cancelExecutionResult(run, result, control)
@@ -252,55 +301,55 @@ class EvaluationRunner {
             await this.stopClient(client)
             control.clients.delete(client)
         }
-        return {completed, failed, completedResults}
+        return {completed, failed}
     }
 
-    async runGradingPhase(run, completedResults, control) {
-        if (!completedResults.length) return
-        if (control.cancelRequested) {
-            for (const entry of completedResults) this.cancelGradingResult(run, entry.result, control)
-            return
-        }
+    async runGradingQueue(run, queue, control) {
         const configuration = judgeConfigurationForRun(run)
-        if (!configuration?.runtimeId || !configuration.providerId || !configuration.executablePath) {
-            for (const entry of completedResults) {
-                this.failGrading(run, entry.result, configuration ?? {}, new Error(
-                    "An independent Judge runtime configuration is required",
-                ))
-            }
-            return
-        }
-
-        let client
+        let client = null
+        let startupError = null
         try {
-            client = this.runtimeRegistry.createClient(runtimeDescriptor(configuration), {
-                workspaceRoot: this.workspaceRoot,
-                traceDirectory: this.traceDirectory,
-                executionPolicy: {sandbox: "read-only", approvalPolicy: "never"},
-            })
-            this.activeClients.add(client)
-            control.clients.add(client)
-            await client.start()
-            if (typeof client.runEvaluationJudge !== "function") {
-                throw new Error("The selected runtime does not support evaluation judging")
-            }
-        } catch (error) {
-            if (client) await this.stopClient(client)
-            if (client) control.clients.delete(client)
-            if (control.cancelRequested) {
-                for (const entry of completedResults) this.cancelGradingResult(run, entry.result, control)
-                return
-            }
-            for (const entry of completedResults) {
-                this.failGrading(run, entry.result, configuration, error)
-            }
-            return
-        }
-
-        try {
-            for (const entry of completedResults) {
+            while (true) {
+                const entry = await queue.next()
+                if (!entry) break
                 if (control.cancelRequested) {
                     this.cancelGradingResult(run, entry.result, control)
+                    continue
+                }
+                if (!configuration?.runtimeId || !configuration.providerId || !configuration.executablePath) {
+                    this.failGrading(run, entry.result, configuration ?? {}, new Error(
+                        "An independent Judge runtime configuration is required",
+                    ))
+                    control.gradingStates.set(entry.result.id, "failed")
+                    continue
+                }
+                if (!client && !startupError) {
+                    try {
+                        client = this.runtimeRegistry.createClient(runtimeDescriptor(configuration), {
+                            workspaceRoot: this.workspaceRoot,
+                            traceDirectory: this.traceDirectory,
+                            executionPolicy: {sandbox: "read-only", approvalPolicy: "never"},
+                        })
+                        this.activeClients.add(client)
+                        control.clients.add(client)
+                        await client.start()
+                        if (typeof client.runEvaluationJudge !== "function") {
+                            throw new Error("The selected runtime does not support evaluation judging")
+                        }
+                    } catch (error) {
+                        startupError = error
+                        if (client) await this.stopClient(client)
+                        if (client) control.clients.delete(client)
+                        client = null
+                    }
+                }
+                if (control.cancelRequested) {
+                    this.cancelGradingResult(run, entry.result, control)
+                    continue
+                }
+                if (startupError) {
+                    this.failGrading(run, entry.result, configuration, startupError)
+                    control.gradingStates.set(entry.result.id, "failed")
                     continue
                 }
                 await this.gradeCompletedResult({
@@ -313,8 +362,8 @@ class EvaluationRunner {
                 })
             }
         } finally {
-            await this.stopClient(client)
-            control.clients.delete(client)
+            if (client) await this.stopClient(client)
+            if (client) control.clients.delete(client)
         }
     }
 
@@ -519,6 +568,7 @@ class EvaluationRunner {
         }
         if (!control.cancelRequested) {
             control.cancelRequested = true
+            control.gradingQueue.close()
             await Promise.all([...control.clients].map((client) => this.stopClient(client)))
         }
         const outcome = await control.operation
@@ -528,7 +578,10 @@ class EvaluationRunner {
     }
 
     async stopAll() {
-        for (const control of this.runControls.values()) control.cancelRequested = true
+        for (const control of this.runControls.values()) {
+            control.cancelRequested = true
+            control.gradingQueue.close()
+        }
         await Promise.all([...this.activeClients].map((client) => this.stopClient(client)))
         await Promise.allSettled([...this.running.values()])
     }

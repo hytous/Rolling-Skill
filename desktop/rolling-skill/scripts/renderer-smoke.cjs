@@ -124,6 +124,15 @@ async function run() {
     if (!datasetBinding.createSkill) {
         throw new Error("Dataset creation did not require an enabled Skill")
     }
+    await inspect(window, 'document.querySelector("[data-evaluation-view=runs]").click()')
+    await waitFor(window, 'document.querySelector("[data-evaluation-run-id=run-smoke]")')
+    const evaluationDuration = await inspect(
+        window,
+        'document.querySelector("#evaluation-run-detail")?.textContent',
+    )
+    if (!evaluationDuration.includes("1:05") || evaluationDuration.includes("65000 ms")) {
+        throw new Error(`Evaluation duration did not use minute-second format: ${evaluationDuration}`)
+    }
     await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
 
     await inspect(window, 'document.querySelector("#topbar-curations").click()')
@@ -495,7 +504,8 @@ async function run() {
             emptyArchiveLoadCancelled: true,
             staleRuntimeModelsIgnored: true,
             inlineCurationFailure: true,
-            caseCardUsesInitialQuestion: true,
+        caseCardUsesInitialQuestion: true,
+        evaluationDurationMinuteSecond: true,
             curatorLiveActivity: true,
             curatorReferenceCard: true,
             curatorDraftRemainsSaveable: true,

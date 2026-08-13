@@ -1,4 +1,5 @@
 const commandActivity = globalThis.RollingSkillCommandActivity
+const {formatEvaluationDuration} = globalThis.RollingSkillEvaluationFormat
 
 const translations = {
     en: {
@@ -223,6 +224,7 @@ const translations = {
         executionStatus: "Execution",
         gradingStatus: "Grading",
         gradingQueued: "Waiting to grade",
+        gradingAwaitingExecution: "Waiting for execution result",
         gradingRunning: "Judge is grading",
         gradingCompleted: "Grading completed",
         gradingFailed: "Grading failed",
@@ -545,6 +547,7 @@ const translations = {
         executionStatus: "执行状态",
         gradingStatus: "判分状态",
         gradingQueued: "等待判分",
+        gradingAwaitingExecution: "等待执行结果",
         gradingRunning: "Judge 判分中",
         gradingCompleted: "判分完成",
         gradingFailed: "判分失败",
@@ -2725,6 +2728,7 @@ function renderEvaluationRuntimeConfigurations(skill) {
 function gradingStatusLabel(status) {
     return t(
         {
+            awaiting_execution: "gradingAwaitingExecution",
             queued: "gradingQueued",
             running: "gradingRunning",
             completed: "gradingCompleted",
@@ -3065,7 +3069,7 @@ function renderEvaluationRuns() {
             `${t("executionStatus")} · ${evaluationRunStatusLabel(result.status)}`,
         )
         executionStatus.title = t("executionStatus")
-        const hasGradingData = ["queued", "running", "completed", "failed", "skipped"].includes(
+        const hasGradingData = ["awaiting_execution", "queued", "running", "completed", "failed", "skipped"].includes(
             result.gradingStatus,
         )
         const gradingStatus = hasGradingData ? result.gradingStatus : null
@@ -3085,7 +3089,9 @@ function renderEvaluationRuns() {
                 [
                     result.runtimeConfiguration?.modelId || t("runtimeDefault"),
                     result.runtimeConfiguration?.effort || t("runtimeDefaultEffort"),
-                    result.durationMs === null ? null : `${result.durationMs} ms`,
+                    result.durationMs === null || result.durationMs === undefined
+                        ? null
+                        : formatEvaluationDuration(result.durationMs),
                 ].filter(Boolean).join(" · "),
             ),
         )

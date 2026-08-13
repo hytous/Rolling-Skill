@@ -12,7 +12,7 @@ const {randomUUID} = require("node:crypto")
 const {formatCuratedAnswer, validateCuratorDraft} = require("./episode-curation.cjs")
 const {validateSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 
-const LOCAL_SCHEMA = "rolling-skill-local/v7"
+const LOCAL_SCHEMA = "rolling-skill-local/v8"
 const CURATION_STATUSES = new Set([
     "queued",
     "running",
@@ -50,6 +50,7 @@ const EVALUATION_RESULT_STATUSES = new Set([
 ])
 const EVALUATION_GRADING_STATUSES = new Set([
     "not_requested",
+    "awaiting_execution",
     "queued",
     "running",
     "completed",
@@ -303,7 +304,7 @@ function migrateState(input) {
                 else if (result.status === "failed" || result.status === "cancelled") {
                     result.gradingStatus = "skipped"
                 }
-                else if (result.status === "queued") result.gradingStatus = "queued"
+                else if (result.status === "queued") result.gradingStatus = "awaiting_execution"
                 else result.gradingStatus = "not_requested"
                 changed = true
             }
@@ -322,6 +323,10 @@ function migrateState(input) {
                     result[field] = null
                     changed = true
                 }
+            }
+            if (!("gradingQueuedAt" in result)) {
+                result.gradingQueuedAt = null
+                changed = true
             }
         }
     }
@@ -1092,12 +1097,13 @@ class LocalEvaluationStore {
                     caseSnapshot: copy(caseSnapshot),
                     runtimeConfiguration: copy(configuration),
                     status: "queued",
-                    gradingStatus: "queued",
+                    gradingStatus: "awaiting_execution",
                     scoreContract: null,
                     judgment: null,
                     computedScore: null,
                     judge: null,
                     gradingError: null,
+                    gradingQueuedAt: null,
                     gradingStartedAt: null,
                     gradingCompletedAt: null,
                     durationMs: null,
@@ -1187,7 +1193,11 @@ class LocalEvaluationStore {
                 result.error = cancellationError
                 result.completedAt = now
             }
-            if (result.gradingStatus === "queued" || result.gradingStatus === "running") {
+            if (
+                result.gradingStatus === "awaiting_execution" ||
+                result.gradingStatus === "queued" ||
+                result.gradingStatus === "running"
+            ) {
                 result.gradingStatus = "skipped"
                 result.gradingError = cancellationError
                 result.gradingCompletedAt = now
@@ -1264,6 +1274,7 @@ class LocalEvaluationStore {
             "startedAt",
             "completedAt",
             "gradingError",
+            "gradingQueuedAt",
             "gradingStartedAt",
             "gradingCompletedAt",
         ]) {
