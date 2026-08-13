@@ -144,8 +144,9 @@
                                     <strong id="evaluation-dataset-count">0</strong>
                                 </div>
                             </div>
-                            <form id="evaluation-create-dataset" class="evaluation-create-row">
+                            <form id="evaluation-create-dataset" class="evaluation-create-row dataset-create-form">
                                 <input id="evaluation-new-dataset-name" type="text" maxlength="100" data-i18n-placeholder="createDataset" placeholder="Create a new dataset" />
+                                <select id="evaluation-new-dataset-skill" required aria-label="Dataset Skill"></select>
                                 <button type="submit" title="Create dataset">＋</button>
                             </form>
                             <nav id="evaluation-dataset-list" class="evaluation-dataset-list"></nav>
@@ -169,11 +170,11 @@
                                     <strong data-i18n="runtimePreflight">Runtime preflight</strong>
                                 </div>
                             </div>
-                            <label class="settings-field">
-                                <span data-i18n="skillUnderTest">Skill under test</span>
-                                <select id="evaluation-skill"></select>
-                            </label>
-                            <div id="evaluation-skill-status" class="skill-preflight"></div>
+                            <div class="dataset-skill-heading">
+                                <span data-i18n="datasetSkill">Dataset Skill</span>
+                                <button id="change-evaluation-dataset-skill" type="button" data-i18n="changeSkill">Change Skill</button>
+                            </div>
+                            <div id="evaluation-dataset-skill-status" class="skill-preflight"></div>
                             <fieldset class="activation-mode">
                                 <legend data-i18n="activationMode">Activation mode</legend>
                                 <label>
@@ -386,10 +387,6 @@
                             <select id="settings-auto-capture-effort"></select>
                         </label>
                     </div>
-                    <label class="settings-field">
-                        <span data-i18n="captureSkill">Skill used by the Curator</span>
-                        <select id="settings-auto-capture-skill"></select>
-                    </label>
                     <div class="settings-grid">
                         <label class="settings-field">
                             <span data-i18n="destinationDataset">Destination dataset</span>
@@ -510,14 +507,15 @@
                 </label>
                 <div class="new-dataset-row">
                     <input id="new-dataset-name" type="text" placeholder="Create a new dataset" data-i18n-placeholder="createDataset" maxlength="100" />
+                    <select id="new-dataset-skill" required aria-label="Dataset Skill"></select>
                     <button id="create-dataset" type="button" data-i18n="create">Create</button>
                 </div>
 
-                <label class="field">
-                    <span data-i18n="skillUnderTest">Skill under test</span>
-                    <select id="case-skill" required></select>
-                </label>
-                <div id="case-skill-status" class="skill-preflight"></div>
+                <div class="dataset-skill-heading">
+                    <span data-i18n="datasetSkill">Dataset Skill</span>
+                    <button id="change-case-dataset-skill" type="button" data-i18n="changeSkill">Change Skill</button>
+                </div>
+                <div id="case-dataset-skill-status" class="skill-preflight"></div>
 
                 <fieldset class="case-type-field">
                     <legend data-i18n="classification">Classification</legend>
@@ -551,6 +549,29 @@
                     <span data-i18n="frozenCopyHelp">A frozen copy goes to Curator; the original task stays live.</span>
                     <button id="cancel-save-case" type="button" data-i18n="cancel">Cancel</button>
                     <button id="confirm-save-case" class="primary" type="submit" data-i18n="startCuration">Start curation</button>
+                </div>
+            </form>
+        </dialog>
+
+        <dialog id="dataset-skill-dialog" class="case-dialog confirm-dialog">
+            <form id="dataset-skill-form" class="confirm-dialog-body">
+                <div class="dialog-header">
+                    <div>
+                        <div class="drawer-eyebrow">DATASET SKILL</div>
+                        <h2 data-i18n="bindDatasetSkill">Bind dataset Skill</h2>
+                    </div>
+                    <button id="close-dataset-skill-dialog" class="icon-button large" type="button">×</button>
+                </div>
+                <p id="dataset-skill-dialog-copy"></p>
+                <label class="field">
+                    <span data-i18n="datasetSkill">Dataset Skill</span>
+                    <select id="dataset-skill-select" required></select>
+                </label>
+                <p class="field-help" data-i18n="datasetSkillHistoryHelp">Existing Cases and evaluation runs keep their frozen historical evidence.</p>
+                <div class="dialog-footer">
+                    <span></span>
+                    <button id="cancel-dataset-skill" type="button" data-i18n="cancel">Cancel</button>
+                    <button id="confirm-dataset-skill" class="primary" type="submit" data-i18n="save">Save</button>
                 </div>
             </form>
         </dialog>

@@ -7,6 +7,18 @@ const root = join(__dirname, "..")
 const source = (path) => readFileSync(join(root, path), "utf8")
 
 describe("desktop main/preload bridge", () => {
+    it("derives curation and evaluation Skills from dataset bindings", () => {
+        const main = source("src/main.cjs")
+        const preload = source("src/preload.cjs")
+
+        assert.match(main, /datasets:bind-skill/)
+        assert.match(preload, /bindDatasetSkill/)
+        assert.match(main, /const dataset = store\.getDataset\(/)
+        assert.match(main, /const skillReference = dataset\.skillReference/)
+        assert.doesNotMatch(main, /requireAbsolutePath\(input\.skillPath, "Skill"\)/)
+        assert.doesNotMatch(main, /input\.skillReference\?\.name/)
+    })
+
     it("exposes explicit evaluation cancellation separately from record deletion", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")

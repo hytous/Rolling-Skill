@@ -62,8 +62,8 @@ Open **Settings** in the lower-left sidebar to configure:
 - Codex Light (the default white-and-blue theme), Codex Dark, or the original Graphite theme;
 - Full local access (default) or Workspace only as the default for new Codex conversations;
 - the default model and reasoning effort for new tasks and Curator tasks; and
-- Automatic Capture, including its Curator model and effort, current runtime Skill, destination
-  dataset, and default case type.
+- Automatic Capture, including its Curator model and effort, Skill-bound destination dataset, and
+  default case type.
 
 All settings are stored locally. Automatic Capture remains disabled until explicitly enabled.
 Runtime selection, raw Trace access, and the local dataset file are also grouped in **Settings**.
@@ -129,6 +129,7 @@ Use the switch below the Rolling Skill logo to move between the native **Chat** 
 **Skill evaluation** workbench. The workbench can:
 
 - create, browse, and delete local datasets;
+- bind exactly one enabled runtime Skill to each dataset and repair or change that binding;
 - inspect original evaluation questions, optional answer-issue descriptions, and curated references;
 - delete a Case without invalidating older evaluation snapshots;
 - query a provider's path-precise Skill inventory when it exposes one;
@@ -178,6 +179,15 @@ A formal score also requires the target runtime's Skill inventory to confirm the
 path. Providers without path-precise inventory support still execute and retain A/B diagnostics, but
 produce no formal total or pass verdict; this prevents a different same-named Skill installation from
 being graded against the selected snapshot.
+
+The Skill is selected once at dataset creation rather than separately for each capture or run.
+Case capture, Curator, Automatic Capture, and evaluation all inherit the dataset binding. Rebinding
+affects only future work: existing Cases, Curator sessions, and evaluation-run snapshots retain
+their frozen historical evidence. A dataset cannot be rebound while a capture reservation or an
+unfinished Curator session exists. Legacy datasets migrate automatically only when their saved
+Case/Curator references agree on one exact Skill name and absolute path; conflicting or evidence-free
+datasets stay unbound until the operator repairs them. A missing or stale exact name+path is never
+displayed as ready and blocks new capture or evaluation.
 
 Deleting a dataset removes its current Cases and finished Curator records but preserves immutable
 evaluation-run snapshots. An unfinished Curator draft blocks dataset deletion. Only terminal
@@ -243,8 +253,8 @@ the UI.
 2. Start a new task or open an existing workspace-scoped task.
 3. Inspect the streamed conversation and raw local trace.
 4. Select **Curate case** beside the assistant message that ends the useful problem-solving episode.
-5. Choose the source user message where the episode begins, the enabled Skill under review, a
-   dataset, and `goodcase` or `badcase`. The optional answer-issue field starts empty and records
+5. Choose the source user message where the episode begins, a Skill-bound dataset, and `goodcase`
+   or `badcase`. The optional answer-issue field starts empty and records
    what went wrong in the captured Agent answer. It never changes the frozen original question
    used as the evaluation input.
 6. Select **Start curation**. Rolling Skill freezes the selected conversation/trace range while the
@@ -256,7 +266,8 @@ the UI.
    remove the item from active Case Drafts; archived history is available only in **Settings**.
 
 Before the Curator starts, Rolling Skill force-refreshes the selected runtime's Skill inventory and
-rejects a Skill that is missing or disabled. The Curator prompt names that Skill and requires the
+rejects the dataset binding if the exact Skill name and path are missing or disabled. The Curator
+prompt names that Skill and requires the
 agent to read the currently installed version as its evaluation rubric without executing the
 Skill's workflow. A runtime-native structured Skill reference pins the exact selected path when
 several installed Skills share a name. Rolling Skill does not copy or cache `SKILL.md`; the runtime
@@ -270,7 +281,7 @@ and expected recovery. Shell activity is grouped by CLI/subcommand (for example 
 `billing-cli cost query`) while repeated CLI and MCP calls are compacted with counts and status
 distributions.
 
-Automatic Capture is disabled by default. When enabled it requires a default enabled Skill and
+Automatic Capture is disabled by default. When enabled it requires a configured Skill-bound dataset and
 creates reviewable Case Drafts after completed assistant responses; it never saves them
 automatically. A missing or disabled Skill produces an explicit capture error instead of a
 Skill-less draft. No case is written until

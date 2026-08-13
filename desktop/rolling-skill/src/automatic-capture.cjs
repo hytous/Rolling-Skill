@@ -1,8 +1,15 @@
 class AutomaticCaptureManager {
-    constructor({store, curationManager, getTraceReference = () => null, onError = () => {}}) {
+    constructor({
+        store,
+        curationManager,
+        getTraceReference = () => null,
+        verifyDatasetSkill = async () => {},
+        onError = () => {},
+    }) {
         this.store = store
         this.curationManager = curationManager
         this.getTraceReference = getTraceReference
+        this.verifyDatasetSkill = verifyDatasetSkill
         this.onError = onError
         this.pending = new Set()
         this.completed = new Set()
@@ -27,23 +34,21 @@ class AutomaticCaptureManager {
             return false
         }
         const profile = settings.autoCaptureProfile
-        if (!profile.skillPath) {
+        const datasets = this.store.listDatasets()
+        const dataset = datasets.find((entry) => entry.id === profile.datasetId)
+        if (!dataset) {
             this.onError(
                 new Error(
-                    "Automatic capture Skill is not configured. Select an enabled Skill in Settings.",
+                    "Automatic capture dataset is not configured. Select a Skill-bound dataset in Settings.",
                 ),
             )
             return false
         }
-        const datasets = this.store.listDatasets()
-        const datasetId = datasets.some((dataset) => dataset.id === profile.datasetId)
-            ? profile.datasetId
-            : datasets[0]?.id
-        if (!datasetId) return false
         this.pending.add(key)
         try {
+            await this.verifyDatasetSkill(dataset)
             await this.curationManager.createSession({
-                datasetId,
+                datasetId: dataset.id,
                 caseType: profile.caseType ?? "goodcase",
                 sourceThreadId: params.threadId,
                 startItemId: null,
@@ -57,7 +62,6 @@ class AutomaticCaptureManager {
                 }),
                 modelId: profile.modelId,
                 ...(profile.effort ? {effort: profile.effort} : {}),
-                skillPath: profile.skillPath,
             })
             this.completed.add(key)
             return true

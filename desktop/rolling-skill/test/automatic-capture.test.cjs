@@ -13,10 +13,20 @@ afterEach(() => {
     for (const directory of directories.splice(0)) rmSync(directory, {recursive: true, force: true})
 })
 
-function fixture() {
+function fixture({verifyDatasetSkill = async () => {}} = {}) {
     const directory = mkdtempSync(join(tmpdir(), "rolling-skill-auto-capture-"))
     directories.push(directory)
     const store = new LocalEvaluationStore(join(directory, "store.json"))
+    const dataset = store.listDatasets()[0]
+    store.bindDatasetSkill(dataset.id, {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        name: "billing-cost-management",
+        path: "/Users/wangbaoheng/.codex/plugins/cache/openai-primary-runtime/template-creator/26.812.11052/skills/billing-cost-management/SKILL.md",
+        scope: "user",
+        description: "Billing Skill",
+        runtimeId: "codex:alpha",
+        confirmedAt: "2026-08-13T00:00:00.000Z",
+    })
     const created = []
     const hidden = new Set()
     const errors = []
@@ -31,6 +41,7 @@ function fixture() {
         store,
         curationManager,
         getTraceReference: ({threadId, endItemId}) => `trace://${threadId}#${endItemId}`,
+        verifyDatasetSkill,
         onError: (error) => errors.push(error),
     })
     return {store, created, hidden, errors, manager}
@@ -69,8 +80,6 @@ describe("automatic capture manager", () => {
             autoCaptureModelId: "gpt-5.6-terra",
             autoCaptureDatasetId: dataset.id,
             autoCaptureCaseType: "goodcase",
-            autoCaptureSkillName: "billing-cost-management",
-            autoCaptureSkillPath: "/runtime/skills/billing-cost-management/SKILL.md",
         })
 
         assert.equal(await manager.handleNotification(completion()), true)
@@ -85,28 +94,42 @@ describe("automatic capture manager", () => {
                 endMessagePosition: "last",
                 traceReference: "trace://thread-1#answer-1",
                 modelId: "gpt-5.6-terra",
-                skillPath: "/runtime/skills/billing-cost-management/SKILL.md",
             },
         ])
         assert.equal(await manager.handleNotification(completion()), false)
         assert.equal(created.length, 1)
     })
 
-    it("reports an explicit error instead of creating a draft without a configured Skill", async () => {
+    it("reports an explicit error instead of creating a draft without a configured dataset", async () => {
         const {store, created, errors, manager} = fixture()
         store.updateSettings({autoCapture: true})
 
         assert.equal(await manager.handleNotification(completion()), false)
         assert.deepEqual(created, [])
-        assert.match(errors[0].message, /Skill.*not configured/i)
+        assert.match(errors[0].message, /dataset.*not configured/i)
+    })
+
+    it("rejects a configured dataset whose bound Skill is no longer enabled", async () => {
+        const {store, created, errors, manager} = fixture({
+            verifyDatasetSkill: async () => {
+                throw new Error("Dataset Skill binding is stale")
+            },
+        })
+        store.updateSettings({
+            autoCapture: true,
+            autoCaptureDatasetId: store.listDatasets()[0].id,
+        })
+
+        assert.equal(await manager.handleNotification(completion()), false)
+        assert.deepEqual(created, [])
+        assert.match(errors[0].message, /skill.*stale/i)
     })
 
     it("ignores Curator threads", async () => {
         const {store, created, hidden, manager} = fixture()
         store.updateSettings({
             autoCapture: true,
-            autoCaptureSkillName: "billing-cost-management",
-            autoCaptureSkillPath: "/runtime/skills/billing-cost-management/SKILL.md",
+            autoCaptureDatasetId: store.listDatasets()[0].id,
         })
         hidden.add("curator-thread")
 

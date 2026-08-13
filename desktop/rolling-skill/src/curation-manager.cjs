@@ -79,28 +79,6 @@ function assistantTextFromTurn(turn) {
         .join("\n\n")
 }
 
-function resolveRuntimeSkill(response, skillPath, runtimeId = null) {
-    const selectedPath = String(skillPath ?? "")
-    for (const entry of response?.data ?? []) {
-        for (const skill of entry.skills ?? []) {
-            if (skill?.path !== selectedPath || !skill.enabled) continue
-            return {
-                schemaVersion: "rolling-skill-skill-reference/v1",
-                name: String(skill.name ?? "").trim(),
-                path: selectedPath,
-                scope: skill.scope ?? null,
-                description:
-                    skill.description ?? skill.interface?.shortDescription ?? null,
-                runtimeId,
-                confirmedAt: new Date().toISOString(),
-            }
-        }
-    }
-    throw new Error(
-        "The selected Skill is not installed and enabled in the current runtime and workspace",
-    )
-}
-
 class CurationManager {
     constructor({
         store,
@@ -209,21 +187,6 @@ class CurationManager {
         const runtime = await this.getRuntime()
         const response = await runtime.readThread(input.sourceThreadId)
         const runtimeDescriptor = this.getRuntimeDescriptor()
-        let skillReference = null
-        if (input.skillPath) {
-            if (typeof runtime.listSkills !== "function") {
-                throw new Error("The current runtime cannot verify the selected Skill")
-            }
-            const skills = await runtime.listSkills({forceReload: true})
-            skillReference = resolveRuntimeSkill(
-                skills,
-                input.skillPath,
-                runtimeDescriptor?.runtimeId ?? null,
-            )
-            if (!skillReference.name) {
-                throw new Error("The selected runtime Skill does not have a valid name")
-            }
-        }
         const curatorModelId = input.modelId ?? response.model ?? response.thread.model ?? null
         const episode = buildEpisodeSnapshot(response.thread, {
             startItemId: input.startItemId,
@@ -242,7 +205,6 @@ class CurationManager {
             caseType: input.caseType,
             issueDescription: input.issueDescription ?? "",
             episode,
-            skillReference,
             curator: {
                 runtimeId: runtimeDescriptor?.runtimeId ?? null,
                 modelProvider: response.thread.modelProvider ?? runtimeDescriptor?.providerId ?? null,
@@ -626,4 +588,4 @@ class CurationManager {
     }
 }
 
-module.exports = {CurationManager, retryPrompt, assistantTextFromTurn, resolveRuntimeSkill}
+module.exports = {CurationManager, retryPrompt, assistantTextFromTurn}

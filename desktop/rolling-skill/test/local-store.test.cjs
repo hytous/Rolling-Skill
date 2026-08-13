@@ -72,6 +72,18 @@ function curatedDraft() {
     }
 }
 
+function skillReference(path = "/skills/billing/SKILL.md", name = "billing-cost-management") {
+    return {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        name,
+        path,
+        scope: "user",
+        description: "Billing cost queries and analysis",
+        runtimeId: "codex-alpha",
+        confirmedAt: "2026-08-13T00:00:00.000Z",
+    }
+}
+
 describe("local evaluation store", () => {
     it("starts with manual capture disabled and a default dataset", () => {
         const {store} = fixture()
@@ -101,14 +113,89 @@ describe("local evaluation store", () => {
             effort: null,
             datasetId: null,
             caseType: "goodcase",
-            skillName: null,
-            skillPath: null,
         })
         assert.equal(snapshot.datasets.length, 1)
         assert.equal(snapshot.datasets[0].name, "Skill evaluation cases")
+        assert.equal(snapshot.datasets[0].skillReference, null)
         assert.deepEqual(snapshot.cases, [])
         assert.deepEqual(snapshot.curationSessions, [])
         assert.deepEqual(snapshot.evaluationRuns, [])
+    })
+
+    it("requires one Skill binding when a dataset is created", () => {
+        const {store} = fixture()
+
+        assert.throws(
+            () => store.createDataset({name: "Unbound", skillReference: null}),
+            /dataset.*skill|skill.*required/i,
+        )
+        const created = store.createDataset({
+            name: "Billing regression",
+            skillReference: skillReference(),
+        })
+
+        assert.deepEqual(created.skillReference, skillReference())
+        assert.deepEqual(store.getDataset(created.id).skillReference, skillReference())
+    })
+
+    it("migrates a unique legacy Case Skill to its dataset without rewriting the Case", () => {
+        const {path} = fixture()
+        const reference = skillReference()
+        writeFileSync(path, `${JSON.stringify({
+            schemaVersion: "rolling-skill-local/v6",
+            settings: {autoCapture: false},
+            datasets: [{id: "dataset-old", name: "Old", createdAt: "then"}],
+            cases: [{
+                id: "case-old",
+                datasetId: "dataset-old",
+                caseType: "goodcase",
+                question: "q",
+                answer: "a",
+                skillReference: reference,
+            }],
+            curationSessions: [],
+            evaluationRuns: [],
+        })}\n`)
+
+        const migrated = new LocalEvaluationStore(path).read()
+
+        assert.equal(migrated.schemaVersion, "rolling-skill-local/v7")
+        assert.deepEqual(migrated.datasets[0].skillReference, reference)
+        assert.deepEqual(migrated.cases[0].skillReference, reference)
+    })
+
+    it("leaves a legacy dataset unbound when its Case Skills conflict", () => {
+        const {path} = fixture()
+        writeFileSync(path, `${JSON.stringify({
+            schemaVersion: "rolling-skill-local/v6",
+            settings: {autoCapture: false},
+            datasets: [{id: "dataset-old", name: "Old", createdAt: "then"}],
+            cases: [
+                {id: "one", datasetId: "dataset-old", skillReference: skillReference("/skills/a/SKILL.md", "a")},
+                {id: "two", datasetId: "dataset-old", skillReference: skillReference("/skills/b/SKILL.md", "b")},
+            ],
+            curationSessions: [],
+            evaluationRuns: [],
+        })}\n`)
+
+        const migrated = new LocalEvaluationStore(path).read()
+
+        assert.equal(migrated.datasets[0].skillReference, null)
+    })
+
+    it("copies the dataset Skill into a Curator session and ignores caller overrides", () => {
+        const {store} = fixture()
+        const dataset = store.bindDatasetSkill(store.listDatasets()[0].id, skillReference())
+
+        const session = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            episode: episode(),
+            skillReference: skillReference("/skills/wrong/SKILL.md", "wrong"),
+            curator: {},
+        })
+
+        assert.deepEqual(session.skillReference, skillReference())
     })
 
     it("stores an optional Curator model override without enabling automatic capture", () => {
@@ -137,8 +224,6 @@ describe("local evaluation store", () => {
             autoCaptureModelId: " gpt-5.6-terra ",
             autoCaptureDatasetId: dataset.id,
             autoCaptureCaseType: "badcase",
-            autoCaptureSkillName: "billing-cost-management",
-            autoCaptureSkillPath: "/runtime/skills/billing-cost-management/SKILL.md",
         })
 
         assert.equal(settings.language, "en")
@@ -157,8 +242,6 @@ describe("local evaluation store", () => {
             effort: null,
             datasetId: dataset.id,
             caseType: "badcase",
-            skillName: "billing-cost-management",
-            skillPath: "/runtime/skills/billing-cost-management/SKILL.md",
         })
         assert.throws(() => store.updateSettings({language: "fr"}), /language/i)
         assert.throws(() => store.updateSettings({theme: "neon"}), /theme/i)
@@ -193,6 +276,7 @@ describe("local evaluation store", () => {
     it("atomically persists a classified case with full local provenance", () => {
         const {path, store} = fixture()
         const dataset = store.read().datasets[0]
+        store.bindDatasetSkill(dataset.id, skillReference())
         const saved = store.saveCase({
             datasetId: dataset.id,
             caseType: "badcase",
@@ -227,6 +311,7 @@ describe("local evaluation store", () => {
             /dataset/i,
         )
         const dataset = store.read().datasets[0]
+        store.bindDatasetSkill(dataset.id, skillReference())
         assert.throws(
             () =>
                 store.saveCase({
@@ -261,7 +346,7 @@ describe("local evaluation store", () => {
 
     it("creates named datasets and reports counts", () => {
         const {store} = fixture()
-        const dataset = store.createDataset("Billing Skill regression")
+        const dataset = store.createDataset({name: "Billing Skill regression", skillReference: skillReference()})
         store.saveCase({
             datasetId: dataset.id,
             caseType: "goodcase",
@@ -276,8 +361,8 @@ describe("local evaluation store", () => {
 
     it("lists the curated cases that belong to one dataset", () => {
         const {store} = fixture()
-        const first = store.createDataset("First")
-        const second = store.createDataset("Second")
+        const first = store.createDataset({name: "First", skillReference: skillReference()})
+        const second = store.createDataset({name: "Second", skillReference: skillReference()})
         const saved = store.saveCase({
             datasetId: first.id,
             caseType: "goodcase",
@@ -308,7 +393,7 @@ describe("local evaluation store", () => {
         )
         const migrated = new LocalEvaluationStore(path).read()
 
-        assert.equal(migrated.schemaVersion, "rolling-skill-local/v6")
+        assert.equal(migrated.schemaVersion, "rolling-skill-local/v7")
         assert.equal(migrated.cases[0].id, "case-old")
         assert.deepEqual(migrated.curationSessions, [])
         assert.equal(migrated.settings.curatorProfile.runtimePolicy, "active")
@@ -457,6 +542,7 @@ describe("local evaluation store", () => {
     it("preserves an optional issue description and accepts blank input", () => {
         const {store} = fixture()
         const dataset = store.read().datasets[0]
+        store.bindDatasetSkill(dataset.id, skillReference())
         const issueDescription = "  回答遗漏了两个业务线  \n"
 
         const session = store.createCurationSession({
@@ -481,20 +567,12 @@ describe("local evaluation store", () => {
     it("persists a reviewable curation conversation and archives one approved revision", () => {
         const {store} = fixture()
         const dataset = store.read().datasets[0]
+        store.bindDatasetSkill(dataset.id, skillReference())
         const question = "帮我随便看看这个账单呗？  别漏啦"
         const session = store.createCurationSession({
             datasetId: dataset.id,
             caseType: "goodcase",
             episode: episode(question),
-            skillReference: {
-                schemaVersion: "rolling-skill-skill-reference/v1",
-                name: "billing-cost-management",
-                path: "/runtime/skills/billing-cost-management/SKILL.md",
-                scope: "user",
-                description: "Billing cost queries and analysis",
-                runtimeId: "codex-alpha",
-                confirmedAt: "2026-08-11T00:00:00.000Z",
-            },
             curator: {
                 runtimeId: "codex:curator",
                 modelProvider: "openai",
@@ -553,6 +631,7 @@ describe("local evaluation store", () => {
     it("does not archive a curation session before a valid draft exists", () => {
         const {store} = fixture()
         const dataset = store.read().datasets[0]
+        store.bindDatasetSkill(dataset.id, skillReference())
         const session = store.createCurationSession({
             datasetId: dataset.id,
             caseType: "badcase",
@@ -567,6 +646,7 @@ describe("local evaluation store", () => {
     it("changes an editable Curator model and cancels a discarded draft without saving a case", () => {
         const {store} = fixture()
         const dataset = store.read().datasets[0]
+        store.bindDatasetSkill(dataset.id, skillReference())
         const session = store.createCurationSession({
             datasetId: dataset.id,
             caseType: "goodcase",

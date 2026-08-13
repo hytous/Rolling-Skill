@@ -13,8 +13,6 @@ const settings = {
         effort: null,
         datasetId: null,
         caseType: "goodcase",
-        skillName: null,
-        skillPath: null,
     },
 }
 
@@ -160,6 +158,23 @@ const curationChangedListeners = new Set()
 const curationActivityListeners = new Set()
 const modelDelayByRuntime = new Map()
 let currentRuntimeId = "codex:renderer-smoke"
+const smokeSkillReference = {
+    schemaVersion: "rolling-skill-skill-reference/v1",
+    name: "billing-cost-management",
+    path: "/tmp/rolling-skill-renderer-smoke/billing-cost-management/SKILL.md",
+    scope: "user",
+    description: "Smoke Skill",
+    runtimeId: "codex:renderer-smoke",
+    confirmedAt: "2026-08-13T00:00:00.000Z",
+}
+let smokeDatasets = [{
+    id: "dataset-smoke",
+    name: "Smoke Dataset",
+    caseCount: 1,
+    goodcaseCount: 1,
+    badcaseCount: 0,
+    skillReference: smokeSkillReference,
+}]
 
 contextBridge.exposeInMainWorld("rollingSkill", {
     bootstrap: async () => ({
@@ -177,7 +192,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
             availableRuntimes: [],
         },
         workspaceRoot: "/tmp/rolling-skill-renderer-smoke",
-        datasets: [{id: "dataset-smoke", name: "Smoke Dataset", caseCount: 1}],
+        datasets: smokeDatasets,
         curationSessions: [smokeCurationSession],
         settings,
     }),
@@ -220,13 +235,25 @@ contextBridge.exposeInMainWorld("rollingSkill", {
             }],
         }],
     }),
-    listDatasets: async () => [{
-        id: "dataset-smoke",
-        name: "Smoke Dataset",
-        caseCount: 1,
-        goodcaseCount: 1,
-        badcaseCount: 0,
-    }],
+    listDatasets: async () => smokeDatasets,
+    createDataset: async ({name, skillReference}) => {
+        const dataset = {
+            id: `dataset-smoke-${smokeDatasets.length + 1}`,
+            name,
+            caseCount: 0,
+            goodcaseCount: 0,
+            badcaseCount: 0,
+            skillReference,
+        }
+        smokeDatasets = [...smokeDatasets, dataset]
+        return dataset
+    },
+    bindDatasetSkill: async (datasetId, skillReference) => {
+        smokeDatasets = smokeDatasets.map((dataset) =>
+            dataset.id === datasetId ? {...dataset, skillReference} : dataset,
+        )
+        return smokeDatasets.find((dataset) => dataset.id === datasetId)
+    },
     listCases: async () => [smokeEvaluationCase],
     listEvaluationRuns: async () => [],
     createCuration: async (input) => {

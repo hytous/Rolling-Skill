@@ -113,6 +113,17 @@ async function run() {
     if (caseCard.title.includes("用户后来对这个 Case 的评价")) {
         throw new Error("Case card used the later user review as its title")
     }
+    const datasetBinding = await inspect(window, `(() => ({
+        operationSkill: Boolean(document.querySelector("#evaluation-skill")),
+        status: document.querySelector("#evaluation-dataset-skill-status")?.textContent,
+        createSkill: document.querySelector("#evaluation-new-dataset-skill")?.value,
+    }))()`)
+    if (datasetBinding.operationSkill || !datasetBinding.status.includes("billing-cost-management")) {
+        throw new Error("Evaluation did not inherit and display the dataset Skill binding")
+    }
+    if (!datasetBinding.createSkill) {
+        throw new Error("Dataset creation did not require an enabled Skill")
+    }
     await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
 
     await inspect(window, 'document.querySelector("#topbar-curations").click()')
@@ -278,9 +289,6 @@ async function run() {
         throw new Error("The optional issue description was prefilled from the source question")
     }
     await inspect(window, `(() => {
-        const skill = document.querySelector("#case-skill")
-        skill.value = "/tmp/rolling-skill-renderer-smoke/billing-cost-management/SKILL.md"
-        skill.dispatchEvent(new Event("change", {bubbles: true}))
         const issue = document.querySelector("#case-issue-description")
         issue.value = "  \\n\\t"
         issue.dispatchEvent(new Event("input", {bubbles: true}))
@@ -318,6 +326,9 @@ async function run() {
     }
     if ("issueDescription" in curationFailure.input || "datasetQuestion" in curationFailure.input) {
         throw new Error("A blank optional issue description was sent or confused with the evaluation question")
+    }
+    if ("skillPath" in curationFailure.input || "skillReference" in curationFailure.input) {
+        throw new Error("Case capture sent an operation-level Skill override")
     }
     await inspect(window, 'document.querySelector("#close-case-dialog")?.click()')
     await waitFor(window, '!document.querySelector("#save-case-dialog")?.open')

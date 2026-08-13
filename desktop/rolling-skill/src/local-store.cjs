@@ -12,7 +12,7 @@ const {randomUUID} = require("node:crypto")
 const {formatCuratedAnswer, validateCuratorDraft} = require("./episode-curation.cjs")
 const {validateSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 
-const LOCAL_SCHEMA = "rolling-skill-local/v6"
+const LOCAL_SCHEMA = "rolling-skill-local/v7"
 const CURATION_STATUSES = new Set([
     "queued",
     "running",
@@ -89,8 +89,6 @@ function defaultSettings() {
             effort: null,
             datasetId: null,
             caseType: "goodcase",
-            skillName: null,
-            skillPath: null,
         },
     }
 }
@@ -104,6 +102,7 @@ function initialState() {
             {
                 id: randomUUID(),
                 name: "Skill evaluation cases",
+                skillReference: null,
                 createdAt: now,
             },
         ],
@@ -157,18 +156,14 @@ function migrateState(input) {
             effort: null,
             datasetId: null,
             caseType: "goodcase",
-            skillName: null,
-            skillPath: null,
         }
         changed = true
     }
-    if (!("skillName" in state.settings.autoCaptureProfile)) {
-        state.settings.autoCaptureProfile.skillName = null
-        changed = true
-    }
-    if (!("skillPath" in state.settings.autoCaptureProfile)) {
-        state.settings.autoCaptureProfile.skillPath = null
-        changed = true
+    for (const legacyField of ["skillName", "skillPath"]) {
+        if (legacyField in state.settings.autoCaptureProfile) {
+            delete state.settings.autoCaptureProfile[legacyField]
+            changed = true
+        }
     }
     for (const profile of [
         state.settings.taskProfile,
@@ -198,6 +193,32 @@ function migrateState(input) {
     }
     if (!Array.isArray(state.evaluationRuns)) {
         state.evaluationRuns = []
+        changed = true
+    }
+    for (const dataset of state.datasets) {
+        if ("skillReference" in dataset) continue
+        const candidates = [...state.cases, ...state.curationSessions]
+            .filter((entry) => entry.datasetId === dataset.id && entry.skillReference)
+            .map((entry) => {
+                try {
+                    return normalizeSkillReference(entry.skillReference)
+                } catch {
+                    return null
+                }
+            })
+            .filter(Boolean)
+        const identities = new Map()
+        for (const reference of candidates) {
+            const key = `${reference.name}\u0000${reference.path}`
+            const score = Object.values(reference).filter(
+                (value) => value !== null && value !== undefined && value !== "",
+            ).length
+            const existing = identities.get(key)
+            if (!existing || score > existing.score) identities.set(key, {reference, score})
+        }
+        dataset.skillReference = identities.size === 1
+            ? copy([...identities.values()][0].reference)
+            : null
         changed = true
     }
     for (const session of state.curationSessions) {
@@ -308,9 +329,16 @@ function migrateState(input) {
 }
 
 function requireDataset(state, datasetId) {
-    if (!state.datasets.some((dataset) => dataset.id === datasetId)) {
-        throw new Error("Unknown dataset")
+    const dataset = state.datasets.find((entry) => entry.id === datasetId)
+    if (!dataset) throw new Error("Unknown dataset")
+    return dataset
+}
+
+function requireDatasetSkill(dataset) {
+    if (!dataset.skillReference) {
+        throw new Error("Dataset Skill binding is required")
     }
+    return dataset.skillReference
 }
 
 function requireCaseType(caseType) {
@@ -438,12 +466,49 @@ class LocalEvaluationStore {
         })
     }
 
-    createDataset(name) {
-        const trimmed = String(name ?? "").trim()
+    getDataset(datasetId) {
+        return copy(requireDataset(this.load(), datasetId))
+    }
+
+    createDataset(input = {}) {
+        const trimmed = String(input?.name ?? "").trim()
         if (!trimmed) throw new Error("Dataset name is required")
+        const skillReference = normalizeSkillReference(input.skillReference)
+        if (!skillReference) throw new Error("Dataset Skill binding is required")
         const state = this.load()
-        const dataset = {id: randomUUID(), name: trimmed, createdAt: new Date().toISOString()}
+        const dataset = {
+            id: randomUUID(),
+            name: trimmed,
+            skillReference,
+            createdAt: new Date().toISOString(),
+        }
         state.datasets.push(dataset)
+        this.persist()
+        return copy(dataset)
+    }
+
+    bindDatasetSkill(datasetId, value) {
+        const state = this.load()
+        const dataset = requireDataset(state, datasetId)
+        const skillReference = normalizeSkillReference(value)
+        if (!skillReference) throw new Error("Dataset Skill binding is required")
+        const current = dataset.skillReference
+        if (current?.name === skillReference.name && current.path === skillReference.path) {
+            dataset.skillReference = skillReference
+            this.persist()
+            return copy(dataset)
+        }
+        if ((this.datasetReservations.get(datasetId) ?? 0) > 0) {
+            throw new Error("Dataset Skill cannot change while capture is in progress")
+        }
+        const unfinished = state.curationSessions.some(
+            (entry) =>
+                entry.datasetId === datasetId &&
+                entry.status !== "archived" &&
+                entry.status !== "cancelled",
+        )
+        if (unfinished) throw new Error("Dataset Skill cannot change with unfinished Curator drafts")
+        dataset.skillReference = skillReference
         this.persist()
         return copy(dataset)
     }
@@ -610,22 +675,6 @@ class LocalEvaluationStore {
             requireCaseType(input.autoCaptureCaseType)
             automatic.caseType = input.autoCaptureCaseType
         }
-        if (input.autoCaptureSkillName !== undefined) {
-            automatic.skillName = skillIdentity(
-                input.autoCaptureSkillName,
-                "Automatic capture Skill name",
-            )
-        }
-        if (input.autoCaptureSkillPath !== undefined) {
-            const path = skillIdentity(
-                input.autoCaptureSkillPath,
-                "Automatic capture Skill path",
-            )
-            if (path && !path.startsWith("/")) {
-                throw new Error("Automatic capture Skill path must be absolute")
-            }
-            automatic.skillPath = path
-        }
         settings.autoCaptureProfile = automatic
         this.persist()
         return copy(settings)
@@ -636,7 +685,8 @@ class LocalEvaluationStore {
         const question = String(input.question ?? "").trim()
         const answer = String(input.answer ?? "").trim()
         requireCaseType(input.caseType)
-        requireDataset(state, input.datasetId)
+        const dataset = requireDataset(state, input.datasetId)
+        const skillReference = copy(requireDatasetSkill(dataset))
         if (!question) throw new Error("Case question is required")
         if (!answer) throw new Error("Case answer is required")
         const entry = {
@@ -645,6 +695,7 @@ class LocalEvaluationStore {
             caseType: input.caseType,
             question,
             answer,
+            skillReference,
             source: {
                 threadId: input.threadId ?? null,
                 turnId: input.turnId ?? null,
@@ -696,7 +747,8 @@ class LocalEvaluationStore {
     createCurationSession(input) {
         const state = this.load()
         requireCaseType(input.caseType)
-        requireDataset(state, input.datasetId)
+        const dataset = requireDataset(state, input.datasetId)
+        const skillReference = copy(requireDatasetSkill(dataset))
         const episode = copy(input.episode)
         if (episode?.schemaVersion !== "rolling-skill-episode/v1") {
             throw new Error("A valid frozen episode is required")
@@ -720,7 +772,7 @@ class LocalEvaluationStore {
             issueDescription,
             status: "queued",
             episode,
-            skillReference: normalizeSkillReference(input.skillReference),
+            skillReference,
             curator: {
                 runtimeId: input.curator?.runtimeId ?? null,
                 modelProvider: input.curator?.modelProvider ?? null,
@@ -948,7 +1000,15 @@ class LocalEvaluationStore {
 
     createEvaluationRun(input = {}) {
         const state = this.load()
-        requireDataset(state, input.datasetId)
+        const dataset = requireDataset(state, input.datasetId)
+        const datasetSkillReference = copy(requireDatasetSkill(dataset))
+        if (
+            input.skillReference &&
+            (String(input.skillReference.name ?? "").trim() !== datasetSkillReference.name ||
+                String(input.skillReference.path ?? "").trim() !== datasetSkillReference.path)
+        ) {
+            throw new Error("Evaluation Skill conflicts with the dataset Skill binding")
+        }
         if (input.selectionMode !== "selected" && input.selectionMode !== "dataset") {
             throw new Error("Evaluation selection mode must be selected or dataset")
         }
@@ -981,7 +1041,6 @@ class LocalEvaluationStore {
             }
             duplicateRuntimes.add(configuration.runtimeId)
         }
-        const dataset = state.datasets.find((entry) => entry.id === input.datasetId)
         const now = new Date().toISOString()
         const requestedJudgeProfile = input.judgeProfile ?? state.settings.judgeProfile
         const judgeProfile = {
@@ -1009,14 +1068,9 @@ class LocalEvaluationStore {
             selectionMode: input.selectionMode,
             selectedCaseIds: caseSnapshots.map((entry) => entry.id),
             caseSnapshots: copy(caseSnapshots),
-            skillReference: input.skillReference
-                ? {
-                      name: modelId(input.skillReference.name, "Skill name"),
-                      path: skillIdentity(input.skillReference.path, "Skill path"),
-                  }
-                : null,
+            skillReference: datasetSkillReference,
             skillEvidence: validateSkillEvidence(input.skillEvidence, {
-                expectedName: modelId(input.skillReference?.name, "Skill name"),
+                expectedName: datasetSkillReference.name,
                 requireComplete: true,
             }),
             activationMode: input.activationMode,

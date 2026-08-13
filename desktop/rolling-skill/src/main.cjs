@@ -9,7 +9,10 @@ const {CodeBuddyRuntimeProvider} = require("./codebuddy-runtime-provider.cjs")
 const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
 const {EvaluationRunner} = require("./evaluation-runner.cjs")
-const {resolveSkillEvidenceBinding} = require("./evaluation-skill-binding.cjs")
+const {
+    resolveSkillEvidenceBinding,
+    runtimeReportsSkill,
+} = require("./evaluation-skill-binding.cjs")
 const {snapshotSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 const {LocalEvaluationStore, reasoningEffort} = require("./local-store.cjs")
 const {resolveExecutionPolicy, resolveRuntimePermission} = require("./execution-policy.cjs")
@@ -334,6 +337,42 @@ async function skillEvidenceBindingForRuntime(descriptor, skillReference) {
         },
         skillReference,
     })
+}
+
+async function currentRuntimeSkillReference(value) {
+    const name = requireIdentifier(value?.name, "Skill")
+    const path = requireAbsolutePath(value?.path, "Skill")
+    const runtime = await ensureRuntime()
+    if (typeof runtime.listSkills !== "function") {
+        throw new Error("The active runtime cannot verify installed Skills")
+    }
+    const response = await runtime.listSkills({forceReload: true})
+    const requested = {name, path}
+    if (!runtimeReportsSkill(response, requested)) {
+        throw new Error(
+            "The selected Skill is not installed and enabled in the active runtime and workspace",
+        )
+    }
+    const reported = response.data
+        .flatMap((entry) => entry.skills ?? [])
+        .find((skill) => skill.enabled && skill.name === name && skill.path === path)
+    return {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        name,
+        path,
+        scope: reported?.scope ?? null,
+        description: reported?.description ?? reported?.interface?.shortDescription ?? null,
+        runtimeId: runtimeDescriptor?.runtimeId ?? null,
+        confirmedAt: new Date().toISOString(),
+    }
+}
+
+async function requireAvailableDatasetSkill(dataset) {
+    if (!dataset?.skillReference) {
+        throw new Error("Bind an enabled Skill to this dataset before continuing")
+    }
+    await currentRuntimeSkillReference(dataset.skillReference)
+    return dataset.skillReference
 }
 
 function unavailableRuntimeState(error = null) {
@@ -899,7 +938,18 @@ function installIpc() {
     ipcMain.handle("datasets:list-cases", (_event, datasetId) =>
         store.listCases(requireIdentifier(datasetId, "dataset")),
     )
-    ipcMain.handle("datasets:create", (_event, name) => store.createDataset(name))
+    ipcMain.handle("datasets:create", async (_event, input = {}) =>
+        store.createDataset({
+            name: input.name,
+            skillReference: await currentRuntimeSkillReference(input.skillReference),
+        }),
+    )
+    ipcMain.handle("datasets:bind-skill", async (_event, input = {}) =>
+        store.bindDatasetSkill(
+            requireIdentifier(input.datasetId, "dataset"),
+            await currentRuntimeSkillReference(input.skillReference),
+        ),
+    )
     ipcMain.handle("datasets:delete", (_event, datasetId) =>
         store.deleteDataset(requireIdentifier(datasetId, "dataset")),
     )
@@ -922,6 +972,9 @@ function installIpc() {
         store.getCurationSession(requireIdentifier(sessionId, "curation session")),
     )
     ipcMain.handle("curation:create", async (_event, input = {}) => {
+        const datasetId = requireIdentifier(input.datasetId, "dataset")
+        const dataset = store.getDataset(datasetId)
+        await requireAvailableDatasetSkill(dataset)
         const sourceThreadId = requireIdentifier(input.sourceThreadId, "source thread")
         const startItemId = input.startItemId
             ? requireIdentifier(input.startItemId, "episode start item")
@@ -944,7 +997,7 @@ function installIpc() {
         })
         const profile = store.read().settings.curatorProfile
         return curationManager.createSession({
-            datasetId: requireIdentifier(input.datasetId, "dataset"),
+            datasetId,
             caseType: input.caseType,
             sourceThreadId,
             startItemId,
@@ -960,7 +1013,6 @@ function installIpc() {
             traceReference,
             modelId: profile.modelId,
             effort: profile.effort,
-            skillPath: requireAbsolutePath(input.skillPath, "Skill"),
         })
     })
     ipcMain.handle("curation:send", (_event, input = {}) =>
@@ -1009,9 +1061,10 @@ function installIpc() {
         store.deleteEvaluationRun(requireIdentifier(runId, "evaluation run")),
     )
     ipcMain.handle("evaluations:start", async (_event, input = {}) => {
-        const skillName = requireIdentifier(input.skillReference?.name, "Skill")
-        const skillPath = requireAbsolutePath(input.skillReference?.path, "Skill")
-        const skillReference = {name: skillName, path: skillPath}
+        const datasetId = requireIdentifier(input.datasetId, "dataset")
+        const dataset = store.getDataset(datasetId)
+        const skillReference = dataset.skillReference
+        await requireAvailableDatasetSkill(dataset)
         const runtimeConfigurations = await Promise.all((input.runtimeConfigurations ?? []).map(async (requested) => {
             const runtimeId = requireIdentifier(requested.runtimeId, "runtime")
             const descriptor = availableRuntimes.find((entry) => entry.runtimeId === runtimeId)
@@ -1027,6 +1080,12 @@ function installIpc() {
             }
         }))
         const skillEvidence = snapshotSkillEvidence(skillReference)
+        if (skillEvidence.truncated || skillEvidence.warnings.length) {
+            const details = skillEvidence.warnings.length
+                ? skillEvidence.warnings.map((warning) => `- ${warning}`).join("\n")
+                : "- Skill evidence exceeded a snapshot limit"
+            throw new Error(`Formal evaluation requires complete Skill evidence:\n${details}`)
+        }
         const requestedJudge = input.judgeConfiguration ?? {}
         const judgeRuntimeId = requireIdentifier(requestedJudge.runtimeId, "Judge runtime")
         const judgeDescriptor = availableRuntimes.find(
@@ -1041,13 +1100,12 @@ function installIpc() {
             effort: optionalEffort(requestedJudge.effort),
         }
         const run = store.createEvaluationRun({
-            datasetId: requireIdentifier(input.datasetId, "dataset"),
+            datasetId,
             caseIds: (input.caseIds ?? []).map((caseId) =>
                 requireIdentifier(caseId, "Case"),
             ),
             selectionMode: input.selectionMode,
             activationMode: input.activationMode,
-            skillReference,
             skillEvidence,
             judgeProfile: {
                 runtimePolicy: "active",
@@ -1163,6 +1221,7 @@ if (!hasLock) {
             store,
             curationManager,
             getTraceReference: (episode) => client?.recorder?.referenceForEpisode(episode) ?? null,
+            verifyDatasetSkill: requireAvailableDatasetSkill,
             onError: (error) => send("runtime:state", {
                 ...enrichRuntimeState(client?.state() ?? {workspaceRoot}),
                 error: `Automatic capture failed: ${error.message}`,

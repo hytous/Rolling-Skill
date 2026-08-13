@@ -673,6 +673,23 @@ kbd {
     gap: 6px;
 }
 
+.evaluation-create-row.dataset-create-form {
+    grid-template-columns: minmax(0, 1fr) 32px;
+}
+
+.evaluation-create-row.dataset-create-form select {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    height: 32px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 10px;
+}
+
 .evaluation-create-row input,
 .evaluation-create-row button {
     height: 32px;
@@ -882,6 +899,24 @@ kbd {
 
 .skill-preflight.missing {
     color: var(--warning);
+}
+
+.dataset-skill-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.dataset-skill-heading button {
+    padding: 3px 7px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--accent);
+    font-size: 9px;
 }
 
 .activation-mode {
@@ -2901,8 +2936,19 @@ kbd {
 .new-dataset-row {
     display: grid;
     margin-top: 7px;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
     gap: 7px;
+}
+
+.new-dataset-row select {
+    min-width: 0;
+    height: 31px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 10px;
 }
 
 .new-dataset-row input {

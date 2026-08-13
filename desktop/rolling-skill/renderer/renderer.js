@@ -33,10 +33,18 @@ const translations = {
         automaticCapture: "Automatic capture",
         automaticCaptureHelp: "Create a reviewable draft after each completed response. Nothing is saved until Done.",
         captureModel: "Capture Curator model",
-        captureSkill: "Skill used by the Curator",
         selectSkill: "Select an enabled Skill",
         unavailableSkill: "Previously selected Skill is unavailable",
-        skillRequiredForCapture: "Automatic capture requires an enabled Skill from the current runtime.",
+        datasetSkill: "Dataset Skill",
+        bindDatasetSkill: "Bind dataset Skill",
+        changeSkill: "Change Skill",
+        datasetSkillHistoryHelp: "Existing Cases and evaluation runs keep their frozen historical evidence.",
+        datasetSkillUnbound: "This dataset has no Skill binding. Bind an enabled runtime Skill before capture or evaluation.",
+        datasetSkillStale: "{name} is bound, but its exact name and path are not enabled in the active runtime.",
+        datasetSkillReady: "{name} · installed and enabled in {runtime}",
+        datasetSkillRequired: "Select an enabled Skill for this dataset.",
+        autoCaptureDatasetRequired: "Automatic capture requires a Skill-bound dataset that is available in the active runtime.",
+        changeDatasetSkillCopy: "Change the Skill bound to “{name}”. Future capture and evaluation use the new binding.",
         destinationDataset: "Destination dataset",
         defaultClassification: "Default classification",
         settingsLocalOnly: "Settings stay on this Mac.",
@@ -347,10 +355,18 @@ const translations = {
         automaticCapture: "自动沉淀",
         automaticCaptureHelp: "每次回答完成后自动创建待审核草稿；只有点击 Done 才会保存 Case。",
         captureModel: "自动沉淀 Curator 模型",
-        captureSkill: "Curator 使用的 Skill",
         selectSkill: "请选择一个已启用的 Skill",
         unavailableSkill: "之前选择的 Skill 当前不可用",
-        skillRequiredForCapture: "自动沉淀必须选择当前运行时中已启用的 Skill。",
+        datasetSkill: "数据集绑定的 Skill",
+        bindDatasetSkill: "绑定数据集 Skill",
+        changeSkill: "更换 Skill",
+        datasetSkillHistoryHelp: "已有 Case 和评测记录会继续保留各自冻结的历史证据，不会被改写。",
+        datasetSkillUnbound: "这个数据集尚未绑定 Skill；沉淀或评测前请绑定当前运行时中已启用的 Skill。",
+        datasetSkillStale: "已绑定 {name}，但当前运行时没有启用名称与路径完全一致的 Skill。",
+        datasetSkillReady: "{name} · 已安装并在 {runtime} 中启用",
+        datasetSkillRequired: "请为这个数据集选择当前运行时中已启用的 Skill。",
+        autoCaptureDatasetRequired: "自动沉淀必须选择一个已绑定 Skill 且该 Skill 在当前运行时可用的数据集。",
+        changeDatasetSkillCopy: "更换数据集“{name}”绑定的 Skill；之后的新沉淀和评测会使用新绑定。",
         destinationDataset: "目标数据集",
         defaultClassification: "默认分类",
         settingsLocalOnly: "设置仅保存在这台 Mac。",
@@ -677,8 +693,6 @@ const state = {
             effort: null,
             datasetId: null,
             caseType: "goodcase",
-            skillName: null,
-            skillPath: null,
         },
     },
     models: [],
@@ -707,7 +721,7 @@ const state = {
     cancelEvaluationRunId: null,
     evaluationLoading: false,
     evaluationError: null,
-    evaluationSkillByThread: {},
+    datasetSkillDialogDatasetId: null,
     renderQueued: false,
 }
 
@@ -751,10 +765,11 @@ const elements = {
     evaluationDatasetList: document.querySelector("#evaluation-dataset-list"),
     evaluationCreateDataset: document.querySelector("#evaluation-create-dataset"),
     evaluationNewDatasetName: document.querySelector("#evaluation-new-dataset-name"),
+    evaluationNewDatasetSkill: document.querySelector("#evaluation-new-dataset-skill"),
     evaluationCaseCount: document.querySelector("#evaluation-case-count"),
     evaluationCaseList: document.querySelector("#evaluation-case-list"),
-    evaluationSkill: document.querySelector("#evaluation-skill"),
-    evaluationSkillStatus: document.querySelector("#evaluation-skill-status"),
+    evaluationDatasetSkillStatus: document.querySelector("#evaluation-dataset-skill-status"),
+    changeEvaluationDatasetSkill: document.querySelector("#change-evaluation-dataset-skill"),
     evaluationRuntimeList: document.querySelector("#evaluation-runtime-list"),
     evaluationJudgeRuntime: document.querySelector("#evaluation-judge-runtime"),
     evaluationJudgeModel: document.querySelector("#evaluation-judge-model"),
@@ -808,7 +823,6 @@ const elements = {
     settingsAutoCapture: document.querySelector("#settings-auto-capture"),
     settingsAutoCaptureModel: document.querySelector("#settings-auto-capture-model"),
     settingsAutoCaptureEffort: document.querySelector("#settings-auto-capture-effort"),
-    settingsAutoCaptureSkill: document.querySelector("#settings-auto-capture-skill"),
     settingsAutoCaptureDataset: document.querySelector("#settings-auto-capture-dataset"),
     settingsAutoCaptureCaseType: document.querySelector("#settings-auto-capture-case-type"),
     discardDialog: document.querySelector("#discard-curation-dialog"),
@@ -846,9 +860,10 @@ const elements = {
     caseDialog: document.querySelector("#save-case-dialog"),
     caseForm: document.querySelector("#save-case-form"),
     caseDataset: document.querySelector("#case-dataset"),
-    caseSkill: document.querySelector("#case-skill"),
-    caseSkillStatus: document.querySelector("#case-skill-status"),
+    caseDatasetSkillStatus: document.querySelector("#case-dataset-skill-status"),
+    changeCaseDatasetSkill: document.querySelector("#change-case-dataset-skill"),
     newDatasetName: document.querySelector("#new-dataset-name"),
+    newDatasetSkill: document.querySelector("#new-dataset-skill"),
     createDataset: document.querySelector("#create-dataset"),
     caseStartItem: document.querySelector("#case-start-item"),
     caseIssueDescription: document.querySelector("#case-issue-description"),
@@ -858,6 +873,13 @@ const elements = {
     closeCaseDialog: document.querySelector("#close-case-dialog"),
     cancelSaveCase: document.querySelector("#cancel-save-case"),
     confirmSaveCase: document.querySelector("#confirm-save-case"),
+    datasetSkillDialog: document.querySelector("#dataset-skill-dialog"),
+    datasetSkillForm: document.querySelector("#dataset-skill-form"),
+    datasetSkillDialogCopy: document.querySelector("#dataset-skill-dialog-copy"),
+    datasetSkillSelect: document.querySelector("#dataset-skill-select"),
+    closeDatasetSkillDialog: document.querySelector("#close-dataset-skill-dialog"),
+    cancelDatasetSkill: document.querySelector("#cancel-dataset-skill"),
+    confirmDatasetSkill: document.querySelector("#confirm-dataset-skill"),
     toast: document.querySelector("#toast"),
 }
 
@@ -1203,12 +1225,52 @@ function populateSkillSelect(select, selectedPath = null, {allowEmpty = true} = 
     }
 }
 
-function renderCaseSkillStatus() {
-    const skill = runtimeSkillByPath(elements.caseSkill.value)
-    elements.caseSkillStatus.className = `skill-preflight ${skill ? "ready" : "missing"}`
-    elements.caseSkillStatus.textContent = skill
-        ? `${formatMessage("skillReady", {runtime: state.runtime?.runtime?.displayName ?? t("localRuntime")})} · ${skill.scope}`
-        : t("selectSkill")
+function selectedDataset(datasetId) {
+    return state.datasets.find((dataset) => dataset.id === datasetId) ?? null
+}
+
+function runtimeSkillForReference(reference) {
+    if (!reference?.name || !reference?.path) return null
+    const skill = runtimeSkillByPath(reference.path)
+    return skill?.enabled && skill.name === reference.name ? skill : null
+}
+
+function skillReferenceFromRuntimeSkill(skill) {
+    if (!skill) return null
+    return {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        name: skill.name,
+        path: skill.path,
+        scope: skill.scope ?? null,
+        description: skill.description ?? skill.interface?.shortDescription ?? null,
+        runtimeId: state.runtime?.runtime?.runtimeId ?? null,
+        confirmedAt: new Date().toISOString(),
+    }
+}
+
+function renderDatasetSkillStatus(element, dataset) {
+    const reference = dataset?.skillReference
+    const skill = runtimeSkillForReference(reference)
+    element.className = `skill-preflight ${skill ? "ready" : "missing"}`
+    if (skill) {
+        element.textContent = formatMessage("datasetSkillReady", {
+            name: reference.name,
+            runtime: state.runtime?.runtime?.displayName ?? t("localRuntime"),
+        })
+    } else if (reference) {
+        element.textContent = formatMessage("datasetSkillStale", {name: reference.name})
+    } else {
+        element.textContent = t("datasetSkillUnbound")
+    }
+    return skill
+}
+
+function renderCaseDatasetSkillStatus() {
+    const dataset = selectedDataset(elements.caseDataset.value)
+    const skill = renderDatasetSkillStatus(elements.caseDatasetSkillStatus, dataset)
+    elements.changeCaseDatasetSkill.textContent = t(dataset?.skillReference ? "changeSkill" : "bindDatasetSkill")
+    elements.changeCaseDatasetSkill.disabled = !dataset
+    if (!state.caseCreationInProgress) elements.confirmSaveCase.disabled = !skill
 }
 
 function renderSettingsForm() {
@@ -1256,10 +1318,6 @@ function renderSettingsForm() {
         settings.autoCaptureProfile?.effort,
         settings.autoCaptureProfile?.modelId,
     )
-    populateSkillSelect(
-        elements.settingsAutoCaptureSkill,
-        settings.autoCaptureProfile?.skillPath,
-    )
     elements.settingsAutoCapture.checked = Boolean(settings.autoCapture)
     elements.settingsAutoCaptureDataset.replaceChildren()
     for (const dataset of state.datasets) {
@@ -1283,7 +1341,6 @@ function refreshOpenSettingsOptions() {
     const judgeEffort = elements.settingsJudgeEffort.value
     const captureModel = elements.settingsAutoCaptureModel.value
     const captureEffort = elements.settingsAutoCaptureEffort.value
-    const captureSkill = elements.settingsAutoCaptureSkill.value
     populateModelSelect(elements.settingsTaskModel, taskModel)
     populateEffortSelect(elements.settingsTaskEffort, taskEffort, taskModel)
     populateModelSelect(elements.settingsCuratorModel, curatorModel, t("sourceOrRuntimeModel"))
@@ -1292,7 +1349,6 @@ function refreshOpenSettingsOptions() {
     populateEffortSelect(elements.settingsJudgeEffort, judgeEffort, judgeModel)
     populateModelSelect(elements.settingsAutoCaptureModel, captureModel, t("sourceOrRuntimeModel"))
     populateEffortSelect(elements.settingsAutoCaptureEffort, captureEffort, captureModel)
-    populateSkillSelect(elements.settingsAutoCaptureSkill, captureSkill)
 }
 
 async function openSettings() {
@@ -1309,9 +1365,9 @@ async function openSettings() {
 async function saveSettings() {
     elements.saveSettings.disabled = true
     try {
-        const captureSkill = runtimeSkillByPath(elements.settingsAutoCaptureSkill.value)
-        if (elements.settingsAutoCapture.checked && !captureSkill) {
-            throw new Error(t("skillRequiredForCapture"))
+        const captureDataset = selectedDataset(elements.settingsAutoCaptureDataset.value)
+        if (elements.settingsAutoCapture.checked && !runtimeSkillForReference(captureDataset?.skillReference)) {
+            throw new Error(t("autoCaptureDatasetRequired"))
         }
         const settings = await window.rollingSkill.updateSettings({
             language: elements.settingsLanguage.value,
@@ -1328,8 +1384,6 @@ async function saveSettings() {
             autoCaptureEffort: elements.settingsAutoCaptureEffort.value,
             autoCaptureDatasetId: elements.settingsAutoCaptureDataset.value || null,
             autoCaptureCaseType: elements.settingsAutoCaptureCaseType.value,
-            autoCaptureSkillName: captureSkill?.name ?? null,
-            autoCaptureSkillPath: captureSkill?.path ?? null,
         })
         applySettings(settings)
         state.evaluationJudgeConfiguration = {
@@ -2340,8 +2394,8 @@ function reportLinkOpenFailure(error, messageKey) {
     showToast(t(messageKey))
 }
 
-function selectedEvaluationSkill() {
-    return state.evaluationSkills.find((skill) => skill.path === elements.evaluationSkill.value) ?? null
+function evaluationDataset() {
+    return selectedDataset(state.evaluationDatasetId)
 }
 
 function renderEvaluationWorkbench() {
@@ -2415,21 +2469,15 @@ function renderEvaluationWorkbench() {
         elements.evaluationCaseList.append(row)
     }
 
-    const selectedPath = elements.evaluationSkill.value
-    elements.evaluationSkill.replaceChildren()
-    for (const skill of state.evaluationSkills) {
-        const option = node("option", "", skillDisplayLabel(skill))
-        option.value = skill.path
-        elements.evaluationSkill.append(option)
-    }
-    if (selectedPath && state.evaluationSkills.some((skill) => skill.path === selectedPath)) {
-        elements.evaluationSkill.value = selectedPath
-    }
-    const skill = selectedEvaluationSkill()
-    elements.evaluationSkillStatus.className = `skill-preflight ${skill ? "ready" : "missing"}`
-    elements.evaluationSkillStatus.textContent = skill
-        ? `${t("skillSelected")} · ${skill.scope ?? "dataset"}`
-        : t("noSkills")
+    populateSkillSelect(
+        elements.evaluationNewDatasetSkill,
+        elements.evaluationNewDatasetSkill.value,
+        {allowEmpty: false},
+    )
+    const dataset = evaluationDataset()
+    const skill = renderDatasetSkillStatus(elements.evaluationDatasetSkillStatus, dataset)
+    elements.changeEvaluationDatasetSkill.textContent = t(dataset?.skillReference ? "changeSkill" : "bindDatasetSkill")
+    elements.changeEvaluationDatasetSkill.disabled = !dataset
     renderEvaluationRuntimeConfigurations(skill)
     renderEvaluationJudgeConfiguration()
     renderEvaluationRuns()
@@ -3109,18 +3157,7 @@ async function refreshRuntimeSkills(forceReload = false) {
     const runtimeSkills = state.runtime?.status === "ready"
         ? flattenRuntimeSkills(await window.rollingSkill.listSkills(forceReload))
         : []
-    const byPath = new Map(runtimeSkills.map((skill) => [skill.path, skill]))
-    for (const caseEntry of state.evaluationCases) {
-        const reference = caseEntry.skillReference
-        if (!reference?.path || !reference?.name || byPath.has(reference.path)) continue
-        byPath.set(reference.path, {
-            ...reference,
-            enabled: true,
-            scope: "dataset",
-            interface: {displayName: reference.name},
-        })
-    }
-    state.evaluationSkills = [...byPath.values()]
+    state.evaluationSkills = runtimeSkills
     return state.evaluationSkills
 }
 
@@ -3139,7 +3176,6 @@ async function loadEvaluationWorkbench(forceReload = false) {
         if (!state.evaluationCases.some((entry) => entry.id === state.evaluationCaseId)) {
             state.evaluationCaseId = state.evaluationCases[0]?.id ?? null
         }
-        const previousSkillPath = elements.evaluationSkill.value
         await Promise.all([
             refreshRuntimeSkills(forceReload),
             refreshEvaluationRuntimeModels(forceReload),
@@ -3155,9 +3191,6 @@ async function loadEvaluationWorkbench(forceReload = false) {
         state.activeEvaluationRun = state.activeEvaluationRunId
             ? state.evaluationRunDetails[state.activeEvaluationRunId] ?? null
             : null
-        if (previousSkillPath && state.evaluationSkills.some((skill) => skill.path === previousSkillPath)) {
-            elements.evaluationSkill.value = previousSkillPath
-        }
     } catch (error) {
         state.evaluationError = error?.message || String(error)
     } finally {
@@ -3196,7 +3229,11 @@ async function createEvaluationDataset() {
     const name = elements.evaluationNewDatasetName.value.trim()
     if (!name) return
     try {
-        const dataset = await window.rollingSkill.createDataset(name)
+        const skillReference = skillReferenceFromRuntimeSkill(
+            runtimeSkillByPath(elements.evaluationNewDatasetSkill.value),
+        )
+        if (!skillReference) throw new Error(t("datasetSkillRequired"))
+        const dataset = await window.rollingSkill.createDataset({name, skillReference})
         elements.evaluationNewDatasetName.value = ""
         state.evaluationDatasetId = dataset.id
         await loadEvaluationWorkbench(false)
@@ -3376,8 +3413,9 @@ async function startEvaluation(selectionMode) {
     elements.startEvaluation.disabled = true
     elements.startDatasetEvaluation.disabled = true
     try {
-        const skill = selectedEvaluationSkill()
-        if (!skill) throw new Error(t("noSkills"))
+        if (!runtimeSkillForReference(evaluationDataset()?.skillReference)) {
+            throw new Error(t("datasetSkillRequired"))
+        }
         const runtimeConfigurations = Object.values(state.evaluationRuntimeConfigurations)
             .filter((configuration) => configuration.selected)
             .map((configuration) => ({
@@ -3394,7 +3432,6 @@ async function startEvaluation(selectionMode) {
             caseIds: selectionMode === "selected" ? [caseEntry.id] : [],
             selectionMode,
             activationMode,
-            skillReference: {name: skill.name, path: skill.path},
             runtimeConfigurations,
             judgeConfiguration: evaluationJudgeRequestConfiguration(),
         })
@@ -3810,11 +3847,8 @@ async function openCaseDialog(turnId, itemId) {
     elements.caseIssueDescription.value = ""
     updateEpisodeStartPreview()
     updateDatasetOptions(state.datasets[0]?.id)
-    populateSkillSelect(
-        elements.caseSkill,
-        state.evaluationSkillByThread[state.activeThreadId] ?? null,
-    )
-    renderCaseSkillStatus()
+    populateSkillSelect(elements.newDatasetSkill, elements.newDatasetSkill.value, {allowEmpty: false})
+    renderCaseDatasetSkillStatus()
     clearCaseError()
     elements.caseDialog.showModal()
 }
@@ -3824,7 +3858,11 @@ async function createDataset() {
     if (!name) return
     elements.createDataset.disabled = true
     try {
-        const created = await window.rollingSkill.createDataset(name)
+        const skillReference = skillReferenceFromRuntimeSkill(
+            runtimeSkillByPath(elements.newDatasetSkill.value),
+        )
+        if (!skillReference) throw new Error(t("datasetSkillRequired"))
+        const created = await window.rollingSkill.createDataset({name, skillReference})
         state.datasets = await window.rollingSkill.listDatasets()
         updateDatasetOptions(created.id)
         elements.newDatasetName.value = ""
@@ -3836,15 +3874,51 @@ async function createDataset() {
     }
 }
 
+function openDatasetSkillDialog(datasetId) {
+    const dataset = selectedDataset(datasetId)
+    if (!dataset) return
+    state.datasetSkillDialogDatasetId = datasetId
+    populateSkillSelect(
+        elements.datasetSkillSelect,
+        runtimeSkillForReference(dataset.skillReference)?.path ?? null,
+        {allowEmpty: false},
+    )
+    elements.datasetSkillDialogCopy.textContent = formatMessage("changeDatasetSkillCopy", {
+        name: dataset.name,
+    })
+    elements.datasetSkillDialog.showModal()
+}
+
+async function bindDatasetSkill() {
+    const datasetId = state.datasetSkillDialogDatasetId
+    const skillReference = skillReferenceFromRuntimeSkill(
+        runtimeSkillByPath(elements.datasetSkillSelect.value),
+    )
+    if (!datasetId || !skillReference) return
+    elements.confirmDatasetSkill.disabled = true
+    try {
+        await window.rollingSkill.bindDatasetSkill(datasetId, skillReference)
+        state.datasets = await window.rollingSkill.listDatasets()
+        elements.datasetSkillDialog.close()
+        updateDatasetOptions(elements.caseDataset.value)
+        renderCaseDatasetSkillStatus()
+        renderEvaluationWorkbench()
+    } catch (error) {
+        showError(error)
+    } finally {
+        elements.confirmDatasetSkill.disabled = false
+    }
+}
+
 async function createCuration() {
     const selection = state.caseSelection
     if (!selection) return
     clearCaseError()
     const caseType = new FormData(elements.caseForm).get("case-type")
-    const skill = runtimeSkillByPath(elements.caseSkill.value)
     const issueDescription = elements.caseIssueDescription.value.trim()
-    if (!skill) {
-        showCaseError(new Error(t("selectSkill")))
+    const dataset = selectedDataset(elements.caseDataset.value)
+    if (!runtimeSkillForReference(dataset?.skillReference)) {
+        showCaseError(new Error(t("datasetSkillRequired")))
         return
     }
     setCaseCreationInProgress(true)
@@ -3862,7 +3936,6 @@ async function createCuration() {
             ...(issueDescription
                 ? {issueDescription: elements.caseIssueDescription.value}
                 : {}),
-            skillPath: skill.path,
         })
         elements.caseDialog.close()
         state.caseSelection = null
@@ -4300,7 +4373,9 @@ elements.evaluationCreateDataset.addEventListener("submit", (event) => {
     event.preventDefault()
     void createEvaluationDataset()
 })
-elements.evaluationSkill.addEventListener("change", renderEvaluationWorkbench)
+elements.changeEvaluationDatasetSkill.addEventListener("click", () =>
+    openDatasetSkillDialog(state.evaluationDatasetId),
+)
 elements.startEvaluation.addEventListener("click", () => void startEvaluation("selected"))
 elements.startDatasetEvaluation.addEventListener("click", () => void startEvaluation("dataset"))
 elements.topbarCurations.addEventListener("click", () => setCurationOpen(true))
@@ -4394,11 +4469,23 @@ elements.caseDialog.addEventListener("cancel", (event) => {
     if (state.caseCreationInProgress) event.preventDefault()
 })
 elements.caseStartItem.addEventListener("change", updateEpisodeStartPreview)
-elements.caseSkill.addEventListener("change", renderCaseSkillStatus)
+elements.caseDataset.addEventListener("change", renderCaseDatasetSkillStatus)
+elements.changeCaseDatasetSkill.addEventListener("click", () =>
+    openDatasetSkillDialog(elements.caseDataset.value),
+)
 elements.createDataset.addEventListener("click", createDataset)
 elements.caseForm.addEventListener("submit", (event) => {
     event.preventDefault()
     void createCuration()
+})
+elements.closeDatasetSkillDialog.addEventListener("click", () => elements.datasetSkillDialog.close())
+elements.cancelDatasetSkill.addEventListener("click", () => elements.datasetSkillDialog.close())
+elements.datasetSkillForm.addEventListener("submit", (event) => {
+    event.preventDefault()
+    void bindDatasetSkill()
+})
+elements.datasetSkillDialog.addEventListener("close", () => {
+    state.datasetSkillDialogDatasetId = null
 })
 elements.curationList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-curation-id]")

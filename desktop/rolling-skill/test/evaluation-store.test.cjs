@@ -19,7 +19,17 @@ afterEach(() => {
 function fixture() {
     const directory = mkdtempSync(join(tmpdir(), "rolling-skill-evaluation-store-"))
     temporaryDirectories.push(directory)
-    return new LocalEvaluationStore(join(directory, "store.json"))
+    const store = new LocalEvaluationStore(join(directory, "store.json"))
+    store.bindDatasetSkill(store.listDatasets()[0].id, {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        name: "billing-cost-management",
+        path: "/skills/billing/SKILL.md",
+        scope: "user",
+        description: "Billing Skill",
+        runtimeId: "codex:alpha",
+        confirmedAt: "2026-08-13T00:00:00.000Z",
+    })
+    return store
 }
 
 function frozenSkillEvidence() {
@@ -28,6 +38,18 @@ function frozenSkillEvidence() {
     const path = join(directory, "SKILL.md")
     writeFileSync(path, "Use the billing workflow.")
     return snapshotSkillEvidence({name: "billing-cost-management", path})
+}
+
+function bindBillingSkill(store, dataset = store.listDatasets()[0], evidence = frozenSkillEvidence()) {
+    return store.bindDatasetSkill(dataset.id, {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        name: evidence.name,
+        path: "/skills/billing/SKILL.md",
+        scope: "user",
+        description: "Billing Skill",
+        runtimeId: "codex:alpha",
+        confirmedAt: "2026-08-13T00:00:00.000Z",
+    })
 }
 
 function frozenEpisode() {
@@ -70,6 +92,43 @@ function draft() {
 }
 
 describe("evaluation data lifecycle", () => {
+    it("derives evaluation Skill identity from the dataset and rejects a conflicting caller", () => {
+        const store = fixture()
+        const evidence = frozenSkillEvidence()
+        const dataset = bindBillingSkill(store, store.listDatasets()[0], evidence)
+        const saved = store.saveCase({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            question: "q",
+            answer: "a",
+        })
+
+        assert.throws(() => store.createEvaluationRun({
+            datasetId: dataset.id,
+            caseIds: [saved.id],
+            selectionMode: "selected",
+            activationMode: "automatic",
+            skillReference: {name: "wrong", path: "/skills/wrong/SKILL.md"},
+            skillEvidence: evidence,
+            runtimeConfigurations: [
+                {runtimeId: "codex:a", providerId: "codex", executablePath: "/a"},
+            ],
+        }), /conflict|dataset.*skill/i)
+
+        const run = store.createEvaluationRun({
+            datasetId: dataset.id,
+            caseIds: [saved.id],
+            selectionMode: "selected",
+            activationMode: "automatic",
+            skillEvidence: evidence,
+            runtimeConfigurations: [
+                {runtimeId: "codex:a", providerId: "codex", executablePath: "/a"},
+            ],
+        })
+        assert.equal(run.skillReference.name, dataset.skillReference.name)
+        assert.equal(run.skillReference.path, dataset.skillReference.path)
+    })
+
     it("keeps archived Curator records out of Case drafts and exposes them separately", () => {
         const store = fixture()
         const dataset = store.listDatasets()[0]
@@ -223,7 +282,7 @@ describe("evaluation data lifecycle", () => {
     it("disables automatic capture instead of silently redirecting it to another Dataset", () => {
         const store = fixture()
         const dataset = store.listDatasets()[0]
-        store.createDataset("Remaining")
+        store.createDataset({name: "Remaining", skillReference: dataset.skillReference})
         store.updateSettings({autoCapture: true, autoCaptureDatasetId: dataset.id})
 
         store.deleteDataset(dataset.id)
@@ -486,6 +545,15 @@ describe("evaluation data lifecycle", () => {
             {name: "billing-cost-management", path: skillPath},
             {maxFileBytes: 64},
         )
+        store.bindDatasetSkill(dataset.id, {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            name: "billing-cost-management",
+            path: skillPath,
+            scope: "user",
+            description: "Billing Skill",
+            runtimeId: "codex:alpha",
+            confirmedAt: "2026-08-13T00:00:00.000Z",
+        })
 
         assert.throws(
             () => store.createEvaluationRun({

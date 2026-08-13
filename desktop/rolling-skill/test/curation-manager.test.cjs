@@ -61,6 +61,18 @@ function sourceThread() {
     }
 }
 
+function billingSkillReference() {
+    return {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        name: "billing-cost-management",
+        path: "/Users/wangbaoheng/.codex/plugins/cache/openai-primary-runtime/template-creator/26.812.11052/skills/billing-cost-management/SKILL.md",
+        scope: "user",
+        description: "Billing cost queries and analysis",
+        runtimeId: "codex-alpha",
+        confirmedAt: "2026-08-13T00:00:00.000Z",
+    }
+}
+
 async function completeInitialDraft(manager, store, session) {
     const turnId = store.getCurationSession(session.id).curator.currentTurnId
     await manager.handleNotification({
@@ -158,6 +170,7 @@ describe("curation manager", () => {
     beforeEach(() => {
         directory = mkdtempSync(join(tmpdir(), "rolling-skill-curation-manager-"))
         store = new LocalEvaluationStore(join(directory, "store.json"))
+        store.bindDatasetSkill(store.listDatasets()[0].id, billingSkillReference())
         runtime = new FakeRuntime()
         changed = []
         manager = new CurationManager({
@@ -181,7 +194,6 @@ describe("curation manager", () => {
             endItemId: "answer-1",
             traceReference: "trace.ndjson#42",
             modelId: "gpt-5.6-sol",
-            skillPath: "/runtime/skills/billing-cost-management/SKILL.md",
         })
         await manager.waitForIdle(session.id)
 
@@ -362,8 +374,9 @@ describe("curation manager", () => {
         const persisted = store.getCurationSession(session.id)
         assert.equal(persisted.episode.originalQuestion, "查一下7月份账单，各业务混元3多少成本？")
         assert.equal(persisted.issueDescription, issueDescription)
-        assert.match(runtime.startedTurns[0].text, new RegExp(issueDescription))
-        assert.match(runtime.startedTurns[0].text, /查一下7月份账单，各业务混元3多少成本？/)
+        const initialPrompt = runtime.startedTurns[0].text.at(-1).text
+        assert.match(initialPrompt, new RegExp(issueDescription))
+        assert.match(initialPrompt, /查一下7月份账单，各业务混元3多少成本？/)
 
         await completeInitialDraft(manager, store, persisted)
         const saved = await manager.archive(session.id)
@@ -372,7 +385,7 @@ describe("curation manager", () => {
         assert.equal(saved.source.originalQuestion, persisted.episode.originalQuestion)
     })
 
-    it("rejects a Skill that the current runtime no longer reports as enabled", async () => {
+    it("inherits the dataset Skill without accepting an operation override", async () => {
         runtime.listSkills = async () => ({
             data: [
                 {
@@ -388,17 +401,15 @@ describe("curation manager", () => {
             ],
         })
 
-        await assert.rejects(
-            manager.createSession({
+        const session = await manager.createSession({
                 datasetId: store.listDatasets()[0].id,
                 caseType: "badcase",
                 sourceThreadId: "source-thread",
                 endItemId: "answer-1",
                 skillPath: "/runtime/skills/billing-cost-management/SKILL.md",
-            }),
-            /not installed and enabled.*current runtime/i,
-        )
-        assert.equal(store.listCurationSessions().length, 0)
+            })
+        await manager.waitForIdle(session.id)
+        assert.deepEqual(session.skillReference, billingSkillReference())
     })
 
     it("records a valid draft, supports follow-up revision, and archives only on Done", async () => {
@@ -457,7 +468,7 @@ describe("curation manager", () => {
         const saved = await manager.archive(session.id)
         assert.equal(saved.question, "查一下7月份账单，各业务混元3多少成本？")
         assert.equal(saved.curated.referenceAnswer.summary, "修订后的参考答案")
-        assert.equal(saved.skillReference, null)
+        assert.deepEqual(saved.skillReference, billingSkillReference())
         assert.equal(store.getCurationSession(session.id).status, "archived")
         assert.deepEqual(runtime.archivedThreads, ["curator-1"])
     })
