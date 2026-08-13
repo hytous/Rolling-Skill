@@ -353,6 +353,17 @@ describe("episode curation evidence", () => {
             /deduction.*positive/i,
         )
 
+        const fullFlexibleScore = badDraft()
+        fullFlexibleScore.badCaseAnalysis.deductionRules[0].deduction = 60
+        assert.doesNotThrow(() => parseCuratorDraft(JSON.stringify(fullFlexibleScore), {caseType: "badcase"}))
+
+        const excessiveDeduction = badDraft()
+        excessiveDeduction.badCaseAnalysis.deductionRules[0].deduction = 61
+        assert.throws(
+            () => parseCuratorDraft(JSON.stringify(excessiveDeduction), {caseType: "badcase"}),
+            /more than 60 points/i,
+        )
+
         const unknownEvidence = badDraft()
         unknownEvidence.badCaseAnalysis.deductionRules[0].sourceItemIds = ["invented-item"]
         assert.throws(

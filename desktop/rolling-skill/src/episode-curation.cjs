@@ -556,7 +556,7 @@ Rules:
   expected recovery. Do not paste repeated calls. Create one or more deductionRules for distinct
   errors. Each rule must say that the same or materially equivalent error in a future evaluation is
   penalized, use a concrete observable match condition, cite frozen source item ids, and assign a
-  positive maximum deduction. Rule deductions must total no more than 40 points.
+  positive maximum deduction. Rule deductions must total no more than 60 points.
 - Do not invent numerical truth. If correctness cannot be established from evidence, encode that as
   an explicit verification requirement.
 - Cite source item ids for evidence-backed claims.
@@ -696,8 +696,8 @@ function validateCuratorDraft(value, {caseType, sourceItemIds} = {}) {
                 }
             }
         }
-        if (totalDeduction > 40) {
-            throw new Error("Badcase deduction rules cannot deduct more than 40 points in total")
+        if (totalDeduction > 60) {
+            throw new Error("Badcase deduction rules cannot deduct more than 60 points in total")
         }
     }
     return deepFreeze(draft)

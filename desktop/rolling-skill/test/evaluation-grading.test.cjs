@@ -115,29 +115,47 @@ function passingJudge(contract = scoreContract()) {
     }
 }
 
+function citeTypedAEvidence(judged) {
+    const evidenceByDimension = {
+        skill_activation: "trace:L1",
+        required_references: "trace:L2",
+        tool_policy: "trace:L3",
+        workflow_order: "trace:L3",
+        completeness_artifacts: "trace:L4",
+        deterministic_processing: "trace:L4",
+        evidence_output: "response",
+        error_recovery: "trace:scope",
+    }
+    for (const entry of judged.aAssessments) {
+        entry.evidenceRefs = [evidenceByDimension[entry.dimensionId]]
+    }
+    return judged
+}
+
 describe("evaluation grading contract", () => {
     it("keeps A generic and maps all Case-specific grading into diagnostic B criteria", () => {
         const contract = scoreContract()
 
         assert.equal(contract.schemaVersion, SCORE_CONTRACT_SCHEMA)
+        assert.equal(contract.calculatorVersion, "a40-b60/v2")
         assert.equal(contract.calculatorVersion, CALCULATOR_VERSION)
-        assert.equal(contract.a.maxScore, 60)
+        assert.equal(contract.a.maxScore, 40)
         assert.equal(contract.issueDescription, "")
         assert.equal(contract.a.passThreshold, A_PASS_THRESHOLD)
         assert.deepEqual(
             contract.a.dimensions.map(({id, weight}) => [id, weight]),
             [
-                ["skill_activation", 10],
-                ["required_references", 8],
-                ["tool_policy", 8],
-                ["workflow_order", 8],
-                ["completeness_artifacts", 8],
-                ["deterministic_processing", 6],
-                ["evidence_output", 6],
-                ["error_recovery", 6],
+                ["skill_activation", 7],
+                ["required_references", 5],
+                ["tool_policy", 5],
+                ["workflow_order", 5],
+                ["completeness_artifacts", 5],
+                ["deterministic_processing", 4],
+                ["evidence_output", 5],
+                ["error_recovery", 4],
             ],
         )
-        assert.equal(A_DIMENSIONS.reduce((sum, entry) => sum + entry.weight, 0), 60)
+        assert.equal(A_DIMENSIONS.reduce((sum, entry) => sum + entry.weight, 0), 40)
         assert.equal("hardRequirements" in contract.a, false)
         assert.equal("automaticFailures" in contract.a, false)
         assert.deepEqual(
@@ -150,7 +168,8 @@ describe("evaluation grading contract", () => {
                 ["S2", "case_soft_criterion"],
             ],
         )
-        assert.equal(contract.b.maxScore, 40)
+        assert.equal(contract.a.passThreshold, 32)
+        assert.equal(contract.b.maxScore, 60)
         assert.match(contract.digest, /^sha256:[a-f0-9]{64}$/)
         assert.equal(Object.isFrozen(contract), true)
     })
@@ -167,7 +186,7 @@ describe("evaluation grading contract", () => {
         const contract = buildScoreContract(curatedBadCase(), {evidenceRefs: ["response"]})
         const deduction = contract.b.criteria.find((entry) => entry.id === "D1")
 
-        assert.equal(contract.a.maxScore, 60)
+        assert.equal(contract.a.maxScore, 40)
         assert.equal(contract.issueDescription, curatedBadCase().issueDescription)
         assert.deepEqual(deduction, {
             id: "D1",
@@ -183,8 +202,8 @@ describe("evaluation grading contract", () => {
         const judge = passingJudge(contract)
         judge.bAssessments.find((entry) => entry.criterionId === "D1").rating = 0
         const computed = calculateScore(contract, judge)
-        assert.equal(computed.aScore, 60)
-        assert.equal(computed.bScore, 32)
+        assert.equal(computed.aScore, 40)
+        assert.equal(computed.bScore, 52)
         assert.deepEqual(
             computed.bCriterionScores.find((entry) => entry.id === "D1"),
             {
@@ -212,6 +231,7 @@ describe("evaluation grading contract", () => {
             source: "trace",
             kind: "skill_activation",
             kinds: ["skill_activation", "skill_read", "command"],
+            sequence: 1,
         })
         assert.equal("catalog" in contract.evidence, false)
         assert.equal(JSON.stringify(contract).includes("Skill contents"), false)
@@ -272,6 +292,82 @@ describe("evaluation grading contract", () => {
             () => validateJudgeResult(judged, contract),
             /not_observable.*semantic Trace coverage is complete/i,
         )
+    })
+
+    it("normalizes error recovery to full credit when a complete Trace contains no errors", () => {
+        const catalog = evidenceCatalog()
+        Object.assign(catalog.entries.find((entry) => entry.id === "trace:scope"), {
+            semanticCoverageComplete: true,
+            samplingStrategy: "semantic-v1",
+            omittedImportantEntries: 0,
+        })
+        const contract = buildScoreContract(curatedCase(), {evidenceCatalog: catalog})
+        const judged = citeTypedAEvidence(passingJudge(contract))
+        judged.aAssessments.find((entry) => entry.dimensionId === "error_recovery").level = 0
+
+        const normalized = validateJudgeResult(judged, contract)
+        const recovery = normalized.aAssessments.find((entry) => entry.dimensionId === "error_recovery")
+
+        assert.deepEqual(recovery, {
+            dimensionId: "error_recovery",
+            status: "scored",
+            level: 4,
+            evidenceRefs: ["trace:scope"],
+            rationale: "The complete Trace contains no error event, so no recovery was required.",
+        })
+        assert.equal(calculateScore(contract, judged).aScore, 40)
+    })
+
+    it("requires failure and recovery-action evidence only when errors occurred", () => {
+        const catalog = evidenceCatalog()
+        Object.assign(catalog.entries.find((entry) => entry.id === "trace:scope"), {
+            semanticCoverageComplete: true,
+            samplingStrategy: "semantic-v1",
+            omittedImportantEntries: 0,
+        })
+        catalog.entries.push(
+            {id: "trace:L5", source: "trace", kind: "error", kinds: ["error", "command", "tool_call"], record: {sequence: 5}},
+            {id: "trace:L6", source: "trace", kind: "command", kinds: ["command", "tool_call"], record: {sequence: 6}},
+        )
+        const contract = buildScoreContract(curatedCase(), {evidenceCatalog: catalog})
+        const judged = citeTypedAEvidence(passingJudge(contract))
+        const recovery = judged.aAssessments.find((entry) => entry.dimensionId === "error_recovery")
+        recovery.level = 3
+        recovery.evidenceRefs = ["trace:L6"]
+
+        assert.throws(
+            () => validateJudgeResult(judged, contract),
+            /must cite a failure.*trace:L5.*recovery action.*trace:L6/i,
+        )
+
+        recovery.evidenceRefs = ["trace:L5", "trace:L6"]
+        assert.doesNotThrow(() => validateJudgeResult(judged, contract))
+    })
+
+    it("replays the CodeBuddy failure evidence IDs that previously made Judge grading fail", () => {
+        const catalog = evidenceCatalog()
+        Object.assign(catalog.entries.find((entry) => entry.id === "trace:scope"), {
+            semanticCoverageComplete: true,
+            samplingStrategy: "semantic-v1",
+            omittedImportantEntries: 0,
+        })
+        catalog.entries.push(
+            {id: "trace:L17760", source: "trace", kind: "command", kinds: ["command", "tool_call", "error"], record: {sequence: 17760}},
+            {id: "trace:L17941", source: "trace", kind: "command", kinds: ["command", "tool_call", "error"], record: {sequence: 17941}},
+            {id: "trace:L19320", source: "trace", kind: "command", kinds: ["command", "tool_call"], record: {sequence: 19320}},
+        )
+        const contract = buildScoreContract(curatedCase(), {evidenceCatalog: catalog})
+        const judged = citeTypedAEvidence(passingJudge(contract))
+        const recovery = judged.aAssessments.find((entry) => entry.dimensionId === "error_recovery")
+        recovery.level = 3
+        recovery.evidenceRefs = ["trace:L19320"]
+
+        assert.throws(
+            () => validateJudgeResult(judged, contract),
+            /trace:L17760.*trace:L17941.*trace:L19320/i,
+        )
+        recovery.evidenceRefs = ["trace:L17941", "trace:L19320"]
+        assert.doesNotThrow(() => validateJudgeResult(judged, contract))
     })
 
     it("requires positive A levels to cite a related strong typed entry when one exists", () => {
@@ -389,19 +485,19 @@ describe("evaluation grading contract", () => {
     })
 })
 
-describe("fixed A60 plus B40 calculator", () => {
+describe("fixed A40 plus flexible B60 calculator", () => {
     it("calculates 100 and passes when A reaches its threshold with all gates clear", () => {
         const contract = scoreContract()
         const computed = calculateScore(contract, passingJudge(contract))
 
-        assert.equal(computed.aScore, 60)
-        assert.equal(computed.bScore, 40)
+        assert.equal(computed.aScore, 40)
+        assert.equal(computed.bScore, 60)
         assert.equal(computed.totalScore, 100)
         assert.equal(computed.aVerdict, "pass")
         assert.equal(computed.overallVerdict, "pass")
     })
 
-    it("uses the inclusive A48 threshold and never lets B decide pass or fail", () => {
+    it("uses the inclusive A32 threshold and never lets B decide pass or fail", () => {
         const contract = scoreContract()
         const atThreshold = passingJudge(contract)
         for (const id of ["deterministic_processing", "error_recovery"]) {
@@ -410,14 +506,14 @@ describe("fixed A60 plus B40 calculator", () => {
         for (const assessment of atThreshold.bAssessments) assessment.rating = 0
 
         const passing = calculateScore(contract, atThreshold)
-        assert.equal(passing.aScore, 48)
+        assert.equal(passing.aScore, 32)
         assert.equal(passing.bScore, 0)
-        assert.equal(passing.totalScore, 48)
+        assert.equal(passing.totalScore, 32)
         assert.equal(passing.overallVerdict, "pass")
 
         atThreshold.aAssessments.find((entry) => entry.dimensionId === "evidence_output").level = 3
         const failing = calculateScore(contract, atThreshold)
-        assert.equal(failing.aScore, 46.5)
+        assert.equal(failing.aScore, 30.8)
         assert.equal(failing.overallVerdict, "fail")
     })
 
@@ -458,7 +554,7 @@ describe("fixed A60 plus B40 calculator", () => {
         assert.equal(computed.totalScore, null)
         assert.equal(computed.aVerdict, "pass")
         assert.deepEqual(computed.unknownDimensions, ["evidence_output"])
-        assert.deepEqual(computed.aScoreRange, {min: 54, max: 60})
+        assert.deepEqual(computed.aScoreRange, {min: 35, max: 40})
         assert.equal(computed.aVerdict, "pass")
     })
 
@@ -513,7 +609,7 @@ describe("fixed A60 plus B40 calculator", () => {
         const computed = calculateScore(contract, passingJudge(contract), {
             activationMode: "explicit",
         })
-        assert.equal(computed.aScore, 60)
+        assert.equal(computed.aScore, 40)
         assert.equal(computed.totalScore, null)
         assert.equal(computed.aVerdict, "diagnostic")
         assert.equal(computed.overallVerdict, "diagnostic")
@@ -526,8 +622,8 @@ describe("fixed A60 plus B40 calculator", () => {
             skillEvidenceBinding: "unverified",
         })
 
-        assert.equal(computed.aScore, 60)
-        assert.equal(computed.bScore, 40)
+        assert.equal(computed.aScore, 40)
+        assert.equal(computed.bScore, 60)
         assert.equal(computed.totalScore, null)
         assert.equal(computed.aVerdict, "diagnostic")
         assert.equal(computed.overallVerdict, "diagnostic")

@@ -9,6 +9,7 @@ const {CodeBuddyRuntimeProvider} = require("./codebuddy-runtime-provider.cjs")
 const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
 const {EvaluationRunner} = require("./evaluation-runner.cjs")
+const {buildDatasetCsv, datasetExportFilename} = require("./dataset-csv-export.cjs")
 const {
     resolveSkillEvidenceBinding,
     runtimeReportsSkill,
@@ -953,6 +954,20 @@ function installIpc() {
     ipcMain.handle("datasets:delete", (_event, datasetId) =>
         store.deleteDataset(requireIdentifier(datasetId, "dataset")),
     )
+    ipcMain.handle("datasets:export-csv", async (_event, requestedDatasetId) => {
+        const datasetId = requireIdentifier(requestedDatasetId, "dataset")
+        const dataset = store.getDataset(datasetId)
+        const cases = store.listCases(datasetId)
+        const csv = buildDatasetCsv(cases)
+        const result = await dialog.showSaveDialog(mainWindow, {
+            title: `Export ${dataset.name}`,
+            defaultPath: join(app.getPath("downloads"), datasetExportFilename(dataset.name)),
+            filters: [{name: "CSV", extensions: ["csv"]}],
+        })
+        if (result.canceled || !result.filePath) return {canceled: true, filePath: null}
+        writeFileSync(result.filePath, csv, {encoding: "utf8", mode: 0o600})
+        return {canceled: false, filePath: result.filePath, caseCount: cases.length}
+    })
     ipcMain.handle("datasets:delete-case", (_event, input = {}) =>
         store.deleteCase(
             requireIdentifier(input.datasetId, "dataset"),

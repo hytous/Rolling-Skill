@@ -318,7 +318,7 @@ describe("local-first desktop surface", () => {
         assert.match(styles, /\.evaluation-case-row:hover\s+\.evaluation-case-delete/)
     })
 
-    it("configures an independent Judge and renders deterministic 60/40 grading records", () => {
+    it("configures an independent Judge and renders deterministic 40/60 grading records", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")
         const styles = source("renderer/styles.css")
@@ -342,6 +342,11 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /judgeModelsLoading/)
         assert.match(renderer, /judgeModelsUnavailable/)
         assert.match(renderer, /judge\.displayName \|\| run\.judgeConfiguration\?\.displayName/)
+        assert.match(renderer, /gradingMaxima\(result\)/)
+        assert.match(renderer, /scoreContract\?\.a\?\.maxScore/)
+        assert.match(renderer, /scoreContract\?\.b\?\.maxScore/)
+        assert.match(renderer, /通用 Skill 执行合规评为 A（40 分）/)
+        assert.match(renderer, /灵活的 Skill \/ Case 质量评为 B（60 分）/)
         assert.match(renderer, /settings\.judgeProfile/)
         assert.match(renderer, /gradingStatus/)
         assert.match(renderer, /computedScore\.dimensionScores/)
@@ -372,6 +377,15 @@ describe("local-first desktop surface", () => {
         assert.match(styles, /@media \(max-width: 900px\)[\s\S]*\.evaluation-grid/)
         assert.match(styles, /@media \(max-width: 900px\)[\s\S]*\.evaluation-runs/)
         assert.doesNotMatch(`${html}\n${renderer}`, /Automated grading is not applied yet|自动评分尚未应用/)
+    })
+
+    it("exports the selected dataset as CSV from the dataset workbench", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+
+        assert.match(html, /id="export-evaluation-dataset"/)
+        assert.match(renderer, /window\.rollingSkill\.exportDatasetCsv\(state\.evaluationDatasetId\)/)
+        assert.match(renderer, /datasetExported/)
     })
 
     it("offers capability-gated Current and Archived thread history with read-only archived sessions", () => {

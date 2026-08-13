@@ -217,7 +217,7 @@ const translations = {
         explicitDiagnostic: "Explicit diagnostic",
         explicitDiagnosticHelp: "Use the provider's explicit Skill instruction to isolate trigger failures.",
         startSelectedCase: "Start selected case",
-        evaluationLaunchHelp: "Selected runtimes execute in parallel. The independent Judge grades A Skill compliance out of 60 and B answer quality out of 40.",
+        evaluationLaunchHelp: "Selected runtimes execute in parallel. The independent Judge grades generic Skill compliance as A (40 points) and flexible Skill / Case quality as B (60 points).",
         judgeConfiguration: "Independent Judge",
         judgeConfigurationHelp: "This runtime reads the saved answer and Trace evidence only; it does not execute the tested Case.",
         judgeRuntime: "Judge runtime",
@@ -248,8 +248,8 @@ const translations = {
         judgeModelsReady: "Judge model catalog ready",
         judgeModelsUnavailable: "Judge model catalog unavailable: {message}",
         totalScore: "Total",
-        skillComplianceScore: "A · Skill compliance",
-        answerQualityScore: "B · Answer quality",
+        skillComplianceScore: "A · Generic Skill compliance",
+        answerQualityScore: "B · Flexible Skill / Case quality",
         gatePass: "A gate passed",
         gateFail: "A gate failed",
         gateIndeterminate: "A gate indeterminate",
@@ -284,6 +284,8 @@ const translations = {
         evaluationRuns: "Evaluation runs",
         runtimeConfigurations: "Runtime configurations",
         startDataset: "Run entire dataset",
+        exportCsv: "Export CSV",
+        datasetExported: "Exported {count} Cases to CSV",
         noRuns: "No evaluation runs yet.",
         runQueued: "Evaluation run queued",
         runResults: "Case × runtime results",
@@ -540,7 +542,7 @@ const translations = {
         explicitDiagnostic: "显式诊断",
         explicitDiagnosticHelp: "使用对应运行时的显式 Skill 指令，用于区分触发失败和执行失败。",
         startSelectedCase: "启动选中 Case",
-        evaluationLaunchHelp: "所选运行时会并行执行；独立 Judge 将 Skill 执行合规评为 A（60 分），将数字与结论质量评为 B（40 分）。",
+        evaluationLaunchHelp: "所选运行时会并行执行；独立 Judge 将通用 Skill 执行合规评为 A（40 分），将灵活的 Skill / Case 质量评为 B（60 分）。",
         judgeConfiguration: "独立 Judge",
         judgeConfigurationHelp: "该运行时只读取已保存回答和 Trace 证据进行判分，不执行被测 Case。",
         judgeRuntime: "Judge 运行时",
@@ -571,8 +573,8 @@ const translations = {
         judgeModelsReady: "Judge 模型目录已就绪",
         judgeModelsUnavailable: "Judge 模型目录不可用：{message}",
         totalScore: "总分",
-        skillComplianceScore: "A · Skill 执行合规",
-        answerQualityScore: "B · 数字与结论正确性",
+        skillComplianceScore: "A · 通用 Skill 执行合规",
+        answerQualityScore: "B · 灵活 Skill / Case 质量",
         gatePass: "A 硬门槛通过",
         gateFail: "A 硬门槛未通过",
         gateIndeterminate: "A 硬门槛无法判定",
@@ -607,6 +609,8 @@ const translations = {
         evaluationRuns: "评测记录",
         runtimeConfigurations: "运行时配置",
         startDataset: "运行整个数据集",
+        exportCsv: "导出 CSV",
+        datasetExported: "已导出 {count} 个 Case 到 CSV",
         noRuns: "还没有评测记录。",
         runQueued: "评测任务已进入队列",
         runResults: "Case × Runtime 结果",
@@ -769,6 +773,7 @@ const elements = {
     evaluationCreateDataset: document.querySelector("#evaluation-create-dataset"),
     evaluationNewDatasetName: document.querySelector("#evaluation-new-dataset-name"),
     evaluationNewDatasetSkill: document.querySelector("#evaluation-new-dataset-skill"),
+    exportEvaluationDataset: document.querySelector("#export-evaluation-dataset"),
     evaluationCaseCount: document.querySelector("#evaluation-case-count"),
     evaluationCaseList: document.querySelector("#evaluation-case-list"),
     evaluationDatasetSkillStatus: document.querySelector("#evaluation-dataset-skill-status"),
@@ -2481,6 +2486,7 @@ function renderEvaluationWorkbench() {
     const skill = renderDatasetSkillStatus(elements.evaluationDatasetSkillStatus, dataset)
     elements.changeEvaluationDatasetSkill.textContent = t(dataset?.skillReference ? "changeSkill" : "bindDatasetSkill")
     elements.changeEvaluationDatasetSkill.disabled = !dataset
+    elements.exportEvaluationDataset.disabled = !dataset
     renderEvaluationRuntimeConfigurations(skill)
     renderEvaluationJudgeConfiguration()
     renderEvaluationRuns()
@@ -2805,6 +2811,14 @@ function resultScoreText(value, maxScore, range = null) {
     return `—/${maxScore}`
 }
 
+function gradingMaxima(result) {
+    const scoreContract = result?.scoreContract
+    return {
+        a: scoreContract?.a?.maxScore ?? 60,
+        b: scoreContract?.b?.maxScore ?? 40,
+    }
+}
+
 function aVerdictLabel(verdict) {
     return t(
         {
@@ -2882,6 +2896,7 @@ function renderCompletedGrading(result, run) {
     const computedScore = result.computedScore
     if (!computedScore) return null
     const scoreContract = result.scoreContract ?? {}
+    const maxima = gradingMaxima(result)
     const judgment = result.judgment ?? {}
     const block = node("section", "evaluation-grading")
     const summary = node("div", "evaluation-score-summary")
@@ -2893,13 +2908,13 @@ function renderCompletedGrading(result, run) {
     const a = node("div", "evaluation-score-part")
     a.append(
         node("small", "", t("skillComplianceScore")),
-        node("strong", "", resultScoreText(computedScore.aScore, 60, computedScore.aScoreRange)),
+        node("strong", "", resultScoreText(computedScore.aScore, maxima.a, computedScore.aScoreRange)),
         node("span", `evaluation-gate ${computedScore.aVerdict ?? "indeterminate"}`, aVerdictLabel(computedScore.aVerdict)),
     )
     const b = node("div", "evaluation-score-part")
     b.append(
         node("small", "", t("answerQualityScore")),
-        node("strong", "", resultScoreText(computedScore.bScore, 40)),
+        node("strong", "", resultScoreText(computedScore.bScore, maxima.b)),
     )
     summary.append(total, a, b)
 
@@ -3250,6 +3265,16 @@ async function createEvaluationDataset() {
         state.evaluationDatasetId = dataset.id
         await loadEvaluationWorkbench(false)
         showToast(formatMessage("createdDataset", {name: dataset.name}))
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function exportEvaluationDataset() {
+    if (!state.evaluationDatasetId) return
+    try {
+        const result = await window.rollingSkill.exportDatasetCsv(state.evaluationDatasetId)
+        if (!result?.canceled) showToast(formatMessage("datasetExported", {count: result.caseCount ?? 0}))
     } catch (error) {
         showError(error)
     }
@@ -4385,6 +4410,7 @@ elements.evaluationCreateDataset.addEventListener("submit", (event) => {
     event.preventDefault()
     void createEvaluationDataset()
 })
+elements.exportEvaluationDataset.addEventListener("click", () => void exportEvaluationDataset())
 elements.changeEvaluationDatasetSkill.addEventListener("click", () =>
     openDatasetSkillDialog(state.evaluationDatasetId),
 )

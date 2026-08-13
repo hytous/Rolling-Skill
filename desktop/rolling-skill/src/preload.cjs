@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     createDataset: (input) => ipcRenderer.invoke("datasets:create", input),
     bindDatasetSkill: (datasetId, skillReference) =>
         ipcRenderer.invoke("datasets:bind-skill", {datasetId, skillReference}),
+    exportDatasetCsv: (datasetId) => ipcRenderer.invoke("datasets:export-csv", datasetId),
     deleteDataset: (datasetId) => ipcRenderer.invoke("datasets:delete", datasetId),
     revealLocalData: () => ipcRenderer.invoke("datasets:reveal"),
     updateSettings: (input) => ipcRenderer.invoke("settings:update", input),

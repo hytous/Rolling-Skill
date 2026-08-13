@@ -19,6 +19,17 @@ describe("desktop main/preload bridge", () => {
         assert.doesNotMatch(main, /input\.skillReference\?\.name/)
     })
 
+    it("exports a complete dataset as input/output JSON-array CSV", () => {
+        const main = source("src/main.cjs")
+        const preload = source("src/preload.cjs")
+
+        assert.match(main, /datasets:export-csv/)
+        assert.match(main, /const cases = store\.listCases\(datasetId\)/)
+        assert.match(main, /buildDatasetCsv\(cases\)/)
+        assert.match(main, /showSaveDialog/)
+        assert.match(preload, /exportDatasetCsv/)
+    })
+
     it("exposes explicit evaluation cancellation separately from record deletion", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")

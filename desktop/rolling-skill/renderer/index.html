@@ -143,6 +143,7 @@
                                     <span class="panel-kicker" data-i18n="datasets">Datasets</span>
                                     <strong id="evaluation-dataset-count">0</strong>
                                 </div>
+                                <button id="export-evaluation-dataset" class="evaluation-panel-action" type="button" data-i18n="exportCsv">Export CSV</button>
                             </div>
                             <form id="evaluation-create-dataset" class="evaluation-create-row dataset-create-form">
                                 <input id="evaluation-new-dataset-name" type="text" maxlength="100" data-i18n-placeholder="createDataset" placeholder="Create a new dataset" />
@@ -213,7 +214,7 @@
                                 <button id="start-evaluation" type="button" data-i18n="startSelectedCase">Start selected case</button>
                                 <button id="start-dataset-evaluation" class="primary" type="button" data-i18n="startDataset">Run entire dataset</button>
                             </div>
-                            <p class="evaluation-note" data-i18n="evaluationLaunchHelp">Selected runtimes execute in parallel. The independent Judge grades A Skill compliance out of 60 and B answer quality out of 40.</p>
+                            <p class="evaluation-note" data-i18n="evaluationLaunchHelp">Selected runtimes execute in parallel. The independent Judge grades generic Skill compliance as A (40 points) and flexible Skill / Case quality as B (60 points).</p>
                         </aside>
                     </div>
                     <section id="evaluation-runs" class="evaluation-runs hidden">

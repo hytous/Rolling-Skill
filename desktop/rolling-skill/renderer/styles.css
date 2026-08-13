@@ -658,6 +658,22 @@ kbd {
     font-size: 16px;
 }
 
+.evaluation-panel-action {
+    min-height: 26px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 9.5px;
+}
+
+.evaluation-panel-action:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+}
+
 .panel-kicker {
     color: var(--faint);
     font-size: 9px;

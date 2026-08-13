@@ -129,6 +129,7 @@ Use the switch below the Rolling Skill logo to move between the native **Chat** 
 **Skill evaluation** workbench. The workbench can:
 
 - create, browse, and delete local datasets;
+- export a complete dataset as CSV, with `input` and `output` columns whose cells are JSON message arrays;
 - bind exactly one enabled runtime Skill to each dataset and repair or change that binding;
 - inspect original evaluation questions, optional answer-issue descriptions, and curated references;
 - delete a Case without invalidating older evaluation snapshots;
@@ -157,13 +158,16 @@ runtime paths and versions, models, efforts, responses/errors, duration, session
 and Case-scoped Trace references. Deleting a current Case therefore does not damage historical
 evidence.
 
-Each `Case × runtime` result is scored out of 100. Layer A is a fixed 60-point Skill-compliance
+Each `Case × runtime` result is scored out of 100. Layer A is a fixed 40-point generic Skill-compliance
 rubric covering activation, required references, tool/CLI policy, workflow order,
 pagination/completeness/artifacts, deterministic processing, evidence/output requirements, and
 error recovery. The application requires the Judge to assess every fixed item and computes the A
-score itself; A passes at 48 points unless the activation gate fails. Layer B is a 40-point
-Case-specific subjective assessment built from the Curator contract. It records verifiable fields,
-cross-checks, verification status, and Judge confidence, but never reverses the A verdict.
+score itself; A passes at 32 points unless the activation gate fails. When a complete Trace contains
+no error event, the fixed program awards full error-recovery credit because no recovery was needed.
+When an error occurred, positive recovery credit requires both failure evidence and a later recovery
+action. Layer B is a flexible 60-point Skill/Case-specific subjective assessment built from the
+Curator contract. It records verifiable fields, cross-checks, verification status, and Judge
+confidence, but never reverses the A verdict.
 
 Target execution, grading execution, and quality verdict remain separate states. A result first waits
 for target execution, then waits in the Judge queue, then moves through active and terminal grading

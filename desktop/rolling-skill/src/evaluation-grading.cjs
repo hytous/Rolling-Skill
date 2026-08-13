@@ -3,55 +3,55 @@ const {createHash} = require("node:crypto")
 const SCORE_CONTRACT_SCHEMA = "rolling-skill-score-contract/v1"
 const JUDGE_RESULT_SCHEMA = "rolling-skill-judge-result/v1"
 const COMPUTED_SCORE_SCHEMA = "rolling-skill-computed-score/v1"
-const CALCULATOR_VERSION = "a60-b40/v1"
-const A_PASS_THRESHOLD = 48
+const CALCULATOR_VERSION = "a40-b60/v2"
+const A_PASS_THRESHOLD = 32
 
 const A_DIMENSIONS = deepFreeze([
     {
         id: "skill_activation",
-        weight: 10,
+        weight: 7,
         applicability: "required",
         criterion: "Discover, read, and apply the target Skill without relying on an unrequested explicit trigger.",
     },
     {
         id: "required_references",
-        weight: 8,
+        weight: 5,
         applicability: "conditional",
         criterion: "Read every applicable required reference before the operation that depends on it.",
     },
     {
         id: "tool_policy",
-        weight: 8,
+        weight: 5,
         applicability: "required",
         criterion: "Follow the Skill's tool-selection policy, including CLI priority and justified fallback behavior.",
     },
     {
         id: "workflow_order",
-        weight: 8,
+        weight: 5,
         applicability: "required",
         criterion: "Perform required checks, queries, validation, synthesis, and output in the prescribed order.",
     },
     {
         id: "completeness_artifacts",
-        weight: 8,
+        weight: 5,
         applicability: "conditional",
         criterion: "Complete pagination and persist required artifacts without silently truncating or omitting results.",
     },
     {
         id: "deterministic_processing",
-        weight: 6,
+        weight: 4,
         applicability: "conditional",
         criterion: "Use deterministic, reproducible processing for filtering, aggregation, and calculation when applicable.",
     },
     {
         id: "evidence_output",
-        weight: 6,
+        weight: 5,
         applicability: "required",
         criterion: "Provide the required evidence, sources, units, scope, verification state, and output structure.",
     },
     {
         id: "error_recovery",
-        weight: 6,
+        weight: 4,
         applicability: "conditional",
         criterion: "Recognize failures, bound retries, use valid recovery paths, and explain unrecoverable limitations.",
     },
@@ -59,7 +59,7 @@ const A_DIMENSIONS = deepFreeze([
 
 const A_DIMENSION_IDS = new Set(A_DIMENSIONS.map((entry) => entry.id))
 const A_MAX_SCORE = A_DIMENSIONS.reduce((sum, entry) => sum + entry.weight, 0)
-const B_MAX_SCORE = 40
+const B_MAX_SCORE = 60
 const FORBIDDEN_JUDGE_FIELD = /(?:score|verdict)/iu
 const EVIDENCE_CATALOG_SCHEMA = "rolling-skill-evidence-catalog/v1"
 const EVIDENCE_KINDS = new Set([
@@ -75,7 +75,7 @@ const A_STRONG_EVIDENCE_KINDS = deepFreeze({
     completeness_artifacts: ["command", "tool_call", "file_change"],
     deterministic_processing: ["command", "tool_call", "file_change"],
     evidence_output: ["response"],
-    error_recovery: ["error"],
+    error_recovery: [],
 })
 
 function copy(value) {
@@ -163,6 +163,8 @@ function compactEvidenceCatalog(value) {
                 ? entry.omittedImportantEntries
                 : 0
         }
+        const sequence = Number(entry.sequence ?? entry.record?.sequence)
+        if (Number.isSafeInteger(sequence) && sequence >= 0) compact.sequence = sequence
         return compact
     })
     assertUniqueIds(entries, "Evidence Catalog entry")
@@ -333,6 +335,7 @@ A assessment shape:
 - Every fixed A item must be assessed; not_applicable is forbidden. When a conditional item has no applicable obligation in the frozen Skill or Case, score the observed compliance and explain that basis instead of skipping its weight.
 - not_observable means the supplied evidence genuinely cannot decide the item. Omit level for that status; it makes the fixed program return a score range instead of a fabricated exact score.
 - When Trace evidence reports semanticCoverageComplete=true, the complete execution range was scanned and only protocol noise or oversized output bodies were compacted. A missing required event is observable absence: score it at level 0 and explain the missing evidence. not_observable is forbidden for A in that case.
+- For error_recovery, a complete Trace with no error event receives level 4 automatically because no recovery was needed. Do not penalize a clean execution. When errors exist, a positive level must cite both an error entry and a later command, tool_call, or file_change showing the recovery action.
 
 B assessment shape:
 {"criterionId":"contract id","status":"scored","rating":0,"confidence":0.0,"verificationStatus":"verified|partially_verified|unverified|not_verifiable","verifiableFields":["field checked"],"crossChecks":["cross-check performed"],"evidenceRefs":[],"rationale":"why"}
@@ -515,6 +518,52 @@ function requireTypedPositiveAEvidence(entry, contract) {
     }
 }
 
+function evidenceSequence(entry) {
+    if (Number.isSafeInteger(entry?.sequence)) return entry.sequence
+    const match = String(entry?.id ?? "").match(/^trace:L(\d+)$/u)
+    return match ? Number(match[1]) : null
+}
+
+function recoveryCandidates(contract) {
+    const failures = contract.evidence.entries.filter((entry) => entry.kinds.includes("error"))
+    const earliestFailure = failures.reduce((minimum, entry) => {
+        const sequence = evidenceSequence(entry)
+        return sequence === null ? minimum : Math.min(minimum, sequence)
+    }, Number.POSITIVE_INFINITY)
+    const actions = contract.evidence.entries.filter((entry) => {
+        if (!entry.kinds.some((kind) => ["command", "tool_call", "file_change"].includes(kind))) return false
+        if (entry.kinds.includes("error")) return false
+        const sequence = evidenceSequence(entry)
+        return !Number.isFinite(earliestFailure) || sequence === null || sequence > earliestFailure
+    })
+    return {failures, actions}
+}
+
+function candidateIds(entries, limit = 20) {
+    return entries.slice(0, limit).map((entry) => entry.id).join(", ") || "none"
+}
+
+function validateErrorRecoveryEvidence(entry, contract) {
+    if (entry.dimensionId !== "error_recovery" || entry.status !== "scored" || entry.level <= 0) return
+    if (!contract.evidence.typed) return
+    const {failures, actions} = recoveryCandidates(contract)
+    if (!failures.length) return
+    const cited = new Set(entry.evidenceRefs)
+    const citedFailures = failures.filter((candidate) => cited.has(candidate.id))
+    const citedActions = actions.filter((candidate) => cited.has(candidate.id))
+    const hasOrderedPair = citedFailures.some((failure) => citedActions.some((action) => {
+        const failureSequence = evidenceSequence(failure)
+        const actionSequence = evidenceSequence(action)
+        return failureSequence === null || actionSequence === null || actionSequence > failureSequence
+    }))
+    if (!hasOrderedPair) {
+        throw new Error(
+            `A assessment error_recovery with a positive level must cite a failure ` +
+            `[${candidateIds(failures)}] and a later recovery action [${candidateIds(actions)}]`,
+        )
+    }
+}
+
 function allowedKeys(entry, keys, label) {
     const allowed = new Set(keys)
     const extra = Object.keys(entry).filter((key) => !allowed.has(key))
@@ -553,6 +602,16 @@ function validateJudgeResult(value, contract) {
         contract.a.dimensions.map((entry) => entry.id),
         "A dimensions",
     )
+    const traceHasErrors = contract.evidence.entries.some((entry) => entry.kinds.includes("error"))
+    if (semanticTraceComplete && !traceHasErrors) {
+        const recovery = aAssessments.find((entry) => entry.dimensionId === "error_recovery")
+        Object.assign(recovery, {
+            status: "scored",
+            level: 4,
+            evidenceRefs: ["trace:scope"],
+            rationale: "The complete Trace contains no error event, so no recovery was required.",
+        })
+    }
     for (const entry of aAssessments) {
         allowedKeys(entry, ["dimensionId", "status", "level", "evidenceRefs", "rationale"], "A assessment")
         const dimension = contract.a.dimensions.find((candidate) => candidate.id === entry.dimensionId)
@@ -571,6 +630,7 @@ function validateJudgeResult(value, contract) {
                 throw new Error("A scored assessment requires at least one evidence reference")
             }
             requireTypedPositiveAEvidence(entry, contract)
+            validateErrorRecoveryEvidence(entry, contract)
         } else if (entry.level !== undefined) {
             throw new Error("A assessment must omit level when it is not scored")
         }
