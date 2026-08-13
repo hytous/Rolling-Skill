@@ -77,9 +77,127 @@ describe("local app-server trace recorder", () => {
         assert.equal(evidence.reference, reference)
         assert.equal(evidence.entries.length, 2)
         assert.equal(evidence.entries[1].sequence, 3)
-        assert.equal(evidence.entries[1].truncated, true)
+        assert.equal(evidence.entries[1].contentCompacted, true)
+        assert.equal(evidence.truncated, false)
+        assert.equal(evidence.semanticCoverageComplete, true)
         assert.match(evidence.digest, /^sha256:[a-f0-9]{64}$/)
         assert.ok(JSON.stringify(evidence).length < 3_000)
+    })
+
+    it("scans the full range and compacts protocol noise without losing semantic evidence", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-traces-"))
+        temporaryDirectories.push(directory)
+        const recorder = new TraceRecorder(directory, {sessionId: "semantic-range"})
+        const mark = recorder.mark()
+        for (let index = 0; index < 2_400; index += 1) {
+            recorder.record("inbound", {
+                method: index % 2 ? "item/agentMessage/delta" : "thread/tokenUsage/updated",
+                params: {delta: "protocol-noise", index},
+            })
+            if (index === 700) {
+                recorder.record("inbound", {
+                    method: "session/update",
+                    params: {
+                        update: {
+                            sessionUpdate: "tool_call",
+                            toolCallId: "skill-call",
+                            kind: "other",
+                            status: "pending",
+                            rawInput: {skill: "billing-cost-management"},
+                            _meta: {"codebuddy.ai/toolName": "Skill"},
+                        },
+                    },
+                })
+            }
+            if (index === 1_300) {
+                recorder.record("inbound", {
+                    method: "session/update",
+                    params: {
+                        update: {
+                            sessionUpdate: "tool_call",
+                            toolCallId: "reference-call",
+                            kind: "read",
+                            status: "pending",
+                            rawInput: {file_path: "/skills/billing/references/query.md"},
+                        },
+                    },
+                })
+            }
+        }
+        const fullCommand = `billing-cli query --page-size 100 --cursor ${"x".repeat(700)}`
+        recorder.record("inbound", {
+            method: "session/update",
+            params: {
+                update: {
+                    sessionUpdate: "tool_call",
+                    toolCallId: "command-call",
+                    kind: "execute",
+                    status: "pending",
+                    rawInput: {command: fullCommand},
+                },
+            },
+        })
+        recorder.record("inbound", {
+            method: "session/update",
+            params: {
+                update: {
+                    sessionUpdate: "tool_call_update",
+                    toolCallId: "command-call",
+                    status: "failed",
+                    rawOutput: {type: "text", text: "failure output ".repeat(2_000)},
+                    error: {code: "E_QUERY"},
+                },
+            },
+        })
+
+        const evidence = recorder.evidenceForReference(recorder.referenceFrom(mark), {
+            maxEntryCharacters: 2_000,
+            maxTotalCharacters: 20_000,
+        })
+
+        assert.deepEqual(
+            evidence.entries.map((entry) => entry.sequence),
+            [...evidence.entries.map((entry) => entry.sequence)].sort((left, right) => left - right),
+        )
+        assert.equal(evidence.sourceEntryCount, 2_404)
+        assert.equal(evidence.includedEntries, 4)
+        assert.equal(evidence.compactedEntries, 2_400)
+        assert.equal(evidence.omittedImportantEntries, 0)
+        assert.equal(evidence.samplingStrategy, "semantic-v1")
+        assert.equal(evidence.semanticCoverageComplete, true)
+        assert.equal(evidence.truncated, false)
+        assert.ok(evidence.entries.some((entry) => entry.sequence > 2_400))
+        const command = evidence.entries.find((entry) =>
+            entry.message?.params?.update?.toolCallId === "command-call" &&
+            entry.message?.params?.update?.sessionUpdate === "tool_call",
+        )
+        assert.equal(command.message.params.update.rawInput.command, fullCommand)
+        const completion = evidence.entries.find((entry) =>
+            entry.message?.params?.update?.toolCallId === "command-call" &&
+            entry.message?.params?.update?.sessionUpdate === "tool_call_update",
+        )
+        assert.equal(completion.contentCompacted, true)
+        assert.ok(JSON.stringify(completion).length <= 2_200)
+    })
+
+    it("marks semantic coverage incomplete only when important events exceed the bound", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-traces-"))
+        temporaryDirectories.push(directory)
+        const recorder = new TraceRecorder(directory, {sessionId: "semantic-overflow"})
+        const mark = recorder.mark()
+        for (let index = 0; index < 5; index += 1) {
+            recorder.record("inbound", {
+                method: "item/completed",
+                params: {item: {type: "commandExecution", command: `billing-cli query ${index}`, status: "completed"}},
+            })
+        }
+
+        const evidence = recorder.evidenceForReference(recorder.referenceFrom(mark), {maxEntries: 2})
+
+        assert.equal(evidence.includedEntries, 2)
+        assert.equal(evidence.omittedImportantEntries, 3)
+        assert.equal(evidence.semanticCoverageComplete, false)
+        assert.equal(evidence.truncated, true)
     })
 
     it("rejects trace references that do not belong to this recorder", () => {

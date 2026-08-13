@@ -88,6 +88,12 @@ function eventKinds(record) {
     const failed = hasErrorObject || statuses.some((value) =>
         ["failed", "error", "rejected", "cancelled"].includes(value),
     )
+    const codeBuddyUpdate = object(record?.message?.params?.update)
+    const codeBuddyToolEvent = ["tool_call", "tool_call_update"].includes(
+        String(codeBuddyUpdate.sessionUpdate ?? ""),
+    )
+    const codeBuddyInput = object(codeBuddyUpdate.rawInput)
+    const codeBuddyCompleted = String(codeBuddyUpdate.status ?? "").toLowerCase() === "completed"
 
     if (hasSkillMention(record)) kinds.add("skill_activation")
     if (types.some((value) => /commandexecution|executecommand|shell|terminal/iu.test(value))) {
@@ -96,6 +102,23 @@ function eventKinds(record) {
     if (types.some((value) => /mcptoolcall|dynamictoolcall|collabagenttoolcall|toolcall/iu.test(value))) {
         kinds.add("tool_call")
     }
+    if (codeBuddyToolEvent) kinds.add("tool_call")
+    if (codeBuddyInput.skill && codeBuddyCompleted) {
+        kinds.add("skill_activation")
+        kinds.add("skill_read")
+    }
+    if (codeBuddyUpdate.kind === "read" && codeBuddyCompleted) {
+        const path = String(codeBuddyInput.file_path ?? codeBuddyInput.path ?? "")
+        if (/(?:^|\/)SKILL\.md$/iu.test(path)) {
+            kinds.add("skill_activation")
+            kinds.add("skill_read")
+        }
+        if (/(?:^|\/)(?:references?|assets?|DEPENDENCIES)\//iu.test(path) || /(?:^|\/)DEPENDENCIES\.md$/iu.test(path)) {
+            kinds.add("reference_read")
+        }
+    }
+    if (codeBuddyUpdate.kind === "execute") kinds.add("command")
+    if (codeBuddyUpdate.kind === "edit") kinds.add("file_change")
     if (types.some((value) => /filechange|file_change|applypatch|writefile|editfile/iu.test(value))) {
         kinds.add("file_change")
     }
@@ -160,6 +183,17 @@ function buildEvidenceCatalog({response = "", traceEvidence = null, skillEvidenc
             omittedEntries: Number.isSafeInteger(trace.omittedEntries) && trace.omittedEntries >= 0
                 ? trace.omittedEntries
                 : 0,
+            sourceEntryCount: Number.isSafeInteger(trace.sourceEntryCount) ? trace.sourceEntryCount : traceEntries.length,
+            includedEntries: Number.isSafeInteger(trace.includedEntries) ? trace.includedEntries : traceEntries.length,
+            compactedEntries: Number.isSafeInteger(trace.compactedEntries) ? trace.compactedEntries : 0,
+            contentCompactedEntries: Number.isSafeInteger(trace.contentCompactedEntries)
+                ? trace.contentCompactedEntries
+                : 0,
+            omittedImportantEntries: Number.isSafeInteger(trace.omittedImportantEntries)
+                ? trace.omittedImportantEntries
+                : Number(trace.omittedEntries) || 0,
+            samplingStrategy: typeof trace.samplingStrategy === "string" ? trace.samplingStrategy : null,
+            semanticCoverageComplete: trace.semanticCoverageComplete === true,
             entryCount: traceEntries.length,
         })
         const seen = new Set()

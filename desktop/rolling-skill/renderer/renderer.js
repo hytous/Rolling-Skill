@@ -3015,11 +3015,14 @@ function renderEvaluationRuns() {
         appendEvaluationQualitySummary(button, detailedRun)
         row.append(button)
         if (run.status === "queued" || run.status === "running") {
-            const cancel = node("button", "hover-delete-button evaluation-run-cancel", "■")
+            const cancel = node("button", "hover-delete-button evaluation-stop-control evaluation-run-cancel")
             cancel.type = "button"
             cancel.title = t("stopEvaluation")
             cancel.setAttribute("aria-label", t("stopEvaluation"))
             cancel.dataset.cancelEvaluationRun = run.id
+            const icon = node("span", "evaluation-stop-icon")
+            icon.setAttribute("aria-hidden", "true")
+            cancel.append(icon)
             row.append(cancel)
         } else {
             const remove = node("button", "hover-delete-button evaluation-run-delete", "×")
@@ -3053,9 +3056,12 @@ function renderEvaluationRuns() {
     )
     appendEvaluationQualitySummary(header, run)
     if (run.status === "queued" || run.status === "running") {
-        const stop = node("button", "evaluation-stop-button", t("stopEvaluation"))
+        const stop = node("button", "evaluation-stop-control evaluation-stop-button")
         stop.type = "button"
         stop.dataset.cancelEvaluationRun = run.id
+        const icon = node("span", "evaluation-stop-icon")
+        icon.setAttribute("aria-hidden", "true")
+        stop.append(icon, node("span", "", t("stopEvaluation")))
         header.append(stop)
     }
     const results = node("div", "evaluation-result-list")

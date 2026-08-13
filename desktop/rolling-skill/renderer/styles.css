@@ -1279,13 +1279,48 @@ kbd {
     position: relative;
 }
 
+.evaluation-stop-control {
+    display: inline-flex;
+    height: 28px;
+    padding: 0 9px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--surface-raised) 64%, var(--surface));
+    box-shadow: 0 1px 2px color-mix(in srgb, #000 6%, transparent);
+    color: var(--muted);
+    font-size: 9px;
+    font-weight: 650;
+    transition: border-color 120ms ease, background 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.evaluation-stop-icon {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    border-radius: 2px;
+    background: currentColor;
+}
+
+.evaluation-stop-control:hover {
+    border-color: color-mix(in srgb, var(--danger) 28%, var(--border));
+    background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+    box-shadow: 0 2px 6px color-mix(in srgb, var(--danger) 9%, transparent);
+    color: var(--danger);
+}
+
+.hover-delete-button.evaluation-stop-control {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+}
+
 .evaluation-stop-button {
     position: absolute;
     top: 0;
     right: 0;
-    border-color: color-mix(in srgb, var(--danger) 32%, var(--border));
-    background: color-mix(in srgb, var(--danger) 8%, var(--surface));
-    color: var(--danger);
 }
 
 .evaluation-run-detail-header h2 {

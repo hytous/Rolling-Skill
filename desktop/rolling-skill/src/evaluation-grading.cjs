@@ -147,14 +147,24 @@ function compactEvidenceCatalog(value) {
     if (value.schemaVersion !== EVIDENCE_CATALOG_SCHEMA || !Array.isArray(value.entries)) {
         throw new Error(`Evidence Catalog must use ${EVIDENCE_CATALOG_SCHEMA}`)
     }
-    const entries = value.entries.map((entry) => ({
-        id: requireString(entry?.id, "Evidence Catalog entry id"),
-        source: requireString(entry?.source, "Evidence Catalog entry source"),
-        kind: requireString(entry?.kind, "Evidence Catalog entry kind"),
-        kinds: requireArray(entry?.kinds, "Evidence Catalog entry kinds").map((kind) =>
-            requireString(kind, "Evidence Catalog kind"),
-        ),
-    }))
+    const entries = value.entries.map((entry) => {
+        const compact = {
+            id: requireString(entry?.id, "Evidence Catalog entry id"),
+            source: requireString(entry?.source, "Evidence Catalog entry source"),
+            kind: requireString(entry?.kind, "Evidence Catalog entry kind"),
+            kinds: requireArray(entry?.kinds, "Evidence Catalog entry kinds").map((kind) =>
+                requireString(kind, "Evidence Catalog kind"),
+            ),
+        }
+        if (compact.kind === "trace_scope") {
+            compact.semanticCoverageComplete = entry.semanticCoverageComplete === true
+            compact.samplingStrategy = typeof entry.samplingStrategy === "string" ? entry.samplingStrategy : null
+            compact.omittedImportantEntries = Number.isSafeInteger(entry.omittedImportantEntries)
+                ? entry.omittedImportantEntries
+                : 0
+        }
+        return compact
+    })
     assertUniqueIds(entries, "Evidence Catalog entry")
     for (const entry of entries) {
         if (!EVIDENCE_KINDS.has(entry.kind) || entry.kinds.some((kind) => !EVIDENCE_KINDS.has(kind))) {
@@ -322,6 +332,7 @@ A assessment shape:
 - For scored, level must be an integer from 0 to 4: 4 complete, 3 minor gaps, 2 material gaps, 1 minimal compliance, 0 absent or contrary.
 - Every fixed A item must be assessed; not_applicable is forbidden. When a conditional item has no applicable obligation in the frozen Skill or Case, score the observed compliance and explain that basis instead of skipping its weight.
 - not_observable means the supplied evidence genuinely cannot decide the item. Omit level for that status; it makes the fixed program return a score range instead of a fabricated exact score.
+- When Trace evidence reports semanticCoverageComplete=true, the complete execution range was scanned and only protocol noise or oversized output bodies were compacted. A missing required event is observable absence: score it at level 0 and explain the missing evidence. not_observable is forbidden for A in that case.
 
 B assessment shape:
 {"criterionId":"contract id","status":"scored","rating":0,"confidence":0.0,"verificationStatus":"verified|partially_verified|unverified|not_verifiable","verifiableFields":["field checked"],"crossChecks":["cross-check performed"],"evidenceRefs":[],"rationale":"why"}
@@ -532,6 +543,9 @@ function validateJudgeResult(value, contract) {
     }
     if (result.contractDigest !== contract.digest) throw new Error("Judge result contract digest does not match")
     const allowedEvidenceRefs = new Set(contract.evidence.allowedRefs)
+    const semanticTraceComplete = contract.evidence.entries.some((entry) =>
+        entry.kind === "trace_scope" && entry.semanticCoverageComplete === true,
+    )
 
     const aAssessments = requireArray(result.aAssessments, "Judge A assessments")
     assertExactIds(
@@ -545,6 +559,9 @@ function validateJudgeResult(value, contract) {
         validateEvidenceAssessment(entry, `A assessment ${entry.dimensionId}`, allowedEvidenceRefs)
         if (!["scored", "not_observable"].includes(entry.status)) {
             throw new Error("Every A assessment must be scored or not_observable")
+        }
+        if (semanticTraceComplete && entry.status === "not_observable") {
+            throw new Error("A assessment cannot be not_observable when semantic Trace coverage is complete")
         }
         if (entry.status === "scored") {
             if (!Number.isInteger(entry.level) || entry.level < 0 || entry.level > 4) {

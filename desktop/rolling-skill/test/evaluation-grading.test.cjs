@@ -244,6 +244,36 @@ describe("evaluation grading contract", () => {
         assert.match(prompt, /"kind":"skill_activation"/)
     })
 
+    it("treats absence as observable non-compliance when semantic Trace coverage is complete", () => {
+        const catalog = evidenceCatalog()
+        Object.assign(catalog.entries.find((entry) => entry.id === "trace:scope"), {
+            semanticCoverageComplete: true,
+            samplingStrategy: "semantic-v1",
+            omittedImportantEntries: 0,
+        })
+        const contract = buildScoreContract(curatedCase(), {evidenceCatalog: catalog})
+        const prompt = buildJudgePrompt({
+            contract,
+            question: curatedCase().question,
+            response: "回答",
+            traceEvidence: {semanticCoverageComplete: true},
+            evidenceCatalog: catalog,
+        })
+        assert.match(prompt, /semanticCoverageComplete=true[\s\S]*score.*0[\s\S]*not_observable/i)
+
+        const judged = passingJudge(contract)
+        judged.aAssessments[0] = {
+            dimensionId: "skill_activation",
+            status: "not_observable",
+            evidenceRefs: ["trace:scope"],
+            rationale: "没有看到 Skill 事件。",
+        }
+        assert.throws(
+            () => validateJudgeResult(judged, contract),
+            /not_observable.*semantic Trace coverage is complete/i,
+        )
+    })
+
     it("requires positive A levels to cite a related strong typed entry when one exists", () => {
         const contract = buildScoreContract(curatedCase(), {evidenceCatalog: evidenceCatalog()})
         const judged = passingJudge(contract)

@@ -517,6 +517,19 @@ describe("local-first desktop surface", () => {
         assert.match(styles, /\.composer textarea\s*\{[^}]*max-height:\s*min\(220px,\s*28vh\)/s)
     })
 
+    it("uses one compact Codex-style stop control across evaluation list and detail", () => {
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        assert.doesNotMatch(renderer, /evaluation-run-cancel",\s*"■"/)
+        assert.match(renderer, /evaluation-stop-control evaluation-run-cancel/)
+        assert.match(renderer, /evaluation-stop-control evaluation-stop-button/)
+        assert.match(renderer, /evaluation-stop-icon/)
+        assert.match(styles, /\.evaluation-stop-control\s*\{[^}]*border-radius:\s*8px/s)
+        assert.match(styles, /\.evaluation-stop-icon\s*\{[^}]*border-radius:/s)
+        assert.match(styles, /\.evaluation-stop-control:hover\s*\{[^}]*var\(--danger\)/s)
+    })
+
     it("lets the composer manage provider-specific permission modes per conversation", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")

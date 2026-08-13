@@ -140,6 +140,75 @@ describe("evaluation evidence catalog", () => {
         assert.deepEqual(catalog.entries[2].kinds, ["trace_event"])
     })
 
+    it("recognizes CodeBuddy Skill, reference, command, file, and failure events structurally", () => {
+        const value = inputs()
+        value.traceEvidence.entries = [
+            {
+                sequence: 1,
+                message: {method: "session/update", params: {update: {
+                    sessionUpdate: "tool_call",
+                    toolCallId: "skill",
+                    status: "completed",
+                    kind: "other",
+                    rawInput: {skill: "billing-cost-management"},
+                    _meta: {"codebuddy.ai/toolName": "Skill"},
+                }}},
+            },
+            {
+                sequence: 2,
+                message: {method: "session/update", params: {update: {
+                    sessionUpdate: "tool_call",
+                    toolCallId: "reference",
+                    status: "completed",
+                    kind: "read",
+                    rawInput: {file_path: "/skills/billing/references/query.md"},
+                }}},
+            },
+            {
+                sequence: 3,
+                message: {method: "session/update", params: {update: {
+                    sessionUpdate: "tool_call",
+                    toolCallId: "command",
+                    status: "pending",
+                    kind: "execute",
+                    rawInput: {command: "billing-cli query --month 2026-07"},
+                }}},
+            },
+            {
+                sequence: 4,
+                message: {method: "session/update", params: {update: {
+                    sessionUpdate: "tool_call",
+                    toolCallId: "edit",
+                    status: "pending",
+                    kind: "edit",
+                    rawInput: {file_path: "/tmp/report.json"},
+                }}},
+            },
+            {
+                sequence: 5,
+                message: {method: "session/update", params: {update: {
+                    sessionUpdate: "tool_call_update",
+                    toolCallId: "command",
+                    status: "failed",
+                    error: {code: "E_QUERY"},
+                }}},
+            },
+        ]
+
+        const catalog = buildEvidenceCatalog(value)
+
+        assert.deepEqual(catalog.entries.find((entry) => entry.id === "trace:L1").kinds,
+            ["skill_activation", "skill_read", "tool_call"])
+        assert.deepEqual(catalog.entries.find((entry) => entry.id === "trace:L2").kinds,
+            ["reference_read", "tool_call"])
+        assert.deepEqual(catalog.entries.find((entry) => entry.id === "trace:L3").kinds,
+            ["command", "tool_call"])
+        assert.deepEqual(catalog.entries.find((entry) => entry.id === "trace:L4").kinds,
+            ["tool_call", "file_change"])
+        assert.deepEqual(catalog.entries.find((entry) => entry.id === "trace:L5").kinds,
+            ["tool_call", "error"])
+    })
+
     it("is pure, deterministic, and recursively freezes the returned catalog", () => {
         const value = inputs()
         const before = structuredClone(value)

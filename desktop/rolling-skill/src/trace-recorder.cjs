@@ -19,19 +19,248 @@ function parseOwnedReference(reference, fileName, maximumLine) {
     return {start, end}
 }
 
-function truncateJsonEntry(entry, maxCharacters) {
-    const serialized = JSON.stringify(entry)
-    if (serialized.length <= maxCharacters) return {...entry, truncated: false}
+function object(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {}
+}
+
+function nestedObjects(value, output = []) {
+    if (!value || typeof value !== "object") return output
+    if (!Array.isArray(value)) output.push(value)
+    for (const child of Object.values(value)) nestedObjects(child, output)
+    return output
+}
+
+function hasFailure(value) {
+    return nestedObjects(value).some((candidate) => {
+        const status = String(candidate.status ?? candidate.outcome ?? "").toLowerCase()
+        return (
+            (Object.hasOwn(candidate, "error") && candidate.error !== null && candidate.error !== undefined) ||
+            ["failed", "error", "rejected", "cancelled"].includes(status)
+        )
+    })
+}
+
+function codeBuddyUpdate(entry) {
+    return object(entry?.message?.params?.update)
+}
+
+function codeBuddyToolInput(update) {
+    const rawInput = object(update.rawInput)
+    return Object.keys(rawInput).length ? rawInput : null
+}
+
+function isSemanticTraceEntry(entry) {
+    const message = object(entry?.message)
+    const method = String(message.method ?? "")
+    if (hasFailure(message)) return true
+    if (!method) return Boolean(message.result)
+
+    if (method === "session/update") {
+        const update = codeBuddyUpdate(entry)
+        const type = String(update.sessionUpdate ?? "")
+        if (type === "tool_call") return Boolean(codeBuddyToolInput(update))
+        if (type === "tool_call_update") {
+            return ["completed", "failed", "error", "rejected", "cancelled"].includes(
+                String(update.status ?? "").toLowerCase(),
+            )
+        }
+        return ![
+            "agent_message_chunk",
+            "agent_thought_chunk",
+            "session_info_update",
+            "usage_update",
+            "config_option_update",
+            "available_commands_update",
+            "plan",
+        ].includes(type)
+    }
+
+    if (
+        /(?:\/delta|\/outputDelta)$/u.test(method) ||
+        [
+            "thread/tokenUsage/updated",
+            "account/rateLimits/updated",
+            "mcpServer/startupStatus/updated",
+            "thread/status/changed",
+            "thread/settings/updated",
+            "remoteControl/status/changed",
+            "initialized",
+        ].includes(method)
+    ) {
+        return false
+    }
+
+    if (method === "item/started" || method === "item/completed") {
+        const item = object(message.params?.item)
+        if (["reasoning", "userMessage"].includes(item.type)) return false
+        if (item.type === "agentMessage") return method === "item/completed"
+    }
+    return true
+}
+
+function compactText(value, limit) {
+    const text = String(value)
+    if (text.length <= limit) return {text, omitted: 0}
+    const marker = `\n… [${text.length - limit} characters compacted] …\n`
+    const available = Math.max(0, limit - marker.length)
+    const head = Math.ceil(available * 0.7)
+    const tail = available - head
     return {
+        text: `${text.slice(0, head)}${marker}${tail ? text.slice(-tail) : ""}`,
+        omitted: text.length - limit,
+    }
+}
+
+function isProtectedCommandPath(path) {
+    const key = path.at(-1)
+    return ["command", "cmd", "argv"].includes(key)
+}
+
+function compactStrings(value, {limit, aggressive = false, path = [], stats}) {
+    if (typeof value === "string") {
+        if (isProtectedCommandPath(path)) return value
+        const outputPath = path.some((entry) =>
+            /^(?:aggregatedOutput|rawOutput|stdout|stderr|output|outputDelta)$/iu.test(entry),
+        )
+        const stringLimit = outputPath ? Math.min(limit, 700) : aggressive ? Math.min(limit, 320) : limit
+        const compacted = compactText(value, stringLimit)
+        if (compacted.omitted) {
+            stats.omittedCharacters += compacted.omitted
+            stats.compacted = true
+        }
+        return compacted.text
+    }
+    if (Array.isArray(value)) {
+        return value.map((entry, index) => compactStrings(entry, {
+            limit,
+            aggressive,
+            path: [...path, String(index)],
+            stats,
+        }))
+    }
+    if (!value || typeof value !== "object") return value
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+        key,
+        compactStrings(child, {limit, aggressive, path: [...path, key], stats}),
+    ]))
+}
+
+function semanticMessageProjection(entry, maxCharacters, stats) {
+    const message = object(entry.message)
+    const params = object(message.params)
+    const update = object(params.update)
+    const item = object(params.item)
+    const projected = {
         schemaVersion: entry.schemaVersion,
         sequence: entry.sequence,
         recordedAt: entry.recordedAt,
         direction: entry.direction,
         runtime: entry.runtime,
-        messagePreview: serialized.slice(0, maxCharacters),
-        truncated: true,
-        omittedCharacters: serialized.length - maxCharacters,
+        message: {
+            ...(message.id === undefined ? {} : {id: message.id}),
+            ...(message.method ? {method: message.method} : {}),
+            ...(Object.keys(update).length ? {params: {update: {
+                sessionUpdate: update.sessionUpdate,
+                toolCallId: update.toolCallId,
+                title: update.title,
+                kind: update.kind,
+                status: update.status,
+                rawInput: update.rawInput,
+                locations: update.locations,
+                error: update.error,
+                rawOutput: update.rawOutput,
+                _meta: {
+                    "codebuddy.ai/toolName": update._meta?.["codebuddy.ai/toolName"],
+                    "codebuddy.ai/rawResponse": update._meta?.["codebuddy.ai/rawResponse"],
+                },
+            }}} : {}),
+            ...(Object.keys(item).length ? {params: {item: {
+                id: item.id,
+                type: item.type,
+                command: item.command,
+                status: item.status,
+                path: item.path,
+                server: item.server,
+                tool: item.tool,
+                error: item.error,
+                aggregatedOutput: item.aggregatedOutput,
+            }}} : {}),
+            ...(!Object.keys(update).length && !Object.keys(item).length && params.turn
+                ? {params: {turn: params.turn}}
+                : {}),
+            ...(message.error ? {error: message.error} : {}),
+            ...(message.result ? {result: message.result} : {}),
+        },
     }
+    stats.compacted = true
+    const projectedStats = {compacted: false, omittedCharacters: 0}
+    const compacted = compactStrings(projected, {
+        limit: Math.max(80, Math.floor(maxCharacters / 5)),
+        aggressive: true,
+        stats: projectedStats,
+    })
+    stats.omittedCharacters += projectedStats.omittedCharacters
+    return compacted
+}
+
+function compactJsonEntry(entry, maxCharacters) {
+    const originalSize = JSON.stringify(entry).length
+    const stats = {compacted: false, omittedCharacters: 0}
+    const codeBuddyType = codeBuddyUpdate(entry).sessionUpdate
+    let compacted = ["tool_call", "tool_call_update"].includes(codeBuddyType)
+        ? semanticMessageProjection(entry, maxCharacters, stats)
+        : compactStrings(entry, {limit: 1_200, stats})
+    if (JSON.stringify(compacted).length > maxCharacters) {
+        compacted = compactStrings(entry, {limit: 320, aggressive: true, stats})
+    }
+    if (JSON.stringify(compacted).length > maxCharacters) {
+        compacted = semanticMessageProjection(entry, maxCharacters, stats)
+    }
+    const finalSize = JSON.stringify(compacted).length
+    if (finalSize < originalSize) {
+        stats.compacted = true
+        stats.omittedCharacters = Math.max(stats.omittedCharacters, originalSize - finalSize)
+    }
+    return {
+        ...compacted,
+        ...(stats.compacted ? {
+            contentCompacted: true,
+            omittedCharacters: stats.omittedCharacters,
+        } : {}),
+    }
+}
+
+function augmentCodeBuddyTerminalEntry(entry, starts) {
+    const update = codeBuddyUpdate(entry)
+    if (String(update.sessionUpdate) !== "tool_call_update" || !update.toolCallId) return entry
+    const start = starts.get(update.toolCallId)
+    if (!start) return entry
+    const startUpdate = codeBuddyUpdate(start)
+    const copy = JSON.parse(JSON.stringify(entry))
+    copy.message.params.update = {
+        ...startUpdate,
+        ...copy.message.params.update,
+        rawInput: copy.message.params.update.rawInput ?? startUpdate.rawInput,
+        kind: copy.message.params.update.kind ?? startUpdate.kind,
+        title: copy.message.params.update.title ?? startUpdate.title,
+        locations: copy.message.params.update.locations ?? startUpdate.locations,
+        _meta: {...startUpdate._meta, ...copy.message.params.update._meta},
+        startedSequence: start.sequence,
+    }
+    return copy
+}
+
+function entryPriority(entry) {
+    if (hasFailure(entry.message)) return 100
+    const update = codeBuddyUpdate(entry)
+    if (update.rawInput?.skill || update.kind === "read") return 95
+    const method = String(entry.message?.method ?? "")
+    const itemType = String(entry.message?.params?.item?.type ?? "")
+    if (/commandExecution|mcpToolCall|dynamicToolCall|fileChange|tool_call/iu.test(`${method} ${itemType} ${update.sessionUpdate ?? ""}`)) {
+        return 80
+    }
+    if (/turn\/completed|agentMessage/iu.test(`${method} ${itemType}`)) return 60
+    return 30
 }
 
 function canonicalJson(value) {
@@ -107,39 +336,58 @@ class TraceRecorder {
 
     evidenceForReference(reference, options = {}) {
         const {start, end} = parseOwnedReference(reference, this.fileName, this.line)
-        const maxEntries = Math.max(1, Math.min(Number(options.maxEntries) || 200, 1_000))
+        const maxEntries = Math.max(1, Math.min(Number(options.maxEntries) || 500, 1_000))
         const maxEntryCharacters = Math.max(
             200,
             Math.min(Number(options.maxEntryCharacters) || 4_000, 20_000),
         )
         const maxTotalCharacters = Math.max(
             1_000,
-            Math.min(Number(options.maxTotalCharacters) || 60_000, 200_000),
+            Math.min(Number(options.maxTotalCharacters) || 200_000, 400_000),
         )
         const lines = readFileSync(this.path, "utf8").trim().split("\n").filter(Boolean)
-        const entries = []
-        let usedCharacters = 0
-        let omittedEntries = 0
+        const semanticEntries = []
+        const codeBuddyStarts = new Map()
+        let compactedEntries = 0
         for (let lineNumber = start; lineNumber <= end; lineNumber += 1) {
-            if (entries.length >= maxEntries) {
-                omittedEntries += end - lineNumber + 1
-                break
+            let entry = JSON.parse(lines[lineNumber - 1])
+            const update = codeBuddyUpdate(entry)
+            if (update.sessionUpdate === "tool_call" && update.toolCallId && codeBuddyToolInput(update)) {
+                codeBuddyStarts.set(update.toolCallId, entry)
             }
-            const entry = truncateJsonEntry(JSON.parse(lines[lineNumber - 1]), maxEntryCharacters)
-            const size = JSON.stringify(entry).length
-            if (usedCharacters + size > maxTotalCharacters) {
-                omittedEntries += end - lineNumber + 1
-                break
+            if (!isSemanticTraceEntry(entry)) {
+                compactedEntries += 1
+                continue
             }
-            entries.push(entry)
-            usedCharacters += size
+            entry = augmentCodeBuddyTerminalEntry(entry, codeBuddyStarts)
+            semanticEntries.push(compactJsonEntry(entry, Math.min(maxEntryCharacters, maxTotalCharacters)))
         }
+
+        const ranked = semanticEntries
+            .map((entry) => ({entry, priority: entryPriority(entry), size: JSON.stringify(entry).length}))
+            .sort((left, right) => right.priority - left.priority || left.entry.sequence - right.entry.sequence)
+        const selected = []
+        let usedCharacters = 0
+        for (const candidate of ranked) {
+            if (selected.length >= maxEntries || usedCharacters + candidate.size > maxTotalCharacters) continue
+            selected.push(candidate.entry)
+            usedCharacters += candidate.size
+        }
+        const entries = selected.sort((left, right) => left.sequence - right.sequence)
+        const omittedImportantEntries = semanticEntries.length - entries.length
         const evidence = {
             schemaVersion: "rolling-skill-trace-evidence/v1",
             reference,
             entries,
-            truncated: omittedEntries > 0 || entries.some((entry) => entry.truncated),
-            omittedEntries,
+            sourceEntryCount: end - start + 1,
+            includedEntries: entries.length,
+            compactedEntries,
+            contentCompactedEntries: entries.filter((entry) => entry.contentCompacted).length,
+            omittedImportantEntries,
+            samplingStrategy: "semantic-v1",
+            semanticCoverageComplete: omittedImportantEntries === 0,
+            truncated: omittedImportantEntries > 0,
+            omittedEntries: omittedImportantEntries,
         }
         return {...evidence, digest: evidenceDigest(evidence)}
     }
