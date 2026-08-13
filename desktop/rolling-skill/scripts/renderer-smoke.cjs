@@ -205,6 +205,68 @@ async function run() {
     if (!reviewedCuration.done.includes("完成并保存")) {
         throw new Error("Valid Curator draft lost its Done and save action")
     }
+    await inspect(window, `(() => {
+        const input = document.querySelector("[data-curation-input=curation-live-smoke]")
+        input.value = "unsent curator follow-up"
+        input.dispatchEvent(new Event("input", {bubbles: true}))
+        const effort = document.querySelector("[data-curation-effort=curation-live-smoke]")
+        effort.value = "high"
+        effort.dispatchEvent(new Event("change", {bubbles: true}))
+    })()`)
+    await waitFor(window, 'document.querySelector("[data-curation-effort=curation-live-smoke]")?.value === "high"')
+    if ((await inspect(window, 'document.querySelector("[data-curation-input=curation-live-smoke]")?.value')) !== "unsent curator follow-up") {
+        throw new Error("Changing Curator effort cleared the unsent follow-up draft")
+    }
+    await inspect(window, `window.rollingSkill.smokeEmitCurationChanged({
+        caseType: "badcase",
+        draft: {
+            schemaVersion: "rolling-skill-curated-case/v1",
+            referenceAnswer: {
+                summary: "Stop the identical retry and diagnose the failure.",
+                requiredFacts: [],
+                requiredSteps: [],
+                requiredOutputFormat: ["State recovery evidence."],
+                evidence: [{claim: "The retry failed.", sourceItemIds: ["thread-a-user-0"]}],
+            },
+            grading: {
+                hardRequirements: [{
+                    id: "H1",
+                    criterion: "Diagnose before retrying",
+                    passCondition: "A diagnosis precedes a changed recovery action.",
+                    evidenceBasis: "The frozen badcase repeated unchanged.",
+                }],
+                softCriteria: [],
+                automaticFailures: [],
+            },
+            badCaseAnalysis: {
+                failureMode: "Repeated a failed query without diagnosis.",
+                firstDivergence: "The first failed query was retried unchanged.",
+                rootCauses: ["No bounded recovery decision."],
+                loopSummary: "Equivalent failed calls repeated.",
+                expectedRecovery: "Diagnose once and use a supported fallback.",
+                deductionRules: [{
+                    id: "D1",
+                    errorPattern: "Undiagnosed identical retry loop",
+                    matchCondition: "Two equivalent failures occur without diagnosis.",
+                    deduction: 8,
+                    evidenceBasis: "Frozen retry trace",
+                    sourceItemIds: ["thread-a-user-0"],
+                }],
+            },
+        },
+    })`)
+    await waitFor(window, 'document.querySelector(".deduction-rule")')
+    const badcaseDraft = await inspect(window, `(() => ({
+        heading: document.querySelector(".curation-reference-card summary")?.textContent,
+        body: document.querySelector(".curation-draft")?.textContent,
+    }))()`)
+    if (!badcaseDraft.heading.includes("Bad Case 问题分析") ||
+        !badcaseDraft.body.includes("首次偏离") ||
+        !badcaseDraft.body.includes("D1 · Undiagnosed identical retry loop") ||
+        !badcaseDraft.body.includes("最多扣 8 分") ||
+        badcaseDraft.body.includes("参考答案")) {
+        throw new Error("Badcase draft did not render as failure analysis with a recurrence deduction")
+    }
     await inspect(window, 'document.querySelector("#topbar-curations").click()')
 
     await inspect(window, `(() => {
@@ -423,6 +485,8 @@ async function run() {
             curatorLiveActivity: true,
             curatorReferenceCard: true,
             curatorDraftRemainsSaveable: true,
+            curatorDraftPreservedOnEffortChange: true,
+            badcaseFailureLed: true,
             rendererErrors: 0,
         })}\n`,
     )

@@ -1,7 +1,7 @@
 const {basename} = require("node:path")
 
 const CURATED_CASE_SCHEMA = "rolling-skill-curated-case/v1"
-const CURATOR_PROMPT_VERSION = "rolling-skill-curator/v2"
+const CURATOR_PROMPT_VERSION = "rolling-skill-curator/v3"
 const MAX_ITEM_TEXT = 24_000
 const MAX_COMMAND_OUTPUT_TEXT = 4_000
 
@@ -494,7 +494,7 @@ Return a short review note followed by exactly one JSON code block using this co
 {
   "schemaVersion": "${CURATED_CASE_SCHEMA}",
   "referenceAnswer": {
-    "summary": "concise ideal answer",
+    "summary": "${caseType === "badcase" ? "concise correct recovery direction, not a polished ideal answer" : "concise ideal answer"}",
     "requiredFacts": ["facts that must be present"],
     "requiredSteps": ["necessary solution steps, excluding dead ends"],
     "requiredOutputFormat": ["fixed presentation or field requirements"],
@@ -512,7 +512,21 @@ Return a short review note followed by exactly one JSON code block using this co
   },
   "badCaseAnalysis": ${
       caseType === "badcase"
-          ? '{"failureMode":"...","firstDivergence":"...","rootCauses":["..."],"loopSummary":"...","expectedRecovery":"..."}'
+          ? `{
+    "failureMode":"...",
+    "firstDivergence":"...",
+    "rootCauses":["..."],
+    "loopSummary":"...",
+    "expectedRecovery":"...",
+    "deductionRules":[{
+      "id":"D1",
+      "errorPattern":"specific recurring error",
+      "matchCondition":"observable match condition in a future response or Trace",
+      "deduction":8,
+      "evidenceBasis":"why the frozen badcase proves this rule",
+      "sourceItemIds":["item-id"]
+    }]
+  }`
           : "null"
   }
 }
@@ -526,13 +540,20 @@ Rules:
 - Treat numerical conclusions as soft/diagnostic by default. Make an exact number a hard gate only
   when the frozen evidence contains authoritative validated ground truth; otherwise require the
   answer to show its source and verification status without inventing the value.
-- Preserve only necessary facts and successful steps; remove retries and irrelevant exploration.
+- For a goodcase, preserve only necessary facts and successful steps; remove retries and irrelevant
+  exploration.
 - Distinguish an activation failure (the task did not discover or invoke the applicable Skill) from
   an execution failure (the Skill was invoked but its workflow or output requirements were not
   followed). Encode that distinction in hard requirements and automatic failures; for badcases,
   also use it in firstDivergence, rootCauses, and expectedRecovery.
+- For a badcase, lead with failure analysis. Do not reconstruct a polished ideal answer. Use
+  referenceAnswer only to preserve the concise correct recovery direction and requirements needed
+  for grading.
 - For a badcase, identify the first useful decision point, root cause, compact loop signature, and
-  expected recovery. Do not paste repeated calls.
+  expected recovery. Do not paste repeated calls. Create one or more deductionRules for distinct
+  errors. Each rule must say that the same or materially equivalent error in a future evaluation is
+  penalized, use a concrete observable match condition, cite frozen source item ids, and assign a
+  positive maximum deduction. Rule deductions must total no more than 40 points.
 - Do not invent numerical truth. If correctness cannot be established from evidence, encode that as
   an explicit verification requirement.
 - Cite source item ids for evidence-backed claims.
@@ -639,6 +660,42 @@ function validateCuratorDraft(value, {caseType, sourceItemIds} = {}) {
         })
         requireString(draft.badCaseAnalysis.loopSummary, "badcase analysis loopSummary")
         requireString(draft.badCaseAnalysis.expectedRecovery, "badcase analysis expectedRecovery")
+        const deductionRules = draft.badCaseAnalysis.deductionRules
+        if (!Array.isArray(deductionRules) || deductionRules.length === 0) {
+            throw new Error("Curator draft requires at least one badcase deduction rules entry")
+        }
+        const deductionRuleIds = new Set()
+        let totalDeduction = 0
+        for (const rule of deductionRules) {
+            requireString(rule?.id, "badcase deduction rule id")
+            requireString(rule?.errorPattern, "badcase deduction rule errorPattern")
+            requireString(rule?.matchCondition, "badcase deduction rule matchCondition")
+            requireString(rule?.evidenceBasis, "badcase deduction rule evidenceBasis")
+            requireStringArray(rule?.sourceItemIds, "badcase deduction rule sourceItemIds", {
+                nonEmpty: true,
+            })
+            if (!Number.isFinite(rule?.deduction) || rule.deduction <= 0) {
+                throw new Error("Badcase deduction must be a positive number")
+            }
+            totalDeduction += rule.deduction
+            if (deductionRuleIds.has(rule.id)) {
+                throw new Error("Badcase deduction rule ids must be unique")
+            }
+            if (gradingIds.has(rule.id)) {
+                throw new Error("Curator grading and deduction rule ids must be unique")
+            }
+            deductionRuleIds.add(rule.id)
+            if (allowedSourceItems) {
+                for (const itemId of rule.sourceItemIds) {
+                    if (!allowedSourceItems.has(itemId)) {
+                        throw new Error(`Badcase deduction rule references unknown source item ${itemId}`)
+                    }
+                }
+            }
+        }
+        if (totalDeduction > 40) {
+            throw new Error("Badcase deduction rules cannot deduct more than 40 points in total")
+        }
     }
     return deepFreeze(draft)
 }
@@ -664,7 +721,40 @@ function formatCuratedAnswer(draft) {
     const softCriteria = draft.grading.softCriteria
         .map((entry) => `- [${entry.id}] ${entry.criterion} (weight ${entry.weight})`)
         .join("\n")
-    const sections = [
+    const gradingSections = [
+        "## Hard requirements",
+        hardRequirements,
+        "## Soft criteria",
+        softCriteria || "- None",
+        "## Automatic failures",
+        bulletList(draft.grading.automaticFailures),
+    ]
+    if (draft.badCaseAnalysis) {
+        const deductionRules = draft.badCaseAnalysis.deductionRules
+            .map(
+                (entry) =>
+                    `- [${entry.id}] ${entry.errorPattern}\n  Match: ${entry.matchCondition}\n  Deduct up to ${entry.deduction} points\n  Basis: ${entry.evidenceBasis} [${entry.sourceItemIds.join(", ")}]`,
+            )
+            .join("\n")
+        return [
+            "## Badcase analysis",
+            `Failure mode: ${draft.badCaseAnalysis.failureMode}`,
+            `First divergence: ${draft.badCaseAnalysis.firstDivergence}`,
+            `Root causes:\n${bulletList(draft.badCaseAnalysis.rootCauses)}`,
+            `Loop summary: ${draft.badCaseAnalysis.loopSummary}`,
+            `Expected recovery: ${draft.badCaseAnalysis.expectedRecovery}`,
+            "## Deduction rules",
+            deductionRules,
+            "## Recovery requirements",
+            draft.referenceAnswer.summary,
+            "## Required output format",
+            bulletList(draft.referenceAnswer.requiredOutputFormat),
+            "## Evidence",
+            evidence || "- None",
+            ...gradingSections,
+        ].join("\n\n")
+    }
+    return [
         "## Reference answer",
         draft.referenceAnswer.summary,
         "## Required facts",
@@ -675,24 +765,8 @@ function formatCuratedAnswer(draft) {
         bulletList(draft.referenceAnswer.requiredOutputFormat),
         "## Evidence",
         evidence || "- None",
-        "## Hard requirements",
-        hardRequirements,
-        "## Soft criteria",
-        softCriteria || "- None",
-        "## Automatic failures",
-        bulletList(draft.grading.automaticFailures),
-    ]
-    if (draft.badCaseAnalysis) {
-        sections.push(
-            "## Badcase analysis",
-            `Failure mode: ${draft.badCaseAnalysis.failureMode}`,
-            `First divergence: ${draft.badCaseAnalysis.firstDivergence}`,
-            `Root causes:\n${bulletList(draft.badCaseAnalysis.rootCauses)}`,
-            `Loop summary: ${draft.badCaseAnalysis.loopSummary}`,
-            `Expected recovery: ${draft.badCaseAnalysis.expectedRecovery}`,
-        )
-    }
-    return sections.join("\n\n")
+        ...gradingSections,
+    ].join("\n\n")
 }
 
 module.exports = {

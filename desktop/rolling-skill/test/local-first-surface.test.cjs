@@ -218,7 +218,8 @@ describe("local-first desktop surface", () => {
 
         assert.match(html, /data-i18n="localEvidence"/)
         assert.match(html, /data-i18n="curatorTasks"/)
-        assert.match(renderer, /t\("structuredReference"\)/)
+        assert.match(renderer, /t\(isBadcase \? "structuredBadcase" : "structuredReference"\)/)
+        assert.match(renderer, /t\("deductionRules"\)/)
         assert.match(renderer, /t\("hardRequirements"\)/)
         assert.match(renderer, /t\("runtimeReady"\)/)
         assert.match(renderer, /thread\?\.preview \|\| t\("newTask"\)/)

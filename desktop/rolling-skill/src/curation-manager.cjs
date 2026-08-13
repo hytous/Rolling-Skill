@@ -34,7 +34,12 @@ function failureState(session) {
     return session.draft ? "needs_review" : "failed"
 }
 
-function followUpPrompt(text) {
+function followUpPrompt(text, caseType) {
+    const badcaseGuidance = caseType === "badcase"
+        ? `This is a badcase. Keep every revision failure-led: diagnose the error, first divergence,
+root cause, and bounded recovery. Do not turn it into a polished goodcase reference answer. Preserve
+or improve the deductionRules that penalize the same or materially equivalent observable error.`
+        : ""
     return `Respond to the user's Curator review message below.
 
 If the user is asking a question about the current reference answer, answer conversationally and
@@ -42,10 +47,16 @@ do not return JSON. If the user asks to revise the reference answer or grading c
 short review note followed by exactly one complete rolling-skill-curated-case/v1 JSON code block.
 Never return a partial contract fragment.
 
+${badcaseGuidance}
+
 <user-review-message>${String(text ?? "").trim()}</user-review-message>`
 }
 
-function retryPrompt(datasetQuestion) {
+function retryPrompt(datasetQuestion, caseType) {
+    const badcaseGuidance = caseType === "badcase"
+        ? `This is a badcase: lead with failure analysis and include executable deductionRules for
+the same or materially equivalent observable errors. Do not reconstruct a polished goodcase answer.`
+        : ""
     return `The previous response did not satisfy the Curator JSON contract. Re-read the frozen
 episode already present in this conversation and return a corrected draft. Use the user-selected
 dataset question below verbatim; the original source wording is immutable evidence, not a
@@ -54,7 +65,9 @@ replacement evaluation input.
 <dataset-question>${String(datasetQuestion ?? "")}</dataset-question>
 
 Do not invent numerical truth, and include every required hard-gating field. Return a short review
-note followed by exactly one JSON code block.`
+note followed by exactly one JSON code block.
+
+${badcaseGuidance}`
 }
 
 function assistantTextFromTurn(turn) {
@@ -501,7 +514,7 @@ class CurationManager {
             if (session.status === "cancelled") return session
             const response = await runtime.startTurn(
                 session.curator.threadId,
-                followUpPrompt(text),
+                followUpPrompt(text, session.caseType),
                 {
                     ...(session.curator.modelId ? {model: session.curator.modelId} : {}),
                     ...(session.curator.effort ? {effort: session.curator.effort} : {}),
@@ -549,7 +562,7 @@ class CurationManager {
             await this.waitForIdle(sessionId)
             return this.store.getCurationSession(sessionId)
         }
-        return this.sendMessage(sessionId, retryPrompt(session.datasetQuestion))
+        return this.sendMessage(sessionId, retryPrompt(session.datasetQuestion, session.caseType))
     }
 
     updateModel(sessionId, modelId) {

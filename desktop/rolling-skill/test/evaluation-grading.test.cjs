@@ -46,6 +46,27 @@ function curatedCase() {
     }
 }
 
+function curatedBadCase() {
+    const input = curatedCase()
+    input.caseType = "badcase"
+    input.curated.badCaseAnalysis = {
+        failureMode: "Repeated a failed query without diagnosis.",
+        firstDivergence: "The first failed command was retried unchanged.",
+        rootCauses: ["No bounded recovery decision"],
+        loopSummary: "The same command repeated.",
+        expectedRecovery: "Diagnose once, then use the supported fallback.",
+        deductionRules: [{
+            id: "D1",
+            errorPattern: "Undiagnosed identical retry loop",
+            matchCondition: "At least two equivalent failed calls occur without an intervening diagnosis",
+            deduction: 8,
+            evidenceBasis: "Frozen badcase trace",
+            sourceItemIds: ["trace:L1"],
+        }],
+    }
+    return input
+}
+
 function evidenceCatalog() {
     return {
         schemaVersion: "rolling-skill-evidence-catalog/v1",
@@ -76,7 +97,7 @@ function passingJudge(contract = scoreContract()) {
             dimensionId: dimension.id,
             status: "scored",
             level: 4,
-            evidenceRefs: [`trace:L${index + 1}`],
+            evidenceRefs: [contract.evidence.allowedRefs[index + 1] ?? contract.evidence.allowedRefs[0]],
             rationale: "可从 Trace 和回答中观察到完整执行。",
         })),
         bAssessments: contract.b.criteria.map((criterion) => ({
@@ -138,6 +159,43 @@ describe("evaluation grading contract", () => {
         const contract = buildScoreContract(input)
 
         assert.deepEqual(contract.b.criteria.map((entry) => entry.id), ["H1", "AF1", "AF2"])
+    })
+
+    it("turns every badcase recurrence rule into a direct B deduction without changing A", () => {
+        const contract = buildScoreContract(curatedBadCase(), {evidenceRefs: ["response"]})
+        const deduction = contract.b.criteria.find((entry) => entry.id === "D1")
+
+        assert.equal(contract.a.maxScore, 60)
+        assert.deepEqual(deduction, {
+            id: "D1",
+            criterion: "Avoid recurrence of this badcase error: Undiagnosed identical retry loop",
+            source: "badcase_deduction",
+            mode: "penalty",
+            maximumDeduction: 8,
+            errorPattern: "Undiagnosed identical retry loop",
+            matchCondition: "At least two equivalent failed calls occur without an intervening diagnosis",
+            evidenceBasis: "Frozen badcase trace",
+        })
+
+        const judge = passingJudge(contract)
+        judge.bAssessments.find((entry) => entry.criterionId === "D1").rating = 0
+        const computed = calculateScore(contract, judge)
+        assert.equal(computed.aScore, 60)
+        assert.equal(computed.bScore, 32)
+        assert.deepEqual(
+            computed.bCriterionScores.find((entry) => entry.id === "D1"),
+            {
+                id: "D1",
+                status: "scored",
+                rating: 0,
+                confidence: 0.8,
+                verificationStatus: "verified",
+                verifiableFields: ["业务范围", "成本数字"],
+                crossChecks: ["回答与参考答案一致"],
+                points: -8,
+                deduction: 8,
+            },
+        )
     })
 
     it("freezes only compact typed Evidence Catalog metadata into the score contract", () => {

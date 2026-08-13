@@ -74,6 +74,9 @@ const translations = {
         referenceReady: "Reference answer ready",
         referenceUpdated: "Reference answer updated",
         expandReference: "Expand to review the structured reference",
+        badcaseReady: "Badcase analysis ready",
+        badcaseUpdated: "Badcase analysis updated",
+        expandBadcase: "Expand to review the error analysis and deduction rules",
         verbatimQuestion: "Verbatim question",
         queued: "Queued",
         running: "Running",
@@ -159,7 +162,9 @@ const translations = {
         activityHistoryLimited: "Tool and command history may be incomplete because Codex does not always return earlier activity.",
         completed: "completed",
         structuredReference: "Structured reference",
+        structuredBadcase: "Badcase error analysis",
         referenceAnswer: "Reference answer",
+        recoveryDirection: "Correct recovery direction",
         requiredFacts: "Required facts",
         requiredSteps: "Required steps",
         requiredOutputFormat: "Required output format",
@@ -170,7 +175,14 @@ const translations = {
         weight: "weight {value}",
         automaticFailures: "Automatic failures",
         rootCauses: "Root causes",
+        failureMode: "Failure mode",
+        firstDivergence: "First divergence",
+        loopSummary: "Repeated-error signature",
         expectedRecovery: "Expected recovery",
+        deductionRules: "Recurrence deduction rules",
+        matchCondition: "Match condition",
+        maximumDeduction: "Deduct up to {value} points",
+        sourceItems: "Source items",
         none: "None",
         untitledCase: "Untitled case",
         frozenRange: "Frozen range: {count} conversation and tool items. New messages in the original task are not included.",
@@ -238,6 +250,8 @@ const translations = {
         verificationStatus: "Verification",
         verifiableFields: "Verifiable fields",
         crossChecks: "Cross-checks",
+        penaltyApplied: "Deduction {value}/{maximum}",
+        avoidanceRating: "error avoidance {value}/10",
         notObservable: "Not observable",
         notApplicable: "Not applicable",
         aSkillActivation: "Skill activation",
@@ -367,6 +381,9 @@ const translations = {
         referenceReady: "参考答案已生成",
         referenceUpdated: "参考答案已更新",
         expandReference: "展开查看结构化参考答案",
+        badcaseReady: "Bad Case 问题分析已生成",
+        badcaseUpdated: "Bad Case 问题分析已更新",
+        expandBadcase: "展开查看错误分析和复现扣分规则",
         verbatimQuestion: "原始问题",
         queued: "排队中",
         running: "处理中",
@@ -452,7 +469,9 @@ const translations = {
         activityHistoryLimited: "Codex 不一定返回较早的工具和命令活动，因此此处历史可能不完整。",
         completed: "已完成",
         structuredReference: "结构化参考结果",
+        structuredBadcase: "Bad Case 错误分析",
         referenceAnswer: "参考答案",
+        recoveryDirection: "正确恢复方向",
         requiredFacts: "必备事实",
         requiredSteps: "必需步骤",
         requiredOutputFormat: "必需输出格式",
@@ -463,7 +482,14 @@ const translations = {
         weight: "权重 {value}",
         automaticFailures: "自动判失败项",
         rootCauses: "错误根因",
+        failureMode: "错误表现",
+        firstDivergence: "首次偏离",
+        loopSummary: "重复错误特征",
         expectedRecovery: "预期修正方式",
+        deductionRules: "相同错误复现扣分规则",
+        matchCondition: "命中条件",
+        maximumDeduction: "最多扣 {value} 分",
+        sourceItems: "来源记录",
         none: "无",
         untitledCase: "未命名 Case",
         frozenRange: "冻结范围：{count} 条对话及工具记录；原任务后续的新消息不包含在内。",
@@ -531,6 +557,8 @@ const translations = {
         verificationStatus: "验证状态",
         verifiableFields: "可验证字段",
         crossChecks: "交叉校验",
+        penaltyApplied: "已扣 {value}/{maximum} 分",
+        avoidanceRating: "错误规避 {value}/10",
         notObservable: "无法观察",
         notApplicable: "不适用",
         aSkillActivation: "Skill 激活",
@@ -615,6 +643,7 @@ const state = {
     caseCreationInProgress: false,
     curationSessions: [],
     curationActivities: new Map(),
+    curationInputDrafts: new Map(),
     curationRevisionCounts: new Map(),
     flashingCurationReferences: new Set(),
     activeCurationId: null,
@@ -1915,20 +1944,47 @@ function draftSection(title, values) {
     return section
 }
 
-function renderDraft(draft) {
+function renderDraft(draft, caseType) {
     const wrapper = node("div", "curation-draft")
-    wrapper.append(node("h3", "", t("structuredReference")))
+    const isBadcase = caseType === "badcase" || Boolean(draft.badCaseAnalysis)
+    wrapper.append(node("h3", "", t(isBadcase ? "structuredBadcase" : "structuredReference")))
+    if (isBadcase) {
+        const analysis = draft.badCaseAnalysis
+        wrapper.append(
+            draftSection(t("failureMode"), [analysis.failureMode]),
+            draftSection(t("firstDivergence"), [analysis.firstDivergence]),
+            draftSection(t("rootCauses"), analysis.rootCauses),
+            draftSection(t("loopSummary"), [analysis.loopSummary]),
+            draftSection(t("expectedRecovery"), [analysis.expectedRecovery]),
+        )
+        const deductions = node("section", "draft-section deduction-rules")
+        deductions.append(node("h4", "", t("deductionRules")))
+        for (const rule of analysis.deductionRules ?? []) {
+            const card = node("article", "requirement-card deduction-rule")
+            card.append(
+                node("strong", "", `${rule.id} · ${rule.errorPattern}`),
+                node("span", "", `${t("matchCondition")}: ${rule.matchCondition}`),
+                node("span", "", formatMessage("maximumDeduction", {value: rule.deduction})),
+                node("small", "", `${t("basis")}: ${rule.evidenceBasis}`),
+                node("small", "", `${t("sourceItems")}: ${(rule.sourceItemIds ?? []).join(", ")}`),
+            )
+            deductions.append(card)
+        }
+        wrapper.append(deductions)
+    }
     const summary = node("section", "draft-section")
     summary.append(
-        node("h4", "", t("referenceAnswer")),
+        node("h4", "", t(isBadcase ? "recoveryDirection" : "referenceAnswer")),
         node("div", "draft-summary", draft.referenceAnswer.summary),
     )
-    wrapper.append(
-        summary,
-        draftSection(t("requiredFacts"), draft.referenceAnswer.requiredFacts),
-        draftSection(t("requiredSteps"), draft.referenceAnswer.requiredSteps),
-        draftSection(t("requiredOutputFormat"), draft.referenceAnswer.requiredOutputFormat),
-    )
+    wrapper.append(summary)
+    if (!isBadcase) {
+        wrapper.append(
+            draftSection(t("requiredFacts"), draft.referenceAnswer.requiredFacts),
+            draftSection(t("requiredSteps"), draft.referenceAnswer.requiredSteps),
+        )
+    }
+    wrapper.append(draftSection(t("requiredOutputFormat"), draft.referenceAnswer.requiredOutputFormat))
 
     const hard = node("section", "draft-section hard-requirements")
     hard.append(node("h4", "", t("hardRequirements")))
@@ -1952,12 +2008,6 @@ function renderDraft(draft) {
         ),
         draftSection(t("automaticFailures"), draft.grading.automaticFailures),
     )
-    if (draft.badCaseAnalysis) {
-        wrapper.append(
-            draftSection(t("rootCauses"), draft.badCaseAnalysis.rootCauses),
-            draftSection(t("expectedRecovery"), [draft.badCaseAnalysis.expectedRecovery]),
-        )
-    }
     return wrapper
 }
 
@@ -2033,6 +2083,14 @@ function patchCurationActivityCard(activity) {
 }
 
 function renderCurations() {
+    const existingInput = elements.curationDetail.querySelector("[data-curation-input]")
+    if (existingInput?.dataset.curationInput) {
+        if (existingInput.value) {
+            state.curationInputDrafts.set(existingInput.dataset.curationInput, existingInput.value)
+        } else {
+            state.curationInputDrafts.delete(existingInput.dataset.curationInput)
+        }
+    }
     elements.curationDrawer.classList.toggle("visible", state.curationOpen)
     elements.curationList.replaceChildren()
     elements.topbarCurations.textContent = state.curationSessions.length
@@ -2118,11 +2176,13 @@ function renderCurations() {
             node(
                 "strong",
                 "",
-                session.revisions?.length > 1 ? t("referenceUpdated") : t("referenceReady"),
+                session.caseType === "badcase"
+                    ? t(session.revisions?.length > 1 ? "badcaseUpdated" : "badcaseReady")
+                    : t(session.revisions?.length > 1 ? "referenceUpdated" : "referenceReady"),
             ),
-            node("small", "", t("expandReference")),
+            node("small", "", t(session.caseType === "badcase" ? "expandBadcase" : "expandReference")),
         )
-        reference.append(summary, renderDraft(session.draft))
+        reference.append(summary, renderDraft(session.draft, session.caseType))
         scroll.append(reference)
     }
 
@@ -2158,6 +2218,7 @@ function renderCurations() {
         input.placeholder = t("curatorPromptPlaceholder")
         input.disabled = session.status === "queued" || session.status === "running"
         input.dataset.curationInput = session.id
+        input.value = state.curationInputDrafts.get(session.id) ?? ""
         const footer = node("div", "curation-followup-footer")
         const modelPicker = node("select", "model-picker curation-model-picker")
         modelPicker.setAttribute("data-curation-model", session.id)
@@ -2812,6 +2873,7 @@ function renderCompletedGrading(result, run) {
     for (const score of computedScore.bCriterionScores ?? []) {
         const criterion = scoreContract.b?.criteria?.find((entry) => entry.id === score.id)
         const assessment = judgment.bAssessments?.find((entry) => entry.criterionId === score.id)
+        const isPenalty = criterion?.mode === "penalty"
         const maximum = bKnownWeight > 0
             ? Math.round(400 * (Number(criterion?.weight) || 0) / bKnownWeight) / 10
             : 40
@@ -2823,10 +2885,19 @@ function renderCompletedGrading(result, run) {
             title: criterion?.criterion ?? score.id,
             scoreText: score.points === null || score.points === undefined
                 ? assessmentStatusText(score.status)
-                : `${score.points}/${maximum}`,
+                : isPenalty
+                  ? formatMessage("penaltyApplied", {
+                        value: score.deduction ?? Math.abs(score.points),
+                        maximum: criterion.maximumDeduction,
+                    })
+                  : `${score.points}/${maximum}`,
             weightText: [
-                `${t("weight").replace("{value}", criterion?.weight ?? "—")}`,
-                score.rating === undefined ? null : `${score.rating}/10`,
+                isPenalty ? null : `${t("weight").replace("{value}", criterion?.weight ?? "—")}`,
+                score.rating === undefined
+                    ? null
+                    : isPenalty
+                      ? formatMessage("avoidanceRating", {value: score.rating})
+                      : `${score.rating}/10`,
                 confidence,
             ].filter(Boolean).join(" · "),
             assessment,
@@ -3782,6 +3853,7 @@ function setCurationOpen(open) {
 function upsertCuration(session) {
     const index = state.curationSessions.findIndex((entry) => entry.id === session.id)
     if (session.status === "cancelled" || session.status === "archived") {
+        state.curationInputDrafts.delete(session.id)
         if (index >= 0) state.curationSessions.splice(index, 1)
         if (state.activeCurationId === session.id) {
             state.activeCurationId = state.curationSessions[0]?.id ?? null
@@ -3796,13 +3868,20 @@ function upsertCuration(session) {
 }
 
 async function sendCurationMessage(sessionId, text) {
-    if (!String(text).trim()) return
+    if (!String(text).trim()) return false
     try {
         const session = await window.rollingSkill.sendCurationMessage(sessionId, text)
+        const input = elements.curationDetail.querySelector(
+            `[data-curation-input="${CSS.escape(String(sessionId))}"]`,
+        )
+        if (input) input.value = ""
+        state.curationInputDrafts.delete(sessionId)
         upsertCuration(session)
         renderCurations()
+        return true
     } catch (error) {
         showError(error)
+        return false
     }
 }
 
@@ -4258,13 +4337,18 @@ elements.curationDetail.addEventListener("change", (event) => {
     const effort = event.target.closest("[data-curation-effort]")
     if (effort) void updateCurationEffort(effort.dataset.curationEffort, effort.value)
 })
+elements.curationDetail.addEventListener("input", (event) => {
+    const input = event.target.closest("[data-curation-input]")
+    if (!input) return
+    if (input.value) state.curationInputDrafts.set(input.dataset.curationInput, input.value)
+    else state.curationInputDrafts.delete(input.dataset.curationInput)
+})
 elements.curationDetail.addEventListener("submit", (event) => {
     const form = event.target.closest("[data-curation-form]")
     if (!form) return
     event.preventDefault()
     const input = form.querySelector("[data-curation-input]")
     const text = input?.value ?? ""
-    if (input) input.value = ""
     void sendCurationMessage(form.dataset.curationForm, text)
 })
 elements.closeDiscardDialog.addEventListener("click", () => elements.discardDialog.close())

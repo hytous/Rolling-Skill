@@ -191,6 +191,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
                 id: requestedRuntimeId === "codex:renderer-smoke" ? "gpt-5.6-sol" : `model-${suffix}`,
                 displayName: requestedRuntimeId === "codex:renderer-smoke" ? "GPT-5.6-Sol" : `Model ${suffix}`,
                 isDefault: true,
+                reasoningEfforts: ["low", "medium", "high", "xhigh"],
             }],
         }
     },
@@ -236,6 +237,20 @@ contextBridge.exposeInMainWorld("rollingSkill", {
             throw new Error("smoke curation failure")
         }
         return {id: "curation-smoke", status: "queued", episode: {originalQuestion: "Smoke"}}
+    },
+    updateCurationModel: async (_sessionId, modelId) => {
+        smokeCurationSession = {
+            ...smokeCurationSession,
+            curator: {...smokeCurationSession.curator, modelId},
+        }
+        return smokeCurationSession
+    },
+    updateCurationEffort: async (_sessionId, effort) => {
+        smokeCurationSession = {
+            ...smokeCurationSession,
+            curator: {...smokeCurationSession.curator, effort},
+        }
+        return smokeCurationSession
     },
     onRuntimeState: (listener) => {
         runtimeStateListeners.add(listener)

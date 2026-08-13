@@ -80,6 +80,35 @@ function goodDraft() {
     }
 }
 
+function badDraft() {
+    const draft = goodDraft()
+    draft.referenceAnswer = {
+        summary: "正确恢复方向：停止重复查询，按 Skill 要求完成校验后再汇总。",
+        requiredFacts: [],
+        requiredSteps: [],
+        requiredOutputFormat: ["明确标注查询范围、证据和未验证项"],
+        evidence: [{claim: "失败查询随后改用了账单工具", sourceItemIds: ["command-2", "mcp-1"]}],
+    }
+    draft.badCaseAnalysis = {
+        failureMode: "CLI 查询失败后没有先判断错误原因。",
+        firstDivergence: "command-2 失败后仍沿用同一查询思路。",
+        rootCauses: ["没有按错误类型选择恢复路径"],
+        loopSummary: "重复同一账单查询，参数和数据源没有发生有效变化。",
+        expectedRecovery: "识别失败原因，选择有效账单数据源并验证覆盖范围。",
+        deductionRules: [
+            {
+                id: "D1",
+                errorPattern: "查询失败后无诊断地重复相同调用",
+                matchCondition: "Trace 中出现至少两次参数及数据源相同的失败查询，且中间没有诊断或恢复动作",
+                deduction: 8,
+                evidenceBasis: "冻结 Trace 中 command-2 所代表的失败路径",
+                sourceItemIds: ["command-2"],
+            },
+        ],
+    }
+    return draft
+}
+
 describe("episode curation evidence", () => {
     it("preserves the exact user question and freezes the selected contiguous range", () => {
         const thread = sourceThread()
@@ -265,6 +294,72 @@ describe("episode curation evidence", () => {
         assert.throws(
             () => parseCuratorDraft(JSON.stringify(goodDraft()), {caseType: "badcase"}),
             /badcase analysis/i,
+        )
+    })
+
+    it("makes badcase curation failure-led and requires executable recurrence deductions", () => {
+        const episode = buildEpisodeSnapshot(sourceThread(), {
+            startItemId: "user-1",
+            endItemId: "agent-2",
+        })
+        const prompt = buildCuratorPrompt({episode, caseType: "badcase"})
+
+        assert.match(prompt, /do not reconstruct a polished ideal answer/i)
+        assert.match(prompt, /deductionRules/)
+        assert.match(prompt, /same or materially equivalent error/i)
+        assert.match(prompt, /observable match condition/i)
+
+        const missingRules = badDraft()
+        delete missingRules.badCaseAnalysis.deductionRules
+        assert.throws(
+            () => parseCuratorDraft(JSON.stringify(missingRules), {caseType: "badcase"}),
+            /deduction rules/i,
+        )
+
+        const parsed = parseCuratorDraft(JSON.stringify(badDraft()), {
+            caseType: "badcase",
+            sourceItemIds: sourceThread().turns[0].items.map((item) => item.id),
+        })
+        const formatted = formatCuratedAnswer(parsed)
+        assert.match(formatted, /^## Badcase analysis/u)
+        assert.match(formatted, /## Deduction rules/u)
+        assert.match(formatted, /\[D1\].*Deduct up to 8 points/su)
+        assert.doesNotMatch(formatted, /^## Reference answer/u)
+    })
+
+    it("rejects ambiguous, duplicated, or unbounded badcase deduction rules", () => {
+        const duplicate = badDraft()
+        duplicate.badCaseAnalysis.deductionRules.push({
+            ...duplicate.badCaseAnalysis.deductionRules[0],
+        })
+        assert.throws(
+            () => parseCuratorDraft(JSON.stringify(duplicate), {caseType: "badcase"}),
+            /deduction rule ids must be unique/i,
+        )
+
+        const noMatchCondition = badDraft()
+        noMatchCondition.badCaseAnalysis.deductionRules[0].matchCondition = ""
+        assert.throws(
+            () => parseCuratorDraft(JSON.stringify(noMatchCondition), {caseType: "badcase"}),
+            /matchCondition/i,
+        )
+
+        const invalidDeduction = badDraft()
+        invalidDeduction.badCaseAnalysis.deductionRules[0].deduction = 0
+        assert.throws(
+            () => parseCuratorDraft(JSON.stringify(invalidDeduction), {caseType: "badcase"}),
+            /deduction.*positive/i,
+        )
+
+        const unknownEvidence = badDraft()
+        unknownEvidence.badCaseAnalysis.deductionRules[0].sourceItemIds = ["invented-item"]
+        assert.throws(
+            () =>
+                parseCuratorDraft(JSON.stringify(unknownEvidence), {
+                    caseType: "badcase",
+                    sourceItemIds: sourceThread().turns[0].items.map((item) => item.id),
+                }),
+            /source item/i,
         )
     })
 

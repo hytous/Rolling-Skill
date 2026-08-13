@@ -235,6 +235,25 @@ function buildScoreContract(caseEntry, options = {}) {
         })),
         ...criteria,
     ]
+    const deductionCriteria = (curated.badCaseAnalysis?.deductionRules ?? []).map((entry) => ({
+        id: requireString(entry?.id, "Badcase deduction id"),
+        criterion: `Avoid recurrence of this badcase error: ${requireString(entry?.errorPattern, "Badcase deduction error pattern")}`,
+        source: "badcase_deduction",
+        mode: "penalty",
+        maximumDeduction: Number(entry?.deduction),
+        errorPattern: requireString(entry?.errorPattern, "Badcase deduction error pattern"),
+        matchCondition: requireString(entry?.matchCondition, "Badcase deduction match condition"),
+        evidenceBasis: requireString(entry?.evidenceBasis, "Badcase deduction evidence basis"),
+    }))
+    for (const criterion of deductionCriteria) {
+        if (!Number.isFinite(criterion.maximumDeduction) || criterion.maximumDeduction <= 0) {
+            throw new Error("Badcase maximum deduction must be a positive number")
+        }
+        if (criterion.maximumDeduction > B_MAX_SCORE) {
+            throw new Error("A badcase deduction cannot exceed the B score")
+        }
+    }
+    criteria.push(...deductionCriteria)
     if (!criteria.length) {
         criteria = [
             {
@@ -246,6 +265,7 @@ function buildScoreContract(caseEntry, options = {}) {
         ]
     }
     for (const criterion of criteria) {
+        if (criterion.mode === "penalty") continue
         if (!Number.isFinite(criterion.weight) || criterion.weight <= 0) {
             throw new Error("Soft criterion weight must be a positive number")
         }
@@ -305,6 +325,10 @@ A assessment shape:
 B assessment shape:
 {"criterionId":"contract id","status":"scored","rating":0,"confidence":0.0,"verificationStatus":"verified|partially_verified|unverified|not_verifiable","verifiableFields":["field checked"],"crossChecks":["cross-check performed"],"evidenceRefs":[],"rationale":"why"}
 - Rating may be any number from 0 to 10 and confidence must be from 0 to 1. B is subjective and diagnostic; every B criterion must receive a rating even when no authoritative oracle exists. Use low confidence and unverified/not_verifiable instead of omitting the score. Case-specific hard requirements and automatic failure conditions are diagnostic B criteria and must not change the A verdict.
+- For a B criterion whose mode is penalty, rate avoidance of the specified badcase error: rating 10
+  means the error did not recur and deducts nothing; rating 0 means the same or materially
+  equivalent error fully recurred and applies maximumDeduction. Use matchCondition as the
+  observable test. For all other B criteria, rating 10 remains best and rating 0 worst.
 - Record which fields were actually verifiable, what cross-checks were performed, and a verification status. Do not claim verified when no independent evidence exists.
 - Evidence references must be selected only from score-contract.evidence.allowedRefs. Never invent a reference.
 - When a positive A assessment has related strong typed evidence in the Evidence Catalog, cite at least one of those related entries. A response-only citation cannot replace available structured proof.
@@ -352,6 +376,31 @@ function validateScoreContract(contract) {
     const criteria = requireArray(contract.b?.criteria, "B criteria")
     assertUniqueIds(criteria, "B criterion")
     if (!criteria.length) throw new Error("Score contract requires at least one B criterion")
+    let totalMaximumDeduction = 0
+    for (const criterion of criteria) {
+        requireString(criterion.criterion, `B criterion ${criterion.id}`)
+        if (criterion.mode === "penalty") {
+            if (criterion.source !== "badcase_deduction") {
+                throw new Error("A B penalty criterion must come from a badcase deduction")
+            }
+            requireString(criterion.errorPattern, `B penalty ${criterion.id} error pattern`)
+            requireString(criterion.matchCondition, `B penalty ${criterion.id} match condition`)
+            requireString(criterion.evidenceBasis, `B penalty ${criterion.id} evidence basis`)
+            if (
+                !Number.isFinite(criterion.maximumDeduction) ||
+                criterion.maximumDeduction <= 0 ||
+                criterion.maximumDeduction > B_MAX_SCORE
+            ) {
+                throw new Error("A B penalty criterion requires a valid positive maximum deduction")
+            }
+            totalMaximumDeduction += criterion.maximumDeduction
+        } else if (!Number.isFinite(criterion.weight) || criterion.weight <= 0) {
+            throw new Error("A B criterion weight must be a positive number")
+        }
+    }
+    if (totalMaximumDeduction > B_MAX_SCORE) {
+        throw new Error("B penalty criteria cannot deduct more than the B score in total")
+    }
     const allowedEvidenceRefs = requireArray(
         contract.evidence?.allowedRefs,
         "Score contract evidence references",
@@ -607,8 +656,25 @@ function calculateScore(
     const bCriterionScores = []
     let bKnownWeight = 0
     let bWeightedRating = 0
+    let bPenalty = 0
     for (const criterion of contract.b.criteria) {
         const assessment = judge.bAssessments.find((entry) => entry.criterionId === criterion.id)
+        if (criterion.mode === "penalty") {
+            const deduction = rounded(criterion.maximumDeduction * (10 - assessment.rating) / 10)
+            bPenalty += deduction
+            bCriterionScores.push({
+                id: criterion.id,
+                status: assessment.status,
+                rating: assessment.rating,
+                confidence: assessment.confidence,
+                verificationStatus: assessment.verificationStatus,
+                verifiableFields: assessment.verifiableFields,
+                crossChecks: assessment.crossChecks,
+                points: rounded(-deduction),
+                deduction,
+            })
+            continue
+        }
         bKnownWeight += criterion.weight
         bWeightedRating += criterion.weight * assessment.rating
         bCriterionScores.push({
@@ -622,9 +688,13 @@ function calculateScore(
             points: null,
         })
     }
-    const bScore = rounded(B_MAX_SCORE * bWeightedRating / (bKnownWeight * 10))
+    const baseBScore = bKnownWeight > 0
+        ? B_MAX_SCORE * bWeightedRating / (bKnownWeight * 10)
+        : B_MAX_SCORE
+    const bScore = rounded(Math.max(0, Math.min(B_MAX_SCORE, baseBScore - bPenalty)))
     for (const entry of bCriterionScores) {
         const criterion = contract.b.criteria.find((candidate) => candidate.id === entry.id)
+        if (criterion.mode === "penalty") continue
         entry.points = rounded(B_MAX_SCORE * criterion.weight * entry.rating / (bKnownWeight * 10))
     }
 
