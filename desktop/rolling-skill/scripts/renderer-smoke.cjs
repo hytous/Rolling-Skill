@@ -263,6 +263,38 @@ async function run() {
     if (!evaluationDuration.includes("1:05") || evaluationDuration.includes("65000 ms")) {
         throw new Error(`Evaluation duration did not use minute-second format: ${evaluationDuration}`)
     }
+    const evaluationRuntimeGroups = await inspect(window, `(() => ({
+        ids: [...document.querySelectorAll("[data-evaluation-runtime-group]")].map(
+            (entry) => entry.dataset.evaluationRuntimeGroup,
+        ),
+        codexCases: document.querySelectorAll(
+            '[data-evaluation-runtime-group="codex:renderer-smoke"] .evaluation-result-card',
+        ).length,
+        codebuddyCases: document.querySelectorAll(
+            '[data-evaluation-runtime-group="codebuddy:renderer-smoke"] .evaluation-result-card',
+        ).length,
+        codebuddyText: document.querySelector(
+            '[data-evaluation-runtime-group="codebuddy:renderer-smoke"]',
+        )?.textContent,
+    }))()`)
+    if (
+        evaluationRuntimeGroups.ids.join(",") !==
+        "codex:renderer-smoke,codebuddy:renderer-smoke" ||
+        evaluationRuntimeGroups.codexCases !== 2 ||
+        evaluationRuntimeGroups.codebuddyCases !== 2
+    ) {
+        throw new Error(
+            `Evaluation results were not grouped by Runtime: ${JSON.stringify(evaluationRuntimeGroups)}`,
+        )
+    }
+    if (
+        !evaluationRuntimeGroups.codebuddyText.includes("66/100") ||
+        !evaluationRuntimeGroups.codebuddyText.includes("仅作诊断")
+    ) {
+        throw new Error(
+            `Diagnostic CodeBuddy score was not displayed: ${evaluationRuntimeGroups.codebuddyText}`,
+        )
+    }
     await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
 
     await inspect(window, 'document.querySelector("#topbar-curations").click()')

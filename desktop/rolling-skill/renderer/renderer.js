@@ -3465,6 +3465,14 @@ function resultScoreText(value, maxScore, range = null) {
     return `—/${maxScore}`
 }
 
+function displayTotalScore(computedScore) {
+    if (Number.isFinite(computedScore?.totalScore)) return computedScore.totalScore
+    if (!Number.isFinite(computedScore?.aScore) || !Number.isFinite(computedScore?.bScore)) {
+        return null
+    }
+    return Math.round((computedScore.aScore + computedScore.bScore + Number.EPSILON) * 10) / 10
+}
+
 function gradingMaxima(result) {
     const scoreContract = result?.scoreContract
     return {
@@ -3583,7 +3591,7 @@ function renderCompletedGrading(result, run) {
     }[computedScore.overallVerdict] ?? "diagnostic")
     total.append(
         node("small", "", t("totalScore")),
-        node("strong", "", resultScoreText(computedScore.totalScore, 100)),
+        node("strong", "", resultScoreText(displayTotalScore(computedScore), 100)),
         node(
             "span",
             `evaluation-outcome-tier ${displayOutcomeTier}`,
@@ -3703,6 +3711,103 @@ function renderCompletedGrading(result, run) {
     return block
 }
 
+function evaluationResultsByRuntime(run) {
+    const groups = new Map()
+    for (const configuration of run.runtimeConfigurations ?? []) {
+        const runtimeId = configuration?.runtimeId
+        if (!runtimeId || groups.has(runtimeId)) continue
+        groups.set(runtimeId, {runtimeId, configuration: {...configuration}, results: []})
+    }
+    for (const [index, result] of (run.results ?? []).entries()) {
+        const runtimeId = result.runtimeId ?? result.runtimeConfiguration?.runtimeId ?? `unknown-runtime-${index}`
+        if (!groups.has(runtimeId)) {
+            groups.set(runtimeId, {runtimeId, configuration: {}, results: []})
+        }
+        const group = groups.get(runtimeId)
+        group.configuration = {...group.configuration, ...result.runtimeConfiguration, runtimeId}
+        group.results.push(result)
+    }
+    return [...groups.values()].filter((group) => group.results.length)
+}
+
+function renderEvaluationResultCard(result, run) {
+    const card = node("article", "evaluation-result-card")
+    const resultHeader = node("div", "evaluation-result-head")
+    const statuses = node("div", "evaluation-result-statuses")
+    const executionStatus = node(
+        "span",
+        `run-status ${result.status}`,
+        `${t("executionStatus")} · ${evaluationRunStatusLabel(result.status)}`,
+    )
+    executionStatus.title = t("executionStatus")
+    const hasGradingData = ["awaiting_execution", "queued", "running", "completed", "failed", "skipped"].includes(
+        result.gradingStatus,
+    )
+    const gradingStatus = hasGradingData ? result.gradingStatus : null
+    const gradingBadge = node(
+        "span",
+        `grading-status ${gradingStatus ?? "legacy"}`,
+        gradingStatusLabel(gradingStatus),
+    )
+    gradingBadge.title = t("gradingStatus")
+    statuses.append(executionStatus, gradingBadge)
+    resultHeader.append(
+        statuses,
+        node("strong", "", result.caseSnapshot?.question ?? result.id),
+        node(
+            "small",
+            "",
+            [
+                result.runtimeConfiguration?.modelId || t("runtimeDefault"),
+                result.runtimeConfiguration?.effort || t("runtimeDefaultEffort"),
+                result.durationMs === null || result.durationMs === undefined
+                    ? null
+                    : formatEvaluationDuration(result.durationMs),
+            ].filter(Boolean).join(" · "),
+        ),
+    )
+    card.append(resultHeader)
+    if (gradingStatus === "completed") {
+        const grading = renderCompletedGrading(result, run)
+        if (grading) card.append(grading)
+    } else if (gradingStatus === "failed" || gradingStatus === "skipped") {
+        card.append(
+            node(
+                "p",
+                "evaluation-grading-error",
+                `${gradingStatusLabel(gradingStatus)}${result.gradingError || result.judge?.error ? ` · ${result.gradingError ?? result.judge.error}` : ""}`,
+            ),
+        )
+    } else if (!hasGradingData) {
+        card.append(node("p", "evaluation-legacy-grading", t("legacyUngraded")))
+    }
+    if (result.response || result.error) {
+        const detail = document.createElement("details")
+        detail.append(
+            node("summary", "", result.error ? t("failed") : t("completed")),
+            node("pre", "", result.error ?? result.response),
+        )
+        card.append(detail)
+    }
+    if (result.failureDiagnostics) {
+        const diagnostics = document.createElement("details")
+        diagnostics.className = "evaluation-failure-diagnostics"
+        const lines = [
+            result.failureDiagnostics.code,
+            result.failureDiagnostics.threadId ? `thread: ${result.failureDiagnostics.threadId}` : null,
+            result.failureDiagnostics.turnId ? `turn: ${result.failureDiagnostics.turnId}` : null,
+            result.failureDiagnostics.lastActivityAt ? `last activity: ${result.failureDiagnostics.lastActivityAt}` : null,
+            result.failureDiagnostics.traceReference,
+        ].filter(Boolean)
+        diagnostics.append(
+            node("summary", "", t("runtimeTrace")),
+            node("pre", "", lines.join("\n")),
+        )
+        card.append(diagnostics)
+    }
+    return card
+}
+
 function renderEvaluationRuns() {
     elements.evaluationRunCount.textContent = String(state.evaluationRuns.length)
     elements.evaluationRunList.replaceChildren()
@@ -3778,85 +3883,29 @@ function renderEvaluationRuns() {
         header.append(stop)
     }
     const results = node("div", "evaluation-result-list")
-    for (const result of run.results ?? []) {
-        const card = node("article", "evaluation-result-card")
-        const resultHeader = node("div", "evaluation-result-head")
-        const statuses = node("div", "evaluation-result-statuses")
-        const executionStatus = node(
-            "span",
-            `run-status ${result.status}`,
-            `${t("executionStatus")} · ${evaluationRunStatusLabel(result.status)}`,
-        )
-        executionStatus.title = t("executionStatus")
-        const hasGradingData = ["awaiting_execution", "queued", "running", "completed", "failed", "skipped"].includes(
-            result.gradingStatus,
-        )
-        const gradingStatus = hasGradingData ? result.gradingStatus : null
-        const gradingBadge = node(
-            "span",
-            `grading-status ${gradingStatus ?? "legacy"}`,
-            gradingStatusLabel(gradingStatus),
-        )
-        gradingBadge.title = t("gradingStatus")
-        statuses.append(executionStatus, gradingBadge)
-        resultHeader.append(
-            statuses,
-            node("strong", "", result.runtimeConfiguration?.displayName ?? result.runtimeId),
+    for (const group of evaluationResultsByRuntime(run)) {
+        const section = node("section", "evaluation-runtime-result-group")
+        section.dataset.evaluationRuntimeGroup = group.runtimeId
+        const groupHeader = node("header", "evaluation-runtime-result-header")
+        const identity = node("span", "evaluation-runtime-result-identity")
+        identity.append(
+            node("strong", "", group.configuration.displayName ?? group.runtimeId),
             node(
                 "small",
                 "",
                 [
-                    result.runtimeConfiguration?.modelId || t("runtimeDefault"),
-                    result.runtimeConfiguration?.effort || t("runtimeDefaultEffort"),
-                    result.durationMs === null || result.durationMs === undefined
-                        ? null
-                        : formatEvaluationDuration(result.durationMs),
+                    group.configuration.modelId || t("runtimeDefault"),
+                    group.configuration.effort || t("runtimeDefaultEffort"),
+                    `${group.results.length} ${t("cases")}`,
                 ].filter(Boolean).join(" · "),
             ),
         )
-        card.append(
-            resultHeader,
-            node("p", "evaluation-result-question", result.caseSnapshot?.question ?? ""),
-        )
-        if (gradingStatus === "completed") {
-            const grading = renderCompletedGrading(result, run)
-            if (grading) card.append(grading)
-        } else if (gradingStatus === "failed" || gradingStatus === "skipped") {
-            card.append(
-                node(
-                    "p",
-                    "evaluation-grading-error",
-                    `${gradingStatusLabel(gradingStatus)}${result.gradingError || result.judge?.error ? ` · ${result.gradingError ?? result.judge.error}` : ""}`,
-                ),
-            )
-        } else if (!hasGradingData) {
-            card.append(node("p", "evaluation-legacy-grading", t("legacyUngraded")))
-        }
-        if (result.response || result.error) {
-            const detail = document.createElement("details")
-            detail.append(
-                node("summary", "", result.error ? t("failed") : t("completed")),
-                node("pre", "", result.error ?? result.response),
-            )
-            card.append(detail)
-        }
-        if (result.failureDiagnostics) {
-            const diagnostics = document.createElement("details")
-            diagnostics.className = "evaluation-failure-diagnostics"
-            const lines = [
-                result.failureDiagnostics.code,
-                result.failureDiagnostics.threadId ? `thread: ${result.failureDiagnostics.threadId}` : null,
-                result.failureDiagnostics.turnId ? `turn: ${result.failureDiagnostics.turnId}` : null,
-                result.failureDiagnostics.lastActivityAt ? `last activity: ${result.failureDiagnostics.lastActivityAt}` : null,
-                result.failureDiagnostics.traceReference,
-            ].filter(Boolean)
-            diagnostics.append(
-                node("summary", "", t("runtimeTrace")),
-                node("pre", "", lines.join("\n")),
-            )
-            card.append(diagnostics)
-        }
-        results.append(card)
+        groupHeader.append(identity)
+        appendEvaluationQualitySummary(groupHeader, {results: group.results})
+        const cases = node("div", "evaluation-runtime-result-cases")
+        for (const result of group.results) cases.append(renderEvaluationResultCard(result, run))
+        section.append(groupHeader, cases)
+        results.append(section)
     }
     elements.evaluationRunDetail.append(header, node("h3", "", t("runResults")), results)
 }

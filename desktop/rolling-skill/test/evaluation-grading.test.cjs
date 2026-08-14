@@ -222,7 +222,7 @@ describe("evaluation grading contract", () => {
         const contract = scoreContract()
 
         assert.equal(contract.schemaVersion, SCORE_CONTRACT_SCHEMA)
-        assert.equal(contract.calculatorVersion, "a40-b60/v2")
+        assert.equal(contract.calculatorVersion, "a40-b60/v3")
         assert.equal(contract.calculatorVersion, CALCULATOR_VERSION)
         assert.equal(contract.a.maxScore, 40)
         assert.equal(contract.issueDescription, "")
@@ -697,9 +697,10 @@ describe("fixed A40 plus flexible B60 calculator", () => {
             activationMode: "explicit",
         })
         assert.equal(computed.aScore, 40)
-        assert.equal(computed.totalScore, null)
+        assert.equal(computed.totalScore, 100)
         assert.equal(computed.aVerdict, "diagnostic")
         assert.equal(computed.overallVerdict, "diagnostic")
+        assert.equal(computed.outcomeTier, "diagnostic")
     })
 
     it("keeps an automatic run diagnostic when the target runtime cannot bind the frozen Skill path", () => {
@@ -711,9 +712,10 @@ describe("fixed A40 plus flexible B60 calculator", () => {
 
         assert.equal(computed.aScore, 40)
         assert.equal(computed.bScore, 60)
-        assert.equal(computed.totalScore, null)
+        assert.equal(computed.totalScore, 100)
         assert.equal(computed.aVerdict, "diagnostic")
         assert.equal(computed.overallVerdict, "diagnostic")
+        assert.equal(computed.outcomeTier, "diagnostic")
         assert.deepEqual(computed.diagnosticReasons, ["target_skill_binding_unverified"])
     })
 

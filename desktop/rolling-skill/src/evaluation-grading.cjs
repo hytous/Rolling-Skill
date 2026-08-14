@@ -4,7 +4,7 @@ const {validateDatasetRubric} = require("./dataset-rubric.cjs")
 const SCORE_CONTRACT_SCHEMA = "rolling-skill-score-contract/v1"
 const JUDGE_RESULT_SCHEMA = "rolling-skill-judge-result/v1"
 const COMPUTED_SCORE_SCHEMA = "rolling-skill-computed-score/v1"
-const CALCULATOR_VERSION = "a40-b60/v2"
+const CALCULATOR_VERSION = "a40-b60/v3"
 const A_PASS_THRESHOLD = 32
 const A_USABLE_THRESHOLD = 24
 
@@ -864,7 +864,7 @@ function calculateScore(
         ...(activationMode === "explicit" ? ["explicit_skill_activation"] : []),
         ...(skillEvidenceBinding === "unverified" ? ["target_skill_binding_unverified"] : []),
     ]
-    const totalScore = aVerdict === "diagnostic" || aScore === null || bScore === null
+    const totalScore = aScore === null || bScore === null
         ? null
         : rounded(aScore + bScore)
     const outcomeTier = aVerdict === "diagnostic"

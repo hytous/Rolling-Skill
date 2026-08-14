@@ -1507,6 +1507,58 @@ kbd {
 .evaluation-result-list {
     display: flex;
     flex-direction: column;
+    gap: 12px;
+}
+
+.evaluation-runtime-result-group {
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+    border-radius: 11px;
+    background: color-mix(in srgb, var(--accent) 2%, var(--surface));
+}
+
+.evaluation-runtime-result-header {
+    display: flex;
+    padding: 10px 11px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 9px;
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+    background: color-mix(in srgb, var(--accent) 5%, var(--surface-raised));
+}
+
+.evaluation-runtime-result-identity {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.evaluation-runtime-result-identity strong {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.evaluation-runtime-result-identity small {
+    overflow: hidden;
+    color: var(--faint);
+    font-size: 8.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.evaluation-runtime-result-header .evaluation-run-quality {
+    width: auto;
+    flex: 0 0 auto;
+    justify-content: flex-end;
+}
+
+.evaluation-runtime-result-cases {
+    display: grid;
+    padding: 8px;
     gap: 8px;
 }
 
@@ -1557,7 +1609,10 @@ kbd {
 }
 
 .evaluation-result-head strong {
+    overflow: hidden;
     font-size: 10.5px;
+    line-height: 1.35;
+    text-overflow: ellipsis;
 }
 
 .evaluation-result-head small {
