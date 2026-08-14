@@ -83,7 +83,7 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /elements\.caseIssueDescription\.value = ""/)
         assert.doesNotMatch(renderer, /datasetQuestionDirty/)
         const createStart = renderer.indexOf("async function createCuration()")
-        const createEnd = renderer.indexOf("async function createCaseCalibration", createStart)
+        const createEnd = renderer.indexOf("function assertCalibrationBatchContext", createStart)
         const createHandler = renderer.slice(createStart, createEnd)
         assert.ok(createStart >= 0 && createEnd > createStart)
         assert.ok(

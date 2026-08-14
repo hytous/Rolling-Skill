@@ -19,6 +19,12 @@ describe("evaluation Skill binding", () => {
         assert.equal(runtimeReportsSkill({data: [{skills: [{...skillReference, enabled: false}]}]}, skillReference), false)
         assert.equal(runtimeReportsSkill({data: [{skills: [{...skillReference, name: "other", enabled: true}]}]}, skillReference), false)
         assert.equal(runtimeReportsSkill({data: [{skills: [{...skillReference, path: "/other/SKILL.md", enabled: true}]}]}, skillReference), false)
+        assert.equal(runtimeReportsSkill({
+            data: [{skills: [{name: skillReference.name, enabled: true, evidencePrecision: "name-only"}]}],
+        }, skillReference, {allowNameOnly: true}), true)
+        assert.equal(runtimeReportsSkill({
+            data: [{skills: [{name: skillReference.name, enabled: true, evidencePrecision: "name-only"}]}],
+        }, skillReference), false)
     })
 
     it("verifies the selected runtime and downgrades providers without path-precise inventory", async () => {
@@ -142,5 +148,24 @@ describe("evaluation Skill binding", () => {
         assert.equal(binding.declaredBinding, "verified")
         assert.equal(binding.observedBinding, "not_observed")
         assert.equal(binding.effectiveBinding, "verified")
+    })
+
+    it("observes DeepSeek Harness explicit Skill injection without claiming a content match", () => {
+        const binding = resolveExecutedSkillEvidenceBinding({
+            declaredBinding: "unverified",
+            skillReference,
+            skillEvidence: {files: [{path: "SKILL.md", content: "# Billing\n"}]},
+            traceEvidence: {entries: [{
+                sequence: 31,
+                message: {params: {event: {
+                    type: "user/message",
+                    data: {source: {kind: "skill-invocation", name: skillReference.name}},
+                }}},
+            }]},
+        })
+
+        assert.equal(binding.observedBinding, "name_only")
+        assert.equal(binding.effectiveBinding, "unverified")
+        assert.deepEqual(binding.evidenceSequences, [31])
     })
 })

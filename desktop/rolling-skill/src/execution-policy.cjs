@@ -38,6 +38,7 @@ function defaultPermissionMode(providerId, settings = {}) {
 }
 
 function resolveRuntimePermission(providerId, requestedMode, settings = {}) {
+    if (providerId === "deepseek-harness") return {}
     const permissionMode = requestedMode || defaultPermissionMode(providerId, settings)
     const supported =
         providerId === "codebuddy"

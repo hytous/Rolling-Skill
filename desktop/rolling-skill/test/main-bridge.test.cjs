@@ -7,6 +7,13 @@ const root = join(__dirname, "..")
 const source = (path) => readFileSync(join(root, path), "utf8")
 
 describe("desktop main/preload bridge", () => {
+    it("registers the locally discovered DeepSeek Harness provider", () => {
+        const main = source("src/main.cjs")
+
+        assert.match(main, /DeepSeekHarnessRuntimeProvider/)
+        assert.match(main, /new DeepSeekHarnessRuntimeProvider\(\)/)
+    })
+
     it("derives curation and evaluation Skills from dataset bindings", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")

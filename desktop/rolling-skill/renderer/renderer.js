@@ -1,5 +1,6 @@
 const commandActivity = globalThis.RollingSkillCommandActivity
 const {formatEvaluationDuration} = globalThis.RollingSkillEvaluationFormat
+const {CaseCalibrationBatch} = globalThis.RollingSkillCalibrationBatch
 
 const translations = {
     en: {
@@ -76,6 +77,14 @@ const translations = {
         calibrationStarted: "Case sent to Curator for calibration",
         caseCalibrated: "Case calibrated and previous version preserved",
         doneCalibration: "Done · update case",
+        calibrateAllCases: "Auto-calibrate all",
+        stopCalibrationBatch: "Stop",
+        calibrationBatchProgress: "Auto calibration · {completed}/{total} saved",
+        calibrationBatchSaving: "Valid draft ready · saving automatically…",
+        calibrationBatchComplete: "All Cases were calibrated and saved",
+        calibrationBatchStopped: "Automatic calibration stopped",
+        calibrationBatchFailed: "Automatic calibration paused: {message}",
+        calibrationContextChanged: "The dataset or published rubric changed during automatic calibration.",
         datasetSkillRequired: "Select an enabled Skill for this dataset.",
         autoCaptureDatasetRequired: "Automatic capture requires a Skill-bound dataset that is available in the active runtime.",
         changeDatasetSkillCopy: "Change the Skill bound to “{name}”. Future capture and evaluation use the new binding.",
@@ -457,6 +466,14 @@ const translations = {
         calibrationStarted: "Case 已交给 Curator 校准",
         caseCalibrated: "Case 已完成校准，旧版本已保留",
         doneCalibration: "完成并更新 Case",
+        calibrateAllCases: "全部自动校准",
+        stopCalibrationBatch: "停止",
+        calibrationBatchProgress: "批量自动校准 · 已保存 {completed}/{total}",
+        calibrationBatchSaving: "草稿校验通过 · 正在自动保存…",
+        calibrationBatchComplete: "全部 Case 已校准并自动保存",
+        calibrationBatchStopped: "已停止批量自动校准",
+        calibrationBatchFailed: "批量自动校准已暂停：{message}",
+        calibrationContextChanged: "自动校准期间数据集或已发布评分标准发生了变化。",
         datasetSkillRequired: "请为这个数据集选择当前运行时中已启用的 Skill。",
         autoCaptureDatasetRequired: "自动沉淀必须选择一个已绑定 Skill 且该 Skill 在当前运行时可用的数据集。",
         changeDatasetSkillCopy: "更换数据集“{name}”绑定的 Skill；之后的新沉淀和评测会使用新绑定。",
@@ -824,6 +841,7 @@ const state = {
     surface: "chat",
     evaluationCases: [],
     calibrationStartingCaseIds: new Set(),
+    calibrationBatch: null,
     evaluationSkills: [],
     evaluationDatasetId: null,
     evaluationCaseId: null,
@@ -1356,6 +1374,7 @@ function populateSkillSelect(select, selectedPath = null, {allowEmpty = true} = 
         select.append(empty)
     }
     for (const skill of state.evaluationSkills) {
+        if (!skill.path) continue
         const option = node("option", "", skillDisplayLabel(skill))
         option.value = skill.path
         select.append(option)
@@ -1380,7 +1399,15 @@ function selectedDataset(datasetId) {
 function runtimeSkillForReference(reference) {
     if (!reference?.name || !reference?.path) return null
     const skill = runtimeSkillByPath(reference.path)
-    return skill?.enabled && skill.name === reference.name ? skill : null
+    if (skill?.enabled && skill.name === reference.name) return skill
+    const allowsNameOnly = state.runtime?.runtime?.capabilities?.includes("skills-name-only")
+    if (!allowsNameOnly) return null
+    return state.evaluationSkills.find((entry) =>
+        entry.enabled &&
+        !entry.path &&
+        entry.evidencePrecision === "name-only" &&
+        entry.name === reference.name,
+    ) ?? null
 }
 
 function skillReferenceFromRuntimeSkill(skill) {
@@ -2181,6 +2208,32 @@ function activeCalibrationForCase(caseId) {
     ) ?? null
 }
 
+function calibrationBatchSnapshot() {
+    return state.calibrationBatch?.snapshot?.() ?? null
+}
+
+function calibrationBatchForSession(sessionId) {
+    const batch = state.calibrationBatch
+    const snapshot = batch?.snapshot?.()
+    return snapshot?.status === "running" && snapshot.currentSessionId === sessionId
+        ? batch
+        : null
+}
+
+function calibrationBatchStatusText(snapshot) {
+    if (!snapshot) return ""
+    if (snapshot.status === "completed") return t("calibrationBatchComplete")
+    if (snapshot.status === "stopped") return t("calibrationBatchStopped")
+    if (snapshot.status === "failed") {
+        return formatMessage("calibrationBatchFailed", {message: snapshot.error || t("failed")})
+    }
+    if (snapshot.archiving) return t("calibrationBatchSaving")
+    return formatMessage("calibrationBatchProgress", {
+        completed: snapshot.completed,
+        total: snapshot.total,
+    })
+}
+
 function calibrationActionKey(session, idleKey = "calibrateCase") {
     if (!session) return idleKey
     return session.status === "queued" || session.status === "running"
@@ -2458,6 +2511,29 @@ function renderCurations() {
         `${session.episode.items.length} episode items · ${session.episode.toolActivity.length} tool signatures · ${session.skillReference?.name || t("none")} · ${curatorModel} · ${curatorEffort}`,
     )
     scroll.append(overview, question)
+    const batchSnapshot = calibrationBatchSnapshot()
+    if (
+        session.operation === "calibration" &&
+        batchSnapshot?.currentSessionId === session.id
+    ) {
+        const batchPanel = node("section", `calibration-batch-panel ${batchSnapshot.status}`)
+        const batchCopy = node("span", "calibration-batch-copy")
+        batchCopy.append(
+            node("strong", "", formatMessage("calibrationBatchProgress", {
+                completed: batchSnapshot.completed,
+                total: batchSnapshot.total,
+            })),
+            node("small", "", calibrationBatchStatusText(batchSnapshot)),
+        )
+        batchPanel.append(batchCopy)
+        if (batchSnapshot.status === "running") {
+            const stop = node("button", "calibration-batch-stop", t("stopCalibrationBatch"))
+            stop.type = "button"
+            stop.dataset.stopCalibrationBatch = "true"
+            batchPanel.append(stop)
+        }
+        scroll.append(batchPanel)
+    }
     scroll.append(sourceQuestion)
     scroll.append(provenance)
 
@@ -2883,8 +2959,11 @@ function appendDatasetCalibrationNotice(version) {
         (entry) => entry.rubricCalibration?.status === "needed",
     )
     if (!version || !pendingCases.length) return
-    const selectedPending = pendingCases.find((entry) => entry.id === state.evaluationCaseId)
-    const selected = selectedPending ?? pendingCases[0]
+    const batchSnapshot = calibrationBatchSnapshot()
+    const relevantBatch = batchSnapshot?.datasetId === state.evaluationDatasetId &&
+        batchSnapshot.rubricVersionId === version.id
+        ? batchSnapshot
+        : null
     const notice = node("div", "dataset-calibration-notice")
     const copy = node("span")
     copy.append(
@@ -2894,18 +2973,20 @@ function appendDatasetCalibrationNotice(version) {
             version: version.version,
         })),
     )
-    const calibrate = node(
+    if (relevantBatch) {
+        copy.append(node("small", `calibration-batch-status ${relevantBatch.status}`, calibrationBatchStatusText(relevantBatch)))
+    }
+    const action = node(
         "button",
-        "dataset-calibration-action",
-        t(calibrationActionKey(
-            activeCalibrationForCase(selected.id),
-            selectedPending ? "calibrateSelectedCase" : "calibrateNextCase",
-        )),
+        relevantBatch?.status === "running"
+            ? "dataset-calibration-action calibration-batch-stop"
+            : "dataset-calibration-action",
+        t(relevantBatch?.status === "running" ? "stopCalibrationBatch" : "calibrateAllCases"),
     )
-    calibrate.type = "button"
-    calibrate.dataset.calibrateEvaluationCase = selected.id
-    calibrate.disabled = state.calibrationStartingCaseIds.has(selected.id)
-    notice.append(copy, calibrate)
+    action.type = "button"
+    if (relevantBatch?.status === "running") action.dataset.stopCalibrationBatch = "true"
+    else action.dataset.startCalibrationBatch = "true"
+    notice.append(copy, action)
     elements.evaluationDatasetRubricStatus.append(notice)
 }
 
@@ -3801,8 +3882,14 @@ function flattenRuntimeSkills(response) {
     const byPath = new Map()
     for (const entry of response?.data ?? []) {
         for (const skill of entry.skills ?? []) {
-            if (!skill?.path || !skill.enabled) continue
-            byPath.set(skill.path, skill)
+            if (!skill?.enabled) continue
+            const key = skill.path || (
+                skill.evidencePrecision === "name-only" && skill.name
+                    ? `name-only:${skill.name}`
+                    : null
+            )
+            if (!key) continue
+            byPath.set(key, skill)
         }
     }
     return [...byPath.values()].sort((left, right) =>
@@ -4747,16 +4834,177 @@ async function createCuration() {
     }
 }
 
-async function createCaseCalibration(caseId) {
+function assertCalibrationBatchContext(batch, caseId = null) {
+    const snapshot = batch.snapshot()
+    if (
+        state.evaluationDatasetId !== snapshot.datasetId ||
+        state.evaluationRubricVersion?.id !== snapshot.rubricVersionId
+    ) {
+        throw new Error(t("calibrationContextChanged"))
+    }
+    if (!caseId) return
     const caseEntry = state.evaluationCases.find((entry) => entry.id === caseId)
-    if (!caseEntry || caseEntry.rubricCalibration?.status !== "needed") return
+    if (
+        !caseEntry ||
+        caseEntry.rubricCalibration?.status !== "needed" ||
+        caseEntry.rubricCalibration?.rubricVersionId !== snapshot.rubricVersionId
+    ) {
+        throw new Error(t("calibrationContextChanged"))
+    }
+}
+
+function failAutomaticCalibrationBatch(batch, error) {
+    if (state.calibrationBatch !== batch) return
+    const snapshot = batch.fail(error)
+    renderEvaluationWorkbench()
+    renderCurations()
+    showToast(calibrationBatchStatusText(snapshot))
+}
+
+async function discardCurationImmediately(sessionId, {feedback = false} = {}) {
+    const session = await window.rollingSkill.discardCuration(sessionId)
+    upsertCuration(session)
+    renderCurations()
+    if (state.surface === "evaluation" && session.operation === "calibration") {
+        renderEvaluationWorkbench()
+    }
+    if (feedback) showToast(t("draftDiscarded"))
+    return session
+}
+
+async function stopAutomaticCalibrationBatch({discardCurrent = true, feedback = true} = {}) {
+    const batch = state.calibrationBatch
+    const before = batch?.snapshot?.()
+    if (!batch || before?.status !== "running") return false
+    const wasArchiving = before.archiving
+    batch.stop()
+    renderEvaluationWorkbench()
+    renderCurations()
+    if (discardCurrent && before.currentSessionId && !wasArchiving) {
+        try {
+            await discardCurationImmediately(before.currentSessionId)
+        } catch (error) {
+            showError(error)
+        }
+    }
+    if (feedback) showToast(t("calibrationBatchStopped"))
+    return true
+}
+
+function leaveAutomaticCalibrationForManualAction(sessionId) {
+    const batch = calibrationBatchForSession(sessionId)
+    if (!batch) return false
+    batch.stop()
+    renderEvaluationWorkbench()
+    renderCurations()
+    showToast(t("calibrationBatchStopped"))
+    return true
+}
+
+async function archiveAutomaticCalibration(session, batch) {
+    try {
+        assertCalibrationBatchContext(batch, session.targetCaseId)
+        renderEvaluationWorkbench()
+        renderCurations()
+        await archiveCuration(session.id, {automatic: true})
+        if (state.calibrationBatch !== batch || batch.snapshot().status !== "running") return
+        const snapshot = batch.completeAutoArchive(session.id)
+        renderEvaluationWorkbench()
+        renderCurations()
+        if (snapshot.status === "completed") {
+            showToast(t("calibrationBatchComplete"))
+            return
+        }
+        await advanceAutomaticCalibrationBatch(batch)
+    } catch (error) {
+        failAutomaticCalibrationBatch(batch, error)
+    }
+}
+
+function maybeAutoArchiveCalibration(session) {
+    const batch = state.calibrationBatch
+    if (!batch || !batch.beginAutoArchive(session)) return false
+    void archiveAutomaticCalibration(session, batch)
+    return true
+}
+
+function handleCalibrationBatchSessionUpdate(session) {
+    const batch = calibrationBatchForSession(session.id)
+    if (!batch) return
+    if (session.status === "failed") {
+        failAutomaticCalibrationBatch(batch, new Error(session.error || t("failed")))
+        return
+    }
+    maybeAutoArchiveCalibration(session)
+}
+
+async function advanceAutomaticCalibrationBatch(batch = state.calibrationBatch) {
+    if (!batch || state.calibrationBatch !== batch || batch.snapshot().status !== "running") return
+    let session = null
+    try {
+        assertCalibrationBatchContext(batch)
+        const caseId = batch.nextCase()
+        renderEvaluationWorkbench()
+        renderCurations()
+        if (!caseId) {
+            if (batch.snapshot().status === "completed") showToast(t("calibrationBatchComplete"))
+            return
+        }
+        assertCalibrationBatchContext(batch, caseId)
+        session = await createCaseCalibration(caseId, {
+            automatic: true,
+            throwOnError: true,
+        })
+        if (!session) throw new Error(t("calibrationContextChanged"))
+        if (
+            state.calibrationBatch !== batch ||
+            !batch.attachSession(caseId, session.id)
+        ) {
+            if (session.status !== "archived" && session.status !== "cancelled") {
+                await discardCurationImmediately(session.id)
+            }
+            return
+        }
+        renderEvaluationWorkbench()
+        renderCurations()
+        const latest = state.curationSessions.find((entry) => entry.id === session.id) ?? session
+        handleCalibrationBatchSessionUpdate(latest)
+    } catch (error) {
+        failAutomaticCalibrationBatch(batch, error)
+    }
+}
+
+function startAutomaticCalibrationBatch() {
+    const datasetId = state.evaluationDatasetId
+    const rubricVersionId = state.evaluationRubricVersion?.id
+    const caseIds = state.evaluationCases
+        .filter((entry) => entry.rubricCalibration?.status === "needed")
+        .map((entry) => entry.id)
+    if (!datasetId || !rubricVersionId || !caseIds.length) return
+    const running = calibrationBatchSnapshot()?.status === "running"
+    if (running) return
+    const batch = new CaseCalibrationBatch({datasetId, rubricVersionId, caseIds})
+    state.calibrationBatch = batch
+    renderEvaluationWorkbench()
+    void advanceAutomaticCalibrationBatch(batch)
+}
+
+async function createCaseCalibration(caseId, {automatic = false, throwOnError = false} = {}) {
+    const caseEntry = state.evaluationCases.find((entry) => entry.id === caseId)
+    if (!caseEntry || caseEntry.rubricCalibration?.status !== "needed") {
+        if (throwOnError) throw new Error(t("calibrationContextChanged"))
+        return null
+    }
     const existing = activeCalibrationForCase(caseId)
     if (existing) {
         state.activeCurationId = existing.id
         setCurationOpen(true)
-        return
+        return existing
     }
-    if (state.calibrationStartingCaseIds.has(caseId)) return
+    if (state.calibrationStartingCaseIds.has(caseId)) {
+        if (throwOnError) throw new Error(t("calibrationInProgress"))
+        return null
+    }
     state.calibrationStartingCaseIds.add(caseId)
     renderEvaluationWorkbench()
     try {
@@ -4767,9 +5015,12 @@ async function createCaseCalibration(caseId) {
         upsertCuration(session)
         state.activeCurationId = session.id
         setCurationOpen(true)
-        showToast(t("calibrationStarted"))
+        if (!automatic) showToast(t("calibrationStarted"))
+        return session
     } catch (error) {
+        if (throwOnError) throw error
         showError(error)
+        return null
     } finally {
         state.calibrationStartingCaseIds.delete(caseId)
         renderEvaluationWorkbench()
@@ -4860,6 +5111,7 @@ function upsertCuration(session) {
 
 async function sendCurationMessage(sessionId, text) {
     if (!String(text).trim()) return false
+    leaveAutomaticCalibrationForManualAction(sessionId)
     try {
         const session = await window.rollingSkill.sendCurationMessage(sessionId, text)
         const input = elements.curationDetail.querySelector(
@@ -4877,6 +5129,7 @@ async function sendCurationMessage(sessionId, text) {
 }
 
 async function retryCuration(sessionId) {
+    leaveAutomaticCalibrationForManualAction(sessionId)
     try {
         const session = await window.rollingSkill.retryCuration(sessionId)
         upsertCuration(session)
@@ -4886,7 +5139,8 @@ async function retryCuration(sessionId) {
     }
 }
 
-async function archiveCuration(sessionId) {
+async function archiveCuration(sessionId, {automatic = false} = {}) {
+    if (!automatic) leaveAutomaticCalibrationForManualAction(sessionId)
     const operation = state.curationSessions.find((entry) => entry.id === sessionId)?.operation
     try {
         await window.rollingSkill.archiveCuration(sessionId)
@@ -4895,13 +5149,17 @@ async function archiveCuration(sessionId) {
         state.datasets = await window.rollingSkill.listDatasets()
         renderCurations()
         if (state.surface === "evaluation") await loadEvaluationWorkbench(false)
-        showToast(t(operation === "calibration" ? "caseCalibrated" : "caseSaved"))
+        if (!automatic) showToast(t(operation === "calibration" ? "caseCalibrated" : "caseSaved"))
+        return session
     } catch (error) {
+        if (automatic) throw error
         showError(error)
+        return null
     }
 }
 
 function openDiscardDialog(sessionId) {
+    leaveAutomaticCalibrationForManualAction(sessionId)
     state.discardCurationId = sessionId
     elements.discardDialog.showModal()
 }
@@ -4911,13 +5169,8 @@ async function discardCuration() {
     if (!sessionId) return
     elements.confirmDiscard.disabled = true
     try {
-        const session = await window.rollingSkill.discardCuration(sessionId)
-        upsertCuration(session)
+        const session = await discardCurationImmediately(sessionId)
         elements.discardDialog.close()
-        renderCurations()
-        if (state.surface === "evaluation" && session.operation === "calibration") {
-            renderEvaluationWorkbench()
-        }
         showToast(t("draftDiscarded"))
     } catch (error) {
         showError(error)
@@ -4928,6 +5181,7 @@ async function discardCuration() {
 }
 
 async function updateCurationModel(sessionId, selectedModelId) {
+    leaveAutomaticCalibrationForManualAction(sessionId)
     try {
         const session = await window.rollingSkill.updateCurationModel(
             sessionId,
@@ -4942,6 +5196,7 @@ async function updateCurationModel(sessionId, selectedModelId) {
 }
 
 async function updateCurationEffort(sessionId, selectedEffort) {
+    leaveAutomaticCalibrationForManualAction(sessionId)
     try {
         const session = await window.rollingSkill.updateCurationEffort(
             sessionId,
@@ -5141,8 +5396,20 @@ elements.openTrace.addEventListener("click", () => {
 })
 elements.refreshEvaluation.addEventListener("click", () => loadEvaluationWorkbench(true))
 elements.evaluationWorkbench.addEventListener("click", (event) => {
+    const stopBatch = event.target.closest("[data-stop-calibration-batch]")
+    if (stopBatch) {
+        void stopAutomaticCalibrationBatch()
+        return
+    }
+    const startBatch = event.target.closest("[data-start-calibration-batch]")
+    if (startBatch) {
+        startAutomaticCalibrationBatch()
+        return
+    }
     const calibration = event.target.closest("[data-calibrate-evaluation-case]")
     if (calibration) {
+        const currentSessionId = calibrationBatchSnapshot()?.currentSessionId
+        if (currentSessionId) leaveAutomaticCalibrationForManualAction(currentSessionId)
         void createCaseCalibration(calibration.dataset.calibrateEvaluationCase)
         return
     }
@@ -5357,6 +5624,11 @@ elements.curationList.addEventListener("click", (event) => {
     renderCurations()
 })
 elements.curationDetail.addEventListener("click", (event) => {
+    const stopBatch = event.target.closest("[data-stop-calibration-batch]")
+    if (stopBatch) {
+        void stopAutomaticCalibrationBatch()
+        return
+    }
     const retry = event.target.closest("[data-retry-curation]")
     if (retry) void retryCuration(retry.dataset.retryCuration)
     const archive = event.target.closest("[data-archive-curation]")
@@ -5467,6 +5739,7 @@ window.rollingSkill.onCurationChanged((session) => {
     upsertCuration(session)
     if (!state.activeCurationId) state.activeCurationId = session.id
     renderCurations()
+    handleCalibrationBatchSessionUpdate(session)
     if (state.surface === "evaluation" && session.operation === "calibration") {
         renderEvaluationWorkbench()
     }

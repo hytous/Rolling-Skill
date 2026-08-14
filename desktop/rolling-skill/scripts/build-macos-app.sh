@@ -40,10 +40,12 @@ npm ci
 npm test
 npm run pack:mac
 
-if [[ -e "$BUILT_APP/Contents/Resources/codex-runtime" ]]; then
-    echo "Refusing application bundle with an embedded Codex runtime" >&2
-    exit 1
-fi
+for runtime_binary in codex codebuddy dsh; do
+    if /usr/bin/find "$BUILT_APP/Contents" -type f -name "$runtime_binary" -print -quit | /usr/bin/grep -q .; then
+        echo "Refusing application bundle with an embedded $runtime_binary runtime" >&2
+        exit 1
+    fi
+done
 
 /usr/bin/codesign --force --deep --sign "$SIGN_IDENTITY" "$BUILT_APP"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$BUILT_APP"

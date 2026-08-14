@@ -154,6 +154,20 @@ const smokeEvaluationCase = {
         previousRubricVersionId: null,
     },
 }
+const smokeEvaluationCaseTwo = {
+    ...smokeEvaluationCase,
+    id: "case-smoke-2",
+    question: "第二条 Case 的后续评价",
+    source: {
+        originalQuestion: "查一下7月份，技术产品自身成本和结算成本情况",
+    },
+    curated: curatedDraft("Second verified case summary"),
+}
+let smokeEvaluationCases = [smokeEvaluationCase, smokeEvaluationCaseTwo]
+const smokeCalibrationSessions = new Map()
+let calibrationCreateOrder = []
+let calibrationArchiveOrder = []
+let calibrationDiscardOrder = []
 const noOpSubscription = () => () => {}
 let readCount = 0
 let nextReadFailureThreadId = null
@@ -239,8 +253,8 @@ let smokeRubricSession = {
 let smokeDatasets = [{
     id: "dataset-smoke",
     name: "Smoke Dataset",
-    caseCount: 1,
-    goodcaseCount: 1,
+    caseCount: 2,
+    goodcaseCount: 2,
     badcaseCount: 0,
     skillReference: smokeSkillReference,
     activeRubricVersionId: smokeRubricVersion.id,
@@ -385,7 +399,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         }
         return smokeRubricSession
     },
-    listCases: async () => [smokeEvaluationCase],
+    listCases: async () => smokeEvaluationCases,
     listEvaluationRuns: async () => [smokeEvaluationRun],
     getEvaluationRun: async () => smokeEvaluationRun,
     createCuration: async (input) => {
@@ -399,16 +413,27 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     },
     createCaseCalibration: async (input) => {
         lastCalibrationInput = input
-        return curationSession({
-            id: "curation-calibration-smoke",
+        const existing = [...smokeCalibrationSessions.values()].find(
+            (session) =>
+                session.targetCaseId === input.caseId &&
+                session.status !== "archived" &&
+                session.status !== "cancelled",
+        )
+        if (existing) return existing
+        calibrationCreateOrder.push(input.caseId)
+        const sourceCase = smokeEvaluationCases.find((entry) => entry.id === input.caseId)
+        const session = curationSession({
+            id: input.caseId === "case-smoke"
+                ? "curation-calibration-smoke"
+                : `curation-calibration-${input.caseId}`,
             operation: "calibration",
             targetCaseId: input.caseId,
             status: "queued",
             baselineCaseSnapshot: {
                 caseId: input.caseId,
-                caseType: smokeEvaluationCase.caseType,
-                answer: smokeEvaluationCase.answer,
-                curated: smokeEvaluationCase.curated,
+                caseType: sourceCase.caseType,
+                answer: sourceCase.answer,
+                curated: sourceCase.curated,
                 rubricVersionId: null,
             },
             rubricVersionSnapshot: smokeRubricVersion,
@@ -421,6 +446,40 @@ contextBridge.exposeInMainWorld("rollingSkill", {
                 currentTurnId: null,
             },
         })
+        smokeCalibrationSessions.set(session.id, session)
+        return session
+    },
+    archiveCuration: async (sessionId) => {
+        const session = smokeCalibrationSessions.get(sessionId)
+        if (!session) throw new Error(`Unknown smoke calibration: ${sessionId}`)
+        calibrationArchiveOrder.push(session.targetCaseId)
+        const archived = {...session, status: "archived"}
+        smokeCalibrationSessions.set(sessionId, archived)
+        smokeEvaluationCases = smokeEvaluationCases.map((entry) =>
+            entry.id === session.targetCaseId
+                ? {...entry, rubricVersionId: smokeRubricVersion.id, rubricCalibration: {status: "current"}}
+                : entry,
+        )
+        for (const listener of curationChangedListeners) listener(archived)
+    },
+    getCuration: async (sessionId) => {
+        if (sessionId === smokeCurationSession.id) return smokeCurationSession
+        const session = smokeCalibrationSessions.get(sessionId)
+        if (!session) throw new Error(`Unknown smoke curation: ${sessionId}`)
+        return session
+    },
+    discardCuration: async (sessionId) => {
+        if (sessionId === smokeCurationSession.id) {
+            smokeCurationSession = {...smokeCurationSession, status: "cancelled"}
+            return smokeCurationSession
+        }
+        const session = smokeCalibrationSessions.get(sessionId)
+        if (!session) throw new Error(`Unknown smoke calibration: ${sessionId}`)
+        calibrationDiscardOrder.push(session.targetCaseId)
+        const cancelled = {...session, status: "cancelled"}
+        smokeCalibrationSessions.set(sessionId, cancelled)
+        for (const listener of curationChangedListeners) listener(cancelled)
+        return cancelled
     },
     updateCurationModel: async (_sessionId, modelId) => {
         smokeCurationSession = {
@@ -455,6 +514,33 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     },
     smokeLastCurationInput: () => lastCurationInput,
     smokeLastCalibrationInput: () => lastCalibrationInput,
+    smokeEmitCalibrationReady: (caseId) => {
+        const entry = [...smokeCalibrationSessions.entries()].find(
+            ([, session]) => session.targetCaseId === caseId && session.status !== "cancelled",
+        )
+        if (!entry) throw new Error(`No smoke calibration for ${caseId}`)
+        const [sessionId, session] = entry
+        const ready = {
+            ...session,
+            status: "needs_review",
+            draft: curatedDraft(`Automatically calibrated ${caseId}`),
+            revisions: [...(session.revisions ?? []), {createdAt: new Date().toISOString()}],
+        }
+        smokeCalibrationSessions.set(sessionId, ready)
+        for (const listener of curationChangedListeners) listener(ready)
+    },
+    smokeCalibrationMetrics: () => ({
+        created: [...calibrationCreateOrder],
+        archived: [...calibrationArchiveOrder],
+        discarded: [...calibrationDiscardOrder],
+    }),
+    smokeResetCalibrationCases: () => {
+        smokeEvaluationCases = [smokeEvaluationCase, smokeEvaluationCaseTwo]
+        smokeCalibrationSessions.clear()
+        calibrationCreateOrder = []
+        calibrationArchiveOrder = []
+        calibrationDiscardOrder = []
+    },
     smokeEmitRuntimeState: (runtimeId, modelDelayMs = 0) => {
         currentRuntimeId = runtimeId
         modelDelayByRuntime.set(runtimeId, modelDelayMs)

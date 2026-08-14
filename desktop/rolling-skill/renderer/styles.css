@@ -1047,6 +1047,24 @@ kbd {
     padding: 0 8px;
 }
 
+.calibration-batch-status {
+    color: var(--accent-strong);
+}
+
+.calibration-batch-status.failed {
+    color: var(--danger);
+}
+
+.calibration-batch-stop {
+    border-color: color-mix(in srgb, var(--danger) 25%, var(--border));
+    background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+    color: var(--danger);
+}
+
+.calibration-batch-stop:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger) 13%, var(--surface));
+}
+
 .dataset-skill-heading {
     display: flex;
     align-items: center;
@@ -2703,6 +2721,46 @@ kbd {
 
 .calibration-baseline-card {
     border-color: color-mix(in srgb, var(--warning) 20%, var(--border));
+}
+
+.calibration-batch-panel {
+    display: flex;
+    margin: 0 0 10px;
+    padding: 9px 10px;
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+    border-radius: 9px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+
+.calibration-batch-panel.failed {
+    border-color: color-mix(in srgb, var(--danger) 24%, var(--border));
+}
+
+.calibration-batch-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.calibration-batch-copy strong {
+    color: var(--text);
+    font-size: 10px;
+}
+
+.calibration-batch-copy small {
+    color: var(--muted);
+    font-size: 8.5px;
+    line-height: 1.4;
+}
+
+.calibration-batch-panel > button {
+    flex: 0 0 auto;
+    min-height: 27px;
+    padding: 0 9px;
 }
 
 .frozen-question {

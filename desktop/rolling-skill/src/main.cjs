@@ -15,6 +15,7 @@ const {pathToFileURL} = require("node:url")
 
 const {CodexRuntimeProvider} = require("./codex-runtime-provider.cjs")
 const {CodeBuddyRuntimeProvider} = require("./codebuddy-runtime-provider.cjs")
+const {DeepSeekHarnessRuntimeProvider} = require("./deepseek-harness-runtime-provider.cjs")
 const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
 const {RubricManager} = require("./rubric-manager.cjs")
@@ -363,14 +364,19 @@ async function currentRuntimeSkillReference(value) {
     }
     const response = await runtime.listSkills({forceReload: true})
     const requested = {name, path}
-    if (!runtimeReportsSkill(response, requested)) {
+    const allowNameOnly = runtimeDescriptor?.capabilities?.includes("skills-name-only")
+    if (!runtimeReportsSkill(response, requested, {allowNameOnly})) {
         throw new Error(
             "The selected Skill is not installed and enabled in the active runtime and workspace",
         )
     }
     const reported = response.data
         .flatMap((entry) => entry.skills ?? [])
-        .find((skill) => skill.enabled && skill.name === name && skill.path === path)
+        .find((skill) =>
+            skill.enabled &&
+            skill.name === name &&
+            (skill.path === path || (allowNameOnly && skill.evidencePrecision === "name-only")),
+        )
     return {
         schemaVersion: "rolling-skill-skill-reference/v1",
         name,
@@ -1384,6 +1390,7 @@ if (!hasLock) {
         runtimeRegistry = new RuntimeRegistry([
             new CodexRuntimeProvider(),
             new CodeBuddyRuntimeProvider(),
+            new DeepSeekHarnessRuntimeProvider(),
         ])
         const evaluationPowerGuard = new EvaluationPowerGuard(powerSaveBlocker)
         evaluationRunner = new EvaluationRunner({

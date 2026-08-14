@@ -1,10 +1,13 @@
-function runtimeReportsSkill(response, skillReference) {
+function runtimeReportsSkill(response, skillReference, {allowNameOnly = false} = {}) {
     for (const entry of response?.data ?? []) {
         for (const skill of entry.skills ?? []) {
             if (
                 skill?.enabled &&
-                skill.path === skillReference.path &&
-                skill.name === skillReference.name
+                skill.name === skillReference.name &&
+                (
+                    skill.path === skillReference.path ||
+                    (allowNameOnly && skill.evidencePrecision === "name-only" && !skill.path)
+                )
             ) {
                 return true
             }
@@ -51,7 +54,23 @@ function resolveExecutedSkillEvidenceBinding({
     const observed = []
     for (const entry of traceEvidence?.entries ?? []) {
         const update = entry?.message?.params?.update ?? {}
-        if (String(update.rawInput?.skill ?? "") !== skillName) continue
+        const event = entry?.message?.params?.event ?? {}
+        const dshExplicitSkill =
+            event.type === "user/message" &&
+            event.data?.source?.kind === "skill-invocation"
+                ? String(event.data.source.name ?? "")
+                : ""
+        const dshToolSkill = event.type === "tool/call" && event.data?.name === "skill"
+            ? (() => {
+                  try {
+                      return String(JSON.parse(event.data.arguments ?? "{}").name ?? "")
+                  } catch {
+                      return ""
+                  }
+              })()
+            : ""
+        const observedSkill = update.rawInput?.skill ?? (dshExplicitSkill || dshToolSkill)
+        if (String(observedSkill ?? "") !== skillName) continue
         observed.push({
             sequence: entry.sequence,
             contentDigest: update.skillContentDigest ?? null,

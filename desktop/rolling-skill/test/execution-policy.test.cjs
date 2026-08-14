@@ -39,6 +39,7 @@ describe("runtime execution policy", () => {
         assert.deepEqual(resolveRuntimePermission("codebuddy", "delegate"), {
             permissionMode: "delegate",
         })
+        assert.deepEqual(resolveRuntimePermission("deepseek-harness", null), {})
         assert.equal(permissionModeOptions("codebuddy").some((entry) => entry.value === "dontAsk"), true)
         assert.throws(() => resolveRuntimePermission("codebuddy", "bad mode"), /permission mode/i)
     })

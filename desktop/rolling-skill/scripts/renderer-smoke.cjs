@@ -135,6 +135,41 @@ async function run() {
     ) {
         throw new Error(`Case calibration drawer is missing frozen context: ${calibrationDrawer.text}`)
     }
+    await inspect(window, 'document.querySelector("[data-discard-curation=curation-calibration-smoke]").click()')
+    await waitFor(window, 'document.querySelector("#discard-curation-dialog").open')
+    await inspect(window, 'document.querySelector("#confirm-discard").click()')
+    await waitFor(window, '!document.querySelector("[data-curation-id=curation-calibration-smoke]")')
+    await inspect(window, 'document.querySelector("#close-curations").click()')
+    await inspect(window, 'window.rollingSkill.smokeResetCalibrationCases()')
+
+    await waitFor(window, 'document.querySelector("[data-start-calibration-batch]")')
+    await inspect(window, 'document.querySelector("[data-start-calibration-batch]").click()')
+    await waitFor(window, `window.rollingSkill.smokeCalibrationMetrics().created.join(",") === "case-smoke"`)
+    await waitFor(window, 'document.querySelector("#curation-drawer").classList.contains("visible") && document.querySelector("[data-stop-calibration-batch]")')
+    await inspect(window, 'window.rollingSkill.smokeEmitCalibrationReady("case-smoke")')
+    await waitFor(window, `window.rollingSkill.smokeCalibrationMetrics().archived.join(",") === "case-smoke"`)
+    await waitFor(window, `window.rollingSkill.smokeCalibrationMetrics().created.join(",") === "case-smoke,case-smoke-2"`)
+    await inspect(window, 'window.rollingSkill.smokeEmitCalibrationReady("case-smoke-2")')
+    await waitFor(window, `window.rollingSkill.smokeCalibrationMetrics().archived.join(",") === "case-smoke,case-smoke-2"`)
+    await waitFor(window, '!document.querySelector(".case-calibration")')
+    const automaticCalibration = await inspect(window, `window.rollingSkill.smokeCalibrationMetrics()`)
+    if (automaticCalibration.created.join(",") !== "case-smoke,case-smoke-2" ||
+        automaticCalibration.archived.join(",") !== "case-smoke,case-smoke-2") {
+        throw new Error(`Automatic calibration was not serialized and saved: ${JSON.stringify(automaticCalibration)}`)
+    }
+
+    await inspect(window, 'window.rollingSkill.smokeResetCalibrationCases()')
+    await inspect(window, 'document.querySelector("#refresh-evaluation").click()')
+    await waitFor(window, 'document.querySelector("[data-start-calibration-batch]")')
+    await inspect(window, 'document.querySelector("[data-start-calibration-batch]").click()')
+    await waitFor(window, `window.rollingSkill.smokeCalibrationMetrics().created.join(",") === "case-smoke"`)
+    await inspect(window, 'document.querySelector("#curation-detail [data-stop-calibration-batch]").click()')
+    await waitFor(window, `window.rollingSkill.smokeCalibrationMetrics().discarded.join(",") === "case-smoke"`)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const stoppedCalibration = await inspect(window, `window.rollingSkill.smokeCalibrationMetrics()`)
+    if (stoppedCalibration.created.includes("case-smoke-2")) {
+        throw new Error(`Stopping calibration started another Case: ${JSON.stringify(stoppedCalibration)}`)
+    }
     await inspect(window, 'document.querySelector("#close-curations").click()')
     const datasetBinding = await inspect(window, `(() => ({
         operationSkill: Boolean(document.querySelector("#evaluation-skill")),
@@ -677,6 +712,8 @@ async function run() {
             inlineCurationFailure: true,
             caseCardUsesInitialQuestion: true,
             caseCalibrationDrawer: true,
+            automaticCalibrationDone: true,
+            automaticCalibrationStop: true,
             datasetExportChoices: true,
             datasetRubric: true,
             rubricActivityPatched: true,
