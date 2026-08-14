@@ -19,11 +19,15 @@ function normalizeExportOptions(options = {}) {
     return {caseScope, outputMode}
 }
 
-function originalAssistantMessages(entry) {
+function originalFinalAssistantMessages(entry) {
     if (!Array.isArray(entry?.source?.originalAssistantMessages)) return []
-    return entry.source.originalAssistantMessages
-        .filter((message) => message?.role === "assistant" && typeof message.content === "string")
-        .map((message) => ({role: "assistant", content: message.content}))
+    for (let index = entry.source.originalAssistantMessages.length - 1; index >= 0; index -= 1) {
+        const message = entry.source.originalAssistantMessages[index]
+        if (message?.role === "assistant" && typeof message.content === "string") {
+            return [{role: "assistant", content: message.content}]
+        }
+    }
+    return []
 }
 
 function buildDatasetCsv(cases = [], options = {}) {
@@ -39,7 +43,7 @@ function buildDatasetCsv(cases = [], options = {}) {
         rows.push([
             messageArray("user", question),
             outputMode === "original"
-                ? JSON.stringify(originalAssistantMessages(entry))
+                ? JSON.stringify(originalFinalAssistantMessages(entry))
                 : messageArray("assistant", answer),
         ])
     }
@@ -61,4 +65,4 @@ function datasetExportFilename(name, options = {}) {
     return `${safe || "rolling-skill-dataset"}${suffix.length ? `-${suffix.join("-")}` : ""}.csv`
 }
 
-module.exports = {buildDatasetCsv, datasetExportFilename}
+module.exports = {buildDatasetCsv, datasetExportFilename, originalFinalAssistantMessages}

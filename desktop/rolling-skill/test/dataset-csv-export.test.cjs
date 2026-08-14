@@ -61,7 +61,7 @@ describe("dataset CSV export", () => {
         assert.equal(buildDatasetCsv([]), "input,output\r\n")
     })
 
-    it("can export only goodcases with their frozen original assistant messages", () => {
+    it("exports only the final frozen Assistant answer and omits intermediate messages", () => {
         const csv = buildDatasetCsv([
             {
                 id: "good-1",
@@ -95,9 +95,9 @@ describe("dataset CSV export", () => {
         assert.equal(rows.length, 2)
         assert.deepEqual(JSON.parse(rows[1][0]), [{role: "user", content: "原始问题"}])
         assert.deepEqual(JSON.parse(rows[1][1]), [
-            {role: "assistant", content: "我先查询。"},
             {role: "assistant", content: "原始最终回答。"},
         ])
+        assert.doesNotMatch(csv, /我先查询/u)
         assert.doesNotMatch(csv, /整理后的参考答案|坏例问题/u)
     })
 

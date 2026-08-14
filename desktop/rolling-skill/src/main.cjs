@@ -21,7 +21,11 @@ const {CurationManager} = require("./curation-manager.cjs")
 const {RubricManager} = require("./rubric-manager.cjs")
 const {EvaluationRunner} = require("./evaluation-runner.cjs")
 const {EvaluationPowerGuard} = require("./evaluation-power-guard.cjs")
-const {buildDatasetCsv, datasetExportFilename} = require("./dataset-csv-export.cjs")
+const {
+    buildDatasetCsv,
+    datasetExportFilename,
+    originalFinalAssistantMessages,
+} = require("./dataset-csv-export.cjs")
 const {
     resolveSkillEvidenceBinding,
     runtimeReportsSkill,
@@ -1006,7 +1010,7 @@ function installIpc() {
             : cases
         const missingOriginalCount = exportOptions.outputMode === "original"
             ? selectedCases.filter(
-                  (entry) => !entry.source?.originalAssistantMessages?.length,
+                  (entry) => !originalFinalAssistantMessages(entry).length,
               ).length
             : 0
         const result = await dialog.showSaveDialog(mainWindow, {

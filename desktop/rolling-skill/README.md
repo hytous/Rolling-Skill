@@ -137,8 +137,8 @@ Use the switch below the Rolling Skill logo to move between the native **Chat** 
 **Skill evaluation** workbench. The workbench can:
 
 - create, browse, and delete local datasets;
-- export all Cases or only Good Cases as CSV, choosing either curated references or the frozen
-  original Assistant messages for the JSON-array `output` column;
+- export all Cases or only Good Cases as CSV, choosing either curated references or only the final
+  frozen Assistant answer for the JSON-array `output` column;
 - bind exactly one enabled runtime Skill to each dataset and repair or change that binding;
 - generate, discuss, revise, publish, and inspect versioned dataset-level scoring Rubrics through a
   read-only Rubric Agent;

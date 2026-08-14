@@ -528,9 +528,9 @@
                     <span data-i18n="exportOutputMode">Output column</span>
                     <select id="export-output-mode">
                         <option value="curated" data-i18n="curatedReferenceOutput">Curated reference answer</option>
-                        <option value="original" data-i18n="originalAssistantOutput">Original Assistant messages</option>
+                        <option value="original" data-i18n="originalAssistantOutput">Original final Assistant answer</option>
                     </select>
-                    <small class="field-help" data-i18n="originalAssistantOutputHelp">Original output preserves every Assistant message in the frozen Case episode and excludes tool output.</small>
+                    <small class="field-help" data-i18n="originalAssistantOutputHelp">Original output keeps only the last Assistant answer in the frozen Case episode; intermediate messages and tool output are excluded.</small>
                 </label>
                 <div class="dialog-footer">
                     <span></span>
