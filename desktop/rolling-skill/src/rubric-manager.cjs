@@ -1,5 +1,6 @@
 const {
     RUBRIC_PROMPT_VERSION,
+    UNIFIED_SCORING_MODEL,
     buildDatasetRubricPrompt,
     buildRubricFollowUpPrompt,
     parseDatasetRubric,
@@ -256,6 +257,11 @@ class RubricManager {
             try {
                 if (!assistantText) throw new Error("Rubric Agent completed without a response")
                 const rubric = parseDatasetRubric(assistantText)
+                if (rubric.scoringModel !== UNIFIED_SCORING_MODEL) {
+                    throw new Error(
+                        `Rubric Agent draft must use scoringModel ${UNIFIED_SCORING_MODEL}`,
+                    )
+                }
                 const reviewed = this.store.recordRubricRevision(session.id, {
                     rubric,
                     assistantText,

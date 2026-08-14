@@ -3,6 +3,9 @@ const {describe, it} = require("node:test")
 
 const {
     DATASET_RUBRIC_SCHEMA,
+    RUBRIC_PROMPT_VERSION,
+    UNIFIED_SCORING_MODEL,
+    buildDatasetRubricPrompt,
     datasetRubricDigest,
     parseDatasetRubric,
     validateDatasetRubric,
@@ -11,6 +14,7 @@ const {
 function rubric() {
     return {
         schemaVersion: DATASET_RUBRIC_SCHEMA,
+        scoringModel: UNIFIED_SCORING_MODEL,
         title: "Billing Skill result-quality rubric",
         summary: "Assess the Skill-specific workflow and the trustworthiness of its conclusions.",
         criteria: [
@@ -60,6 +64,7 @@ describe("dataset rubric contract", () => {
         const validated = validateDatasetRubric(rubric())
 
         assert.equal(validated.schemaVersion, "rolling-skill-dataset-rubric/v1")
+        assert.equal(validated.scoringModel, "unified-100/v1")
         assert.deepEqual(validated.criteria.map((entry) => entry.id), ["R1", "R2"])
         assert.equal(Object.isFrozen(validated), true)
         assert.equal(Object.isFrozen(validated.criteria[0]), true)
@@ -98,6 +103,7 @@ describe("dataset rubric contract", () => {
         const second = {
             automaticFailures: first.automaticFailures,
             criteria: first.criteria,
+            scoringModel: first.scoringModel,
             summary: first.summary,
             title: first.title,
             schemaVersion: first.schemaVersion,
@@ -110,5 +116,27 @@ describe("dataset rubric contract", () => {
     it("extracts the last valid JSON contract from a conversational Agent response", () => {
         const parsed = parseDatasetRubric(`I revised the evidence anchors.\n\n\`\`\`json\n${JSON.stringify(rubric())}\n\`\`\``)
         assert.equal(parsed.criteria.length, 2)
+    })
+
+    it("generates the complete Skill rubric as one unified score model", () => {
+        const prompt = buildDatasetRubricPrompt({
+            datasetName: "Billing",
+            skillReference: {name: "billing-cost-management"},
+            skillEvidence: {files: [{content: "Use the billing CLI"}]},
+        })
+
+        assert.equal(RUBRIC_PROMPT_VERSION, "dataset-rubric-agent/v2-unified")
+        assert.match(prompt, /complete\s+evaluation in one criterion set/i)
+        assert.match(prompt, /automatic Skill discovery and activation/i)
+        assert.match(prompt, /"scoringModel": "unified-100\/v1"/)
+        assert.match(prompt, /one 100-point total/i)
+        assert.doesNotMatch(prompt, /40-point|60-point|supplies the flexible/i)
+    })
+
+    it("keeps a legacy split-model rubric readable until it is republished", () => {
+        const legacy = rubric()
+        delete legacy.scoringModel
+        const validated = validateDatasetRubric(legacy)
+        assert.equal("scoringModel" in validated, false)
     })
 })

@@ -360,7 +360,7 @@ describe("local-first desktop surface", () => {
         assert.match(styles, /\.evaluation-case-row:hover\s+\.evaluation-case-delete/)
     })
 
-    it("configures an independent Judge and renders deterministic 40/60 grading records", () => {
+    it("configures an independent Judge and renders unified grading with legacy history support", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")
         const styles = source("renderer/styles.css")
@@ -387,12 +387,15 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /gradingMaxima\(result\)/)
         assert.match(renderer, /scoreContract\?\.a\?\.maxScore/)
         assert.match(renderer, /scoreContract\?\.b\?\.maxScore/)
-        assert.match(renderer, /通用 Skill 执行合规评为 A（40 分）/)
-        assert.match(renderer, /灵活的 Skill \/ Case 质量评为 B（60 分）/)
+        assert.match(renderer, /计算一个统一百分制总分/)
         assert.match(renderer, /settings\.judgeProfile/)
         assert.match(renderer, /gradingStatus/)
         assert.match(renderer, /computedScore\.dimensionScores/)
         assert.match(renderer, /computedScore\.bCriterionScores/)
+        assert.match(renderer, /computedScore\.criterionScores/)
+        assert.match(renderer, /scoreContract\.criteria/)
+        assert.match(renderer, /judgment\.assessments/)
+        assert.match(renderer, /renderUnifiedCompletedGrading/)
         assert.match(renderer, /result\.scoreContract/)
         assert.match(renderer, /skillBindingDiagnostic/)
         assert.match(renderer, /effectiveBinding === "unverified"/)

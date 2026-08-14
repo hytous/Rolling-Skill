@@ -37,6 +37,7 @@ function validDraft(summary = "Use the verified billing result.") {
 function datasetRubric() {
     return {
         schemaVersion: "rolling-skill-dataset-rubric/v1",
+        scoringModel: "unified-100/v1",
         title: "Billing rubric v2",
         summary: "Current billing result quality standard.",
         criteria: [{

@@ -1,6 +1,7 @@
 const commandActivity = globalThis.RollingSkillCommandActivity
 const {formatEvaluationDuration} = globalThis.RollingSkillEvaluationFormat
 const {CaseCalibrationBatch} = globalThis.RollingSkillCalibrationBatch
+const UNIFIED_SCORING_MODEL = "unified-100/v1"
 
 const translations = {
     en: {
@@ -65,6 +66,7 @@ const translations = {
         rubricPublishedToast: "Dataset rubric published",
         rubricDiscarded: "Rubric draft discarded",
         rubricRequired: "Publish a dataset rubric before capturing Cases or running an evaluation.",
+        rubricNeedsUnified: "This rubric uses the retired split A/B model. Ask Rubric Agent to update and publish a unified 100-point rubric before evaluation.",
         caseNeedsCalibration: "Needs calibration for the current rubric",
         casesNeedCalibration: "{count} Cases must be calibrated for rubric v{version} before this dataset can run.",
         calibrateCase: "Calibrate",
@@ -259,7 +261,7 @@ const translations = {
         explicitDiagnostic: "Explicit diagnostic",
         explicitDiagnosticHelp: "Use the provider's explicit Skill instruction to isolate trigger failures.",
         startSelectedCase: "Start selected case",
-        evaluationLaunchHelp: "Selected runtimes execute in parallel. The independent Judge grades generic Skill compliance as A (40 points) and flexible Skill / Case quality as B (60 points).",
+        evaluationLaunchHelp: "Selected runtimes execute in parallel. The independent Judge applies the published Skill rubric and computes one unified 100-point score.",
         judgeConfiguration: "Independent Judge",
         judgeConfigurationHelp: "This runtime reads the saved answer and Trace evidence only; it does not execute the tested Case.",
         judgeRuntime: "Judge runtime",
@@ -304,6 +306,10 @@ const translations = {
         judgeModelsReady: "Judge model catalog ready",
         judgeModelsUnavailable: "Judge model catalog unavailable: {message}",
         totalScore: "Total",
+        unifiedRubricScore: "Unified Skill rubric",
+        automaticFailureTriggered: "Automatic failure triggered",
+        automaticFailureClear: "Not triggered",
+        criticalGateTriggered: "Critical failure triggered",
         skillComplianceScore: "A · Generic Skill compliance",
         answerQualityScore: "B · Flexible Skill / Case quality",
         gatePass: "A gate passed",
@@ -454,6 +460,7 @@ const translations = {
         rubricPublishedToast: "数据集评分标准已发布",
         rubricDiscarded: "评分标准草稿已丢弃",
         rubricRequired: "请先发布数据集评分标准，再沉淀 Case 或启动评测。",
+        rubricNeedsUnified: "当前标准仍使用已停用的 A/B 分层模型。请让 Rubric Agent 更新并发布统一百分制标准后再评测。",
         caseNeedsCalibration: "需要按当前评分标准校准",
         casesNeedCalibration: "还有 {count} 个 Case 需要按评分标准 v{version} 校准，完成后才能运行整个数据集。",
         calibrateCase: "校准",
@@ -648,7 +655,7 @@ const translations = {
         explicitDiagnostic: "显式诊断",
         explicitDiagnosticHelp: "使用对应运行时的显式 Skill 指令，用于区分触发失败和执行失败。",
         startSelectedCase: "启动选中 Case",
-        evaluationLaunchHelp: "所选运行时会并行执行；独立 Judge 将通用 Skill 执行合规评为 A（40 分），将灵活的 Skill / Case 质量评为 B（60 分）。",
+        evaluationLaunchHelp: "所选运行时会并行执行；独立 Judge 按已发布的 Skill 标准逐项判断，并计算一个统一百分制总分。",
         judgeConfiguration: "独立 Judge",
         judgeConfigurationHelp: "该运行时只读取已保存回答和 Trace 证据进行判分，不执行被测 Case。",
         judgeRuntime: "Judge 运行时",
@@ -693,6 +700,10 @@ const translations = {
         judgeModelsReady: "Judge 模型目录已就绪",
         judgeModelsUnavailable: "Judge 模型目录不可用：{message}",
         totalScore: "总分",
+        unifiedRubricScore: "统一 Skill 评分标准",
+        automaticFailureTriggered: "已触发自动失败",
+        automaticFailureClear: "未触发",
+        criticalGateTriggered: "已触发关键失败",
         skillComplianceScore: "A · 通用 Skill 执行合规",
         answerQualityScore: "B · 灵活 Skill / Case 质量",
         gatePass: "A 硬门槛通过",
@@ -2954,6 +2965,10 @@ function activeRubricSession() {
         state.rubricSessions[0] ?? null
 }
 
+function rubricUsesUnifiedScoring(version) {
+    return version?.rubric?.scoringModel === UNIFIED_SCORING_MODEL
+}
+
 function appendDatasetCalibrationNotice(version) {
     const pendingCases = state.evaluationCases.filter(
         (entry) => entry.rubricCalibration?.status === "needed",
@@ -3006,7 +3021,7 @@ function renderDatasetRubricStatus(dataset) {
         )
         appendDatasetCalibrationNotice(version)
         elements.manageDatasetRubric.textContent = t("manageRubric")
-        return Boolean(version)
+        return rubricUsesUnifiedScoring(version)
     }
     if (!version) {
         elements.evaluationDatasetRubricStatus.classList.add("missing")
@@ -3014,6 +3029,19 @@ function renderDatasetRubricStatus(dataset) {
             node("span", "", t("rubricNotPublished")),
         )
         elements.manageDatasetRubric.textContent = t("generateRubric")
+        return false
+    }
+    if (!rubricUsesUnifiedScoring(version)) {
+        elements.evaluationDatasetRubricStatus.classList.add("missing")
+        elements.evaluationDatasetRubricStatus.append(
+            node("strong", "", version.rubric.title),
+            node("small", "", formatMessage("rubricPublished", {
+                version: version.version,
+                count: version.rubric.criteria.length,
+            })),
+            node("p", "", t("rubricNeedsUnified")),
+        )
+        elements.manageDatasetRubric.textContent = t("editRubric")
         return false
     }
     elements.evaluationDatasetRubricStatus.classList.add("ready")
@@ -3575,9 +3603,111 @@ function renderScoreCriterion({section, title, scoreText, weightText, assessment
     return item
 }
 
+function appendEvaluationJudgeMetadata(detail, result, run) {
+    const judge = result.judge ?? {}
+    const skillBinding = result.skillExecutionBinding ?? null
+    const effectiveBinding = skillBinding?.effectiveBinding ??
+        result.runtimeConfiguration?.skillEvidenceBinding ??
+        "unverified"
+    if (effectiveBinding === "unverified") {
+        detail.append(node("p", "evaluation-judge-meta", t("skillBindingDiagnostic")))
+    } else if (effectiveBinding === "verified-by-trace") {
+        detail.append(node("p", "evaluation-judge-meta", t("skillBindingTraceVerified")))
+    }
+    if (skillBinding) {
+        detail.append(node("p", "evaluation-judge-meta", formatMessage("skillBindingStatus", {
+            declared: bindingStatusLabel(skillBinding.declaredBinding),
+            observed: bindingStatusLabel(skillBinding.observedBinding),
+            effective: bindingStatusLabel(skillBinding.effectiveBinding),
+        })))
+    }
+    detail.append(node(
+        "p",
+        "evaluation-judge-meta",
+        [
+            judge.displayName || run.judgeConfiguration?.displayName || judge.runtimeId,
+            judge.modelId || t("runtimeDefault"),
+            judge.effort || t("runtimeDefaultEffort"),
+        ].filter(Boolean).join(" · "),
+    ))
+}
+
+function renderUnifiedCompletedGrading(result, run) {
+    const computedScore = result.computedScore
+    const scoreContract = result.scoreContract ?? {}
+    const judgment = result.judgment ?? {}
+    const block = node("section", "evaluation-grading unified")
+    const summary = node("div", "evaluation-score-summary unified")
+    const total = node("div", "evaluation-score-total")
+    const displayOutcomeTier = computedScore.outcomeTier ?? ({
+        pass: "formal_pass",
+        fail: "fail",
+        diagnostic: "diagnostic",
+    }[computedScore.overallVerdict] ?? "diagnostic")
+    total.append(
+        node("small", "", t("totalScore")),
+        node("strong", "", resultScoreText(displayTotalScore(computedScore), 100)),
+        node("span", `evaluation-outcome-tier ${displayOutcomeTier}`, outcomeTierLabel(displayOutcomeTier)),
+    )
+    summary.append(total)
+
+    const detail = document.createElement("details")
+    detail.className = "evaluation-grading-breakdown"
+    detail.append(node("summary", "", t("judgeDetails")))
+    appendEvaluationJudgeMetadata(detail, result, run)
+    const list = node("section", "evaluation-score-section unified")
+    list.append(node("h4", "", t("unifiedRubricScore")))
+    for (const score of computedScore.criterionScores ?? []) {
+        const criterion = scoreContract.criteria?.find((entry) => entry.id === score.id)
+        const assessment = judgment.assessments?.find((entry) => entry.criterionId === score.id)
+        const isPenalty = criterion?.mode === "penalty"
+        const isAutomaticFailure = criterion?.mode === "automatic_failure"
+        const confidence = assessment?.confidence === undefined
+            ? null
+            : `${t("confidence")} ${Math.round(assessment.confidence * 100)}%`
+        const item = renderScoreCriterion({
+            section: "unified",
+            title: criterion?.title ?? criterion?.criterion ?? score.id,
+            scoreText: isPenalty
+                ? formatMessage("penaltyApplied", {
+                      value: score.deduction ?? Math.abs(score.points),
+                      maximum: criterion.maximumDeduction,
+                  })
+                : isAutomaticFailure
+                  ? t(score.criticalFailureTriggered ? "automaticFailureTriggered" : "automaticFailureClear")
+                  : `${score.points}/${score.maxPoints}`,
+            weightText: [
+                !isPenalty && !isAutomaticFailure
+                    ? t("weight").replace("{value}", criterion?.weight ?? "—")
+                    : null,
+                isPenalty
+                    ? formatMessage("avoidanceRating", {value: score.rating})
+                    : isAutomaticFailure
+                      ? null
+                      : `${score.rating}/10`,
+                confidence,
+            ].filter(Boolean).join(" · "),
+            assessment,
+            criterion: criterion?.criterion,
+            verification: verificationLines(assessment),
+        })
+        if (score.criticalFailureTriggered) {
+            item.classList.add("critical-triggered")
+            item.append(node("p", "evaluation-score-critical", t("criticalGateTriggered")))
+        }
+        list.append(item)
+    }
+    detail.append(list)
+    block.append(summary, detail)
+    return block
+}
+
 function renderCompletedGrading(result, run) {
     const computedScore = result.computedScore
     if (!computedScore) return null
+    if (Array.isArray(computedScore.criterionScores)) {
+        return renderUnifiedCompletedGrading(result, run)
+    }
     const scoreContract = result.scoreContract ?? {}
     const maxima = gradingMaxima(result)
     const judgment = result.judgment ?? {}
@@ -3614,40 +3744,7 @@ function renderCompletedGrading(result, run) {
     const detail = document.createElement("details")
     detail.className = "evaluation-grading-breakdown"
     detail.append(node("summary", "", t("judgeDetails")))
-    const judge = result.judge ?? {}
-    const skillBinding = result.skillExecutionBinding ?? null
-    const effectiveBinding = skillBinding?.effectiveBinding ??
-        result.runtimeConfiguration?.skillEvidenceBinding ??
-        "unverified"
-    if (effectiveBinding === "unverified") {
-        detail.append(
-            node(
-                "p",
-                "evaluation-judge-meta",
-                t("skillBindingDiagnostic"),
-            ),
-        )
-    } else if (effectiveBinding === "verified-by-trace") {
-        detail.append(node("p", "evaluation-judge-meta", t("skillBindingTraceVerified")))
-    }
-    if (skillBinding) {
-        detail.append(node("p", "evaluation-judge-meta", formatMessage("skillBindingStatus", {
-            declared: bindingStatusLabel(skillBinding.declaredBinding),
-            observed: bindingStatusLabel(skillBinding.observedBinding),
-            effective: bindingStatusLabel(skillBinding.effectiveBinding),
-        })))
-    }
-    detail.append(
-        node(
-            "p",
-            "evaluation-judge-meta",
-            [
-                judge.displayName || run.judgeConfiguration?.displayName || judge.runtimeId,
-                judge.modelId || t("runtimeDefault"),
-                judge.effort || t("runtimeDefaultEffort"),
-            ].filter(Boolean).join(" · "),
-        ),
-    )
+    appendEvaluationJudgeMetadata(detail, result, run)
 
     const aList = node("section", "evaluation-score-section")
     aList.append(node("h4", "", t("skillComplianceScore")))
@@ -4267,6 +4364,9 @@ async function startEvaluation(selectionMode) {
             throw new Error(t("datasetSkillRequired"))
         }
         if (!state.evaluationRubricVersion) throw new Error(t("rubricRequired"))
+        if (!rubricUsesUnifiedScoring(state.evaluationRubricVersion)) {
+            throw new Error(t("rubricNeedsUnified"))
+        }
         const runtimeConfigurations = Object.values(state.evaluationRuntimeConfigurations)
             .filter((configuration) => configuration.selected)
             .map((configuration) => ({

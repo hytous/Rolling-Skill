@@ -4,7 +4,7 @@ const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {afterEach, beforeEach, describe, it} = require("node:test")
 
-const {DATASET_RUBRIC_SCHEMA} = require("../src/dataset-rubric.cjs")
+const {DATASET_RUBRIC_SCHEMA, UNIFIED_SCORING_MODEL} = require("../src/dataset-rubric.cjs")
 const {snapshotSkillEvidence} = require("../src/evaluation-skill-evidence.cjs")
 const {LocalEvaluationStore} = require("../src/local-store.cjs")
 const {RubricManager} = require("../src/rubric-manager.cjs")
@@ -12,6 +12,7 @@ const {RubricManager} = require("../src/rubric-manager.cjs")
 function rubric(title = "Billing rubric") {
     return {
         schemaVersion: DATASET_RUBRIC_SCHEMA,
+        scoringModel: UNIFIED_SCORING_MODEL,
         title,
         summary: "Billing Skill-specific result quality.",
         criteria: [{
@@ -153,7 +154,8 @@ describe("Rubric Agent manager", () => {
         const prompt = runtime.startedTurns[0].input[1].text
         assert.match(prompt, /rolling-skill-dataset-rubric\/v1/)
         assert.match(prompt, /paginate all results/)
-        assert.match(prompt, /application, not you, computes all scores and verdicts/i)
+        assert.match(prompt, /application, not you,[\s\S]*one 100-point total/i)
+        assert.match(prompt, /"scoringModel": "unified-100\/v1"/)
         assert.equal(manager.hiddenThreadIds().has(session.rubricAgent.threadId), true)
     })
 
@@ -231,5 +233,16 @@ describe("Rubric Agent manager", () => {
         session = store.getRubricSession(session.id)
         assert.equal(session.status, "failed")
         assert.match(session.error, /JSON rubric/i)
+    })
+
+    it("rejects a new Rubric Agent draft that omits the unified scoring model", async () => {
+        let session = await start()
+        const legacy = rubric("Legacy")
+        delete legacy.scoringModel
+        session = await complete(session, legacy)
+
+        assert.equal(session.status, "failed")
+        assert.match(session.error, /scoringModel unified-100\/v1/i)
+        assert.equal(session.draft, null)
     })
 })

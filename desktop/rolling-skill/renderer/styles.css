@@ -1642,6 +1642,15 @@ kbd {
     gap: 7px;
 }
 
+.evaluation-score-summary.unified {
+    grid-template-columns: 1fr;
+}
+
+.evaluation-score-summary.unified .evaluation-score-total {
+    padding-right: 0;
+    border-right: 0;
+}
+
 .evaluation-score-total,
 .evaluation-score-part {
     display: flex;
@@ -1752,6 +1761,22 @@ kbd {
 
 .evaluation-score-item.b {
     border-left-color: var(--success);
+}
+
+.evaluation-score-item.unified {
+    border-left-color: var(--accent);
+}
+
+.evaluation-score-item.critical-triggered {
+    border-left-color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 5%, var(--surface));
+}
+
+.evaluation-score-critical {
+    margin: 6px 0 0;
+    color: var(--danger);
+    font-size: 8px;
+    font-weight: 700;
 }
 
 .evaluation-score-item-head {

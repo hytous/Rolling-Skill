@@ -193,6 +193,7 @@ const smokeSkillReference = {
 }
 const smokeRubric = {
     schemaVersion: "rolling-skill-dataset-rubric/v1",
+    scoringModel: "unified-100/v1",
     title: "账单结果质量标准",
     summary: "检查账单 Skill 的业务口径、成本结论和证据完整性。",
     criteria: [{
@@ -297,9 +298,52 @@ const smokeEvaluationRun = {
             },
             caseSnapshot: smokeEvaluationCase,
             status: "completed",
-            gradingStatus: "queued",
+            gradingStatus: "completed",
             durationMs: 65_000,
             response: "Smoke evaluation answer",
+            scoreContract: {
+                schemaVersion: "rolling-skill-score-contract/v2",
+                criteria: [{
+                    id: "R1",
+                    title: "Skill 工作流与结论",
+                    criterion: "按 Skill 工作流返回有证据的账单结论。",
+                    weight: 1,
+                    criticalFailure: false,
+                }],
+            },
+            judgment: {
+                assessments: [{
+                    criterionId: "R1",
+                    status: "scored",
+                    rating: 8.4,
+                    confidence: 0.9,
+                    verificationStatus: "verified",
+                    verifiableFields: ["账期", "金额"],
+                    crossChecks: ["回答与 Trace 一致"],
+                    evidenceRefs: ["response"],
+                    rationale: "工作流和结论均有证据，存在少量说明缺口。",
+                }],
+            },
+            computedScore: {
+                schemaVersion: "rolling-skill-computed-score/v2",
+                totalScore: 84,
+                overallVerdict: "pass",
+                outcomeTier: "formal_pass",
+                criticalFailures: [],
+                diagnosticReasons: [],
+                criterionScores: [{
+                    id: "R1",
+                    status: "scored",
+                    rating: 8.4,
+                    confidence: 0.9,
+                    verificationStatus: "verified",
+                    verifiableFields: ["账期", "金额"],
+                    crossChecks: ["回答与 Trace 一致"],
+                    points: 84,
+                    maxPoints: 100,
+                    criticalFailureTriggered: false,
+                }],
+            },
         },
         {
             id: "result-smoke-codebuddy-one",

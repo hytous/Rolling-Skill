@@ -10,6 +10,7 @@ const {dirname} = require("node:path")
 const {randomUUID} = require("node:crypto")
 
 const {
+    UNIFIED_SCORING_MODEL,
     datasetRubricDigest,
     validateDatasetRubric,
 } = require("./dataset-rubric.cjs")
@@ -1652,6 +1653,14 @@ class LocalEvaluationStore {
             : null
         if (rubricVersionSnapshot && rubricVersionSnapshot.datasetId !== dataset.id) {
             throw new Error("Dataset active rubric does not belong to the dataset")
+        }
+        if (
+            rubricVersionSnapshot &&
+            rubricVersionSnapshot.rubric?.scoringModel !== UNIFIED_SCORING_MODEL
+        ) {
+            throw new Error(
+                "Update and publish the dataset Rubric with the unified scoring model before evaluation",
+            )
         }
         if (
             input.skillReference &&

@@ -5,6 +5,7 @@ const CURATED_CASE_V2_SCHEMA = "rolling-skill-curated-case/v2"
 const CURATOR_PROMPT_VERSION = "rolling-skill-curator/v5"
 const MAX_ITEM_TEXT = 24_000
 const MAX_COMMAND_OUTPUT_TEXT = 4_000
+const MAX_BADCASE_DEDUCTION = 100
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
@@ -571,7 +572,7 @@ Rules:
   expected recovery. Do not paste repeated calls. Create one or more deductionRules for distinct
   errors. Each rule must say that the same or materially equivalent error in a future evaluation is
   penalized, use a concrete observable match condition, cite frozen source item ids, and assign a
-  positive maximum deduction. Rule deductions must total no more than 60 points.
+  positive maximum deduction. Rule deductions must total no more than ${MAX_BADCASE_DEDUCTION} points.
 - Do not invent numerical truth. If correctness cannot be established from evidence, encode that as
   an explicit verification requirement.
 - Cite source item ids for evidence-backed claims.
@@ -684,7 +685,7 @@ Rules:
   state rather than fabricating a value.
 - For a goodcase, remove retries and irrelevant exploration. For a badcase, lead with the error,
   first divergence, root cause, bounded recovery, and observable recurrence deductions. Badcase
-  deductions may total no more than 60 points.
+  deductions may total no more than ${MAX_BADCASE_DEDUCTION} points.
 - Cite source item ids for evidence-backed reference claims and badcase deductions.
 - Curator model id requested by profile: ${modelId ?? "runtime default (exact model unavailable)"}.
 
@@ -786,8 +787,10 @@ function validateBadCaseAnalysis(draft, {caseType, allowedSourceItems, gradingId
             }
         }
     }
-    if (totalDeduction > 60) {
-        throw new Error("Badcase deduction rules cannot deduct more than 60 points in total")
+    if (totalDeduction > MAX_BADCASE_DEDUCTION) {
+        throw new Error(
+            `Badcase deduction rules cannot deduct more than ${MAX_BADCASE_DEDUCTION} points in total`,
+        )
     }
 }
 

@@ -276,6 +276,9 @@ async function run() {
         codebuddyText: document.querySelector(
             '[data-evaluation-runtime-group="codebuddy:renderer-smoke"]',
         )?.textContent,
+        codexText: document.querySelector(
+            '[data-evaluation-runtime-group="codex:renderer-smoke"]',
+        )?.textContent,
     }))()`)
     if (
         evaluationRuntimeGroups.ids.join(",") !==
@@ -293,6 +296,16 @@ async function run() {
     ) {
         throw new Error(
             `Diagnostic CodeBuddy score was not displayed: ${evaluationRuntimeGroups.codebuddyText}`,
+        )
+    }
+    if (
+        !evaluationRuntimeGroups.codexText.includes("84/100") ||
+        !evaluationRuntimeGroups.codexText.includes("统一 Skill 评分标准") ||
+        evaluationRuntimeGroups.codexText.includes("A · 通用") ||
+        evaluationRuntimeGroups.codexText.includes("B · 灵活")
+    ) {
+        throw new Error(
+            `Unified score was not rendered as one rubric: ${evaluationRuntimeGroups.codexText}`,
         )
     }
     await inspect(window, 'document.querySelector("[data-surface=chat]").click()')

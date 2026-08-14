@@ -176,30 +176,30 @@ turn does time out, Rolling Skill interrupts that exact Codex turn, cancels that
 session, or calls DeepSeek Harness `session.cancel` before continuing. The failed result retains the runtime error code, duration, last observed
 activity time, thread/session ID, turn ID, raw Trace range, and bounded Trace evidence for diagnosis.
 
-Each `Case × runtime` result is scored out of 100. Layer A is a fixed 40-point generic Skill-compliance
-rubric covering activation, required references, tool/CLI policy, workflow order,
-pagination/completeness/artifacts, deterministic processing, evidence/output requirements, and
-error recovery. The application requires the Judge to assess every fixed item and computes the A
-score itself; A passes at 32 points unless the activation gate fails. When a complete Trace contains
-no error event, the fixed program awards full error-recovery credit because no recovery was needed.
-When an error occurred, positive recovery credit requires both failure evidence and a later recovery
-action. Layer B is a flexible 60-point Skill/Case-specific subjective assessment built from the
-immutable dataset Rubric frozen into the run, plus Case reference facts and narrow Case-specific
-addenda. It records verifiable fields, cross-checks, verification status, and Judge
-confidence, but never reverses the A verdict. The workbench presents the fixed outcome as one of four
-operator-facing tiers: **Formal pass** (A at least 32 with no critical failure), **Usable · needs
-improvement** (A at least 24 with no critical failure), **Failed**, or **Diagnostic only**.
+Each `Case × runtime` result receives one unified score out of 100. Rubric Agent reads the bound Skill
+and its references, then publishes a complete dataset rubric covering automatic activation,
+required references, tool policy, workflow order, pagination and artifacts, deterministic
+processing, evidence/output requirements, applicable error recovery, and Skill-specific answer
+quality. Criteria use relative weights and observable 0–10 anchors; the application normalizes them
+into the total. Case calibration adds only Case-specific expectations, automatic failures, and
+badcase deductions without creating a separate score layer. The Judge records verifiable fields,
+cross-checks, verification status, confidence, rationale, and evidence references for every item,
+while the application alone computes points and outcomes. The workbench presents **Formal pass**
+(80 or above with no critical failure), **Usable · needs improvement** (60 or above with no critical
+failure), **Failed**, or **Diagnostic only**. A published critical criterion rated below 5 and an
+observed binary automatic-failure condition remain fixed gates.
+When either gate fires, the fixed calculator caps the unified total below the usable threshold so a
+high-looking score can never contradict a failed outcome.
 
 Target execution, grading execution, and quality verdict remain separate states. A result first waits
 for target execution, then waits in the Judge queue, then moves through active and terminal grading
 states. Explicit activation
-runs are diagnostic: they retain A/B component scores but do not produce a formal total or pass/fail
+runs are diagnostic: they retain the unified numerical total but do not produce a formal pass/fail
 quality verdict. As each target result completes, one independently selected read-only Judge runtime
 grades the saved response,
 bounded Trace evidence, and a digest-pinned snapshot of the selected `SKILL.md` plus its recursively
-linked local Markdown references. A typed evidence catalog prevents positive A ratings from citing
-unrelated response or Trace entries when stronger activation, reference-read, command/tool, output,
-or error evidence exists. The Skill digest is checked again immediately before and after every Case;
+linked local Markdown references. A typed evidence catalog limits every assessment to stable
+response, Trace, Skill, and reference identifiers. The Skill digest is checked again immediately before and after every Case;
 a changed installation rejects that target result instead of grading against a stale snapshot.
 Invalid or incomplete Judge JSON is retried once with the fixed validator error. A final Judge failure keeps
 the target response and Trace intact and marks only grading as failed. Legacy runs remain explicitly

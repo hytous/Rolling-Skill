@@ -353,15 +353,15 @@ describe("episode curation evidence", () => {
             /deduction.*positive/i,
         )
 
-        const fullFlexibleScore = badDraft()
-        fullFlexibleScore.badCaseAnalysis.deductionRules[0].deduction = 60
-        assert.doesNotThrow(() => parseCuratorDraft(JSON.stringify(fullFlexibleScore), {caseType: "badcase"}))
+        const fullUnifiedScore = badDraft()
+        fullUnifiedScore.badCaseAnalysis.deductionRules[0].deduction = 100
+        assert.doesNotThrow(() => parseCuratorDraft(JSON.stringify(fullUnifiedScore), {caseType: "badcase"}))
 
         const excessiveDeduction = badDraft()
-        excessiveDeduction.badCaseAnalysis.deductionRules[0].deduction = 61
+        excessiveDeduction.badCaseAnalysis.deductionRules[0].deduction = 101
         assert.throws(
             () => parseCuratorDraft(JSON.stringify(excessiveDeduction), {caseType: "badcase"}),
-            /more than 60 points/i,
+            /more than 100 points/i,
         )
 
         const unknownEvidence = badDraft()
@@ -407,6 +407,7 @@ describe("episode curation evidence", () => {
             rubricDigest: "sha256:test",
             rubric: {
                 schemaVersion: "rolling-skill-dataset-rubric/v1",
+                scoringModel: "unified-100/v1",
                 title: "Billing rubric",
                 summary: "Billing quality",
                 criteria: [{

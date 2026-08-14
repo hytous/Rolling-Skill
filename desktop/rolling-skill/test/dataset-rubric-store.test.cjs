@@ -4,7 +4,7 @@ const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {afterEach, describe, it} = require("node:test")
 
-const {DATASET_RUBRIC_SCHEMA} = require("../src/dataset-rubric.cjs")
+const {DATASET_RUBRIC_SCHEMA, UNIFIED_SCORING_MODEL} = require("../src/dataset-rubric.cjs")
 const {snapshotSkillEvidence} = require("../src/evaluation-skill-evidence.cjs")
 const {LocalEvaluationStore} = require("../src/local-store.cjs")
 
@@ -19,6 +19,7 @@ afterEach(() => {
 function rubric(label = "v1") {
     return {
         schemaVersion: DATASET_RUBRIC_SCHEMA,
+        scoringModel: UNIFIED_SCORING_MODEL,
         title: `Billing rubric ${label}`,
         summary: "Skill-specific execution and result quality.",
         criteria: [{
@@ -69,7 +70,7 @@ function startSession(store, dataset, skillEvidence, baseVersionId = null) {
             modelProvider: "openai",
             modelId: "gpt-5.6-sol",
             effort: "high",
-            promptVersion: "dataset-rubric-agent/v1",
+            promptVersion: "dataset-rubric-agent/v2-unified",
         },
     })
 }
@@ -261,6 +262,39 @@ describe("dataset rubric lifecycle", () => {
 
         store.getDatasetRubricVersion(second.id).rubric.title = "mutated outside copy"
         assert.equal(store.getEvaluationRun(run.id).rubricVersionSnapshot.rubric.title, "Billing rubric v2")
+    })
+
+    it("blocks a legacy split-layer rubric until Rubric Agent republishes it as unified", () => {
+        const {store, dataset, skillEvidence} = fixture()
+        const session = startSession(store, dataset, skillEvidence)
+        const legacy = rubric("legacy")
+        delete legacy.scoringModel
+        store.recordRubricRevision(session.id, {rubric: legacy, assistantText: "legacy"})
+        store.publishRubricSession(session.id)
+        const curation = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            episode: episode(),
+            curator: {},
+        })
+        store.recordCurationRevision(curation.id, {
+            draft: curatedV2Draft(),
+            assistantText: "legacy Case",
+        })
+        const savedCase = store.archiveCurationSession(curation.id)
+
+        assert.throws(() => store.createEvaluationRun({
+            datasetId: dataset.id,
+            caseIds: [savedCase.id],
+            selectionMode: "selected",
+            activationMode: "automatic",
+            skillEvidence,
+            runtimeConfigurations: [{
+                runtimeId: "codex:alpha",
+                providerId: "codex",
+                executablePath: "/usr/local/bin/codex",
+            }],
+        }), /unified scoring model/i)
     })
 
     it("calibrates an existing Case in place against the active rubric and preserves history", () => {

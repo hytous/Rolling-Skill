@@ -1,7 +1,8 @@
 const {createHash} = require("node:crypto")
 
 const DATASET_RUBRIC_SCHEMA = "rolling-skill-dataset-rubric/v1"
-const RUBRIC_PROMPT_VERSION = "dataset-rubric-agent/v1"
+const UNIFIED_SCORING_MODEL = "unified-100/v1"
+const RUBRIC_PROMPT_VERSION = "dataset-rubric-agent/v2-unified"
 const RUBRIC_ANCHOR_KEYS = Object.freeze(["0", "2", "5", "8", "10"])
 const FORBIDDEN_AGENT_FIELD = /^(?:score|scores|totalScore|verdict|pass|passed|points|grade)$/iu
 
@@ -74,11 +75,14 @@ function validateDatasetRubric(value) {
     rejectForbiddenFields(source)
     requireAllowedKeys(
         source,
-        ["schemaVersion", "title", "summary", "criteria", "automaticFailures"],
+        ["schemaVersion", "scoringModel", "title", "summary", "criteria", "automaticFailures"],
         "Dataset rubric",
     )
     if (source.schemaVersion !== DATASET_RUBRIC_SCHEMA) {
         throw new Error(`Dataset rubric must use ${DATASET_RUBRIC_SCHEMA}`)
+    }
+    if (source.scoringModel !== undefined && source.scoringModel !== UNIFIED_SCORING_MODEL) {
+        throw new Error(`Dataset rubric scoringModel must use ${UNIFIED_SCORING_MODEL}`)
     }
     const title = requireString(source.title, "Dataset rubric title")
     const summary = requireString(source.summary, "Dataset rubric summary")
@@ -173,6 +177,7 @@ function validateDatasetRubric(value) {
     })
     return deepFreeze({
         schemaVersion: DATASET_RUBRIC_SCHEMA,
+        ...(source.scoringModel ? {scoringModel: source.scoringModel} : {}),
         title,
         summary,
         criteria,
@@ -203,24 +208,30 @@ function parseDatasetRubric(text) {
 function buildDatasetRubricPrompt({datasetName, skillReference, skillEvidence, baseVersion = null} = {}) {
     const baseRubric = baseVersion?.rubric ? validateDatasetRubric(baseVersion.rubric) : null
     return `You are the Rubric Agent for one Skill evaluation dataset. Design or revise the single
-dataset-level result-quality rubric that every future Case Curator and Judge will inherit.
+dataset-level unified rubric that every future Case Curator and Judge will inherit.
 
-The application already owns an immutable 40-point generic Skill-compliance layer covering Skill
-activation, required references, tool policy, workflow order, completeness/artifacts, deterministic
-processing, evidence/output, and error recovery. Do not duplicate that generic layer unless the
-selected Skill adds a concrete, Skill-specific obligation. Your rubric supplies the flexible
-60-point layer. The application, not you, computes all scores and verdicts.
+Read the frozen Skill and linked reference contents below. The rubric must cover the complete
+evaluation in one criterion set: automatic Skill discovery and activation, required references,
+tool policy, workflow order, pagination and artifacts, deterministic processing, evidence and
+output requirements, error recovery when applicable, plus Skill-specific answer correctness and
+usefulness. Tailor these dimensions to the selected Skill instead of copying generic boilerplate.
+Do not create separate A/B, compliance/quality, or hard/soft score layers. The application, not you,
+normalizes all relative weights into one 100-point total and computes every outcome.
 
-Read the frozen Skill and linked reference contents below. Derive stable criteria that apply across
-the dataset, including Skill-specific execution obligations, result-quality dimensions, required
-evidence, observable anchors, and truly critical result failures. Do not invent business truth or
-Case-specific facts. Keep criterion ids stable when revising an existing rubric. Criteria weights
-are relative positive weights and are normalized by the fixed calculator.
+Derive stable criteria that apply across the dataset, including observable evidence requirements,
+rating anchors, and only truly critical failures. A criticalFailure criterion rated below 5 becomes
+a fixed failure gate. An automaticFailures condition is binary and invalidates the result when
+observed. Do not invent business truth or Case-specific facts. Keep criterion ids stable when
+revising an existing unified rubric. If the published base rubric lacks scoringModel
+${UNIFIED_SCORING_MODEL}, it came from the retired split A/B model: preserve useful ids where
+possible, add the missing full-Skill execution coverage, and return a complete unified replacement.
+Criteria weights are relative positive weights and are normalized by the fixed calculator.
 
 Return a short review note followed by exactly one complete JSON code block. Never return a score,
 points, pass/fail decision, or verdict. The JSON must use this exact shape:
 {
   "schemaVersion": "${DATASET_RUBRIC_SCHEMA}",
+  "scoringModel": "${UNIFIED_SCORING_MODEL}",
   "title": "short rubric title",
   "summary": "scope of this dataset rubric",
   "criteria": [{
@@ -257,7 +268,7 @@ function buildRubricFollowUpPrompt(text) {
 
 If the user asks a question, answer conversationally and do not return JSON. If the user requests a
 change, return a short review note followed by exactly one complete ${DATASET_RUBRIC_SCHEMA} JSON
-code block. Never return a partial fragment. Preserve existing criterion ids unless their meaning is
+code block with scoringModel ${UNIFIED_SCORING_MODEL}. Never return a partial fragment. Preserve existing criterion ids unless their meaning is
 being intentionally removed. Never provide scores, points, verdicts, or pass/fail decisions.
 
 <user-review-message>${String(text ?? "").trim()}</user-review-message>`
@@ -267,6 +278,7 @@ module.exports = {
     DATASET_RUBRIC_SCHEMA,
     RUBRIC_ANCHOR_KEYS,
     RUBRIC_PROMPT_VERSION,
+    UNIFIED_SCORING_MODEL,
     buildDatasetRubricPrompt,
     buildRubricFollowUpPrompt,
     datasetRubricDigest,

@@ -48,32 +48,10 @@ function contractFromPrompt(prompt) {
 }
 
 function passingJudge(caseEntry, contract = buildScoreContract(caseEntry)) {
-    const strongKinds = {
-        skill_activation: ["skill_activation", "skill_read"],
-        required_references: ["reference_read"],
-        tool_policy: ["command", "tool_call", "file_change"],
-        workflow_order: ["command", "tool_call", "file_change"],
-        completeness_artifacts: ["command", "tool_call", "file_change"],
-        deterministic_processing: ["command", "tool_call", "file_change"],
-        evidence_output: ["response"],
-        error_recovery: ["error"],
-    }
     return {
         schemaVersion: JUDGE_RESULT_SCHEMA,
         contractDigest: contract.digest,
-        aAssessments: contract.a.dimensions.map((dimension) => {
-            const related = contract.evidence.entries?.find((entry) =>
-                entry.kinds.some((kind) => strongKinds[dimension.id]?.includes(kind)),
-            )
-            return {
-                dimensionId: dimension.id,
-                status: "scored",
-                level: 4,
-                evidenceRefs: [related?.id ?? "response"],
-                rationale: "The supplied evidence satisfies this dimension.",
-            }
-        }),
-        bAssessments: contract.b.criteria.map((criterion) => ({
+        assessments: contract.criteria.map((criterion) => ({
             criterionId: criterion.id,
             status: "scored",
             rating: 10,
