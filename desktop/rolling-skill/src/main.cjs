@@ -1,4 +1,13 @@
-const {app, BrowserWindow, dialog, ipcMain, Menu, session, shell} = require("electron")
+const {
+    app,
+    BrowserWindow,
+    dialog,
+    ipcMain,
+    Menu,
+    powerSaveBlocker,
+    session,
+    shell,
+} = require("electron")
 const {chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync} = require("node:fs")
 const {homedir} = require("node:os")
 const {join} = require("node:path")
@@ -9,6 +18,7 @@ const {CodeBuddyRuntimeProvider} = require("./codebuddy-runtime-provider.cjs")
 const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
 const {EvaluationRunner} = require("./evaluation-runner.cjs")
+const {EvaluationPowerGuard} = require("./evaluation-power-guard.cjs")
 const {buildDatasetCsv, datasetExportFilename} = require("./dataset-csv-export.cjs")
 const {
     resolveSkillEvidenceBinding,
@@ -1246,12 +1256,14 @@ if (!hasLock) {
             new CodexRuntimeProvider(),
             new CodeBuddyRuntimeProvider(),
         ])
+        const evaluationPowerGuard = new EvaluationPowerGuard(powerSaveBlocker)
         evaluationRunner = new EvaluationRunner({
             store,
             runtimeRegistry,
             workspaceRoot,
             traceDirectory: join(app.getPath("userData"), "traces", "evaluations"),
             getExecutionPolicy: currentExecutionPolicy,
+            acquireRunLease: () => evaluationPowerGuard.acquire(),
             onChanged: (update) => send("evaluation:changed", update),
         })
         discoverLocalRuntimes()

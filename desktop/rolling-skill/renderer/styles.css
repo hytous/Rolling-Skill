@@ -1242,6 +1242,12 @@ kbd {
     color: var(--success);
 }
 
+.quality-status.usable,
+.evaluation-outcome-tier.usable_with_gaps {
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    color: var(--warning);
+}
+
 .quality-status.failed,
 .quality-status.grading_failed {
     background: color-mix(in srgb, var(--danger) 9%, transparent);
@@ -1477,6 +1483,26 @@ kbd {
 .evaluation-gate.fail {
     color: var(--danger);
     background: color-mix(in srgb, var(--danger) 9%, transparent);
+}
+
+.evaluation-outcome-tier {
+    width: fit-content;
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--warning) 10%, transparent);
+    color: var(--warning);
+    font-size: 7.5px;
+    font-weight: 700;
+}
+
+.evaluation-outcome-tier.formal_pass {
+    background: color-mix(in srgb, var(--success) 10%, transparent);
+    color: var(--success);
+}
+
+.evaluation-outcome-tier.fail {
+    background: color-mix(in srgb, var(--danger) 9%, transparent);
+    color: var(--danger);
 }
 
 .evaluation-grading-breakdown {

@@ -5,6 +5,7 @@ const JUDGE_RESULT_SCHEMA = "rolling-skill-judge-result/v1"
 const COMPUTED_SCORE_SCHEMA = "rolling-skill-computed-score/v1"
 const CALCULATOR_VERSION = "a40-b60/v2"
 const A_PASS_THRESHOLD = 32
+const A_USABLE_THRESHOLD = 24
 
 const A_DIMENSIONS = deepFreeze([
     {
@@ -366,7 +367,7 @@ Trace evidence:
 Frozen Skill and reference evidence:
 <skill-evidence>${JSON.stringify(skillEvidence)}</skill-evidence>
 Typed Evidence Catalog:
-<evidence-catalog>${JSON.stringify(evidenceCatalog)}</evidence-catalog>`
+<evidence-catalog>${JSON.stringify(compactEvidenceCatalog(evidenceCatalog))}</evidence-catalog>`
 }
 
 function validateScoreContract(contract) {
@@ -691,8 +692,8 @@ function calculateScore(
         throw new Error("Activation mode must be automatic or explicit")
     }
     const judge = validateJudgeResult(judgeValue, contract)
-    if (!["verified", "unverified"].includes(skillEvidenceBinding)) {
-        throw new Error("Skill evidence binding must be verified or unverified")
+    if (!["verified", "verified-by-trace", "unverified"].includes(skillEvidenceBinding)) {
+        throw new Error("Skill evidence binding must be verified, verified-by-trace, or unverified")
     }
     const dimensionScores = []
     const unknownDimensions = []
@@ -794,6 +795,13 @@ function calculateScore(
     const totalScore = aVerdict === "diagnostic" || aScore === null || bScore === null
         ? null
         : rounded(aScore + bScore)
+    const outcomeTier = aVerdict === "diagnostic"
+        ? "diagnostic"
+        : aVerdict === "pass"
+          ? "formal_pass"
+          : criticalFailures.length === 0 && aScore !== null && aScore >= A_USABLE_THRESHOLD
+            ? "usable_with_gaps"
+            : "fail"
     return deepFreeze({
         schemaVersion: COMPUTED_SCORE_SCHEMA,
         calculatorVersion: CALCULATOR_VERSION,
@@ -805,6 +813,7 @@ function calculateScore(
         bScore,
         totalScore,
         overallVerdict: aVerdict,
+        outcomeTier,
         criticalFailures,
         diagnosticReasons,
         unknownDimensions,
@@ -818,6 +827,7 @@ const computeScore = calculateScore
 module.exports = {
     A_DIMENSIONS,
     A_PASS_THRESHOLD,
+    A_USABLE_THRESHOLD,
     CALCULATOR_VERSION,
     COMPUTED_SCORE_SCHEMA,
     JUDGE_RESULT_SCHEMA,

@@ -6,6 +6,7 @@ const {
 } = require("./evaluation-grading.cjs")
 const {buildEvidenceCatalog} = require("./evaluation-evidence-catalog.cjs")
 const {snapshotSkillEvidence} = require("./evaluation-skill-evidence.cjs")
+const {resolveExecutedSkillEvidenceBinding} = require("./evaluation-skill-binding.cjs")
 
 const SKILL_DRIFT_ERROR = "Skill changed after evaluation snapshot"
 const CANCELLATION_ERROR = "Evaluation cancelled by user"
@@ -54,6 +55,7 @@ function runtimeDescriptor(configuration = {}) {
 }
 
 function judgeRecord(configuration, output = {}, patch = {}) {
+    output = output ?? {}
     return {
         runtimeId: configuration.runtimeId ?? null,
         providerId: configuration.providerId ?? null,
@@ -79,6 +81,25 @@ function judgeConfigurationForRun(run) {
     }
 }
 
+function targetFailureDiagnostics(error) {
+    const fields = [
+        "code",
+        "threadId",
+        "turnId",
+        "durationMs",
+        "lastActivityAt",
+        "traceReference",
+        "traceEvidence",
+    ]
+    const diagnostics = {}
+    for (const field of fields) {
+        if (error?.[field] !== undefined && error?.[field] !== null) {
+            diagnostics[field] = error[field]
+        }
+    }
+    return Object.keys(diagnostics).length ? diagnostics : null
+}
+
 class EvaluationRunner {
     constructor({
         store,
@@ -88,6 +109,7 @@ class EvaluationRunner {
         getExecutionPolicy = () => null,
         onChanged = () => {},
         snapshotSkill = snapshotSkillEvidence,
+        acquireRunLease = () => () => {},
     }) {
         this.store = store
         this.runtimeRegistry = runtimeRegistry
@@ -96,6 +118,7 @@ class EvaluationRunner {
         this.getExecutionPolicy = getExecutionPolicy
         this.onChanged = onChanged
         this.snapshotSkill = snapshotSkill
+        this.acquireRunLease = acquireRunLease
         this.running = new Map()
         this.runControls = new Map()
         this.activeClients = new Set()
@@ -144,6 +167,15 @@ class EvaluationRunner {
     }
 
     async execute(run, control) {
+        const releaseRunLease = this.acquireRunLease()
+        try {
+            return await this.executeWithLease(run, control)
+        } finally {
+            releaseRunLease?.()
+        }
+    }
+
+    async executeWithLease(run, control) {
         const startedAt = new Date().toISOString()
         this.store.updateEvaluationRun(run.id, {status: "running", startedAt})
         this.onChanged({runId: run.id, status: "running"})
@@ -230,6 +262,17 @@ class EvaluationRunner {
                         continue
                     }
                     const gradingQueuedAt = new Date().toISOString()
+                    const declaredBinding =
+                        result.runtimeConfiguration?.skillEvidenceBinding ??
+                        configuration.skillEvidenceBinding ??
+                        "unverified"
+                    const skillExecutionBinding = resolveExecutedSkillEvidenceBinding({
+                        declaredBinding,
+                        skillReference: run.skillReference,
+                        skillEvidence: run.skillEvidence,
+                        traceEvidence: output.traceEvidence,
+                    })
+                    output.skillExecutionBinding = skillExecutionBinding
                     this.store.updateEvaluationResult(run.id, result.id, {
                         status: "completed",
                         gradingStatus: "queued",
@@ -240,6 +283,7 @@ class EvaluationRunner {
                         turnId: output.turnId ?? null,
                         traceReference: output.traceReference ?? null,
                         ...(output.traceEvidence ? {traceEvidence: output.traceEvidence} : {}),
+                        skillExecutionBinding,
                         completedAt: new Date().toISOString(),
                     })
                     control.executionStates.set(result.id, "completed")
@@ -259,6 +303,7 @@ class EvaluationRunner {
                         this.cancelExecutionResult(run, result, control)
                         continue
                     }
+                    const failureDiagnostics = targetFailureDiagnostics(error)
                     this.store.updateEvaluationResult(run.id, result.id, {
                         status: "failed",
                         gradingStatus: "skipped",
@@ -267,6 +312,17 @@ class EvaluationRunner {
                             error: "Target execution did not complete; grading was skipped",
                         },
                         error: error?.message ?? String(error),
+                        ...(failureDiagnostics ? {
+                            failureDiagnostics,
+                            threadId: failureDiagnostics.threadId ?? null,
+                            turnId: failureDiagnostics.turnId ?? null,
+                            durationMs: failureDiagnostics.durationMs ?? null,
+                            lastActivityAt: failureDiagnostics.lastActivityAt ?? null,
+                            traceReference: failureDiagnostics.traceReference ?? null,
+                            ...(failureDiagnostics.traceEvidence
+                                ? {traceEvidence: failureDiagnostics.traceEvidence}
+                                : {}),
+                        } : {}),
                         completedAt: new Date().toISOString(),
                     })
                     control.executionStates.set(result.id, "failed")
@@ -433,6 +489,7 @@ class EvaluationRunner {
             const computedScore = computeScore(contract, judgment, {
                 activationMode: run.activationMode,
                 skillEvidenceBinding:
+                    output.skillExecutionBinding?.effectiveBinding ??
                     result.runtimeConfiguration?.skillEvidenceBinding ??
                     run.runtimeConfigurations.find((candidate) =>
                         candidate.runtimeId ===

@@ -5,6 +5,7 @@ const {dirname} = require("node:path")
 const {version: clientVersion} = require("../package.json")
 
 const {JsonLineDecoder, RpcRequestTracker} = require("./json-rpc.cjs")
+const {evaluationTurnError} = require("./evaluation-turn-error.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
 
 function textContent(value) {
@@ -573,15 +574,30 @@ class CodeBuddyAcpClient extends EventEmitter {
                 ? `/${input.skillReference.name}\n\n${input.question}`
                 : input.question
         let turnId = null
+        let lastActivityAt = new Date().toISOString()
         let cleanup = () => {}
         const completed = new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
                 cleanup()
-                reject(new Error("The evaluation turn timed out"))
+                try {
+                    void Promise.resolve(this.interruptTurn(threadId)).catch(() => {})
+                } catch {
+                    // The timeout remains authoritative if ACP already stopped.
+                }
+                reject(evaluationTurnError("The evaluation turn timed out", {
+                    code: "EVALUATION_TURN_TIMEOUT",
+                    recorder: this.recorder,
+                    traceMark,
+                    threadId,
+                    turnId,
+                    startedAt,
+                    lastActivityAt,
+                }))
             }, input.timeoutMs ?? 30 * 60 * 1000)
             const onNotification = (message) => {
                 const params = message?.params ?? {}
                 if (params.threadId !== threadId) return
+                lastActivityAt = new Date().toISOString()
                 if (message.method === "turn/completed") {
                     cleanup()
                     if (params.turn?.status === "failed") {

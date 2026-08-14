@@ -1,6 +1,7 @@
 const {createHash} = require("node:crypto")
 const {appendFileSync, chmodSync, constants, mkdirSync, openSync, closeSync, readFileSync} = require("node:fs")
 const {join} = require("node:path")
+const {skillContentDigest} = require("./skill-content.cjs")
 
 function safeSessionId(value) {
     return String(value).replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 120)
@@ -122,7 +123,7 @@ function compactStrings(value, {limit, aggressive = false, path = [], stats}) {
         const outputPath = path.some((entry) =>
             /^(?:aggregatedOutput|rawOutput|stdout|stderr|output|outputDelta)$/iu.test(entry),
         )
-        const stringLimit = outputPath ? Math.min(limit, 700) : aggressive ? Math.min(limit, 320) : limit
+        const stringLimit = outputPath ? Math.min(limit, 400) : aggressive ? Math.min(limit, 320) : limit
         const compacted = compactText(value, stringLimit)
         if (compacted.omitted) {
             stats.omittedCharacters += compacted.omitted
@@ -169,9 +170,11 @@ function semanticMessageProjection(entry, maxCharacters, stats) {
                 locations: update.locations,
                 error: update.error,
                 rawOutput: update.rawOutput,
+                rawOutputDigest: update.rawOutputDigest,
+                skillContentDigest: update.skillContentDigest,
+                startedSequence: update.startedSequence,
                 _meta: {
                     "codebuddy.ai/toolName": update._meta?.["codebuddy.ai/toolName"],
-                    "codebuddy.ai/rawResponse": update._meta?.["codebuddy.ai/rawResponse"],
                 },
             }}} : {}),
             ...(Object.keys(item).length ? {params: {item: {
@@ -248,6 +251,27 @@ function augmentCodeBuddyTerminalEntry(entry, starts) {
         startedSequence: start.sequence,
     }
     return copy
+}
+
+function attachCodeBuddyOutputDigests(entry) {
+    const update = codeBuddyUpdate(entry)
+    if (String(update.sessionUpdate) !== "tool_call_update" || !update.rawOutput) return entry
+    const copy = JSON.parse(JSON.stringify(entry))
+    const target = copy.message.params.update
+    target.rawOutputDigest = evidenceDigest(update.rawOutput)
+    const outputText = typeof update.rawOutput?.text === "string" ? update.rawOutput.text : null
+    if (update.rawInput?.skill && outputText !== null) {
+        target.skillContentDigest = skillContentDigest(outputText)
+    }
+    return copy
+}
+
+function isCodeBuddyTerminalUpdate(update) {
+    return update.sessionUpdate === "tool_call_update" &&
+        Boolean(update.toolCallId) &&
+        ["completed", "failed", "error", "rejected", "cancelled"].includes(
+            String(update.status ?? "").toLowerCase(),
+        )
 }
 
 function entryPriority(entry) {
@@ -343,23 +367,51 @@ class TraceRecorder {
         )
         const maxTotalCharacters = Math.max(
             1_000,
-            Math.min(Number(options.maxTotalCharacters) || 200_000, 400_000),
+            Math.min(Number(options.maxTotalCharacters) || 240_000, 400_000),
         )
         const lines = readFileSync(this.path, "utf8").trim().split("\n").filter(Boolean)
         const semanticEntries = []
+        const rangeEntries = []
         const codeBuddyStarts = new Map()
+        const codeBuddyTerminalSequences = new Map()
         let compactedEntries = 0
+        let collapsedToolCallEntries = 0
         for (let lineNumber = start; lineNumber <= end; lineNumber += 1) {
-            let entry = JSON.parse(lines[lineNumber - 1])
+            const entry = JSON.parse(lines[lineNumber - 1])
+            rangeEntries.push(entry)
             const update = codeBuddyUpdate(entry)
             if (update.sessionUpdate === "tool_call" && update.toolCallId && codeBuddyToolInput(update)) {
                 codeBuddyStarts.set(update.toolCallId, entry)
+            }
+            if (isCodeBuddyTerminalUpdate(update)) {
+                codeBuddyTerminalSequences.set(update.toolCallId, entry.sequence)
+            }
+        }
+        for (let entry of rangeEntries) {
+            const update = codeBuddyUpdate(entry)
+            if (
+                update.sessionUpdate === "tool_call" &&
+                update.toolCallId &&
+                codeBuddyTerminalSequences.has(update.toolCallId)
+            ) {
+                compactedEntries += 1
+                collapsedToolCallEntries += 1
+                continue
+            }
+            if (
+                isCodeBuddyTerminalUpdate(update) &&
+                codeBuddyTerminalSequences.get(update.toolCallId) !== entry.sequence
+            ) {
+                compactedEntries += 1
+                collapsedToolCallEntries += 1
+                continue
             }
             if (!isSemanticTraceEntry(entry)) {
                 compactedEntries += 1
                 continue
             }
             entry = augmentCodeBuddyTerminalEntry(entry, codeBuddyStarts)
+            entry = attachCodeBuddyOutputDigests(entry)
             semanticEntries.push(compactJsonEntry(entry, Math.min(maxEntryCharacters, maxTotalCharacters)))
         }
 
@@ -382,9 +434,10 @@ class TraceRecorder {
             sourceEntryCount: end - start + 1,
             includedEntries: entries.length,
             compactedEntries,
+            collapsedToolCallEntries,
             contentCompactedEntries: entries.filter((entry) => entry.contentCompacted).length,
             omittedImportantEntries,
-            samplingStrategy: "semantic-v1",
+            samplingStrategy: "semantic-v2",
             semanticCoverageComplete: omittedImportantEntries === 0,
             truncated: omittedImportantEntries > 0,
             omittedEntries: omittedImportantEntries,

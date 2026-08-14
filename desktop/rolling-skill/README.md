@@ -117,9 +117,8 @@ Reasoning and compact activity cards are shown inline for commands, file changes
 tools, collaboration tools, subagents, plans, and context compaction. Codex may omit command items
 from a later `thread/read` response even though they were available while the turn streamed.
 Rolling Skill therefore keeps a bounded local index of activity it observes and merges that index
-back into history by item ID. The index stores only compact labels/status metadata, not command
-arguments or output, tool arguments/results, file paths, or file diffs. Persisted command cards keep
-only the executable name. Activity that predates this index and is also absent
+back into history by item ID. The index keeps full command input and compact labels/status metadata,
+but does not persist command output, tool results, or file diffs. Activity that predates this index and is also absent
 from the runtime's own history cannot be reconstructed; its raw trace remains available when the
 conversation originally ran through Rolling Skill.
 
@@ -158,6 +157,13 @@ runtime paths and versions, models, efforts, responses/errors, duration, session
 and Case-scoped Trace references. Deleting a current Case therefore does not damage historical
 evidence.
 
+While any evaluation run is active, the app holds macOS's `prevent-app-suspension` power lease. The
+display may still sleep, but system sleep no longer consumes the wall-clock evaluation timeout. The
+lease is shared across concurrent runs and released after the last run finishes or fails. If a target
+turn does time out, Rolling Skill interrupts that exact Codex turn or cancels that CodeBuddy ACP
+session before continuing. The failed result retains the runtime error code, duration, last observed
+activity time, thread/session ID, turn ID, raw Trace range, and bounded Trace evidence for diagnosis.
+
 Each `Case × runtime` result is scored out of 100. Layer A is a fixed 40-point generic Skill-compliance
 rubric covering activation, required references, tool/CLI policy, workflow order,
 pagination/completeness/artifacts, deterministic processing, evidence/output requirements, and
@@ -167,7 +173,9 @@ no error event, the fixed program awards full error-recovery credit because no r
 When an error occurred, positive recovery credit requires both failure evidence and a later recovery
 action. Layer B is a flexible 60-point Skill/Case-specific subjective assessment built from the
 Curator contract. It records verifiable fields, cross-checks, verification status, and Judge
-confidence, but never reverses the A verdict.
+confidence, but never reverses the A verdict. The workbench presents the fixed outcome as one of four
+operator-facing tiers: **Formal pass** (A at least 32 with no critical failure), **Usable · needs
+improvement** (A at least 24 with no critical failure), **Failed**, or **Diagnostic only**.
 
 Target execution, grading execution, and quality verdict remain separate states. A result first waits
 for target execution, then waits in the Judge queue, then moves through active and terminal grading
@@ -184,10 +192,24 @@ Invalid or incomplete Judge JSON is retried once with the fixed validator error.
 the target response and Trace intact and marks only grading as failed. Legacy runs remain explicitly
 ungraded rather than receiving guessed scores.
 
-A formal score also requires the target runtime's Skill inventory to confirm the exact frozen Skill
-path. Providers without path-precise inventory support still execute and retain A/B diagnostics, but
-produce no formal total or pass verdict; this prevents a different same-named Skill installation from
-being graded against the selected snapshot.
+Raw runtime JSONL is always retained unchanged. Judge evidence is a deterministic projection: noisy
+deltas are omitted, a completed CodeBuddy `tool_call` plus `tool_call_update` pair becomes one merged
+terminal event, and an unfinished call keeps its start event. Commands and parameters remain
+inspectable. Oversized stdout/stderr and tool-result bodies are reduced to a bounded head/tail excerpt
+after an SHA-256 digest is recorded, so repeated multi-kilobyte output cannot crowd commands, errors,
+or Skill reads out of the Judge budget. Duplicate ACP `rawResponse` bodies are not copied into Judge
+evidence. The evidence states whether every semantic event fit; protocol noise and output-body
+compaction do not by themselves make semantic coverage incomplete. The Judge prompt receives the raw
+bounded evidence once plus a compact typed index, rather than receiving duplicate full Trace and Skill
+copies.
+
+A formal score normally uses the target runtime's Skill inventory to confirm the exact frozen Skill
+path. Inventory declaration and execution observation are stored separately. For providers such as
+CodeBuddy that do not expose path-precise inventory, a completed Skill tool event can recover formal
+binding only when the unabridged executed Skill body digest exactly matches the frozen `SKILL.md` body.
+A matching name alone is insufficient, and an observed body mismatch forces diagnostic-only grading.
+The same Trace remains the evidence for whether the agent actually activated, read, and applied the
+Skill; installation binding never awards the Skill-activation rubric by itself.
 
 The Skill is selected once at dataset creation rather than separately for each capture or run.
 Case capture, Curator, Automatic Capture, and evaluation all inherit the dataset binding. Rebinding

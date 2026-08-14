@@ -5,6 +5,7 @@ const {join} = require("node:path")
 const {afterEach, describe, it} = require("node:test")
 
 const {TraceRecorder} = require("../src/trace-recorder.cjs")
+const {skillContentDigest} = require("../src/skill-content.cjs")
 
 const temporaryDirectories = []
 
@@ -160,24 +161,71 @@ describe("local app-server trace recorder", () => {
             [...evidence.entries.map((entry) => entry.sequence)].sort((left, right) => left - right),
         )
         assert.equal(evidence.sourceEntryCount, 2_404)
-        assert.equal(evidence.includedEntries, 4)
-        assert.equal(evidence.compactedEntries, 2_400)
+        assert.equal(evidence.includedEntries, 3)
+        assert.equal(evidence.compactedEntries, 2_401)
+        assert.equal(evidence.collapsedToolCallEntries, 1)
         assert.equal(evidence.omittedImportantEntries, 0)
-        assert.equal(evidence.samplingStrategy, "semantic-v1")
+        assert.equal(evidence.samplingStrategy, "semantic-v2")
         assert.equal(evidence.semanticCoverageComplete, true)
         assert.equal(evidence.truncated, false)
         assert.ok(evidence.entries.some((entry) => entry.sequence > 2_400))
-        const command = evidence.entries.find((entry) =>
-            entry.message?.params?.update?.toolCallId === "command-call" &&
-            entry.message?.params?.update?.sessionUpdate === "tool_call",
-        )
-        assert.equal(command.message.params.update.rawInput.command, fullCommand)
         const completion = evidence.entries.find((entry) =>
             entry.message?.params?.update?.toolCallId === "command-call" &&
             entry.message?.params?.update?.sessionUpdate === "tool_call_update",
         )
+        assert.equal(completion.message.params.update.rawInput.command, fullCommand)
+        assert.equal(completion.message.params.update.startedSequence, 2_403)
         assert.equal(completion.contentCompacted, true)
         assert.ok(JSON.stringify(completion).length <= 2_200)
+        assert.ok(evidence.entries.some((entry) =>
+            entry.message?.params?.update?.toolCallId === "skill-call" &&
+            entry.message?.params?.update?.sessionUpdate === "tool_call",
+        ), "an unfinished tool call must retain its start event")
+    })
+
+    it("merges a completed CodeBuddy Skill call and fingerprints the unabridged output", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-traces-"))
+        temporaryDirectories.push(directory)
+        const recorder = new TraceRecorder(directory, {sessionId: "skill-call"})
+        const mark = recorder.mark()
+        const frozenSkill = "---\nname: billing-cost-management\ndescription: costs\n---\n\n# Billing\n\nUse the CLI first.\n"
+        recorder.record("inbound", {
+            method: "session/update",
+            params: {update: {
+                sessionUpdate: "tool_call",
+                toolCallId: "skill-1",
+                title: "Skill",
+                status: "pending",
+                rawInput: {skill: "billing-cost-management"},
+            }},
+        })
+        recorder.record("inbound", {
+            method: "session/update",
+            params: {update: {
+                sessionUpdate: "tool_call_update",
+                toolCallId: "skill-1",
+                status: "completed",
+                rawOutput: {
+                    type: "text",
+                    text: "Base directory for this skill: /Users/test/.codebuddy/skills/billing-cost-management\n# Billing\n\nUse the CLI first.\n",
+                },
+                _meta: {"codebuddy.ai/rawResponse": "duplicated output that must not enter Judge evidence"},
+            }},
+        })
+
+        const evidence = recorder.evidenceForReference(recorder.referenceFrom(mark), {
+            maxEntryCharacters: 800,
+        })
+
+        assert.equal(evidence.entries.length, 1)
+        assert.equal(evidence.collapsedToolCallEntries, 1)
+        const update = evidence.entries[0].message.params.update
+        assert.equal(update.sessionUpdate, "tool_call_update")
+        assert.equal(update.startedSequence, 1)
+        assert.deepEqual(update.rawInput, {skill: "billing-cost-management"})
+        assert.match(update.rawOutputDigest, /^sha256:[a-f0-9]{64}$/)
+        assert.equal(update.skillContentDigest, skillContentDigest(frozenSkill))
+        assert.equal(update._meta["codebuddy.ai/rawResponse"], undefined)
     })
 
     it("marks semantic coverage incomplete only when important events exceed the bound", () => {

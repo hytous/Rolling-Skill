@@ -512,6 +512,46 @@ describe("CodeBuddy ACP client", () => {
         })
     })
 
+    it("cancels a timed-out target turn and returns preserved diagnostics", async () => {
+        const client = new CodeBuddyAcpClient({
+            binaryPath: "/bin/codebuddy",
+            workspaceRoot: "/workspace",
+            traceDirectory: "/tmp",
+        })
+        const interrupts = []
+        client.recorder = {
+            mark: () => ({line: 20}),
+            referenceFrom: () => "trace://timeout.jsonl#L21-L30",
+            evidenceForReference: (reference) => ({reference, entries: [{sequence: 30}]}),
+        }
+        client.startThread = async () => ({thread: {id: "timed-out-session"}})
+        client.startTurn = async () => ({turn: {id: "timed-out-turn"}})
+        client.interruptTurn = async (threadId) => {
+            interrupts.push(threadId)
+        }
+
+        let failure
+        await assert.rejects(
+            client.runEvaluationCase({question: "hello", timeoutMs: 5}),
+            (error) => {
+                failure = error
+                return /timed out/.test(error.message)
+            },
+        )
+
+        assert.deepEqual(interrupts, ["timed-out-session"])
+        assert.equal(failure.code, "EVALUATION_TURN_TIMEOUT")
+        assert.equal(failure.threadId, "timed-out-session")
+        assert.equal(failure.turnId, "timed-out-turn")
+        assert.equal(failure.traceReference, "trace://timeout.jsonl#L21-L30")
+        assert.deepEqual(failure.traceEvidence, {
+            reference: "trace://timeout.jsonl#L21-L30",
+            entries: [{sequence: 30}],
+        })
+        assert.equal(typeof failure.durationMs, "number")
+        assert.match(failure.lastActivityAt, /^\d{4}-\d{2}-\d{2}T/)
+    })
+
     it("removes its evaluation listener when turn startup fails", async () => {
         const client = new CodeBuddyAcpClient({
             binaryPath: "/bin/codebuddy",

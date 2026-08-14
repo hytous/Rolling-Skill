@@ -502,6 +502,46 @@ describe("Codex app-server request construction", () => {
         })
     })
 
+    it("interrupts a timed-out target turn and returns preserved diagnostics", async () => {
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        const interrupts = []
+        client.recorder = {
+            mark: () => ({line: 10}),
+            referenceFrom: () => "trace://timeout.jsonl#L11-L19",
+            evidenceForReference: (reference) => ({reference, entries: [{sequence: 19}]}),
+        }
+        client.startThread = async () => ({thread: {id: "timed-out-thread"}})
+        client.startTurn = async () => ({turn: {id: "timed-out-turn"}})
+        client.interruptTurn = async (threadId, turnId) => {
+            interrupts.push([threadId, turnId])
+        }
+
+        let failure
+        await assert.rejects(
+            client.runEvaluationCase({question: "hello", timeoutMs: 5}),
+            (error) => {
+                failure = error
+                return /timed out/.test(error.message)
+            },
+        )
+
+        assert.deepEqual(interrupts, [["timed-out-thread", "timed-out-turn"]])
+        assert.equal(failure.code, "EVALUATION_TURN_TIMEOUT")
+        assert.equal(failure.threadId, "timed-out-thread")
+        assert.equal(failure.turnId, "timed-out-turn")
+        assert.equal(failure.traceReference, "trace://timeout.jsonl#L11-L19")
+        assert.deepEqual(failure.traceEvidence, {
+            reference: "trace://timeout.jsonl#L11-L19",
+            entries: [{sequence: 19}],
+        })
+        assert.equal(typeof failure.durationMs, "number")
+        assert.match(failure.lastActivityAt, /^\d{4}-\d{2}-\d{2}T/)
+    })
+
     it("removes its evaluation listener when turn startup fails", async () => {
         const client = new CodexAppServerClient({
             binaryPath: "/tmp/codex",

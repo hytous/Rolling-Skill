@@ -237,6 +237,7 @@ const translations = {
         executionFailed: "Execution failed",
         executionCancelled: "Execution cancelled",
         qualityPassed: "Passed",
+        qualityUsable: "Usable · improve",
         qualityFailed: "Not passed",
         qualityIndeterminate: "Indeterminate",
         qualityPending: "Pending grading",
@@ -244,6 +245,19 @@ const translations = {
         qualityCancelled: "Stopped before grading",
         qualityDiagnostic: "Diagnostic",
         skillBindingDiagnostic: "Diagnostic only: this runtime could not bind execution to the frozen Skill path, so no formal total or pass verdict is produced.",
+        skillBindingTraceVerified: "Formal binding recovered from Trace: the executed Skill content exactly matches the frozen version.",
+        skillBindingStatus: "Skill binding · runtime declaration: {declared} · Trace execution: {observed} · effective: {effective}",
+        bindingVerified: "verified",
+        bindingUnverified: "unverified",
+        bindingVerifiedByTrace: "verified by Trace",
+        bindingMatched: "exact content match",
+        bindingMismatched: "content mismatch",
+        bindingNameOnly: "name only",
+        bindingNotObserved: "not observed",
+        outcomeFormalPass: "Formal pass",
+        outcomeUsable: "Usable · needs improvement",
+        outcomeFail: "Failed",
+        outcomeDiagnostic: "Diagnostic only",
         judgeModelsLoading: "Loading Judge model catalog…",
         judgeModelsReady: "Judge model catalog ready",
         judgeModelsUnavailable: "Judge model catalog unavailable: {message}",
@@ -562,6 +576,7 @@ const translations = {
         executionFailed: "执行失败",
         executionCancelled: "执行已取消",
         qualityPassed: "通过",
+        qualityUsable: "基本可用 · 待改进",
         qualityFailed: "未通过",
         qualityIndeterminate: "无法判定",
         qualityPending: "待判",
@@ -569,6 +584,19 @@ const translations = {
         qualityCancelled: "停止后未判分",
         qualityDiagnostic: "诊断",
         skillBindingDiagnostic: "仅诊断：该 Runtime 无法确认执行的是冻结 Skill 路径，因此不生成正式总分或通过结论。",
+        skillBindingTraceVerified: "已由 Trace 补足正式绑定：实际执行的 Skill 正文与冻结版本完全一致。",
+        skillBindingStatus: "Skill 绑定 · Runtime 声明：{declared} · Trace 实际执行：{observed} · 最终：{effective}",
+        bindingVerified: "已核验",
+        bindingUnverified: "未核验",
+        bindingVerifiedByTrace: "Trace 已核验",
+        bindingMatched: "正文完全匹配",
+        bindingMismatched: "正文不匹配",
+        bindingNameOnly: "仅名称匹配",
+        bindingNotObserved: "未观察到",
+        outcomeFormalPass: "正式通过",
+        outcomeUsable: "基本可用 · 待改进",
+        outcomeFail: "失败",
+        outcomeDiagnostic: "仅作诊断",
         judgeModelsLoading: "正在加载 Judge 模型目录…",
         judgeModelsReady: "Judge 模型目录已就绪",
         judgeModelsUnavailable: "Judge 模型目录不可用：{message}",
@@ -2770,6 +2798,10 @@ function evaluationResultQuality(result) {
         return "grading_failed"
     }
     if (result.gradingStatus !== "completed" || !result.computedScore) return "pending"
+    if (result.computedScore.outcomeTier === "formal_pass") return "passed"
+    if (result.computedScore.outcomeTier === "usable_with_gaps") return "usable"
+    if (result.computedScore.outcomeTier === "fail") return "failed"
+    if (result.computedScore.outcomeTier === "diagnostic") return "diagnostic"
     if (result.computedScore.overallVerdict === "pass") return "passed"
     if (result.computedScore.overallVerdict === "fail") return "failed"
     if (result.computedScore.overallVerdict === "diagnostic") return "diagnostic"
@@ -2777,10 +2809,11 @@ function evaluationResultQuality(result) {
 }
 
 function evaluationRunQualitySummary(run) {
-    const counts = {passed: 0, failed: 0, indeterminate: 0, diagnostic: 0, pending: 0, grading_failed: 0, cancelled: 0}
+    const counts = {passed: 0, usable: 0, failed: 0, indeterminate: 0, diagnostic: 0, pending: 0, grading_failed: 0, cancelled: 0}
     for (const result of run?.results ?? []) counts[evaluationResultQuality(result)] += 1
     const labels = {
         passed: "qualityPassed",
+        usable: "qualityUsable",
         failed: "qualityFailed",
         indeterminate: "qualityIndeterminate",
         pending: "qualityPending",
@@ -2828,6 +2861,27 @@ function aVerdictLabel(verdict) {
             diagnostic: "diagnosticOnly",
         }[verdict] ?? "gateIndeterminate",
     )
+}
+
+function bindingStatusLabel(status) {
+    return t({
+        verified: "bindingVerified",
+        unverified: "bindingUnverified",
+        "verified-by-trace": "bindingVerifiedByTrace",
+        matched: "bindingMatched",
+        mismatched: "bindingMismatched",
+        name_only: "bindingNameOnly",
+        not_observed: "bindingNotObserved",
+    }[status] ?? "bindingUnverified")
+}
+
+function outcomeTierLabel(tier) {
+    return t({
+        formal_pass: "outcomeFormalPass",
+        usable_with_gaps: "outcomeUsable",
+        fail: "outcomeFail",
+        diagnostic: "outcomeDiagnostic",
+    }[tier] ?? "outcomeDiagnostic")
 }
 
 function evidenceText(refs) {
@@ -2901,9 +2955,19 @@ function renderCompletedGrading(result, run) {
     const block = node("section", "evaluation-grading")
     const summary = node("div", "evaluation-score-summary")
     const total = node("div", "evaluation-score-total")
+    const displayOutcomeTier = computedScore.outcomeTier ?? ({
+        pass: "formal_pass",
+        fail: "fail",
+        diagnostic: "diagnostic",
+    }[computedScore.overallVerdict] ?? "diagnostic")
     total.append(
         node("small", "", t("totalScore")),
         node("strong", "", resultScoreText(computedScore.totalScore, 100)),
+        node(
+            "span",
+            `evaluation-outcome-tier ${displayOutcomeTier}`,
+            outcomeTierLabel(displayOutcomeTier),
+        ),
     )
     const a = node("div", "evaluation-score-part")
     a.append(
@@ -2922,7 +2986,11 @@ function renderCompletedGrading(result, run) {
     detail.className = "evaluation-grading-breakdown"
     detail.append(node("summary", "", t("judgeDetails")))
     const judge = result.judge ?? {}
-    if (result.runtimeConfiguration?.skillEvidenceBinding === "unverified") {
+    const skillBinding = result.skillExecutionBinding ?? null
+    const effectiveBinding = skillBinding?.effectiveBinding ??
+        result.runtimeConfiguration?.skillEvidenceBinding ??
+        "unverified"
+    if (effectiveBinding === "unverified") {
         detail.append(
             node(
                 "p",
@@ -2930,6 +2998,15 @@ function renderCompletedGrading(result, run) {
                 t("skillBindingDiagnostic"),
             ),
         )
+    } else if (effectiveBinding === "verified-by-trace") {
+        detail.append(node("p", "evaluation-judge-meta", t("skillBindingTraceVerified")))
+    }
+    if (skillBinding) {
+        detail.append(node("p", "evaluation-judge-meta", formatMessage("skillBindingStatus", {
+            declared: bindingStatusLabel(skillBinding.declaredBinding),
+            observed: bindingStatusLabel(skillBinding.observedBinding),
+            effective: bindingStatusLabel(skillBinding.effectiveBinding),
+        })))
     }
     detail.append(
         node(
@@ -3141,6 +3218,22 @@ function renderEvaluationRuns() {
                 node("pre", "", result.error ?? result.response),
             )
             card.append(detail)
+        }
+        if (result.failureDiagnostics) {
+            const diagnostics = document.createElement("details")
+            diagnostics.className = "evaluation-failure-diagnostics"
+            const lines = [
+                result.failureDiagnostics.code,
+                result.failureDiagnostics.threadId ? `thread: ${result.failureDiagnostics.threadId}` : null,
+                result.failureDiagnostics.turnId ? `turn: ${result.failureDiagnostics.turnId}` : null,
+                result.failureDiagnostics.lastActivityAt ? `last activity: ${result.failureDiagnostics.lastActivityAt}` : null,
+                result.failureDiagnostics.traceReference,
+            ].filter(Boolean)
+            diagnostics.append(
+                node("summary", "", t("runtimeTrace")),
+                node("pre", "", lines.join("\n")),
+            )
+            card.append(diagnostics)
         }
         results.append(card)
     }

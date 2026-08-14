@@ -250,6 +250,7 @@ describe("evaluation grading contract", () => {
             question: curatedCase().question,
             response: "回答",
             traceEvidence: {items: [{id: "trace-1", type: "commandExecution"}]},
+            skillEvidence: {files: [{id: "skill:SKILL.md", path: "SKILL.md", content: "Skill contents"}]},
             evidenceCatalog: catalog,
             activationMode: "automatic",
         })
@@ -261,6 +262,7 @@ describe("evaluation grading contract", () => {
         assert.match(prompt, /<evidence-catalog>/)
         assert.match(prompt, /Reviewer issue description.*context only/is)
         assert.match(prompt, /Skill contents/)
+        assert.equal(prompt.split("Skill contents").length - 1, 1)
         assert.match(prompt, /"kind":"skill_activation"/)
     })
 
@@ -628,5 +630,30 @@ describe("fixed A40 plus flexible B60 calculator", () => {
         assert.equal(computed.aVerdict, "diagnostic")
         assert.equal(computed.overallVerdict, "diagnostic")
         assert.deepEqual(computed.diagnosticReasons, ["target_skill_binding_unverified"])
+    })
+
+    it("accepts exact execution-time Trace binding as formal evidence", () => {
+        const contract = scoreContract()
+        const computed = calculateScore(contract, passingJudge(contract), {
+            activationMode: "automatic",
+            skillEvidenceBinding: "verified-by-trace",
+        })
+
+        assert.equal(computed.totalScore, 100)
+        assert.equal(computed.outcomeTier, "formal_pass")
+    })
+
+    it("classifies a non-critical 60-percent A result as usable with gaps", () => {
+        const contract = scoreContract()
+        const judgment = passingJudge(contract)
+        judgment.aAssessments = judgment.aAssessments.map((entry) => ({
+            ...entry,
+            level: 3,
+        }))
+        const computed = calculateScore(contract, judgment)
+
+        assert.equal(computed.aVerdict, "fail")
+        assert.ok(computed.aScore >= 24 && computed.aScore < 32)
+        assert.equal(computed.outcomeTier, "usable_with_gaps")
     })
 })

@@ -2,9 +2,11 @@ const assert = require("node:assert/strict")
 const {describe, it} = require("node:test")
 
 const {
+    resolveExecutedSkillEvidenceBinding,
     resolveSkillEvidenceBinding,
     runtimeReportsSkill,
 } = require("../src/evaluation-skill-binding.cjs")
+const {skillContentDigest} = require("../src/skill-content.cjs")
 
 describe("evaluation Skill binding", () => {
     const skillReference = {
@@ -80,5 +82,65 @@ describe("evaluation Skill binding", () => {
 
         assert.equal(binding, "unverified")
         assert.equal(stopped, true)
+    })
+
+    it("promotes a provider without Skill inventory when Trace proves the exact Skill content", () => {
+        const content = "---\nname: billing-cost-management\ndescription: costs\n---\n\n# Billing\nUse CLI.\n"
+        const binding = resolveExecutedSkillEvidenceBinding({
+            declaredBinding: "unverified",
+            skillReference,
+            skillEvidence: {files: [{path: "SKILL.md", content}]},
+            traceEvidence: {entries: [{
+                sequence: 12,
+                message: {params: {update: {
+                    sessionUpdate: "tool_call_update",
+                    toolCallId: "skill-1",
+                    rawInput: {skill: "billing-cost-management"},
+                    skillContentDigest: skillContentDigest(content),
+                }}},
+            }]},
+        })
+
+        assert.deepEqual(binding, {
+            declaredBinding: "unverified",
+            observedBinding: "matched",
+            effectiveBinding: "verified-by-trace",
+            skillName: "billing-cost-management",
+            expectedContentDigest: skillContentDigest(content),
+            observedContentDigest: skillContentDigest(content),
+            evidenceSequences: [12],
+        })
+    })
+
+    it("does not trust a matching Skill name when the executed content differs", () => {
+        const content = "---\nname: billing-cost-management\n---\n\n# Frozen body\n"
+        const binding = resolveExecutedSkillEvidenceBinding({
+            declaredBinding: "unverified",
+            skillReference,
+            skillEvidence: {files: [{path: "SKILL.md", content}]},
+            traceEvidence: {entries: [{
+                sequence: 20,
+                message: {params: {update: {
+                    rawInput: {skill: "billing-cost-management"},
+                    skillContentDigest: skillContentDigest("# Different body\n"),
+                }}},
+            }]},
+        })
+
+        assert.equal(binding.observedBinding, "mismatched")
+        assert.equal(binding.effectiveBinding, "unverified")
+    })
+
+    it("keeps declared inventory binding separate when no Skill execution is observable", () => {
+        const binding = resolveExecutedSkillEvidenceBinding({
+            declaredBinding: "verified",
+            skillReference,
+            skillEvidence: {files: [{path: "SKILL.md", content: "# Billing\n"}]},
+            traceEvidence: {entries: []},
+        })
+
+        assert.equal(binding.declaredBinding, "verified")
+        assert.equal(binding.observedBinding, "not_observed")
+        assert.equal(binding.effectiveBinding, "verified")
     })
 })

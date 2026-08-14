@@ -37,4 +37,58 @@ async function resolveSkillEvidenceBinding({
     }
 }
 
-module.exports = {resolveSkillEvidenceBinding, runtimeReportsSkill}
+function resolveExecutedSkillEvidenceBinding({
+    declaredBinding = "unverified",
+    skillReference,
+    skillEvidence,
+    traceEvidence,
+}) {
+    const frozenSkill = skillEvidence?.files?.find((entry) => entry.path === "SKILL.md")
+    const expectedContentDigest = frozenSkill?.content === undefined
+        ? null
+        : skillContentDigest(frozenSkill.content)
+    const skillName = String(skillReference?.name ?? skillEvidence?.name ?? "")
+    const observed = []
+    for (const entry of traceEvidence?.entries ?? []) {
+        const update = entry?.message?.params?.update ?? {}
+        if (String(update.rawInput?.skill ?? "") !== skillName) continue
+        observed.push({
+            sequence: entry.sequence,
+            contentDigest: update.skillContentDigest ?? null,
+        })
+    }
+    const matching = observed.find((entry) =>
+        expectedContentDigest && entry.contentDigest === expectedContentDigest,
+    )
+    const observedDigests = observed.map((entry) => entry.contentDigest).filter(Boolean)
+    const observedBinding = matching
+        ? "matched"
+        : observedDigests.length
+          ? "mismatched"
+          : observed.length
+            ? "name_only"
+            : "not_observed"
+    const effectiveBinding = observedBinding === "matched"
+        ? "verified-by-trace"
+        : observedBinding === "mismatched"
+          ? "unverified"
+          : declaredBinding === "verified"
+            ? "verified"
+            : "unverified"
+    return {
+        declaredBinding: declaredBinding === "verified" ? "verified" : "unverified",
+        observedBinding,
+        effectiveBinding,
+        skillName,
+        expectedContentDigest,
+        observedContentDigest: matching?.contentDigest ?? observedDigests.at(-1) ?? null,
+        evidenceSequences: observed.map((entry) => entry.sequence),
+    }
+}
+
+module.exports = {
+    resolveExecutedSkillEvidenceBinding,
+    resolveSkillEvidenceBinding,
+    runtimeReportsSkill,
+}
+const {skillContentDigest} = require("./skill-content.cjs")

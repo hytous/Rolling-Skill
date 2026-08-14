@@ -6,6 +6,7 @@ const {describe, it} = require("node:test")
 
 const {EvaluationRunner} = require("../src/evaluation-runner.cjs")
 const {snapshotSkillEvidence} = require("../src/evaluation-skill-evidence.cjs")
+const {skillContentDigest} = require("../src/skill-content.cjs")
 const {
     JUDGE_RESULT_SCHEMA,
     buildScoreContract,
@@ -87,6 +88,108 @@ function passingJudge(caseEntry, contract = buildScoreContract(caseEntry)) {
 }
 
 describe("multi-runtime evaluation runner", () => {
+    it("holds and releases one run-level power lease even when execution fails", async () => {
+        const events = []
+        const runner = new EvaluationRunner({
+            store: {
+                updateEvaluationRun() {},
+                updateEvaluationResult() {},
+            },
+            runtimeRegistry: {
+                createClient() {
+                    return {
+                        start: async () => {},
+                        runEvaluationCase: async () => {
+                            throw new Error("target failed")
+                        },
+                        stop: async () => {},
+                    }
+                },
+            },
+            workspaceRoot: "/workspace",
+            traceDirectory: "/traces",
+            acquireRunLease: () => {
+                events.push("acquire")
+                return () => events.push("release")
+            },
+        })
+
+        await runner.run({
+            id: "run-power-lease",
+            runtimeConfigurations: [
+                {runtimeId: "target", providerId: "codex", executablePath: "/target"},
+            ],
+            results: [{
+                id: "result",
+                runtimeId: "target",
+                status: "queued",
+                caseSnapshot: curatedCase("case", "question"),
+            }],
+        })
+
+        assert.deepEqual(events, ["acquire", "release"])
+    })
+
+    it("persists target failure diagnostics for post-mortem inspection", async () => {
+        const resultPatches = new Map()
+        const failure = Object.assign(new Error("The evaluation turn timed out"), {
+            code: "EVALUATION_TURN_TIMEOUT",
+            threadId: "target-thread",
+            turnId: "target-turn",
+            durationMs: 1234,
+            lastActivityAt: "2026-08-14T01:02:03.000Z",
+            traceReference: "trace://target.jsonl#L2-L9",
+            traceEvidence: {reference: "trace://target.jsonl#L2-L9", entries: []},
+        })
+        const runner = new EvaluationRunner({
+            store: {
+                updateEvaluationRun() {},
+                updateEvaluationResult(_runId, resultId, patch) {
+                    resultPatches.set(resultId, {...resultPatches.get(resultId), ...patch})
+                },
+            },
+            runtimeRegistry: {
+                createClient() {
+                    return {
+                        start: async () => {},
+                        runEvaluationCase: async () => {
+                            throw failure
+                        },
+                        stop: async () => {},
+                    }
+                },
+            },
+            workspaceRoot: "/workspace",
+            traceDirectory: "/traces",
+        })
+
+        await runner.run({
+            id: "run-target-diagnostics",
+            runtimeConfigurations: [
+                {runtimeId: "target", providerId: "codex", executablePath: "/target"},
+            ],
+            results: [{
+                id: "result",
+                runtimeId: "target",
+                status: "queued",
+                caseSnapshot: curatedCase("case", "question"),
+            }],
+        })
+
+        assert.deepEqual(resultPatches.get("result").failureDiagnostics, {
+            code: "EVALUATION_TURN_TIMEOUT",
+            threadId: "target-thread",
+            turnId: "target-turn",
+            durationMs: 1234,
+            lastActivityAt: "2026-08-14T01:02:03.000Z",
+            traceReference: "trace://target.jsonl#L2-L9",
+            traceEvidence: {reference: "trace://target.jsonl#L2-L9", entries: []},
+        })
+        assert.equal(resultPatches.get("result").threadId, "target-thread")
+        assert.equal(resultPatches.get("result").turnId, "target-turn")
+        assert.equal(resultPatches.get("result").traceReference, "trace://target.jsonl#L2-L9")
+    })
+
     it("sends only the frozen original question to the target runtime", async () => {
         const calls = []
         const runner = new EvaluationRunner({
@@ -834,6 +937,88 @@ describe("multi-runtime evaluation runner", () => {
         const grading = patches.find((patch) => patch.gradingStatus === "completed")
         assert.equal(grading.computedScore.totalScore, 100)
         assert.equal(grading.computedScore.overallVerdict, "pass")
+    })
+
+    it("uses exact execution Trace to formally grade a runtime without Skill inventory", async () => {
+        const caseEntry = curatedCase("case-trace-binding", "q1")
+        const skillContent = "---\nname: billing\ndescription: costs\n---\n\n# Billing\nUse CLI.\n"
+        const resultPatches = []
+        const runner = new EvaluationRunner({
+            store: {
+                updateEvaluationRun() {},
+                updateEvaluationResult(_runId, _resultId, patch) {
+                    resultPatches.push(patch)
+                },
+            },
+            runtimeRegistry: {
+                createClient(descriptor) {
+                    if (descriptor.runtimeId === "judge") {
+                        return {
+                            start: async () => {},
+                            async runEvaluationJudge({prompt}) {
+                                const contract = contractFromPrompt(prompt)
+                                return {response: JSON.stringify(passingJudge(caseEntry, contract))}
+                            },
+                            stop: async () => {},
+                        }
+                    }
+                    return {
+                        start: async () => {},
+                        runEvaluationCase: async () => ({
+                            response: "answer",
+                            durationMs: 1,
+                            traceEvidence: {entries: [{
+                                sequence: 7,
+                                message: {params: {update: {
+                                    sessionUpdate: "tool_call_update",
+                                    status: "completed",
+                                    rawInput: {skill: "billing"},
+                                    skillContentDigest: skillContentDigest(skillContent),
+                                }}},
+                            }]},
+                        }),
+                        stop: async () => {},
+                    }
+                },
+            },
+            workspaceRoot: "/workspace",
+            traceDirectory: "/traces",
+        })
+
+        await runner.run({
+            id: "run-trace-binding",
+            activationMode: "automatic",
+            skillReference: {name: "billing", path: "/skills/billing/SKILL.md"},
+            skillEvidence: {
+                name: "billing",
+                files: [{id: "skill:SKILL.md", path: "SKILL.md", content: skillContent}],
+            },
+            judgeConfiguration: {
+                runtimeId: "judge",
+                providerId: "codex",
+                executablePath: "/judge",
+            },
+            runtimeConfigurations: [{
+                runtimeId: "target",
+                providerId: "codebuddy",
+                executablePath: "/target",
+                skillEvidenceBinding: "unverified",
+            }],
+            results: [{
+                id: "result",
+                runtimeId: "target",
+                status: "queued",
+                caseSnapshot: caseEntry,
+            }],
+        })
+
+        const execution = resultPatches.find((patch) => patch.skillExecutionBinding)
+        assert.equal(execution.skillExecutionBinding.declaredBinding, "unverified")
+        assert.equal(execution.skillExecutionBinding.observedBinding, "matched")
+        assert.equal(execution.skillExecutionBinding.effectiveBinding, "verified-by-trace")
+        const grading = resultPatches.find((patch) => patch.gradingStatus === "completed")
+        assert.equal(grading.computedScore.totalScore, 100)
+        assert.equal(grading.computedScore.outcomeTier, "formal_pass")
     })
 
     it("freezes response, sequenced Trace entries, and the Skill snapshot into an untrusted Judge evidence catalog", async () => {

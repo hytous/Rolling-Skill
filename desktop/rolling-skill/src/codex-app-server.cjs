@@ -5,6 +5,7 @@ const {dirname, join} = require("node:path")
 const {version: clientVersion} = require("../package.json")
 
 const {JsonLineDecoder, RpcRequestTracker} = require("./json-rpc.cjs")
+const {evaluationTurnError} = require("./evaluation-turn-error.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
 
 function turnSandboxPolicy(sandbox) {
@@ -303,15 +304,26 @@ class CodexAppServerClient extends EventEmitter {
                 : input.question
         let turnId = null
         let responseText = ""
+        let lastActivityAt = new Date().toISOString()
         let cleanup = () => {}
         const completed = new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
                 cleanup()
-                reject(new Error("The evaluation turn timed out"))
+                if (turnId) void this.interruptTurn(threadId, turnId).catch(() => {})
+                reject(evaluationTurnError("The evaluation turn timed out", {
+                    code: "EVALUATION_TURN_TIMEOUT",
+                    recorder: this.recorder,
+                    traceMark,
+                    threadId,
+                    turnId,
+                    startedAt,
+                    lastActivityAt,
+                }))
             }, input.timeoutMs ?? 30 * 60 * 1000)
             const onNotification = (message) => {
                 const params = message?.params ?? {}
                 if (params.threadId !== threadId) return
+                lastActivityAt = new Date().toISOString()
                 if (message.method === "item/agentMessage/delta") {
                     responseText += params.delta ?? ""
                 } else if (
