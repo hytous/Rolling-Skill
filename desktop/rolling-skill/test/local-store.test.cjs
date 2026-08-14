@@ -159,7 +159,7 @@ describe("local evaluation store", () => {
 
         const migrated = new LocalEvaluationStore(path).read()
 
-        assert.equal(migrated.schemaVersion, "rolling-skill-local/v9")
+        assert.equal(migrated.schemaVersion, "rolling-skill-local/v10")
         assert.deepEqual(migrated.datasets[0].skillReference, reference)
         assert.deepEqual(migrated.cases[0].skillReference, reference)
     })
@@ -393,8 +393,11 @@ describe("local evaluation store", () => {
         )
         const migrated = new LocalEvaluationStore(path).read()
 
-        assert.equal(migrated.schemaVersion, "rolling-skill-local/v9")
+        assert.equal(migrated.schemaVersion, "rolling-skill-local/v10")
         assert.equal(migrated.cases[0].id, "case-old")
+        assert.deepEqual(migrated.cases[0].source.originalAssistantMessages, [
+            {role: "assistant", content: "a"},
+        ])
         assert.deepEqual(migrated.curationSessions, [])
         assert.equal(migrated.settings.curatorProfile.runtimePolicy, "active")
     })
@@ -443,15 +446,34 @@ describe("local evaluation store", () => {
                 caseType: "badcase",
                 question: "回答无诊断地重复调用了三次。",
                 answer: "analysis",
-                source: {originalQuestion: "查一下七月各业务成本。"},
+                source: {
+                    originalQuestion: "查一下七月各业务成本。",
+                    curationSessionId: "curation-old",
+                },
             }],
-            curationSessions: [],
+            curationSessions: [{
+                id: "curation-old",
+                caseId: "case-old",
+                datasetId: "dataset-old",
+                status: "archived",
+                episode: {
+                    items: [
+                        {id: "agent-1", type: "agentMessage", text: "先查一下。"},
+                        {id: "agent-2", type: "agentMessage", text: "原始回答。"},
+                    ],
+                },
+                curator: {},
+            }],
             evaluationRuns: [],
         })}\n`)
 
         const migrated = new LocalEvaluationStore(path).read().cases[0]
         assert.equal(migrated.question, "查一下七月各业务成本。")
         assert.equal(migrated.issueDescription, "回答无诊断地重复调用了三次。")
+        assert.deepEqual(migrated.source.originalAssistantMessages, [
+            {role: "assistant", content: "先查一下。"},
+            {role: "assistant", content: "原始回答。"},
+        ])
     })
 
     it("migrates legacy evaluation runs to ungraded Judge-compatible results", () => {
@@ -625,6 +647,9 @@ describe("local evaluation store", () => {
         assert.equal(saved.source.curatorEffort, "max")
         assert.equal(saved.source.curatorEffectiveModelId, "gpt-effective")
         assert.equal(saved.source.curatorEffectiveEffort, "xhigh")
+        assert.deepEqual(saved.source.originalAssistantMessages, [
+            {role: "assistant", content: "结果"},
+        ])
         assert.equal(archived.status, "archived")
         assert.equal(archived.caseId, saved.id)
     })

@@ -1,15 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="640" height="520" viewBox="0 0 640 520" fill="none">
-    <defs>
-        <linearGradient id="check" x1="318" y1="372" x2="552" y2="140" gradientUnits="userSpaceOnUse">
-            <stop stop-color="#2F7AF0" />
-            <stop offset="1" stop-color="#0752CC" />
-        </linearGradient>
-    </defs>
-    <g stroke-linecap="round" stroke-linejoin="round">
-        <path d="M76 132H170C232 132 254 210 320 260" stroke="#78B8FF" stroke-width="62" />
-        <path d="M76 260H320" stroke="#3D88F5" stroke-width="62" />
-        <path d="M76 388H170C232 388 254 310 320 260" stroke="#2368DE" stroke-width="62" />
-        <path d="M320 260L408 352L554 158" stroke="url(#check)" stroke-width="72" />
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+    <title>Rolling Skill mechanical S keycap</title>
+    <rect x="32" y="32" width="960" height="960" rx="210" fill="#F36B21" />
+    <rect x="55" y="55" width="914" height="914" rx="188" fill="none" stroke="#FFFFFF" stroke-width="14" />
+
+    <g fill="none" stroke="#FFFFFF" stroke-width="32" stroke-linecap="round">
+        <path d="M170 394C147 320 172 246 232 198" />
+        <path d="M854 630C877 704 852 778 792 826" />
     </g>
-    <circle cx="320" cy="260" r="14" fill="#FFFFFF" fill-opacity="0.94" />
+
+    <g transform="rotate(-7 512 512)">
+        <path
+            data-keycap-side="true"
+            d="M232 318Q228 276 270 270L727 214Q771 209 778 253L829 638Q835 686 788 694L337 752Q284 759 277 707Z"
+            fill="#FFFFFF"
+        />
+        <path
+            data-keycap-top="true"
+            d="M256 273Q251 235 292 230L710 178Q754 173 761 216L801 543Q807 587 762 593L347 646Q298 652 292 607Z"
+            fill="#F36B21"
+            stroke="#FFFFFF"
+            stroke-width="28"
+            stroke-linejoin="round"
+        />
+        <text
+            x="525"
+            y="516"
+            fill="#FFFFFF"
+            font-family="Arial Rounded MT Bold, Arial, sans-serif"
+            font-size="330"
+            font-weight="800"
+            text-anchor="middle"
+        >S</text>
+    </g>
 </svg>

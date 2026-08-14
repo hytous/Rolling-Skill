@@ -983,19 +983,42 @@ function installIpc() {
     ipcMain.handle("datasets:delete", (_event, datasetId) =>
         store.deleteDataset(requireIdentifier(datasetId, "dataset")),
     )
-    ipcMain.handle("datasets:export-csv", async (_event, requestedDatasetId) => {
-        const datasetId = requireIdentifier(requestedDatasetId, "dataset")
+    ipcMain.handle("datasets:export-csv", async (_event, requestedInput) => {
+        const input = typeof requestedInput === "string"
+            ? {datasetId: requestedInput}
+            : requestedInput ?? {}
+        const datasetId = requireIdentifier(input.datasetId, "dataset")
+        const exportOptions = {
+            caseScope: input.caseScope ?? "all",
+            outputMode: input.outputMode ?? "curated",
+        }
         const dataset = store.getDataset(datasetId)
         const cases = store.listCases(datasetId)
-        const csv = buildDatasetCsv(cases)
+        const csv = buildDatasetCsv(cases, exportOptions)
+        const selectedCases = exportOptions.caseScope === "goodcase"
+            ? cases.filter((entry) => entry.caseType === "goodcase")
+            : cases
+        const missingOriginalCount = exportOptions.outputMode === "original"
+            ? selectedCases.filter(
+                  (entry) => !entry.source?.originalAssistantMessages?.length,
+              ).length
+            : 0
         const result = await dialog.showSaveDialog(mainWindow, {
             title: `Export ${dataset.name}`,
-            defaultPath: join(app.getPath("downloads"), datasetExportFilename(dataset.name)),
+            defaultPath: join(
+                app.getPath("downloads"),
+                datasetExportFilename(dataset.name, exportOptions),
+            ),
             filters: [{name: "CSV", extensions: ["csv"]}],
         })
         if (result.canceled || !result.filePath) return {canceled: true, filePath: null}
         writeFileSync(result.filePath, csv, {encoding: "utf8", mode: 0o600})
-        return {canceled: false, filePath: result.filePath, caseCount: cases.length}
+        return {
+            canceled: false,
+            filePath: result.filePath,
+            caseCount: selectedCases.length,
+            missingOriginalCount,
+        }
     })
     ipcMain.handle("datasets:delete-case", (_event, input = {}) =>
         store.deleteCase(

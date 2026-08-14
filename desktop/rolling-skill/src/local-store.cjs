@@ -16,7 +16,7 @@ const {
 const {formatCuratedAnswer, validateCuratorDraft} = require("./episode-curation.cjs")
 const {validateSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 
-const LOCAL_SCHEMA = "rolling-skill-local/v9"
+const LOCAL_SCHEMA = "rolling-skill-local/v10"
 const CURATION_STATUSES = new Set([
     "queued",
     "running",
@@ -72,6 +72,13 @@ const EVALUATION_GRADING_STATUSES = new Set([
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
+}
+
+function originalAssistantMessagesFromEpisode(episode) {
+    if (!Array.isArray(episode?.items)) return []
+    return episode.items
+        .filter((item) => item?.type === "agentMessage" && typeof item.text === "string")
+        .map((item) => ({role: "assistant", content: item.text}))
 }
 
 function modelId(value, label = "Model id") {
@@ -311,6 +318,10 @@ function migrateState(input) {
         }
     }
     for (const entry of state.cases) {
+        if (!entry.source || typeof entry.source !== "object" || Array.isArray(entry.source)) {
+            entry.source = {}
+            changed = true
+        }
         const originalQuestion = String(entry.source?.originalQuestion ?? "")
         if (!("issueDescription" in entry)) {
             entry.issueDescription = originalQuestion && entry.question !== originalQuestion
@@ -320,6 +331,19 @@ function migrateState(input) {
         }
         if (originalQuestion && entry.question !== originalQuestion) {
             entry.question = originalQuestion
+            changed = true
+        }
+        if (!Array.isArray(entry.source.originalAssistantMessages)) {
+            const curationSession = state.curationSessions.find(
+                (session) =>
+                    session.id === entry.source.curationSessionId || session.caseId === entry.id,
+            )
+            const archivedMessages = originalAssistantMessagesFromEpisode(curationSession?.episode)
+            entry.source.originalAssistantMessages = archivedMessages.length
+                ? archivedMessages
+                : !entry.curated && typeof entry.answer === "string"
+                  ? [{role: "assistant", content: entry.answer}]
+                  : []
             changed = true
         }
     }
@@ -1078,6 +1102,7 @@ class LocalEvaluationStore {
                 itemId: input.itemId ?? null,
                 runtimeId: input.runtimeId ?? null,
                 traceReference: input.traceReference ?? null,
+                originalAssistantMessages: [{role: "assistant", content: answer}],
             },
             createdAt: new Date().toISOString(),
         }
@@ -1364,6 +1389,7 @@ class LocalEvaluationStore {
                 skillPath: session.skillReference?.path ?? null,
                 skillRuntimeId: session.skillReference?.runtimeId ?? null,
                 originalQuestion: session.episode.originalQuestion,
+                originalAssistantMessages: originalAssistantMessagesFromEpisode(session.episode),
                 skillConfirmedAt: session.skillReference?.confirmedAt ?? null,
             },
             evidence: {

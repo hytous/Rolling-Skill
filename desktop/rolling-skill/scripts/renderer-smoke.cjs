@@ -124,6 +124,20 @@ async function run() {
     if (!datasetBinding.createSkill) {
         throw new Error("Dataset creation did not require an enabled Skill")
     }
+    await inspect(window, 'document.querySelector("#export-evaluation-dataset").click()')
+    await waitFor(window, 'document.querySelector("#export-dataset-dialog").open')
+    const exportDialog = await inspect(window, `(() => ({
+        caseScopes: [...document.querySelectorAll("#export-case-scope option")].map((option) => option.value),
+        outputModes: [...document.querySelectorAll("#export-output-mode option")].map((option) => option.value),
+        help: document.querySelector("#export-dataset-dialog .field-help")?.textContent,
+    }))()`)
+    if (!exportDialog.caseScopes.includes("goodcase") || !exportDialog.outputModes.includes("original")) {
+        throw new Error("Dataset export choices are missing")
+    }
+    if (!exportDialog.help.includes("Assistant") || !exportDialog.help.includes("工具输出")) {
+        throw new Error(`Original-output export explanation is unclear: ${exportDialog.help}`)
+    }
+    await inspect(window, 'document.querySelector("#close-export-dataset-dialog").click()')
     const rubricStatus = await inspect(
         window,
         'document.querySelector("#evaluation-dataset-rubric-status")?.textContent',
@@ -519,6 +533,14 @@ async function run() {
             await inspect(window, 'document.querySelector("#manage-dataset-rubric").click()')
             await waitFor(window, 'document.querySelector("#rubric-drawer").classList.contains("visible")')
             await inspect(window, 'document.querySelector("#rubric-drawer .curation-reference-card")?.setAttribute("open", "")')
+        } else if (process.env.ROLLING_SKILL_RENDERER_SMOKE_SCREENSHOT_SURFACE === "export") {
+            await inspect(window, 'document.querySelector("[data-surface=evaluation]").click()')
+            await inspect(window, 'document.querySelector("[data-evaluation-view=cases]").click()')
+            await waitFor(window, 'document.querySelector("[data-evaluation-case-id=case-smoke]")')
+            await inspect(window, 'document.querySelector("#export-evaluation-dataset").click()')
+            await waitFor(window, 'document.querySelector("#export-dataset-dialog").open')
+            await inspect(window, 'document.querySelector("#export-case-scope").value = "goodcase"')
+            await inspect(window, 'document.querySelector("#export-output-mode").value = "original"')
         } else {
             await inspect(window, 'document.querySelector("[data-thread-view=current]").click()')
             await waitFor(window, 'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation")')
@@ -540,6 +562,7 @@ async function run() {
             staleRuntimeModelsIgnored: true,
             inlineCurationFailure: true,
             caseCardUsesInitialQuestion: true,
+            datasetExportChoices: true,
             datasetRubric: true,
             evaluationDurationMinuteSecond: true,
             curatorLiveActivity: true,

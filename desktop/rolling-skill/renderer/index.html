@@ -506,6 +506,38 @@
             </div>
         </dialog>
 
+        <dialog id="export-dataset-dialog" class="case-dialog confirm-dialog">
+            <form id="export-dataset-form" class="confirm-dialog-body">
+                <div class="dialog-header">
+                    <div>
+                        <div class="drawer-eyebrow">DATASET CSV</div>
+                        <h2 data-i18n="exportDataset">Export dataset</h2>
+                    </div>
+                    <button id="close-export-dataset-dialog" class="icon-button large" type="button" data-i18n-title="close" data-i18n-aria-label="close" title="Close" aria-label="Close">×</button>
+                </div>
+                <label class="field">
+                    <span data-i18n="exportCaseScope">Cases to export</span>
+                    <select id="export-case-scope">
+                        <option value="all" data-i18n="allCases">All Cases</option>
+                        <option value="goodcase" data-i18n="goodCasesOnly">Good Cases only</option>
+                    </select>
+                </label>
+                <label class="field">
+                    <span data-i18n="exportOutputMode">Output column</span>
+                    <select id="export-output-mode">
+                        <option value="curated" data-i18n="curatedReferenceOutput">Curated reference answer</option>
+                        <option value="original" data-i18n="originalAssistantOutput">Original Assistant messages</option>
+                    </select>
+                    <small class="field-help" data-i18n="originalAssistantOutputHelp">Original output preserves every Assistant message in the frozen Case episode and excludes tool output.</small>
+                </label>
+                <div class="dialog-footer">
+                    <span></span>
+                    <button id="cancel-export-dataset" type="button" data-i18n="cancel">Cancel</button>
+                    <button id="confirm-export-dataset" class="primary" type="submit" data-i18n="exportCsv">Export CSV</button>
+                </div>
+            </form>
+        </dialog>
+
         <dialog id="discard-curation-dialog" class="case-dialog confirm-dialog">
             <div class="confirm-dialog-body">
                 <div class="dialog-header">

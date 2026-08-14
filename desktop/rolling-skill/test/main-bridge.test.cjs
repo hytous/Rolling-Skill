@@ -50,15 +50,15 @@ describe("desktop main/preload bridge", () => {
         assert.match(runner, /rubricVersion:\s*run\.rubricVersionSnapshot/)
     })
 
-    it("exports a complete dataset as input/output JSON-array CSV", () => {
+    it("exports a selectable dataset subset and output source as JSON-array CSV", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")
 
         assert.match(main, /datasets:export-csv/)
         assert.match(main, /const cases = store\.listCases\(datasetId\)/)
-        assert.match(main, /buildDatasetCsv\(cases\)/)
+        assert.match(main, /buildDatasetCsv\(cases,\s*exportOptions\)/)
         assert.match(main, /showSaveDialog/)
-        assert.match(preload, /exportDatasetCsv/)
+        assert.match(preload, /exportDatasetCsv:\s*\(input\)/)
     })
 
     it("exposes explicit evaluation cancellation separately from record deletion", () => {

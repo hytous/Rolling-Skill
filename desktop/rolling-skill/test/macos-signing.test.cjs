@@ -14,6 +14,9 @@ test("macOS builds use the persistent local signing identity", () => {
     assert.match(buildScript, /ensure-local-signing-identity\.sh/)
     assert.match(buildScript, /codesign[^\n]+--sign "\$SIGN_IDENTITY"/)
     assert.doesNotMatch(buildScript, /codesign[^\n]+--sign -(?:\s|$)/m)
+    assert.match(buildScript, /REQUIRED_NODE_MAJOR=22/)
+    assert.match(buildScript, /\/opt\/homebrew\/bin\/node/)
+    assert.match(buildScript, /Node\.js 22 or newer is required/)
 })
 
 test("the local identity bootstrap keeps private material out of the repository", () => {

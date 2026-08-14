@@ -114,7 +114,7 @@ describe("dataset rubric lifecycle", () => {
         const {store, dataset} = fixture()
         const snapshot = store.read()
 
-        assert.equal(snapshot.schemaVersion, "rolling-skill-local/v9")
+        assert.equal(snapshot.schemaVersion, "rolling-skill-local/v10")
         assert.equal(store.getDataset(dataset.id).activeRubricVersionId, null)
         assert.deepEqual(snapshot.datasetRubricVersions, [])
         assert.deepEqual(snapshot.rubricSessions, [])

@@ -36,7 +36,7 @@ describe("local-first desktop surface", () => {
         assert.match(appIcon, /data-keycap-top/)
         assert.match(packageJson, /assets\/icon-s-keycap-orange\.png/)
         assert.match(packageJson, /"pack:mac":\s*"npm run render:icon && electron-builder/)
-        assert.match(inAppLogo, /M76 132H170/)
+        assert.equal(inAppLogo.trim(), appIcon.trim())
         assert.doesNotMatch(`${previousAppIcon}\n${appIcon}\n${inAppLogo}`, /#F2F25C/i)
         assert.doesNotMatch(styles, /filter:\s*hue-rotate/)
         assert.equal(previousPng.subarray(1, 4).toString("ascii"), "PNG")
@@ -424,7 +424,10 @@ describe("local-first desktop surface", () => {
         const renderer = source("renderer/renderer.js")
 
         assert.match(html, /id="export-evaluation-dataset"/)
-        assert.match(renderer, /window\.rollingSkill\.exportDatasetCsv\(state\.evaluationDatasetId\)/)
+        assert.match(html, /id="export-dataset-dialog"/)
+        assert.match(html, /id="export-case-scope"/)
+        assert.match(html, /id="export-output-mode"/)
+        assert.match(renderer, /window\.rollingSkill\.exportDatasetCsv\(\{[\s\S]*datasetId:/)
         assert.match(renderer, /datasetExported/)
     })
 

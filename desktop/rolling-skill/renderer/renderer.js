@@ -321,7 +321,16 @@ const translations = {
         runtimeConfigurations: "Runtime configurations",
         startDataset: "Run entire dataset",
         exportCsv: "Export CSV",
+        exportDataset: "Export dataset",
+        exportCaseScope: "Cases to export",
+        allCases: "All Cases",
+        goodCasesOnly: "Good Cases only",
+        exportOutputMode: "Output column",
+        curatedReferenceOutput: "Curated reference answer",
+        originalAssistantOutput: "Original Assistant messages",
+        originalAssistantOutputHelp: "Original output preserves every Assistant message in the frozen Case episode and excludes tool output.",
         datasetExported: "Exported {count} Cases to CSV",
+        datasetExportedMissingOriginal: "Exported {count} Cases; {missing} had no archived original answer and use an empty output array.",
         noRuns: "No evaluation runs yet.",
         runQueued: "Evaluation run queued",
         runResults: "Case × runtime results",
@@ -682,7 +691,16 @@ const translations = {
         runtimeConfigurations: "运行时配置",
         startDataset: "运行整个数据集",
         exportCsv: "导出 CSV",
+        exportDataset: "导出数据集",
+        exportCaseScope: "导出范围",
+        allCases: "全部 Case",
+        goodCasesOnly: "仅 Good Case",
+        exportOutputMode: "Output 列内容",
+        curatedReferenceOutput: "Curator 精炼参考答案",
+        originalAssistantOutput: "原始 Assistant 回复",
+        originalAssistantOutputHelp: "原始输出会保留冻结 Case 片段中的每条 Assistant 消息，但不包含工具输出。",
         datasetExported: "已导出 {count} 个 Case 到 CSV",
+        datasetExportedMissingOriginal: "已导出 {count} 个 Case；其中 {missing} 个没有可用的归档原始回答，output 使用空数组。",
         noRuns: "还没有评测记录。",
         runQueued: "评测任务已进入队列",
         runResults: "Case × Runtime 结果",
@@ -854,6 +872,13 @@ const elements = {
     evaluationNewDatasetName: document.querySelector("#evaluation-new-dataset-name"),
     evaluationNewDatasetSkill: document.querySelector("#evaluation-new-dataset-skill"),
     exportEvaluationDataset: document.querySelector("#export-evaluation-dataset"),
+    exportDatasetDialog: document.querySelector("#export-dataset-dialog"),
+    exportDatasetForm: document.querySelector("#export-dataset-form"),
+    exportCaseScope: document.querySelector("#export-case-scope"),
+    exportOutputMode: document.querySelector("#export-output-mode"),
+    closeExportDatasetDialog: document.querySelector("#close-export-dataset-dialog"),
+    cancelExportDataset: document.querySelector("#cancel-export-dataset"),
+    confirmExportDataset: document.querySelector("#confirm-export-dataset"),
     evaluationCaseCount: document.querySelector("#evaluation-case-count"),
     evaluationCaseList: document.querySelector("#evaluation-case-list"),
     evaluationDatasetSkillStatus: document.querySelector("#evaluation-dataset-skill-status"),
@@ -3753,12 +3778,37 @@ async function createEvaluationDataset() {
 
 async function exportEvaluationDataset() {
     if (!state.evaluationDatasetId) return
+    elements.confirmExportDataset.disabled = true
     try {
-        const result = await window.rollingSkill.exportDatasetCsv(state.evaluationDatasetId)
-        if (!result?.canceled) showToast(formatMessage("datasetExported", {count: result.caseCount ?? 0}))
+        const result = await window.rollingSkill.exportDatasetCsv({
+            datasetId: state.evaluationDatasetId,
+            caseScope: elements.exportCaseScope.value,
+            outputMode: elements.exportOutputMode.value,
+        })
+        elements.exportDatasetDialog.close()
+        if (!result?.canceled) {
+            showToast(formatMessage(
+                result.missingOriginalCount
+                    ? "datasetExportedMissingOriginal"
+                    : "datasetExported",
+                {
+                    count: result.caseCount ?? 0,
+                    missing: result.missingOriginalCount ?? 0,
+                },
+            ))
+        }
     } catch (error) {
         showError(error)
+    } finally {
+        elements.confirmExportDataset.disabled = false
     }
+}
+
+function openExportDatasetDialog() {
+    if (!state.evaluationDatasetId) return
+    elements.exportCaseScope.value = "all"
+    elements.exportOutputMode.value = "curated"
+    elements.exportDatasetDialog.showModal()
 }
 
 function openDeleteCaseDialog(caseId) {
@@ -4990,7 +5040,15 @@ elements.evaluationCreateDataset.addEventListener("submit", (event) => {
     event.preventDefault()
     void createEvaluationDataset()
 })
-elements.exportEvaluationDataset.addEventListener("click", () => void exportEvaluationDataset())
+elements.exportEvaluationDataset.addEventListener("click", openExportDatasetDialog)
+elements.closeExportDatasetDialog.addEventListener("click", () =>
+    elements.exportDatasetDialog.close(),
+)
+elements.cancelExportDataset.addEventListener("click", () => elements.exportDatasetDialog.close())
+elements.exportDatasetForm.addEventListener("submit", (event) => {
+    event.preventDefault()
+    void exportEvaluationDataset()
+})
 elements.changeEvaluationDatasetSkill.addEventListener("click", () =>
     openDatasetSkillDialog(state.evaluationDatasetId),
 )

@@ -128,7 +128,8 @@ Use the switch below the Rolling Skill logo to move between the native **Chat** 
 **Skill evaluation** workbench. The workbench can:
 
 - create, browse, and delete local datasets;
-- export a complete dataset as CSV, with `input` and `output` columns whose cells are JSON message arrays;
+- export all Cases or only Good Cases as CSV, choosing either curated references or the frozen
+  original Assistant messages for the JSON-array `output` column;
 - bind exactly one enabled runtime Skill to each dataset and repair or change that binding;
 - generate, discuss, revise, publish, and inspect versioned dataset-level scoring Rubrics through a
   read-only Rubric Agent;
@@ -278,7 +279,8 @@ The script installs desktop dependencies, runs unit and discovered-runtime integ
 packages the Apple Silicon Electron client, refuses any bundle containing an embedded Codex
 runtime, creates or reuses the local keychain signing identity, and writes the signed
 `Rolling Skill.app` at the repository root. Private signing material remains in the login keychain
-and is never written to the repository. It targets macOS 13 or newer.
+and is never written to the repository. It requires Node.js 22 or newer and automatically tries a
+local Homebrew Node when the current shell resolves an older version. It targets macOS 13 or newer.
 
 ## Develop
 

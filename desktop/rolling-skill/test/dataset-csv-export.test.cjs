@@ -61,8 +61,60 @@ describe("dataset CSV export", () => {
         assert.equal(buildDatasetCsv([]), "input,output\r\n")
     })
 
+    it("can export only goodcases with their frozen original assistant messages", () => {
+        const csv = buildDatasetCsv([
+            {
+                id: "good-1",
+                caseType: "goodcase",
+                question: "原始问题",
+                answer: "整理后的参考答案",
+                source: {
+                    originalAssistantMessages: [
+                        {role: "assistant", content: "我先查询。"},
+                        {role: "assistant", content: "原始最终回答。"},
+                    ],
+                },
+            },
+            {
+                id: "bad-1",
+                caseType: "badcase",
+                question: "坏例问题",
+                answer: "坏例分析",
+                source: {
+                    originalAssistantMessages: [
+                        {role: "assistant", content: "发生了错误。"},
+                    ],
+                },
+            },
+        ], {
+            caseScope: "goodcase",
+            outputMode: "original",
+        })
+        const rows = parseCsvRows(csv)
+
+        assert.equal(rows.length, 2)
+        assert.deepEqual(JSON.parse(rows[1][0]), [{role: "user", content: "原始问题"}])
+        assert.deepEqual(JSON.parse(rows[1][1]), [
+            {role: "assistant", content: "我先查询。"},
+            {role: "assistant", content: "原始最终回答。"},
+        ])
+        assert.doesNotMatch(csv, /整理后的参考答案|坏例问题/u)
+    })
+
+    it("rejects unsupported export choices instead of silently changing the dataset", () => {
+        assert.throws(() => buildDatasetCsv([], {caseScope: "badcase"}), /case scope/i)
+        assert.throws(() => buildDatasetCsv([], {outputMode: "trace"}), /output mode/i)
+    })
+
     it("creates a filesystem-safe CSV filename", () => {
         assert.equal(datasetExportFilename(" 成本/账单：7月 "), "成本-账单-7月.csv")
         assert.equal(datasetExportFilename(""), "rolling-skill-dataset.csv")
+        assert.equal(
+            datasetExportFilename("成本账单", {
+                caseScope: "goodcase",
+                outputMode: "original",
+            }),
+            "成本账单-goodcases-original.csv",
+        )
     })
 })

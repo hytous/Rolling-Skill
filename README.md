@@ -126,8 +126,10 @@ Badcase 还包含首次偏离点、根因、重复循环摘要、正确恢复方
 重算历史 Run。与新版本不一致的旧 Case 会显示“需要校准”并阻止正式评测，避免把旧 Case
 解释静默套到新标准上。并发编辑时，旧基线草稿不能覆盖已经发布的较新版本。
 
-数据集列表右上角可将当前整个数据集导出为 CSV。文件固定包含 `input` 和 `output` 两列，
-每个单元格均为 JSON 消息数组；`input` 保存原始用户问题，`output` 保存精炼参考答案。
+数据集列表右上角可将当前数据集导出为 CSV。导出前可选择全部 Case 或仅 Good Case，并选择
+`output` 使用 Curator 精炼参考答案或冻结片段中的原始 Assistant 回复。文件固定包含 `input`
+和 `output` 两列，每个单元格均为 JSON 消息数组；原始回复模式会保留片段内的多条 Assistant
+消息，但不包含工具输出。
 
 运行中的评测可从记录列表或详情页选择 **停止评测**。Rolling Skill 会停止这次评测专属的
 被测 Runtime/Judge 客户端，阻止尚未开始的 Case 启动，并保留已经完成的回答与 Trace；
@@ -199,7 +201,8 @@ npm start
 
 构建脚本会运行测试、生成 Apple Silicon Electron 应用、确认包内没有 Agent Runtime，
 创建或复用登录钥匙串中的长期本地签名证书，并将签名结果写到仓库根目录的
-`Rolling Skill.app`。私钥不会写入仓库。
+`Rolling Skill.app`。脚本要求 Node.js 22 或更高版本，并会在当前 Node 过旧时自动尝试本机
+Homebrew Node。私钥不会写入仓库。
 
 ## 安全边界
 
