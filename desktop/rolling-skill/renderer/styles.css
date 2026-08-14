@@ -116,7 +116,8 @@ button:not(:disabled) {
 }
 
 .app-shell:has(.trace-drawer.visible),
-.app-shell:has(.curation-drawer.visible) {
+.app-shell:has(.curation-drawer.visible),
+.app-shell:has(.rubric-drawer.visible) {
     grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--drawer-width);
 }
 
@@ -915,6 +916,82 @@ kbd {
 
 .skill-preflight.missing {
     color: var(--warning);
+}
+
+.dataset-rubric-card {
+    margin-top: 10px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+}
+
+.dataset-rubric-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.dataset-rubric-heading > div,
+.dataset-rubric-status {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.dataset-rubric-heading span,
+.dataset-rubric-status strong {
+    color: var(--text);
+    font-size: 10px;
+    font-weight: 650;
+}
+
+.dataset-rubric-heading small,
+.dataset-rubric-status small,
+.dataset-rubric-status p {
+    margin: 0;
+    color: var(--faint);
+    font-size: 8.5px;
+    line-height: 1.4;
+}
+
+.dataset-rubric-heading button,
+.rubric-create {
+    min-height: 27px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface-raised);
+    color: var(--accent-strong);
+    font-size: 9px;
+}
+
+.dataset-rubric-status {
+    margin-top: 9px;
+    padding: 8px;
+    border-radius: 7px;
+    background: var(--surface-raised);
+}
+
+.dataset-rubric-status.ready {
+    border-left: 2px solid var(--success);
+}
+
+.dataset-rubric-status.draft {
+    border-left: 2px solid var(--accent);
+}
+
+.dataset-rubric-status.missing {
+    border-left: 2px solid var(--warning);
+    color: var(--warning);
+}
+
+.case-calibration {
+    grid-column: 2;
+    color: var(--warning);
+    font-size: 8px;
 }
 
 .dataset-skill-heading {
@@ -2227,7 +2304,8 @@ kbd {
 }
 
 .trace-drawer,
-.curation-drawer {
+.curation-drawer,
+.rubric-drawer {
     grid-column: 3;
     grid-row: 1;
     visibility: hidden;
@@ -2240,7 +2318,8 @@ kbd {
 }
 
 .trace-drawer.visible,
-.curation-drawer.visible {
+.curation-drawer.visible,
+.rubric-drawer.visible {
     visibility: visible;
     opacity: 1;
 }
@@ -2253,6 +2332,84 @@ kbd {
 .curation-drawer {
     display: grid;
     grid-template-rows: 74px auto minmax(0, 1fr);
+}
+
+.rubric-drawer {
+    display: grid;
+    grid-template-rows: 74px auto minmax(0, 1fr);
+}
+
+.rubric-version-list {
+    display: flex;
+    overflow-x: auto;
+    min-height: 72px;
+    padding: 8px;
+    border-bottom: 1px solid var(--border);
+    align-items: stretch;
+    gap: 7px;
+}
+
+.rubric-version-heading {
+    display: flex;
+    min-width: 64px;
+    color: var(--faint);
+    font-size: 8px;
+    font-weight: 680;
+    align-items: center;
+}
+
+.rubric-version-card {
+    display: flex;
+    width: 165px;
+    min-width: 165px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+}
+
+.rubric-version-card.active {
+    border-color: color-mix(in srgb, var(--success) 30%, var(--border));
+}
+
+.rubric-version-card strong {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rubric-version-card small {
+    color: var(--faint);
+    font-size: 7.5px;
+}
+
+.rubric-detail {
+    display: grid;
+    overflow: hidden;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.rubric-create {
+    width: 100%;
+    margin-top: 14px;
+}
+
+.rubric-anchors {
+    display: grid;
+    margin-top: 7px;
+    gap: 3px;
+}
+
+.rubric-anchors span {
+    color: var(--faint);
+    font-size: 7.7px;
+    line-height: 1.35;
 }
 
 .drawer-header {
@@ -3412,6 +3569,7 @@ kbd {
 
 :root[data-theme="codex-light"] .trace-drawer,
 :root[data-theme="codex-light"] .curation-drawer,
+:root[data-theme="codex-light"] .rubric-drawer,
 :root[data-theme="codex-light"] .curation-composer-wrap {
     background: #f8fbff;
 }
@@ -3453,6 +3611,7 @@ kbd {
 :root[data-theme="codex-dark"] .dialog-header,
 :root[data-theme="codex-dark"] .trace-drawer,
 :root[data-theme="codex-dark"] .curation-drawer,
+:root[data-theme="codex-dark"] .rubric-drawer,
 :root[data-theme="codex-dark"] .curation-composer-wrap {
     background: #141e2c;
 }
@@ -3493,12 +3652,14 @@ kbd {
     }
 
     .app-shell:has(.trace-drawer.visible),
-    .app-shell:has(.curation-drawer.visible) {
+    .app-shell:has(.curation-drawer.visible),
+    .app-shell:has(.rubric-drawer.visible) {
         grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
     }
 
     .trace-drawer.visible,
-    .curation-drawer.visible {
+    .curation-drawer.visible,
+    .rubric-drawer.visible {
         position: fixed;
         z-index: 200;
         top: 0;

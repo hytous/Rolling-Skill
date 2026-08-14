@@ -19,6 +19,37 @@ describe("desktop main/preload bridge", () => {
         assert.doesNotMatch(main, /input\.skillReference\?\.name/)
     })
 
+    it("exposes the dataset Rubric lifecycle and freezes it into formal runs", () => {
+        const main = source("src/main.cjs")
+        const preload = source("src/preload.cjs")
+        const store = source("src/local-store.cjs")
+        const runner = source("src/evaluation-runner.cjs")
+
+        for (const channel of [
+            "rubrics:list-versions",
+            "rubrics:active",
+            "rubrics:list-sessions",
+            "rubrics:get-session",
+            "rubrics:create",
+            "rubrics:send",
+            "rubrics:retry",
+            "rubrics:publish",
+            "rubrics:discard",
+            "rubrics:update-model",
+            "rubrics:update-effort",
+        ]) {
+            assert.match(main, new RegExp(channel))
+        }
+        assert.match(preload, /createRubricSession/)
+        assert.match(preload, /publishRubricSession/)
+        assert.match(preload, /onRubricActivity/)
+        assert.match(main, /curation:create[\s\S]*?requirePublishedDatasetRubric\(dataset\)/)
+        assert.match(main, /evaluations:start[\s\S]*?requirePublishedDatasetRubric\(dataset\)/)
+        assert.match(store, /rubricVersionSnapshot/)
+        assert.match(store, /rubricCalibration/)
+        assert.match(runner, /rubricVersion:\s*run\.rubricVersionSnapshot/)
+    })
+
     it("exports a complete dataset as input/output JSON-array CSV", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")

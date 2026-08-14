@@ -31,8 +31,8 @@ async function run() {
     await app.whenReady()
     const rendererErrors = []
     const window = new BrowserWindow({
-        width: 1_180,
-        height: 800,
+        width: Number(process.env.ROLLING_SKILL_RENDERER_SMOKE_WIDTH) || 1_180,
+        height: Number(process.env.ROLLING_SKILL_RENDERER_SMOKE_HEIGHT) || 800,
         show: false,
         webPreferences: {
             preload: join(__dirname, "renderer-smoke-preload.cjs"),
@@ -124,6 +124,33 @@ async function run() {
     if (!datasetBinding.createSkill) {
         throw new Error("Dataset creation did not require an enabled Skill")
     }
+    const rubricStatus = await inspect(
+        window,
+        'document.querySelector("#evaluation-dataset-rubric-status")?.textContent',
+    )
+    if (!rubricStatus.includes("账单结果质量标准") || !rubricStatus.includes("评分标准草稿已就绪")) {
+        throw new Error(`Reviewable dataset rubric draft status missing: ${rubricStatus}`)
+    }
+    await inspect(window, 'document.querySelector("#manage-dataset-rubric").click()')
+    await waitFor(
+        window,
+        'document.querySelector("#rubric-drawer").classList.contains("visible") && document.querySelector("[data-publish-rubric=rubric-session-smoke]")',
+    )
+    const rubricDrawer = await inspect(window, `(() => ({
+        text: document.querySelector("#rubric-drawer")?.textContent,
+        effort: document.querySelector("[data-rubric-effort=rubric-session-smoke]")?.value,
+        modelOptions: document.querySelectorAll("[data-rubric-model=rubric-session-smoke] option").length,
+    }))()`)
+    for (const expected of ["v1", "账单结果质量标准", "R1", "RF1", "把跨业务线归因写得更清楚。", "发布评分标准"]) {
+        if (!rubricDrawer.text.includes(expected)) {
+            throw new Error(`Rubric drawer missing: ${expected}`)
+        }
+    }
+    if (rubricDrawer.effort !== "high" || !rubricDrawer.modelOptions) {
+        throw new Error("Rubric Agent model or reasoning controls are missing")
+    }
+    await inspect(window, 'document.querySelector("#close-rubric-drawer").click()')
+    await waitFor(window, '!document.querySelector("#rubric-drawer").classList.contains("visible")')
     await inspect(window, 'document.querySelector("[data-evaluation-view=runs]").click()')
     await waitFor(window, 'document.querySelector("[data-evaluation-run-id=run-smoke]")')
     const evaluationDuration = await inspect(
@@ -485,11 +512,19 @@ async function run() {
     if (rendererErrors.length) throw new Error(`Renderer console errors: ${rendererErrors.join(" | ")}`)
     const screenshotPath = process.env.ROLLING_SKILL_RENDERER_SMOKE_SCREENSHOT
     if (screenshotPath) {
-        await inspect(window, 'document.querySelector("[data-thread-view=current]").click()')
-        await waitFor(window, 'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation")')
-        await new Promise((resolve) => setTimeout(resolve, 50))
-        await inspect(window, 'document.querySelector("#conversation-scroll").scrollTop = 0')
-        await new Promise((resolve) => setTimeout(resolve, 25))
+        if (process.env.ROLLING_SKILL_RENDERER_SMOKE_SCREENSHOT_SURFACE === "rubric") {
+            await inspect(window, 'document.querySelector("[data-surface=evaluation]").click()')
+            await inspect(window, 'document.querySelector("[data-evaluation-view=cases]").click()')
+            await waitFor(window, 'document.querySelector("[data-evaluation-case-id=case-smoke]")')
+            await inspect(window, 'document.querySelector("#manage-dataset-rubric").click()')
+            await waitFor(window, 'document.querySelector("#rubric-drawer").classList.contains("visible")')
+            await inspect(window, 'document.querySelector("#rubric-drawer .curation-reference-card")?.setAttribute("open", "")')
+        } else {
+            await inspect(window, 'document.querySelector("[data-thread-view=current]").click()')
+            await waitFor(window, 'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation")')
+            await inspect(window, 'document.querySelector("#conversation-scroll").scrollTop = 0')
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200))
         writeFileSync(screenshotPath, (await window.capturePage()).toPNG())
     }
     process.stdout.write(
@@ -504,8 +539,9 @@ async function run() {
             emptyArchiveLoadCancelled: true,
             staleRuntimeModelsIgnored: true,
             inlineCurationFailure: true,
-        caseCardUsesInitialQuestion: true,
-        evaluationDurationMinuteSecond: true,
+            caseCardUsesInitialQuestion: true,
+            datasetRubric: true,
+            evaluationDurationMinuteSecond: true,
             curatorLiveActivity: true,
             curatorReferenceCard: true,
             curatorDraftRemainsSaveable: true,

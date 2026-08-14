@@ -30,6 +30,7 @@ const translations = {
         models: "Models",
         taskModel: "New task model",
         curatorModel: "Default Curator model",
+        rubricModel: "Default Rubric Agent model",
         judgeModel: "Default Judge model",
         automaticCapture: "Automatic capture",
         automaticCaptureHelp: "Create a reviewable draft after each completed response. Nothing is saved until Done.",
@@ -43,6 +44,27 @@ const translations = {
         datasetSkillUnbound: "This dataset has no Skill binding. Bind an enabled runtime Skill before capture or evaluation.",
         datasetSkillStale: "{name} is bound, but its exact name and path are not enabled in the active runtime.",
         datasetSkillReady: "{name} · installed and enabled in {runtime}",
+        datasetRubric: "Dataset rubric",
+        datasetRubricHelp: "Shared Skill-specific criteria inherited by every Case.",
+        manageRubric: "Manage",
+        generateRubric: "Generate with Agent",
+        editRubric: "Edit with Agent",
+        rubricNotPublished: "No rubric has been published for this dataset.",
+        rubricPublished: "Published v{version} · {count} criteria",
+        rubricDraftRunning: "Rubric Agent is preparing a draft…",
+        rubricAgentTask: "RUBRIC AGENT",
+        rubricConversation: "Rubric Agent conversation",
+        rubricPromptPlaceholder: "Ask why or describe a rubric revision",
+        rubricReady: "Rubric draft ready",
+        rubricCriteria: "Criteria",
+        rubricFailures: "Automatic failures",
+        criticalFailure: "Critical failure",
+        rubricVersions: "Published versions",
+        publishRubric: "Publish rubric",
+        rubricPublishedToast: "Dataset rubric published",
+        rubricDiscarded: "Rubric draft discarded",
+        rubricRequired: "Publish a dataset rubric before capturing Cases or running an evaluation.",
+        caseNeedsCalibration: "Needs calibration for the current rubric",
         datasetSkillRequired: "Select an enabled Skill for this dataset.",
         autoCaptureDatasetRequired: "Automatic capture requires a Skill-bound dataset that is available in the active runtime.",
         changeDatasetSkillCopy: "Change the Skill bound to “{name}”. Future capture and evaluation use the new binding.",
@@ -369,6 +391,7 @@ const translations = {
         models: "模型",
         taskModel: "新任务默认模型",
         curatorModel: "Curator 默认模型",
+        rubricModel: "Rubric Agent 默认模型",
         judgeModel: "Judge 默认模型",
         automaticCapture: "自动沉淀",
         automaticCaptureHelp: "每次回答完成后自动创建待审核草稿；只有点击 Done 才会保存 Case。",
@@ -382,6 +405,27 @@ const translations = {
         datasetSkillUnbound: "这个数据集尚未绑定 Skill；沉淀或评测前请绑定当前运行时中已启用的 Skill。",
         datasetSkillStale: "已绑定 {name}，但当前运行时没有启用名称与路径完全一致的 Skill。",
         datasetSkillReady: "{name} · 已安装并在 {runtime} 中启用",
+        datasetRubric: "数据集评分标准",
+        datasetRubricHelp: "由 Skill 派生，并被该数据集的所有 Case 继承。",
+        manageRubric: "管理标准",
+        generateRubric: "让 Agent 生成",
+        editRubric: "让 Agent 编辑",
+        rubricNotPublished: "该数据集还没有已发布的评分标准。",
+        rubricPublished: "已发布 v{version} · {count} 个评分项",
+        rubricDraftRunning: "Rubric Agent 正在整理评分标准…",
+        rubricAgentTask: "RUBRIC AGENT",
+        rubricConversation: "Rubric Agent 会话",
+        rubricPromptPlaceholder: "询问原因，或用自然语言要求修改标准",
+        rubricReady: "评分标准草稿已就绪",
+        rubricCriteria: "评分项",
+        rubricFailures: "自动失败条件",
+        criticalFailure: "关键失败项",
+        rubricVersions: "已发布版本",
+        publishRubric: "发布评分标准",
+        rubricPublishedToast: "数据集评分标准已发布",
+        rubricDiscarded: "评分标准草稿已丢弃",
+        rubricRequired: "请先发布数据集评分标准，再沉淀 Case 或启动评测。",
+        caseNeedsCalibration: "需要按当前评分标准校准",
         datasetSkillRequired: "请为这个数据集选择当前运行时中已启用的 Skill。",
         autoCaptureDatasetRequired: "自动沉淀必须选择一个已绑定 Skill 且该 Skill 在当前运行时可用的数据集。",
         changeDatasetSkillCopy: "更换数据集“{name}”绑定的 Skill；之后的新沉淀和评测会使用新绑定。",
@@ -721,6 +765,7 @@ const state = {
         localAccess: "full",
         taskProfile: {runtimePolicy: "active", modelId: null, effort: null},
         curatorProfile: {runtimePolicy: "active", modelId: null, effort: null},
+        rubricProfile: {runtimePolicy: "active", modelId: null, effort: null},
         judgeProfile: {runtimePolicy: "active", modelId: null, effort: null},
         autoCaptureProfile: {
             runtimePolicy: "active",
@@ -748,6 +793,13 @@ const state = {
     activeEvaluationRun: null,
     evaluationRuntimeConfigurations: {},
     evaluationJudgeConfiguration: {runtimeId: null, modelId: null, effort: null},
+    evaluationRubricVersion: null,
+    evaluationRubricVersions: [],
+    rubricSessions: [],
+    activeRubricSessionId: null,
+    rubricActivities: new Map(),
+    rubricInputDrafts: new Map(),
+    rubricOpen: false,
     archivedCurations: [],
     archivedCurationsOpen: false,
     deleteCaseId: null,
@@ -805,6 +857,8 @@ const elements = {
     evaluationCaseCount: document.querySelector("#evaluation-case-count"),
     evaluationCaseList: document.querySelector("#evaluation-case-list"),
     evaluationDatasetSkillStatus: document.querySelector("#evaluation-dataset-skill-status"),
+    evaluationDatasetRubricStatus: document.querySelector("#evaluation-dataset-rubric-status"),
+    manageDatasetRubric: document.querySelector("#manage-dataset-rubric"),
     changeEvaluationDatasetSkill: document.querySelector("#change-evaluation-dataset-skill"),
     evaluationRuntimeList: document.querySelector("#evaluation-runtime-list"),
     evaluationJudgeRuntime: document.querySelector("#evaluation-judge-runtime"),
@@ -841,6 +895,10 @@ const elements = {
     closeCurations: document.querySelector("#close-curations"),
     curationList: document.querySelector("#curation-list"),
     curationDetail: document.querySelector("#curation-detail"),
+    rubricDrawer: document.querySelector("#rubric-drawer"),
+    closeRubricDrawer: document.querySelector("#close-rubric-drawer"),
+    rubricVersionList: document.querySelector("#rubric-version-list"),
+    rubricDetail: document.querySelector("#rubric-detail"),
     settingsDialog: document.querySelector("#settings-dialog"),
     settingsForm: document.querySelector("#settings-form"),
     closeSettingsDialog: document.querySelector("#close-settings-dialog"),
@@ -854,6 +912,8 @@ const elements = {
     settingsTaskEffort: document.querySelector("#settings-task-effort"),
     settingsCuratorModel: document.querySelector("#settings-curator-model"),
     settingsCuratorEffort: document.querySelector("#settings-curator-effort"),
+    settingsRubricModel: document.querySelector("#settings-rubric-model"),
+    settingsRubricEffort: document.querySelector("#settings-rubric-effort"),
     settingsJudgeModel: document.querySelector("#settings-judge-model"),
     settingsJudgeEffort: document.querySelector("#settings-judge-effort"),
     settingsAutoCapture: document.querySelector("#settings-auto-capture"),
@@ -1183,6 +1243,10 @@ function applySettings(settings) {
         localAccess: settings.localAccess ?? "full",
         taskProfile: {...settings.taskProfile, effort: settings.taskProfile?.effort ?? null},
         curatorProfile: {...settings.curatorProfile, effort: settings.curatorProfile?.effort ?? null},
+        rubricProfile: {
+            ...(settings.rubricProfile ?? {runtimePolicy: "active", modelId: null}),
+            effort: settings.rubricProfile?.effort ?? null,
+        },
         judgeProfile: {
             ...(settings.judgeProfile ?? {runtimePolicy: "active", modelId: null}),
             effort: settings.judgeProfile?.effort ?? null,
@@ -1306,7 +1370,9 @@ function renderCaseDatasetSkillStatus() {
     const skill = renderDatasetSkillStatus(elements.caseDatasetSkillStatus, dataset)
     elements.changeCaseDatasetSkill.textContent = t(dataset?.skillReference ? "changeSkill" : "bindDatasetSkill")
     elements.changeCaseDatasetSkill.disabled = !dataset
-    if (!state.caseCreationInProgress) elements.confirmSaveCase.disabled = !skill
+    if (!state.caseCreationInProgress) {
+        elements.confirmSaveCase.disabled = !skill || !dataset?.activeRubricVersionId
+    }
 }
 
 function renderSettingsForm() {
@@ -1333,6 +1399,16 @@ function renderSettingsForm() {
         elements.settingsCuratorEffort,
         settings.curatorProfile?.effort,
         settings.curatorProfile?.modelId,
+    )
+    populateModelSelect(
+        elements.settingsRubricModel,
+        settings.rubricProfile?.modelId,
+        t("runtimeDefault"),
+    )
+    populateEffortSelect(
+        elements.settingsRubricEffort,
+        settings.rubricProfile?.effort,
+        settings.rubricProfile?.modelId,
     )
     populateModelSelect(
         elements.settingsJudgeModel,
@@ -1373,6 +1449,8 @@ function refreshOpenSettingsOptions() {
     const taskEffort = elements.settingsTaskEffort.value
     const curatorModel = elements.settingsCuratorModel.value
     const curatorEffort = elements.settingsCuratorEffort.value
+    const rubricModel = elements.settingsRubricModel.value
+    const rubricEffort = elements.settingsRubricEffort.value
     const judgeModel = elements.settingsJudgeModel.value
     const judgeEffort = elements.settingsJudgeEffort.value
     const captureModel = elements.settingsAutoCaptureModel.value
@@ -1381,6 +1459,8 @@ function refreshOpenSettingsOptions() {
     populateEffortSelect(elements.settingsTaskEffort, taskEffort, taskModel)
     populateModelSelect(elements.settingsCuratorModel, curatorModel, t("sourceOrRuntimeModel"))
     populateEffortSelect(elements.settingsCuratorEffort, curatorEffort, curatorModel)
+    populateModelSelect(elements.settingsRubricModel, rubricModel)
+    populateEffortSelect(elements.settingsRubricEffort, rubricEffort, rubricModel)
     populateModelSelect(elements.settingsJudgeModel, judgeModel)
     populateEffortSelect(elements.settingsJudgeEffort, judgeEffort, judgeModel)
     populateModelSelect(elements.settingsAutoCaptureModel, captureModel, t("sourceOrRuntimeModel"))
@@ -1402,7 +1482,13 @@ async function saveSettings() {
     elements.saveSettings.disabled = true
     try {
         const captureDataset = selectedDataset(elements.settingsAutoCaptureDataset.value)
-        if (elements.settingsAutoCapture.checked && !runtimeSkillForReference(captureDataset?.skillReference)) {
+        if (
+            elements.settingsAutoCapture.checked &&
+            (
+                !runtimeSkillForReference(captureDataset?.skillReference) ||
+                !captureDataset?.activeRubricVersionId
+            )
+        ) {
             throw new Error(t("autoCaptureDatasetRequired"))
         }
         const settings = await window.rollingSkill.updateSettings({
@@ -1413,6 +1499,8 @@ async function saveSettings() {
             taskEffort: elements.settingsTaskEffort.value,
             curatorModelId: elements.settingsCuratorModel.value,
             curatorEffort: elements.settingsCuratorEffort.value,
+            rubricModelId: elements.settingsRubricModel.value,
+            rubricEffort: elements.settingsRubricEffort.value,
             judgeModelId: elements.settingsJudgeModel.value,
             judgeEffort: elements.settingsJudgeEffort.value,
             autoCapture: elements.settingsAutoCapture.checked,
@@ -2096,6 +2184,36 @@ function renderDraft(draft, caseType) {
     }
     wrapper.append(draftSection(t("requiredOutputFormat"), draft.referenceAnswer.requiredOutputFormat))
 
+    if (draft.schemaVersion === "rolling-skill-curated-case/v2") {
+        const coverage = node("section", "draft-section hard-requirements")
+        coverage.append(node("h4", "", t("rubricCriteria")))
+        for (const entry of draft.rubricCoverage ?? []) {
+            const card = node("article", "requirement-card")
+            card.append(
+                node("strong", "", `${entry.criterionId} · ${entry.applicability}`),
+                node("span", "", entry.expectation),
+                node("small", "", `${t("basis")}: ${entry.evidenceBasis}`),
+            )
+            coverage.append(card)
+        }
+        wrapper.append(
+            coverage,
+            draftSection(
+                t("softCriteria"),
+                (draft.caseSpecificCriteria ?? []).map(
+                    (entry) => `${entry.id} · ${entry.criterion} (${formatMessage("weight", {value: entry.weight})})`,
+                ),
+            ),
+            draftSection(
+                t("automaticFailures"),
+                (draft.caseAutomaticFailures ?? []).map(
+                    (entry) => `${entry.id} · ${entry.condition}`,
+                ),
+            ),
+        )
+        return wrapper
+    }
+
     const hard = node("section", "draft-section hard-requirements")
     hard.append(node("h4", "", t("hardRequirements")))
     for (const requirement of draft.grading.hardRequirements) {
@@ -2125,7 +2243,7 @@ function curatorConversationText(message) {
     if (message.role !== "assistant") return message.text
     const text = String(message.text ?? "")
     const marker = text.search(
-        /```(?:json)?\s*\{|\{\s*"schemaVersion"\s*:\s*"rolling-skill-curated-case\/v1"/iu,
+        /```(?:json)?\s*\{|\{\s*"schemaVersion"\s*:\s*"rolling-skill-curated-case\/v[12]"/iu,
     )
     if (marker < 0) return message.text
     return text.slice(0, marker).trim() || t("referenceUpdated")
@@ -2370,6 +2488,199 @@ function renderCurations() {
     }
 }
 
+function rubricConversationText(message) {
+    if (message.role !== "assistant") return message.text
+    const text = String(message.text ?? "")
+    const marker = text.search(/```(?:json)?\s*\{|\{\s*"schemaVersion"\s*:\s*"rolling-skill-dataset-rubric\/v1"/iu)
+    return marker < 0 ? text : text.slice(0, marker).trim() || t("rubricReady")
+}
+
+function renderRubricDraft(rubric) {
+    const wrapper = node("div", "curation-draft rubric-draft")
+    wrapper.append(
+        node("h3", "", rubric.title),
+        node("p", "draft-summary", rubric.summary),
+    )
+    const criteria = node("section", "draft-section hard-requirements")
+    criteria.append(node("h4", "", t("rubricCriteria")))
+    for (const entry of rubric.criteria ?? []) {
+        const card = node("article", "requirement-card")
+        card.append(
+            node("strong", "", `${entry.id} · ${entry.title}`),
+            node("span", "", entry.criterion),
+            node("small", "", `${formatMessage("weight", {value: entry.weight})} · ${entry.criticalFailure ? t("criticalFailure") : t("softCriteria")}`),
+        )
+        const anchors = node("div", "rubric-anchors")
+        for (const [rating, meaning] of Object.entries(entry.scoringAnchors ?? {})) {
+            anchors.append(node("span", "", `${rating} · ${meaning}`))
+        }
+        card.append(anchors)
+        criteria.append(card)
+    }
+    wrapper.append(criteria)
+    const failures = (rubric.automaticFailures ?? []).map(
+        (entry) => `${entry.id} · ${entry.condition} — ${entry.rationale}`,
+    )
+    wrapper.append(draftSection(t("rubricFailures"), failures))
+    return wrapper
+}
+
+function upsertRubricSession(session) {
+    const index = state.rubricSessions.findIndex((entry) => entry.id === session.id)
+    if (session.status === "cancelled" || session.status === "archived") {
+        state.rubricInputDrafts.delete(session.id)
+        if (index >= 0) state.rubricSessions.splice(index, 1)
+        if (state.activeRubricSessionId === session.id) {
+            state.activeRubricSessionId = state.rubricSessions[0]?.id ?? null
+        }
+        return
+    }
+    if (index >= 0) state.rubricSessions[index] = session
+    else state.rubricSessions.unshift(session)
+    state.activeRubricSessionId ??= session.id
+}
+
+function renderRubricActivity(container, session) {
+    if (session.status !== "queued" && session.status !== "running") return
+    const activity = state.rubricActivities.get(session.id)
+    const card = node("div", "curation-live-activity")
+    const heading = node("div", "curation-live-heading")
+    heading.append(node("span", "curation-live-dot"), node("strong", "", t("rubricDraftRunning")))
+    card.append(heading)
+    if (activity?.summary) card.append(node("div", "curation-live-detail", activity.summary))
+    container.append(card)
+}
+
+function renderRubricDrawer() {
+    const existingInput = elements.rubricDetail.querySelector("[data-rubric-input]")
+    if (existingInput?.dataset.rubricInput) {
+        if (existingInput.value) state.rubricInputDrafts.set(existingInput.dataset.rubricInput, existingInput.value)
+        else state.rubricInputDrafts.delete(existingInput.dataset.rubricInput)
+    }
+    elements.rubricDrawer.classList.toggle("visible", state.rubricOpen)
+    elements.rubricVersionList.replaceChildren()
+    const versionHeading = node("span", "rubric-version-heading", t("rubricVersions"))
+    elements.rubricVersionList.append(versionHeading)
+    for (const version of state.evaluationRubricVersions) {
+        const card = node("article", "rubric-version-card")
+        if (version.id === state.evaluationRubricVersion?.id) card.classList.add("active")
+        card.append(
+            node("strong", "", `v${version.version} · ${version.rubric.title}`),
+            node("small", "", new Date(version.publishedAt).toLocaleString(state.settings.language)),
+        )
+        elements.rubricVersionList.append(card)
+    }
+
+    elements.rubricDetail.replaceChildren()
+    const scroll = node("div", "curation-detail-scroll")
+    elements.rubricDetail.append(scroll)
+    const session = activeRubricSession()
+    if (!session) {
+        if (state.evaluationRubricVersion) {
+            scroll.append(renderRubricDraft(state.evaluationRubricVersion.rubric))
+        } else {
+            scroll.append(node("div", "sidebar-placeholder", t("rubricNotPublished")))
+        }
+        const create = node(
+            "button",
+            "rubric-create primary",
+            t(state.evaluationRubricVersion ? "editRubric" : "generateRubric"),
+        )
+        create.type = "button"
+        create.dataset.createRubric = state.evaluationDatasetId ?? ""
+        create.disabled = !evaluationDataset()?.skillReference
+        scroll.append(create)
+        return
+    }
+
+    const overview = node("div", "curation-overview")
+    overview.append(
+        node("span", "case-kind", `v${state.evaluationRubricVersion?.version ?? 0} → draft`),
+        node("span", `curation-status ${session.status}`, curationStatusLabel(session.status)),
+    )
+    const agentModel = session.rubricAgent.effectiveModelId ?? session.rubricAgent.modelId ?? t("runtimeDefault")
+    const agentEffort = session.rubricAgent.effectiveEffort ?? session.rubricAgent.effort ?? t("runtimeDefaultEffort")
+    scroll.append(
+        overview,
+        node("div", "curation-provenance", `${session.skillReference.name} · ${agentModel} · ${agentEffort}`),
+    )
+    if (session.draft) {
+        const details = document.createElement("details")
+        details.className = "curation-reference-card"
+        const summary = document.createElement("summary")
+        summary.append(
+            node("span", "curation-reference-check", "✓"),
+            node("strong", "", t("rubricReady")),
+            node("small", "", session.draft.title),
+        )
+        details.append(summary, renderRubricDraft(session.draft))
+        scroll.append(details)
+    }
+    const conversation = node("section", "curator-conversation")
+    conversation.append(node("h3", "", t("rubricConversation")))
+    for (const message of session.conversation ?? []) {
+        const bubble = node("article", `curator-message ${message.role}`)
+        bubble.append(
+            node("span", "curator-role", message.role === "assistant" ? "Rubric Agent" : t("you")),
+        )
+        const body = node("div")
+        appendSafeMessageMarkdown(body, rubricConversationText(message))
+        bubble.append(body)
+        conversation.append(bubble)
+    }
+    renderRubricActivity(conversation, session)
+    if (session.error) {
+        const error = node("div", "curation-error")
+        error.append(node("span", "", session.error))
+        if (session.status === "failed") {
+            const retry = node("button", "", t("retry"))
+            retry.type = "button"
+            retry.dataset.retryRubric = session.id
+            error.append(retry)
+        }
+        conversation.append(error)
+    }
+    scroll.append(conversation)
+
+    const composerWrap = node("div", "curation-composer-wrap")
+    const form = node("form", "curation-followup")
+    form.dataset.rubricForm = session.id
+    const input = node("textarea")
+    input.rows = 3
+    input.maxLength = 120000
+    input.placeholder = t("rubricPromptPlaceholder")
+    input.disabled = session.status === "queued" || session.status === "running"
+    input.dataset.rubricInput = session.id
+    input.value = state.rubricInputDrafts.get(session.id) ?? ""
+    const footer = node("div", "curation-followup-footer")
+    const model = node("select", "model-picker")
+    model.dataset.rubricModel = session.id
+    model.disabled = input.disabled
+    populateModelSelect(model, session.rubricAgent.modelId)
+    const effort = node("select", "effort-picker")
+    effort.dataset.rubricEffort = session.id
+    effort.disabled = input.disabled
+    populateEffortSelect(effort, session.rubricAgent.effort, session.rubricAgent.modelId)
+    const send = node("button", "", t("send"))
+    send.type = "submit"
+    send.disabled = input.disabled
+    footer.append(model, effort, send)
+    form.append(input, footer)
+    const actions = node("div", "curation-actions")
+    const discard = node("button", "curation-discard", t("discard"))
+    discard.type = "button"
+    discard.dataset.discardRubric = session.id
+    actions.append(discard)
+    if (session.status === "needs_review" && session.draft) {
+        const publish = node("button", "curation-done primary", t("publishRubric"))
+        publish.type = "button"
+        publish.dataset.publishRubric = session.id
+        actions.append(publish)
+    }
+    composerWrap.append(form, actions)
+    elements.rubricDetail.append(composerWrap)
+}
+
 function renderAll(options) {
     renderWorkspace()
     renderRuntime()
@@ -2379,6 +2690,7 @@ function renderAll(options) {
     renderComposer()
     renderRuntimeOptions()
     renderEvaluationWorkbench()
+    renderRubricDrawer()
 }
 
 function queueRender(options = {}) {
@@ -2432,6 +2744,49 @@ function reportLinkOpenFailure(error, messageKey) {
 
 function evaluationDataset() {
     return selectedDataset(state.evaluationDatasetId)
+}
+
+function activeRubricSession() {
+    return state.rubricSessions.find((entry) => entry.id === state.activeRubricSessionId) ??
+        state.rubricSessions[0] ?? null
+}
+
+function renderDatasetRubricStatus(dataset) {
+    const version = state.evaluationRubricVersion
+    const session = activeRubricSession()
+    elements.evaluationDatasetRubricStatus.replaceChildren()
+    elements.evaluationDatasetRubricStatus.className = "dataset-rubric-status"
+    elements.manageDatasetRubric.disabled = !dataset?.skillReference
+    if (session) {
+        const working = session.status === "queued" || session.status === "running"
+        const ready = session.status === "needs_review" && Boolean(session.draft)
+        elements.evaluationDatasetRubricStatus.classList.add("draft")
+        elements.evaluationDatasetRubricStatus.append(
+            node("strong", "", t(working ? "rubricDraftRunning" : ready ? "rubricReady" : "failed")),
+            node("small", "", session.draft?.title ?? session.error ?? ""),
+        )
+        elements.manageDatasetRubric.textContent = t("manageRubric")
+        return Boolean(version)
+    }
+    if (!version) {
+        elements.evaluationDatasetRubricStatus.classList.add("missing")
+        elements.evaluationDatasetRubricStatus.append(
+            node("span", "", t("rubricNotPublished")),
+        )
+        elements.manageDatasetRubric.textContent = t("generateRubric")
+        return false
+    }
+    elements.evaluationDatasetRubricStatus.classList.add("ready")
+    elements.evaluationDatasetRubricStatus.append(
+        node("strong", "", version.rubric.title),
+        node("small", "", formatMessage("rubricPublished", {
+            version: version.version,
+            count: version.rubric.criteria.length,
+        })),
+        node("p", "", version.rubric.summary),
+    )
+    elements.manageDatasetRubric.textContent = t("editRubric")
+    return true
 }
 
 function renderEvaluationWorkbench() {
@@ -2496,6 +2851,9 @@ function renderEvaluationWorkbench() {
             node("strong", "", caseTitle),
             node("small", "", caseEntry.curated?.referenceAnswer?.summary || caseEntry.answer || ""),
         )
+        if (caseEntry.rubricCalibration?.status === "needed") {
+            button.append(node("span", "case-calibration", t("caseNeedsCalibration")))
+        }
         const remove = node("button", "hover-delete-button evaluation-case-delete", "×")
         remove.type = "button"
         remove.title = t("deleteCase")
@@ -2512,6 +2870,7 @@ function renderEvaluationWorkbench() {
     )
     const dataset = evaluationDataset()
     const skill = renderDatasetSkillStatus(elements.evaluationDatasetSkillStatus, dataset)
+    const rubricReady = renderDatasetRubricStatus(dataset)
     elements.changeEvaluationDatasetSkill.textContent = t(dataset?.skillReference ? "changeSkill" : "bindDatasetSkill")
     elements.changeEvaluationDatasetSkill.disabled = !dataset
     elements.exportEvaluationDataset.disabled = !dataset
@@ -2526,16 +2885,26 @@ function renderEvaluationWorkbench() {
         ? state.evaluationRuntimeConfigurations[judgeRuntime.runtimeId]
         : null
     const judgeReady = Boolean(judgeRuntime) && !judgeCatalog?.loading && !judgeCatalog?.error
+    const selectedCaseNeedsCalibration = state.evaluationCases.find(
+        (entry) => entry.id === state.evaluationCaseId,
+    )?.rubricCalibration?.status === "needed"
+    const datasetNeedsCalibration = state.evaluationCases.some(
+        (entry) => entry.rubricCalibration?.status === "needed",
+    )
     elements.startEvaluation.disabled =
         state.evaluationLoading ||
         !state.evaluationCaseId ||
         !skill ||
+        !rubricReady ||
+        selectedCaseNeedsCalibration ||
         !selectedRuntimeCount ||
         !judgeReady
     elements.startDatasetEvaluation.disabled =
         state.evaluationLoading ||
         !state.evaluationCases.length ||
         !skill ||
+        !rubricReady ||
+        datasetNeedsCalibration ||
         !selectedRuntimeCount ||
         !judgeReady
 }
@@ -3293,6 +3662,24 @@ async function loadEvaluationWorkbench(forceReload = false) {
         state.evaluationCases = state.evaluationDatasetId
             ? await window.rollingSkill.listCases(state.evaluationDatasetId)
             : []
+        if (state.evaluationDatasetId) {
+            const [activeRubric, rubricVersions, rubricSessions] = await Promise.all([
+                window.rollingSkill.getActiveDatasetRubric(state.evaluationDatasetId),
+                window.rollingSkill.listDatasetRubricVersions(state.evaluationDatasetId),
+                window.rollingSkill.listRubricSessions(state.evaluationDatasetId),
+            ])
+            state.evaluationRubricVersion = activeRubric
+            state.evaluationRubricVersions = rubricVersions
+            state.rubricSessions = rubricSessions
+            if (!rubricSessions.some((entry) => entry.id === state.activeRubricSessionId)) {
+                state.activeRubricSessionId = rubricSessions[0]?.id ?? null
+            }
+        } else {
+            state.evaluationRubricVersion = null
+            state.evaluationRubricVersions = []
+            state.rubricSessions = []
+            state.activeRubricSessionId = null
+        }
         if (!state.evaluationCases.some((entry) => entry.id === state.evaluationCaseId)) {
             state.evaluationCaseId = state.evaluationCases[0]?.id ?? null
         }
@@ -3316,6 +3703,7 @@ async function loadEvaluationWorkbench(forceReload = false) {
     } finally {
         state.evaluationLoading = false
         renderEvaluationWorkbench()
+        renderRubricDrawer()
     }
 }
 
@@ -3546,6 +3934,7 @@ async function startEvaluation(selectionMode) {
         if (!runtimeSkillForReference(evaluationDataset()?.skillReference)) {
             throw new Error(t("datasetSkillRequired"))
         }
+        if (!state.evaluationRubricVersion) throw new Error(t("rubricRequired"))
         const runtimeConfigurations = Object.values(state.evaluationRuntimeConfigurations)
             .filter((configuration) => configuration.selected)
             .map((configuration) => ({
@@ -3578,6 +3967,81 @@ async function startEvaluation(selectionMode) {
     }
 }
 
+async function createRubricSession() {
+    if (!state.evaluationDatasetId) return
+    try {
+        const session = await window.rollingSkill.createRubricSession(state.evaluationDatasetId)
+        upsertRubricSession(session)
+        state.activeRubricSessionId = session.id
+        setRubricOpen(true)
+        renderEvaluationWorkbench()
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function sendRubricMessage(sessionId, text) {
+    if (!String(text).trim()) return
+    try {
+        const session = await window.rollingSkill.sendRubricMessage(sessionId, text)
+        state.rubricInputDrafts.delete(sessionId)
+        upsertRubricSession(session)
+        renderRubricDrawer()
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function retryRubricSession(sessionId) {
+    try {
+        upsertRubricSession(await window.rollingSkill.retryRubricSession(sessionId))
+        renderRubricDrawer()
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function publishRubricSession(sessionId) {
+    try {
+        await window.rollingSkill.publishRubricSession(sessionId)
+        upsertRubricSession(await window.rollingSkill.getRubricSession(sessionId))
+        await loadEvaluationWorkbench(false)
+        renderRubricDrawer()
+        showToast(t("rubricPublishedToast"))
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function discardRubricSession(sessionId) {
+    try {
+        upsertRubricSession(await window.rollingSkill.discardRubricSession(sessionId))
+        renderRubricDrawer()
+        renderEvaluationWorkbench()
+        showToast(t("rubricDiscarded"))
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function updateRubricModel(sessionId, modelId) {
+    try {
+        upsertRubricSession(await window.rollingSkill.updateRubricModel(sessionId, modelId || null))
+        renderRubricDrawer()
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function updateRubricEffort(sessionId, effort) {
+    try {
+        upsertRubricSession(await window.rollingSkill.updateRubricEffort(sessionId, effort || null))
+        renderRubricDrawer()
+    } catch (error) {
+        showError(error)
+    }
+}
+
 function setSurface(surface) {
     if (surface !== "chat" && surface !== "evaluation") return
     state.surface = surface
@@ -3585,6 +4049,8 @@ function setSurface(surface) {
         setTraceOpen(false)
         setCurationOpen(false)
         void loadEvaluationWorkbench(true)
+    } else {
+        setRubricOpen(false)
     }
     renderAll()
 }
@@ -4032,7 +4498,8 @@ async function bindDatasetSkill() {
         elements.datasetSkillDialog.close()
         updateDatasetOptions(elements.caseDataset.value)
         renderCaseDatasetSkillStatus()
-        renderEvaluationWorkbench()
+        if (state.evaluationDatasetId === datasetId) await loadEvaluationWorkbench(false)
+        else renderEvaluationWorkbench()
     } catch (error) {
         showError(error)
     } finally {
@@ -4049,6 +4516,10 @@ async function createCuration() {
     const dataset = selectedDataset(elements.caseDataset.value)
     if (!runtimeSkillForReference(dataset?.skillReference)) {
         showCaseError(new Error(t("datasetSkillRequired")))
+        return
+    }
+    if (!dataset?.activeRubricVersionId) {
+        showCaseError(new Error(t("rubricRequired")))
         return
     }
     setCaseCreationInProgress(true)
@@ -4113,6 +4584,8 @@ function setTraceOpen(open) {
     if (open) {
         state.curationOpen = false
         elements.curationDrawer.classList.remove("visible")
+        state.rubricOpen = false
+        elements.rubricDrawer.classList.remove("visible")
     }
     elements.traceDrawer.classList.toggle("visible", open)
     if (open) void loadTrace()
@@ -4123,11 +4596,24 @@ function setCurationOpen(open) {
     if (open) {
         state.traceOpen = false
         elements.traceDrawer.classList.remove("visible")
+        state.rubricOpen = false
+        elements.rubricDrawer.classList.remove("visible")
         if (!state.activeCurationId && state.curationSessions.length) {
             state.activeCurationId = state.curationSessions[0].id
         }
     }
     renderCurations()
+}
+
+function setRubricOpen(open) {
+    state.rubricOpen = Boolean(open)
+    if (open) {
+        state.traceOpen = false
+        state.curationOpen = false
+        elements.traceDrawer.classList.remove("visible")
+        elements.curationDrawer.classList.remove("visible")
+    }
+    renderRubricDrawer()
 }
 
 function upsertCuration(session) {
@@ -4405,6 +4891,7 @@ elements.settingsForm.addEventListener("submit", (event) => {
 for (const [modelSelect, effortSelect] of [
     [elements.settingsTaskModel, elements.settingsTaskEffort],
     [elements.settingsCuratorModel, elements.settingsCuratorEffort],
+    [elements.settingsRubricModel, elements.settingsRubricEffort],
     [elements.settingsJudgeModel, elements.settingsJudgeEffort],
     [elements.settingsAutoCaptureModel, elements.settingsAutoCaptureEffort],
 ]) {
@@ -4507,12 +4994,14 @@ elements.exportEvaluationDataset.addEventListener("click", () => void exportEval
 elements.changeEvaluationDatasetSkill.addEventListener("click", () =>
     openDatasetSkillDialog(state.evaluationDatasetId),
 )
+elements.manageDatasetRubric.addEventListener("click", () => setRubricOpen(true))
 elements.startEvaluation.addEventListener("click", () => void startEvaluation("selected"))
 elements.startDatasetEvaluation.addEventListener("click", () => void startEvaluation("dataset"))
 elements.topbarCurations.addEventListener("click", () => setCurationOpen(true))
 elements.topbarTrace.addEventListener("click", () => setTraceOpen(true))
 elements.closeTrace.addEventListener("click", () => setTraceOpen(false))
 elements.closeCurations.addEventListener("click", () => setCurationOpen(false))
+elements.closeRubricDrawer.addEventListener("click", () => setRubricOpen(false))
 elements.refreshTrace.addEventListener("click", loadTrace)
 elements.openTraceFolder.addEventListener("click", () => window.rollingSkill.openTraceFolder())
 elements.runtimeStatus.addEventListener("click", async () => {
@@ -4652,6 +5141,35 @@ elements.curationDetail.addEventListener("submit", (event) => {
     const text = input?.value ?? ""
     void sendCurationMessage(form.dataset.curationForm, text)
 })
+elements.rubricDetail.addEventListener("click", (event) => {
+    const create = event.target.closest("[data-create-rubric]")
+    if (create) void createRubricSession()
+    const retry = event.target.closest("[data-retry-rubric]")
+    if (retry) void retryRubricSession(retry.dataset.retryRubric)
+    const publish = event.target.closest("[data-publish-rubric]")
+    if (publish) void publishRubricSession(publish.dataset.publishRubric)
+    const discard = event.target.closest("[data-discard-rubric]")
+    if (discard) void discardRubricSession(discard.dataset.discardRubric)
+})
+elements.rubricDetail.addEventListener("change", (event) => {
+    const model = event.target.closest("[data-rubric-model]")
+    if (model) void updateRubricModel(model.dataset.rubricModel, model.value)
+    const effort = event.target.closest("[data-rubric-effort]")
+    if (effort) void updateRubricEffort(effort.dataset.rubricEffort, effort.value)
+})
+elements.rubricDetail.addEventListener("input", (event) => {
+    const input = event.target.closest("[data-rubric-input]")
+    if (!input) return
+    if (input.value) state.rubricInputDrafts.set(input.dataset.rubricInput, input.value)
+    else state.rubricInputDrafts.delete(input.dataset.rubricInput)
+})
+elements.rubricDetail.addEventListener("submit", (event) => {
+    const form = event.target.closest("[data-rubric-form]")
+    if (!form) return
+    event.preventDefault()
+    const input = form.querySelector("[data-rubric-input]")
+    void sendRubricMessage(form.dataset.rubricForm, input?.value ?? "")
+})
 elements.closeDiscardDialog.addEventListener("click", () => elements.discardDialog.close())
 elements.cancelDiscard.addEventListener("click", () => elements.discardDialog.close())
 elements.confirmDiscard.addEventListener("click", discardCuration)
@@ -4712,6 +5230,22 @@ window.rollingSkill.onCurationActivity((activity) => {
     if (activity.terminal) state.curationActivities.delete(activity.sessionId)
     else state.curationActivities.set(activity.sessionId, activity)
     patchCurationActivityCard(activity)
+})
+window.rollingSkill.onRubricChanged((session) => {
+    if (!session?.datasetId || session.datasetId !== state.evaluationDatasetId) return
+    upsertRubricSession(session)
+    if (!state.activeRubricSessionId && session.status !== "archived") {
+        state.activeRubricSessionId = session.id
+    }
+    renderRubricDrawer()
+    renderEvaluationWorkbench()
+})
+window.rollingSkill.onRubricActivity((activity) => {
+    if (!activity?.sessionId) return
+    if (!state.rubricSessions.some((session) => session.id === activity.sessionId)) return
+    if (activity.terminal) state.rubricActivities.delete(activity.sessionId)
+    else state.rubricActivities.set(activity.sessionId, activity)
+    renderRubricDrawer()
 })
 window.rollingSkill.onEvaluationChanged(async ({runId, resultId, status}) => {
     if (!runId) return

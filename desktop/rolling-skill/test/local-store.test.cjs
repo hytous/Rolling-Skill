@@ -159,7 +159,7 @@ describe("local evaluation store", () => {
 
         const migrated = new LocalEvaluationStore(path).read()
 
-        assert.equal(migrated.schemaVersion, "rolling-skill-local/v8")
+        assert.equal(migrated.schemaVersion, "rolling-skill-local/v9")
         assert.deepEqual(migrated.datasets[0].skillReference, reference)
         assert.deepEqual(migrated.cases[0].skillReference, reference)
     })
@@ -393,7 +393,7 @@ describe("local evaluation store", () => {
         )
         const migrated = new LocalEvaluationStore(path).read()
 
-        assert.equal(migrated.schemaVersion, "rolling-skill-local/v8")
+        assert.equal(migrated.schemaVersion, "rolling-skill-local/v9")
         assert.equal(migrated.cases[0].id, "case-old")
         assert.deepEqual(migrated.curationSessions, [])
         assert.equal(migrated.settings.curatorProfile.runtimePolicy, "active")

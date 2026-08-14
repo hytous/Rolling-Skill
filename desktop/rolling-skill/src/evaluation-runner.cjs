@@ -451,6 +451,7 @@ class EvaluationRunner {
             contract = buildScoreContract(result.caseSnapshot, {
                 activationMode: run.activationMode,
                 evidenceCatalog,
+                rubricVersion: run.rubricVersionSnapshot ?? null,
             })
             const basePrompt = buildJudgePrompt({
                 contract,

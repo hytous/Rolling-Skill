@@ -30,7 +30,8 @@ macOS 可能要求先按住 Control 点击应用，再选择 **打开**。
 - 查看并保存 Runtime 原始 Trace；
 - 从一段连续的问题解决过程创建 `goodcase` 或 `badcase`；
 - 冻结证据与评测输入始终保留用户问题原文；可选问题描述只记录 Agent 回答中发生了什么；
-- 使用独立 Curator 会话提炼参考答案、硬判定条件、输出格式和失败原因；
+- 使用独立 Rubric Agent 从数据集绑定的 Skill 生成、讨论、修订并发布一套共享评分标准；
+- 使用独立 Curator 会话继承已发布标准，只提炼 Case 参考事实、适用性、特殊项和失败原因；
 - 将已完成或丢弃的 Case Draft 从活动列表移出，并在设置中查看归档记录；
 - 创建、浏览和删除数据集及其中的 Case；每个数据集唯一绑定一个 Runtime Skill；
 - 运行单个 Case 或整个数据集；
@@ -39,8 +40,8 @@ macOS 可能要求先按住 Control 点击应用，再选择 **打开**。
 - 删除当前 Case 后继续保留历史评测使用的不可变快照；
 - 可选 Automatic Capture，默认关闭且只创建待审核草稿，不会自动写入数据集。
 
-删除数据集会同时移除其中的 Case 和已结束的 Curator 草稿记录，但保留历史评测快照；若仍
-有未结束草稿，删除会被阻止。排队中或运行中的评测记录不能删除，终态记录删除后不会额外
+删除数据集会同时移除其中的 Case、Rubric 版本/会话和已结束的 Curator 草稿记录，但保留历史
+评测中的不可变快照；若仍有未结束草稿，删除会被阻止。排队中或运行中的评测记录不能删除，终态记录删除后不会额外
 删除其原始 Trace 文件。若删除的是 Automatic Capture 目标数据集，自动沉淀会关闭，不会
 静默改投其他数据集。
 
@@ -94,31 +95,36 @@ header。如果企业 Codex 服务只允许固定的 known clients，未登记�
 
 ## Case 沉淀流程
 
-1. 在 Chat 中完成一次问题解决过程。
-2. 在结束该过程的 Assistant 消息旁选择 **沉淀 Case**。
-3. 选择作为起点的 User 消息、已经绑定被测 Skill 的目标数据集和 `goodcase`/`badcase`；可选填写
+1. 在 **Skill 评测** 中创建并绑定数据集，使用 Rubric Agent 审阅并发布该数据集的评分标准。
+2. 在 Chat 中完成一次问题解决过程。
+3. 在结束该过程的 Assistant 消息旁选择 **沉淀 Case**。
+4. 选择作为起点的 User 消息、已有已发布标准的目标数据集和 `goodcase`/`badcase`；可选填写
    “Agent 回答中的问题”，描述本次回答发生了什么问题，默认留空。
-4. Rolling Skill 冻结所选对话及 Trace 范围；起点 User 消息始终作为评测输入，问题描述
+5. Rolling Skill 冻结所选对话及 Trace 范围；起点 User 消息始终作为评测输入，问题描述
    只供 Curator 和 Judge 分析，不能替换原始问题，原对话仍可继续使用。
-5. 独立、只读的 Curator 会话根据当前 Runtime 中的 Skill 整理必要证据。
-6. 可以继续向 Curator 提问、要求修改、切换模型或推理强度。
-7. 选择 **Done** 后保存 Case；选择 **丢弃** 则不写入数据集。
+6. 独立、只读的 Curator 会话继承冻结的 Rubric 版本，并根据当前 Runtime 中的 Skill 整理必要证据。
+7. 可以继续向 Curator 提问、要求修改、切换模型或推理强度。
+8. 选择 **Done** 后保存 Case；选择 **丢弃** 则不写入数据集。
 
-Curator 的结构化结果包含参考答案摘要、必要事实、必要步骤、输出格式、证据引用、硬性
-通过条件、软性标准和自动失败条件。Badcase 还包含首次偏离点、根因、重复循环摘要和正确
-恢复方式。
+Curator 的结构化结果包含参考答案摘要、必要事实、必要步骤、输出格式、证据引用、数据集
+Rubric 各项在本 Case 中的适用性，以及确有必要的 Case 特殊项。它不能重新设计数据集标准。
+Badcase 还包含首次偏离点、根因、重复循环摘要、正确恢复方式和可执行的复现扣分规则。
 
 ## Skill 评测
 
 在左上角切换到 **Skill 评测**：
 
 1. 选择已绑定被测 Skill 的数据集；界面只显示继承的 Skill，不再为本次运行重复选择；
-2. 选择自动触发或显式诊断模式；
-3. 勾选一个或多个 Runtime；
-4. 分别选择模型和推理强度；
+2. 首次使用时选择 **让 Agent 生成**，在右侧 Rubric Agent 会话中审阅、自然语言修订并发布；
+3. 选择自动触发或显式诊断模式；
+4. 勾选一个或多个 Runtime，并分别选择模型和推理强度；
 5. 独立选择 Judge Runtime、模型和推理强度；
 6. 启动选中 Case 或整个数据集；
 7. 在 **评测记录** 中查看执行状态、判分状态、回答、Trace 和逐项得分。
+
+每次发布都会产生不可变的 Rubric 版本。Case 和评测运行分别冻结自己使用的版本；新版本不会
+重算历史 Run。与新版本不一致的旧 Case 会显示“需要校准”并阻止正式评测，避免把旧 Case
+解释静默套到新标准上。并发编辑时，旧基线草稿不能覆盖已经发布的较新版本。
 
 数据集列表右上角可将当前整个数据集导出为 CSV。文件固定包含 `input` 和 `output` 两列，
 每个单元格均为 JSON 消息数组；`input` 保存原始用户问题，`output` 保存精炼参考答案。
@@ -133,7 +139,7 @@ Curator 的结构化结果包含参考答案摘要、必要事实、必要步骤
 落盘、确定性处理、证据与输出规范、错误恢复八项，由固定程序校验 Judge 是否逐项填写并
 计算分数；A 达到 32 分且没有 Skill 激活关键失败才通过硬门槛。完整 Trace 没有任何错误
 事件时，固定程序直接给“错误恢复”满分；发生错误时才要求 Judge 同时引用失败证据和后续
-恢复动作。B 使用 Case 的整理标准
+恢复动作。B 使用评测 Run 冻结的数据集 Rubric，并叠加 Case 的参考事实和少量特殊项
 主观评分，并记录可验证字段、交叉校验、验证状态和 Judge 置信度；B 不会反转 A 的门槛
 结论。被测执行、Judge 判分和质量结论是三个独立状态，Judge 失败不会丢失原回答或 Trace。
 显式唤起只作诊断：保留 A/B 分项，但不生成正式总分或通过/失败结论。
@@ -156,11 +162,13 @@ Judge 的分析上下文。该模式用于评测 Runtime 是否能自行发现�
 Provider 的显式 Skill 输入，用于区分“没有触发 Skill”和“Skill 执行错误”，不等同于
 自动触发成绩。
 
-Skill 绑定属于数据集，而不属于单次沉淀或评测。新建数据集必须同时选择当前 Runtime 精确
-报告为已启用的 Skill；Automatic Capture 也只选择目标数据集。旧数据会在同一数据集只有一份
+Skill 绑定和评分标准都属于数据集，而不属于单次沉淀或评测。新建数据集必须同时选择当前
+Runtime 精确报告为已启用的 Skill，随后发布 Rubric；Automatic Capture 也只选择已经完成这两步
+的目标数据集。旧数据会在同一数据集只有一份
 一致的历史 Skill name+path 时自动迁移；没有证据或存在冲突时保持未绑定，需在工作台或沉淀
 弹窗中手动修复。重新绑定只影响之后的新 Case 和评测；已有 Case、Curator 草稿和评测记录中的
-冻结证据保持不变。存在进行中的 Curator/capture 时不能更换绑定。
+冻结证据保持不变。重新绑定会使当前 Rubric 失效，但保留历史版本。存在进行中的
+Curator/capture 或 Rubric Agent 会话时不能更换绑定。
 
 ## 本地数据
 
@@ -168,7 +176,7 @@ Skill 绑定属于数据集，而不属于单次沉淀或评测。新建数据�
 
 | 路径 | 内容 |
 | --- | --- |
-| `~/Library/Application Support/Rolling Skill/evaluation-store.json` | 设置、数据集、Cases、Curator 会话和评测记录 |
+| `~/Library/Application Support/Rolling Skill/evaluation-store.json` | 设置、数据集、Rubric 版本/会话、Cases、Curator 会话和评测记录 |
 | `~/Library/Application Support/Rolling Skill/preferences.json` | 工作目录和 Runtime 选择 |
 | `~/Library/Application Support/Rolling Skill/traces/*.jsonl` | 带 Runtime 身份的追加式 Trace |
 

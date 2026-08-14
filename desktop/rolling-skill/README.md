@@ -51,7 +51,7 @@ does not download, install, upgrade, or authenticate a runtime.
 The active runtime's model catalog is loaded through its provider adapter. The task composer can
 select a model, reasoning effort, and conversation permission mode; each editable Case Draft can
 select its model and effort. Settings provides defaults
-for new tasks, Curator tasks, and Automatic Capture. No model names are bundled into the desktop
+for new tasks, Rubric Agent tasks, Curator tasks, Judge tasks, and Automatic Capture. No model names are bundled into the desktop
 application.
 
 ## Settings and appearance
@@ -61,7 +61,7 @@ Open **Settings** in the lower-left sidebar to configure:
 - Simplified Chinese or English interface text;
 - Codex Light (the default white-and-blue theme), Codex Dark, or the original Graphite theme;
 - Full local access (default) or Workspace only as the default for new Codex conversations;
-- the default model and reasoning effort for new tasks and Curator tasks; and
+- the default model and reasoning effort for new tasks, Rubric Agent tasks, Curator tasks, and Judge tasks; and
 - Automatic Capture, including its Curator model and effort, Skill-bound destination dataset, and
   default case type.
 
@@ -130,6 +130,8 @@ Use the switch below the Rolling Skill logo to move between the native **Chat** 
 - create, browse, and delete local datasets;
 - export a complete dataset as CSV, with `input` and `output` columns whose cells are JSON message arrays;
 - bind exactly one enabled runtime Skill to each dataset and repair or change that binding;
+- generate, discuss, revise, publish, and inspect versioned dataset-level scoring Rubrics through a
+  read-only Rubric Agent;
 - inspect original evaluation questions, optional answer-issue descriptions, and curated references;
 - delete a Case without invalidating older evaluation snapshots;
 - query a provider's path-precise Skill inventory when it exposes one;
@@ -172,7 +174,8 @@ score itself; A passes at 32 points unless the activation gate fails. When a com
 no error event, the fixed program awards full error-recovery credit because no recovery was needed.
 When an error occurred, positive recovery credit requires both failure evidence and a later recovery
 action. Layer B is a flexible 60-point Skill/Case-specific subjective assessment built from the
-Curator contract. It records verifiable fields, cross-checks, verification status, and Judge
+immutable dataset Rubric frozen into the run, plus Case reference facts and narrow Case-specific
+addenda. It records verifiable fields, cross-checks, verification status, and Judge
 confidence, but never reverses the A verdict. The workbench presents the fixed outcome as one of four
 operator-facing tiers: **Formal pass** (A at least 32 with no critical failure), **Usable · needs
 improvement** (A at least 24 with no critical failure), **Failed**, or **Diagnostic only**.
@@ -211,17 +214,30 @@ A matching name alone is insufficient, and an observed body mismatch forces diag
 The same Trace remains the evidence for whether the agent actually activated, read, and applied the
 Skill; installation binding never awards the Skill-activation rubric by itself.
 
-The Skill is selected once at dataset creation rather than separately for each capture or run.
-Case capture, Curator, Automatic Capture, and evaluation all inherit the dataset binding. Rebinding
-affects only future work: existing Cases, Curator sessions, and evaluation-run snapshots retain
-their frozen historical evidence. A dataset cannot be rebound while a capture reservation or an
-unfinished Curator session exists. Legacy datasets migrate automatically only when their saved
+The Skill is selected once at dataset creation rather than separately for each capture or run. A
+dataset must then publish one shared Rubric before Case capture or formal evaluation. The Rubric
+Agent reads a complete frozen snapshot of the bound Skill and linked local Markdown references,
+creates a score-free contract with stable criterion IDs, relative weights, evidence requirements,
+0/2/5/8/10 anchors, and narrow failure conditions, and accepts natural-language review messages.
+Only the operator's **Publish** action makes a revision active. Every publication creates an
+immutable version; stale concurrent drafts cannot overwrite a newer active version.
+
+Case capture, Curator, Automatic Capture, and evaluation all inherit the dataset binding and active
+Rubric. The Curator must cover every dataset criterion exactly once and may add only narrow
+Case-specific criteria or failures; `rolling-skill-curated-case/v2` rejects a duplicate per-Case
+grading contract. Runs freeze the active Rubric and never recalculate older records. Publishing a
+new version marks existing Cases as needing calibration and blocks them from formal evaluation
+until re-curated. Rebinding affects only future work: existing Cases, Curator sessions, and
+evaluation-run snapshots retain their frozen historical evidence, while the active Rubric is
+cleared. A dataset cannot be rebound while a capture reservation, unfinished Curator session, or
+unfinished Rubric Agent session exists. Legacy datasets migrate automatically only when their saved
 Case/Curator references agree on one exact Skill name and absolute path; conflicting or evidence-free
 datasets stay unbound until the operator repairs them. A missing or stale exact name+path is never
 displayed as ready and blocks new capture or evaluation.
 
-Deleting a dataset removes its current Cases and finished Curator records but preserves immutable
-evaluation-run snapshots. An unfinished Curator draft blocks dataset deletion. Only terminal
+Deleting a dataset removes its current Cases, Rubric versions/sessions, and finished Curator records
+but preserves immutable evaluation-run snapshots. An unfinished Curator or Rubric Agent draft blocks
+dataset deletion. Only terminal
 evaluation runs can be deleted; deleting a run does not remove its separate raw Trace files. If the
 deleted dataset was the Automatic Capture target, capture is disabled instead of being silently
 redirected to another dataset.
@@ -283,41 +299,41 @@ the UI.
    intended Skill is installed and enabled in that exact runtime and workspace.
 2. Start a new task or open an existing workspace-scoped task.
 3. Inspect the streamed conversation and raw local trace.
-4. Select **Curate case** beside the assistant message that ends the useful problem-solving episode.
-5. Choose the source user message where the episode begins, a Skill-bound dataset, and `goodcase`
+4. In the Skill evaluation workbench, generate, review, and publish the selected dataset's shared Rubric.
+5. Select **Curate case** beside the assistant message that ends the useful problem-solving episode.
+6. Choose the source user message where the episode begins, a Skill-and-Rubric-bound dataset, and `goodcase`
    or `badcase`. The optional answer-issue field starts empty and records
    what went wrong in the captured Agent answer. It never changes the frozen original question
    used as the evaluation input.
-6. Select **Start curation**. Rolling Skill freezes the selected conversation/trace range while the
+7. Select **Start curation**. Rolling Skill freezes the selected conversation/trace range while the
    original task remains live, then starts an independent read-only Curator task.
-7. Review the Curator conversation and structured reference answer in **Case drafts**. Ask follow-up
+8. Review the Curator conversation and structured reference answer in **Case drafts**. Ask follow-up
    questions or request revisions, change the model used by subsequent Curator turns, use **Retry**
-   after a failed draft, and select **Done** only when the hard requirements and reference result
+   after a failed draft, and select **Done** only when the Rubric coverage and reference result
    are ready. **Discard** stops and archives the Curator task without saving a Case. Both actions
    remove the item from active Case Drafts; archived history is available only in **Settings**.
 
-Before the Curator starts, Rolling Skill force-refreshes the selected runtime's Skill inventory and
-rejects the dataset binding if the exact Skill name and path are missing or disabled. The Curator
-prompt names that Skill and requires the
-agent to read the currently installed version as its evaluation rubric without executing the
-Skill's workflow. A runtime-native structured Skill reference pins the exact selected path when
+Before the Rubric Agent or Curator starts, Rolling Skill force-refreshes the selected runtime's
+Skill inventory and rejects the dataset binding if the exact Skill name and path are missing or
+disabled. The Rubric Agent reads frozen Skill evidence; the Curator receives both the published
+Rubric snapshot and a runtime-native structured Skill reference that pins the exact selected path when
 several installed Skills share a name. Rolling Skill does not copy or cache `SKILL.md`; the runtime
 remains the source of truth. Each draft and approved Case records the Skill name/path, scope,
 runtime identity, and confirmation time as provenance.
 
-The Curator output has a fixed agent-grading contract: reference summary, required facts, required
-steps, required output format, evidence links, hard pass/fail requirements, soft criteria, and
-automatic failures. Badcases also record the first divergence, root causes, compact loop summary,
-and expected recovery. Shell activity is grouped by CLI/subcommand (for example `git status` and
+The Curator output inherits the dataset Rubric and stores a reference summary, required facts,
+required steps, required output format, evidence links, per-criterion applicability, and only
+narrow Case-specific addenda. Badcases also record the first divergence, root causes, compact loop
+summary, expected recovery, and recurrence deductions. Shell activity is grouped by CLI/subcommand (for example `git status` and
 `billing-cli cost query`) while repeated CLI and MCP calls are compacted with counts and status
 distributions.
 
-Automatic Capture is disabled by default. When enabled it requires a configured Skill-bound dataset and
+Automatic Capture is disabled by default. When enabled it requires a configured Skill-bound dataset with a published Rubric and
 creates reviewable Case Drafts after completed assistant responses; it never saves them
 automatically. A missing or disabled Skill produces an explicit capture error instead of a
 Skill-less draft. No case is written until
 **Done**. Approved cases retain the exact source question as evaluation input and store the optional
-answer-issue description separately, plus structured grading data, source and Curator runtime provenance,
+answer-issue description separately, plus structured Rubric coverage, source and Curator runtime provenance,
 immutable Episode evidence, and the append-only trace range. The default Curator model lives in **Settings**;
 each editable Case Draft can override it for subsequent follow-up turns. If no override is set, the
 source model is reused when the runtime exposes it, with the active runtime default as fallback.
@@ -326,7 +342,7 @@ Local state is stored under `~/Library/Application Support/Rolling Skill/`:
 
 | Path | Contents |
 | --- | --- |
-| `evaluation-store.json` | Datasets, cases, Curator sessions/revisions, settings, and immutable evaluation runs |
+| `evaluation-store.json` | Datasets, Rubric versions/sessions, cases, Curator sessions/revisions, settings, and immutable evaluation runs |
 | `preferences.json` | Selected workspace and optional runtime selection |
 | `traces/*.jsonl` | Append-only runtime events with runtime identity metadata |
 
@@ -334,7 +350,7 @@ Local state is stored under `~/Library/Application Support/Rolling Skill/`:
 
 - Runtime probes and launches use fixed executable/argument arrays with `shell: false`.
 - Source Codex and Codex evaluation threads use the selected local-access policy, defaulting to
-  `danger-full-access`; Codex Curator threads remain forced to `read-only`. CodeBuddy uses its own
+  `danger-full-access`; Codex Rubric Agent and Curator threads remain forced to `read-only`. CodeBuddy uses its own
   ACP permission mode because it does not expose the same OS workspace sandbox. Codex threads use
   `approvalPolicy: never`.
 - The renderer has Node integration disabled, context isolation enabled, and Chromium sandboxing
@@ -353,7 +369,8 @@ selection/client delegation, a real locally discovered app-server smoke, protoco
 workspace discovery, local-first surface invariants, episode boundaries, dataset/source questions,
 CLI/MCP compaction, Curator lifecycle/retries/revisions/discard, Automatic Capture gating, model
 catalog and turn overrides, reasoning-effort propagation, settings migration, atomic dataset
-persistence, Case deletion and immutable run snapshots, fixed grading contracts, multi-runtime
+persistence, dataset Rubric schemas/versioning/stale-draft protection, Curator Rubric inheritance,
+Case deletion and immutable run snapshots, fixed grading contracts, multi-runtime
 parallel queues, CodeBuddy ACP configuration, runtime attribution, shutdown cleanup, and trace
 provenance.
 

@@ -395,4 +395,101 @@ describe("episode curation evidence", () => {
             /weight/i,
         )
     })
+
+    it("inherits a published dataset rubric without asking Curator to recreate grading", () => {
+        const episode = buildEpisodeSnapshot(sourceThread(), {
+            startItemId: "user-1",
+            endItemId: "agent-2",
+        })
+        const rubricVersion = {
+            id: "rubric-v1",
+            version: 1,
+            rubricDigest: "sha256:test",
+            rubric: {
+                schemaVersion: "rolling-skill-dataset-rubric/v1",
+                title: "Billing rubric",
+                summary: "Billing quality",
+                criteria: [{
+                    id: "R1",
+                    title: "Verified result",
+                    criterion: "Return a supported billing conclusion.",
+                    weight: 1,
+                    evidenceRequirements: ["Response"],
+                    scoringAnchors: {
+                        "0": "Missing",
+                        "2": "Minimal",
+                        "5": "Partial",
+                        "8": "Substantial",
+                        "10": "Complete",
+                    },
+                    criticalFailure: true,
+                }],
+                automaticFailures: [],
+            },
+        }
+        const prompt = buildCuratorPrompt({
+            episode,
+            caseType: "goodcase",
+            skillReference: {name: "billing-cost-management"},
+            rubricVersion,
+        })
+
+        assert.match(prompt, /rolling-skill-curated-case\/v2/)
+        assert.match(prompt, /do not redesign it/i)
+        assert.match(prompt, /"criterionId":"R1"|"id":"R1"/)
+        assert.doesNotMatch(prompt, /"hardRequirements"/)
+
+        const draft = {
+            schemaVersion: "rolling-skill-curated-case/v2",
+            referenceAnswer: {
+                summary: "按业务返回 7 月成本。",
+                requiredFacts: ["账期为 7 月"],
+                requiredSteps: ["核验账期"],
+                requiredOutputFormat: ["金额带币种"],
+                evidence: [{claim: "账单工具被调用", sourceItemIds: ["mcp-1"]}],
+            },
+            rubricCoverage: [{
+                criterionId: "R1",
+                applicability: "applicable",
+                expectation: "返回有来源的 7 月账单结论",
+                evidenceBasis: "原始问题与工具调用",
+            }],
+            caseSpecificCriteria: [],
+            caseAutomaticFailures: [],
+            badCaseAnalysis: null,
+        }
+        const parsed = parseCuratorDraft(JSON.stringify(draft), {
+            caseType: "goodcase",
+            sourceItemIds: episode.items.map((item) => item.id),
+            rubricCriteriaIds: ["R1"],
+        })
+        assert.equal(parsed.schemaVersion, "rolling-skill-curated-case/v2")
+        assert.match(formatCuratedAnswer(parsed), /Dataset rubric coverage/)
+
+        const duplicatedGrading = structuredClone(draft)
+        duplicatedGrading.grading = {
+            hardRequirements: [{id: "H1"}],
+            softCriteria: [],
+            automaticFailures: [],
+        }
+        assert.throws(
+            () => parseCuratorDraft(JSON.stringify(duplicatedGrading), {
+                caseType: "goodcase",
+                sourceItemIds: episode.items.map((item) => item.id),
+                rubricCriteriaIds: ["R1"],
+            }),
+            /unsupported|grading/i,
+        )
+
+        const missingCoverage = structuredClone(draft)
+        missingCoverage.rubricCoverage = []
+        assert.throws(
+            () => parseCuratorDraft(JSON.stringify(missingCoverage), {
+                caseType: "goodcase",
+                sourceItemIds: episode.items.map((item) => item.id),
+                rubricCriteriaIds: ["R1"],
+            }),
+            /every published criterion/i,
+        )
+    })
 })

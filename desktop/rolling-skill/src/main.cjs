@@ -17,6 +17,7 @@ const {CodexRuntimeProvider} = require("./codex-runtime-provider.cjs")
 const {CodeBuddyRuntimeProvider} = require("./codebuddy-runtime-provider.cjs")
 const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
+const {RubricManager} = require("./rubric-manager.cjs")
 const {EvaluationRunner} = require("./evaluation-runner.cjs")
 const {EvaluationPowerGuard} = require("./evaluation-power-guard.cjs")
 const {buildDatasetCsv, datasetExportFilename} = require("./dataset-csv-export.cjs")
@@ -43,6 +44,7 @@ let runtimeDescriptor = null
 let availableRuntimes = []
 let store = null
 let curationManager = null
+let rubricManager = null
 let automaticCaptureManager = null
 let evaluationRunner = null
 let activityStore = null
@@ -123,6 +125,7 @@ function installClientEvents(nextClient, sourceRuntimeId) {
     })
     nextClient.on("notification", (message) => {
         void curationManager?.handleNotification(message)
+        void rubricManager?.handleNotification(message)
         void automaticCaptureManager?.handleNotification(message)
         const params = message?.params ?? {}
         const threadId = params.threadId ?? params.thread?.id ?? null
@@ -158,6 +161,7 @@ function installClientEvents(nextClient, sourceRuntimeId) {
         }
         const hidden =
             (threadId && curationManager?.hiddenThreadIds().has(threadId)) ||
+            (threadId && rubricManager?.hiddenThreadIds().has(threadId)) ||
             params.thread?.threadSource === "subagent"
         if (!hidden) {
             activityStore?.captureNotification(sourceRuntimeId, message)
@@ -384,6 +388,15 @@ async function requireAvailableDatasetSkill(dataset) {
     }
     await currentRuntimeSkillReference(dataset.skillReference)
     return dataset.skillReference
+}
+
+function requirePublishedDatasetRubric(dataset) {
+    if (!dataset?.activeRubricVersionId) {
+        throw new Error(
+            "Publish a dataset scoring rubric before capturing Cases or starting an evaluation",
+        )
+    }
+    return store.getDatasetRubricVersion(dataset.activeRubricVersionId)
 }
 
 function unavailableRuntimeState(error = null) {
@@ -731,7 +744,10 @@ function installIpc() {
             return {data: [], nextCursor: null, unsupported: true}
         }
         const response = await (await ensureRuntime()).listThreads({archived})
-        const hidden = curationManager.hiddenThreadIds()
+        const hidden = new Set([
+            ...curationManager.hiddenThreadIds(),
+            ...rubricManager.hiddenThreadIds(),
+        ])
         return {...response, data: (response.data ?? []).filter((thread) => !hidden.has(thread.id))}
     })
     ipcMain.handle("runtime:archive-thread", async (_event, threadId) => {
@@ -838,8 +854,11 @@ function installIpc() {
     })
     ipcMain.handle("runtime:read-thread", async (_event, threadId) => {
         threadId = requireIdentifier(threadId, "thread")
-        if (curationManager.hiddenThreadIds().has(threadId)) {
-            throw new Error("Curator threads are available through curation sessions only")
+        if (
+            curationManager.hiddenThreadIds().has(threadId) ||
+            rubricManager.hiddenThreadIds().has(threadId)
+        ) {
+            throw new Error("Curator and Rubric Agent threads are available through their review sessions only")
         }
         const runtime = await ensureRuntime()
         const sourceRuntimeId = runtimeDescriptor?.runtimeId
@@ -991,6 +1010,68 @@ function installIpc() {
         return settings
     })
 
+    ipcMain.handle("rubrics:list-versions", (_event, datasetId) =>
+        store.listDatasetRubricVersions(requireIdentifier(datasetId, "dataset")),
+    )
+    ipcMain.handle("rubrics:active", (_event, datasetId) =>
+        store.getActiveDatasetRubric(requireIdentifier(datasetId, "dataset")),
+    )
+    ipcMain.handle("rubrics:list-sessions", (_event, datasetId) =>
+        store.listRubricSessions(
+            datasetId ? requireIdentifier(datasetId, "dataset") : null,
+        ),
+    )
+    ipcMain.handle("rubrics:get-session", (_event, sessionId) =>
+        store.getRubricSession(requireIdentifier(sessionId, "rubric session")),
+    )
+    ipcMain.handle("rubrics:create", async (_event, input = {}) => {
+        const datasetId = requireIdentifier(input.datasetId, "dataset")
+        const dataset = store.getDataset(datasetId)
+        await requireAvailableDatasetSkill(dataset)
+        const skillEvidence = snapshotSkillEvidence(dataset.skillReference)
+        if (skillEvidence.truncated || skillEvidence.warnings.length) {
+            const details = skillEvidence.warnings.length
+                ? skillEvidence.warnings.map((warning) => `- ${warning}`).join("\n")
+                : "- Skill evidence exceeded a snapshot limit"
+            throw new Error(`Rubric generation requires complete Skill evidence:\n${details}`)
+        }
+        const profile = store.read().settings.rubricProfile
+        return rubricManager.createSession({
+            datasetId,
+            baseVersionId: dataset.activeRubricVersionId,
+            skillEvidence,
+            modelId: profile.modelId,
+            effort: profile.effort,
+        })
+    })
+    ipcMain.handle("rubrics:send", (_event, input = {}) =>
+        rubricManager.sendMessage(
+            requireIdentifier(input.sessionId, "rubric session"),
+            String(input.text ?? ""),
+        ),
+    )
+    ipcMain.handle("rubrics:retry", (_event, sessionId) =>
+        rubricManager.retry(requireIdentifier(sessionId, "rubric session")),
+    )
+    ipcMain.handle("rubrics:publish", (_event, sessionId) =>
+        rubricManager.publish(requireIdentifier(sessionId, "rubric session")),
+    )
+    ipcMain.handle("rubrics:discard", (_event, sessionId) =>
+        rubricManager.discard(requireIdentifier(sessionId, "rubric session")),
+    )
+    ipcMain.handle("rubrics:update-model", (_event, input = {}) =>
+        rubricManager.updateModel(
+            requireIdentifier(input.sessionId, "rubric session"),
+            optionalIdentifier(input.modelId, "model"),
+        ),
+    )
+    ipcMain.handle("rubrics:update-effort", (_event, input = {}) =>
+        rubricManager.updateEffort(
+            requireIdentifier(input.sessionId, "rubric session"),
+            optionalEffort(input.effort),
+        ),
+    )
+
     ipcMain.handle("curation:list", () => store.listCurationSessions())
     ipcMain.handle("curation:list-archived", () => store.listArchivedCurationSessions())
     ipcMain.handle("curation:get", (_event, sessionId) =>
@@ -1000,6 +1081,7 @@ function installIpc() {
         const datasetId = requireIdentifier(input.datasetId, "dataset")
         const dataset = store.getDataset(datasetId)
         await requireAvailableDatasetSkill(dataset)
+        requirePublishedDatasetRubric(dataset)
         const sourceThreadId = requireIdentifier(input.sourceThreadId, "source thread")
         const startItemId = input.startItemId
             ? requireIdentifier(input.startItemId, "episode start item")
@@ -1090,6 +1172,7 @@ function installIpc() {
         const dataset = store.getDataset(datasetId)
         const skillReference = dataset.skillReference
         await requireAvailableDatasetSkill(dataset)
+        requirePublishedDatasetRubric(dataset)
         const runtimeConfigurations = await Promise.all((input.runtimeConfigurations ?? []).map(async (requested) => {
             const runtimeId = requireIdentifier(requested.runtimeId, "runtime")
             const descriptor = availableRuntimes.find((entry) => entry.runtimeId === runtimeId)
@@ -1242,11 +1325,21 @@ if (!hasLock) {
             onChanged: (session) => send("curation:changed", session),
             onActivity: (activity) => send("curation:activity", activity),
         })
+        rubricManager = new RubricManager({
+            store,
+            getRuntime: ensureRuntime,
+            getRuntimeDescriptor: () => runtimeDescriptor,
+            onChanged: (session) => send("rubric:changed", session),
+            onActivity: (activity) => send("rubric:activity", activity),
+        })
         automaticCaptureManager = new AutomaticCaptureManager({
             store,
             curationManager,
             getTraceReference: (episode) => client?.recorder?.referenceForEpisode(episode) ?? null,
-            verifyDatasetSkill: requireAvailableDatasetSkill,
+            verifyDatasetSkill: async (dataset) => {
+                await requireAvailableDatasetSkill(dataset)
+                requirePublishedDatasetRubric(dataset)
+            },
             onError: (error) => send("runtime:state", {
                 ...enrichRuntimeState(client?.state() ?? {workspaceRoot}),
                 error: `Automatic capture failed: ${error.message}`,

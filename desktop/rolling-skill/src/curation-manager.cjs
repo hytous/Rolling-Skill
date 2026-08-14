@@ -1,4 +1,6 @@
 const {
+    CURATED_CASE_SCHEMA,
+    CURATED_CASE_V2_SCHEMA,
     CURATOR_PROMPT_VERSION,
     buildCuratorPrompt,
     buildEpisodeSnapshot,
@@ -34,7 +36,7 @@ function failureState(session) {
     return session.draft ? "needs_review" : "failed"
 }
 
-function followUpPrompt(text, caseType) {
+function followUpPrompt(text, caseType, schemaVersion = CURATED_CASE_SCHEMA) {
     const badcaseGuidance = caseType === "badcase"
         ? `This is a badcase. Keep every revision failure-led: diagnose the error, first divergence,
 root cause, and bounded recovery. Do not turn it into a polished goodcase reference answer. Preserve
@@ -43,8 +45,8 @@ or improve the deductionRules that penalize the same or materially equivalent ob
     return `Respond to the user's Curator review message below.
 
 If the user is asking a question about the current reference answer, answer conversationally and
-do not return JSON. If the user asks to revise the reference answer or grading contract, return a
-short review note followed by exactly one complete rolling-skill-curated-case/v1 JSON code block.
+do not return JSON. If the user asks to revise the reference answer or grading addenda, return a
+short review note followed by exactly one complete ${schemaVersion} JSON code block.
 Never return a partial contract fragment.
 
 ${badcaseGuidance}
@@ -52,7 +54,7 @@ ${badcaseGuidance}
 <user-review-message>${String(text ?? "").trim()}</user-review-message>`
 }
 
-function retryPrompt(originalQuestion, issueDescription, caseType) {
+function retryPrompt(originalQuestion, issueDescription, caseType, schemaVersion = CURATED_CASE_SCHEMA) {
     const badcaseGuidance = caseType === "badcase"
         ? `This is a badcase: lead with failure analysis and include executable deductionRules for
 the same or materially equivalent observable errors. Do not reconstruct a polished goodcase answer.`
@@ -69,6 +71,8 @@ original question.
 Do not invent numerical truth, and include every required hard-gating field. Return a short review
 note followed by exactly one JSON code block.
 
+The complete JSON must use ${schemaVersion}.
+
 ${badcaseGuidance}`
 }
 
@@ -77,6 +81,15 @@ function assistantTextFromTurn(turn) {
         .filter((item) => item.type === "agentMessage" && String(item.text ?? "").trim())
         .map((item) => String(item.text).trim())
         .join("\n\n")
+}
+
+function draftValidationOptions(session) {
+    return {
+        caseType: session.caseType,
+        sourceItemIds: session.episode.items.map((item) => item.id),
+        rubricCriteriaIds:
+            session.rubricVersionSnapshot?.rubric?.criteria?.map((entry) => entry.id) ?? undefined,
+    }
 }
 
 class CurationManager {
@@ -268,6 +281,7 @@ class CurationManager {
                 caseType: session.caseType,
                 modelId: session.curator.modelId,
                 skillReference: session.skillReference,
+                rubricVersion: session.rubricVersionSnapshot,
             })
             const turnInput = session.skillReference
                 ? [
@@ -392,8 +406,7 @@ class CurationManager {
             try {
                 if (!assistantText) throw new Error("Curator turn completed without an assistant response")
                 const draft = parseCuratorDraft(assistantText, {
-                    caseType: session.caseType,
-                    sourceItemIds: session.episode.items.map((item) => item.id),
+                    ...draftValidationOptions(session),
                 })
                 const reviewed = this.store.recordCurationRevision(session.id, {
                     draft,
@@ -478,7 +491,13 @@ class CurationManager {
             if (session.status === "cancelled") return session
             const response = await runtime.startTurn(
                 session.curator.threadId,
-                followUpPrompt(text, session.caseType),
+                followUpPrompt(
+                    text,
+                    session.caseType,
+                    session.rubricVersionSnapshot
+                        ? CURATED_CASE_V2_SCHEMA
+                        : CURATED_CASE_SCHEMA,
+                ),
                 {
                     ...(session.curator.modelId ? {model: session.curator.modelId} : {}),
                     ...(session.curator.effort ? {effort: session.curator.effort} : {}),
@@ -532,6 +551,9 @@ class CurationManager {
                 session.episode.originalQuestion,
                 session.issueDescription,
                 session.caseType,
+                session.rubricVersionSnapshot
+                    ? CURATED_CASE_V2_SCHEMA
+                    : CURATED_CASE_SCHEMA,
             ),
         )
     }

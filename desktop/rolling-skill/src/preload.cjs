@@ -53,6 +53,22 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     deleteDataset: (datasetId) => ipcRenderer.invoke("datasets:delete", datasetId),
     revealLocalData: () => ipcRenderer.invoke("datasets:reveal"),
     updateSettings: (input) => ipcRenderer.invoke("settings:update", input),
+    listDatasetRubricVersions: (datasetId) =>
+        ipcRenderer.invoke("rubrics:list-versions", datasetId),
+    getActiveDatasetRubric: (datasetId) => ipcRenderer.invoke("rubrics:active", datasetId),
+    listRubricSessions: (datasetId = null) =>
+        ipcRenderer.invoke("rubrics:list-sessions", datasetId),
+    getRubricSession: (sessionId) => ipcRenderer.invoke("rubrics:get-session", sessionId),
+    createRubricSession: (datasetId) => ipcRenderer.invoke("rubrics:create", {datasetId}),
+    sendRubricMessage: (sessionId, text) =>
+        ipcRenderer.invoke("rubrics:send", {sessionId, text}),
+    retryRubricSession: (sessionId) => ipcRenderer.invoke("rubrics:retry", sessionId),
+    publishRubricSession: (sessionId) => ipcRenderer.invoke("rubrics:publish", sessionId),
+    discardRubricSession: (sessionId) => ipcRenderer.invoke("rubrics:discard", sessionId),
+    updateRubricModel: (sessionId, modelId) =>
+        ipcRenderer.invoke("rubrics:update-model", {sessionId, modelId}),
+    updateRubricEffort: (sessionId, effort) =>
+        ipcRenderer.invoke("rubrics:update-effort", {sessionId, effort}),
     listCurations: () => ipcRenderer.invoke("curation:list"),
     listArchivedCurations: () => ipcRenderer.invoke("curation:list-archived"),
     getCuration: (sessionId) => ipcRenderer.invoke("curation:get", sessionId),
@@ -76,6 +92,8 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     onRuntimeNotification: (listener) => subscribe("runtime:notification", listener),
     onCurationChanged: (listener) => subscribe("curation:changed", listener),
     onCurationActivity: (listener) => subscribe("curation:activity", listener),
+    onRubricChanged: (listener) => subscribe("rubric:changed", listener),
+    onRubricActivity: (listener) => subscribe("rubric:activity", listener),
     onEvaluationChanged: (listener) => subscribe("evaluation:changed", listener),
     onWorkspaceChanged: (listener) => subscribe("workspace:changed", listener),
     onNewTask: (listener) => subscribe("app:new-task", listener),

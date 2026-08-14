@@ -176,6 +176,16 @@
                                 <button id="change-evaluation-dataset-skill" type="button" data-i18n="changeSkill">Change Skill</button>
                             </div>
                             <div id="evaluation-dataset-skill-status" class="skill-preflight"></div>
+                            <section class="dataset-rubric-card">
+                                <div class="dataset-rubric-heading">
+                                    <div>
+                                        <span data-i18n="datasetRubric">Dataset rubric</span>
+                                        <small data-i18n="datasetRubricHelp">Shared Skill-specific criteria inherited by every Case.</small>
+                                    </div>
+                                    <button id="manage-dataset-rubric" type="button" data-i18n="manageRubric">Manage</button>
+                                </div>
+                                <div id="evaluation-dataset-rubric-status" class="dataset-rubric-status"></div>
+                            </section>
                             <fieldset class="activation-mode">
                                 <legend data-i18n="activationMode">Activation mode</legend>
                                 <label>
@@ -258,6 +268,20 @@
                     <div class="sidebar-placeholder" data-i18n="selectDraft">Select a case draft to review it.</div>
                 </section>
             </aside>
+
+            <aside id="rubric-drawer" class="right-drawer rubric-drawer" aria-label="Dataset rubric agent">
+                <header class="drawer-header">
+                    <div>
+                        <div class="drawer-eyebrow" data-i18n="rubricAgentTask">RUBRIC AGENT</div>
+                        <h2 data-i18n="datasetRubric">Dataset rubric</h2>
+                    </div>
+                    <button id="close-rubric-drawer" class="icon-button large" type="button" title="Close rubric agent">×</button>
+                </header>
+                <nav id="rubric-version-list" class="rubric-version-list" aria-label="Rubric versions"></nav>
+                <section id="rubric-detail" class="rubric-detail">
+                    <div class="sidebar-placeholder" data-i18n="rubricNotPublished">No rubric has been published for this dataset.</div>
+                </section>
+            </aside>
         </div>
 
         <dialog id="runtime-dialog" class="case-dialog runtime-dialog">
@@ -331,6 +355,14 @@
                         <label class="settings-field">
                             <span data-i18n="reasoningEffort">Reasoning effort</span>
                             <select id="settings-curator-effort"></select>
+                        </label>
+                        <label class="settings-field">
+                            <span data-i18n="rubricModel">Default Rubric Agent model</span>
+                            <select id="settings-rubric-model"></select>
+                        </label>
+                        <label class="settings-field">
+                            <span data-i18n="reasoningEffort">Reasoning effort</span>
+                            <select id="settings-rubric-effort"></select>
                         </label>
                         <label class="settings-field">
                             <span data-i18n="judgeModel">Default Judge model</span>

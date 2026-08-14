@@ -3,10 +3,11 @@ const {contextBridge} = require("electron")
 const settings = {
     autoCapture: false,
     language: "zh-CN",
-    theme: "codex-light",
+    theme: process.env.ROLLING_SKILL_RENDERER_SMOKE_THEME || "codex-light",
     localAccess: "full",
     taskProfile: {runtimePolicy: "active", modelId: null, effort: null},
     curatorProfile: {runtimePolicy: "active", modelId: null, effort: null},
+    rubricProfile: {runtimePolicy: "active", modelId: null, effort: "high"},
     autoCaptureProfile: {
         runtimePolicy: "active",
         modelId: null,
@@ -156,6 +157,8 @@ const notificationListeners = new Set()
 const runtimeStateListeners = new Set()
 const curationChangedListeners = new Set()
 const curationActivityListeners = new Set()
+const rubricChangedListeners = new Set()
+const rubricActivityListeners = new Set()
 const modelDelayByRuntime = new Map()
 let currentRuntimeId = "codex:renderer-smoke"
 const smokeSkillReference = {
@@ -167,6 +170,65 @@ const smokeSkillReference = {
     runtimeId: "codex:renderer-smoke",
     confirmedAt: "2026-08-13T00:00:00.000Z",
 }
+const smokeRubric = {
+    schemaVersion: "rolling-skill-dataset-rubric/v1",
+    title: "账单结果质量标准",
+    summary: "检查账单 Skill 的业务口径、成本结论和证据完整性。",
+    criteria: [{
+        id: "R1",
+        title: "账单结论完整性",
+        criterion: "返回范围明确且有证据支持的成本结论。",
+        weight: 1,
+        evidenceRequirements: ["Agent 回答", "冻结的 Case 参考事实"],
+        scoringAnchors: {
+            "0": "结论缺失或捏造。",
+            "2": "大部分结论无证据。",
+            "5": "结论部分完整。",
+            "8": "结论基本完整且仅有轻微缺口。",
+            "10": "全部结论完整、可归因且已交叉校验。",
+        },
+        criticalFailure: true,
+    }],
+    automaticFailures: [{
+        id: "RF1",
+        condition: "回答捏造了任何无证据支持的账单数字。",
+        rationale: "虚构财务结论会使结果不可用。",
+    }],
+}
+const smokeRubricVersion = {
+    id: "rubric-version-smoke",
+    datasetId: "dataset-smoke",
+    version: 1,
+    rubric: smokeRubric,
+    rubricDigest: "sha256:smoke",
+    createdAt: "2026-08-13T00:00:00.000Z",
+    publishedAt: "2026-08-13T00:00:00.000Z",
+}
+let smokeRubricSession = {
+    id: "rubric-session-smoke",
+    datasetId: "dataset-smoke",
+    baseVersionId: smokeRubricVersion.id,
+    status: "needs_review",
+    skillReference: smokeSkillReference,
+    rubricAgent: {
+        runtimeId: "codex:renderer-smoke",
+        modelId: null,
+        effort: "high",
+        effectiveModelId: "gpt-5.6-sol",
+        effectiveEffort: "high",
+        threadId: "rubric-thread-smoke",
+        currentTurnId: null,
+    },
+    conversation: [
+        {role: "user", text: "把跨业务线归因写得更清楚。"},
+        {role: "assistant", text: "已补充账单结论的范围和证据要求。"},
+    ],
+    revisions: [{createdAt: "2026-08-13T00:02:00.000Z"}],
+    draft: smokeRubric,
+    error: null,
+    createdAt: "2026-08-13T00:01:00.000Z",
+    updatedAt: "2026-08-13T00:02:00.000Z",
+}
 let smokeDatasets = [{
     id: "dataset-smoke",
     name: "Smoke Dataset",
@@ -174,6 +236,7 @@ let smokeDatasets = [{
     goodcaseCount: 1,
     badcaseCount: 0,
     skillReference: smokeSkillReference,
+    activeRubricVersionId: smokeRubricVersion.id,
 }]
 const smokeEvaluationRun = {
     id: "run-smoke",
@@ -182,6 +245,7 @@ const smokeEvaluationRun = {
     selectionMode: "dataset",
     activationMode: "automatic",
     skillReference: smokeSkillReference,
+    rubricVersionSnapshot: smokeRubricVersion,
     status: "completed",
     createdAt: "2026-08-13T00:00:00.000Z",
     completedAt: "2026-08-13T00:01:05.000Z",
@@ -282,6 +346,38 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         )
         return smokeDatasets.find((dataset) => dataset.id === datasetId)
     },
+    listDatasetRubricVersions: async () => [smokeRubricVersion],
+    getActiveDatasetRubric: async () => smokeRubricVersion,
+    listRubricSessions: async () => [smokeRubricSession],
+    getRubricSession: async () => smokeRubricSession,
+    createRubricSession: async () => smokeRubricSession,
+    sendRubricMessage: async (_sessionId, text) => {
+        smokeRubricSession = {
+            ...smokeRubricSession,
+            conversation: [...smokeRubricSession.conversation, {role: "user", text}],
+        }
+        return smokeRubricSession
+    },
+    retryRubricSession: async () => smokeRubricSession,
+    publishRubricSession: async () => smokeRubricVersion,
+    discardRubricSession: async () => {
+        smokeRubricSession = {...smokeRubricSession, status: "cancelled"}
+        return smokeRubricSession
+    },
+    updateRubricModel: async (_sessionId, modelId) => {
+        smokeRubricSession = {
+            ...smokeRubricSession,
+            rubricAgent: {...smokeRubricSession.rubricAgent, modelId},
+        }
+        return smokeRubricSession
+    },
+    updateRubricEffort: async (_sessionId, effort) => {
+        smokeRubricSession = {
+            ...smokeRubricSession,
+            rubricAgent: {...smokeRubricSession.rubricAgent, effort},
+        }
+        return smokeRubricSession
+    },
     listCases: async () => [smokeEvaluationCase],
     listEvaluationRuns: async () => [smokeEvaluationRun],
     getEvaluationRun: async () => smokeEvaluationRun,
@@ -359,6 +455,14 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     },
     smokeEmitCurationActivity: (activity) => {
         for (const listener of curationActivityListeners) listener(activity)
+    },
+    onRubricChanged: (listener) => {
+        rubricChangedListeners.add(listener)
+        return () => rubricChangedListeners.delete(listener)
+    },
+    onRubricActivity: (listener) => {
+        rubricActivityListeners.add(listener)
+        return () => rubricActivityListeners.delete(listener)
     },
     onEvaluationChanged: noOpSubscription,
     onWorkspaceChanged: noOpSubscription,

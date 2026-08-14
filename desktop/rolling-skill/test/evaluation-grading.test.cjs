@@ -133,6 +133,91 @@ function citeTypedAEvidence(judged) {
 }
 
 describe("evaluation grading contract", () => {
+    it("builds B from the frozen dataset rubric plus narrow Case addenda for curated v2 Cases", () => {
+        const caseEntry = {
+            id: "case-v2",
+            question: "查一下 7 月账单",
+            curated: {
+                schemaVersion: "rolling-skill-curated-case/v2",
+                referenceAnswer: {
+                    summary: "给出有来源的 7 月账单结果。",
+                    requiredFacts: ["账期是 7 月"],
+                    requiredSteps: ["核验账期"],
+                    requiredOutputFormat: ["金额带币种"],
+                    evidence: [],
+                },
+                rubricCoverage: [{
+                    criterionId: "R1",
+                    applicability: "applicable",
+                    expectation: "按 7 月账期返回可核验结论",
+                    evidenceBasis: "原始问题",
+                }],
+                caseSpecificCriteria: [{
+                    id: "C1",
+                    criterion: "明确标出 7 月",
+                    weight: 1,
+                    evidenceBasis: "原始问题",
+                }],
+                caseAutomaticFailures: [{
+                    id: "CF1",
+                    condition: "回答其他月份",
+                    evidenceBasis: "原始问题限定 7 月",
+                }],
+                badCaseAnalysis: null,
+            },
+        }
+        const rubricVersion = {
+            id: "rubric-version-2",
+            version: 2,
+            rubricDigest: "sha256:rubric",
+            rubric: {
+                schemaVersion: "rolling-skill-dataset-rubric/v1",
+                title: "Billing rubric",
+                summary: "Billing quality",
+                criteria: [{
+                    id: "R1",
+                    title: "Verified billing result",
+                    criterion: "Return a supported and scoped billing conclusion.",
+                    weight: 3,
+                    evidenceRequirements: ["Response", "Trace"],
+                    scoringAnchors: {
+                        "0": "Missing",
+                        "2": "Minimal",
+                        "5": "Partial",
+                        "8": "Substantial",
+                        "10": "Complete",
+                    },
+                    criticalFailure: true,
+                }],
+                automaticFailures: [{
+                    id: "RF1",
+                    condition: "Fabricated billing number",
+                    rationale: "Unsupported financial data is unusable.",
+                }],
+            },
+        }
+
+        const contract = buildScoreContract(caseEntry, {
+            rubricVersion,
+            evidenceRefs: ["response"],
+        })
+
+        assert.equal(contract.rubricVersion.id, "rubric-version-2")
+        assert.deepEqual(
+            contract.b.criteria.map((entry) => [entry.id, entry.source, entry.weight]),
+            [
+                ["R1", "dataset_rubric", 3],
+                ["RF1", "dataset_rubric_failure", 1],
+                ["C1", "case_specific", 1],
+                ["CF1", "case_automatic_failure", 1],
+            ],
+        )
+        assert.match(contract.b.criteria[0].criterion, /0: Missing/)
+        assert.match(contract.b.criteria[0].criterion, /按 7 月账期/)
+        assert.equal(contract.a.maxScore, 40)
+        assert.equal(contract.b.maxScore, 60)
+    })
+
     it("keeps A generic and maps all Case-specific grading into diagnostic B criteria", () => {
         const contract = scoreContract()
 

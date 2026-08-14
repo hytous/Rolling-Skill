@@ -1,4 +1,5 @@
 const {createHash} = require("node:crypto")
+const {validateDatasetRubric} = require("./dataset-rubric.cjs")
 
 const SCORE_CONTRACT_SCHEMA = "rolling-skill-score-contract/v1"
 const JUDGE_RESULT_SCHEMA = "rolling-skill-judge-result/v1"
@@ -123,15 +124,26 @@ function normalizeApplicability(value, fallback) {
     return normalized
 }
 
-function normalizeCuratedCase(caseEntry) {
+function normalizeCuratedCase(caseEntry, options = {}) {
     const curated = caseEntry?.curated ?? caseEntry
     if (!curated || typeof curated !== "object") throw new Error("A curated Case is required")
+    if (curated.schemaVersion === "rolling-skill-curated-case/v2") {
+        const rubricVersion = options.rubricVersion
+        if (!rubricVersion?.rubric) {
+            throw new Error("A curated v2 Case requires its frozen dataset rubric version")
+        }
+        const rubric = validateDatasetRubric(rubricVersion.rubric)
+        requireArray(curated.rubricCoverage, "Curated rubric coverage")
+        requireArray(curated.caseSpecificCriteria, "Curated Case-specific criteria")
+        requireArray(curated.caseAutomaticFailures, "Curated Case automatic failures")
+        return {curated, grading: null, rubric, rubricVersion, version: 2}
+    }
     const grading = curated.grading
     if (!grading || typeof grading !== "object") throw new Error("The curated Case requires grading")
     requireArray(grading.hardRequirements, "Curated hard requirements")
     requireArray(grading.softCriteria, "Curated soft criteria")
     requireArray(grading.automaticFailures, "Curated automatic failures")
-    return {curated, grading}
+    return {curated, grading, rubric: null, rubricVersion: null, version: 1}
 }
 
 function assertUniqueIds(entries, label) {
@@ -181,7 +193,10 @@ function compactEvidenceCatalog(value) {
 }
 
 function buildScoreContract(caseEntry, options = {}) {
-    const {curated, grading} = normalizeCuratedCase(caseEntry)
+    const {curated, grading, rubric, rubricVersion, version} = normalizeCuratedCase(
+        caseEntry,
+        options,
+    )
     const applicability = options.aApplicability ?? options.applicability ?? {}
     const dimensionOverrides = options.aDimensions ?? {}
     const dimensions = A_DIMENSIONS.map((template) => {
@@ -199,55 +214,103 @@ function buildScoreContract(caseEntry, options = {}) {
         }
     })
 
-    const hardRequirements = grading.hardRequirements.map((entry) => ({
-        id: requireString(entry?.id, "Hard requirement id"),
-        criterion: requireString(entry?.criterion, "Hard requirement criterion"),
-        passCondition: requireString(entry?.passCondition, "Hard requirement pass condition"),
-        evidenceBasis: requireString(entry?.evidenceBasis, "Hard requirement evidence basis"),
-        source: "case_hard_requirement",
-        weight: 1,
-    }))
-    assertUniqueIds(hardRequirements, "Hard requirement")
-
-    const automaticFailures = grading.automaticFailures.map((entry, index) => {
-        if (typeof entry === "string") {
+    let criteria
+    if (version === 2) {
+        const coverageById = new Map(
+            curated.rubricCoverage.map((entry) => [
+                requireString(entry?.criterionId, "Rubric coverage criterion id"),
+                entry,
+            ]),
+        )
+        if (
+            coverageById.size !== rubric.criteria.length ||
+            rubric.criteria.some((entry) => !coverageById.has(entry.id))
+        ) {
+            throw new Error("Curated rubric coverage must exactly match the frozen dataset rubric")
+        }
+        criteria = rubric.criteria.map((entry) => {
+            const coverage = coverageById.get(entry.id)
+            const anchors = Object.entries(entry.scoringAnchors)
+                .map(([rating, meaning]) => `${rating}: ${meaning}`)
+                .join("; ")
             return {
-                id: `AF${index + 1}`,
-                condition: requireString(entry, "Automatic failure condition"),
-                source: "case_automatic_failure",
-                weight: 1,
+                id: entry.id,
+                criterion: `${entry.title}: ${entry.criterion} Case applicability: ${coverage.applicability}. Case expectation: ${requireString(coverage.expectation, "Rubric coverage expectation")}. Evidence basis: ${requireString(coverage.evidenceBasis, "Rubric coverage evidence basis")}. Evidence requirements: ${entry.evidenceRequirements.join("; ")}. Rating anchors: ${anchors}`,
+                weight: Number(entry.weight),
+                source: "dataset_rubric",
+                criticalFailure: entry.criticalFailure,
+                applicability: coverage.applicability,
             }
-        }
-        return {
-            id: requireString(entry?.id, "Automatic failure id"),
-            condition: requireString(entry?.condition, "Automatic failure condition"),
-            source: "case_automatic_failure",
-            weight: Number(entry.weight ?? 1),
-        }
-    })
-    assertUniqueIds(automaticFailures, "Automatic failure")
-
-    let criteria = grading.softCriteria.map((entry) => ({
-        id: requireString(entry?.id, "Soft criterion id"),
-        criterion: requireString(entry?.criterion, "Soft criterion"),
-        weight: Number(entry?.weight),
-        source: "case_soft_criterion",
-    }))
-    criteria = [
-        ...hardRequirements.map((entry) => ({
-            id: entry.id,
-            criterion: `${entry.criterion}. Pass condition: ${entry.passCondition}. Evidence basis: ${entry.evidenceBasis}`,
-            weight: entry.weight,
-            source: entry.source,
-        })),
-        ...automaticFailures.map((entry) => ({
-            id: entry.id,
-            criterion: `The response should avoid this failure condition: ${entry.condition}`,
-            weight: entry.weight,
-            source: entry.source,
-        })),
-        ...criteria,
-    ]
+        })
+        criteria.push(
+            ...rubric.automaticFailures.map((entry) => ({
+                id: entry.id,
+                criterion: `Avoid this dataset rubric failure: ${entry.condition}. Basis: ${entry.rationale}`,
+                weight: 1,
+                source: "dataset_rubric_failure",
+            })),
+            ...curated.caseSpecificCriteria.map((entry) => ({
+                id: requireString(entry?.id, "Case-specific criterion id"),
+                criterion: `${requireString(entry?.criterion, "Case-specific criterion")}. Evidence basis: ${requireString(entry?.evidenceBasis, "Case-specific criterion evidence basis")}`,
+                weight: Number(entry?.weight),
+                source: "case_specific",
+            })),
+            ...curated.caseAutomaticFailures.map((entry) => ({
+                id: requireString(entry?.id, "Case automatic failure id"),
+                criterion: `Avoid this Case-specific failure: ${requireString(entry?.condition, "Case automatic failure condition")}. Evidence basis: ${requireString(entry?.evidenceBasis, "Case automatic failure evidence basis")}`,
+                weight: 1,
+                source: "case_automatic_failure",
+            })),
+        )
+    } else {
+        const hardRequirements = grading.hardRequirements.map((entry) => ({
+            id: requireString(entry?.id, "Hard requirement id"),
+            criterion: requireString(entry?.criterion, "Hard requirement criterion"),
+            passCondition: requireString(entry?.passCondition, "Hard requirement pass condition"),
+            evidenceBasis: requireString(entry?.evidenceBasis, "Hard requirement evidence basis"),
+            source: "case_hard_requirement",
+            weight: 1,
+        }))
+        assertUniqueIds(hardRequirements, "Hard requirement")
+        const automaticFailures = grading.automaticFailures.map((entry, index) => {
+            if (typeof entry === "string") {
+                return {
+                    id: `AF${index + 1}`,
+                    condition: requireString(entry, "Automatic failure condition"),
+                    source: "case_automatic_failure",
+                    weight: 1,
+                }
+            }
+            return {
+                id: requireString(entry?.id, "Automatic failure id"),
+                condition: requireString(entry?.condition, "Automatic failure condition"),
+                source: "case_automatic_failure",
+                weight: Number(entry.weight ?? 1),
+            }
+        })
+        assertUniqueIds(automaticFailures, "Automatic failure")
+        criteria = grading.softCriteria.map((entry) => ({
+            id: requireString(entry?.id, "Soft criterion id"),
+            criterion: requireString(entry?.criterion, "Soft criterion"),
+            weight: Number(entry?.weight),
+            source: "case_soft_criterion",
+        }))
+        criteria = [
+            ...hardRequirements.map((entry) => ({
+                id: entry.id,
+                criterion: `${entry.criterion}. Pass condition: ${entry.passCondition}. Evidence basis: ${entry.evidenceBasis}`,
+                weight: entry.weight,
+                source: entry.source,
+            })),
+            ...automaticFailures.map((entry) => ({
+                id: entry.id,
+                criterion: `The response should avoid this failure condition: ${entry.condition}`,
+                weight: entry.weight,
+                source: entry.source,
+            })),
+            ...criteria,
+        ]
+    }
     const deductionCriteria = (curated.badCaseAnalysis?.deductionRules ?? []).map((entry) => ({
         id: requireString(entry?.id, "Badcase deduction id"),
         criterion: `Avoid recurrence of this badcase error: ${requireString(entry?.errorPattern, "Badcase deduction error pattern")}`,
@@ -297,6 +360,15 @@ function buildScoreContract(caseEntry, options = {}) {
         calculatorVersion: CALCULATOR_VERSION,
         issueDescription: String(caseEntry?.issueDescription ?? ""),
         referenceAnswer: copy(curated.referenceAnswer ?? null),
+        ...(version === 2
+            ? {
+                  rubricVersion: {
+                      id: String(rubricVersion.id ?? ""),
+                      version: Number(rubricVersion.version ?? 0),
+                      rubricDigest: String(rubricVersion.rubricDigest ?? ""),
+                  },
+              }
+            : {}),
         evidence: {
             typed: Boolean(evidenceCatalog),
             allowedRefs: evidenceRefs,

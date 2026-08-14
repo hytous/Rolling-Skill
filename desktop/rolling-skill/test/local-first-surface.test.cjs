@@ -112,7 +112,7 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /curation-live-activity/)
         assert.match(renderer, /effectiveEffort/)
         assert.match(renderer, /actualRuntimeUnknown/)
-        assert.match(renderer, /rolling-skill-curated-case\\\/v1/)
+        assert.match(renderer, /rolling-skill-curated-case\\\/v\[12\]/)
         assert.doesNotMatch(renderer, /defaultEffort \? `\$\{t\("runtimeDefaultEffort"\)\} · \$\{defaultEffort\}`/)
     })
 
@@ -262,6 +262,43 @@ describe("local-first desktop surface", () => {
         assert.match(main, /datasets:list-cases/)
         assert.doesNotMatch(styles, /\.workbench\.evaluation-mode\s*>\s*\.topbar/)
         assert.match(styles, /\.evaluation-workbench\s*\{[^}]*grid-row:\s*2\s*\/\s*-1/s)
+    })
+
+    it("manages one versioned dataset rubric before Case curation and evaluation", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+        const preload = source("src/preload.cjs")
+        const main = source("src/main.cjs")
+
+        for (const id of [
+            "evaluation-dataset-rubric-status",
+            "manage-dataset-rubric",
+            "rubric-drawer",
+            "rubric-version-list",
+            "rubric-detail",
+            "settings-rubric-model",
+            "settings-rubric-effort",
+        ]) {
+            assert.match(html, new RegExp(`id="${id}"`))
+        }
+        assert.match(renderer, /createRubricSession/)
+        assert.match(renderer, /sendRubricMessage/)
+        assert.match(renderer, /publishRubricSession/)
+        assert.match(renderer, /discardRubricSession/)
+        assert.match(renderer, /data-rubric-model/)
+        assert.match(renderer, /data-rubric-effort/)
+        assert.match(renderer, /rubricCalibration\?\.status === "needed"/)
+        assert.match(renderer, /session\.datasetId !== state\.evaluationDatasetId/)
+        assert.match(renderer, /state\.rubricSessions\.some\(\(session\) => session\.id === activity\.sessionId\)/)
+        assert.match(preload, /listDatasetRubricVersions/)
+        assert.match(preload, /getActiveDatasetRubric/)
+        assert.match(preload, /onRubricChanged/)
+        assert.match(main, /rubrics:create/)
+        assert.match(main, /rubrics:publish/)
+        assert.match(main, /requirePublishedDatasetRubric\(dataset\)/)
+        assert.match(styles, /\.dataset-rubric-card/)
+        assert.match(styles, /\.rubric-drawer\.visible/)
     })
 
     it("keeps runtime and trace utilities inside Settings instead of the sidebar footer", () => {

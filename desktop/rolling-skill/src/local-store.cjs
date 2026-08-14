@@ -9,11 +9,23 @@ const {
 const {dirname} = require("node:path")
 const {randomUUID} = require("node:crypto")
 
+const {
+    datasetRubricDigest,
+    validateDatasetRubric,
+} = require("./dataset-rubric.cjs")
 const {formatCuratedAnswer, validateCuratorDraft} = require("./episode-curation.cjs")
 const {validateSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 
-const LOCAL_SCHEMA = "rolling-skill-local/v8"
+const LOCAL_SCHEMA = "rolling-skill-local/v9"
 const CURATION_STATUSES = new Set([
+    "queued",
+    "running",
+    "needs_review",
+    "failed",
+    "archived",
+    "cancelled",
+])
+const RUBRIC_STATUSES = new Set([
     "queued",
     "running",
     "needs_review",
@@ -83,6 +95,7 @@ function defaultSettings() {
         localAccess: "full",
         taskProfile: {runtimePolicy: "active", modelId: null, effort: null},
         curatorProfile: {runtimePolicy: "active", modelId: null, effort: null},
+        rubricProfile: {runtimePolicy: "active", modelId: null, effort: null},
         judgeProfile: {runtimePolicy: "active", modelId: null, effort: null},
         autoCaptureProfile: {
             runtimePolicy: "active",
@@ -104,11 +117,14 @@ function initialState() {
                 id: randomUUID(),
                 name: "Skill evaluation cases",
                 skillReference: null,
+                activeRubricVersionId: null,
                 createdAt: now,
             },
         ],
         cases: [],
         curationSessions: [],
+        datasetRubricVersions: [],
+        rubricSessions: [],
         evaluationRuns: [],
     }
 }
@@ -146,6 +162,10 @@ function migrateState(input) {
         state.settings.curatorProfile = {runtimePolicy: "active", modelId: null, effort: null}
         changed = true
     }
+    if (!state.settings.rubricProfile) {
+        state.settings.rubricProfile = {runtimePolicy: "active", modelId: null, effort: null}
+        changed = true
+    }
     if (!state.settings.judgeProfile) {
         state.settings.judgeProfile = {runtimePolicy: "active", modelId: null, effort: null}
         changed = true
@@ -169,6 +189,7 @@ function migrateState(input) {
     for (const profile of [
         state.settings.taskProfile,
         state.settings.curatorProfile,
+        state.settings.rubricProfile,
         state.settings.judgeProfile,
         state.settings.autoCaptureProfile,
     ]) {
@@ -192,35 +213,48 @@ function migrateState(input) {
         state.curationSessions = []
         changed = true
     }
+    if (!Array.isArray(state.datasetRubricVersions)) {
+        state.datasetRubricVersions = []
+        changed = true
+    }
+    if (!Array.isArray(state.rubricSessions)) {
+        state.rubricSessions = []
+        changed = true
+    }
     if (!Array.isArray(state.evaluationRuns)) {
         state.evaluationRuns = []
         changed = true
     }
     for (const dataset of state.datasets) {
-        if ("skillReference" in dataset) continue
-        const candidates = [...state.cases, ...state.curationSessions]
-            .filter((entry) => entry.datasetId === dataset.id && entry.skillReference)
-            .map((entry) => {
-                try {
-                    return normalizeSkillReference(entry.skillReference)
-                } catch {
-                    return null
-                }
-            })
-            .filter(Boolean)
-        const identities = new Map()
-        for (const reference of candidates) {
-            const key = `${reference.name}\u0000${reference.path}`
-            const score = Object.values(reference).filter(
-                (value) => value !== null && value !== undefined && value !== "",
-            ).length
-            const existing = identities.get(key)
-            if (!existing || score > existing.score) identities.set(key, {reference, score})
+        if (!("skillReference" in dataset)) {
+            const candidates = [...state.cases, ...state.curationSessions]
+                .filter((entry) => entry.datasetId === dataset.id && entry.skillReference)
+                .map((entry) => {
+                    try {
+                        return normalizeSkillReference(entry.skillReference)
+                    } catch {
+                        return null
+                    }
+                })
+                .filter(Boolean)
+            const identities = new Map()
+            for (const reference of candidates) {
+                const key = `${reference.name}\u0000${reference.path}`
+                const score = Object.values(reference).filter(
+                    (value) => value !== null && value !== undefined && value !== "",
+                ).length
+                const existing = identities.get(key)
+                if (!existing || score > existing.score) identities.set(key, {reference, score})
+            }
+            dataset.skillReference = identities.size === 1
+                ? copy([...identities.values()][0].reference)
+                : null
+            changed = true
         }
-        dataset.skillReference = identities.size === 1
-            ? copy([...identities.values()][0].reference)
-            : null
-        changed = true
+        if (!("activeRubricVersionId" in dataset)) {
+            dataset.activeRubricVersionId = null
+            changed = true
+        }
     }
     for (const session of state.curationSessions) {
         if (!("issueDescription" in session)) {
@@ -243,6 +277,10 @@ function migrateState(input) {
         }
         if (!("skillReference" in session)) {
             session.skillReference = null
+            changed = true
+        }
+        if (!("rubricVersionSnapshot" in session)) {
+            session.rubricVersionSnapshot = null
             changed = true
         }
         if (session.curator && !("effort" in session.curator)) {
@@ -296,6 +334,10 @@ function migrateState(input) {
         }
         if (!("skillEvidence" in run)) {
             run.skillEvidence = null
+            changed = true
+        }
+        if (!("rubricVersionSnapshot" in run)) {
+            run.rubricVersionSnapshot = null
             changed = true
         }
         for (const result of run.results ?? []) {
@@ -356,6 +398,27 @@ function requireCurationSession(state, id) {
     const session = state.curationSessions.find((entry) => entry.id === id)
     if (!session) throw new Error("Unknown curation session")
     return session
+}
+
+function requireRubricSession(state, id) {
+    const session = state.rubricSessions.find((entry) => entry.id === id)
+    if (!session) throw new Error("Unknown rubric session")
+    return session
+}
+
+function requireDatasetRubricVersion(state, id) {
+    const version = state.datasetRubricVersions.find((entry) => entry.id === id)
+    if (!version) throw new Error("Unknown dataset rubric version")
+    return version
+}
+
+function curationValidationOptions(session) {
+    return {
+        caseType: session.caseType,
+        sourceItemIds: session.episode.items.map((item) => item.id),
+        rubricCriteriaIds:
+            session.rubricVersionSnapshot?.rubric?.criteria?.map((entry) => entry.id) ?? undefined,
+    }
 }
 
 function skillIdentity(value, label) {
@@ -485,6 +548,7 @@ class LocalEvaluationStore {
             id: randomUUID(),
             name: trimmed,
             skillReference,
+            activeRubricVersionId: null,
             createdAt: new Date().toISOString(),
         }
         state.datasets.push(dataset)
@@ -513,7 +577,17 @@ class LocalEvaluationStore {
                 entry.status !== "cancelled",
         )
         if (unfinished) throw new Error("Dataset Skill cannot change with unfinished Curator drafts")
+        const unfinishedRubric = state.rubricSessions.some(
+            (entry) =>
+                entry.datasetId === datasetId &&
+                entry.status !== "archived" &&
+                entry.status !== "cancelled",
+        )
+        if (unfinishedRubric) {
+            throw new Error("Dataset Skill cannot change with an unfinished Rubric Agent session")
+        }
         dataset.skillReference = skillReference
+        dataset.activeRubricVersionId = null
         this.persist()
         return copy(dataset)
     }
@@ -549,12 +623,27 @@ class LocalEvaluationStore {
         if (unfinishedCurations.length) {
             throw new Error("Dataset has unfinished Curator drafts")
         }
+        const unfinishedRubrics = state.rubricSessions.filter(
+            (entry) =>
+                entry.datasetId === datasetId &&
+                entry.status !== "archived" &&
+                entry.status !== "cancelled",
+        )
+        if (unfinishedRubrics.length) {
+            throw new Error("Dataset has unfinished Rubric Agent sessions")
+        }
 
         const dataset = state.datasets.find((entry) => entry.id === datasetId)
         const deletedCaseCount = state.cases.filter(
             (entry) => entry.datasetId === datasetId,
         ).length
         const deletedCurationCount = state.curationSessions.filter(
+            (entry) => entry.datasetId === datasetId,
+        ).length
+        const deletedRubricSessionCount = state.rubricSessions.filter(
+            (entry) => entry.datasetId === datasetId,
+        ).length
+        const deletedRubricVersionCount = state.datasetRubricVersions.filter(
             (entry) => entry.datasetId === datasetId,
         ).length
         const preservedEvaluationRunCount = state.evaluationRuns.filter(
@@ -564,6 +653,12 @@ class LocalEvaluationStore {
         state.datasets = state.datasets.filter((entry) => entry.id !== datasetId)
         state.cases = state.cases.filter((entry) => entry.datasetId !== datasetId)
         state.curationSessions = state.curationSessions.filter(
+            (entry) => entry.datasetId !== datasetId,
+        )
+        state.rubricSessions = state.rubricSessions.filter(
+            (entry) => entry.datasetId !== datasetId,
+        )
+        state.datasetRubricVersions = state.datasetRubricVersions.filter(
             (entry) => entry.datasetId !== datasetId,
         )
 
@@ -578,6 +673,8 @@ class LocalEvaluationStore {
             dataset,
             deletedCaseCount,
             deletedCurationCount,
+            deletedRubricSessionCount,
+            deletedRubricVersionCount,
             preservedEvaluationRunCount,
             settings: state.settings,
         })
@@ -647,6 +744,19 @@ class LocalEvaluationStore {
                 "Curator reasoning effort",
             )
         }
+        if (input.rubricModelId !== undefined) {
+            settings.rubricProfile = {
+                ...settings.rubricProfile,
+                runtimePolicy: "active",
+                modelId: modelId(input.rubricModelId, "Rubric Agent model id"),
+            }
+        }
+        if (input.rubricEffort !== undefined) {
+            settings.rubricProfile.effort = reasoningEffort(
+                input.rubricEffort,
+                "Rubric Agent reasoning effort",
+            )
+        }
         if (input.judgeModelId !== undefined) {
             settings.judgeProfile = {
                 ...settings.judgeProfile,
@@ -683,6 +793,267 @@ class LocalEvaluationStore {
         settings.autoCaptureProfile = automatic
         this.persist()
         return copy(settings)
+    }
+
+    listDatasetRubricVersions(datasetId) {
+        const state = this.load()
+        requireDataset(state, datasetId)
+        return copy(
+            state.datasetRubricVersions
+                .filter((entry) => entry.datasetId === datasetId)
+                .sort((left, right) => Number(right.version ?? 0) - Number(left.version ?? 0)),
+        )
+    }
+
+    getDatasetRubricVersion(id) {
+        return copy(requireDatasetRubricVersion(this.load(), id))
+    }
+
+    getActiveDatasetRubric(datasetId) {
+        const state = this.load()
+        const dataset = requireDataset(state, datasetId)
+        if (!dataset.activeRubricVersionId) return null
+        const version = requireDatasetRubricVersion(state, dataset.activeRubricVersionId)
+        if (version.datasetId !== datasetId) {
+            throw new Error("Dataset active rubric does not belong to the dataset")
+        }
+        return copy(version)
+    }
+
+    listRubricSessions(datasetId = null) {
+        const state = this.load()
+        if (datasetId) requireDataset(state, datasetId)
+        return copy(
+            state.rubricSessions
+                .filter((entry) => !datasetId || entry.datasetId === datasetId)
+                .filter((entry) => entry.status !== "cancelled" && entry.status !== "archived")
+                .sort((left, right) =>
+                    String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")),
+                ),
+        )
+    }
+
+    getRubricSession(id) {
+        return copy(requireRubricSession(this.load(), id))
+    }
+
+    createRubricSession(input = {}) {
+        const state = this.load()
+        const dataset = requireDataset(state, input.datasetId)
+        const skillReference = copy(requireDatasetSkill(dataset))
+        const skillEvidence = copy(validateSkillEvidence(input.skillEvidence, {
+            expectedName: skillReference.name,
+            requireComplete: true,
+        }))
+        let baseVersionId = null
+        if (input.baseVersionId) {
+            const base = requireDatasetRubricVersion(state, input.baseVersionId)
+            if (base.datasetId !== dataset.id) {
+                throw new Error("Rubric base version does not belong to the dataset")
+            }
+            baseVersionId = base.id
+        }
+        const now = new Date().toISOString()
+        const session = {
+            id: randomUUID(),
+            datasetId: dataset.id,
+            baseVersionId,
+            status: "queued",
+            skillReference,
+            skillEvidence,
+            rubricAgent: {
+                runtimeId: input.rubricAgent?.runtimeId ?? null,
+                modelProvider: input.rubricAgent?.modelProvider ?? null,
+                modelId: modelId(input.rubricAgent?.modelId, "Rubric Agent model id"),
+                effort: reasoningEffort(
+                    input.rubricAgent?.effort,
+                    "Rubric Agent reasoning effort",
+                ),
+                effectiveModelId: modelId(
+                    input.rubricAgent?.effectiveModelId,
+                    "Effective Rubric Agent model id",
+                ),
+                effectiveEffort: reasoningEffort(
+                    input.rubricAgent?.effectiveEffort,
+                    "Effective Rubric Agent reasoning effort",
+                ),
+                promptVersion: input.rubricAgent?.promptVersion ?? null,
+                threadId: null,
+                currentTurnId: null,
+            },
+            conversation: [],
+            revisions: [],
+            draft: null,
+            error: null,
+            publishedVersionId: null,
+            createdAt: now,
+            updatedAt: now,
+        }
+        state.rubricSessions.push(session)
+        this.persist()
+        return copy(session)
+    }
+
+    updateRubricSession(id, patch = {}) {
+        const state = this.load()
+        const session = requireRubricSession(state, id)
+        if (patch.status !== undefined) {
+            if (!RUBRIC_STATUSES.has(patch.status)) throw new Error("Invalid rubric status")
+            session.status = patch.status
+        }
+        if (patch.rubricAgent !== undefined) {
+            session.rubricAgent = {...session.rubricAgent, ...copy(patch.rubricAgent)}
+        }
+        if (patch.error !== undefined) session.error = patch.error ? String(patch.error) : null
+        if (patch.draft !== undefined) {
+            session.draft = patch.draft ? copy(validateDatasetRubric(patch.draft)) : null
+        }
+        session.updatedAt = new Date().toISOString()
+        this.persist()
+        return copy(session)
+    }
+
+    appendRubricMessage(id, input = {}) {
+        const state = this.load()
+        const session = requireRubricSession(state, id)
+        if (input.role !== "user" && input.role !== "assistant") {
+            throw new Error("Rubric message role must be user or assistant")
+        }
+        const message = String(input.text ?? "").trim()
+        if (!message) throw new Error("Rubric message text is required")
+        if (message.length > 120_000) throw new Error("Rubric message is too large")
+        session.conversation.push({
+            id: randomUUID(),
+            role: input.role,
+            text: message,
+            turnId: input.turnId ?? null,
+            createdAt: new Date().toISOString(),
+        })
+        session.updatedAt = new Date().toISOString()
+        this.persist()
+        return copy(session)
+    }
+
+    recordRubricRevision(id, input = {}) {
+        const state = this.load()
+        const session = requireRubricSession(state, id)
+        const rubric = copy(validateDatasetRubric(input.rubric))
+        const assistantText = String(input.assistantText ?? "").trim()
+        if (!assistantText) throw new Error("A Rubric Agent response is required")
+        const now = new Date().toISOString()
+        session.conversation.push({
+            id: randomUUID(),
+            role: "assistant",
+            text: assistantText,
+            turnId: input.turnId ?? null,
+            createdAt: now,
+        })
+        session.revisions.push({
+            id: randomUUID(),
+            rubric,
+            rubricDigest: datasetRubricDigest(rubric),
+            turnId: input.turnId ?? null,
+            createdAt: now,
+        })
+        session.draft = rubric
+        session.status = "needs_review"
+        session.error = null
+        session.rubricAgent.currentTurnId = null
+        session.updatedAt = now
+        this.persist()
+        return copy(session)
+    }
+
+    updateRubricModel(id, value) {
+        const state = this.load()
+        const session = requireRubricSession(state, id)
+        if (session.status === "archived" || session.status === "cancelled") {
+            throw new Error("This rubric session is no longer editable")
+        }
+        session.rubricAgent.modelId = modelId(value, "Rubric Agent model id")
+        session.updatedAt = new Date().toISOString()
+        this.persist()
+        return copy(session)
+    }
+
+    updateRubricEffort(id, value) {
+        const state = this.load()
+        const session = requireRubricSession(state, id)
+        if (session.status === "archived" || session.status === "cancelled") {
+            throw new Error("This rubric session is no longer editable")
+        }
+        session.rubricAgent.effort = reasoningEffort(value, "Rubric Agent reasoning effort")
+        session.updatedAt = new Date().toISOString()
+        this.persist()
+        return copy(session)
+    }
+
+    cancelRubricSession(id) {
+        const state = this.load()
+        const session = requireRubricSession(state, id)
+        if (session.status === "archived") throw new Error("A published rubric cannot be discarded")
+        session.status = "cancelled"
+        session.error = null
+        session.rubricAgent.currentTurnId = null
+        session.updatedAt = new Date().toISOString()
+        this.persist()
+        return copy(session)
+    }
+
+    publishRubricSession(id) {
+        const state = this.load()
+        const session = requireRubricSession(state, id)
+        if (session.status !== "needs_review" || !session.draft) {
+            throw new Error("A valid reviewed rubric draft is required before publishing")
+        }
+        const dataset = requireDataset(state, session.datasetId)
+        const currentSkill = requireDatasetSkill(dataset)
+        if (
+            currentSkill.name !== session.skillReference.name ||
+            currentSkill.path !== session.skillReference.path
+        ) {
+            throw new Error("Dataset Skill changed before the rubric could be published")
+        }
+        if ((dataset.activeRubricVersionId ?? null) !== (session.baseVersionId ?? null)) {
+            throw new Error(
+                "A newer dataset Rubric is already active; discard this stale draft and edit the latest version",
+            )
+        }
+        const rubric = copy(validateDatasetRubric(session.draft))
+        const versionNumber = state.datasetRubricVersions
+            .filter((entry) => entry.datasetId === dataset.id)
+            .reduce((highest, entry) => Math.max(highest, Number(entry.version) || 0), 0) + 1
+        const now = new Date().toISOString()
+        const version = {
+            id: randomUUID(),
+            datasetId: dataset.id,
+            version: versionNumber,
+            rubric,
+            rubricDigest: datasetRubricDigest(rubric),
+            skillReference: copy(session.skillReference),
+            skillEvidenceDigest: session.skillEvidence.digest,
+            sourceSessionId: session.id,
+            baseVersionId: session.baseVersionId,
+            createdAt: now,
+            publishedAt: now,
+        }
+        state.datasetRubricVersions.push(version)
+        dataset.activeRubricVersionId = version.id
+        for (const entry of state.cases.filter((candidate) => candidate.datasetId === dataset.id)) {
+            if (entry.rubricVersionId === version.id) continue
+            entry.rubricCalibration = {
+                status: "needed",
+                rubricVersionId: version.id,
+                previousRubricVersionId: entry.rubricVersionId ?? null,
+            }
+        }
+        session.status = "archived"
+        session.publishedVersionId = version.id
+        session.error = null
+        session.rubricAgent.currentTurnId = null
+        session.updatedAt = now
+        this.persist()
+        return copy(version)
     }
 
     saveCase(input) {
@@ -754,6 +1125,9 @@ class LocalEvaluationStore {
         requireCaseType(input.caseType)
         const dataset = requireDataset(state, input.datasetId)
         const skillReference = copy(requireDatasetSkill(dataset))
+        const rubricVersionSnapshot = dataset.activeRubricVersionId
+            ? copy(requireDatasetRubricVersion(state, dataset.activeRubricVersionId))
+            : null
         const episode = copy(input.episode)
         if (episode?.schemaVersion !== "rolling-skill-episode/v1") {
             throw new Error("A valid frozen episode is required")
@@ -778,6 +1152,7 @@ class LocalEvaluationStore {
             status: "queued",
             episode,
             skillReference,
+            rubricVersionSnapshot,
             curator: {
                 runtimeId: input.curator?.runtimeId ?? null,
                 modelProvider: input.curator?.modelProvider ?? null,
@@ -820,8 +1195,7 @@ class LocalEvaluationStore {
             session.draft = patch.draft
                 ? copy(
                       validateCuratorDraft(patch.draft, {
-                          caseType: session.caseType,
-                          sourceItemIds: session.episode.items.map((item) => item.id),
+                          ...curationValidationOptions(session),
                       }),
                   )
                 : null
@@ -894,8 +1268,7 @@ class LocalEvaluationStore {
         const session = requireCurationSession(state, id)
         const draft = copy(
             validateCuratorDraft(input.draft, {
-                caseType: session.caseType,
-                sourceItemIds: session.episode.items.map((item) => item.id),
+                ...curationValidationOptions(session),
             }),
         )
         const assistantText = String(input.assistantText ?? "").trim()
@@ -931,15 +1304,29 @@ class LocalEvaluationStore {
         if (session.status !== "needs_review" || !session.draft) {
             throw new Error("A valid reviewed draft is required before archiving")
         }
-        requireDataset(state, session.datasetId)
+        const dataset = requireDataset(state, session.datasetId)
         const draft = copy(
             validateCuratorDraft(session.draft, {
-                caseType: session.caseType,
-                sourceItemIds: session.episode.items.map((item) => item.id),
+                ...curationValidationOptions(session),
             }),
         )
         const now = new Date().toISOString()
         const latestRevision = session.revisions.at(-1)
+        const frozenRubricVersionId = session.rubricVersionSnapshot?.id ?? null
+        const activeRubricVersionId = dataset.activeRubricVersionId ?? null
+        const rubricCalibration = activeRubricVersionId
+            ? activeRubricVersionId === frozenRubricVersionId
+                ? {
+                      status: "current",
+                      rubricVersionId: activeRubricVersionId,
+                      previousRubricVersionId: frozenRubricVersionId,
+                  }
+                : {
+                      status: "needed",
+                      rubricVersionId: activeRubricVersionId,
+                      previousRubricVersionId: frozenRubricVersionId,
+                  }
+            : null
         const entry = {
             id: randomUUID(),
             datasetId: session.datasetId,
@@ -948,6 +1335,8 @@ class LocalEvaluationStore {
             issueDescription: session.issueDescription,
             answer: formatCuratedAnswer(draft),
             curated: draft,
+            rubricVersionId: frozenRubricVersionId,
+            rubricCalibration,
             skillReference: copy(session.skillReference),
             source: {
                 threadId: session.episode.source.threadId,
@@ -1007,6 +1396,12 @@ class LocalEvaluationStore {
         const state = this.load()
         const dataset = requireDataset(state, input.datasetId)
         const datasetSkillReference = copy(requireDatasetSkill(dataset))
+        const rubricVersionSnapshot = dataset.activeRubricVersionId
+            ? copy(requireDatasetRubricVersion(state, dataset.activeRubricVersionId))
+            : null
+        if (rubricVersionSnapshot && rubricVersionSnapshot.datasetId !== dataset.id) {
+            throw new Error("Dataset active rubric does not belong to the dataset")
+        }
         if (
             input.skillReference &&
             (String(input.skillReference.name ?? "").trim() !== datasetSkillReference.name ||
@@ -1032,6 +1427,14 @@ class LocalEvaluationStore {
             caseSnapshots.length !== new Set(requestedCaseIds).size
         ) {
             throw new Error("One or more selected Cases are unavailable")
+        }
+        if (
+            rubricVersionSnapshot &&
+            caseSnapshots.some((entry) => entry.rubricVersionId !== rubricVersionSnapshot.id)
+        ) {
+            throw new Error(
+                "One or more Cases require calibration for the active dataset rubric version",
+            )
         }
         const runtimeConfigurations = (input.runtimeConfigurations ?? []).map((configuration) => ({
             ...evaluationRuntimeConfiguration(configuration),
@@ -1070,6 +1473,7 @@ class LocalEvaluationStore {
             id: randomUUID(),
             datasetId: input.datasetId,
             datasetSnapshot: copy(dataset),
+            rubricVersionSnapshot,
             selectionMode: input.selectionMode,
             selectedCaseIds: caseSnapshots.map((entry) => entry.id),
             caseSnapshots: copy(caseSnapshots),
