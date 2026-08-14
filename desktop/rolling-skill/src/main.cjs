@@ -1145,6 +1145,19 @@ function installIpc() {
             effort: profile.effort,
         })
     })
+    ipcMain.handle("curation:create-calibration", async (_event, input = {}) => {
+        const datasetId = requireIdentifier(input.datasetId, "dataset")
+        const dataset = store.getDataset(datasetId)
+        await requireAvailableDatasetSkill(dataset)
+        requirePublishedDatasetRubric(dataset)
+        const profile = store.read().settings.curatorProfile
+        return curationManager.createCalibrationSession({
+            datasetId,
+            caseId: requireIdentifier(input.caseId, "Case"),
+            modelId: profile.modelId,
+            effort: profile.effort,
+        })
+    })
     ipcMain.handle("curation:send", (_event, input = {}) =>
         curationManager.sendMessage(
             requireIdentifier(input.sessionId, "curation session"),

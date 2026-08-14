@@ -34,6 +34,52 @@ function validDraft(summary = "Use the verified billing result.") {
     }
 }
 
+function datasetRubric() {
+    return {
+        schemaVersion: "rolling-skill-dataset-rubric/v1",
+        title: "Billing rubric v2",
+        summary: "Current billing result quality standard.",
+        criteria: [{
+            id: "R1",
+            title: "Supported billing conclusion",
+            criterion: "Return a scoped and evidenced billing conclusion.",
+            weight: 1,
+            evidenceRequirements: ["Agent answer"],
+            scoringAnchors: {
+                "0": "Missing",
+                "2": "Minimal",
+                "5": "Partial",
+                "8": "Substantial",
+                "10": "Complete",
+            },
+            criticalFailure: true,
+        }],
+        automaticFailures: [],
+    }
+}
+
+function rubricAwareDraft(summary = "Calibrated billing reference.") {
+    return {
+        schemaVersion: "rolling-skill-curated-case/v2",
+        referenceAnswer: {
+            summary,
+            requiredFacts: ["July is the billing period."],
+            requiredSteps: ["Query and verify the billing source."],
+            requiredOutputFormat: ["State amount and currency."],
+            evidence: [{claim: "The question asks for July.", sourceItemIds: ["user-1"]}],
+        },
+        rubricCoverage: [{
+            criterionId: "R1",
+            applicability: "applicable",
+            expectation: "Return a supported July billing conclusion.",
+            evidenceBasis: "The frozen question and answer require it.",
+        }],
+        caseSpecificCriteria: [],
+        caseAutomaticFailures: [],
+        badCaseAnalysis: null,
+    }
+}
+
 function sourceThread() {
     return {
         id: "source-thread",
@@ -228,6 +274,79 @@ describe("curation manager", () => {
             /\/runtime\/skills\/billing-cost-management\/SKILL\.md/,
         )
         assert.equal(changed.at(-1).status, "running")
+    })
+
+    it("starts Case calibration from frozen history and includes the current summary and rubric", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const sourceSession = store.createCurationSession({
+            datasetId,
+            caseType: "goodcase",
+            episode: buildEpisodeSnapshot(sourceThread(), {endItemId: "answer-1"}),
+            curator: {},
+        })
+        store.recordCurationRevision(sourceSession.id, {
+            draft: validDraft("Existing saved summary."),
+            assistantText: "original curation",
+        })
+        const saved = store.archiveCurationSession(sourceSession.id)
+        const raw = store.load()
+        const version = {
+            id: "rubric-v2",
+            datasetId,
+            version: 2,
+            rubric: datasetRubric(),
+            rubricDigest: "sha256:test",
+            publishedAt: "2026-08-14T00:00:00.000Z",
+        }
+        raw.datasetRubricVersions.push(version)
+        raw.datasets[0].activeRubricVersionId = version.id
+        raw.cases[0].rubricCalibration = {
+            status: "needed",
+            rubricVersionId: version.id,
+            previousRubricVersionId: null,
+        }
+        store.persist()
+        runtime.readThread = async () => {
+            throw new Error("Calibration must reuse frozen Case evidence")
+        }
+
+        const session = await manager.createCalibrationSession({
+            datasetId,
+            caseId: saved.id,
+            modelId: "gpt-5.6-sol",
+            effort: "high",
+        })
+        await manager.waitForIdle(session.id)
+
+        const persisted = store.getCurationSession(session.id)
+        const prompt = runtime.startedTurns.at(-1).text.at(-1).text
+        assert.equal(persisted.operation, "calibration")
+        assert.equal(persisted.targetCaseId, saved.id)
+        assert.match(prompt, /calibration of an existing saved Case/i)
+        assert.match(prompt, /Existing saved summary\./)
+        assert.match(prompt, /Billing rubric v2/)
+        assert.match(prompt, /查一下7月份账单，各业务混元3多少成本？/)
+
+        await manager.handleNotification({
+            method: "turn/completed",
+            params: {
+                threadId: persisted.curator.threadId,
+                turn: {
+                    id: persisted.curator.currentTurnId,
+                    status: "completed",
+                    items: [{
+                        id: "calibrated-draft",
+                        type: "agentMessage",
+                        text: `\`\`\`json\n${JSON.stringify(rubricAwareDraft())}\n\`\`\``,
+                    }],
+                },
+            },
+        })
+        const calibrated = await manager.archive(session.id)
+        assert.equal(calibrated.id, saved.id)
+        assert.equal(calibrated.rubricVersionId, version.id)
+        assert.equal(calibrated.rubricCalibration.status, "current")
+        assert.equal(store.listCases(datasetId).length, 1)
     })
 
     it("keeps requested settings separate from runtime-effective settings", async () => {

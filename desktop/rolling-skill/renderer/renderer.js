@@ -65,6 +65,17 @@ const translations = {
         rubricDiscarded: "Rubric draft discarded",
         rubricRequired: "Publish a dataset rubric before capturing Cases or running an evaluation.",
         caseNeedsCalibration: "Needs calibration for the current rubric",
+        casesNeedCalibration: "{count} Cases must be calibrated for rubric v{version} before this dataset can run.",
+        calibrateCase: "Calibrate",
+        calibrateSelectedCase: "Calibrate selected Case",
+        calibrateNextCase: "Calibrate next Case",
+        calibrationInProgress: "Calibrating…",
+        reviewCalibration: "Review calibration",
+        caseCalibration: "Calibration",
+        calibrationBaseline: "Current saved summary",
+        calibrationStarted: "Case sent to Curator for calibration",
+        caseCalibrated: "Case calibrated and previous version preserved",
+        doneCalibration: "Done · update case",
         datasetSkillRequired: "Select an enabled Skill for this dataset.",
         autoCaptureDatasetRequired: "Automatic capture requires a Skill-bound dataset that is available in the active runtime.",
         changeDatasetSkillCopy: "Change the Skill bound to “{name}”. Future capture and evaluation use the new binding.",
@@ -435,6 +446,17 @@ const translations = {
         rubricDiscarded: "评分标准草稿已丢弃",
         rubricRequired: "请先发布数据集评分标准，再沉淀 Case 或启动评测。",
         caseNeedsCalibration: "需要按当前评分标准校准",
+        casesNeedCalibration: "还有 {count} 个 Case 需要按评分标准 v{version} 校准，完成后才能运行整个数据集。",
+        calibrateCase: "校准",
+        calibrateSelectedCase: "校准选中 Case",
+        calibrateNextCase: "校准下一个 Case",
+        calibrationInProgress: "校准中…",
+        reviewCalibration: "查看校准",
+        caseCalibration: "Case 校准",
+        calibrationBaseline: "当前已保存总结",
+        calibrationStarted: "Case 已交给 Curator 校准",
+        caseCalibrated: "Case 已完成校准，旧版本已保留",
+        doneCalibration: "完成并更新 Case",
         datasetSkillRequired: "请为这个数据集选择当前运行时中已启用的 Skill。",
         autoCaptureDatasetRequired: "自动沉淀必须选择一个已绑定 Skill 且该 Skill 在当前运行时可用的数据集。",
         changeDatasetSkillCopy: "更换数据集“{name}”绑定的 Skill；之后的新沉淀和评测会使用新绑定。",
@@ -801,6 +823,7 @@ const state = {
     traceOpen: false,
     surface: "chat",
     evaluationCases: [],
+    calibrationStartingCaseIds: new Set(),
     evaluationSkills: [],
     evaluationDatasetId: null,
     evaluationCaseId: null,
@@ -2150,6 +2173,21 @@ function activeCuration() {
     return state.curationSessions.find((session) => session.id === state.activeCurationId) ?? null
 }
 
+function activeCalibrationForCase(caseId) {
+    return state.curationSessions.find(
+        (session) =>
+            session.operation === "calibration" &&
+            session.targetCaseId === caseId,
+    ) ?? null
+}
+
+function calibrationActionKey(session, idleKey = "calibrateCase") {
+    if (!session) return idleKey
+    return session.status === "queued" || session.status === "running"
+        ? "calibrationInProgress"
+        : "reviewCalibration"
+}
+
 function appendStringList(container, values, empty = t("none")) {
     if (!values?.length) {
         container.append(node("div", "curation-empty", empty))
@@ -2364,6 +2402,9 @@ function renderCurations() {
             ).trim()
             button.append(
                 node("span", "curation-list-title", title || t("untitledCase")),
+                ...(session.operation === "calibration"
+                    ? [node("span", "curation-list-mode", t("caseCalibration"))]
+                    : []),
                 node(
                     "span",
                     `curation-status ${session.status}`,
@@ -2386,6 +2427,9 @@ function renderCurations() {
     const overview = node("div", "curation-overview")
     overview.append(
         node("span", `case-kind ${session.caseType}`, session.caseType),
+        ...(session.operation === "calibration"
+            ? [node("span", "case-kind calibration", t("caseCalibration"))]
+            : []),
         node("span", `curation-status ${session.status}`, curationStatusLabel(session.status)),
     )
     const question = node("section", "frozen-question")
@@ -2416,6 +2460,28 @@ function renderCurations() {
     scroll.append(overview, question)
     scroll.append(sourceQuestion)
     scroll.append(provenance)
+
+    if (session.operation === "calibration" && session.baselineCaseSnapshot) {
+        const baseline = document.createElement("details")
+        baseline.className = "curation-reference-card calibration-baseline-card"
+        const summary = document.createElement("summary")
+        summary.append(
+            node("span", "curation-reference-check", "↺"),
+            node("strong", "", t("calibrationBaseline")),
+            node(
+                "small",
+                "",
+                session.baselineCaseSnapshot.curated?.referenceAnswer?.summary ??
+                    session.baselineCaseSnapshot.answer ??
+                    t("none"),
+            ),
+        )
+        baseline.append(summary)
+        if (session.baselineCaseSnapshot.curated) {
+            baseline.append(renderDraft(session.baselineCaseSnapshot.curated, session.caseType))
+        }
+        scroll.append(baseline)
+    }
 
     if (session.draft) {
         const reference = document.createElement("details")
@@ -2503,7 +2569,11 @@ function renderCurations() {
         discard.setAttribute("data-discard-curation", session.id)
         actions.append(discard)
         if (session.status === "needs_review" && session.draft) {
-            const done = node("button", "curation-done primary", t("doneSaveCase"))
+            const done = node(
+                "button",
+                "curation-done primary",
+                t(session.operation === "calibration" ? "doneCalibration" : "doneSaveCase"),
+            )
             done.type = "button"
             done.dataset.archiveCuration = session.id
             actions.append(done)
@@ -2808,6 +2878,37 @@ function activeRubricSession() {
         state.rubricSessions[0] ?? null
 }
 
+function appendDatasetCalibrationNotice(version) {
+    const pendingCases = state.evaluationCases.filter(
+        (entry) => entry.rubricCalibration?.status === "needed",
+    )
+    if (!version || !pendingCases.length) return
+    const selectedPending = pendingCases.find((entry) => entry.id === state.evaluationCaseId)
+    const selected = selectedPending ?? pendingCases[0]
+    const notice = node("div", "dataset-calibration-notice")
+    const copy = node("span")
+    copy.append(
+        node("strong", "", t("caseNeedsCalibration")),
+        node("small", "", formatMessage("casesNeedCalibration", {
+            count: pendingCases.length,
+            version: version.version,
+        })),
+    )
+    const calibrate = node(
+        "button",
+        "dataset-calibration-action",
+        t(calibrationActionKey(
+            activeCalibrationForCase(selected.id),
+            selectedPending ? "calibrateSelectedCase" : "calibrateNextCase",
+        )),
+    )
+    calibrate.type = "button"
+    calibrate.dataset.calibrateEvaluationCase = selected.id
+    calibrate.disabled = state.calibrationStartingCaseIds.has(selected.id)
+    notice.append(copy, calibrate)
+    elements.evaluationDatasetRubricStatus.append(notice)
+}
+
 function renderDatasetRubricStatus(dataset) {
     const version = state.evaluationRubricVersion
     const session = activeRubricSession()
@@ -2822,6 +2923,7 @@ function renderDatasetRubricStatus(dataset) {
             node("strong", "", t(working ? "rubricDraftRunning" : ready ? "rubricReady" : "failed")),
             node("small", "", session.draft?.title ?? session.error ?? ""),
         )
+        appendDatasetCalibrationNotice(version)
         elements.manageDatasetRubric.textContent = t("manageRubric")
         return Boolean(version)
     }
@@ -2842,6 +2944,7 @@ function renderDatasetRubricStatus(dataset) {
         })),
         node("p", "", version.rubric.summary),
     )
+    appendDatasetCalibrationNotice(version)
     elements.manageDatasetRubric.textContent = t("editRubric")
     return true
 }
@@ -2908,15 +3011,26 @@ function renderEvaluationWorkbench() {
             node("strong", "", caseTitle),
             node("small", "", caseEntry.curated?.referenceAnswer?.summary || caseEntry.answer || ""),
         )
+        let calibrate = null
         if (caseEntry.rubricCalibration?.status === "needed") {
             button.append(node("span", "case-calibration", t("caseNeedsCalibration")))
+            const calibration = activeCalibrationForCase(caseEntry.id)
+            calibrate = node(
+                "button",
+                "evaluation-case-calibrate",
+                t(calibrationActionKey(calibration)),
+            )
+            calibrate.type = "button"
+            calibrate.dataset.calibrateEvaluationCase = caseEntry.id
+            calibrate.disabled = state.calibrationStartingCaseIds.has(caseEntry.id)
         }
         const remove = node("button", "hover-delete-button evaluation-case-delete", "×")
         remove.type = "button"
         remove.title = t("deleteCase")
         remove.setAttribute("aria-label", t("deleteCase"))
         remove.dataset.deleteEvaluationCase = caseEntry.id
-        row.append(button, remove)
+        remove.disabled = Boolean(activeCalibrationForCase(caseEntry.id))
+        row.append(button, ...(calibrate ? [calibrate] : []), remove)
         elements.evaluationCaseList.append(row)
     }
 
@@ -4633,6 +4747,35 @@ async function createCuration() {
     }
 }
 
+async function createCaseCalibration(caseId) {
+    const caseEntry = state.evaluationCases.find((entry) => entry.id === caseId)
+    if (!caseEntry || caseEntry.rubricCalibration?.status !== "needed") return
+    const existing = activeCalibrationForCase(caseId)
+    if (existing) {
+        state.activeCurationId = existing.id
+        setCurationOpen(true)
+        return
+    }
+    if (state.calibrationStartingCaseIds.has(caseId)) return
+    state.calibrationStartingCaseIds.add(caseId)
+    renderEvaluationWorkbench()
+    try {
+        const session = await window.rollingSkill.createCaseCalibration({
+            datasetId: caseEntry.datasetId,
+            caseId,
+        })
+        upsertCuration(session)
+        state.activeCurationId = session.id
+        setCurationOpen(true)
+        showToast(t("calibrationStarted"))
+    } catch (error) {
+        showError(error)
+    } finally {
+        state.calibrationStartingCaseIds.delete(caseId)
+        renderEvaluationWorkbench()
+    }
+}
+
 async function loadTrace() {
     elements.traceEvents.replaceChildren(node("div", "sidebar-placeholder", t("readingTrace")))
     try {
@@ -4744,13 +4887,15 @@ async function retryCuration(sessionId) {
 }
 
 async function archiveCuration(sessionId) {
+    const operation = state.curationSessions.find((entry) => entry.id === sessionId)?.operation
     try {
         await window.rollingSkill.archiveCuration(sessionId)
         const session = await window.rollingSkill.getCuration(sessionId)
         upsertCuration(session)
         state.datasets = await window.rollingSkill.listDatasets()
         renderCurations()
-        showToast(t("caseSaved"))
+        if (state.surface === "evaluation") await loadEvaluationWorkbench(false)
+        showToast(t(operation === "calibration" ? "caseCalibrated" : "caseSaved"))
     } catch (error) {
         showError(error)
     }
@@ -4770,6 +4915,9 @@ async function discardCuration() {
         upsertCuration(session)
         elements.discardDialog.close()
         renderCurations()
+        if (state.surface === "evaluation" && session.operation === "calibration") {
+            renderEvaluationWorkbench()
+        }
         showToast(t("draftDiscarded"))
     } catch (error) {
         showError(error)
@@ -4993,6 +5141,11 @@ elements.openTrace.addEventListener("click", () => {
 })
 elements.refreshEvaluation.addEventListener("click", () => loadEvaluationWorkbench(true))
 elements.evaluationWorkbench.addEventListener("click", (event) => {
+    const calibration = event.target.closest("[data-calibrate-evaluation-case]")
+    if (calibration) {
+        void createCaseCalibration(calibration.dataset.calibrateEvaluationCase)
+        return
+    }
     const view = event.target.closest("[data-evaluation-view]")
     if (!view) return
     state.evaluationView = view.dataset.evaluationView
@@ -5314,6 +5467,9 @@ window.rollingSkill.onCurationChanged((session) => {
     upsertCuration(session)
     if (!state.activeCurationId) state.activeCurationId = session.id
     renderCurations()
+    if (state.surface === "evaluation" && session.operation === "calibration") {
+        renderEvaluationWorkbench()
+    }
 })
 window.rollingSkill.onCurationActivity((activity) => {
     if (!activity?.sessionId) return

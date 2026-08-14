@@ -16,7 +16,7 @@ const {
 const {formatCuratedAnswer, validateCuratorDraft} = require("./episode-curation.cjs")
 const {validateSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 
-const LOCAL_SCHEMA = "rolling-skill-local/v10"
+const LOCAL_SCHEMA = "rolling-skill-local/v11"
 const CURATION_STATUSES = new Set([
     "queued",
     "running",
@@ -264,6 +264,18 @@ function migrateState(input) {
         }
     }
     for (const session of state.curationSessions) {
+        if (!session.operation) {
+            session.operation = "capture"
+            changed = true
+        }
+        if (!("targetCaseId" in session)) {
+            session.targetCaseId = null
+            changed = true
+        }
+        if (!("baselineCaseSnapshot" in session)) {
+            session.baselineCaseSnapshot = null
+            changed = true
+        }
         if (!("issueDescription" in session)) {
             const legacyQuestion = typeof session.datasetQuestion === "string"
                 ? session.datasetQuestion
@@ -346,6 +358,14 @@ function migrateState(input) {
                   : []
             changed = true
         }
+        if (!Array.isArray(entry.calibrationHistory)) {
+            entry.calibrationHistory = []
+            changed = true
+        }
+        if (!("updatedAt" in entry)) {
+            entry.updatedAt = entry.createdAt ?? new Date().toISOString()
+            changed = true
+        }
     }
     for (const run of state.evaluationRuns) {
         if (!("judgeProfile" in run)) {
@@ -418,6 +438,14 @@ function requireCaseType(caseType) {
     }
 }
 
+function requireCase(state, datasetId, caseId) {
+    const entry = state.cases.find(
+        (candidate) => candidate.datasetId === datasetId && candidate.id === caseId,
+    )
+    if (!entry) throw new Error("Unknown Case")
+    return entry
+}
+
 function requireCurationSession(state, id) {
     const session = state.curationSessions.find((entry) => entry.id === id)
     if (!session) throw new Error("Unknown curation session")
@@ -442,6 +470,122 @@ function curationValidationOptions(session) {
         sourceItemIds: session.episode.items.map((item) => item.id),
         rubricCriteriaIds:
             session.rubricVersionSnapshot?.rubric?.criteria?.map((entry) => entry.id) ?? undefined,
+    }
+}
+
+function episodeFromCase(entry) {
+    const questionId = `case:${entry.id}:question`
+    const assistantMessages = Array.isArray(entry.source?.originalAssistantMessages)
+        ? entry.source.originalAssistantMessages
+        : []
+    const answerItems = assistantMessages.map((message, index) => ({
+        id: `case:${entry.id}:answer:${index + 1}`,
+        type: "agentMessage",
+        text: String(message?.content ?? ""),
+    })).filter((item) => item.text.trim())
+    if (!answerItems.length && typeof entry.answer === "string" && entry.answer.trim()) {
+        answerItems.push({
+            id: `case:${entry.id}:answer:1`,
+            type: "agentMessage",
+            text: entry.answer,
+        })
+    }
+    const items = [
+        {id: questionId, type: "userMessage", text: entry.question},
+        ...answerItems,
+    ]
+    const endItemId = items.at(-1).id
+    return {
+        schemaVersion: "rolling-skill-episode/v1",
+        originalQuestion: entry.question,
+        source: {
+            threadId: entry.source?.threadId ?? `case:${entry.id}`,
+            cwd: null,
+            startTurnId: entry.source?.startTurnId ?? null,
+            startItemId: entry.source?.startItemId ?? questionId,
+            endTurnId: entry.source?.endTurnId ?? entry.source?.turnId ?? null,
+            endItemId: entry.source?.endItemId ?? entry.source?.itemId ?? endItemId,
+            runtimeId: entry.source?.runtimeId ?? null,
+            modelProvider: entry.source?.modelProvider ?? null,
+            modelId: entry.source?.modelId ?? null,
+            traceReference: entry.source?.traceReference ?? null,
+        },
+        items,
+        toolActivity: copy(entry.evidence?.toolActivity ?? []),
+        capturedAt: entry.createdAt ?? new Date().toISOString(),
+    }
+}
+
+function caseCalibrationBaseline(entry) {
+    return {
+        caseId: entry.id,
+        caseType: entry.caseType,
+        question: entry.question,
+        issueDescription: entry.issueDescription ?? "",
+        answer: entry.answer,
+        curated: entry.curated ? copy(entry.curated) : null,
+        rubricVersionId: entry.rubricVersionId ?? null,
+        rubricCalibration: copy(entry.rubricCalibration ?? null),
+        sourceCurationSessionId: entry.source?.curationSessionId ?? null,
+        sourceCurationRevisionId: entry.source?.curationRevisionId ?? null,
+    }
+}
+
+function newCurationSession({dataset, input, episode, operation = "capture", targetCaseId = null, baselineCaseSnapshot = null}) {
+    requireCaseType(input.caseType)
+    const skillReference = copy(requireDatasetSkill(dataset))
+    const rubricVersionSnapshot = dataset.activeRubricVersionId
+        ? copy(input.rubricVersionSnapshot)
+        : null
+    const frozenEpisode = copy(episode)
+    if (frozenEpisode?.schemaVersion !== "rolling-skill-episode/v1") {
+        throw new Error("A valid frozen episode is required")
+    }
+    if (typeof frozenEpisode.originalQuestion !== "string" || !frozenEpisode.originalQuestion.trim()) {
+        throw new Error("The episode must contain the original question")
+    }
+    const rawIssueDescription = String(input.issueDescription ?? "")
+    if (rawIssueDescription.length > 120_000) {
+        throw new Error("The issue description is too large")
+    }
+    const issueDescription = rawIssueDescription.trim() ? rawIssueDescription : ""
+    if (JSON.stringify(frozenEpisode).length > 1_500_000) {
+        throw new Error("The selected episode is too large to curate locally")
+    }
+    const now = new Date().toISOString()
+    return {
+        id: randomUUID(),
+        datasetId: dataset.id,
+        operation,
+        targetCaseId,
+        baselineCaseSnapshot: baselineCaseSnapshot ? copy(baselineCaseSnapshot) : null,
+        caseType: input.caseType,
+        issueDescription,
+        status: "queued",
+        episode: frozenEpisode,
+        skillReference,
+        rubricVersionSnapshot,
+        curator: {
+            runtimeId: input.curator?.runtimeId ?? null,
+            modelProvider: input.curator?.modelProvider ?? null,
+            modelId: input.curator?.modelId ?? null,
+            effort: reasoningEffort(input.curator?.effort, "Curator reasoning effort"),
+            effectiveModelId: input.curator?.effectiveModelId ?? null,
+            effectiveEffort: reasoningEffort(
+                input.curator?.effectiveEffort,
+                "Effective Curator reasoning effort",
+            ),
+            promptVersion: input.curator?.promptVersion ?? null,
+            threadId: null,
+            currentTurnId: null,
+        },
+        conversation: [],
+        revisions: [],
+        draft: null,
+        error: null,
+        caseId: null,
+        createdAt: now,
+        updatedAt: now,
     }
 }
 
@@ -1147,59 +1291,66 @@ class LocalEvaluationStore {
 
     createCurationSession(input) {
         const state = this.load()
-        requireCaseType(input.caseType)
         const dataset = requireDataset(state, input.datasetId)
-        const skillReference = copy(requireDatasetSkill(dataset))
         const rubricVersionSnapshot = dataset.activeRubricVersionId
             ? copy(requireDatasetRubricVersion(state, dataset.activeRubricVersionId))
             : null
-        const episode = copy(input.episode)
-        if (episode?.schemaVersion !== "rolling-skill-episode/v1") {
-            throw new Error("A valid frozen episode is required")
+        const session = newCurationSession({
+            dataset,
+            input: {...input, rubricVersionSnapshot},
+            episode: input.episode,
+        })
+        state.curationSessions.push(session)
+        this.persist()
+        return copy(session)
+    }
+
+    createCaseCalibrationSession(input) {
+        const state = this.load()
+        const dataset = requireDataset(state, input.datasetId)
+        const activeRubricVersionId = dataset.activeRubricVersionId
+        if (!activeRubricVersionId) {
+            throw new Error("A published dataset rubric is required for Case calibration")
         }
-        if (typeof episode.originalQuestion !== "string" || !episode.originalQuestion.trim()) {
-            throw new Error("The episode must contain the original question")
+        const target = requireCase(state, dataset.id, input.caseId)
+        if (
+            target.rubricVersionId === activeRubricVersionId &&
+            target.rubricCalibration?.status !== "needed"
+        ) {
+            throw new Error("This Case is already calibrated for the active dataset rubric")
         }
-        const rawIssueDescription = String(input.issueDescription ?? "")
-        if (rawIssueDescription.length > 120_000) {
-            throw new Error("The issue description is too large")
-        }
-        const issueDescription = rawIssueDescription.trim() ? rawIssueDescription : ""
-        if (JSON.stringify(episode).length > 1_500_000) {
-            throw new Error("The selected episode is too large to curate locally")
-        }
-        const now = new Date().toISOString()
-        const session = {
-            id: randomUUID(),
-            datasetId: input.datasetId,
-            caseType: input.caseType,
-            issueDescription,
-            status: "queued",
+        const existing = state.curationSessions.find(
+            (entry) =>
+                entry.operation === "calibration" &&
+                entry.targetCaseId === target.id &&
+                entry.status !== "archived" &&
+                entry.status !== "cancelled",
+        )
+        if (existing) throw new Error("Case calibration is already in progress")
+        const sourceSession = state.curationSessions.find(
+            (entry) =>
+                entry.id === target.source?.curationSessionId ||
+                entry.caseId === target.id,
+        )
+        const episode = sourceSession?.episode
+            ? copy(sourceSession.episode)
+            : episodeFromCase(target)
+        const rubricVersionSnapshot = copy(
+            requireDatasetRubricVersion(state, activeRubricVersionId),
+        )
+        const session = newCurationSession({
+            dataset,
+            operation: "calibration",
+            targetCaseId: target.id,
+            baselineCaseSnapshot: caseCalibrationBaseline(target),
             episode,
-            skillReference,
-            rubricVersionSnapshot,
-            curator: {
-                runtimeId: input.curator?.runtimeId ?? null,
-                modelProvider: input.curator?.modelProvider ?? null,
-                modelId: input.curator?.modelId ?? null,
-                effort: reasoningEffort(input.curator?.effort, "Curator reasoning effort"),
-                effectiveModelId: input.curator?.effectiveModelId ?? null,
-                effectiveEffort: reasoningEffort(
-                    input.curator?.effectiveEffort,
-                    "Effective Curator reasoning effort",
-                ),
-                promptVersion: input.curator?.promptVersion ?? null,
-                threadId: null,
-                currentTurnId: null,
+            input: {
+                caseType: target.caseType,
+                issueDescription: target.issueDescription ?? "",
+                curator: input.curator ?? {},
+                rubricVersionSnapshot,
             },
-            conversation: [],
-            revisions: [],
-            draft: null,
-            error: null,
-            caseId: null,
-            createdAt: now,
-            updatedAt: now,
-        }
+        })
         state.curationSessions.push(session)
         this.persist()
         return copy(session)
@@ -1352,6 +1503,68 @@ class LocalEvaluationStore {
                       previousRubricVersionId: frozenRubricVersionId,
                   }
             : null
+        if (session.operation === "calibration") {
+            if (!session.targetCaseId) throw new Error("Case calibration target is missing")
+            if (!frozenRubricVersionId || activeRubricVersionId !== frozenRubricVersionId) {
+                throw new Error(
+                    "The dataset rubric changed during calibration; discard this draft and calibrate against the latest version",
+                )
+            }
+            const target = requireCase(state, session.datasetId, session.targetCaseId)
+            const previousRubricVersionId = target.rubricVersionId ?? null
+            if (!Array.isArray(target.calibrationHistory)) target.calibrationHistory = []
+            target.calibrationHistory.push({
+                id: randomUUID(),
+                rubricVersionId: previousRubricVersionId,
+                rubricCalibration: copy(target.rubricCalibration ?? null),
+                skillReference: copy(target.skillReference ?? null),
+                answer: target.answer,
+                curated: copy(target.curated ?? null),
+                issueDescription: target.issueDescription ?? "",
+                curation: {
+                    sessionId: target.source?.curationSessionId ?? null,
+                    revisionId: target.source?.curationRevisionId ?? null,
+                    curatorThreadId: target.source?.curatorThreadId ?? null,
+                    curatorRuntimeId: target.source?.curatorRuntimeId ?? null,
+                    curatorModelId: target.source?.curatorModelId ?? null,
+                    curatorEffort: target.source?.curatorEffort ?? null,
+                },
+                archivedAt: now,
+            })
+            target.answer = formatCuratedAnswer(draft)
+            target.curated = draft
+            target.rubricVersionId = frozenRubricVersionId
+            target.rubricCalibration = {
+                status: "current",
+                rubricVersionId: frozenRubricVersionId,
+                previousRubricVersionId,
+            }
+            target.skillReference = copy(session.skillReference)
+            target.issueDescription = session.issueDescription
+            target.source = {
+                ...target.source,
+                curationSessionId: session.id,
+                curationRevisionId: latestRevision?.id ?? null,
+                curatorThreadId: session.curator.threadId,
+                curatorRuntimeId: session.curator.runtimeId,
+                curatorModelProvider: session.curator.modelProvider,
+                curatorModelId: session.curator.modelId,
+                curatorEffort: session.curator.effort,
+                curatorEffectiveModelId: session.curator.effectiveModelId,
+                curatorEffectiveEffort: session.curator.effectiveEffort,
+                curatorPromptVersion: session.curator.promptVersion,
+                skillName: session.skillReference?.name ?? null,
+                skillPath: session.skillReference?.path ?? null,
+                skillRuntimeId: session.skillReference?.runtimeId ?? null,
+                skillConfirmedAt: session.skillReference?.confirmedAt ?? null,
+            }
+            target.updatedAt = now
+            session.status = "archived"
+            session.caseId = target.id
+            session.updatedAt = now
+            this.persist()
+            return copy(target)
+        }
         const entry = {
             id: randomUUID(),
             datasetId: session.datasetId,
@@ -1396,7 +1609,9 @@ class LocalEvaluationStore {
                 episodeSchemaVersion: session.episode.schemaVersion,
                 toolActivity: copy(session.episode.toolActivity),
             },
+            calibrationHistory: [],
             createdAt: now,
+            updatedAt: now,
         }
         state.cases.push(entry)
         session.status = "archived"
@@ -1409,6 +1624,16 @@ class LocalEvaluationStore {
     deleteCase(datasetId, caseId) {
         const state = this.load()
         requireDataset(state, datasetId)
+        const unfinishedCalibration = state.curationSessions.some(
+            (entry) =>
+                entry.operation === "calibration" &&
+                entry.targetCaseId === caseId &&
+                entry.status !== "archived" &&
+                entry.status !== "cancelled",
+        )
+        if (unfinishedCalibration) {
+            throw new Error("Discard or finish the active Case calibration before deleting it")
+        }
         const index = state.cases.findIndex(
             (entry) => entry.datasetId === datasetId && entry.id === caseId,
         )

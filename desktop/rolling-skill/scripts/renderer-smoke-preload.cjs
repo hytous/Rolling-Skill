@@ -147,12 +147,19 @@ const smokeEvaluationCase = {
     source: {
         originalQuestion: "查一下7月份账单，各业务混元3多少成本？",
     },
+    rubricVersionId: null,
+    rubricCalibration: {
+        status: "needed",
+        rubricVersionId: "rubric-version-smoke",
+        previousRubricVersionId: null,
+    },
 }
 const noOpSubscription = () => () => {}
 let readCount = 0
 let nextReadFailureThreadId = null
 let failNextCuration = false
 let lastCurationInput = null
+let lastCalibrationInput = null
 const notificationListeners = new Set()
 const runtimeStateListeners = new Set()
 const curationChangedListeners = new Set()
@@ -390,6 +397,31 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         }
         return {id: "curation-smoke", status: "queued", episode: {originalQuestion: "Smoke"}}
     },
+    createCaseCalibration: async (input) => {
+        lastCalibrationInput = input
+        return curationSession({
+            id: "curation-calibration-smoke",
+            operation: "calibration",
+            targetCaseId: input.caseId,
+            status: "queued",
+            baselineCaseSnapshot: {
+                caseId: input.caseId,
+                caseType: smokeEvaluationCase.caseType,
+                answer: smokeEvaluationCase.answer,
+                curated: smokeEvaluationCase.curated,
+                rubricVersionId: null,
+            },
+            rubricVersionSnapshot: smokeRubricVersion,
+            curator: {
+                modelId: null,
+                effort: null,
+                effectiveModelId: null,
+                effectiveEffort: null,
+                threadId: null,
+                currentTurnId: null,
+            },
+        })
+    },
     updateCurationModel: async (_sessionId, modelId) => {
         smokeCurationSession = {
             ...smokeCurationSession,
@@ -422,6 +454,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         failNextCuration = true
     },
     smokeLastCurationInput: () => lastCurationInput,
+    smokeLastCalibrationInput: () => lastCalibrationInput,
     smokeEmitRuntimeState: (runtimeId, modelDelayMs = 0) => {
         currentRuntimeId = runtimeId
         modelDelayByRuntime.set(runtimeId, modelDelayMs)

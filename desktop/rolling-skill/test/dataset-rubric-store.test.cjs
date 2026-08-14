@@ -114,7 +114,7 @@ describe("dataset rubric lifecycle", () => {
         const {store, dataset} = fixture()
         const snapshot = store.read()
 
-        assert.equal(snapshot.schemaVersion, "rolling-skill-local/v10")
+        assert.equal(snapshot.schemaVersion, "rolling-skill-local/v11")
         assert.equal(store.getDataset(dataset.id).activeRubricVersionId, null)
         assert.deepEqual(snapshot.datasetRubricVersions, [])
         assert.deepEqual(snapshot.rubricSessions, [])
@@ -261,6 +261,80 @@ describe("dataset rubric lifecycle", () => {
 
         store.getDatasetRubricVersion(second.id).rubric.title = "mutated outside copy"
         assert.equal(store.getEvaluationRun(run.id).rubricVersionSnapshot.rubric.title, "Billing rubric v2")
+    })
+
+    it("calibrates an existing Case in place against the active rubric and preserves history", () => {
+        const {store, dataset, skillEvidence} = fixture()
+        let rubricSession = startSession(store, dataset, skillEvidence)
+        store.recordRubricRevision(rubricSession.id, {
+            rubric: rubric("v1"),
+            assistantText: "v1",
+        })
+        const first = store.publishRubricSession(rubricSession.id)
+        const sourceSession = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            episode: episode(),
+            curator: {modelId: "gpt-source", effort: "high"},
+        })
+        store.recordCurationRevision(sourceSession.id, {
+            draft: curatedV2Draft(),
+            assistantText: "original curated Case",
+        })
+        const saved = store.archiveCurationSession(sourceSession.id)
+
+        rubricSession = startSession(store, dataset, skillEvidence, first.id)
+        store.recordRubricRevision(rubricSession.id, {
+            rubric: rubric("v2"),
+            assistantText: "v2",
+        })
+        const second = store.publishRubricSession(rubricSession.id)
+
+        const calibration = store.createCaseCalibrationSession({
+            datasetId: dataset.id,
+            caseId: saved.id,
+            curator: {modelId: "gpt-calibrator", effort: "xhigh"},
+        })
+        assert.equal(calibration.operation, "calibration")
+        assert.equal(calibration.targetCaseId, saved.id)
+        assert.equal(calibration.episode.originalQuestion, saved.question)
+        assert.equal(
+            calibration.baselineCaseSnapshot.curated.referenceAnswer.summary,
+            saved.curated.referenceAnswer.summary,
+        )
+        assert.equal(calibration.rubricVersionSnapshot.id, second.id)
+        assert.throws(() => store.createCaseCalibrationSession({
+            datasetId: dataset.id,
+            caseId: saved.id,
+            curator: {},
+        }), /already.*progress/i)
+        assert.throws(() => store.deleteCase(dataset.id, saved.id), /calibration/i)
+
+        const calibratedDraft = curatedV2Draft()
+        calibratedDraft.referenceAnswer.summary = "按 v2 校准后的参考结论。"
+        store.recordCurationRevision(calibration.id, {
+            draft: calibratedDraft,
+            assistantText: "calibrated for v2",
+        })
+        const calibrated = store.archiveCurationSession(calibration.id)
+
+        assert.equal(calibrated.id, saved.id)
+        assert.equal(store.listCases(dataset.id).length, 1)
+        assert.equal(calibrated.curated.referenceAnswer.summary, "按 v2 校准后的参考结论。")
+        assert.equal(calibrated.rubricVersionId, second.id)
+        assert.deepEqual(calibrated.rubricCalibration, {
+            status: "current",
+            rubricVersionId: second.id,
+            previousRubricVersionId: first.id,
+        })
+        assert.equal(calibrated.calibrationHistory.length, 1)
+        assert.equal(
+            calibrated.calibrationHistory[0].curated.referenceAnswer.summary,
+            saved.curated.referenceAnswer.summary,
+        )
+        assert.equal(calibrated.source.originalQuestion, saved.source.originalQuestion)
+        assert.equal(calibrated.source.curationSessionId, calibration.id)
+        assert.equal(store.getCurationSession(calibration.id).caseId, saved.id)
     })
 
     it("marks a Case for calibration when its frozen Curator Rubric became stale", () => {

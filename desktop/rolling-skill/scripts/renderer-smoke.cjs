@@ -113,6 +113,29 @@ async function run() {
     if (caseCard.title.includes("用户后来对这个 Case 的评价")) {
         throw new Error("Case card used the later user review as its title")
     }
+    await inspect(window, 'document.querySelector("[data-calibrate-evaluation-case=case-smoke]").click()')
+    await waitFor(
+        window,
+        'document.querySelector("#curation-drawer").classList.contains("visible") && document.querySelector("[data-curation-id=curation-calibration-smoke].active")',
+    )
+    const calibrationDrawer = await inspect(window, `(() => ({
+        text: document.querySelector("#curation-drawer")?.textContent,
+        input: window.rollingSkill.smokeLastCalibrationInput(),
+    }))()`)
+    if (
+        calibrationDrawer.input?.datasetId !== "dataset-smoke" ||
+        calibrationDrawer.input?.caseId !== "case-smoke"
+    ) {
+        throw new Error("Case calibration did not inherit the selected dataset and Case")
+    }
+    if (
+        !calibrationDrawer.text.includes("Case 校准") ||
+        !calibrationDrawer.text.includes("当前已保存总结") ||
+        !calibrationDrawer.text.includes("Verified case summary")
+    ) {
+        throw new Error(`Case calibration drawer is missing frozen context: ${calibrationDrawer.text}`)
+    }
+    await inspect(window, 'document.querySelector("#close-curations").click()')
     const datasetBinding = await inspect(window, `(() => ({
         operationSkill: Boolean(document.querySelector("#evaluation-skill")),
         status: document.querySelector("#evaluation-dataset-skill-status")?.textContent,
@@ -208,7 +231,9 @@ async function run() {
     await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
 
     await inspect(window, 'document.querySelector("#topbar-curations").click()')
-    await waitFor(window, 'document.querySelector("#curation-drawer").classList.contains("visible") && document.querySelector(".curation-live-activity")')
+    await waitFor(window, 'document.querySelector("#curation-drawer").classList.contains("visible")')
+    await inspect(window, 'document.querySelector("[data-curation-id=curation-live-smoke]").click()')
+    await waitFor(window, 'document.querySelector(".curation-live-activity")')
     await inspect(window, `window.rollingSkill.smokeEmitCurationActivity({
         sessionId: "curation-live-smoke",
         stage: "command",
@@ -593,6 +618,7 @@ async function run() {
             staleRuntimeModelsIgnored: true,
             inlineCurationFailure: true,
             caseCardUsesInitialQuestion: true,
+            caseCalibrationDrawer: true,
             datasetExportChoices: true,
             datasetRubric: true,
             rubricActivityPatched: true,

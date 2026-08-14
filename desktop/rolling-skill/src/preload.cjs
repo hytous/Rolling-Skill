@@ -73,6 +73,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     listArchivedCurations: () => ipcRenderer.invoke("curation:list-archived"),
     getCuration: (sessionId) => ipcRenderer.invoke("curation:get", sessionId),
     createCuration: (input) => ipcRenderer.invoke("curation:create", input),
+    createCaseCalibration: (input) => ipcRenderer.invoke("curation:create-calibration", input),
     sendCurationMessage: (sessionId, text) =>
         ipcRenderer.invoke("curation:send", {sessionId, text}),
     retryCuration: (sessionId) => ipcRenderer.invoke("curation:retry", sessionId),

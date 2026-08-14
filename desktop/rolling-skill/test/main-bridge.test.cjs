@@ -50,6 +50,19 @@ describe("desktop main/preload bridge", () => {
         assert.match(runner, /rubricVersion:\s*run\.rubricVersionSnapshot/)
     })
 
+    it("exposes Case calibration through the existing Curator lifecycle", () => {
+        const main = source("src/main.cjs")
+        const preload = source("src/preload.cjs")
+        const store = source("src/local-store.cjs")
+
+        assert.match(main, /curation:create-calibration/)
+        assert.match(main, /createCalibrationSession/)
+        assert.match(preload, /createCaseCalibration/)
+        assert.match(store, /createCaseCalibrationSession/)
+        assert.match(store, /calibrationHistory/)
+        assert.match(store, /targetCaseId/)
+    })
+
     it("exports a selectable dataset subset and output source as JSON-array CSV", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")

@@ -228,7 +228,11 @@ Rubric. The Curator must cover every dataset criterion exactly once and may add 
 Case-specific criteria or failures; `rolling-skill-curated-case/v2` rejects a duplicate per-Case
 grading contract. Runs freeze the active Rubric and never recalculate older records. Publishing a
 new version marks existing Cases as needing calibration and blocks them from formal evaluation
-until re-curated. Rebinding affects only future work: existing Cases, Curator sessions, and
+until re-curated. **Calibrate** on a Case card or in the dataset Rubric status starts a regular
+reviewable Curator conversation with the frozen original exchange, current structured summary,
+active Skill, and latest Rubric. **Done · update case** updates the same Case id, preserves the
+previous calibrated revision, and clears the block once every Case is current. Rebinding affects
+only future work: existing Cases, Curator sessions, and
 evaluation-run snapshots retain their frozen historical evidence, while the active Rubric is
 cleared. A dataset cannot be rebound while a capture reservation, unfinished Curator session, or
 unfinished Rubric Agent session exists. Legacy datasets migrate automatically only when their saved

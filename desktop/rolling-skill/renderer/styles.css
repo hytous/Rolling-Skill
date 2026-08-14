@@ -846,7 +846,7 @@ kbd {
     display: grid;
     min-height: 86px;
     margin-bottom: 6px;
-    padding: 10px 38px 10px 10px;
+    padding: 10px 82px 10px 10px;
     grid-template-columns: auto minmax(0, 1fr);
     gap: 6px 8px;
 }
@@ -992,6 +992,59 @@ kbd {
     grid-column: 2;
     color: var(--warning);
     font-size: 8px;
+}
+
+.evaluation-case-calibrate,
+.dataset-calibration-action {
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, var(--border));
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--warning) 8%, var(--surface));
+    color: var(--warning);
+    font-size: 8.5px;
+    font-weight: 650;
+}
+
+.evaluation-case-calibrate {
+    position: absolute;
+    z-index: 2;
+    right: 8px;
+    bottom: 8px;
+    min-width: 58px;
+    min-height: 25px;
+    padding: 0 7px;
+}
+
+.evaluation-case-calibrate:hover:not(:disabled),
+.dataset-calibration-action:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--warning) 14%, var(--surface));
+}
+
+.evaluation-case-calibrate:disabled,
+.dataset-calibration-action:disabled {
+    opacity: 0.58;
+}
+
+.dataset-calibration-notice {
+    display: flex;
+    margin-top: 6px;
+    padding-top: 7px;
+    border-top: 1px solid var(--border);
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.dataset-calibration-notice > span {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.dataset-calibration-action {
+    flex: 0 0 auto;
+    min-height: 27px;
+    padding: 0 8px;
 }
 
 .dataset-skill-heading {
@@ -2573,6 +2626,12 @@ kbd {
     white-space: nowrap;
 }
 
+.curation-list-mode {
+    color: var(--accent-strong);
+    font-size: 7.5px;
+    font-weight: 650;
+}
+
 .curation-status {
     color: var(--faint);
     font-size: 8px;
@@ -2635,6 +2694,15 @@ kbd {
 .case-kind.badcase {
     border-color: rgba(241, 141, 134, 0.22);
     color: #e9aaa6;
+}
+
+.case-kind.calibration {
+    border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+    color: var(--accent-strong);
+}
+
+.calibration-baseline-card {
+    border-color: color-mix(in srgb, var(--warning) 20%, var(--border));
 }
 
 .frozen-question {

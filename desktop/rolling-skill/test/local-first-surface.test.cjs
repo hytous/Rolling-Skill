@@ -83,7 +83,7 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /elements\.caseIssueDescription\.value = ""/)
         assert.doesNotMatch(renderer, /datasetQuestionDirty/)
         const createStart = renderer.indexOf("async function createCuration()")
-        const createEnd = renderer.indexOf("async function loadTrace()", createStart)
+        const createEnd = renderer.indexOf("async function createCaseCalibration", createStart)
         const createHandler = renderer.slice(createStart, createEnd)
         assert.ok(createStart >= 0 && createEnd > createStart)
         assert.ok(
@@ -110,6 +110,9 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /badcase/)
         assert.match(renderer, /curation-reference-card/)
         assert.match(renderer, /curation-live-activity/)
+        assert.match(renderer, /createCaseCalibration/)
+        assert.match(renderer, /dataset\.calibrateEvaluationCase/)
+        assert.match(renderer, /operation === "calibration"/)
         assert.match(renderer, /effectiveEffort/)
         assert.match(renderer, /actualRuntimeUnknown/)
         assert.match(renderer, /rolling-skill-curated-case\\\/v\[12\]/)
