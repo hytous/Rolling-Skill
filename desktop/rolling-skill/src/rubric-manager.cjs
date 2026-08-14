@@ -5,6 +5,14 @@ const {
     parseDatasetRubric,
 } = require("./dataset-rubric.cjs")
 
+const RUBRIC_NOTIFICATION_METHODS = new Set([
+    "thread/settings/updated",
+    "turn/started",
+    "item/started",
+    "turn/completed",
+    "error",
+])
+
 function assistantTextFromTurn(turn) {
     return (turn?.items ?? [])
         .filter((item) => item.type === "agentMessage" && String(item.text ?? "").trim())
@@ -203,7 +211,7 @@ class RubricManager {
 
     async handleNotification(message) {
         const {method, params = {}} = message ?? {}
-        if (!params.threadId) return false
+        if (!params.threadId || !RUBRIC_NOTIFICATION_METHODS.has(method)) return false
         const session = this.sessionForThread(params.threadId)
         if (!session || session.status === "archived" || session.status === "cancelled") return false
 

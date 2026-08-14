@@ -2567,13 +2567,45 @@ function upsertRubricSession(session) {
 
 function renderRubricActivity(container, session) {
     if (session.status !== "queued" && session.status !== "running") return
-    const activity = state.rubricActivities.get(session.id)
+    const activity = state.rubricActivities.get(session.id) ?? {
+        sessionId: session.id,
+        stage: "starting",
+        summary: "",
+        startedAt: Date.parse(session.updatedAt || session.createdAt || new Date().toISOString()),
+        lastActivityAt: Date.now(),
+    }
     const card = node("div", "curation-live-activity")
+    card.dataset.rubricActivity = session.id
     const heading = node("div", "curation-live-heading")
-    heading.append(node("span", "curation-live-dot"), node("strong", "", t("rubricDraftRunning")))
-    card.append(heading)
-    if (activity?.summary) card.append(node("div", "curation-live-detail", activity.summary))
+    heading.append(
+        node("span", "curation-live-dot"),
+        node("strong", "rubric-live-stage", t("rubricDraftRunning")),
+    )
+    const detail = node("div", "curation-live-detail", activity.summary || "")
+    detail.classList.toggle("hidden", !activity.summary)
+    card.append(heading, detail, node("small", "rubric-live-timing"))
     container.append(card)
+    patchRubricActivityCard(activity)
+}
+
+function patchRubricActivityCard(activity) {
+    const card = elements.rubricDetail.querySelector(
+        `[data-rubric-activity="${CSS.escape(String(activity?.sessionId ?? ""))}"]`,
+    )
+    if (!card) return
+    if (activity.terminal) {
+        card.remove()
+        return
+    }
+    const now = Date.now()
+    const detail = card.querySelector(".curation-live-detail")
+    detail.textContent = activity.summary || ""
+    detail.classList.toggle("hidden", !activity.summary)
+    card.querySelector(".rubric-live-timing").textContent = `${formatMessage("curatorElapsed", {
+        value: shortElapsed(now - activity.startedAt),
+    })} · ${formatMessage("curatorLastActive", {
+        value: shortElapsed(now - activity.lastActivityAt),
+    })}`
 }
 
 function renderRubricDrawer() {
@@ -5303,7 +5335,7 @@ window.rollingSkill.onRubricActivity((activity) => {
     if (!state.rubricSessions.some((session) => session.id === activity.sessionId)) return
     if (activity.terminal) state.rubricActivities.delete(activity.sessionId)
     else state.rubricActivities.set(activity.sessionId, activity)
-    renderRubricDrawer()
+    patchRubricActivityCard(activity)
 })
 window.rollingSkill.onEvaluationChanged(async ({runId, resultId, status}) => {
     if (!runId) return
@@ -5383,8 +5415,12 @@ async function bootstrap() {
 
 resizeComposer()
 setInterval(() => {
-    if (!state.curationOpen) return
-    for (const activity of state.curationActivities.values()) patchCurationActivityCard(activity)
+    if (state.curationOpen) {
+        for (const activity of state.curationActivities.values()) patchCurationActivityCard(activity)
+    }
+    if (state.rubricOpen) {
+        for (const activity of state.rubricActivities.values()) patchRubricActivityCard(activity)
+    }
 }, 1_000)
 window.addEventListener("beforeunload", snapshotActiveThreadView)
 void bootstrap()

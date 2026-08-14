@@ -163,6 +163,37 @@ async function run() {
     if (rubricDrawer.effort !== "high" || !rubricDrawer.modelOptions) {
         throw new Error("Rubric Agent model or reasoning controls are missing")
     }
+    await inspect(window, `window.rollingSkill.smokeEmitRubricChanged({
+        status: "running",
+        rubricAgent: {currentTurnId: "rubric-turn-running"},
+    })`)
+    await waitFor(window, 'document.querySelector("[data-rubric-activity=rubric-session-smoke]")')
+    await inspect(window, 'window.__rubricConversationBeforeActivity = document.querySelector("#rubric-detail .curator-conversation")')
+    await inspect(window, `window.rollingSkill.smokeEmitRubricActivity({
+        sessionId: "rubric-session-smoke",
+        stage: "command",
+        summary: "sed -n 1,400p billing-cost-management/SKILL.md",
+        startedAt: Date.now() - 1000,
+        lastActivityAt: Date.now(),
+        terminal: false,
+    })`)
+    await waitFor(window, 'document.querySelector("[data-rubric-activity=rubric-session-smoke]")?.textContent.includes("sed -n 1,400p")')
+    const rubricActivityPatched = await inspect(
+        window,
+        'window.__rubricConversationBeforeActivity === document.querySelector("#rubric-detail .curator-conversation")',
+    )
+    if (!rubricActivityPatched) {
+        throw new Error("Rubric activity rebuilt the complete drawer instead of patching its status card")
+    }
+    await inspect(window, `window.rollingSkill.smokeEmitRubricActivity({
+        sessionId: "rubric-session-smoke",
+        terminal: true,
+    })`)
+    await inspect(window, `window.rollingSkill.smokeEmitRubricChanged({
+        status: "needs_review",
+        rubricAgent: {currentTurnId: null},
+    })`)
+    await waitFor(window, 'document.querySelector("[data-publish-rubric=rubric-session-smoke]")')
     await inspect(window, 'document.querySelector("#close-rubric-drawer").click()')
     await waitFor(window, '!document.querySelector("#rubric-drawer").classList.contains("visible")')
     await inspect(window, 'document.querySelector("[data-evaluation-view=runs]").click()')
@@ -564,6 +595,7 @@ async function run() {
             caseCardUsesInitialQuestion: true,
             datasetExportChoices: true,
             datasetRubric: true,
+            rubricActivityPatched: true,
             evaluationDurationMinuteSecond: true,
             curatorLiveActivity: true,
             curatorReferenceCard: true,

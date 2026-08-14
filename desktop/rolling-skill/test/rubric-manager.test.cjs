@@ -157,6 +157,28 @@ describe("Rubric Agent manager", () => {
         assert.equal(manager.hiddenThreadIds().has(session.rubricAgent.threadId), true)
     })
 
+    it("drops high-frequency response deltas before copying the frozen Rubric session", async () => {
+        const session = await start()
+        const getRubricSession = store.getRubricSession.bind(store)
+        let sessionCopies = 0
+        store.getRubricSession = (...args) => {
+            sessionCopies += 1
+            return getRubricSession(...args)
+        }
+
+        const handled = await manager.handleNotification({
+            method: "item/agentMessage/delta",
+            params: {
+                threadId: session.rubricAgent.threadId,
+                turnId: session.rubricAgent.currentTurnId,
+                delta: "streamed response fragment",
+            },
+        })
+
+        assert.equal(handled, false)
+        assert.equal(sessionCopies, 0)
+    })
+
     it("keeps conversational review while applying complete JSON revisions", async () => {
         let session = await start()
         session = await complete(session)

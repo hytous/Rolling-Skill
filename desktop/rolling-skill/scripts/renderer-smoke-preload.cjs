@@ -460,9 +460,22 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         rubricChangedListeners.add(listener)
         return () => rubricChangedListeners.delete(listener)
     },
+    smokeEmitRubricChanged: (patch) => {
+        smokeRubricSession = {
+            ...smokeRubricSession,
+            ...patch,
+            rubricAgent: patch.rubricAgent
+                ? {...smokeRubricSession.rubricAgent, ...patch.rubricAgent}
+                : smokeRubricSession.rubricAgent,
+        }
+        for (const listener of rubricChangedListeners) listener(smokeRubricSession)
+    },
     onRubricActivity: (listener) => {
         rubricActivityListeners.add(listener)
         return () => rubricActivityListeners.delete(listener)
+    },
+    smokeEmitRubricActivity: (activity) => {
+        for (const listener of rubricActivityListeners) listener(activity)
     },
     onEvaluationChanged: noOpSubscription,
     onWorkspaceChanged: noOpSubscription,

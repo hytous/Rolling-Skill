@@ -284,6 +284,8 @@ describe("local-first desktop surface", () => {
         }
         assert.match(renderer, /createRubricSession/)
         assert.match(renderer, /sendRubricMessage/)
+        assert.match(renderer, /function patchRubricActivityCard/)
+        assert.match(renderer, /onRubricActivity[\s\S]*patchRubricActivityCard/)
         assert.match(renderer, /publishRubricSession/)
         assert.match(renderer, /discardRubricSession/)
         assert.match(renderer, /data-rubric-model/)
