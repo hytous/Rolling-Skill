@@ -579,6 +579,64 @@ async function run() {
         throw new Error("A stale Runtime model response replaced the active Runtime catalog")
     }
 
+    window.setSize(760, 480)
+    await inspect(window, 'document.querySelector("#settings-button").click()')
+    await waitFor(window, 'document.querySelector("#settings-dialog").open')
+    const settingsLayoutBeforeScroll = await inspect(window, `(() => {
+        const dialog = document.querySelector("#settings-dialog")
+        const body = dialog.querySelector(".settings-dialog-body")
+        const actions = dialog.querySelector(".settings-actions")
+        const save = dialog.querySelector("#save-settings")
+        if (!body || !actions || !save) return null
+        const dialogRect = dialog.getBoundingClientRect()
+        const actionsRect = actions.getBoundingClientRect()
+        const saveRect = save.getBoundingClientRect()
+        return {
+            bodyScrollable: body.scrollHeight > body.clientHeight,
+            bodyScrollTop: body.scrollTop,
+            actionsTop: actionsRect.top,
+            actionsBottom: actionsRect.bottom,
+            dialogTop: dialogRect.top,
+            dialogBottom: dialogRect.bottom,
+            saveRight: saveRect.right,
+            actionsRight: actionsRect.right,
+        }
+    })()`)
+    if (
+        !settingsLayoutBeforeScroll?.bodyScrollable ||
+        settingsLayoutBeforeScroll.actionsTop < settingsLayoutBeforeScroll.dialogTop ||
+        settingsLayoutBeforeScroll.actionsBottom > settingsLayoutBeforeScroll.dialogBottom + 1 ||
+        Math.abs(settingsLayoutBeforeScroll.actionsRight - settingsLayoutBeforeScroll.saveRight) > 21
+    ) {
+        throw new Error(`Settings actions are not persistently visible at the lower right: ${JSON.stringify(settingsLayoutBeforeScroll)}`)
+    }
+    await inspect(window, `(() => {
+        const body = document.querySelector("#settings-dialog .settings-dialog-body")
+        body.scrollTop = body.scrollHeight
+    })()`)
+    const settingsLayoutAfterScroll = await inspect(window, `(() => {
+        const dialog = document.querySelector("#settings-dialog")
+        const body = dialog.querySelector(".settings-dialog-body")
+        const actions = dialog.querySelector(".settings-actions")
+        const dialogRect = dialog.getBoundingClientRect()
+        const actionsRect = actions.getBoundingClientRect()
+        return {
+            bodyScrollTop: body.scrollTop,
+            actionsTop: actionsRect.top,
+            actionsBottom: actionsRect.bottom,
+            dialogTop: dialogRect.top,
+            dialogBottom: dialogRect.bottom,
+        }
+    })()`)
+    if (
+        settingsLayoutAfterScroll.bodyScrollTop <= 0 ||
+        settingsLayoutAfterScroll.actionsTop !== settingsLayoutBeforeScroll.actionsTop ||
+        settingsLayoutAfterScroll.actionsBottom !== settingsLayoutBeforeScroll.actionsBottom
+    ) {
+        throw new Error(`Settings actions moved with the scrolling content: ${JSON.stringify(settingsLayoutAfterScroll)}`)
+    }
+    await inspect(window, 'document.querySelector("#cancel-settings").click()')
+
     if (rendererErrors.length) throw new Error(`Renderer console errors: ${rendererErrors.join(" | ")}`)
     const screenshotPath = process.env.ROLLING_SKILL_RENDERER_SMOKE_SCREENSHOT
     if (screenshotPath) {
@@ -628,6 +686,7 @@ async function run() {
             curatorDraftRemainsSaveable: true,
             curatorDraftPreservedOnEffortChange: true,
             badcaseFailureLed: true,
+            settingsActionsPinned: true,
             rendererErrors: 0,
         })}\n`,
     )

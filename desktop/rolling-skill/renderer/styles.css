@@ -3342,6 +3342,29 @@ kbd {
     width: min(690px, calc(100vw - 80px));
 }
 
+.settings-dialog form {
+    display: grid;
+    overflow: hidden;
+    max-height: calc(100vh - 70px);
+    padding: 0;
+    grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.settings-dialog-body {
+    min-height: 0;
+    padding: 0 20px 18px;
+    overflow-y: auto;
+}
+
+.settings-actions {
+    z-index: 2;
+    min-height: 58px;
+    margin: 0;
+    padding: 12px 20px 14px;
+    background: #1c1c1a;
+    box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.08);
+}
+
 .settings-section {
     padding: 3px 0 17px;
     border-bottom: 1px solid var(--border);
@@ -3623,7 +3646,8 @@ kbd {
 :root[data-theme="codex-light"] .assistant-avatar,
 :root[data-theme="codex-light"] .composer,
 :root[data-theme="codex-light"] .case-dialog,
-:root[data-theme="codex-light"] .dialog-header {
+:root[data-theme="codex-light"] .dialog-header,
+:root[data-theme="codex-light"] .settings-actions {
     background: #ffffff;
 }
 
@@ -3677,6 +3701,7 @@ kbd {
 :root[data-theme="codex-dark"] .composer,
 :root[data-theme="codex-dark"] .case-dialog,
 :root[data-theme="codex-dark"] .dialog-header,
+:root[data-theme="codex-dark"] .settings-actions,
 :root[data-theme="codex-dark"] .trace-drawer,
 :root[data-theme="codex-dark"] .curation-drawer,
 :root[data-theme="codex-dark"] .rubric-drawer,
