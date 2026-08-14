@@ -9,6 +9,14 @@ const {
 const {commandActivityDetail} = require("../renderer/command-activity.js")
 
 const ACTIVITY_SUMMARY_LIMIT = 240
+const CURATION_NOTIFICATION_METHODS = new Set([
+    "thread/settings/updated",
+    "turn/started",
+    "item/started",
+    "item/completed",
+    "turn/completed",
+    "error",
+])
 
 function compactActivityText(value, limit = ACTIVITY_SUMMARY_LIMIT) {
     const text = String(value ?? "").replace(/\s+/gu, " ").trim()
@@ -355,7 +363,7 @@ class CurationManager {
 
     async handleNotification(message) {
         const {method, params = {}} = message ?? {}
-        if (!params.threadId) return false
+        if (!params.threadId || !CURATION_NOTIFICATION_METHODS.has(method)) return false
         const session = this.sessionForThread(params.threadId)
         if (!session || session.status === "archived" || session.status === "cancelled") return false
 

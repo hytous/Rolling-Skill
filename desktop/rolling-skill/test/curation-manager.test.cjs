@@ -349,6 +349,63 @@ describe("curation manager", () => {
         assert.equal(store.listCases(datasetId).length, 1)
     })
 
+    it("drops high-frequency response deltas before copying the frozen calibration session", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const sourceSession = store.createCurationSession({
+            datasetId,
+            caseType: "goodcase",
+            episode: buildEpisodeSnapshot(sourceThread(), {endItemId: "answer-1"}),
+            curator: {},
+        })
+        store.recordCurationRevision(sourceSession.id, {
+            draft: validDraft("Existing saved summary."),
+            assistantText: "original curation",
+        })
+        const saved = store.archiveCurationSession(sourceSession.id)
+        const raw = store.load()
+        const version = {
+            id: "rubric-v2",
+            datasetId,
+            version: 2,
+            rubric: datasetRubric(),
+            rubricDigest: "sha256:test",
+            publishedAt: "2026-08-14T00:00:00.000Z",
+        }
+        raw.datasetRubricVersions.push(version)
+        raw.datasets[0].activeRubricVersionId = version.id
+        raw.cases[0].rubricCalibration = {
+            status: "needed",
+            rubricVersionId: version.id,
+            previousRubricVersionId: null,
+        }
+        store.persist()
+
+        const session = await manager.createCalibrationSession({
+            datasetId,
+            caseId: saved.id,
+        })
+        await manager.waitForIdle(session.id)
+        const running = store.getCurationSession(session.id)
+        const getCurationSession = store.getCurationSession.bind(store)
+        let sessionCopies = 0
+        store.getCurationSession = (...args) => {
+            sessionCopies += 1
+            return getCurationSession(...args)
+        }
+
+        const handled = await manager.handleNotification({
+            method: "item/agentMessage/delta",
+            params: {
+                threadId: running.curator.threadId,
+                turnId: running.curator.currentTurnId,
+                delta: "streamed calibration fragment",
+            },
+        })
+
+        assert.equal(handled, false)
+        assert.equal(sessionCopies, 0)
+    })
+
     it("keeps requested settings separate from runtime-effective settings", async () => {
         const session = await manager.createSession({
             datasetId: store.listDatasets()[0].id,
