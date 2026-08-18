@@ -1,0 +1,495 @@
+const {createHash} = require("node:crypto")
+const {appendFileSync, chmodSync, constants, mkdirSync, openSync, closeSync, readFileSync} = require("node:fs")
+const {join} = require("node:path")
+const {skillContentDigest} = require("./skill-content.cjs")
+
+function safeSessionId(value) {
+    return String(value).replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 120)
+}
+
+function parseOwnedReference(reference, fileName, maximumLine) {
+    const escaped = fileName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const match = String(reference ?? "").match(
+        new RegExp(`^trace://${escaped}#L([1-9]\\d*)(?:-L([1-9]\\d*))?$`),
+    )
+    const start = Number(match?.[1])
+    const end = Number(match?.[2] ?? match?.[1])
+    if (!match || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || end > maximumLine) {
+        throw new Error("Invalid or foreign trace reference")
+    }
+    return {start, end}
+}
+
+function object(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {}
+}
+
+function nestedObjects(value, output = []) {
+    if (!value || typeof value !== "object") return output
+    if (!Array.isArray(value)) output.push(value)
+    for (const child of Object.values(value)) nestedObjects(child, output)
+    return output
+}
+
+function hasFailure(value) {
+    return nestedObjects(value).some((candidate) => {
+        const status = String(candidate.status ?? candidate.outcome ?? "").toLowerCase()
+        return (
+            (Object.hasOwn(candidate, "error") && candidate.error !== null && candidate.error !== undefined) ||
+            ["failed", "error", "rejected", "cancelled"].includes(status)
+        )
+    })
+}
+
+function codeBuddyUpdate(entry) {
+    return object(entry?.message?.params?.update)
+}
+
+function codeBuddyToolInput(update) {
+    const rawInput = object(update.rawInput)
+    return Object.keys(rawInput).length ? rawInput : null
+}
+
+function isSemanticTraceEntry(entry) {
+    const message = object(entry?.message)
+    const method = String(message.method ?? "")
+    if (hasFailure(message)) return true
+    if (!method) return Boolean(message.result)
+
+    if (method === "session/update") {
+        const update = codeBuddyUpdate(entry)
+        const type = String(update.sessionUpdate ?? "")
+        if (type === "tool_call") return Boolean(codeBuddyToolInput(update))
+        if (type === "tool_call_update") {
+            return ["completed", "failed", "error", "rejected", "cancelled"].includes(
+                String(update.status ?? "").toLowerCase(),
+            )
+        }
+        return ![
+            "agent_message_chunk",
+            "agent_thought_chunk",
+            "session_info_update",
+            "usage_update",
+            "config_option_update",
+            "available_commands_update",
+            "plan",
+        ].includes(type)
+    }
+
+    if (
+        /(?:\/delta|\/outputDelta)$/u.test(method) ||
+        [
+            "thread/tokenUsage/updated",
+            "account/rateLimits/updated",
+            "mcpServer/startupStatus/updated",
+            "thread/status/changed",
+            "thread/settings/updated",
+            "remoteControl/status/changed",
+            "initialized",
+        ].includes(method)
+    ) {
+        return false
+    }
+
+    if (method === "item/started" || method === "item/completed") {
+        const item = object(message.params?.item)
+        if (["reasoning", "userMessage"].includes(item.type)) return false
+        if (item.type === "agentMessage") return method === "item/completed"
+    }
+    return true
+}
+
+function compactText(value, limit) {
+    const text = String(value)
+    if (text.length <= limit) return {text, omitted: 0}
+    const marker = `\n… [${text.length - limit} characters compacted] …\n`
+    const available = Math.max(0, limit - marker.length)
+    const head = Math.ceil(available * 0.7)
+    const tail = available - head
+    return {
+        text: `${text.slice(0, head)}${marker}${tail ? text.slice(-tail) : ""}`,
+        omitted: text.length - limit,
+    }
+}
+
+function isProtectedCommandPath(path) {
+    const key = path.at(-1)
+    return ["command", "cmd", "argv"].includes(key)
+}
+
+function compactStrings(value, {limit, aggressive = false, path = [], stats}) {
+    if (typeof value === "string") {
+        if (isProtectedCommandPath(path)) return value
+        const outputPath = path.some((entry) =>
+            /^(?:aggregatedOutput|rawOutput|stdout|stderr|output|outputDelta)$/iu.test(entry),
+        )
+        const stringLimit = outputPath ? Math.min(limit, 400) : aggressive ? Math.min(limit, 320) : limit
+        const compacted = compactText(value, stringLimit)
+        if (compacted.omitted) {
+            stats.omittedCharacters += compacted.omitted
+            stats.compacted = true
+        }
+        return compacted.text
+    }
+    if (Array.isArray(value)) {
+        return value.map((entry, index) => compactStrings(entry, {
+            limit,
+            aggressive,
+            path: [...path, String(index)],
+            stats,
+        }))
+    }
+    if (!value || typeof value !== "object") return value
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+        key,
+        compactStrings(child, {limit, aggressive, path: [...path, key], stats}),
+    ]))
+}
+
+function semanticMessageProjection(entry, maxCharacters, stats) {
+    const message = object(entry.message)
+    const params = object(message.params)
+    const update = object(params.update)
+    const item = object(params.item)
+    const projected = {
+        schemaVersion: entry.schemaVersion,
+        sequence: entry.sequence,
+        recordedAt: entry.recordedAt,
+        direction: entry.direction,
+        runtime: entry.runtime,
+        message: {
+            ...(message.id === undefined ? {} : {id: message.id}),
+            ...(message.method ? {method: message.method} : {}),
+            ...(Object.keys(update).length ? {params: {update: {
+                sessionUpdate: update.sessionUpdate,
+                toolCallId: update.toolCallId,
+                title: update.title,
+                kind: update.kind,
+                status: update.status,
+                rawInput: update.rawInput,
+                locations: update.locations,
+                error: update.error,
+                rawOutput: update.rawOutput,
+                rawOutputDigest: update.rawOutputDigest,
+                skillContentDigest: update.skillContentDigest,
+                startedSequence: update.startedSequence,
+                _meta: {
+                    "codebuddy.ai/toolName": update._meta?.["codebuddy.ai/toolName"],
+                },
+            }}} : {}),
+            ...(Object.keys(item).length ? {params: {item: {
+                id: item.id,
+                type: item.type,
+                command: item.command,
+                status: item.status,
+                path: item.path,
+                server: item.server,
+                tool: item.tool,
+                error: item.error,
+                aggregatedOutput: item.aggregatedOutput,
+            }}} : {}),
+            ...(!Object.keys(update).length && !Object.keys(item).length && params.turn
+                ? {params: {turn: params.turn}}
+                : {}),
+            ...(message.error ? {error: message.error} : {}),
+            ...(message.result ? {result: message.result} : {}),
+        },
+    }
+    stats.compacted = true
+    const projectedStats = {compacted: false, omittedCharacters: 0}
+    const compacted = compactStrings(projected, {
+        limit: Math.max(80, Math.floor(maxCharacters / 5)),
+        aggressive: true,
+        stats: projectedStats,
+    })
+    stats.omittedCharacters += projectedStats.omittedCharacters
+    return compacted
+}
+
+function compactJsonEntry(entry, maxCharacters) {
+    const originalSize = JSON.stringify(entry).length
+    const stats = {compacted: false, omittedCharacters: 0}
+    const codeBuddyType = codeBuddyUpdate(entry).sessionUpdate
+    let compacted = ["tool_call", "tool_call_update"].includes(codeBuddyType)
+        ? semanticMessageProjection(entry, maxCharacters, stats)
+        : compactStrings(entry, {limit: 1_200, stats})
+    if (JSON.stringify(compacted).length > maxCharacters) {
+        compacted = compactStrings(entry, {limit: 320, aggressive: true, stats})
+    }
+    if (JSON.stringify(compacted).length > maxCharacters) {
+        compacted = semanticMessageProjection(entry, maxCharacters, stats)
+    }
+    const finalSize = JSON.stringify(compacted).length
+    if (finalSize < originalSize) {
+        stats.compacted = true
+        stats.omittedCharacters = Math.max(stats.omittedCharacters, originalSize - finalSize)
+    }
+    return {
+        ...compacted,
+        ...(stats.compacted ? {
+            contentCompacted: true,
+            omittedCharacters: stats.omittedCharacters,
+        } : {}),
+    }
+}
+
+function augmentCodeBuddyTerminalEntry(entry, starts) {
+    const update = codeBuddyUpdate(entry)
+    if (String(update.sessionUpdate) !== "tool_call_update" || !update.toolCallId) return entry
+    const start = starts.get(update.toolCallId)
+    if (!start) return entry
+    const startUpdate = codeBuddyUpdate(start)
+    const copy = JSON.parse(JSON.stringify(entry))
+    copy.message.params.update = {
+        ...startUpdate,
+        ...copy.message.params.update,
+        rawInput: copy.message.params.update.rawInput ?? startUpdate.rawInput,
+        kind: copy.message.params.update.kind ?? startUpdate.kind,
+        title: copy.message.params.update.title ?? startUpdate.title,
+        locations: copy.message.params.update.locations ?? startUpdate.locations,
+        _meta: {...startUpdate._meta, ...copy.message.params.update._meta},
+        startedSequence: start.sequence,
+    }
+    return copy
+}
+
+function attachCodeBuddyOutputDigests(entry) {
+    const update = codeBuddyUpdate(entry)
+    if (String(update.sessionUpdate) !== "tool_call_update" || !update.rawOutput) return entry
+    const copy = JSON.parse(JSON.stringify(entry))
+    const target = copy.message.params.update
+    target.rawOutputDigest = evidenceDigest(update.rawOutput)
+    const outputText = typeof update.rawOutput?.text === "string" ? update.rawOutput.text : null
+    if (update.rawInput?.skill && outputText !== null) {
+        target.skillContentDigest = skillContentDigest(outputText)
+    }
+    return copy
+}
+
+function isCodeBuddyTerminalUpdate(update) {
+    return update.sessionUpdate === "tool_call_update" &&
+        Boolean(update.toolCallId) &&
+        ["completed", "failed", "error", "rejected", "cancelled"].includes(
+            String(update.status ?? "").toLowerCase(),
+        )
+}
+
+function entryPriority(entry) {
+    if (hasFailure(entry.message)) return 100
+    const update = codeBuddyUpdate(entry)
+    if (update.rawInput?.skill || update.kind === "read") return 95
+    const method = String(entry.message?.method ?? "")
+    const itemType = String(entry.message?.params?.item?.type ?? "")
+    if (/commandExecution|mcpToolCall|dynamicToolCall|fileChange|tool_call/iu.test(`${method} ${itemType} ${update.sessionUpdate ?? ""}`)) {
+        return 80
+    }
+    if (/turn\/completed|agentMessage/iu.test(`${method} ${itemType}`)) return 60
+    return 30
+}
+
+function canonicalJson(value) {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`
+    if (value && typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) =>
+            `${JSON.stringify(key)}:${canonicalJson(value[key])}`,
+        ).join(",")}}`
+    }
+    return JSON.stringify(value)
+}
+
+function evidenceDigest(value) {
+    return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`
+}
+
+class TraceRecorder {
+    constructor(directory, options = {}) {
+        mkdirSync(directory, {recursive: true, mode: 0o700})
+        const sessionId = safeSessionId(options.sessionId ?? `runtime-${Date.now()}`)
+        this.path = join(directory, `${sessionId}.jsonl`)
+        this.fileName = `${sessionId}.jsonl`
+        this.line = 0
+        this.latestReference = null
+        this.runtime = options.runtime
+            ? {
+                  runtimeId: options.runtime.runtimeId,
+                  providerId: options.runtime.providerId,
+                  version: options.runtime.version,
+              }
+            : null
+    }
+
+    record(direction, message) {
+        this.line += 1
+        const entry = {
+            schemaVersion: "rolling-skill-trace/v1",
+            sequence: this.line,
+            recordedAt: new Date().toISOString(),
+            direction,
+            message,
+            runtime: this.runtime,
+        }
+        const descriptor = openSync(
+            this.path,
+            constants.O_WRONLY |
+                constants.O_CREAT |
+                constants.O_APPEND |
+                (constants.O_NOFOLLOW ?? 0),
+            0o600,
+        )
+        try {
+            appendFileSync(descriptor, `${JSON.stringify(entry)}\n`, "utf8")
+        } finally {
+            closeSync(descriptor)
+        }
+        chmodSync(this.path, 0o600)
+        this.latestReference = `trace://${this.fileName}#L${this.line}`
+        return {entry, reference: this.latestReference}
+    }
+
+    mark() {
+        return Object.freeze({fileName: this.fileName, line: this.line})
+    }
+
+    referenceFrom(mark) {
+        if (mark?.fileName !== this.fileName || !Number.isSafeInteger(mark.line) || mark.line < 0 || mark.line > this.line) {
+            throw new Error("Invalid trace mark")
+        }
+        if (this.line === mark.line) return null
+        return `trace://${this.fileName}#L${mark.line + 1}-L${this.line}`
+    }
+
+    evidenceForReference(reference, options = {}) {
+        const {start, end} = parseOwnedReference(reference, this.fileName, this.line)
+        const maxEntries = Math.max(1, Math.min(Number(options.maxEntries) || 500, 1_000))
+        const maxEntryCharacters = Math.max(
+            200,
+            Math.min(Number(options.maxEntryCharacters) || 4_000, 20_000),
+        )
+        const maxTotalCharacters = Math.max(
+            1_000,
+            Math.min(Number(options.maxTotalCharacters) || 240_000, 400_000),
+        )
+        const lines = readFileSync(this.path, "utf8").trim().split("\n").filter(Boolean)
+        const semanticEntries = []
+        const rangeEntries = []
+        const codeBuddyStarts = new Map()
+        const codeBuddyTerminalSequences = new Map()
+        let compactedEntries = 0
+        let collapsedToolCallEntries = 0
+        for (let lineNumber = start; lineNumber <= end; lineNumber += 1) {
+            const entry = JSON.parse(lines[lineNumber - 1])
+            rangeEntries.push(entry)
+            const update = codeBuddyUpdate(entry)
+            if (update.sessionUpdate === "tool_call" && update.toolCallId && codeBuddyToolInput(update)) {
+                codeBuddyStarts.set(update.toolCallId, entry)
+            }
+            if (isCodeBuddyTerminalUpdate(update)) {
+                codeBuddyTerminalSequences.set(update.toolCallId, entry.sequence)
+            }
+        }
+        for (let entry of rangeEntries) {
+            const update = codeBuddyUpdate(entry)
+            if (
+                update.sessionUpdate === "tool_call" &&
+                update.toolCallId &&
+                codeBuddyTerminalSequences.has(update.toolCallId)
+            ) {
+                compactedEntries += 1
+                collapsedToolCallEntries += 1
+                continue
+            }
+            if (
+                isCodeBuddyTerminalUpdate(update) &&
+                codeBuddyTerminalSequences.get(update.toolCallId) !== entry.sequence
+            ) {
+                compactedEntries += 1
+                collapsedToolCallEntries += 1
+                continue
+            }
+            if (!isSemanticTraceEntry(entry)) {
+                compactedEntries += 1
+                continue
+            }
+            entry = augmentCodeBuddyTerminalEntry(entry, codeBuddyStarts)
+            entry = attachCodeBuddyOutputDigests(entry)
+            semanticEntries.push(compactJsonEntry(entry, Math.min(maxEntryCharacters, maxTotalCharacters)))
+        }
+
+        const ranked = semanticEntries
+            .map((entry) => ({entry, priority: entryPriority(entry), size: JSON.stringify(entry).length}))
+            .sort((left, right) => right.priority - left.priority || left.entry.sequence - right.entry.sequence)
+        const selected = []
+        let usedCharacters = 0
+        for (const candidate of ranked) {
+            if (selected.length >= maxEntries || usedCharacters + candidate.size > maxTotalCharacters) continue
+            selected.push(candidate.entry)
+            usedCharacters += candidate.size
+        }
+        const entries = selected.sort((left, right) => left.sequence - right.sequence)
+        const omittedImportantEntries = semanticEntries.length - entries.length
+        const evidence = {
+            schemaVersion: "rolling-skill-trace-evidence/v1",
+            reference,
+            entries,
+            sourceEntryCount: end - start + 1,
+            includedEntries: entries.length,
+            compactedEntries,
+            collapsedToolCallEntries,
+            contentCompactedEntries: entries.filter((entry) => entry.contentCompacted).length,
+            omittedImportantEntries,
+            samplingStrategy: "semantic-v2",
+            semanticCoverageComplete: omittedImportantEntries === 0,
+            truncated: omittedImportantEntries > 0,
+            omittedEntries: omittedImportantEntries,
+        }
+        return {...evidence, digest: evidenceDigest(evidence)}
+    }
+
+    readRecent(limit = 200) {
+        try {
+            return readFileSync(this.path, "utf8")
+                .trim()
+                .split("\n")
+                .filter(Boolean)
+                .slice(-Math.max(1, Math.min(limit, 1000)))
+                .map((line) => JSON.parse(line))
+        } catch {
+            return []
+        }
+    }
+
+    referenceForEpisode({threadId, startItemId, endItemId}) {
+        try {
+            const lines = readFileSync(this.path, "utf8").trim().split("\n").filter(Boolean)
+            let startLine = null
+            let endLine = null
+            for (const line of lines) {
+                const event = JSON.parse(line)
+                const params = event.message?.params ?? {}
+                const historicalThread = event.message?.result?.thread ?? null
+                const eventThreadId =
+                    params.threadId ?? params.thread?.id ?? historicalThread?.id ?? null
+                if (eventThreadId !== threadId) continue
+                const historicalItemIds = (historicalThread?.turns ?? []).flatMap((turn) =>
+                    (turn.items ?? []).map((item) => item.id),
+                )
+                const itemIds = new Set([
+                    params.itemId,
+                    params.item?.id,
+                    ...(params.turn?.items ?? []).map((item) => item.id),
+                    ...historicalItemIds,
+                ])
+                if (startLine === null && itemIds.has(startItemId)) startLine = event.sequence
+                if (itemIds.has(endItemId)) endLine = event.sequence
+            }
+            if (startLine !== null && endLine !== null && startLine <= endLine) {
+                return `trace://${this.fileName}#L${startLine}-L${endLine}`
+            }
+        } catch {
+            // Fall back to the last immutable append position when a range cannot be recovered.
+        }
+        return this.latestReference
+    }
+}
+
+module.exports = {TraceRecorder, safeSessionId}

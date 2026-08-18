@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+    <defs>
+        <linearGradient id="background" x1="138" y1="96" x2="892" y2="932" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#FFFFFF" />
+            <stop offset="0.54" stop-color="#F2F7FF" />
+            <stop offset="1" stop-color="#DCEAFF" />
+        </linearGradient>
+        <radialGradient id="backgroundGlow" cx="0" cy="0" r="1" gradientTransform="translate(304 214) rotate(47) scale(650)" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#FFFFFF" stop-opacity="0.98" />
+            <stop offset="1" stop-color="#FFFFFF" stop-opacity="0" />
+        </radialGradient>
+        <linearGradient id="keyFace" x1="294" y1="218" x2="718" y2="784" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#FFFFFF" />
+            <stop offset="0.58" stop-color="#F5F9FF" />
+            <stop offset="1" stop-color="#E4EFFF" />
+        </linearGradient>
+        <linearGradient id="keyEdge" x1="262" y1="256" x2="744" y2="824" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#D6E7FF" />
+            <stop offset="1" stop-color="#A9CCFF" />
+        </linearGradient>
+        <linearGradient id="letter" x1="352" y1="360" x2="720" y2="688" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#3889F6" />
+            <stop offset="1" stop-color="#0752CC" />
+        </linearGradient>
+        <filter id="keyShadow" x="128" y="128" width="784" height="820" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+            <feDropShadow dx="0" dy="30" stdDeviation="26" flood-color="#155DCB" flood-opacity="0.22" />
+        </filter>
+    </defs>
+
+    <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#background)" />
+    <rect x="42" y="42" width="940" height="940" rx="214" fill="url(#backgroundGlow)" />
+    <rect x="42" y="42" width="940" height="940" rx="214" fill="none" stroke="#BED7FB" stroke-width="8" />
+    <rect x="54" y="54" width="916" height="916" rx="202" fill="none" stroke="#FFFFFF" stroke-opacity="0.8" stroke-width="5" />
+
+    <g fill="none" stroke-linecap="round">
+        <path d="M176 388C143 298 190 208 296 162" stroke="#3D8CF6" stroke-width="28" opacity="0.72" />
+        <path d="M157 429C139 379 137 333 151 292" stroke="#87BCFF" stroke-width="16" opacity="0.78" />
+        <path d="M848 630C877 719 831 807 728 852" stroke="#2875E9" stroke-width="28" opacity="0.72" />
+        <path d="M868 588C886 637 888 681 875 720" stroke="#79B2FC" stroke-width="16" opacity="0.78" />
+    </g>
+
+    <g transform="rotate(-9 512 512)" filter="url(#keyShadow)">
+        <rect x="202" y="230" width="620" height="612" rx="158" fill="url(#keyEdge)" />
+        <rect x="202" y="188" width="620" height="612" rx="158" fill="url(#keyFace)" stroke="#8DBBFA" stroke-width="9" />
+        <rect x="224" y="210" width="576" height="568" rx="138" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-opacity="0.92" />
+        <path d="M286 248C365 213 657 213 738 258" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" opacity="0.82" />
+        <text x="468" y="635" fill="url(#letter)" font-family="SF Pro Rounded, SF Pro Display, Helvetica Neue, Arial, sans-serif" font-size="360" font-weight="760" text-anchor="middle">S</text>
+        <text x="687" y="650" fill="#1F69DA" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif" font-size="142" font-weight="700" text-anchor="middle">放</text>
+    </g>
+</svg>

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+    <defs>
+        <linearGradient id="background" x1="142" y1="112" x2="890" y2="930" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#FFFFFF" />
+            <stop offset="0.5" stop-color="#F2F7FF" />
+            <stop offset="1" stop-color="#DDEBFF" />
+        </linearGradient>
+        <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(310 230) rotate(48) scale(620)" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#FFFFFF" stop-opacity="0.95" />
+            <stop offset="1" stop-color="#FFFFFF" stop-opacity="0" />
+        </radialGradient>
+        <linearGradient id="check" x1="508" y1="648" x2="798" y2="360" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#246FE8" />
+            <stop offset="1" stop-color="#084ECA" />
+        </linearGradient>
+        <filter id="markShadow" x="150" y="258" width="750" height="520" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+            <feDropShadow dx="0" dy="20" stdDeviation="22" flood-color="#1B5FCB" flood-opacity="0.18" />
+        </filter>
+    </defs>
+    <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#background)" />
+    <rect x="42" y="42" width="940" height="940" rx="214" fill="url(#glow)" />
+    <rect x="42" y="42" width="940" height="940" rx="214" fill="none" stroke="#BFD7FA" stroke-width="8" />
+    <rect x="54" y="54" width="916" height="916" rx="202" fill="none" stroke="#FFFFFF" stroke-opacity="0.78" stroke-width="5" />
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round" filter="url(#markShadow)">
+        <path d="M244 338H348C423 338 446 428 512 500" stroke="#78B8FF" stroke-width="76" />
+        <path d="M244 500H512" stroke="#3D88F5" stroke-width="76" />
+        <path d="M244 662H348C423 662 446 572 512 500" stroke="#2368DE" stroke-width="76" />
+        <path d="M512 500L626 626L794 382" stroke="url(#check)" stroke-width="88" />
+    </g>
+    <circle cx="512" cy="500" r="18" fill="#FFFFFF" fill-opacity="0.92" />
+</svg>

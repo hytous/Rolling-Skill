@@ -1,0 +1,48 @@
+{
+    "name": "rolling-skill-desktop",
+    "version": "0.9.3",
+    "private": true,
+    "author": "Rolling Skill",
+    "description": "Native-window macOS client for the Rolling Skill evaluation workbench",
+    "main": "src/main.cjs",
+    "scripts": {
+        "start": "electron .",
+        "render:icon": "electron scripts/render-icon.cjs assets/icon-s-keycap-orange.svg assets/icon-s-keycap-orange.png",
+        "test": "node --test test/*.test.cjs",
+        "smoke:renderer": "electron scripts/renderer-smoke.cjs",
+        "pack:mac": "npm run render:icon && electron-builder --mac dir --arm64",
+        "dist:mac": "npm run render:icon && electron-builder --mac dmg zip --arm64"
+    },
+    "devDependencies": {
+        "electron": "^43.3.0",
+        "electron-builder": "^26.0.12"
+    },
+    "build": {
+        "appId": "com.rolling-skill.desktop",
+        "productName": "Rolling Skill",
+        "asar": true,
+        "files": [
+            "src/**/*",
+            "renderer/**/*",
+            "package.json"
+        ],
+        "directories": {
+            "output": "dist",
+            "buildResources": "assets"
+        },
+        "mac": {
+            "target": [
+                "dir"
+            ],
+            "category": "public.app-category.developer-tools",
+            "minimumSystemVersion": "13.0",
+            "darkModeSupport": true,
+            "icon": "assets/icon-s-keycap-orange.png",
+            "identity": null
+        }
+    },
+    "dependencies": {
+        "he": "^1.2.0",
+        "marked": "^15.0.12"
+    }
+}
