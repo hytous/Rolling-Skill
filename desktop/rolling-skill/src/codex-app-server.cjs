@@ -34,6 +34,8 @@ class CodexAppServerClient extends EventEmitter {
         traceDirectory,
         workspaceRoot,
         executionPolicy = null,
+        requestPermission = null,
+        requestQuestion = null,
         spawnProcess = spawn,
     }) {
         super()
@@ -46,6 +48,8 @@ class CodexAppServerClient extends EventEmitter {
             approvalPolicy: executionPolicy?.approvalPolicy ?? "never",
         }
         this.spawnProcess = spawnProcess
+        this.requestPermission = requestPermission
+        this.requestQuestion = requestQuestion
         this.child = null
         this.tracker = new RpcRequestTracker()
         this.recorder = null
@@ -152,6 +156,10 @@ class CodexAppServerClient extends EventEmitter {
     handleMessage(message) {
         this.recorder?.record("inbound", message)
         if (message?.id !== undefined && message?.method) {
+            if (this.isInteractiveServerRequest(message.method)) {
+                void this.handleInteractiveServerRequest(message)
+                return
+            }
             this.write({
                 id: message.id,
                 error: {code: -32601, message: `Unsupported client request: ${message.method}`},
@@ -162,6 +170,127 @@ class CodexAppServerClient extends EventEmitter {
         if (message?.method) {
             this.emit("notification", message)
             this.emit(message.method, message.params)
+        }
+    }
+
+    isInteractiveServerRequest(method) {
+        return method === "item/commandExecution/requestApproval" ||
+            method === "item/fileChange/requestApproval" ||
+            method === "item/permissions/requestApproval" ||
+            method === "item/tool/requestUserInput"
+    }
+
+    permissionOptions(decisions, defaults) {
+        const ids = (Array.isArray(decisions) ? decisions : defaults)
+            .filter((decision) => typeof decision === "string")
+        if (!ids.some((id) => /decline|cancel|reject|deny/iu.test(id))) ids.push("decline")
+        return [...new Set(ids)].map((optionId) => ({
+            optionId,
+            kind: optionId,
+            name: optionId,
+        }))
+    }
+
+    async requestApproval(message, defaults) {
+        const params = message.params ?? {}
+        const options = this.permissionOptions(params.availableDecisions, defaults)
+        const rejection = options.find((option) => /decline|cancel|reject|deny/iu.test(option.optionId))
+        if (typeof this.requestPermission !== "function") return rejection.optionId
+        const selected = await this.requestPermission({
+            rpcId: String(message.id),
+            params: {
+                ...params,
+                sessionId: params.threadId,
+                toolCall: {
+                    name: message.method.includes("fileChange") ? "fileChange" : "commandExecution",
+                    rawInput: params.command ?? params.reason ?? "",
+                },
+            },
+            options,
+        })
+        return options.some((option) => option.optionId === selected)
+            ? selected
+            : rejection.optionId
+    }
+
+    async handleInteractiveServerRequest(message) {
+        try {
+            if (message.method === "item/commandExecution/requestApproval") {
+                const decision = await this.requestApproval(
+                    message,
+                    ["accept", "acceptForSession", "decline", "cancel"],
+                )
+                this.write({id: message.id, result: {decision}})
+                return
+            }
+            if (message.method === "item/fileChange/requestApproval") {
+                const decision = await this.requestApproval(
+                    message,
+                    ["accept", "acceptForSession", "decline", "cancel"],
+                )
+                this.write({id: message.id, result: {decision}})
+                return
+            }
+            if (message.method === "item/permissions/requestApproval") {
+                const selected = await this.requestApproval(
+                    message,
+                    ["accept", "acceptForSession", "decline"],
+                )
+                if (selected !== "accept" && selected !== "acceptForSession") {
+                    this.write({
+                        id: message.id,
+                        error: {code: -32000, message: "User denied the requested permissions"},
+                    })
+                    return
+                }
+                const requested = message.params?.permissions ?? {}
+                const permissions = {}
+                if (requested.network) permissions.network = requested.network
+                if (requested.fileSystem) permissions.fileSystem = requested.fileSystem
+                this.write({
+                    id: message.id,
+                    result: {
+                        permissions,
+                        scope: selected === "acceptForSession" ? "session" : "turn",
+                    },
+                })
+                return
+            }
+            const params = message.params ?? {}
+            const questions = (params.questions ?? []).map((question) => ({
+                ...question,
+                prompt: question.question,
+                options: Array.isArray(question.options)
+                    ? question.options.map((option) => ({
+                          label: option.label,
+                          description: option.description,
+                      }))
+                    : [],
+            }))
+            const response = typeof this.requestQuestion === "function"
+                ? await this.requestQuestion({
+                      rpcId: String(message.id),
+                      sessionId: params.threadId,
+                      questions,
+                  })
+                : null
+            const answers = {}
+            for (const answer of response?.answers ?? []) {
+                const questionId = String(answer.questionId ?? answer.id ?? "")
+                if (!questionId || !questions.some((question) => question.id === questionId)) continue
+                const values = Array.isArray(answer.answers)
+                    ? answer.answers.map(String)
+                    : answer.answer === null || answer.answer === undefined
+                      ? []
+                      : [String(answer.answer)]
+                answers[questionId] = {answers: values}
+            }
+            this.write({id: message.id, result: {answers}})
+        } catch (error) {
+            this.write({
+                id: message.id,
+                error: {code: -32000, message: error?.message ?? String(error)},
+            })
         }
     }
 

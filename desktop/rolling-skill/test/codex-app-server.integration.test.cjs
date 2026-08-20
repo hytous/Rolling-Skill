@@ -45,6 +45,110 @@ describe("discovered local Codex app-server smoke", {skip: !descriptor}, () => {
 })
 
 describe("Codex app-server request construction", () => {
+    it("routes command approval requests through the injected permission callback", async () => {
+        const writes = []
+        const requests = []
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            requestPermission: async (request) => {
+                requests.push(request)
+                return "accept"
+            },
+        })
+        client.write = (message) => writes.push(message)
+
+        client.handleMessage({
+            id: 91,
+            method: "item/commandExecution/requestApproval",
+            params: {
+                threadId: "thread-1",
+                turnId: "turn-1",
+                itemId: "command-1",
+                command: "cp source target",
+                cwd: "/tmp/workspace",
+                availableDecisions: ["accept", "acceptForSession", "decline"],
+            },
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.equal(requests.length, 1)
+        assert.equal(requests[0].params.sessionId, "thread-1")
+        assert.deepEqual(requests[0].options.map((entry) => entry.optionId), [
+            "accept",
+            "acceptForSession",
+            "decline",
+        ])
+        assert.deepEqual(writes, [{id: 91, result: {decision: "accept"}}])
+    })
+
+    it("routes request_user_input and maps answers back to the Codex protocol", async () => {
+        const writes = []
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            requestQuestion: async (request) => {
+                assert.equal(request.sessionId, "thread-1")
+                assert.equal(request.questions[0].id, "confirm")
+                return {
+                    answers: [{questionId: "confirm", answers: ["Continue overwrite"]}],
+                }
+            },
+        })
+        client.write = (message) => writes.push(message)
+
+        client.handleMessage({
+            id: "question-1",
+            method: "item/tool/requestUserInput",
+            params: {
+                threadId: "thread-1",
+                turnId: "turn-1",
+                itemId: "question-item",
+                isBlocking: true,
+                questions: [{
+                    id: "confirm",
+                    header: "Overwrite",
+                    question: "Continue?",
+                    isOther: false,
+                    isSecret: false,
+                    options: [{label: "Continue overwrite", description: "Replace the target"}],
+                }],
+            },
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.deepEqual(writes, [{
+            id: "question-1",
+            result: {answers: {confirm: {answers: ["Continue overwrite"]}}},
+        }])
+    })
+
+    it("fails closed for denied or unsupported Codex client requests", async () => {
+        const writes = []
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+        })
+        client.write = (message) => writes.push(message)
+
+        client.handleMessage({
+            id: 1,
+            method: "item/fileChange/requestApproval",
+            params: {threadId: "thread-1", turnId: "turn-1", itemId: "patch-1"},
+        })
+        client.handleMessage({id: 2, method: "unknown/request", params: {}})
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.deepEqual(writes.find((entry) => entry.id === 1), {
+            id: 1,
+            result: {decision: "decline"},
+        })
+        assert.equal(writes.find((entry) => entry.id === 2).error.code, -32601)
+    })
+
     it("uses the temporary codex_exec originator while retaining the Rolling Skill title", async () => {
         const writes = []
         class FakeChild extends EventEmitter {
