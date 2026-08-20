@@ -117,11 +117,19 @@ describe("Skill installation store", () => {
             command: "git archive",
             status: "running",
         })
+        store.appendMessage(job.id, {role: "assistant", content: "Target checked"})
         store.updateJob(job.id, {status: "verifying"})
 
         const stored = store.getJob(job.id)
-        assert.deepEqual(stored.messages.map((entry) => entry.content), ["Checking target"])
+        assert.deepEqual(
+            stored.messages.map((entry) => entry.content),
+            ["Checking target", "Target checked"],
+        )
         assert.deepEqual(stored.activities.map((entry) => entry.command), ["git archive"])
+        assert.deepEqual(
+            stored.timeline.map((entry) => entry.kind),
+            ["message", "activity", "message"],
+        )
         assert.throws(() => store.updateJob(job.id, {status: "queued"}), /transition/u)
         assert.throws(
             () => store.appendMessage(job.id, {role: "assistant", content: "x".repeat(140_000)}),

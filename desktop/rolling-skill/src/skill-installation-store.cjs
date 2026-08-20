@@ -132,14 +132,19 @@ function validateState(state) {
         normalizeRuntime(job.runtime)
         normalizeRequest(job.request)
         if (!ALL_STATUSES.has(job.status)) throw new Error("Skill installation job status is invalid")
-        if (!Array.isArray(job.messages) || !Array.isArray(job.activities)) {
+        if (!Array.isArray(job.messages) || !Array.isArray(job.activities) || !Array.isArray(job.timeline)) {
             throw new Error("Skill installation timeline is invalid")
         }
-        if (job.messages.length > MAX_TIMELINE_ENTRIES || job.activities.length > MAX_TIMELINE_ENTRIES) {
+        if (
+            job.messages.length > MAX_TIMELINE_ENTRIES ||
+            job.activities.length > MAX_TIMELINE_ENTRIES ||
+            job.timeline.length > MAX_TIMELINE_ENTRIES
+        ) {
             throw new Error("Skill installation timeline exceeds its limit")
         }
         job.messages.forEach((entry) => validateTimelineEntry(entry, "Installation message"))
         job.activities.forEach((entry) => validateTimelineEntry(entry, "Installation activity"))
+        job.timeline.forEach((entry) => validateTimelineEntry(entry, "Installation timeline entry"))
     }
     for (const installation of state.installations) {
         requiredText(installation.id, "Installation record id", 200)
@@ -177,7 +182,17 @@ class SkillInstallationStore {
             throw new Error("Skill installation store exceeds its byte limit")
         }
         try {
-            this.state = validateState(JSON.parse(readFileSync(this.path, "utf8")))
+            const parsed = JSON.parse(readFileSync(this.path, "utf8"))
+            for (const job of parsed.jobs ?? []) {
+                if (Array.isArray(job.timeline)) continue
+                job.timeline = [
+                    ...(job.messages ?? []).map((entry) => ({...entry, kind: "message"})),
+                    ...(job.activities ?? []).map((entry) => ({...entry, kind: "activity"})),
+                ].sort((left, right) => String(left.recordedAt ?? "").localeCompare(
+                    String(right.recordedAt ?? ""),
+                ))
+            }
+            this.state = validateState(parsed)
         } catch (error) {
             throw new Error(`Could not read Skill installation store: ${error.message}`)
         }
@@ -258,6 +273,7 @@ class SkillInstallationStore {
             turnId: null,
             messages: [],
             activities: [],
+            timeline: [],
             parsedResult: null,
             rawResult: null,
             traceReference: null,
@@ -328,9 +344,14 @@ class SkillInstallationStore {
         const current = this.getJob(jobId)
         return this.mutate(() => {
             const job = this.state.jobs.find((candidate) => candidate.id === current.id)
-            job.messages.push({...entry, recordedAt: entry.recordedAt ?? new Date().toISOString()})
+            const recorded = {...entry, recordedAt: entry.recordedAt ?? new Date().toISOString()}
+            job.messages.push(recorded)
+            job.timeline.push({...recorded, kind: "message"})
             if (job.messages.length > MAX_TIMELINE_ENTRIES) {
                 job.messages.splice(0, job.messages.length - MAX_TIMELINE_ENTRIES)
+            }
+            if (job.timeline.length > MAX_TIMELINE_ENTRIES) {
+                job.timeline.splice(0, job.timeline.length - MAX_TIMELINE_ENTRIES)
             }
             job.updatedAt = new Date().toISOString()
             return job
@@ -342,9 +363,14 @@ class SkillInstallationStore {
         const current = this.getJob(jobId)
         return this.mutate(() => {
             const job = this.state.jobs.find((candidate) => candidate.id === current.id)
-            job.activities.push({...entry, recordedAt: entry.recordedAt ?? new Date().toISOString()})
+            const recorded = {...entry, recordedAt: entry.recordedAt ?? new Date().toISOString()}
+            job.activities.push(recorded)
+            job.timeline.push({...recorded, kind: "activity"})
             if (job.activities.length > MAX_TIMELINE_ENTRIES) {
                 job.activities.splice(0, job.activities.length - MAX_TIMELINE_ENTRIES)
+            }
+            if (job.timeline.length > MAX_TIMELINE_ENTRIES) {
+                job.timeline.splice(0, job.timeline.length - MAX_TIMELINE_ENTRIES)
             }
             job.updatedAt = new Date().toISOString()
             return job
