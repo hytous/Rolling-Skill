@@ -8,7 +8,14 @@ const {
     session,
     shell,
 } = require("electron")
-const {chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync} = require("node:fs")
+const {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    renameSync,
+    writeFileSync,
+} = require("node:fs")
 const {homedir} = require("node:os")
 const {join} = require("node:path")
 const {pathToFileURL} = require("node:url")
@@ -32,10 +39,17 @@ const {
 } = require("./evaluation-skill-binding.cjs")
 const {snapshotSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 const {LocalEvaluationStore, reasoningEffort} = require("./local-store.cjs")
+const {ManagedSkillManager} = require("./managed-skill-manager.cjs")
+const {ManagedSkillStore} = require("./managed-skill-store.cjs")
+const {requireGitSourceLocation} = require("./managed-skill-git.cjs")
+const {RawCaseStore} = require("./raw-case-store.cjs")
+const {SkillInstallationManager} = require("./skill-installation-manager.cjs")
+const {SkillInstallationStore} = require("./skill-installation-store.cjs")
 const {resolveExecutionPolicy, resolveRuntimePermission} = require("./execution-policy.cjs")
 const {requireLocalPath, requireWebUrl} = require("./link-targets.cjs")
 const {readThreadProfile, updateThreadProfiles} = require("./thread-profile-store.cjs")
 const {ThreadActivityStore} = require("./thread-activity-store.cjs")
+const {RuntimeNotificationRouter} = require("./runtime-notification-router.cjs")
 const {RuntimeRegistry} = require("./runtime-registry.cjs")
 const {findGitWorkspace} = require("./workspace.cjs")
 
@@ -53,15 +67,26 @@ let rubricManager = null
 let automaticCaptureManager = null
 let evaluationRunner = null
 let activityStore = null
+let rawCaseStore = null
+let managedSkillStore = null
+let managedSkillManager = null
+let managedSkillStartupError = null
+let skillInstallationStore = null
+let skillInstallationManager = null
 let workspaceRoot = null
 let rendererUrl = null
 let runtimeStart = null
 let runtimeOperationTail = Promise.resolve()
 let clientGeneration = 0
 const permissionDialogTails = new Map()
+const pendingRuntimeQuestions = new Map()
+let runtimeQuestionSequence = 0
+const pendingSkillInstallationQuestions = new Map()
+let skillInstallationQuestionSequence = 0
 let quitAfterRuntimeStops = false
 const loadedThreads = new Set()
 const activeThreads = new Set()
+const runtimeNotificationRouter = new RuntimeNotificationRouter()
 
 app.setName("Rolling Skill")
 
@@ -123,9 +148,42 @@ function send(channel, payload) {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
 }
 
+function sourceCurationMarkers() {
+    return store.read().curationSessions
+        .filter(
+            (session_) =>
+                session_.operation !== "calibration" &&
+                session_.status !== "cancelled" &&
+                session_.episode?.source?.threadId,
+        )
+        .map((session_) => ({
+            id: session_.id,
+            datasetId: session_.datasetId,
+            caseId: session_.caseId ?? null,
+            status: session_.status,
+            threadId: session_.episode.source.threadId,
+            startItemId: session_.episode.source.startItemId,
+            endItemId: session_.episode.source.endItemId,
+            itemIds: (session_.episode.items ?? []).map((item) => item.id).filter(Boolean),
+        }))
+}
+
+function isHiddenRuntimeThread(threadId) {
+    return Boolean(
+        threadId && (
+            curationManager?.hiddenThreadIds().has(threadId) ||
+            rubricManager?.hiddenThreadIds().has(threadId)
+        ),
+    )
+}
+
 function installClientEvents(nextClient, sourceRuntimeId) {
     nextClient.on("state", (state) => {
-        if (state.status === "stopped" || state.status === "error") activeThreads.clear()
+        if (state.status === "stopped" || state.status === "error") {
+            activeThreads.clear()
+            runtimeNotificationRouter.clear()
+            cancelRuntimeQuestionsForClient(nextClient)
+        }
         send("runtime:state", enrichRuntimeState(state))
     })
     nextClient.on("notification", (message) => {
@@ -164,13 +222,12 @@ function installClientEvents(nextClient, sourceRuntimeId) {
                 rememberThreadProfile(threadId, patch, sourceRuntimeId)
             }
         }
-        const hidden =
-            (threadId && curationManager?.hiddenThreadIds().has(threadId)) ||
-            (threadId && rubricManager?.hiddenThreadIds().has(threadId)) ||
-            params.thread?.threadSource === "subagent"
+        const hidden = isHiddenRuntimeThread(threadId) || params.thread?.threadSource === "subagent"
         if (!hidden) {
             activityStore?.captureNotification(sourceRuntimeId, message)
-            send("runtime:notification", message)
+            if (runtimeNotificationRouter.route(message).forward) {
+                send("runtime:notification", message)
+            }
         }
     })
     nextClient.on("runtimeError", (error) => {
@@ -192,6 +249,14 @@ function runtimePermissionFor(providerId, requestedMode = null) {
         requestedMode,
         store?.read().settings,
     )
+}
+
+function installerRuntimePermissionFor(providerId, requestedMode = null) {
+    const permission = runtimePermissionFor(providerId, requestedMode)
+    if (providerId === "codex" && permission.permissionMode !== "full") {
+        return {...permission, approvalPolicy: "on-request"}
+    }
+    return permission
 }
 
 function permissionOptionId(option = {}) {
@@ -292,11 +357,140 @@ async function showRuntimePermissionDialog(request = {}) {
     return permissionOptionId(options[result.response] ?? options[rejectedIndex])
 }
 
+function settleRuntimeQuestion(pending, answer = null, reason = "resolved") {
+    if (!pending || pendingRuntimeQuestions.get(pending.requestId) !== pending) return false
+    pendingRuntimeQuestions.delete(pending.requestId)
+    pending.signal?.removeEventListener?.("abort", pending.onAbort)
+    pending.resolve(answer)
+    send("runtime:question-resolved", {requestId: pending.requestId, reason})
+    return true
+}
+
+function cancelRuntimeQuestionsForClient(sourceClient, reason = "runtime-stopped") {
+    for (const pending of [...pendingRuntimeQuestions.values()]) {
+        if (pending.sourceClient === sourceClient) settleRuntimeQuestion(pending, null, reason)
+    }
+}
+
+function requestRuntimeQuestion(request = {}) {
+    const generation = request.clientGeneration
+    const processEpoch = request.processEpoch ?? null
+    const rpcId = String(request.rpcId ?? "")
+    const sessionId = String(request.sessionId ?? request.params?.sessionId ?? "")
+    const questions = Array.isArray(request.questions) ? request.questions : []
+    const isCurrent = () =>
+        generation === clientGeneration &&
+        request.runtimeId === runtimeDescriptor?.runtimeId &&
+        request.sourceClient === client &&
+        (processEpoch === null || request.sourceClient?.processEpoch === processEpoch)
+    if (
+        !rpcId ||
+        !sessionId ||
+        !questions.length ||
+        isHiddenRuntimeThread(sessionId) ||
+        !isCurrent()
+    ) {
+        return Promise.resolve(null)
+    }
+    const duplicate = [...pendingRuntimeQuestions.values()].find(
+        (entry) =>
+            entry.clientGeneration === generation &&
+            entry.processEpoch === processEpoch &&
+            entry.rpcId === rpcId,
+    )
+    if (duplicate) return duplicate.promise
+    const requestId = `${generation}:${processEpoch ?? "runtime"}:${++runtimeQuestionSequence}`
+    let resolveQuestion
+    const promise = new Promise((resolve) => {
+        resolveQuestion = resolve
+    })
+    const pending = {
+        requestId,
+        promise,
+        resolve: resolveQuestion,
+        clientGeneration: generation,
+        processEpoch,
+        runtimeId: request.runtimeId,
+        sourceClient: request.sourceClient,
+        rpcId,
+        sessionId,
+        signal: request.signal ?? null,
+        onAbort: null,
+    }
+    pending.onAbort = () => settleRuntimeQuestion(pending, null, "runtime-resolved")
+    request.signal?.addEventListener?.("abort", pending.onAbort, {once: true})
+    if (request.signal?.aborted || !isCurrent()) {
+        pending.resolve(null)
+        return promise
+    }
+    pendingRuntimeQuestions.set(requestId, pending)
+    send("runtime:question-requested", {
+        requestId,
+        runtimeId: request.runtimeId,
+        threadId: sessionId,
+        rpcId,
+        questions,
+    })
+    return promise
+}
+
+function settleSkillInstallationQuestion(pending, answer = null, reason = "resolved") {
+    if (
+        !pending ||
+        pendingSkillInstallationQuestions.get(pending.requestId) !== pending
+    ) return false
+    pendingSkillInstallationQuestions.delete(pending.requestId)
+    pending.signal?.removeEventListener?.("abort", pending.onAbort)
+    pending.resolve(answer)
+    send("skill-installations:question-resolved", {
+        requestId: pending.requestId,
+        jobId: pending.jobId,
+        reason,
+    })
+    return true
+}
+
+function requestSkillInstallationQuestion(request = {}) {
+    const jobId = requireIdentifier(request.jobId, "Skill installation job")
+    const questions = Array.isArray(request.questions) ? request.questions : []
+    if (!questions.length) return Promise.resolve(null)
+    const requestId = `installer:${++skillInstallationQuestionSequence}`
+    let resolveQuestion
+    const promise = new Promise((resolve) => {
+        resolveQuestion = resolve
+    })
+    const pending = {
+        requestId,
+        jobId,
+        promise,
+        resolve: resolveQuestion,
+        threadId: request.threadId ?? request.sessionId ?? null,
+        signal: request.signal ?? null,
+        onAbort: null,
+    }
+    pending.onAbort = () => settleSkillInstallationQuestion(pending, null, "runtime-resolved")
+    request.signal?.addEventListener?.("abort", pending.onAbort, {once: true})
+    if (request.signal?.aborted) {
+        pending.resolve(null)
+        return promise
+    }
+    pendingSkillInstallationQuestions.set(requestId, pending)
+    send("skill-installations:question-requested", {
+        requestId,
+        jobId,
+        runtimeId: request.runtime?.runtimeId ?? null,
+        threadId: pending.threadId,
+        questions,
+    })
+    return promise
+}
+
 function requestRuntimePermission(request = {}) {
     const options = Array.isArray(request.options) ? request.options : []
     const rejection = options.find(isRejectionOption)
     if (!rejection) return Promise.reject(new Error("Permission request has no explicit rejection option"))
     const rejectionId = permissionOptionId(rejection)
+    if (isHiddenRuntimeThread(request.params?.sessionId)) return Promise.resolve(rejectionId)
     const generation = request.clientGeneration
     const processEpoch = request.processEpoch ?? null
     const permissionQueueId = `${generation}:${processEpoch ?? "runtime"}`
@@ -442,6 +636,14 @@ function createClient() {
                     nextClient?.workspaceRoot ??
                     workspaceRoot,
             }),
+        requestQuestion: (request) =>
+            requestRuntimeQuestion({
+                ...request,
+                runtime: sourceRuntime,
+                runtimeId: sourceRuntime.runtimeId,
+                clientGeneration: sourceGeneration,
+                sourceClient: nextClient,
+            }),
     })
     installClientEvents(nextClient, runtimeDescriptor.runtimeId)
     return nextClient
@@ -475,6 +677,7 @@ function enqueueRuntimeOperation(operation) {
 
 async function restartRuntimeNow({rediscover = false} = {}) {
     clientGeneration += 1
+    runtimeNotificationRouter.clear()
     if (client) await client.stop()
     runtimeStart = null
     loadedThreads.clear()
@@ -586,8 +789,10 @@ async function chooseWorkspace() {
         writePreferences({workspaceRoot})
         loadedThreads.clear()
         activeThreads.clear()
+        runtimeNotificationRouter.clear()
         client?.setWorkspace(workspaceRoot)
         if (evaluationRunner) evaluationRunner.workspaceRoot = workspaceRoot
+        if (skillInstallationManager) skillInstallationManager.workspaceRoot = workspaceRoot
         send("workspace:changed", {workspaceRoot})
         return workspaceRoot
     })
@@ -719,6 +924,40 @@ function installMenu() {
     )
 }
 
+async function chooseManagedSkillSource(kind) {
+    const folder = kind === "folder" || kind === "local-git"
+    const options = {
+        title: kind === "zip"
+            ? "Import Skill ZIP"
+            : kind === "local-git"
+              ? "Import local Git repository"
+              : "Import Skill folder",
+        properties: folder ? ["openDirectory"] : ["openFile"],
+    }
+    if (kind === "zip") options.filters = [{name: "ZIP archives", extensions: ["zip"]}]
+    const result = await dialog.showOpenDialog(mainWindow, options)
+    return result.canceled ? null : result.filePaths[0] ?? null
+}
+
+function notifyManagedSkills() {
+    const overview = managedSkillManager.overview()
+    send("managed-skills:changed", overview)
+    return overview
+}
+
+function openManagedSkillStore(registryPath) {
+    try {
+        return new ManagedSkillStore(registryPath)
+    } catch (error) {
+        const quarantinePath = `${registryPath}.corrupt-${Date.now()}`
+        renameSync(registryPath, quarantinePath)
+        managedSkillStartupError =
+            `The managed Skill registry was invalid and was moved to ${quarantinePath}. ` +
+            `${error instanceof Error ? error.message : String(error)}`
+        return new ManagedSkillStore(registryPath)
+    }
+}
+
 function installIpc() {
     ipcMain.handle("app:bootstrap", async () => {
         const runtime = client
@@ -731,8 +970,13 @@ function installIpc() {
             workspaceRoot,
             datasets: store.listDatasets(),
             curationSessions: store.listCurationSessions(),
+            sourceCurationMarkers: sourceCurationMarkers(),
             curatorProfile: store.read().settings.curatorProfile,
             settings: store.read().settings,
+            rawCases: rawCaseStore.list(),
+            managedSkills: managedSkillManager.overview(),
+            managedSkillStartupError,
+            skillInstallations: skillInstallationManager.overview(),
         }
     })
     ipcMain.handle("workspace:choose", chooseWorkspace)
@@ -747,6 +991,148 @@ function installIpc() {
         client?.recentTrace(limit) ?? {path: null, reference: null, events: []},
     )
     ipcMain.handle("runtime:open-traces", openTraceFolder)
+
+    ipcMain.handle("raw-cases:list", (_event, input = {}) =>
+        rawCaseStore.list({skillName: optionalIdentifier(input.skillName, "Skill")}),
+    )
+    ipcMain.handle("raw-cases:add", (_event, input = {}) =>
+        rawCaseStore.addMany(Array.isArray(input) ? input : input.cases),
+    )
+    ipcMain.handle("raw-cases:update", (_event, input = {}) =>
+        rawCaseStore.update(
+            requireIdentifier(input.id, "Raw Case"),
+            input.changes ?? {},
+        ),
+    )
+    ipcMain.handle("raw-cases:delete", (_event, id) =>
+        rawCaseStore.delete(requireIdentifier(id, "Raw Case")),
+    )
+    ipcMain.handle("raw-cases:mark-dispatched", (_event, input = {}) =>
+        rawCaseStore.markDispatched(
+            requireIdentifier(input.id, "Raw Case"),
+            {
+                threadId: requireIdentifier(input.threadId, "thread"),
+                mode: input.mode === "current" ? "current" : "new",
+                runtimeId: runtimeDescriptor?.runtimeId ?? null,
+            },
+        ),
+    )
+
+    ipcMain.handle("skill-repositories:list", () => managedSkillManager.overview())
+    ipcMain.handle("skill-repositories:rescan", async () => {
+        const overview = await managedSkillManager.rescanAll()
+        send("managed-skills:changed", overview)
+        return overview
+    })
+    ipcMain.handle("skill-repositories:import", async (_event, input = {}) => {
+        const kind = requireIdentifier(input.kind, "Skill source kind")
+        if (!["zip", "folder", "local-git", "git-url"].includes(kind)) {
+            throw new Error("Unsupported managed Skill source kind")
+        }
+        const location = kind === "git-url"
+            ? requireGitSourceLocation(input.location)
+            : await chooseManagedSkillSource(kind)
+        if (!location) return {cancelled: true}
+        const imported = await managedSkillManager.importSource({kind, location})
+        const overview = notifyManagedSkills()
+        return {
+            cancelled: false,
+            repository: overview.repositories.find((entry) => entry.id === imported.repository.id),
+            skills: overview.skills.filter((entry) => entry.repositoryId === imported.repository.id),
+            versions: overview.versions.filter((entry) => entry.repositoryId === imported.repository.id),
+        }
+    })
+    ipcMain.handle("skill-repositories:reveal", (_event, input = {}) => {
+        const path = managedSkillManager.repositoryPath(
+            requireIdentifier(input.repositoryId, "repository"),
+        )
+        shell.showItemInFolder(path)
+        return {revealed: true}
+    })
+    ipcMain.handle("managed-skills:read", (_event, input = {}) => {
+        const detail = managedSkillManager.readSkill(requireIdentifier(input.skillId, "Skill"))
+        const {managedPath: _managedPath, ...repository} = detail.repository
+        return {...detail, repository}
+    })
+    ipcMain.handle("skill-versions:create-candidate", async (_event, input = {}) => {
+        const candidate = await managedSkillManager.createCandidate({
+            skillId: requireIdentifier(input.skillId, "Skill"),
+            message: String(input.message ?? ""),
+        })
+        notifyManagedSkills()
+        return candidate
+    })
+    ipcMain.handle("skill-versions:release", async (_event, input = {}) => {
+        const released = await managedSkillManager.releaseVersion({
+            versionId: requireIdentifier(input.versionId, "version"),
+            versionLabel: String(input.versionLabel ?? ""),
+        })
+        notifyManagedSkills()
+        send("skill-versions:released", released)
+        return released
+    })
+    ipcMain.handle("skill-versions:deprecate", async (_event, input = {}) => {
+        const deprecated = await managedSkillManager.deprecateVersion({
+            versionId: requireIdentifier(input.versionId, "version"),
+        })
+        notifyManagedSkills()
+        return deprecated
+    })
+
+    ipcMain.handle("skill-installations:list", (_event, input = {}) =>
+        skillInstallationManager.overview(
+            optionalIdentifier(input.skillId, "Skill"),
+        ),
+    )
+    ipcMain.handle("skill-installations:get", (_event, input = {}) =>
+        skillInstallationStore.getJob(
+            requireIdentifier(input.jobId, "Skill installation job"),
+        ),
+    )
+    ipcMain.handle("skill-installations:start", (_event, input = {}) => {
+        const targets = (Array.isArray(input.targets) ? input.targets : []).map((target) => ({
+            runtimeId: requireIdentifier(target.runtimeId, "runtime"),
+            modelId: optionalIdentifier(target.modelId, "model"),
+            effort: optionalEffort(target.effort),
+            permissionMode: optionalIdentifier(target.permissionMode, "permission mode"),
+        }))
+        return skillInstallationManager.start({
+            skillId: requireIdentifier(input.skillId, "Skill"),
+            versionId: requireIdentifier(input.versionId, "version"),
+            targets,
+        })
+    })
+    ipcMain.handle("skill-installations:cancel", (_event, input = {}) =>
+        skillInstallationManager.cancel(
+            requireIdentifier(input.jobId, "Skill installation job"),
+        ),
+    )
+    ipcMain.handle("skill-installations:inspect", (_event, input = {}) =>
+        skillInstallationManager.inspect(
+            requireIdentifier(input.jobId, "Skill installation job"),
+        ),
+    )
+    ipcMain.handle("skill-installations:send", (_event, input = {}) =>
+        skillInstallationManager.send(
+            requireIdentifier(input.jobId, "Skill installation job"),
+            String(input.text ?? ""),
+        ),
+    )
+    ipcMain.handle("skill-installations:respond-question", (_event, input = {}) => {
+        const requestId = requireIdentifier(input.requestId, "Skill installation question")
+        const jobId = requireIdentifier(input.jobId, "Skill installation job")
+        const pending = pendingSkillInstallationQuestions.get(requestId)
+        if (!pending || pending.jobId !== jobId) return {accepted: false, reason: "not-pending"}
+        const answer = input.cancelled
+            ? null
+            : {answers: Array.isArray(input.answers) ? input.answers : []}
+        settleSkillInstallationQuestion(
+            pending,
+            answer,
+            input.cancelled ? "cancelled" : "answered",
+        )
+        return {accepted: true}
+    })
 
     ipcMain.handle("runtime:list-threads", async (_event, input = {}) => {
         const archived = Boolean(input.archived)
@@ -873,23 +1259,43 @@ function installIpc() {
         const runtime = await ensureRuntime()
         const sourceRuntimeId = runtimeDescriptor?.runtimeId
         const sourceProviderId = runtimeDescriptor?.providerId
-        const response = await runtime.readThread(threadId)
-        const observedActivityCount = activityStore.list(sourceRuntimeId, threadId).length
-        const withActivity = activityStore.mergeThreadResponse(sourceRuntimeId, response)
-        const withCoverage = withActivity?.thread
-            ? {
-                  ...withActivity,
-                  thread: {
-                      ...withActivity.thread,
-                      rollingSkillActivityHistory: {
-                          observedActivityCount,
-                          runtimeMayOmitItems: sourceProviderId === "codex",
+        const observationEpoch = runtimeNotificationRouter.beginObservation(threadId)
+        try {
+            const response = await runtime.readThread(threadId)
+            const observedActivityCount = activityStore.list(sourceRuntimeId, threadId).length
+            const withActivity = activityStore.mergeThreadResponse(sourceRuntimeId, response)
+            const withCoverage = withActivity?.thread
+                ? {
+                      ...withActivity,
+                      thread: {
+                          ...withActivity.thread,
+                          rollingSkillActivityHistory: {
+                              observedActivityCount,
+                              runtimeMayOmitItems: sourceProviderId === "codex",
+                          },
                       },
-                  },
-              }
-            : withActivity
-        return attachThreadProfile(withCoverage, threadId, sourceRuntimeId)
+                  }
+                : withActivity
+            runtimeNotificationRouter.snapshotReady(observationEpoch)
+            return {
+                ...attachThreadProfile(withCoverage, threadId, sourceRuntimeId),
+                rollingSkillObservationEpoch: observationEpoch,
+            }
+        } catch (error) {
+            runtimeNotificationRouter.clear(observationEpoch)
+            throw error
+        }
     })
+    ipcMain.handle("runtime:drain-observation", (_event, input = {}) =>
+        runtimeNotificationRouter.drain(requireObservationEpoch(input.epoch)),
+    )
+    ipcMain.handle("runtime:clear-observation", (_event, input = {}) =>
+        runtimeNotificationRouter.clear(
+            input.epoch === null || input.epoch === undefined
+                ? null
+                : requireObservationEpoch(input.epoch),
+        ),
+    )
     ipcMain.handle("runtime:start-thread", async (_event, input = {}) => {
         const model = optionalIdentifier(input.modelId, "model")
         const effort = optionalEffort(input.effort)
@@ -910,6 +1316,9 @@ function installIpc() {
                 ...permission,
             })
             loadedThreads.add(response.thread.id)
+            const observationEpoch = runtimeNotificationRouter.beginObservation(response.thread.id)
+            runtimeNotificationRouter.snapshotReady(observationEpoch)
+            runtimeNotificationRouter.drain(observationEpoch)
             rememberThreadProfile(
                 response.thread.id,
                 {
@@ -919,7 +1328,10 @@ function installIpc() {
                 },
                 sourceRuntimeId,
             )
-            return attachThreadProfile(response, response.thread.id, sourceRuntimeId)
+            return {
+                ...attachThreadProfile(response, response.thread.id, sourceRuntimeId),
+                rollingSkillObservationEpoch: observationEpoch,
+            }
         })
     })
     ipcMain.handle(
@@ -944,7 +1356,10 @@ function installIpc() {
                 if (!loadedThreads.has(threadId)) {
                     await runtime.resumeThread(
                         threadId,
-                        sourceRuntime.providerId === "codex" ? permission : {},
+                        sourceRuntime.providerId === "codex" ||
+                        sourceRuntime.providerId === "deepseek-harness"
+                            ? permission
+                            : {},
                     )
                     loadedThreads.add(threadId)
                 }
@@ -974,6 +1389,27 @@ function installIpc() {
             requireIdentifier(input.turnId, "turn"),
         ),
     )
+    ipcMain.handle("runtime:respond-question", (_event, input = {}) => {
+        const requestId = requireIdentifier(input.requestId, "runtime question")
+        const pending = pendingRuntimeQuestions.get(requestId)
+        if (!pending) return {accepted: false, reason: "not-pending"}
+        const processEpoch = pending.processEpoch
+        const sourceClient = pending.sourceClient
+        const current =
+            pending.clientGeneration === clientGeneration &&
+            pending.runtimeId === runtimeDescriptor?.runtimeId &&
+            sourceClient === client &&
+            (processEpoch === null || sourceClient?.processEpoch === processEpoch)
+        if (!current) {
+            settleRuntimeQuestion(pending, null, "stale")
+            return {accepted: false, reason: "stale"}
+        }
+        const answer = input.cancelled
+            ? null
+            : {answers: Array.isArray(input.answers) ? input.answers : []}
+        settleRuntimeQuestion(pending, answer, input.cancelled ? "cancelled" : "answered")
+        return {accepted: true}
+    })
     ipcMain.handle("datasets:list", () => store.listDatasets())
     ipcMain.handle("datasets:list-cases", (_event, datasetId) =>
         store.listCases(requireIdentifier(datasetId, "dataset")),
@@ -1048,6 +1484,11 @@ function installIpc() {
     )
     ipcMain.handle("rubrics:active", (_event, datasetId) =>
         store.getActiveDatasetRubric(requireIdentifier(datasetId, "dataset")),
+    )
+    ipcMain.handle("rubrics:migrate-legacy-contract", (_event, datasetId) =>
+        store.migrateActiveDatasetRubricToUnified(
+            requireIdentifier(datasetId, "dataset"),
+        ),
     )
     ipcMain.handle("rubrics:list-sessions", (_event, datasetId) =>
         store.listRubricSessions(
@@ -1287,6 +1728,14 @@ function requireIdentifier(value, label) {
     return value
 }
 
+function requireObservationEpoch(value) {
+    const epoch = Number(value)
+    if (!Number.isSafeInteger(epoch) || epoch <= 0) {
+        throw new Error("A valid runtime observation epoch is required")
+    }
+    return epoch
+}
+
 function optionalIdentifier(value, label) {
     if (value === null || value === undefined || String(value).trim() === "") return null
     return requireIdentifier(String(value).trim(), label)
@@ -1361,6 +1810,15 @@ if (!hasLock) {
         })
         workspaceRoot = locateInitialWorkspace()
         store = new LocalEvaluationStore(join(app.getPath("userData"), "evaluation-store.json"))
+        managedSkillStore = openManagedSkillStore(
+            join(app.getPath("userData"), "skill-registry.json"),
+        )
+        managedSkillManager = new ManagedSkillManager({
+            applicationSupportDirectory: app.getPath("userData"),
+            store: managedSkillStore,
+        })
+        rawCaseStore = new RawCaseStore()
+        rawCaseStore.subscribe((rawCases) => send("raw-cases:changed", rawCases))
         activityStore = new ThreadActivityStore(
             join(app.getPath("userData"), "thread-activity-store.json"),
         )
@@ -1396,6 +1854,25 @@ if (!hasLock) {
             new CodeBuddyRuntimeProvider(),
             new DeepSeekHarnessRuntimeProvider(),
         ])
+        skillInstallationStore = new SkillInstallationStore(
+            join(app.getPath("userData"), "skill-installations.json"),
+        )
+        skillInstallationManager = new SkillInstallationManager({
+            store: skillInstallationStore,
+            managedSkillStore,
+            managedSkillManager,
+            runtimeRegistry,
+            getRuntimes: () => availableRuntimes,
+            workspaceRoot,
+            traceDirectory: join(app.getPath("userData"), "traces", "skill-installations"),
+            resolvePermission: installerRuntimePermissionFor,
+            requestPermission: (request) => showRuntimePermissionDialog({
+                ...request,
+                workspaceRoot,
+            }),
+            requestQuestion: requestSkillInstallationQuestion,
+            onChanged: (job) => send("skill-installations:changed", job),
+        })
         const evaluationPowerGuard = new EvaluationPowerGuard(powerSaveBlocker)
         evaluationRunner = new EvaluationRunner({
             store,
@@ -1436,6 +1913,7 @@ if (!hasLock) {
         void Promise.allSettled([
             client?.stop?.() ?? Promise.resolve(),
             evaluationRunner?.stopAll?.() ?? Promise.resolve(),
+            skillInstallationManager?.stopAll?.() ?? Promise.resolve(),
         ])
             .then((results) => {
                 for (const result of results) {
@@ -1444,6 +1922,7 @@ if (!hasLock) {
                     }
                 }
                 activityStore?.flush()
+                rawCaseStore?.close()
             })
             .catch((error) => console.error("Rolling Skill shutdown persistence failed", error))
             .finally(() => app.quit())

@@ -209,6 +209,36 @@ describe("evaluation evidence catalog", () => {
             ["tool_call", "error"])
     })
 
+    it("recognizes DeepSeek Harness explicit Skill invocation as activation and read evidence", () => {
+        const value = inputs()
+        value.traceEvidence.entries = [{
+            sequence: 1,
+            direction: "inbound",
+            message: {
+                method: "session/event",
+                params: {
+                    event: {
+                        type: "user/message",
+                        data: {
+                            id: "skill-1",
+                            role: "user",
+                            source: {
+                                kind: "skill-invocation",
+                                name: "billing-cost-management",
+                            },
+                            content: [{type: "text", text: "Injected Skill instructions."}],
+                        },
+                    },
+                },
+            },
+        }]
+
+        const catalog = buildEvidenceCatalog(value)
+
+        assert.deepEqual(catalog.entries.find((entry) => entry.id === "trace:L1").kinds,
+            ["skill_activation", "skill_read"])
+    })
+
     it("is pure, deterministic, and recursively freezes the returned catalog", () => {
         const value = inputs()
         const before = structuredClone(value)

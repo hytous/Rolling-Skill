@@ -225,6 +225,7 @@ class EvaluationRunner {
             workspaceRoot: this.workspaceRoot,
             traceDirectory: this.traceDirectory,
             executionPolicy: this.getExecutionPolicy(),
+            nonInteractive: true,
         })
         this.activeClients.add(client)
         control.clients.add(client)
@@ -385,6 +386,7 @@ class EvaluationRunner {
                             workspaceRoot: this.workspaceRoot,
                             traceDirectory: this.traceDirectory,
                             executionPolicy: {sandbox: "read-only", approvalPolicy: "never"},
+                            nonInteractive: true,
                         })
                         this.activeClients.add(client)
                         control.clients.add(client)

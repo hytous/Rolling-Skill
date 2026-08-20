@@ -21,6 +21,25 @@ const translations = {
         trace: "Trace",
         runtime: "Runtime…",
         caseDrafts: "Case drafts",
+        rawCases: "Raw Cases",
+        rawCaseInbox: "RAW CASE INBOX",
+        rawCaseQuestion: "Question",
+        rawCaseSkillPlaceholder: "Skill name",
+        rawCaseQuestionPlaceholder: "Save an unverified question…",
+        rawCaseNotePlaceholder: "Why keep this case?",
+        noteOptional: "Note · optional",
+        addToInbox: "Add to inbox",
+        saveChanges: "Save changes",
+        rawCaseEmpty: "No pending questions. Add one here or through the external Tool.",
+        rawCaseNewTask: "Run in new task",
+        rawCaseCurrentTask: "Run here",
+        rawCaseEdit: "Edit",
+        rawCaseDelete: "Delete",
+        rawCaseDuplicate: "This question is already pending for the same Skill.",
+        rawCaseDraftStatus: "Case draft",
+        rawCaseArchivedStatus: "Saved Case",
+        curateAgain: "Curate again",
+        skill: "Skill",
         taskCouldNotContinue: "Task could not continue",
         dismiss: "Dismiss",
         close: "Close",
@@ -66,7 +85,9 @@ const translations = {
         rubricPublishedToast: "Dataset rubric published",
         rubricDiscarded: "Rubric draft discarded",
         rubricRequired: "Publish a dataset rubric before capturing Cases or running an evaluation.",
-        rubricNeedsUnified: "This rubric uses the retired split A/B model. Ask Rubric Agent to update and publish a unified 100-point rubric before evaluation.",
+        rubricNeedsUnified: "This rubric uses a retired grading contract. Upgrade its contract without rewriting the rubric or calibrated Cases before evaluation.",
+        migrateLegacyRubric: "Upgrade contract",
+        legacyRubricMigrated: "Scoring contract upgraded; rubric content and calibrated Cases were preserved",
         caseNeedsCalibration: "Needs calibration for the current rubric",
         casesNeedCalibration: "{count} Cases must be calibrated for rubric v{version} before this dataset can run.",
         calibrateCase: "Calibrate",
@@ -110,6 +131,11 @@ const translations = {
         requestedRuntimeSetting: "Requested: {value}",
         actualRuntimeUnknown: "actual setting unavailable",
         send: "Send",
+        runtimeQuestionTitle: "The runtime needs your input",
+        runtimeQuestionCustom: "Other answer (optional)",
+        runtimeQuestionSubmit: "Submit answer",
+        runtimeQuestionCancel: "Cancel request",
+        runtimeQuestionRequired: "Answer every question before submitting.",
         doneSaveCase: "Done · save case",
         done: "Done",
         retry: "Retry",
@@ -247,6 +273,82 @@ const translations = {
         noTraceEvents: "No trace events yet.",
         chat: "Chat",
         skillEvaluation: "Skill evaluation",
+        skillManagement: "Skill management",
+        skillRepositoryWorkbench: "SKILL REPOSITORY WORKBENCH",
+        managedSkillRepositories: "Managed Skill repositories",
+        managedSkillHelp: "Import editable repositories, review working changes, and release immutable Skill versions.",
+        managedRepositories: "Repositories",
+        managedVersions: "Versions",
+        importFolder: "Import folder",
+        importZip: "Import ZIP",
+        importGitRepository: "Import local Git",
+        cloneGitUrl: "Clone Git URL",
+        gitUrl: "Git URL",
+        "import": "Import",
+        noManagedRepositories: "No managed Skill repositories yet.",
+        selectManagedSkill: "Select a Skill to inspect its manifest and versions.",
+        repositoryWorkingTree: "Repository working tree",
+        revealRepository: "Reveal repository",
+        createCandidate: "Create candidate",
+        candidateMessage: "Change summary",
+        releaseVersion: "Release version",
+        deprecateVersion: "Deprecate",
+        versionLabel: "Version label",
+        managedWorking: "Working",
+        managedCandidate: "Candidate",
+        managedReleased: "Released",
+        managedDeprecated: "Deprecated",
+        managedMissing: "Missing",
+        managedInvalid: "Invalid",
+        managedSkillImported: "Skill repository imported",
+        managedCandidateCreated: "Candidate created",
+        managedVersionReleased: "Version released",
+        managedVersionDeprecated: "Version deprecated",
+        noManagedVersions: "No candidate or released versions yet.",
+        noWorkingChanges: "The working tree matches the latest candidate.",
+        runtimeInstallations: "Runtime installs",
+        releasedVersion: "Released version",
+        installWithRuntimes: "Install with selected runtimes",
+        installationJobs: "Installation jobs",
+        noReleasedVersions: "Release a version before installing it.",
+        noInstallationJobs: "No installation jobs for this Skill yet.",
+        noRuntimeInstallations: "No compatible local runtime was detected.",
+        selectRuntimeInstallTarget: "Select at least one Runtime.",
+        installationQueued: "Installation jobs queued",
+        installationFailedToStart: "Could not start installation jobs",
+        installationStatusQueued: "Queued",
+        installationStatusRunning: "Running",
+        installationStatusAwaitingPermission: "Awaiting permission",
+        installationStatusAwaitingConfirmation: "Awaiting confirmation",
+        installationStatusVerifying: "Verifying",
+        installationStatusSucceeded: "Installed",
+        installationStatusFailed: "Failed",
+        installationStatusCancelled: "Cancelled",
+        installationStatusUnverified: "Unverified",
+        installationRuntimeDefault: "Runtime default",
+        installationCurrentVersion: "Installed: {version}",
+        installationNotVerified: "No verified installation",
+        installationRuntimeVerified: "Runtime verified",
+        installationFilesystemOnly: "Copied · awaiting Runtime verification",
+        installationLastJob: "Last job: {status}",
+        installationSession: "Installer session",
+        installationResultSummary: "Structured result",
+        installationDestination: "Destination",
+        installationClassification: "Pre-state",
+        installationVerification: "Verification",
+        installationNoTimeline: "The installer has not produced completed output yet.",
+        installationTool: "Tool · {name}",
+        installationCommand: "Command · {command}",
+        installationStop: "Stop installation",
+        installationStopped: "Installation stop requested",
+        inspectInstallation: "Inspect read-only",
+        inspectionQueued: "Read-only inspection queued",
+        installerConversationRunning: "Agent running",
+        installerMessagePlaceholder: "Ask the installer Agent…",
+        sendInstallerMessage: "Send",
+        installationQuestionTitle: "Installer needs your input",
+        installationOpenAfterRelease: "Version released. Open Runtime installs to deploy it.",
+        openRuntimeInstallations: "Open Runtime installs",
         evaluationWorkbench: "SKILL EVALUATION WORKBENCH",
         evaluateSkills: "Evaluate Skills against real language",
         evaluationWorkbenchHelp: "Keep questions verbatim and compare the same Skill across local runtime configurations.",
@@ -274,6 +376,8 @@ const translations = {
         gradingFailed: "Grading failed",
         gradingSkipped: "Grading skipped",
         legacyUngraded: "Legacy record · no grading data",
+        legacySplitGrading: "Legacy score record",
+        legacySplitGradingHelp: "Historical grading format · shown as one archived total for reference and not directly comparable with the current unified rubric.",
         executionQueued: "Execution queued",
         executionRunning: "Executing",
         executionCompleted: "Execution completed",
@@ -415,6 +519,25 @@ const translations = {
         trace: "Trace",
         runtime: "运行时…",
         caseDrafts: "Case 草稿",
+        rawCases: "Raw Cases",
+        rawCaseInbox: "RAW CASE 收件箱",
+        rawCaseQuestion: "待验证问题",
+        rawCaseSkillPlaceholder: "Skill 名称",
+        rawCaseQuestionPlaceholder: "先存一个还没来得及验证的问题…",
+        rawCaseNotePlaceholder: "为什么先保留这个 Case？",
+        noteOptional: "备注 · 可选",
+        addToInbox: "加入队列",
+        saveChanges: "保存修改",
+        rawCaseEmpty: "暂时没有待验证问题。可以在这里添加，也可以让外部 Agent 通过 Tool 填入。",
+        rawCaseNewTask: "新会话执行",
+        rawCaseCurrentTask: "当前会话执行",
+        rawCaseEdit: "编辑",
+        rawCaseDelete: "删除",
+        rawCaseDuplicate: "同一个 Skill 下已经有这条待验证问题。",
+        rawCaseDraftStatus: "Case 草稿",
+        rawCaseArchivedStatus: "已沉淀 Case",
+        curateAgain: "再次整理",
+        skill: "Skill",
         taskCouldNotContinue: "任务无法继续",
         dismiss: "关闭",
         close: "关闭",
@@ -460,7 +583,9 @@ const translations = {
         rubricPublishedToast: "数据集评分标准已发布",
         rubricDiscarded: "评分标准草稿已丢弃",
         rubricRequired: "请先发布数据集评分标准，再沉淀 Case 或启动评测。",
-        rubricNeedsUnified: "当前标准仍使用已停用的 A/B 分层模型。请让 Rubric Agent 更新并发布统一百分制标准后再评测。",
+        rubricNeedsUnified: "当前标准仍使用已停用的旧评分契约。请先原样升级契约；评分内容和已校准 Case 不会被改写。",
+        migrateLegacyRubric: "原样升级契约",
+        legacyRubricMigrated: "评分契约已升级；评分内容和已校准 Case 保持不变",
         caseNeedsCalibration: "需要按当前评分标准校准",
         casesNeedCalibration: "还有 {count} 个 Case 需要按评分标准 v{version} 校准，完成后才能运行整个数据集。",
         calibrateCase: "校准",
@@ -504,6 +629,11 @@ const translations = {
         requestedRuntimeSetting: "请求：{value}",
         actualRuntimeUnknown: "实际设置未知",
         send: "发送",
+        runtimeQuestionTitle: "运行时需要你的确认",
+        runtimeQuestionCustom: "其他回答（可选）",
+        runtimeQuestionSubmit: "提交回答",
+        runtimeQuestionCancel: "取消请求",
+        runtimeQuestionRequired: "请先回答全部问题。",
         doneSaveCase: "完成并保存 Case",
         done: "完成",
         retry: "重试",
@@ -641,6 +771,82 @@ const translations = {
         noTraceEvents: "暂无 Trace 事件。",
         chat: "对话",
         skillEvaluation: "Skill 评测",
+        skillManagement: "Skill 管理",
+        skillRepositoryWorkbench: "SKILL 仓库工作台",
+        managedSkillRepositories: "受管 Skill 仓库",
+        managedSkillHelp: "导入可编辑仓库、检查工作区变化，并发布不可变的 Skill 版本。",
+        managedRepositories: "仓库",
+        managedVersions: "版本",
+        importFolder: "导入文件夹",
+        importZip: "导入 ZIP",
+        importGitRepository: "导入本地 Git",
+        cloneGitUrl: "克隆 Git 地址",
+        gitUrl: "Git 地址",
+        "import": "导入",
+        noManagedRepositories: "还没有受管 Skill 仓库。",
+        selectManagedSkill: "选择一个 Skill 查看清单和版本。",
+        repositoryWorkingTree: "仓库工作区",
+        revealRepository: "在访达中显示仓库",
+        createCandidate: "创建候选版本",
+        candidateMessage: "改动摘要",
+        releaseVersion: "发布版本",
+        deprecateVersion: "弃用",
+        versionLabel: "版本标识",
+        managedWorking: "工作区",
+        managedCandidate: "候选",
+        managedReleased: "已发布",
+        managedDeprecated: "已弃用",
+        managedMissing: "仓库缺失",
+        managedInvalid: "Skill 无效",
+        managedSkillImported: "Skill 仓库已导入",
+        managedCandidateCreated: "候选版本已创建",
+        managedVersionReleased: "版本已发布",
+        managedVersionDeprecated: "版本已弃用",
+        noManagedVersions: "还没有候选或已发布版本。",
+        noWorkingChanges: "工作区与最新候选版本一致。",
+        runtimeInstallations: "Runtime 安装",
+        releasedVersion: "已发布版本",
+        installWithRuntimes: "让所选 Runtime 执行安装",
+        installationJobs: "安装任务",
+        noReleasedVersions: "请先发布一个版本，再执行安装。",
+        noInstallationJobs: "这个 Skill 还没有安装任务。",
+        noRuntimeInstallations: "没有发现可用的本地 Runtime。",
+        selectRuntimeInstallTarget: "请至少选择一个 Runtime。",
+        installationQueued: "安装任务已进入队列",
+        installationFailedToStart: "无法启动安装任务",
+        installationStatusQueued: "排队中",
+        installationStatusRunning: "运行中",
+        installationStatusAwaitingPermission: "等待权限",
+        installationStatusAwaitingConfirmation: "等待确认",
+        installationStatusVerifying: "验证中",
+        installationStatusSucceeded: "已安装",
+        installationStatusFailed: "失败",
+        installationStatusCancelled: "已停止",
+        installationStatusUnverified: "未验证",
+        installationRuntimeDefault: "Runtime 默认",
+        installationCurrentVersion: "已安装：{version}",
+        installationNotVerified: "尚无可信安装记录",
+        installationRuntimeVerified: "Runtime 已验证",
+        installationFilesystemOnly: "已复制 · 等待 Runtime 验证",
+        installationLastJob: "最近任务：{status}",
+        installationSession: "安装 Agent 会话",
+        installationResultSummary: "结构化结果",
+        installationDestination: "目标目录",
+        installationClassification: "安装前状态",
+        installationVerification: "验证方式",
+        installationNoTimeline: "安装 Agent 还没有产生已完成的输出。",
+        installationTool: "工具 · {name}",
+        installationCommand: "命令 · {command}",
+        installationStop: "停止安装",
+        installationStopped: "已请求停止安装",
+        inspectInstallation: "只读检查",
+        inspectionQueued: "只读检查任务已进入队列",
+        installerConversationRunning: "Agent 运行中",
+        installerMessagePlaceholder: "追问安装 Agent…",
+        sendInstallerMessage: "发送",
+        installationQuestionTitle: "安装 Agent 需要你的输入",
+        installationOpenAfterRelease: "版本已发布，可前往 Runtime 安装页面部署。",
+        openRuntimeInstallations: "打开 Runtime 安装",
         evaluationWorkbench: "SKILL 评测工作台",
         evaluateSkills: "用真实自然语言评测 Skill",
         evaluationWorkbenchHelp: "保留原始问题，在多个本地运行时配置间对比同一个 Skill。",
@@ -668,6 +874,8 @@ const translations = {
         gradingFailed: "判分失败",
         gradingSkipped: "已跳过判分",
         legacyUngraded: "旧评测记录 · 无判分数据",
+        legacySplitGrading: "旧版评分记录",
+        legacySplitGradingHelp: "历史评分格式 · 仅以归档总分供参考，不能与当前统一评分直接比较。",
         executionQueued: "等待执行",
         executionRunning: "执行中",
         executionCompleted: "执行完成",
@@ -816,15 +1024,23 @@ const state = {
     runtimeErrorDismissed: false,
     runtimeOperationInProgress: false,
     runtimeEpoch: 0,
+    activeThreadObservationEpoch: null,
+    threadObservationResumePending: false,
     caseSelection: null,
     caseCreationInProgress: false,
     curationSessions: [],
+    sourceCurationMarkers: [],
+    activeCurationMarkerByItem: new Map(),
     curationActivities: new Map(),
     curationInputDrafts: new Map(),
     curationRevisionCounts: new Map(),
     flashingCurationReferences: new Set(),
     activeCurationId: null,
     curationOpen: false,
+    rawCases: [],
+    rawCaseOpen: window.innerWidth > 1120,
+    rawCaseEditingId: null,
+    rawCaseDispatchingIds: new Set(),
     curatorProfile: {runtimePolicy: "active", modelId: null},
     settings: {
         autoCapture: false,
@@ -847,9 +1063,28 @@ const state = {
     selectedTaskModelId: null,
     selectedTaskEffort: null,
     selectedTaskPermissionMode: null,
+    pendingRuntimeQuestions: new Map(),
     discardCurationId: null,
     traceOpen: false,
     surface: "chat",
+    managedSkills: {repositories: [], skills: [], versions: []},
+    activeManagedRepositoryId: null,
+    activeManagedSkillId: null,
+    managedSkillDetail: null,
+    managedSkillLoading: false,
+    managedSkillError: null,
+    managedSkillMutation: false,
+    managedCandidateSkillId: null,
+    managedReleaseVersionId: null,
+    managedSkillSideView: "versions",
+    skillInstallations: {jobs: [], matrix: []},
+    managedInstallVersionId: null,
+    managedInstallConfigurations: {},
+    activeSkillInstallationJobId: null,
+    pendingSkillInstallationQuestions: new Map(),
+    skillInstallationInputDrafts: new Map(),
+    managedInstallationLoading: false,
+    managedInstallationStarting: false,
     evaluationCases: [],
     calibrationStartingCaseIds: new Set(),
     calibrationBatch: null,
@@ -861,6 +1096,7 @@ const state = {
     evaluationRunDetails: {},
     activeEvaluationRunId: null,
     activeEvaluationRun: null,
+    evaluationRuntimeViewByRun: {},
     evaluationRuntimeConfigurations: {},
     evaluationJudgeConfiguration: {runtimeId: null, modelId: null, effort: null},
     evaluationRubricVersion: null,
@@ -916,6 +1152,55 @@ const elements = {
     openTrace: document.querySelector("#open-trace"),
     topbarCurations: document.querySelector("#topbar-curations"),
     topbarTrace: document.querySelector("#topbar-trace"),
+    topbarRawCases: document.querySelector("#topbar-raw-cases"),
+    rawCaseCount: document.querySelector("#raw-case-count"),
+    rawCasePanel: document.querySelector("#raw-case-panel"),
+    closeRawCases: document.querySelector("#close-raw-cases"),
+    rawCaseForm: document.querySelector("#raw-case-form"),
+    rawCaseSkill: document.querySelector("#raw-case-skill"),
+    rawCaseSkillOptions: document.querySelector("#raw-case-skill-options"),
+    rawCaseQuestion: document.querySelector("#raw-case-question"),
+    rawCaseNote: document.querySelector("#raw-case-note"),
+    addRawCase: document.querySelector("#add-raw-case"),
+    cancelRawCaseEdit: document.querySelector("#cancel-raw-case-edit"),
+    rawCaseList: document.querySelector("#raw-case-list"),
+    skillManagementWorkbench: document.querySelector("#skill-management-workbench"),
+    managedRepositoryCount: document.querySelector("#managed-repository-count"),
+    managedRepositoryList: document.querySelector("#managed-repository-list"),
+    managedSkillDetail: document.querySelector("#managed-skill-detail"),
+    managedSkillVersions: document.querySelector("#managed-skill-versions"),
+    managedSkillSideTabs: document.querySelector("#managed-skill-side-tabs"),
+    managedSkillInstallations: document.querySelector("#managed-skill-installations"),
+    managedInstallVersion: document.querySelector("#managed-install-version"),
+    managedInstallRuntimeList: document.querySelector("#managed-install-runtime-list"),
+    startManagedSkillInstallations: document.querySelector("#start-managed-skill-installations"),
+    managedInstallJobList: document.querySelector("#managed-install-job-list"),
+    managedInstallSession: document.querySelector("#managed-install-session"),
+    inspectManagedSkillInstallation: document.querySelector("#inspect-managed-skill-installation"),
+    cancelManagedSkillInstallation: document.querySelector("#cancel-managed-skill-installation"),
+    managedSkillError: document.querySelector("#managed-skill-error"),
+    refreshManagedSkills: document.querySelector("#refresh-managed-skills"),
+    managedGitUrlDialog: document.querySelector("#managed-git-url-dialog"),
+    managedGitUrlForm: document.querySelector("#managed-git-url-form"),
+    managedGitUrl: document.querySelector("#managed-git-url"),
+    managedGitUrlError: document.querySelector("#managed-git-url-error"),
+    closeManagedGitUrlDialog: document.querySelector("#close-managed-git-url-dialog"),
+    cancelManagedGitUrl: document.querySelector("#cancel-managed-git-url"),
+    confirmManagedGitUrl: document.querySelector("#confirm-managed-git-url"),
+    managedCandidateDialog: document.querySelector("#managed-candidate-dialog"),
+    managedCandidateForm: document.querySelector("#managed-candidate-form"),
+    managedCandidateMessage: document.querySelector("#managed-candidate-message"),
+    managedCandidateError: document.querySelector("#managed-candidate-error"),
+    closeManagedCandidateDialog: document.querySelector("#close-managed-candidate-dialog"),
+    cancelManagedCandidate: document.querySelector("#cancel-managed-candidate"),
+    confirmManagedCandidate: document.querySelector("#confirm-managed-candidate"),
+    managedReleaseDialog: document.querySelector("#managed-release-dialog"),
+    managedReleaseForm: document.querySelector("#managed-release-form"),
+    managedReleaseLabel: document.querySelector("#managed-release-label"),
+    managedReleaseError: document.querySelector("#managed-release-error"),
+    closeManagedReleaseDialog: document.querySelector("#close-managed-release-dialog"),
+    cancelManagedRelease: document.querySelector("#cancel-managed-release"),
+    confirmManagedRelease: document.querySelector("#confirm-managed-release"),
     evaluationWorkbench: document.querySelector("#evaluation-workbench"),
     refreshEvaluation: document.querySelector("#refresh-evaluation"),
     evaluationDatasetCount: document.querySelector("#evaluation-dataset-count"),
@@ -1554,6 +1839,7 @@ function refreshOpenSettingsOptions() {
 }
 
 async function openSettings() {
+    suspendThreadObservation()
     renderSettingsForm()
     elements.settingsDialog.showModal()
     try {
@@ -1676,7 +1962,7 @@ function activeProviderId() {
     return state.runtime?.runtime?.providerId ?? null
 }
 
-function permissionModeOptions(providerId = activeProviderId()) {
+function permissionModeOptions(providerId = activeProviderId(), availableModes = undefined) {
     if (providerId === "codex") {
         return [
             {value: "full", label: "fullLocalAccess"},
@@ -1694,7 +1980,9 @@ function permissionModeOptions(providerId = activeProviderId()) {
             {value: "bypassPermissions", label: "codebuddyBypassAccess"},
             {value: "fullAccess", label: "fullLocalAccess"},
         ]
-        const available = state.activeThread?.availablePermissionModes
+        const available = availableModes === undefined
+            ? state.activeThread?.availablePermissionModes
+            : availableModes
         if (!Array.isArray(available) || !available.length) return options
         const filtered = options.filter((option) => available.includes(option.value))
         const current = state.activeThread?.permissionMode
@@ -1707,6 +1995,13 @@ function permissionModeOptions(providerId = activeProviderId()) {
         }
         return filtered
     }
+    if (providerId === "deepseek-harness") {
+        return [
+            {value: "danger-full-access", label: "fullLocalAccess"},
+            {value: "workspace-write", label: "workspaceOnlyAccess"},
+            {value: "read-only", label: "readOnlyAccess"},
+        ]
+    }
     return []
 }
 
@@ -1715,6 +2010,11 @@ function defaultPermissionMode(providerId = activeProviderId()) {
         return state.settings.localAccess === "workspace" ? "workspace" : "full"
     }
     if (providerId === "codebuddy") return "auto"
+    if (providerId === "deepseek-harness") {
+        return state.settings.localAccess === "workspace"
+            ? "workspace-write"
+            : "danger-full-access"
+    }
     return null
 }
 
@@ -1918,6 +2218,7 @@ function renderRuntimeOptions() {
 }
 
 function openRuntimeDialog() {
+    suspendThreadObservation()
     renderRuntimeOptions()
     elements.runtimeDialog.showModal()
 }
@@ -1987,6 +2288,266 @@ function renderThreads() {
             row.append(action)
         }
         elements.threadList.append(row)
+    }
+}
+
+function rawCaseSkillReference(name) {
+    const normalized = String(name ?? "").trim().toLocaleLowerCase("en-US")
+    const candidates = [
+        ...state.datasets.map((dataset) => dataset.skillReference),
+        ...state.evaluationSkills,
+    ].filter(Boolean)
+    const match = candidates.find(
+        (skill) => String(skill.name ?? "").trim().toLocaleLowerCase("en-US") === normalized,
+    )
+    return {
+        name: String(name ?? "").trim(),
+        ...(match?.path ? {path: match.path} : {}),
+    }
+}
+
+function suggestedRawCaseSkill() {
+    return (
+        state.datasets.find((dataset) => dataset.skillReference)?.skillReference?.name ??
+        state.evaluationSkills[0]?.name ??
+        ""
+    )
+}
+
+function renderRawCaseSkillOptions() {
+    const current = elements.rawCaseSkill.value
+    const names = new Set()
+    for (const rawCase of state.rawCases) {
+        if (rawCase.skill?.name) names.add(rawCase.skill.name)
+    }
+    for (const dataset of state.datasets) {
+        if (dataset.skillReference?.name) names.add(dataset.skillReference.name)
+    }
+    for (const skill of state.evaluationSkills) {
+        if (skill?.name) names.add(skill.name)
+    }
+    elements.rawCaseSkillOptions.replaceChildren(
+        ...[...names].sort((left, right) => left.localeCompare(right)).map((name) => {
+            const option = document.createElement("option")
+            option.value = name
+            return option
+        }),
+    )
+    elements.rawCaseSkill.value = current
+}
+
+function canDispatchRawCaseToCurrentThread() {
+    return Boolean(
+        state.activeThreadId &&
+        state.activeThread &&
+        !state.newTaskMode &&
+        !state.activeThreadArchived &&
+        !state.activeTurnId &&
+        !state.sending &&
+        !state.loadingThread &&
+        state.runtime?.status === "ready"
+    )
+}
+
+function rawCaseDispatchDisabled(rawCaseId) {
+    return (
+        state.runtime?.status !== "ready" ||
+        state.sending ||
+        Boolean(state.activeTurnId) ||
+        state.rawCaseDispatchingIds.has(rawCaseId)
+    )
+}
+
+function renderRawCases() {
+    const visible = state.surface === "chat" && state.rawCaseOpen
+    elements.rawCasePanel.classList.toggle("visible", visible)
+    elements.topbarRawCases.classList.toggle("active", visible)
+    elements.topbarRawCases.classList.toggle("hidden", state.surface !== "chat")
+    elements.rawCaseCount.textContent = String(state.rawCases.length)
+    renderRawCaseSkillOptions()
+    elements.addRawCase.textContent = t(state.rawCaseEditingId ? "saveChanges" : "addToInbox")
+    elements.cancelRawCaseEdit.classList.toggle("hidden", !state.rawCaseEditingId)
+    elements.rawCaseList.replaceChildren()
+    if (!state.rawCases.length) {
+        elements.rawCaseList.append(node("div", "raw-case-empty", t("rawCaseEmpty")))
+        return
+    }
+
+    const groups = new Map()
+    for (const rawCase of state.rawCases) {
+        const name = rawCase.skill?.name || t("skill")
+        if (!groups.has(name)) groups.set(name, [])
+        groups.get(name).push(rawCase)
+    }
+    for (const [skillName, rawCases] of groups) {
+        const group = node("section", "raw-case-skill-group")
+        const heading = node("header", "raw-case-skill-heading")
+        heading.append(
+            node("strong", "", skillName),
+            node("span", "", String(rawCases.length)),
+        )
+        group.append(heading)
+        for (const rawCase of rawCases) {
+            const card = node("article", "raw-case-card")
+            card.dataset.rawCaseId = rawCase.id
+            const question = node("p", "raw-case-card-question", rawCase.question)
+            const metadata = node(
+                "div",
+                "raw-case-card-meta",
+                [rawCase.note, relativeTime(rawCase.createdAt)].filter(Boolean).join(" · "),
+            )
+            const actions = node("div", "raw-case-card-actions")
+            const edit = node("button", "raw-case-secondary", t("rawCaseEdit"))
+            edit.type = "button"
+            edit.dataset.editRawCase = rawCase.id
+            const remove = node("button", "raw-case-secondary danger", t("rawCaseDelete"))
+            remove.type = "button"
+            remove.dataset.deleteRawCase = rawCase.id
+            const current = node("button", "raw-case-secondary", t("rawCaseCurrentTask"))
+            current.type = "button"
+            current.dataset.dispatchRawCase = rawCase.id
+            current.dataset.dispatchMode = "current"
+            current.disabled = !canDispatchRawCaseToCurrentThread() || rawCaseDispatchDisabled(rawCase.id)
+            const fresh = node("button", "raw-case-primary", t("rawCaseNewTask"))
+            fresh.type = "button"
+            fresh.dataset.dispatchRawCase = rawCase.id
+            fresh.dataset.dispatchMode = "new"
+            fresh.disabled = rawCaseDispatchDisabled(rawCase.id)
+            edit.disabled = state.rawCaseDispatchingIds.has(rawCase.id)
+            remove.disabled = state.rawCaseDispatchingIds.has(rawCase.id)
+            actions.append(edit, remove, current, fresh)
+            card.append(question, metadata, actions)
+            group.append(card)
+        }
+        elements.rawCaseList.append(group)
+    }
+}
+
+function clearRawCaseForm() {
+    state.rawCaseEditingId = null
+    elements.rawCaseQuestion.value = ""
+    elements.rawCaseNote.value = ""
+    if (!elements.rawCaseSkill.value.trim()) {
+        elements.rawCaseSkill.value = suggestedRawCaseSkill()
+    }
+    renderRawCases()
+}
+
+function editRawCase(rawCaseId) {
+    const rawCase = state.rawCases.find((entry) => entry.id === rawCaseId)
+    if (!rawCase) return
+    state.rawCaseEditingId = rawCase.id
+    elements.rawCaseSkill.value = rawCase.skill?.name ?? ""
+    elements.rawCaseQuestion.value = rawCase.question
+    elements.rawCaseNote.value = rawCase.note ?? ""
+    renderRawCases()
+    elements.rawCaseQuestion.focus()
+}
+
+async function saveRawCaseForm() {
+    const question = elements.rawCaseQuestion.value.trim()
+    const skillName = elements.rawCaseSkill.value.trim()
+    if (!question || !skillName) return
+    elements.addRawCase.disabled = true
+    try {
+        const input = {
+            question,
+            skill: rawCaseSkillReference(skillName),
+            note: elements.rawCaseNote.value.trim(),
+        }
+        if (state.rawCaseEditingId) {
+            await window.rollingSkill.updateRawCase(state.rawCaseEditingId, input)
+        } else {
+            const result = await window.rollingSkill.addRawCases([
+                {...input, source: {kind: "manual"}},
+            ])
+            if (!result.created.length && result.duplicates.length) {
+                showToast(t("rawCaseDuplicate"))
+            }
+        }
+        state.rawCases = await window.rollingSkill.listRawCases()
+        clearRawCaseForm()
+    } catch (error) {
+        showError(error)
+    } finally {
+        elements.addRawCase.disabled = false
+        renderRawCases()
+    }
+}
+
+async function deleteRawCase(rawCaseId) {
+    try {
+        await window.rollingSkill.deleteRawCase(rawCaseId)
+        state.rawCases = state.rawCases.filter((entry) => entry.id !== rawCaseId)
+        if (state.rawCaseEditingId === rawCaseId) clearRawCaseForm()
+        else renderRawCases()
+    } catch (error) {
+        showError(error)
+    }
+}
+
+async function dispatchRawCase(rawCaseId, mode) {
+    const rawCase = state.rawCases.find((entry) => entry.id === rawCaseId)
+    if (!rawCase || rawCaseDispatchDisabled(rawCase.id)) return
+    if (mode === "current" && !canDispatchRawCaseToCurrentThread()) return
+    const modelId = state.selectedTaskModelId
+    const effort = state.selectedTaskEffort
+    const permissionMode = state.selectedTaskPermissionMode
+    const runtimeEpoch = state.runtimeEpoch
+    const currentThreadId = state.activeThreadId
+    state.rawCaseDispatchingIds.add(rawCase.id)
+    state.sending = true
+    state.error = null
+    renderAll()
+    try {
+        if (mode === "current") {
+            const response = await window.rollingSkill.startTurn(
+                currentThreadId,
+                rawCase.question,
+                modelId,
+                effort,
+                permissionMode,
+            )
+            await window.rollingSkill.markRawCaseDispatched(rawCase.id, currentThreadId, "current")
+            state.rawCases = state.rawCases.filter((entry) => entry.id !== rawCase.id)
+            state.sending = false
+            if (runtimeEpoch === state.runtimeEpoch && state.activeThreadId === currentThreadId) {
+                state.activeTurnId = response.turn.id
+                upsertTurn(response.turn)
+                renderAll({forceBottom: true})
+            }
+        } else {
+            snapshotActiveThreadView()
+            const threadResponse = await window.rollingSkill.startThread(
+                modelId,
+                effort,
+                permissionMode,
+            )
+            const threadId = threadResponse.thread.id
+            await window.rollingSkill.startTurn(
+                threadId,
+                rawCase.question,
+                modelId,
+                effort,
+                permissionMode,
+            )
+            await window.rollingSkill.markRawCaseDispatched(rawCase.id, threadId, "new")
+            state.rawCases = state.rawCases.filter((entry) => entry.id !== rawCase.id)
+            state.sending = false
+            const observationEpoch = threadResponse.rollingSkillObservationEpoch ?? null
+            if (observationEpoch !== null) {
+                await window.rollingSkill.clearThreadObservation(observationEpoch).catch(() => {})
+            }
+            upsertThreadSummary(threadResponse.thread)
+            if (runtimeEpoch === state.runtimeEpoch) await loadThread(threadId)
+            void refreshThreads(false)
+        }
+    } catch (error) {
+        state.sending = false
+        showError(error)
+    } finally {
+        state.rawCaseDispatchingIds.delete(rawCase.id)
+        renderAll()
     }
 }
 
@@ -2062,6 +2623,77 @@ function activityText(item) {
 
 const renderedItemCache = new Map()
 
+function sourceCurationMarkerFromSession(session) {
+    if (
+        !session ||
+        session.operation === "calibration" ||
+        session.status === "cancelled" ||
+        !session.episode?.source?.threadId
+    ) {
+        return null
+    }
+    return {
+        id: session.id,
+        datasetId: session.datasetId,
+        caseId: session.caseId ?? null,
+        status: session.status,
+        threadId: session.episode.source.threadId,
+        startItemId: session.episode.source.startItemId,
+        endItemId: session.episode.source.endItemId,
+        itemIds: (session.episode.items ?? []).map((item) => item.id).filter(Boolean),
+    }
+}
+
+function upsertSourceCurationMarker(session) {
+    const index = state.sourceCurationMarkers.findIndex((marker) => marker.id === session?.id)
+    const marker = sourceCurationMarkerFromSession(session)
+    if (!marker) {
+        if (index >= 0) state.sourceCurationMarkers.splice(index, 1)
+        return
+    }
+    if (index >= 0) state.sourceCurationMarkers[index] = marker
+    else state.sourceCurationMarkers.push(marker)
+}
+
+function rebuildActiveCurationMarkerIndex() {
+    const index = new Map()
+    for (const marker of state.sourceCurationMarkers) {
+        if (marker.threadId !== state.activeThreadId) continue
+        const kind = marker.status === "archived" || marker.caseId ? "archived" : "draft"
+        for (const itemId of marker.itemIds ?? []) {
+            const current = index.get(itemId)
+            if (!current || (current.kind !== "archived" && kind === "archived")) {
+                index.set(itemId, {
+                    ...marker,
+                    kind,
+                    isEnd: itemId === marker.endItemId,
+                })
+            }
+        }
+    }
+    state.activeCurationMarkerByItem = index
+}
+
+function curationMarkerForItem(item) {
+    return state.activeCurationMarkerByItem.get(item?.id) ?? null
+}
+
+function decorateSourceCaseRange(element, item) {
+    const marker = curationMarkerForItem(item)
+    if (!marker || !element) return marker
+    element.classList.add("source-case-range", marker.kind)
+    if (marker.isEnd) {
+        element.append(
+            node(
+                "span",
+                "source-case-range-status",
+                t(marker.kind === "archived" ? "rawCaseArchivedStatus" : "rawCaseDraftStatus"),
+            ),
+        )
+    }
+    return marker
+}
+
 function renderItemSignature(item, turn) {
     const content =
         item.type === "userMessage"
@@ -2075,6 +2707,8 @@ function renderItemSignature(item, turn) {
         turn.status,
         item.type,
         content,
+        curationMarkerForItem(item)?.kind ?? null,
+        curationMarkerForItem(item)?.isEnd ?? false,
     ])
 }
 
@@ -2084,6 +2718,7 @@ function renderItem(item, turn) {
         const body = node("div", "message-body")
         appendSafeMessageMarkdown(body, textFromUserInput(item.content))
         wrapper.append(body)
+        decorateSourceCaseRange(wrapper, item)
         return wrapper
     }
     if (item.type === "agentMessage") {
@@ -2098,7 +2733,11 @@ function renderItem(item, turn) {
         wrapper.append(avatar, body)
         if (turn.status !== "inProgress") {
             const actions = node("div", "message-actions")
-            const save = node("button", "save-case-button", t("curateCase"))
+            const save = node(
+                "button",
+                "save-case-button",
+                t(curationMarkerForItem(item) ? "curateAgain" : "curateCase"),
+            )
             save.type = "button"
             save.dataset.saveCase = "true"
             save.dataset.turnId = turn.id
@@ -2106,14 +2745,131 @@ function renderItem(item, turn) {
             actions.append(save)
             wrapper.append(actions)
         }
+        decorateSourceCaseRange(wrapper, item)
         return wrapper
     }
     const text = activityText(item)
-    return text ? node("div", "activity-card", text) : null
+    if (!text) return null
+    const activity = node("div", "activity-card", text)
+    decorateSourceCaseRange(activity, item)
+    return activity
+}
+
+function renderRuntimeQuestion(request) {
+    const card = node("form", "runtime-question-card")
+    card.dataset.runtimeQuestionId = request.requestId
+    card.append(node("h3", "", t("runtimeQuestionTitle")))
+    for (const [index, question] of (request.questions ?? []).entries()) {
+        const group = node("fieldset", "runtime-question-group")
+        const legend = document.createElement("legend")
+        legend.textContent = question.header
+            ? `${question.header} · ${question.question}`
+            : question.question
+        group.append(legend)
+        if (question.detail) {
+            const detail = node("div", "runtime-question-detail")
+            appendSafeMessageMarkdown(detail, question.detail)
+            group.append(detail)
+        }
+        const options = node("div", "runtime-question-options")
+        for (const option of question.options ?? []) {
+            const label = node("label", "runtime-question-option")
+            const input = document.createElement("input")
+            input.type = question.multiSelect ? "checkbox" : "radio"
+            input.name = `runtime-question-${request.requestId}-${index}`
+            input.value = option.label
+            input.dataset.runtimeQuestionOption = String(index)
+            const copy = node("span", "")
+            copy.append(node("strong", "", option.label))
+            if (option.description) copy.append(node("small", "", option.description))
+            label.append(input, copy)
+            options.append(label)
+        }
+        group.append(options)
+        const custom = document.createElement("input")
+        custom.type = "text"
+        custom.className = "runtime-question-custom"
+        custom.placeholder = t("runtimeQuestionCustom")
+        custom.dataset.runtimeQuestionCustom = String(index)
+        group.append(custom)
+        card.append(group)
+    }
+    const error = node("p", "runtime-question-error hidden")
+    error.dataset.runtimeQuestionError = "true"
+    const actions = node("div", "runtime-question-actions")
+    const cancel = node("button", "secondary-button", t("runtimeQuestionCancel"))
+    cancel.type = "button"
+    cancel.dataset.cancelRuntimeQuestion = request.requestId
+    const submit = node("button", "primary-button", t("runtimeQuestionSubmit"))
+    submit.type = "submit"
+    actions.append(cancel, submit)
+    card.append(error, actions)
+    return card
+}
+
+function appendRuntimeQuestions() {
+    for (const request of state.pendingRuntimeQuestions.values()) {
+        if (request.threadId !== state.activeThreadId) continue
+        elements.conversation.append(renderRuntimeQuestion(request))
+    }
+}
+
+function onRuntimeQuestion(request) {
+    if (!request?.requestId || !request?.threadId) return
+    state.pendingRuntimeQuestions.set(request.requestId, request)
+    if (request.threadId === state.activeThreadId) renderConversation({forceBottom: true})
+}
+
+function onRuntimeQuestionResolved(payload) {
+    if (!payload?.requestId) return
+    const request = state.pendingRuntimeQuestions.get(payload.requestId)
+    state.pendingRuntimeQuestions.delete(payload.requestId)
+    if (request?.threadId === state.activeThreadId) renderConversation()
+}
+
+async function respondRuntimeQuestion(form, {cancelled = false} = {}) {
+    const requestId = form.dataset.runtimeQuestionId
+    const request = state.pendingRuntimeQuestions.get(requestId)
+    if (!request) return
+    const answers = []
+    if (!cancelled) {
+        for (const [index, question] of (request.questions ?? []).entries()) {
+            const selected = [...form.querySelectorAll(
+                `[data-runtime-question-option="${index}"]:checked`,
+            )].map((input) => input.value)
+            const custom = form.querySelector(
+                `[data-runtime-question-custom="${index}"]`,
+            )?.value.trim() ?? ""
+            const valid = question.multiSelect
+                ? selected.length > 0 || Boolean(custom)
+                : selected.length === 1 !== Boolean(custom)
+            if (!valid) {
+                const error = form.querySelector("[data-runtime-question-error]")
+                error.textContent = t("runtimeQuestionRequired")
+                error.classList.remove("hidden")
+                return
+            }
+            answers.push({
+                id: question.id,
+                selected,
+                ...(custom ? {custom} : {}),
+            })
+        }
+    }
+    for (const button of form.querySelectorAll("button, input")) button.disabled = true
+    try {
+        await window.rollingSkill.respondRuntimeQuestion({requestId, cancelled, answers})
+        state.pendingRuntimeQuestions.delete(requestId)
+        renderConversation()
+    } catch (error) {
+        for (const button of form.querySelectorAll("button, input")) button.disabled = false
+        showError(error)
+    }
 }
 
 function renderConversation(options = {}) {
     const wasNearBottom = isConversationNearBottom()
+    rebuildActiveCurationMarkerIndex()
     elements.conversation.replaceChildren()
     if (state.loadingThread) {
         elements.conversation.append(node("div", "loading-conversation", t("loadingTask")))
@@ -2127,12 +2883,14 @@ function renderConversation(options = {}) {
     if (!state.activeThread || getTurns().length === 0) {
         renderedItemCache.clear()
         renderWelcome()
+        appendRuntimeQuestions()
         return
     }
 
     const visibleItemKeys = new Set()
     for (const turn of getTurns()) {
         const block = node("section", "turn-block")
+        block.dataset.turnId = turn.id
         for (let index = 0; index < (turn.items ?? []).length; index += 1) {
             const item = turn.items[index]
             const cacheKey = `${turn.id}:${item.id || `${item.type}-${index}`}`
@@ -2142,7 +2900,10 @@ function renderConversation(options = {}) {
                 cached?.signature === signature ? cached.rendered : renderItem(item, turn)
             renderedItemCache.set(cacheKey, {signature, rendered})
             visibleItemKeys.add(cacheKey)
-            if (rendered) block.append(rendered)
+            if (rendered) {
+                rendered.dataset.timelineItemKey = cacheKey
+                block.append(rendered)
+            }
         }
         if (turn.error?.message) block.append(node("div", "turn-error", turn.error.message))
         elements.conversation.append(block)
@@ -2157,12 +2918,85 @@ function renderConversation(options = {}) {
             node("div", "activity-history-note", t("activityHistoryLimited")),
         )
     }
+    appendRuntimeQuestions()
 
     if (options.forceBottom || wasNearBottom) {
         requestAnimationFrame(() => {
             elements.conversationScroll.scrollTop = elements.conversationScroll.scrollHeight
         })
     }
+}
+
+function renderDirtyConversationItems(locators, options = {}) {
+    const wasNearBottom = isConversationNearBottom()
+    let requiresConversationRender = false
+    for (const {turnId, itemId} of locators) {
+        const turn = findTurn(turnId)
+        const index = turn?.items?.findIndex((item) => item.id === itemId) ?? -1
+        if (!turn || index < 0) continue
+        const item = turn.items[index]
+        const cacheKey = `${turn.id}:${item.id || `${item.type}-${index}`}`
+        const cached = renderedItemCache.get(cacheKey)
+        if (!cached?.rendered?.isConnected) {
+            requiresConversationRender = true
+            break
+        }
+        const signature = renderItemSignature(item, turn)
+        if (cached.signature === signature) continue
+        const rendered = renderItem(item, turn)
+        if (!rendered) {
+            requiresConversationRender = true
+            break
+        }
+        rendered.dataset.timelineItemKey = cacheKey
+        cached.rendered.replaceWith(rendered)
+        renderedItemCache.set(cacheKey, {signature, rendered})
+    }
+    if (requiresConversationRender) {
+        renderConversation(options)
+        return
+    }
+    if (options.forceBottom || wasNearBottom) {
+        requestAnimationFrame(() => {
+            elements.conversationScroll.scrollTop = elements.conversationScroll.scrollHeight
+        })
+    }
+}
+
+const streamRenderQueue = globalThis.RollingSkillStreamRenderQueue.createStreamRenderQueue({
+    render: renderDirtyConversationItems,
+})
+
+function renderDirtyLiveActivities(locators) {
+    for (const {turnId: kind, itemId: sessionId} of locators) {
+        if (kind === "curation") {
+            const activity = state.curationActivities.get(sessionId)
+            if (activity) patchCurationActivityCard(activity)
+        } else if (kind === "rubric") {
+            const activity = state.rubricActivities.get(sessionId)
+            if (activity) patchRubricActivityCard(activity)
+        }
+    }
+}
+
+const liveActivityRenderQueue = globalThis.RollingSkillStreamRenderQueue.createStreamRenderQueue({
+    intervalMs: 64,
+    render: renderDirtyLiveActivities,
+})
+
+function enqueueLiveActivityPatch(kind, activity) {
+    if (!activity?.sessionId) return
+    if (activity.terminal) {
+        liveActivityRenderQueue.flushNow()
+        if (kind === "curation") state.curationActivities.delete(activity.sessionId)
+        else state.rubricActivities.delete(activity.sessionId)
+        if (kind === "curation") patchCurationActivityCard(activity)
+        else patchRubricActivityCard(activity)
+        return
+    }
+    if (kind === "curation") state.curationActivities.set(activity.sessionId, activity)
+    else state.rubricActivities.set(activity.sessionId, activity)
+    liveActivityRenderQueue.enqueue(kind, activity.sessionId)
 }
 
 function renderComposer() {
@@ -2190,6 +3024,8 @@ function renderComposer() {
 function renderTitle() {
     elements.activeTitle.textContent = state.surface === "evaluation"
         ? t("skillEvaluation")
+        : state.surface === "skills"
+        ? t("skillManagement")
         : state.newTaskMode
         ? t("newTask")
         : titleForThread(state.activeThread || state.threads.find((item) => item.id === state.activeThreadId))
@@ -2896,18 +3732,29 @@ function renderRubricDrawer() {
 }
 
 function renderAll(options) {
+    streamRenderQueue.cancel()
+    liveActivityRenderQueue.cancel()
     renderWorkspace()
     renderRuntime()
     renderThreads()
+    renderRawCases()
     renderTitle()
-    renderConversation(options)
-    renderComposer()
+    const chat = state.surface === "chat"
+    elements.topbarCurations.classList.toggle("hidden", !chat)
+    elements.topbarTrace.classList.toggle("hidden", !chat)
+    if (chat) {
+        renderConversation(options)
+        renderComposer()
+    }
     renderRuntimeOptions()
     renderEvaluationWorkbench()
+    renderSkillManagementWorkbench()
     renderRubricDrawer()
 }
 
 function queueRender(options = {}) {
+    streamRenderQueue.cancel()
+    liveActivityRenderQueue.cancel()
     if (state.renderQueued) return
     state.renderQueued = true
     requestAnimationFrame(() => {
@@ -2944,11 +3791,24 @@ function setCaseCreationInProgress(inProgress) {
 }
 
 let toastTimer = null
-function showToast(message) {
+function showToast(message, options = {}) {
     clearTimeout(toastTimer)
-    elements.toast.textContent = message
+    elements.toast.replaceChildren(node("span", "", message))
+    if (options.actionLabel && typeof options.onAction === "function") {
+        const action = node("button", "toast-action", options.actionLabel)
+        action.type = "button"
+        action.addEventListener("click", () => {
+            clearTimeout(toastTimer)
+            elements.toast.classList.add("hidden")
+            options.onAction()
+        }, {once: true})
+        elements.toast.append(action)
+    }
     elements.toast.classList.remove("hidden")
-    toastTimer = setTimeout(() => elements.toast.classList.add("hidden"), 2600)
+    toastTimer = setTimeout(
+        () => elements.toast.classList.add("hidden"),
+        options.durationMs ?? 2_600,
+    )
 }
 
 function reportLinkOpenFailure(error, messageKey) {
@@ -3033,13 +3893,18 @@ function renderDatasetRubricStatus(dataset) {
     }
     if (!rubricUsesUnifiedScoring(version)) {
         elements.evaluationDatasetRubricStatus.classList.add("missing")
+        const migration = node("div", "dataset-rubric-migration")
+        const migrate = node("button", "dataset-rubric-migration-action", t("migrateLegacyRubric"))
+        migrate.type = "button"
+        migrate.dataset.migrateLegacyRubric = dataset.id
+        migration.append(node("p", "", t("rubricNeedsUnified")), migrate)
         elements.evaluationDatasetRubricStatus.append(
             node("strong", "", version.rubric.title),
             node("small", "", formatMessage("rubricPublished", {
                 version: version.version,
                 count: version.rubric.criteria.length,
             })),
-            node("p", "", t("rubricNeedsUnified")),
+            migration,
         )
         elements.manageDatasetRubric.textContent = t("editRubric")
         return false
@@ -3056,6 +3921,953 @@ function renderDatasetRubricStatus(dataset) {
     appendDatasetCalibrationNotice(version)
     elements.manageDatasetRubric.textContent = t("editRubric")
     return true
+}
+
+function normalizedManagedSkills(value) {
+    return {
+        repositories: Array.isArray(value?.repositories) ? value.repositories : [],
+        skills: Array.isArray(value?.skills) ? value.skills : [],
+        versions: Array.isArray(value?.versions) ? value.versions : [],
+    }
+}
+
+function managedSkillErrorMessage(error) {
+    return (error?.message || String(error)).replace(
+        /^Error invoking remote method '[^']+': Error:\s*/u,
+        "",
+    )
+}
+
+function managedRepositoryById(repositoryId) {
+    return state.managedSkills.repositories.find((entry) => entry.id === repositoryId) ?? null
+}
+
+function managedSkillById(skillId) {
+    return state.managedSkills.skills.find((entry) => entry.id === skillId) ?? null
+}
+
+function managedVersionsForSkill(skillId) {
+    return state.managedSkills.versions.filter((entry) => entry.skillId === skillId)
+}
+
+function reconcileManagedSkillSelection() {
+    let skill = managedSkillById(state.activeManagedSkillId)
+    let repository = managedRepositoryById(state.activeManagedRepositoryId)
+    if (!skill && repository) {
+        skill = state.managedSkills.skills.find((entry) => entry.repositoryId === repository.id) ?? null
+    }
+    if (!skill) skill = state.managedSkills.skills[0] ?? null
+    if (skill) repository = managedRepositoryById(skill.repositoryId)
+    if (!repository) repository = state.managedSkills.repositories[0] ?? null
+    state.activeManagedRepositoryId = repository?.id ?? null
+    state.activeManagedSkillId = skill?.id ?? null
+    if (state.managedSkillDetail?.skill?.id !== state.activeManagedSkillId) {
+        state.managedSkillDetail = null
+    }
+}
+
+async function readActiveManagedSkill() {
+    const skillId = state.activeManagedSkillId
+    if (!skillId) {
+        state.managedSkillDetail = null
+        return
+    }
+    state.managedSkillLoading = true
+    renderSkillManagementWorkbench()
+    try {
+        const detail = await window.rollingSkill.readManagedSkill(skillId)
+        if (state.activeManagedSkillId === skillId) state.managedSkillDetail = detail
+    } catch (error) {
+        if (state.activeManagedSkillId === skillId) {
+            state.managedSkillDetail = null
+            state.managedSkillError = managedSkillErrorMessage(error)
+        }
+    } finally {
+        if (state.activeManagedSkillId === skillId) state.managedSkillLoading = false
+        renderSkillManagementWorkbench()
+    }
+}
+
+async function loadManagedSkills(loadDetail = true) {
+    state.managedSkillLoading = true
+    state.managedSkillError = null
+    renderSkillManagementWorkbench()
+    try {
+        state.managedSkills = normalizedManagedSkills(await window.rollingSkill.listManagedSkills())
+        reconcileManagedSkillSelection()
+        if (loadDetail && state.activeManagedSkillId) {
+            await Promise.all([
+                readActiveManagedSkill(),
+                loadManagedSkillInstallations(state.activeManagedSkillId),
+            ])
+        }
+    } catch (error) {
+        state.managedSkillError = managedSkillErrorMessage(error)
+    } finally {
+        state.managedSkillLoading = false
+        renderSkillManagementWorkbench()
+    }
+}
+
+async function rescanManagedSkills() {
+    state.managedSkillLoading = true
+    state.managedSkillError = null
+    renderSkillManagementWorkbench()
+    try {
+        const result = await window.rollingSkill.rescanManagedSkills()
+        state.managedSkills = normalizedManagedSkills(result)
+        reconcileManagedSkillSelection()
+        if (result.failures?.length) {
+            state.managedSkillError = result.failures
+                .map((entry) => entry.message)
+                .filter(Boolean)
+                .join("\n")
+        }
+        if (state.activeManagedSkillId) {
+            await Promise.all([
+                readActiveManagedSkill(),
+                loadManagedSkillInstallations(state.activeManagedSkillId),
+            ])
+        }
+    } catch (error) {
+        state.managedSkillError = managedSkillErrorMessage(error)
+    } finally {
+        state.managedSkillLoading = false
+        renderSkillManagementWorkbench()
+    }
+}
+
+async function selectManagedSkill(skillId) {
+    const skill = managedSkillById(skillId)
+    if (!skill) return
+    state.activeManagedSkillId = skill.id
+    state.activeManagedRepositoryId = skill.repositoryId
+    state.managedSkillDetail = null
+    state.managedSkillError = null
+    state.managedInstallVersionId = null
+    state.activeSkillInstallationJobId = null
+    renderSkillManagementWorkbench()
+    await Promise.all([readActiveManagedSkill(), loadManagedSkillInstallations(skill.id)])
+}
+
+async function importManagedSkill(kind, location = null) {
+    state.managedSkillMutation = true
+    state.managedSkillError = null
+    renderSkillManagementWorkbench()
+    try {
+        const result = await window.rollingSkill.importManagedSkill({kind, location})
+        if (result?.cancelled) return
+        state.activeManagedRepositoryId = result.repository?.id ?? state.activeManagedRepositoryId
+        state.activeManagedSkillId = result.skills?.find((entry) => entry.status === "valid")?.id ?? null
+        showToast(t("managedSkillImported"))
+        await loadManagedSkills(true)
+    } catch (error) {
+        state.managedSkillError = managedSkillErrorMessage(error)
+    } finally {
+        state.managedSkillMutation = false
+        renderSkillManagementWorkbench()
+    }
+}
+
+async function importManagedGitUrl() {
+    const location = elements.managedGitUrl.value
+    clearManagedDialogError(elements.managedGitUrlError)
+    state.managedSkillMutation = true
+    elements.confirmManagedGitUrl.disabled = true
+    elements.cancelManagedGitUrl.disabled = true
+    elements.closeManagedGitUrlDialog.disabled = true
+    renderSkillManagementWorkbench()
+    let succeeded = false
+    try {
+        const result = await window.rollingSkill.importManagedSkill({
+            kind: "git-url",
+            location,
+        })
+        if (result?.cancelled) return
+        state.activeManagedRepositoryId = result.repository?.id ?? state.activeManagedRepositoryId
+        state.activeManagedSkillId = result.skills?.find((entry) => entry.status === "valid")?.id ?? null
+        showToast(t("managedSkillImported"))
+        await loadManagedSkills(true)
+        succeeded = true
+    } catch (error) {
+        showManagedDialogError(elements.managedGitUrlError, error)
+    } finally {
+        state.managedSkillMutation = false
+        elements.confirmManagedGitUrl.disabled = false
+        elements.cancelManagedGitUrl.disabled = false
+        elements.closeManagedGitUrlDialog.disabled = false
+        renderSkillManagementWorkbench()
+        if (succeeded) elements.managedGitUrlDialog.close()
+    }
+}
+
+function showManagedDialogError(element, error) {
+    element.textContent = managedSkillErrorMessage(error)
+    element.classList.remove("hidden")
+}
+
+function clearManagedDialogError(element) {
+    element.textContent = ""
+    element.classList.add("hidden")
+}
+
+async function createManagedSkillCandidate() {
+    const skillId = state.managedCandidateSkillId
+    if (!skillId) return
+    clearManagedDialogError(elements.managedCandidateError)
+    elements.confirmManagedCandidate.disabled = true
+    try {
+        await window.rollingSkill.createManagedSkillCandidate({
+            skillId,
+            message: elements.managedCandidateMessage.value,
+        })
+        elements.managedCandidateDialog.close()
+        showToast(t("managedCandidateCreated"))
+        await loadManagedSkills(true)
+    } catch (error) {
+        showManagedDialogError(elements.managedCandidateError, error)
+    } finally {
+        elements.confirmManagedCandidate.disabled = false
+    }
+}
+
+async function releaseManagedSkillVersion() {
+    const versionId = state.managedReleaseVersionId
+    if (!versionId) return
+    clearManagedDialogError(elements.managedReleaseError)
+    elements.confirmManagedRelease.disabled = true
+    try {
+        const released = await window.rollingSkill.releaseManagedSkillVersion({
+            versionId,
+            versionLabel: elements.managedReleaseLabel.value,
+        })
+        state.managedInstallVersionId = released?.id ?? null
+        elements.managedReleaseDialog.close()
+        showToast(t("installationOpenAfterRelease"), {
+            actionLabel: t("openRuntimeInstallations"),
+            onAction: () => {
+                state.managedSkillSideView = "installations"
+                renderSkillManagementWorkbench()
+                void refreshManagedInstallationRuntimeModels(false)
+                void loadManagedSkillInstallations(state.activeManagedSkillId)
+            },
+            durationMs: 7_000,
+        })
+        await loadManagedSkills(true)
+    } catch (error) {
+        showManagedDialogError(elements.managedReleaseError, error)
+    } finally {
+        elements.confirmManagedRelease.disabled = false
+    }
+}
+
+async function deprecateManagedSkillVersion(versionId) {
+    state.managedSkillMutation = true
+    state.managedSkillError = null
+    renderSkillManagementWorkbench()
+    try {
+        await window.rollingSkill.deprecateManagedSkillVersion({versionId})
+        showToast(t("managedVersionDeprecated"))
+        await loadManagedSkills(true)
+    } catch (error) {
+        state.managedSkillError = managedSkillErrorMessage(error)
+    } finally {
+        state.managedSkillMutation = false
+        renderSkillManagementWorkbench()
+    }
+}
+
+const TERMINAL_SKILL_INSTALLATION_STATUSES = new Set([
+    "succeeded",
+    "failed",
+    "cancelled",
+    "unverified",
+])
+
+function normalizedSkillInstallationOverview(value = {}) {
+    return {
+        jobs: Array.isArray(value.jobs) ? value.jobs : [],
+        matrix: Array.isArray(value.matrix) ? value.matrix : [],
+    }
+}
+
+function skillInstallationStatusLabel(status) {
+    const key = {
+        queued: "installationStatusQueued",
+        running: "installationStatusRunning",
+        awaiting_permission: "installationStatusAwaitingPermission",
+        awaiting_confirmation: "installationStatusAwaitingConfirmation",
+        verifying: "installationStatusVerifying",
+        succeeded: "installationStatusSucceeded",
+        failed: "installationStatusFailed",
+        cancelled: "installationStatusCancelled",
+        unverified: "installationStatusUnverified",
+    }[status]
+    return key ? t(key) : String(status ?? t("none"))
+}
+
+function releasedManagedVersions(skillId) {
+    return managedVersionsForSkill(skillId).filter((version) => version.state === "released")
+}
+
+function ensureManagedInstallVersion(skillId = state.activeManagedSkillId) {
+    const versions = skillId ? releasedManagedVersions(skillId) : []
+    if (!versions.some((entry) => entry.id === state.managedInstallVersionId)) {
+        state.managedInstallVersionId = versions[0]?.id ?? null
+    }
+    return versions
+}
+
+function ensureManagedInstallConfigurations() {
+    const runtimes = state.runtime?.availableRuntimes ?? []
+    const availableIds = new Set(runtimes.map((runtime) => runtime.runtimeId))
+    for (const runtimeId of Object.keys(state.managedInstallConfigurations)) {
+        if (!availableIds.has(runtimeId)) delete state.managedInstallConfigurations[runtimeId]
+    }
+    for (const runtime of runtimes) {
+        const current = state.managedInstallConfigurations[runtime.runtimeId]
+        if (current) {
+            current.runtime = runtime
+            continue
+        }
+        const active = runtime.runtimeId === state.runtime?.runtime?.runtimeId
+        state.managedInstallConfigurations[runtime.runtimeId] = {
+            runtime,
+            selected: active,
+            modelId: active ? state.settings.taskProfile?.modelId ?? null : null,
+            effort: active ? state.settings.taskProfile?.effort ?? null : null,
+            permissionMode: defaultPermissionMode(runtime.providerId),
+            models: (runtime.models ?? []).map((model, index) => ({
+                id: model,
+                model,
+                displayName: model,
+                isDefault: index === 0 || model === "default-model",
+                reasoningEfforts: (runtime.efforts ?? []).map((effort) => ({reasoningEffort: effort})),
+            })),
+            loading: false,
+            error: null,
+        }
+    }
+    return Object.values(state.managedInstallConfigurations)
+}
+
+async function refreshManagedInstallationRuntimeModels(forceReload = false) {
+    const configurations = ensureManagedInstallConfigurations().filter(
+        (configuration) => forceReload || !configuration.models.length,
+    )
+    for (const configuration of configurations) {
+        configuration.loading = true
+        configuration.error = null
+    }
+    if (state.surface === "skills" && state.managedSkillSideView === "installations") {
+        renderManagedSkillInstallations()
+    }
+    await Promise.all(configurations.map(async (configuration) => {
+        try {
+            const response = await window.rollingSkill.listModelsForRuntime(
+                configuration.runtime.runtimeId,
+            )
+            configuration.models = response.data ?? []
+        } catch (error) {
+            configuration.error = error?.message ?? String(error)
+        } finally {
+            configuration.loading = false
+        }
+    }))
+    if (state.surface === "skills" && state.managedSkillSideView === "installations") {
+        renderManagedSkillInstallations()
+    }
+}
+
+function mergeSkillInstallationJob(job) {
+    if (!job?.id || job.request?.source?.skillId !== state.activeManagedSkillId) return false
+    const jobs = state.skillInstallations.jobs
+    const index = jobs.findIndex((entry) => entry.id === job.id)
+    if (index < 0) jobs.unshift(job)
+    else jobs[index] = job
+    jobs.sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+    if (!state.activeSkillInstallationJobId) state.activeSkillInstallationJobId = job.id
+    return true
+}
+
+async function loadManagedSkillInstallations(skillId = state.activeManagedSkillId) {
+    if (!skillId) {
+        state.skillInstallations = {jobs: [], matrix: []}
+        state.activeSkillInstallationJobId = null
+        renderManagedSkillInstallations()
+        return
+    }
+    state.managedInstallationLoading = true
+    if (state.surface === "skills") renderManagedSkillInstallations()
+    try {
+        const overview = normalizedSkillInstallationOverview(
+            await window.rollingSkill.listSkillInstallations(skillId),
+        )
+        if (state.activeManagedSkillId !== skillId) return
+        state.skillInstallations = overview
+        if (!overview.jobs.some((entry) => entry.id === state.activeSkillInstallationJobId)) {
+            state.activeSkillInstallationJobId = overview.jobs[0]?.id ?? null
+        }
+    } catch (error) {
+        if (state.activeManagedSkillId === skillId) {
+            state.managedSkillError = managedSkillErrorMessage(error)
+        }
+    } finally {
+        if (state.activeManagedSkillId === skillId) state.managedInstallationLoading = false
+        if (state.surface === "skills") renderManagedSkillInstallations()
+    }
+}
+
+function managedInstallMatrixFor(runtimeId) {
+    return state.skillInstallations.matrix.find((entry) => entry.runtimeId === runtimeId) ?? null
+}
+
+function managedVersionDisplay(versionId) {
+    const version = state.managedSkills.versions.find((entry) => entry.id === versionId)
+    return version?.versionLabel ?? version?.commit?.slice(0, 8) ?? versionId
+}
+
+function renderManagedInstallRuntime(configuration) {
+    const runtime = configuration.runtime
+    const matrix = managedInstallMatrixFor(runtime.runtimeId)
+    const row = node(
+        "article",
+        `managed-install-runtime-row${configuration.selected ? " selected" : ""}`,
+    )
+    row.dataset.managedInstallRuntimeId = runtime.runtimeId
+    const heading = node("label", "managed-install-runtime-heading")
+    const checkbox = document.createElement("input")
+    checkbox.type = "checkbox"
+    checkbox.checked = configuration.selected
+    checkbox.dataset.managedInstallRuntimeToggle = runtime.runtimeId
+    const copy = node("span")
+    copy.append(
+        node("strong", "", `${runtime.displayName ?? runtime.providerId} ${runtime.version ?? ""}`.trim()),
+        node("small", "", runtime.executablePath ?? runtime.runtimeId),
+    )
+    heading.append(checkbox, copy)
+    row.append(heading)
+
+    const current = node(
+        "div",
+        "managed-install-runtime-state",
+        matrix?.versionId
+            ? formatMessage("installationCurrentVersion", {
+                version: managedVersionDisplay(matrix.versionId),
+            })
+            : t("installationNotVerified"),
+    )
+    if (matrix?.verification === "runtime-inventory") {
+        current.append(` · ${t("installationRuntimeVerified")}`)
+    } else if (matrix?.verification === "filesystem-only") {
+        current.append(` · ${t("installationFilesystemOnly")}`)
+    }
+    if (matrix?.lastJobStatus) {
+        current.append(` · ${formatMessage("installationLastJob", {
+            status: skillInstallationStatusLabel(matrix.lastJobStatus),
+        })}`)
+    }
+    row.append(current)
+
+    const controls = node("div", "managed-install-runtime-controls")
+    const model = node("select")
+    model.dataset.managedInstallRuntimeModel = runtime.runtimeId
+    populateModelSelect(
+        model,
+        configuration.modelId,
+        t("installationRuntimeDefault"),
+        configuration.models,
+    )
+    model.disabled = configuration.loading
+    const effort = node("select")
+    effort.dataset.managedInstallRuntimeEffort = runtime.runtimeId
+    populateEffortSelect(
+        effort,
+        configuration.effort,
+        configuration.modelId,
+        configuration.models,
+        runtime.efforts ?? [],
+    )
+    effort.disabled = configuration.loading || effort.options.length <= 1
+    const permission = node("select")
+    permission.dataset.managedInstallRuntimePermission = runtime.runtimeId
+    const permissionOptions = permissionModeOptions(runtime.providerId, null)
+    if (!permissionOptions.length) {
+        const option = node("option", "", t("runtimeManagedAccess"))
+        option.value = ""
+        permission.append(option)
+    } else {
+        for (const entry of permissionOptions) {
+            const option = node("option", "", entry.labelText ?? t(entry.label))
+            option.value = entry.value
+            permission.append(option)
+        }
+    }
+    if (!permissionOptions.some((entry) => entry.value === configuration.permissionMode)) {
+        configuration.permissionMode = permissionOptions[0]?.value ?? null
+    }
+    permission.value = configuration.permissionMode ?? ""
+    controls.append(model, effort, permission)
+    row.append(controls)
+    if (configuration.error) row.append(node("small", "managed-skill-error", configuration.error))
+    return row
+}
+
+function renderSkillInstallationQuestion(request) {
+    const form = node("form", "managed-install-question")
+    form.dataset.skillInstallationQuestionId = request.requestId
+    form.dataset.skillInstallationJobId = request.jobId
+    form.append(node("p", "", t("installationQuestionTitle")))
+    for (const [index, question] of (request.questions ?? []).entries()) {
+        const fieldset = document.createElement("fieldset")
+        const legend = document.createElement("legend")
+        legend.textContent = question.header
+            ? `${question.header} · ${question.question}`
+            : question.question
+        fieldset.append(legend)
+        const options = node("div", "managed-install-question-actions")
+        for (const option of question.options ?? []) {
+            const label = node("label")
+            const input = document.createElement("input")
+            input.type = question.multiSelect ? "checkbox" : "radio"
+            input.name = `managed-install-question-${request.requestId}-${index}`
+            input.value = option.label
+            input.dataset.skillInstallationQuestionOption = String(index)
+            label.append(input, document.createTextNode(option.label))
+            options.append(label)
+        }
+        fieldset.append(options)
+        const custom = document.createElement("input")
+        custom.type = "text"
+        custom.placeholder = t("runtimeQuestionCustom")
+        custom.dataset.skillInstallationQuestionCustom = String(index)
+        fieldset.append(custom)
+        form.append(fieldset)
+    }
+    const error = node("p", "runtime-question-error hidden")
+    error.dataset.skillInstallationQuestionError = "true"
+    const actions = node("div", "managed-install-question-actions")
+    const cancel = node("button", "", t("runtimeQuestionCancel"))
+    cancel.type = "button"
+    cancel.dataset.cancelSkillInstallationQuestion = request.requestId
+    const submit = node("button", "primary", t("runtimeQuestionSubmit"))
+    submit.type = "submit"
+    actions.append(cancel, submit)
+    form.append(error, actions)
+    return form
+}
+
+function renderManagedSkillInstallationSession(job) {
+    elements.managedInstallSession.replaceChildren()
+    elements.inspectManagedSkillInstallation.classList.add("hidden")
+    elements.cancelManagedSkillInstallation.classList.add("hidden")
+    if (!job) return
+    const head = node("div", "managed-skill-panel-head")
+    head.append(
+        node("span", "", t("installationSession")),
+        node(
+            "strong",
+            "",
+            job.conversationStatus === "running"
+                ? `${skillInstallationStatusLabel(job.status)} · ${t("installerConversationRunning")}`
+                : skillInstallationStatusLabel(job.status),
+        ),
+    )
+    elements.managedInstallSession.append(head)
+    if (job.parsedResult) {
+        const summary = node("dl", "managed-install-result")
+        for (const [label, value] of [
+            [t("installationDestination"), job.parsedResult.destination ?? t("none")],
+            [t("installationClassification"), job.parsedResult.classificationBefore ?? t("none")],
+            [t("installationVerification"), job.parsedResult.verification ?? t("none")],
+        ]) {
+            summary.append(node("dt", "", label), node("dd", "", value))
+        }
+        elements.managedInstallSession.append(summary)
+    }
+    const timeline = node("div", "managed-install-timeline")
+    if (!job.timeline?.length) {
+        timeline.append(node("div", "managed-skill-empty", t("installationNoTimeline")))
+    }
+    for (const entry of job.timeline ?? []) {
+        if (entry.kind === "message") {
+            const item = node("div", `managed-install-timeline-item ${entry.role ?? "assistant"}`)
+            appendSafeMessageMarkdown(item, entry.content ?? "")
+            timeline.append(item)
+            continue
+        }
+        const label = entry.command
+            ? formatMessage("installationCommand", {command: entry.command})
+            : formatMessage("installationTool", {name: entry.name ?? entry.type ?? t("none")})
+        timeline.append(node("div", "managed-install-timeline-item tool", label))
+    }
+    elements.managedInstallSession.append(timeline)
+    const question = [...state.pendingSkillInstallationQuestions.values()].find(
+        (entry) => entry.jobId === job.id,
+    )
+    if (question) elements.managedInstallSession.append(renderSkillInstallationQuestion(question))
+    if (job.error?.message) {
+        elements.managedInstallSession.append(node("p", "managed-skill-error", job.error.message))
+    }
+    if (job.conversationError?.message) {
+        elements.managedInstallSession.append(
+            node("p", "managed-skill-error", job.conversationError.message),
+        )
+    }
+    if (TERMINAL_SKILL_INSTALLATION_STATUSES.has(job.status)) {
+        const form = node("form", "managed-install-composer")
+        form.dataset.skillInstallationMessageForm = job.id
+        const input = document.createElement("textarea")
+        input.rows = 2
+        input.maxLength = 120_000
+        input.placeholder = t("installerMessagePlaceholder")
+        input.value = state.skillInstallationInputDrafts.get(job.id) ?? ""
+        input.dataset.skillInstallationMessageInput = job.id
+        input.disabled = job.conversationStatus === "running"
+        const send = node("button", "primary", t("sendInstallerMessage"))
+        send.type = "submit"
+        send.disabled = job.conversationStatus === "running"
+        form.append(input, send)
+        elements.managedInstallSession.append(form)
+    }
+    if (!TERMINAL_SKILL_INSTALLATION_STATUSES.has(job.status) || job.conversationStatus === "running") {
+        elements.cancelManagedSkillInstallation.classList.remove("hidden")
+        elements.cancelManagedSkillInstallation.dataset.jobId = job.id
+        elements.cancelManagedSkillInstallation.title = t("installationStop")
+    } else {
+        elements.inspectManagedSkillInstallation.classList.remove("hidden")
+        elements.inspectManagedSkillInstallation.dataset.jobId = job.id
+    }
+}
+
+function renderManagedSkillInstallations() {
+    const active = state.managedSkillSideView === "installations"
+    elements.managedSkillVersions.classList.toggle("hidden", active)
+    elements.managedSkillInstallations.classList.toggle("hidden", !active)
+    for (const button of elements.managedSkillSideTabs.querySelectorAll(
+        "[data-managed-skill-side-view]",
+    )) {
+        const selected = button.dataset.managedSkillSideView === state.managedSkillSideView
+        button.classList.toggle("active", selected)
+        button.setAttribute("aria-selected", String(selected))
+    }
+    if (!active) return
+
+    const skill = managedSkillById(state.activeManagedSkillId)
+    const versions = ensureManagedInstallVersion(skill?.id)
+    elements.managedInstallVersion.replaceChildren()
+    if (!versions.length) {
+        const option = node("option", "", t("noReleasedVersions"))
+        option.value = ""
+        elements.managedInstallVersion.append(option)
+    } else {
+        for (const version of versions) {
+            const option = node(
+                "option",
+                "",
+                `${version.versionLabel ?? version.commit.slice(0, 8)} · ${version.commit.slice(0, 8)}`,
+            )
+            option.value = version.id
+            elements.managedInstallVersion.append(option)
+        }
+    }
+    elements.managedInstallVersion.value = state.managedInstallVersionId ?? ""
+    elements.managedInstallVersion.disabled = !versions.length || state.managedInstallationStarting
+
+    const configurations = ensureManagedInstallConfigurations()
+    elements.managedInstallRuntimeList.replaceChildren()
+    if (!configurations.length) {
+        elements.managedInstallRuntimeList.append(
+            node("div", "managed-skill-empty", t("noRuntimeInstallations")),
+        )
+    }
+    for (const configuration of configurations) {
+        elements.managedInstallRuntimeList.append(renderManagedInstallRuntime(configuration))
+    }
+    elements.startManagedSkillInstallations.disabled =
+        state.managedInstallationStarting ||
+        !skill ||
+        !versions.length ||
+        !configurations.some((entry) => entry.selected && !entry.loading)
+
+    elements.managedInstallJobList.replaceChildren()
+    const jobs = state.skillInstallations.jobs
+    if (!jobs.length) {
+        elements.managedInstallJobList.append(
+            node("div", "managed-skill-empty", state.managedInstallationLoading
+                ? t("loadingTask")
+                : t("noInstallationJobs")),
+        )
+    }
+    for (const job of jobs) {
+        const button = node("button", "managed-install-job")
+        button.type = "button"
+        button.dataset.skillInstallationJobId = job.id
+        if (job.id === state.activeSkillInstallationJobId) button.classList.add("active")
+        const copy = node("span", "managed-install-job-copy")
+        copy.append(
+            node("strong", "", `${job.runtime.displayName} · ${job.request.versionLabel}`),
+            node("small", "", new Date(job.updatedAt ?? job.createdAt).toLocaleString(
+                state.settings.language,
+            )),
+        )
+        button.append(
+            copy,
+            node("span", `managed-install-status ${job.status}`, skillInstallationStatusLabel(job.status)),
+        )
+        elements.managedInstallJobList.append(button)
+    }
+    const activeJob = jobs.find((entry) => entry.id === state.activeSkillInstallationJobId) ?? null
+    renderManagedSkillInstallationSession(activeJob)
+}
+
+async function startManagedSkillInstallations() {
+    const skillId = state.activeManagedSkillId
+    const versionId = state.managedInstallVersionId
+    const targets = ensureManagedInstallConfigurations()
+        .filter((configuration) => configuration.selected)
+        .map((configuration) => ({
+            runtimeId: configuration.runtime.runtimeId,
+            modelId: configuration.modelId || null,
+            effort: configuration.effort || null,
+            permissionMode: configuration.permissionMode || null,
+        }))
+    if (!skillId || !versionId || !targets.length) {
+        showToast(t("selectRuntimeInstallTarget"))
+        return
+    }
+    state.managedInstallationStarting = true
+    renderManagedSkillInstallations()
+    try {
+        const jobs = await window.rollingSkill.startSkillInstallations({skillId, versionId, targets})
+        for (const job of jobs ?? []) mergeSkillInstallationJob(job)
+        state.activeSkillInstallationJobId = jobs?.[0]?.id ?? state.activeSkillInstallationJobId
+        showToast(t("installationQueued"))
+    } catch (error) {
+        state.managedSkillError = `${t("installationFailedToStart")}: ${managedSkillErrorMessage(error)}`
+    } finally {
+        state.managedInstallationStarting = false
+        renderSkillManagementWorkbench()
+    }
+}
+
+async function cancelManagedSkillInstallation(jobId) {
+    try {
+        const job = await window.rollingSkill.cancelSkillInstallation(jobId)
+        mergeSkillInstallationJob(job)
+        showToast(t("installationStopped"))
+        renderManagedSkillInstallations()
+    } catch (error) {
+        state.managedSkillError = managedSkillErrorMessage(error)
+        renderSkillManagementWorkbench()
+    }
+}
+
+async function inspectManagedSkillInstallation(jobId) {
+    try {
+        const job = await window.rollingSkill.inspectSkillInstallation(jobId)
+        mergeSkillInstallationJob(job)
+        state.activeSkillInstallationJobId = job.id
+        showToast(t("inspectionQueued"))
+        renderManagedSkillInstallations()
+    } catch (error) {
+        state.managedSkillError = managedSkillErrorMessage(error)
+        renderSkillManagementWorkbench()
+    }
+}
+
+async function sendSkillInstallationMessage(jobId, text) {
+    text = String(text ?? "").trim()
+    if (!text) return
+    try {
+        const job = await window.rollingSkill.sendSkillInstallationMessage(jobId, text)
+        state.skillInstallationInputDrafts.delete(jobId)
+        mergeSkillInstallationJob(job)
+        renderManagedSkillInstallations()
+    } catch (error) {
+        state.managedSkillError = managedSkillErrorMessage(error)
+        renderSkillManagementWorkbench()
+    }
+}
+
+async function respondSkillInstallationQuestion(form, {cancelled = false} = {}) {
+    const requestId = form.dataset.skillInstallationQuestionId
+    const jobId = form.dataset.skillInstallationJobId
+    const request = state.pendingSkillInstallationQuestions.get(requestId)
+    if (!request) return
+    const answers = []
+    if (!cancelled) {
+        for (const [index, question] of (request.questions ?? []).entries()) {
+            const selected = [...form.querySelectorAll(
+                `[data-skill-installation-question-option="${index}"]:checked`,
+            )].map((input) => input.value)
+            const custom = form.querySelector(
+                `[data-skill-installation-question-custom="${index}"]`,
+            )?.value.trim() ?? ""
+            const valid = question.multiSelect
+                ? selected.length > 0 || Boolean(custom)
+                : selected.length === 1 !== Boolean(custom)
+            if (!valid) {
+                const error = form.querySelector("[data-skill-installation-question-error]")
+                error.textContent = t("runtimeQuestionRequired")
+                error.classList.remove("hidden")
+                return
+            }
+            answers.push({id: question.id, selected, ...(custom ? {custom} : {})})
+        }
+    }
+    for (const control of form.querySelectorAll("button, input")) control.disabled = true
+    try {
+        await window.rollingSkill.respondSkillInstallationQuestion({
+            requestId,
+            jobId,
+            cancelled,
+            answers,
+        })
+        state.pendingSkillInstallationQuestions.delete(requestId)
+        renderManagedSkillInstallations()
+    } catch (error) {
+        for (const control of form.querySelectorAll("button, input")) control.disabled = false
+        state.managedSkillError = managedSkillErrorMessage(error)
+        renderSkillManagementWorkbench()
+    }
+}
+
+function managedSkillStatusLabel(skill) {
+    if (skill.status === "missing") return t("managedMissing")
+    if (skill.status !== "valid") return t("managedInvalid")
+    return t("managedWorking")
+}
+
+function managedVersionStatus(version) {
+    if (version.deprecatedAt) return {className: "deprecated", label: t("managedDeprecated")}
+    if (version.state === "released") return {className: "released", label: t("managedReleased")}
+    return {className: "candidate", label: t("managedCandidate")}
+}
+
+function renderSkillManagementWorkbench() {
+    const visible = state.surface === "skills"
+    elements.workbench.classList.toggle("skills-mode", visible)
+    elements.skillManagementWorkbench.classList.toggle("hidden", !visible)
+    for (const button of elements.surfaceSwitch.querySelectorAll("[data-surface]")) {
+        button.classList.toggle("active", button.dataset.surface === state.surface)
+    }
+    if (!visible) return
+
+    const {repositories, skills} = state.managedSkills
+    elements.managedRepositoryCount.textContent = String(repositories.length)
+    elements.managedSkillError.textContent = state.managedSkillError ?? ""
+    elements.managedSkillError.classList.toggle("hidden", !state.managedSkillError)
+    elements.refreshManagedSkills.disabled = state.managedSkillLoading || state.managedSkillMutation
+    for (const button of elements.skillManagementWorkbench.querySelectorAll("[data-import-skill]")) {
+        button.disabled = state.managedSkillMutation
+    }
+
+    elements.managedRepositoryList.replaceChildren()
+    if (!repositories.length) {
+        elements.managedRepositoryList.append(node("div", "managed-skill-empty", t("noManagedRepositories")))
+    }
+    for (const repository of repositories) {
+        const card = node("section", "managed-repository-card")
+        if (repository.id === state.activeManagedRepositoryId) card.classList.add("active")
+        const head = node("button", "managed-repository-button")
+        head.type = "button"
+        head.dataset.managedRepositoryId = repository.id
+        head.append(
+            node("strong", "", repository.displayName),
+            node("small", "", `${repository.source?.kind ?? "folder"} · ${repository.defaultBranch}`),
+        )
+        card.append(head)
+        const skillList = node("div", "managed-repository-skills")
+        for (const skill of skills.filter((entry) => entry.repositoryId === repository.id)) {
+            const button = node("button", "managed-skill-row")
+            button.type = "button"
+            button.dataset.managedSkillId = skill.id
+            if (skill.id === state.activeManagedSkillId) button.classList.add("active")
+            const copy = node("span")
+            copy.append(node("strong", "", skill.name), node("small", "", skill.skillRoot || "."))
+            button.append(copy, node("span", `managed-status ${skill.status}`, managedSkillStatusLabel(skill)))
+            skillList.append(button)
+        }
+        card.append(skillList)
+        elements.managedRepositoryList.append(card)
+    }
+
+    elements.managedSkillDetail.replaceChildren()
+    const skill = managedSkillById(state.activeManagedSkillId)
+    const repository = skill ? managedRepositoryById(skill.repositoryId) : null
+    if (!skill) {
+        elements.managedSkillDetail.append(node("div", "managed-skill-empty", t("selectManagedSkill")))
+    } else {
+        const heading = node("div", "managed-detail-heading")
+        const copy = node("div")
+        copy.append(
+            node("span", "panel-kicker", t("repositoryWorkingTree")),
+            node("h2", "", skill.name),
+            node("p", "", skill.description ?? skill.skillRoot),
+        )
+        const actions = node("div", "managed-detail-actions")
+        const reveal = node("button", "", t("revealRepository"))
+        reveal.type = "button"
+        reveal.dataset.revealManagedRepository = repository?.id ?? ""
+        const candidate = node("button", "primary", t("createCandidate"))
+        candidate.type = "button"
+        candidate.dataset.createManagedCandidate = skill.id
+        candidate.disabled = state.managedSkillMutation || skill.status !== "valid"
+        actions.append(reveal, candidate)
+        heading.append(copy, actions)
+        elements.managedSkillDetail.append(heading)
+        if (skill.warnings?.length) {
+            const warnings = node("ul", "managed-skill-warnings")
+            for (const warning of skill.warnings) warnings.append(node("li", "", warning))
+            elements.managedSkillDetail.append(warnings)
+        }
+        if (state.managedSkillLoading && !state.managedSkillDetail) {
+            elements.managedSkillDetail.append(node("div", "managed-skill-empty", t("loadingTask")))
+        } else if (state.managedSkillDetail?.manifest) {
+            const manifest = node("pre", "managed-skill-manifest")
+            manifest.textContent = state.managedSkillDetail.manifest
+            elements.managedSkillDetail.append(manifest)
+        }
+    }
+
+    elements.managedSkillVersions.replaceChildren()
+    const versionsHead = node("div", "managed-skill-panel-head")
+    const versions = skill ? managedVersionsForSkill(skill.id) : []
+    versionsHead.append(node("span", "", t("managedVersions")), node("strong", "", String(versions.length)))
+    elements.managedSkillVersions.append(versionsHead)
+    if (!skill || !versions.length) {
+        elements.managedSkillVersions.append(node("div", "managed-skill-empty", t("noManagedVersions")))
+    }
+    for (const version of versions) {
+        const status = managedVersionStatus(version)
+        const card = node("article", "managed-version-card")
+        const heading = node("div", "managed-version-heading")
+        heading.append(
+            node("strong", "", version.versionLabel ?? version.commit.slice(0, 8)),
+            node("span", `managed-version-status ${status.className}`, status.label),
+        )
+        card.append(
+            heading,
+            node("code", "managed-version-commit", version.commit),
+            node("small", "", new Date(version.releasedAt ?? version.createdAt).toLocaleString(state.settings.language)),
+        )
+        const actions = node("div", "managed-version-actions")
+        if (version.state === "candidate") {
+            const release = node("button", "primary", t("releaseVersion"))
+            release.type = "button"
+            release.dataset.releaseManagedVersion = version.id
+            actions.append(release)
+        } else if (!version.deprecatedAt) {
+            const deprecate = node("button", "", t("deprecateVersion"))
+            deprecate.type = "button"
+            deprecate.dataset.deprecateManagedVersion = version.id
+            actions.append(deprecate)
+        }
+        card.append(actions)
+        elements.managedSkillVersions.append(card)
+    }
+    renderManagedSkillInstallations()
 }
 
 function renderEvaluationWorkbench() {
@@ -3501,25 +5313,6 @@ function displayTotalScore(computedScore) {
     return Math.round((computedScore.aScore + computedScore.bScore + Number.EPSILON) * 10) / 10
 }
 
-function gradingMaxima(result) {
-    const scoreContract = result?.scoreContract
-    return {
-        a: scoreContract?.a?.maxScore ?? 60,
-        b: scoreContract?.b?.maxScore ?? 40,
-    }
-}
-
-function aVerdictLabel(verdict) {
-    return t(
-        {
-            pass: "gatePass",
-            fail: "gateFail",
-            indeterminate: "gateIndeterminate",
-            diagnostic: "diagnosticOnly",
-        }[verdict] ?? "gateIndeterminate",
-    )
-}
-
 function bindingStatusLabel(status) {
     return t({
         verified: "bindingVerified",
@@ -3543,27 +5336,6 @@ function outcomeTierLabel(tier) {
 
 function evidenceText(refs) {
     return Array.isArray(refs) && refs.length ? refs.join(" · ") : t("none")
-}
-
-function assessmentStatusText(status) {
-    if (status === "not_observable") return t("notObservable")
-    if (status === "not_applicable") return t("notApplicable")
-    return status
-}
-
-const aDimensionLabels = {
-    skill_activation: "aSkillActivation",
-    required_references: "aRequiredReferences",
-    tool_policy: "aToolPolicy",
-    workflow_order: "aWorkflowOrder",
-    completeness_artifacts: "aCompletenessArtifacts",
-    deterministic_processing: "aDeterministicProcessing",
-    evidence_output: "aEvidenceOutput",
-    error_recovery: "aErrorRecovery",
-}
-
-function aDimensionTitle(dimension, id) {
-    return aDimensionLabels[id] ? t(aDimensionLabels[id]) : dimension?.criterion ?? id
 }
 
 function verificationLines(assessment) {
@@ -3708,11 +5480,8 @@ function renderCompletedGrading(result, run) {
     if (Array.isArray(computedScore.criterionScores)) {
         return renderUnifiedCompletedGrading(result, run)
     }
-    const scoreContract = result.scoreContract ?? {}
-    const maxima = gradingMaxima(result)
-    const judgment = result.judgment ?? {}
-    const block = node("section", "evaluation-grading")
-    const summary = node("div", "evaluation-score-summary")
+    const block = node("section", "evaluation-grading legacy")
+    const summary = node("div", "evaluation-score-summary unified")
     const total = node("div", "evaluation-score-total")
     const displayOutcomeTier = computedScore.outcomeTier ?? ({
         pass: "formal_pass",
@@ -3728,82 +5497,61 @@ function renderCompletedGrading(result, run) {
             outcomeTierLabel(displayOutcomeTier),
         ),
     )
-    const a = node("div", "evaluation-score-part")
-    a.append(
-        node("small", "", t("skillComplianceScore")),
-        node("strong", "", resultScoreText(computedScore.aScore, maxima.a, computedScore.aScoreRange)),
-        node("span", `evaluation-gate ${computedScore.aVerdict ?? "indeterminate"}`, aVerdictLabel(computedScore.aVerdict)),
-    )
-    const b = node("div", "evaluation-score-part")
-    b.append(
-        node("small", "", t("answerQualityScore")),
-        node("strong", "", resultScoreText(computedScore.bScore, maxima.b)),
-    )
-    summary.append(total, a, b)
+    summary.append(total)
 
     const detail = document.createElement("details")
     detail.className = "evaluation-grading-breakdown"
-    detail.append(node("summary", "", t("judgeDetails")))
+    detail.append(
+        node("summary", "", t("legacySplitGrading")),
+        node("p", "evaluation-legacy-grading", t("legacySplitGradingHelp")),
+    )
     appendEvaluationJudgeMetadata(detail, result, run)
-
-    const aList = node("section", "evaluation-score-section")
-    aList.append(node("h4", "", t("skillComplianceScore")))
-    for (const score of computedScore.dimensionScores ?? []) {
-        const dimension = scoreContract.a?.dimensions?.find((entry) => entry.id === score.id)
-        const assessment = judgment.aAssessments?.find((entry) => entry.dimensionId === score.id)
-        aList.append(renderScoreCriterion({
-            section: "a",
-            title: aDimensionTitle(dimension, score.id),
-            scoreText: score.points === null || score.points === undefined
-                ? assessmentStatusText(score.status)
-                : `${score.points}/${score.maxPoints}`,
-            weightText: `${t("weight").replace("{value}", score.maxPoints ?? dimension?.weight ?? "—")}`,
-            assessment,
-        }))
+    const scoreContract = result.scoreContract ?? {}
+    const judgment = result.judgment ?? {}
+    const legacyAssessments = [
+        ...(judgment.aAssessments ?? []).map((assessment) => {
+            const dimension = scoreContract.a?.dimensions?.find(
+                (entry) => entry.id === assessment.dimensionId,
+            )
+            return {
+                id: assessment.dimensionId,
+                criterion: dimension?.criterion,
+                assessment,
+                scoreText: assessment.level === undefined ? assessment.status : `${assessment.level}/4`,
+            }
+        }),
+        ...(judgment.bAssessments ?? []).map((assessment) => {
+            const criterion = scoreContract.b?.criteria?.find(
+                (entry) => entry.id === assessment.criterionId,
+            )
+            return {
+                id: assessment.criterionId,
+                criterion: criterion?.criterion,
+                assessment,
+                scoreText: assessment.rating === undefined ? assessment.status : `${assessment.rating}/10`,
+            }
+        }),
+    ]
+    if (legacyAssessments.length) {
+        const list = node("section", "evaluation-score-section legacy")
+        list.append(node("h4", "", t("legacySplitGrading")))
+        for (const entry of legacyAssessments) {
+            list.append(renderScoreCriterion({
+                section: "legacy",
+                title: entry.criterion ? `${entry.id} · ${entry.criterion}` : entry.id,
+                scoreText: entry.scoreText,
+                weightText: [
+                    entry.assessment.status,
+                    entry.assessment.confidence === undefined
+                        ? null
+                        : `${t("confidence")} ${Math.round(entry.assessment.confidence * 100)}%`,
+                ].filter(Boolean).join(" · "),
+                assessment: entry.assessment,
+                verification: verificationLines(entry.assessment),
+            }))
+        }
+        detail.append(list)
     }
-
-    const bList = node("section", "evaluation-score-section")
-    bList.append(node("h4", "", t("answerQualityScore")))
-    const bKnownWeight = (computedScore.bCriterionScores ?? []).reduce((sum, entry) => {
-        if (entry.status !== "scored") return sum
-        const criterion = scoreContract.b?.criteria?.find((candidate) => candidate.id === entry.id)
-        return sum + (Number(criterion?.weight) || 0)
-    }, 0)
-    for (const score of computedScore.bCriterionScores ?? []) {
-        const criterion = scoreContract.b?.criteria?.find((entry) => entry.id === score.id)
-        const assessment = judgment.bAssessments?.find((entry) => entry.criterionId === score.id)
-        const isPenalty = criterion?.mode === "penalty"
-        const maximum = bKnownWeight > 0
-            ? Math.round(400 * (Number(criterion?.weight) || 0) / bKnownWeight) / 10
-            : 40
-        const confidence = assessment?.confidence === undefined
-            ? null
-            : `${t("confidence")} ${Math.round(assessment.confidence * 100)}%`
-        bList.append(renderScoreCriterion({
-            section: "b",
-            title: criterion?.criterion ?? score.id,
-            scoreText: score.points === null || score.points === undefined
-                ? assessmentStatusText(score.status)
-                : isPenalty
-                  ? formatMessage("penaltyApplied", {
-                        value: score.deduction ?? Math.abs(score.points),
-                        maximum: criterion.maximumDeduction,
-                    })
-                  : `${score.points}/${maximum}`,
-            weightText: [
-                isPenalty ? null : `${t("weight").replace("{value}", criterion?.weight ?? "—")}`,
-                score.rating === undefined
-                    ? null
-                    : isPenalty
-                      ? formatMessage("avoidanceRating", {value: score.rating})
-                      : `${score.rating}/10`,
-                confidence,
-            ].filter(Boolean).join(" · "),
-            assessment,
-            verification: verificationLines(assessment),
-        }))
-    }
-    detail.append(aList, bList)
     block.append(summary, detail)
     return block
 }
@@ -3825,6 +5573,34 @@ function evaluationResultsByRuntime(run) {
         group.results.push(result)
     }
     return [...groups.values()].filter((group) => group.results.length)
+}
+
+function renderEvaluationRuntimeGroup(group, run, {panelId = null, tabId = null} = {}) {
+    const section = node("section", "evaluation-runtime-result-group")
+    section.dataset.evaluationRuntimeGroup = group.runtimeId
+    section.setAttribute("role", "tabpanel")
+    if (panelId) section.id = panelId
+    if (tabId) section.setAttribute("aria-labelledby", tabId)
+    const groupHeader = node("header", "evaluation-runtime-result-header")
+    const identity = node("span", "evaluation-runtime-result-identity")
+    identity.append(
+        node("strong", "", group.configuration.displayName ?? group.runtimeId),
+        node(
+            "small",
+            "",
+            [
+                group.configuration.modelId || t("runtimeDefault"),
+                group.configuration.effort || t("runtimeDefaultEffort"),
+                `${group.results.length} ${t("cases")}`,
+            ].filter(Boolean).join(" · "),
+        ),
+    )
+    groupHeader.append(identity)
+    appendEvaluationQualitySummary(groupHeader, {results: group.results})
+    const cases = node("div", "evaluation-runtime-result-cases")
+    for (const result of group.results) cases.append(renderEvaluationResultCard(result, run))
+    section.append(groupHeader, cases)
+    return section
 }
 
 function renderEvaluationResultCard(result, run) {
@@ -3979,32 +5755,51 @@ function renderEvaluationRuns() {
         stop.append(icon, node("span", "", t("stopEvaluation")))
         header.append(stop)
     }
-    const results = node("div", "evaluation-result-list")
-    for (const group of evaluationResultsByRuntime(run)) {
-        const section = node("section", "evaluation-runtime-result-group")
-        section.dataset.evaluationRuntimeGroup = group.runtimeId
-        const groupHeader = node("header", "evaluation-runtime-result-header")
-        const identity = node("span", "evaluation-runtime-result-identity")
-        identity.append(
-            node("strong", "", group.configuration.displayName ?? group.runtimeId),
-            node(
-                "small",
-                "",
-                [
-                    group.configuration.modelId || t("runtimeDefault"),
-                    group.configuration.effort || t("runtimeDefaultEffort"),
-                    `${group.results.length} ${t("cases")}`,
-                ].filter(Boolean).join(" · "),
-            ),
+    const groups = evaluationResultsByRuntime(run)
+    const selectedRuntimeId = state.evaluationRuntimeViewByRun[run.id]
+    const activeGroup = groups.find((group) => group.runtimeId === selectedRuntimeId) ?? groups[0] ?? null
+    if (activeGroup) state.evaluationRuntimeViewByRun[run.id] = activeGroup.runtimeId
+
+    const runtimeTabs = node("div", "evaluation-view-tabs evaluation-runtime-tabs")
+    runtimeTabs.setAttribute("role", "tablist")
+    let activePanelId = null
+    let activeTabId = null
+    for (const [index, group] of groups.entries()) {
+        const active = group.runtimeId === activeGroup?.runtimeId
+        const tab = node("button", active ? "active" : "")
+        const tabId = `evaluation-runtime-tab-${run.id}-${index}`
+        const panelId = `evaluation-runtime-panel-${run.id}-${index}`
+        tab.type = "button"
+        tab.id = tabId
+        tab.dataset.evaluationRuntimeView = group.runtimeId
+        tab.setAttribute("role", "tab")
+        tab.setAttribute("aria-selected", String(active))
+        tab.setAttribute("aria-controls", panelId)
+        tab.tabIndex = active ? 0 : -1
+        tab.append(
+            node("span", "", group.configuration.displayName ?? group.runtimeId),
+            node("small", "", String(group.results.length)),
         )
-        groupHeader.append(identity)
-        appendEvaluationQualitySummary(groupHeader, {results: group.results})
-        const cases = node("div", "evaluation-runtime-result-cases")
-        for (const result of group.results) cases.append(renderEvaluationResultCard(result, run))
-        section.append(groupHeader, cases)
-        results.append(section)
+        runtimeTabs.append(tab)
+        if (active) {
+            activePanelId = panelId
+            activeTabId = tabId
+        }
     }
-    elements.evaluationRunDetail.append(header, node("h3", "", t("runResults")), results)
+
+    const results = node("div", "evaluation-result-list")
+    if (activeGroup) {
+        results.append(renderEvaluationRuntimeGroup(activeGroup, run, {
+            panelId: activePanelId,
+            tabId: activeTabId,
+        }))
+    }
+    elements.evaluationRunDetail.append(
+        header,
+        node("h3", "", t("runResults")),
+        runtimeTabs,
+        results,
+    )
 }
 
 function evaluationRunSummary(run) {
@@ -4280,6 +6075,7 @@ async function deleteEvaluationRun() {
         const runId = state.deleteEvaluationRunId
         await window.rollingSkill.deleteEvaluationRun(runId)
         state.deleteEvaluationRunId = null
+        delete state.evaluationRuntimeViewByRun[runId]
         if (state.activeEvaluationRunId === runId) state.activeEvaluationRunId = null
         if (state.activeEvaluationRun?.id === runId) state.activeEvaluationRun = null
         elements.deleteEvaluationRunDialog.close()
@@ -4399,6 +6195,19 @@ async function startEvaluation(selectionMode) {
     }
 }
 
+async function migrateLegacyDatasetRubric(button) {
+    if (!state.evaluationDatasetId) return
+    button.disabled = true
+    try {
+        await window.rollingSkill.migrateLegacyDatasetRubric(state.evaluationDatasetId)
+        await loadEvaluationWorkbench(false)
+        showToast(t("legacyRubricMigrated"))
+    } catch (error) {
+        button.disabled = false
+        showError(error)
+    }
+}
+
 async function createRubricSession() {
     if (!state.evaluationDatasetId) return
     try {
@@ -4475,22 +6284,106 @@ async function updateRubricEffort(sessionId, effort) {
 }
 
 function setSurface(surface) {
-    if (surface !== "chat" && surface !== "evaluation") return
+    if (surface !== "chat" && surface !== "evaluation" && surface !== "skills") return
     state.surface = surface
     if (surface === "evaluation") {
+        suspendThreadObservation()
         setTraceOpen(false)
         setCurationOpen(false)
         void loadEvaluationWorkbench(true)
+    } else if (surface === "skills") {
+        suspendThreadObservation()
+        setTraceOpen(false)
+        setCurationOpen(false)
+        setRubricOpen(false)
+        void loadManagedSkills(true)
     } else {
         setRubricOpen(false)
+        void resumeThreadObservation()
     }
     renderAll()
+}
+
+function chatTimelineSurfaceIsVisible() {
+    return (
+        state.surface === "chat" &&
+        !state.traceOpen &&
+        !state.curationOpen &&
+        !state.rubricOpen &&
+        !elements.settingsDialog.open &&
+        !elements.runtimeDialog.open &&
+        !elements.caseDialog.open
+    )
+}
+
+function chatTimelineCanBeObserved() {
+    return (
+        chatTimelineSurfaceIsVisible() &&
+        Boolean(state.activeThreadId) &&
+        !state.newTaskMode
+    )
+}
+
+function suspendThreadObservation({cancelPendingRead = true} = {}) {
+    const epoch = state.activeThreadObservationEpoch
+    state.activeThreadObservationEpoch = null
+    if (cancelPendingRead) {
+        state.threadLoadToken += 1
+        if (state.loadingThread) {
+            state.loadingThread = false
+            queueRender()
+        }
+    }
+    return window.rollingSkill.clearThreadObservation(epoch).catch(() => {})
+}
+
+async function drainThreadObservation(epoch, threadId, loadToken, runtimeEpoch) {
+    while (
+        state.activeThreadObservationEpoch === epoch &&
+        state.activeThreadId === threadId &&
+        state.threadLoadToken === loadToken &&
+        state.runtimeEpoch === runtimeEpoch &&
+        chatTimelineCanBeObserved()
+    ) {
+        const result = await window.rollingSkill.drainThreadObservation(epoch)
+        if (!result?.matched) return
+        if (result.reloadRequired) {
+            state.activeThreadObservationEpoch = null
+            await loadThread(threadId)
+            return
+        }
+        for (const notification of result.notifications ?? []) handleNotification(notification)
+        if (result.live) return
+    }
+    if (state.activeThreadObservationEpoch === epoch && !chatTimelineCanBeObserved()) {
+        suspendThreadObservation()
+    }
+}
+
+async function resumeThreadObservation() {
+    if (state.threadObservationResumePending) return
+    state.threadObservationResumePending = true
+    await Promise.resolve()
+    try {
+        if (
+            !chatTimelineCanBeObserved() ||
+            state.activeThreadObservationEpoch !== null ||
+            state.loadingThread ||
+            state.threadLoadFailed
+        ) {
+            return
+        }
+        await loadThread(state.activeThreadId)
+    } finally {
+        state.threadObservationResumePending = false
+    }
 }
 
 async function setThreadView(view) {
     if (view !== "current" && view !== "archived") return
     if (view === "archived" && !supportsThreadArchive()) return
     if (view === state.threadView) return
+    suspendThreadObservation()
     snapshotActiveThreadView()
     state.threadLoadToken += 1
     state.loadingThread = false
@@ -4517,6 +6410,7 @@ async function archiveThread(threadId) {
     try {
         await window.rollingSkill.archiveThread(threadId)
         if (state.activeThreadId === threadId) {
+            suspendThreadObservation()
             snapshotActiveThreadView()
             state.threadLoadToken += 1
             state.loadingThread = false
@@ -4537,6 +6431,7 @@ async function unarchiveThread(threadId) {
     try {
         await window.rollingSkill.unarchiveThread(threadId)
         if (state.activeThreadId === threadId) {
+            suspendThreadObservation()
             snapshotActiveThreadView()
             state.threadLoadToken += 1
             state.loadingThread = false
@@ -4602,12 +6497,27 @@ async function refreshThreads(selectFirst = false) {
 
 async function loadThread(threadId) {
     if (!threadId) return
-    snapshotActiveThreadView()
     state.surface = "chat"
+    state.traceOpen = false
+    state.curationOpen = false
+    state.rubricOpen = false
+    elements.traceDrawer.classList.remove("visible")
+    elements.curationDrawer.classList.remove("visible")
+    elements.rubricDrawer.classList.remove("visible")
+    const retainedThread = state.activeThreadId === threadId ? state.activeThread : null
     const runtimeEpoch = state.runtimeEpoch
     const loadToken = ++state.threadLoadToken
+    await suspendThreadObservation({cancelPendingRead: false})
+    if (
+        runtimeEpoch !== state.runtimeEpoch ||
+        loadToken !== state.threadLoadToken ||
+        !chatTimelineSurfaceIsVisible()
+    ) {
+        return
+    }
+    snapshotActiveThreadView()
     state.activeThreadId = threadId
-    state.activeThread = null
+    state.activeThread = retainedThread
     state.activeThreadArchived = state.threadView === "archived"
     state.newTaskMode = false
     state.loadingThread = true
@@ -4618,13 +6528,19 @@ async function loadThread(threadId) {
     renderAll()
     try {
         const response = await window.rollingSkill.readThread(threadId)
+        const observationEpoch = response.rollingSkillObservationEpoch ?? null
         if (
             runtimeEpoch !== state.runtimeEpoch ||
             loadToken !== state.threadLoadToken ||
-            state.activeThreadId !== threadId
+            state.activeThreadId !== threadId ||
+            !chatTimelineCanBeObserved()
         ) {
+            if (observationEpoch !== null) {
+                void window.rollingSkill.clearThreadObservation(observationEpoch).catch(() => {})
+            }
             return
         }
+        state.activeThreadObservationEpoch = observationEpoch
         state.activeThread = response.thread
         const rememberedProfile = response.thread.rollingSkillProfile
         state.selectedTaskModelId =
@@ -4646,6 +6562,9 @@ async function loadThread(threadId) {
         upsertThreadSummary(response.thread)
         renderAll()
         restoreActiveThreadView({restoreScroll: true})
+        if (observationEpoch !== null) {
+            await drainThreadObservation(observationEpoch, threadId, loadToken, runtimeEpoch)
+        }
     } catch (error) {
         if (
             runtimeEpoch !== state.runtimeEpoch ||
@@ -4662,6 +6581,7 @@ async function loadThread(threadId) {
 }
 
 function beginNewTask() {
+    suspendThreadObservation()
     snapshotActiveThreadView()
     state.threadLoadToken += 1
     const changedView = state.threadView !== "current"
@@ -4712,7 +6632,11 @@ async function submitTurn() {
                 submittedEffort,
                 submittedPermissionMode,
             )
+            const observationEpoch = response.rollingSkillObservationEpoch ?? null
             if (submittedRuntimeEpoch !== state.runtimeEpoch) {
+                if (observationEpoch !== null) {
+                    void window.rollingSkill.clearThreadObservation(observationEpoch).catch(() => {})
+                }
                 state.sending = false
                 renderAll()
                 return
@@ -4733,6 +6657,9 @@ async function submitTurn() {
                 state.activeThread = response.thread
                 state.activeThreadId = submittedThreadId
                 state.newTaskMode = false
+                state.activeThreadObservationEpoch = observationEpoch
+            } else if (observationEpoch !== null) {
+                void window.rollingSkill.clearThreadObservation(observationEpoch).catch(() => {})
             }
         }
         const response = await window.rollingSkill.startTurn(
@@ -4878,6 +6805,7 @@ async function openCaseDialog(turnId, itemId) {
     populateSkillSelect(elements.newDatasetSkill, elements.newDatasetSkill.value, {allowEmpty: false})
     renderCaseDatasetSkillStatus()
     clearCaseError()
+    suspendThreadObservation()
     elements.caseDialog.showModal()
 }
 
@@ -5207,6 +7135,8 @@ async function loadTrace() {
 function setTraceOpen(open) {
     state.traceOpen = open
     if (open) {
+        collapseRawCasesForCompactDrawer()
+        suspendThreadObservation()
         state.curationOpen = false
         elements.curationDrawer.classList.remove("visible")
         state.rubricOpen = false
@@ -5214,11 +7144,14 @@ function setTraceOpen(open) {
     }
     elements.traceDrawer.classList.toggle("visible", open)
     if (open) void loadTrace()
+    else void resumeThreadObservation()
 }
 
 function setCurationOpen(open) {
     state.curationOpen = open
     if (open) {
+        collapseRawCasesForCompactDrawer()
+        suspendThreadObservation()
         state.traceOpen = false
         elements.traceDrawer.classList.remove("visible")
         state.rubricOpen = false
@@ -5228,17 +7161,38 @@ function setCurationOpen(open) {
         }
     }
     renderCurations()
+    if (!open) void resumeThreadObservation()
 }
 
 function setRubricOpen(open) {
     state.rubricOpen = Boolean(open)
     if (open) {
+        collapseRawCasesForCompactDrawer()
+        suspendThreadObservation()
         state.traceOpen = false
         state.curationOpen = false
         elements.traceDrawer.classList.remove("visible")
         elements.curationDrawer.classList.remove("visible")
     }
     renderRubricDrawer()
+    if (!open) void resumeThreadObservation()
+}
+
+function transientDrawerIsOpen() {
+    return state.traceOpen || state.curationOpen || state.rubricOpen
+}
+
+function collapseRawCasesForCompactDrawer() {
+    if (window.innerWidth > 1120 || !state.rawCaseOpen) return
+    state.rawCaseOpen = false
+    renderRawCases()
+}
+
+function closeTransientDrawersForCompactRawCases() {
+    if (window.innerWidth > 1120 || !transientDrawerIsOpen()) return
+    setTraceOpen(false)
+    setCurationOpen(false)
+    setRubricOpen(false)
 }
 
 function upsertCuration(session) {
@@ -5360,11 +7314,15 @@ async function updateCurationEffort(sessionId, selectedEffort) {
 
 function handleNotification(message) {
     const {method, params = {}} = message ?? {}
+    let dirtyItem = null
+    let needsFullRender = false
     if (method === "thread/started") {
         if (state.threadView === "current") upsertThreadSummary(params.thread)
+        needsFullRender = true
     } else if (method === "thread/archived" || method === "thread/unarchived") {
         const threadId = params.threadId ?? params.thread?.id ?? null
         if (threadId && state.activeThreadId === threadId) {
+            suspendThreadObservation()
             snapshotActiveThreadView()
             state.threadLoadToken += 1
             state.loadingThread = false
@@ -5377,13 +7335,16 @@ function handleNotification(message) {
             restoreActiveThreadView()
         }
         void refreshThreads(false)
+        needsFullRender = true
     } else if (method === "thread/name/updated") {
         const thread = state.threads.find((entry) => entry.id === params.threadId)
         if (thread) thread.name = params.threadName
         if (state.activeThread?.id === params.threadId) state.activeThread.name = params.threadName
+        needsFullRender = true
     } else if (method === "thread/status/changed") {
         const thread = state.threads.find((entry) => entry.id === params.threadId)
         if (thread) thread.status = params.status
+        needsFullRender = true
     } else if (method === "thread/settings/updated" && params.threadId === state.activeThreadId) {
         const threadSettings = params.threadSettings ?? params.settings ?? {}
         if ("model" in threadSettings) {
@@ -5395,12 +7356,15 @@ function handleNotification(message) {
             state.selectedTaskEffort = effort || null
             if (state.activeThread) state.activeThread.effort = effort || null
         }
+        needsFullRender = true
     } else if (method === "turn/started" && params.threadId === state.activeThreadId) {
         state.activeTurnId = params.turn.id
         state.sending = false
         upsertTurn(params.turn)
+        needsFullRender = true
     } else if (method === "item/started" && params.threadId === state.activeThreadId) {
         upsertItem(params.turnId, params.item)
+        dirtyItem = {turnId: params.turnId, itemId: params.item?.id}
     } else if (method === "item/agentMessage/delta" && params.threadId === state.activeThreadId) {
         const turn = ensureTurn(params.turnId)
         let item = turn?.items.find((entry) => entry.id === params.itemId)
@@ -5409,8 +7373,10 @@ function handleNotification(message) {
             turn?.items.push(item)
         }
         item.text = `${item.text || ""}${params.delta || ""}`
+        dirtyItem = {turnId: params.turnId, itemId: params.itemId}
     } else if (method === "item/completed" && params.threadId === state.activeThreadId) {
         upsertItem(params.turnId, params.item)
+        dirtyItem = {turnId: params.turnId, itemId: params.item?.id}
     } else if (method === "turn/completed" && params.threadId === state.activeThreadId) {
         upsertTurn(params.turn)
         if (state.activeTurnId === params.turn.id) state.activeTurnId = null
@@ -5418,17 +7384,23 @@ function handleNotification(message) {
         const summary = state.threads.find((entry) => entry.id === params.threadId)
         if (summary) summary.updatedAt = Date.now() / 1000
         void refreshThreads(false)
+        needsFullRender = true
     } else if (method === "error" && params.threadId === state.activeThreadId) {
         state.error = params.error?.message || "The task failed"
         if (!params.willRetry) {
             state.activeTurnId = null
             state.sending = false
         }
+        needsFullRender = true
     }
-    queueRender()
+    if (needsFullRender) queueRender()
+    else if (dirtyItem?.turnId && dirtyItem?.itemId) {
+        streamRenderQueue.enqueue(dirtyItem.turnId, dirtyItem.itemId)
+    }
 }
 
 function clearRuntimeTaskState() {
+    suspendThreadObservation()
     state.threads = []
     state.threadView = "current"
     state.threadLoadToken += 1
@@ -5446,6 +7418,7 @@ function clearRuntimeTaskState() {
     state.selectedTaskModelId = null
     state.selectedTaskEffort = null
     state.selectedTaskPermissionMode = null
+    state.pendingRuntimeQuestions.clear()
 }
 
 async function changeRuntime(operation, {markStarting = true, clearBefore = true} = {}) {
@@ -5518,6 +7491,7 @@ elements.workspaceButton.addEventListener("click", async () => {
 elements.settingsButton.addEventListener("click", () => void openSettings())
 elements.closeSettingsDialog.addEventListener("click", () => elements.settingsDialog.close())
 elements.cancelSettings.addEventListener("click", () => elements.settingsDialog.close())
+elements.settingsDialog.addEventListener("close", () => void resumeThreadObservation())
 elements.settingsForm.addEventListener("submit", (event) => {
     event.preventDefault()
     void saveSettings()
@@ -5543,8 +7517,185 @@ elements.openTrace.addEventListener("click", () => {
     elements.settingsDialog.close()
     setTraceOpen(true)
 })
+elements.refreshManagedSkills.addEventListener("click", () => void rescanManagedSkills())
+elements.skillManagementWorkbench.addEventListener("click", (event) => {
+    const sideView = event.target.closest("[data-managed-skill-side-view]")
+    if (sideView) {
+        state.managedSkillSideView = sideView.dataset.managedSkillSideView
+        renderSkillManagementWorkbench()
+        if (state.managedSkillSideView === "installations") {
+            void refreshManagedInstallationRuntimeModels(false)
+            if (state.activeManagedSkillId) {
+                void loadManagedSkillInstallations(state.activeManagedSkillId)
+            }
+        }
+        return
+    }
+    const installationJob = event.target.closest("[data-skill-installation-job-id]")
+    if (installationJob) {
+        state.activeSkillInstallationJobId = installationJob.dataset.skillInstallationJobId
+        renderManagedSkillInstallations()
+        return
+    }
+    const cancelQuestion = event.target.closest("[data-cancel-skill-installation-question]")
+    if (cancelQuestion) {
+        const form = cancelQuestion.closest("[data-skill-installation-question-id]")
+        if (form) void respondSkillInstallationQuestion(form, {cancelled: true})
+        return
+    }
+    const importer = event.target.closest("[data-import-skill]")
+    if (importer) {
+        const kind = importer.dataset.importSkill
+        if (kind === "git-url") {
+            clearManagedDialogError(elements.managedGitUrlError)
+            elements.managedGitUrlDialog.showModal()
+            elements.managedGitUrl.focus()
+        } else {
+            void importManagedSkill(kind)
+        }
+        return
+    }
+    const skillButton = event.target.closest("[data-managed-skill-id]")
+    if (skillButton) {
+        void selectManagedSkill(skillButton.dataset.managedSkillId)
+        return
+    }
+    const repositoryButton = event.target.closest("[data-managed-repository-id]")
+    if (repositoryButton) {
+        const repositoryId = repositoryButton.dataset.managedRepositoryId
+        const firstSkill = state.managedSkills.skills.find((entry) => entry.repositoryId === repositoryId)
+        state.activeManagedRepositoryId = repositoryId
+        if (firstSkill) void selectManagedSkill(firstSkill.id)
+        else renderSkillManagementWorkbench()
+        return
+    }
+    const reveal = event.target.closest("[data-reveal-managed-repository]")
+    if (reveal) {
+        void window.rollingSkill.revealManagedSkillRepository(
+            reveal.dataset.revealManagedRepository,
+        ).catch((error) => {
+            state.managedSkillError = managedSkillErrorMessage(error)
+            renderSkillManagementWorkbench()
+        })
+        return
+    }
+    const candidate = event.target.closest("[data-create-managed-candidate]")
+    if (candidate) {
+        state.managedCandidateSkillId = candidate.dataset.createManagedCandidate
+        elements.managedCandidateMessage.value = ""
+        clearManagedDialogError(elements.managedCandidateError)
+        elements.managedCandidateDialog.showModal()
+        elements.managedCandidateMessage.focus()
+        return
+    }
+    const release = event.target.closest("[data-release-managed-version]")
+    if (release) {
+        state.managedReleaseVersionId = release.dataset.releaseManagedVersion
+        elements.managedReleaseLabel.value = ""
+        clearManagedDialogError(elements.managedReleaseError)
+        elements.managedReleaseDialog.showModal()
+        elements.managedReleaseLabel.focus()
+        return
+    }
+    const deprecate = event.target.closest("[data-deprecate-managed-version]")
+    if (deprecate) void deprecateManagedSkillVersion(deprecate.dataset.deprecateManagedVersion)
+})
+elements.managedSkillInstallations.addEventListener("change", (event) => {
+    if (event.target === elements.managedInstallVersion) {
+        state.managedInstallVersionId = elements.managedInstallVersion.value || null
+        return
+    }
+    const toggle = event.target.closest("[data-managed-install-runtime-toggle]")
+    const model = event.target.closest("[data-managed-install-runtime-model]")
+    const effort = event.target.closest("[data-managed-install-runtime-effort]")
+    const permission = event.target.closest("[data-managed-install-runtime-permission]")
+    const runtimeId =
+        toggle?.dataset.managedInstallRuntimeToggle ??
+        model?.dataset.managedInstallRuntimeModel ??
+        effort?.dataset.managedInstallRuntimeEffort ??
+        permission?.dataset.managedInstallRuntimePermission
+    const configuration = state.managedInstallConfigurations[runtimeId]
+    if (!configuration) return
+    if (toggle) configuration.selected = toggle.checked
+    if (model) {
+        configuration.modelId = model.value || null
+        configuration.effort = null
+    }
+    if (effort) configuration.effort = effort.value || null
+    if (permission) configuration.permissionMode = permission.value || null
+    renderManagedSkillInstallations()
+})
+elements.managedSkillInstallations.addEventListener("submit", (event) => {
+    const messageForm = event.target.closest("[data-skill-installation-message-form]")
+    if (messageForm) {
+        event.preventDefault()
+        const jobId = messageForm.dataset.skillInstallationMessageForm
+        const input = messageForm.querySelector("[data-skill-installation-message-input]")
+        void sendSkillInstallationMessage(jobId, input?.value ?? "")
+        return
+    }
+    const form = event.target.closest("[data-skill-installation-question-id]")
+    if (!form) return
+    event.preventDefault()
+    void respondSkillInstallationQuestion(form)
+})
+elements.managedSkillInstallations.addEventListener("input", (event) => {
+    const input = event.target.closest("[data-skill-installation-message-input]")
+    if (!input) return
+    if (input.value) state.skillInstallationInputDrafts.set(input.dataset.skillInstallationMessageInput, input.value)
+    else state.skillInstallationInputDrafts.delete(input.dataset.skillInstallationMessageInput)
+})
+elements.startManagedSkillInstallations.addEventListener("click", () => {
+    void startManagedSkillInstallations()
+})
+elements.cancelManagedSkillInstallation.addEventListener("click", () => {
+    const jobId = elements.cancelManagedSkillInstallation.dataset.jobId
+    if (jobId) void cancelManagedSkillInstallation(jobId)
+})
+elements.inspectManagedSkillInstallation.addEventListener("click", () => {
+    const jobId = elements.inspectManagedSkillInstallation.dataset.jobId
+    if (jobId) void inspectManagedSkillInstallation(jobId)
+})
+elements.closeManagedGitUrlDialog.addEventListener("click", () => elements.managedGitUrlDialog.close())
+elements.cancelManagedGitUrl.addEventListener("click", () => elements.managedGitUrlDialog.close())
+elements.managedGitUrlForm.addEventListener("submit", (event) => {
+    event.preventDefault()
+    void importManagedGitUrl()
+})
+elements.managedGitUrlDialog.addEventListener("cancel", (event) => {
+    if (state.managedSkillMutation) event.preventDefault()
+})
+elements.managedGitUrlDialog.addEventListener("close", () => {
+    elements.managedGitUrl.value = ""
+    clearManagedDialogError(elements.managedGitUrlError)
+})
+elements.closeManagedCandidateDialog.addEventListener("click", () => elements.managedCandidateDialog.close())
+elements.cancelManagedCandidate.addEventListener("click", () => elements.managedCandidateDialog.close())
+elements.managedCandidateForm.addEventListener("submit", (event) => {
+    event.preventDefault()
+    void createManagedSkillCandidate()
+})
+elements.managedCandidateDialog.addEventListener("close", () => {
+    state.managedCandidateSkillId = null
+    clearManagedDialogError(elements.managedCandidateError)
+})
+elements.closeManagedReleaseDialog.addEventListener("click", () => elements.managedReleaseDialog.close())
+elements.cancelManagedRelease.addEventListener("click", () => elements.managedReleaseDialog.close())
+elements.managedReleaseForm.addEventListener("submit", (event) => {
+    event.preventDefault()
+    void releaseManagedSkillVersion()
+})
+elements.managedReleaseDialog.addEventListener("close", () => {
+    state.managedReleaseVersionId = null
+    clearManagedDialogError(elements.managedReleaseError)
+})
 elements.refreshEvaluation.addEventListener("click", () => loadEvaluationWorkbench(true))
 elements.evaluationWorkbench.addEventListener("click", (event) => {
+    const migrateLegacyRubric = event.target.closest("[data-migrate-legacy-rubric]")
+    if (migrateLegacyRubric) {
+        void migrateLegacyDatasetRubric(migrateLegacyRubric)
+        return
+    }
     const stopBatch = event.target.closest("[data-stop-calibration-batch]")
     if (stopBatch) {
         void stopAutomaticCalibrationBatch()
@@ -5634,8 +7785,37 @@ elements.evaluationRunList.addEventListener("click", (event) => {
     void selectEvaluationRun(button.dataset.evaluationRunId)
 })
 elements.evaluationRunDetail.addEventListener("click", (event) => {
+    const runtimeView = event.target.closest("[data-evaluation-runtime-view]")
+    if (runtimeView && state.activeEvaluationRunId) {
+        state.evaluationRuntimeViewByRun[state.activeEvaluationRunId] =
+            runtimeView.dataset.evaluationRuntimeView
+        renderEvaluationRuns()
+        return
+    }
     const cancel = event.target.closest("[data-cancel-evaluation-run]")
     if (cancel) openCancelEvaluationRunDialog(cancel.dataset.cancelEvaluationRun)
+})
+elements.evaluationRunDetail.addEventListener("keydown", (event) => {
+    const runtimeView = event.target.closest("[data-evaluation-runtime-view]")
+    if (!runtimeView || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return
+    const tabs = [...elements.evaluationRunDetail.querySelectorAll("[data-evaluation-runtime-view]")]
+    const currentIndex = tabs.indexOf(runtimeView)
+    if (currentIndex < 0 || !tabs.length) return
+    event.preventDefault()
+    const nextIndex = event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? tabs.length - 1
+          : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length
+    const runtimeId = tabs[nextIndex].dataset.evaluationRuntimeView
+    if (!state.activeEvaluationRunId || !runtimeId) return
+    state.evaluationRuntimeViewByRun[state.activeEvaluationRunId] = runtimeId
+    renderEvaluationRuns()
+    requestAnimationFrame(() => {
+        elements.evaluationRunDetail.querySelector(
+            `[data-evaluation-runtime-view="${CSS.escape(runtimeId)}"]`,
+        )?.focus()
+    })
 })
 elements.evaluationCreateDataset.addEventListener("submit", (event) => {
     event.preventDefault()
@@ -5658,6 +7838,37 @@ elements.startEvaluation.addEventListener("click", () => void startEvaluation("s
 elements.startDatasetEvaluation.addEventListener("click", () => void startEvaluation("dataset"))
 elements.topbarCurations.addEventListener("click", () => setCurationOpen(true))
 elements.topbarTrace.addEventListener("click", () => setTraceOpen(true))
+elements.topbarRawCases.addEventListener("click", () => {
+    const opening = !state.rawCaseOpen
+    if (opening) closeTransientDrawersForCompactRawCases()
+    state.rawCaseOpen = opening
+    renderRawCases()
+})
+elements.closeRawCases.addEventListener("click", () => {
+    state.rawCaseOpen = false
+    renderRawCases()
+})
+elements.rawCaseForm.addEventListener("submit", (event) => {
+    event.preventDefault()
+    void saveRawCaseForm()
+})
+elements.cancelRawCaseEdit.addEventListener("click", clearRawCaseForm)
+elements.rawCaseList.addEventListener("click", (event) => {
+    const edit = event.target.closest("[data-edit-raw-case]")
+    if (edit) {
+        editRawCase(edit.dataset.editRawCase)
+        return
+    }
+    const remove = event.target.closest("[data-delete-raw-case]")
+    if (remove) {
+        void deleteRawCase(remove.dataset.deleteRawCase)
+        return
+    }
+    const dispatch = event.target.closest("[data-dispatch-raw-case]")
+    if (dispatch) {
+        void dispatchRawCase(dispatch.dataset.dispatchRawCase, dispatch.dataset.dispatchMode)
+    }
+})
 elements.closeTrace.addEventListener("click", () => setTraceOpen(false))
 elements.closeCurations.addEventListener("click", () => setCurationOpen(false))
 elements.closeRubricDrawer.addEventListener("click", () => setRubricOpen(false))
@@ -5668,6 +7879,7 @@ elements.runtimeStatus.addEventListener("click", async () => {
 })
 elements.closeRuntimeDialog.addEventListener("click", () => elements.runtimeDialog.close())
 elements.confirmRuntime.addEventListener("click", () => elements.runtimeDialog.close())
+elements.runtimeDialog.addEventListener("close", () => void resumeThreadObservation())
 elements.runtimeOptions.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-runtime-id]")
     if (!button || button.dataset.runtimeId === state.runtime?.runtime?.runtimeId) return
@@ -5719,6 +7931,12 @@ elements.composerAccess.addEventListener("change", () => {
 })
 elements.stopTurn.addEventListener("click", stopTurn)
 elements.conversation.addEventListener("click", (event) => {
+    const cancelQuestion = event.target.closest("[data-cancel-runtime-question]")
+    if (cancelQuestion) {
+        const form = cancelQuestion.closest("[data-runtime-question-id]")
+        if (form) void respondRuntimeQuestion(form, {cancelled: true})
+        return
+    }
     const external = event.target.closest("[data-external-url]")
     if (external) {
         event.preventDefault()
@@ -5738,11 +7956,18 @@ elements.conversation.addEventListener("click", (event) => {
     const button = event.target.closest("[data-save-case]")
     if (button) void openCaseDialog(button.dataset.turnId, button.dataset.itemId)
 })
+elements.conversation.addEventListener("submit", (event) => {
+    const form = event.target.closest("[data-runtime-question-id]")
+    if (!form) return
+    event.preventDefault()
+    void respondRuntimeQuestion(form)
+})
 elements.closeCaseDialog.addEventListener("click", () => elements.caseDialog.close())
 elements.cancelSaveCase.addEventListener("click", () => elements.caseDialog.close())
 elements.caseDialog.addEventListener("close", () => {
     state.caseSelection = null
     clearCaseError()
+    void resumeThreadObservation()
 })
 elements.caseDialog.addEventListener("cancel", (event) => {
     if (state.caseCreationInProgress) event.preventDefault()
@@ -5878,13 +8103,58 @@ window.rollingSkill.onRuntimeState((runtime) => {
         renderThreads()
     }
     if (state.surface === "evaluation") void loadEvaluationWorkbench(true)
+    if (state.surface === "skills" && state.managedSkillSideView === "installations") {
+        ensureManagedInstallConfigurations()
+        void refreshManagedInstallationRuntimeModels(false)
+    }
 })
 window.rollingSkill.onRuntimeNotification(handleNotification)
+window.rollingSkill.onRuntimeQuestion(onRuntimeQuestion)
+window.rollingSkill.onRuntimeQuestionResolved(onRuntimeQuestionResolved)
+window.rollingSkill.onRawCasesChanged((rawCases) => {
+    state.rawCases = rawCases ?? []
+    renderRawCases()
+})
+window.rollingSkill.onManagedSkillsChanged((overview) => {
+    state.managedSkills = normalizedManagedSkills(overview)
+    reconcileManagedSkillSelection()
+    if (state.surface === "skills") {
+        renderSkillManagementWorkbench()
+        if (state.activeManagedSkillId) void readActiveManagedSkill()
+    }
+})
+window.rollingSkill.onSkillInstallationsChanged((job) => {
+    if (!mergeSkillInstallationJob(job)) return
+    if (state.surface === "skills") renderManagedSkillInstallations()
+    if (TERMINAL_SKILL_INSTALLATION_STATUSES.has(job.status)) {
+        void loadManagedSkillInstallations(job.request.source.skillId)
+    }
+})
+window.rollingSkill.onSkillInstallationQuestion((request) => {
+    if (!request?.requestId || !request?.jobId) return
+    state.pendingSkillInstallationQuestions.set(request.requestId, request)
+    if (
+        state.surface === "skills" &&
+        state.managedSkillSideView === "installations" &&
+        request.jobId === state.activeSkillInstallationJobId
+    ) {
+        renderManagedSkillInstallations()
+    }
+})
+window.rollingSkill.onSkillInstallationQuestionResolved((payload) => {
+    if (!payload?.requestId) return
+    const request = state.pendingSkillInstallationQuestions.get(payload.requestId)
+    state.pendingSkillInstallationQuestions.delete(payload.requestId)
+    if (request?.jobId === state.activeSkillInstallationJobId) {
+        renderManagedSkillInstallations()
+    }
+})
 window.rollingSkill.onCurationChanged((session) => {
     const revisionCount = session.revisions?.length ?? 0
     const previousCount = state.curationRevisionCounts.get(session.id) ?? 0
     if (revisionCount > previousCount) state.flashingCurationReferences.add(session.id)
     state.curationRevisionCounts.set(session.id, revisionCount)
+    upsertSourceCurationMarker(session)
     upsertCuration(session)
     if (!state.activeCurationId) state.activeCurationId = session.id
     renderCurations()
@@ -5892,12 +8162,12 @@ window.rollingSkill.onCurationChanged((session) => {
     if (state.surface === "evaluation" && session.operation === "calibration") {
         renderEvaluationWorkbench()
     }
+    if (session.operation !== "calibration" && session.episode?.source?.threadId === state.activeThreadId) {
+        renderConversation()
+    }
 })
 window.rollingSkill.onCurationActivity((activity) => {
-    if (!activity?.sessionId) return
-    if (activity.terminal) state.curationActivities.delete(activity.sessionId)
-    else state.curationActivities.set(activity.sessionId, activity)
-    patchCurationActivityCard(activity)
+    enqueueLiveActivityPatch("curation", activity)
 })
 window.rollingSkill.onRubricChanged((session) => {
     if (!session?.datasetId || session.datasetId !== state.evaluationDatasetId) return
@@ -5911,9 +8181,7 @@ window.rollingSkill.onRubricChanged((session) => {
 window.rollingSkill.onRubricActivity((activity) => {
     if (!activity?.sessionId) return
     if (!state.rubricSessions.some((session) => session.id === activity.sessionId)) return
-    if (activity.terminal) state.rubricActivities.delete(activity.sessionId)
-    else state.rubricActivities.set(activity.sessionId, activity)
-    patchRubricActivityCard(activity)
+    enqueueLiveActivityPatch("rubric", activity)
 })
 window.rollingSkill.onEvaluationChanged(async ({runId, resultId, status}) => {
     if (!runId) return
@@ -5933,6 +8201,7 @@ window.rollingSkill.onEvaluationChanged(async ({runId, resultId, status}) => {
     }
 })
 window.rollingSkill.onWorkspaceChanged(async ({workspaceRoot}) => {
+    suspendThreadObservation()
     snapshotActiveThreadView()
     state.threadLoadToken += 1
     state.loadingThread = false
@@ -5964,8 +8233,14 @@ async function bootstrap() {
         state.runtime = initial.runtime
         state.workspaceRoot = initial.workspaceRoot
         state.datasets = initial.datasets ?? []
+        state.rawCases = initial.rawCases ?? []
+        state.managedSkills = normalizedManagedSkills(initial.managedSkills)
+        state.skillInstallations = normalizedSkillInstallationOverview(initial.skillInstallations)
+        state.managedSkillError = initial.managedSkillStartupError ?? null
+        reconcileManagedSkillSelection()
         state.evaluationDatasetId = state.datasets[0]?.id ?? null
         state.curationSessions = initial.curationSessions ?? []
+        state.sourceCurationMarkers = initial.sourceCurationMarkers ?? []
         state.curationRevisionCounts = new Map(
             state.curationSessions.map((session) => [session.id, session.revisions?.length ?? 0]),
         )
@@ -5974,6 +8249,7 @@ async function bootstrap() {
         state.selectedTaskEffort = state.settings.taskProfile?.effort ?? null
         state.selectedTaskPermissionMode = defaultPermissionMode()
         state.activeCurationId = state.curationSessions[0]?.id ?? null
+        if (!elements.rawCaseSkill.value) elements.rawCaseSkill.value = suggestedRawCaseSkill()
         restoreActiveThreadView()
         renderAll()
         renderCurations()
@@ -5992,6 +8268,20 @@ async function bootstrap() {
 }
 
 resizeComposer()
+let compactDrawerLayout = window.innerWidth <= 1120
+window.addEventListener("resize", () => {
+    const nextCompactDrawerLayout = window.innerWidth <= 1120
+    if (
+        nextCompactDrawerLayout &&
+        !compactDrawerLayout &&
+        state.rawCaseOpen &&
+        transientDrawerIsOpen()
+    ) {
+        state.rawCaseOpen = false
+        renderRawCases()
+    }
+    compactDrawerLayout = nextCompactDrawerLayout
+})
 setInterval(() => {
     if (state.curationOpen) {
         for (const activity of state.curationActivities.values()) patchCurationActivityCard(activity)

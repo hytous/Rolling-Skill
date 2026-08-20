@@ -19,6 +19,7 @@ const CLASSIFICATIONS = new Set([
 ])
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/u
 const COMMIT_PATTERN = /^[a-f0-9]{40}$/u
+const DIGEST_ALGORITHM = "rolling-skill-tree-sha256/v1"
 
 function requiredText(value, label, maxLength = 4_096) {
     const normalized = typeof value === "string" ? value.trim() : ""
@@ -127,15 +128,41 @@ function buildSkillInstallationPrompt(request, options = {}) {
         warnings: [],
         error: null,
     }
+    const procedure = operation === "inspect"
+        ? [
+            "1. Verify the repository and exact commit. Export only source.skillRoot from that commit into a temporary directory. Never read install bytes from the current working tree.",
+            "2. Compute the deterministic source Skill SHA-256 digest, excluding .rolling-skill-managed.json, and require it to equal source.expectedDigest.",
+            "3. Discover the Skill root actually used by this Runtime and select only the exact target for skillName. Do not assume a provider-specific path supplied by this prompt.",
+            "4. Inspect the target, its digest, symlinks, and .rolling-skill-managed.json. Classify the current state exactly as one of: absent, managed-clean, managed-drifted, unmanaged, conflict, uncertain.",
+            "5. This is an inspect-only recovery turn. Do not create, edit, move, delete, overwrite, or chmod any target or marker. Do not request write permission.",
+            "6. Query this Runtime's own Skill inventory when supported. If inventory cannot prove discovery, report runtimeDiscovered as null, not true.",
+            "7. Report succeeded only when the installed target already matches source.expectedDigest and contains the matching management marker. Otherwise report failed, cancelled, or unverified with a structured error.",
+            "8. Finish with exactly one result block using the schema below. Natural-language progress may appear before it, but never emit a second result block.",
+        ]
+        : [
+            "1. Verify the repository and exact commit. Export only source.skillRoot from that commit into a temporary directory. Never copy the current working tree.",
+            "2. Compute the deterministic Skill content SHA-256 digest, excluding .rolling-skill-managed.json, and require it to equal source.expectedDigest before touching a target.",
+            "3. Discover the Skill root actually used by this Runtime and select only the exact target for skillName. Do not assume a provider-specific path supplied by this prompt.",
+            "4. Inspect the target, its digest, symlinks, and .rolling-skill-managed.json. Classify the pre-state exactly as one of: absent, managed-clean, managed-drifted, unmanaged, conflict, uncertain.",
+            "5. Only absent and managed-clean may continue without an additional overwrite confirmation. For managed-drifted, unmanaged, conflict, or uncertain, pause and ask the user through the Runtime interaction UI. Show the destination, evidence, and exact directory that would be changed. Offer Continue overwrite, I will install manually, and Cancel.",
+            "6. Refuse a symlink target, a broad/dangerous destination, an identity boundary you cannot prove, or any operation that would delete outside the exact target, even if broad permission is available.",
+            "7. If authorized, install/update the exact target and write .rolling-skill-managed.json with schema, repositoryId, skillId, versionId, commit, contentDigest, and installedAt. The marker is excluded from the content digest.",
+            "8. Recompute the installed digest, then refresh or query this Runtime's own Skill inventory when supported. If inventory cannot prove discovery, report runtimeDiscovered as null, not true.",
+            "9. If permission is insufficient, request it through the Runtime. Never elevate silently. If the user refuses, stop without pretending success.",
+            "10. Finish with exactly one result block using the schema below. Natural-language progress may appear before it, but never emit a second result block.",
+        ]
     return [
         "You are running a managed Skill installation task inside your own local Runtime.",
-        "Perform every inspection and filesystem change yourself through Bash/tool calls. Do not ask the host application to copy, delete, or discover paths for you.",
+        operation === "inspect"
+            ? "Perform every inspection yourself through Bash/tool calls. This recovery turn is strictly read-only."
+            : "Perform every inspection and filesystem change yourself through Bash/tool calls. Do not ask the host application to copy, delete, or discover paths for you.",
         "Do not run scripts from the managed Skill. Do not install from the working tree or implicit HEAD.",
         "",
         "Frozen installation request (immutable):",
         JSON.stringify({
             operation,
             markerSchema: request.markerSchema,
+            digestAlgorithm: DIGEST_ALGORITHM,
             repositoryPath: request.repositoryPath,
             skillName: request.skillName,
             versionLabel: request.versionLabel,
@@ -143,17 +170,10 @@ function buildSkillInstallationPrompt(request, options = {}) {
             priorInstallation,
         }, null, 2),
         "",
+        `Digest algorithm ${DIGEST_ALGORITHM}: enumerate every file and symbolic link below the Skill root except the root .rolling-skill-managed.json, sort relative POSIX paths lexicographically, and for each entry hash UTF-8 header type\\0path\\0executable-bit\\0byte-length\\0, then the exact blob/link-target bytes, then one NUL byte. type is file or symlink; executable-bit is 1 only for executable regular files.`,
+        "",
         "Required procedure:",
-        "1. Verify the repository and exact commit. Export only source.skillRoot from that commit into a temporary directory. Never copy the current working tree.",
-        "2. Compute the deterministic Skill content SHA-256 digest, excluding .rolling-skill-managed.json, and require it to equal source.expectedDigest before touching a target.",
-        "3. Discover the Skill root actually used by this Runtime and select only the exact target for skillName. Do not assume a provider-specific path supplied by this prompt.",
-        "4. Inspect the target, its digest, symlinks, and .rolling-skill-managed.json. Classify the pre-state exactly as one of: absent, managed-clean, managed-drifted, unmanaged, conflict, uncertain.",
-        "5. Only absent and managed-clean may continue without an additional overwrite confirmation. For managed-drifted, unmanaged, conflict, or uncertain, pause and ask the user through the Runtime interaction UI. Show the destination, evidence, and exact directory that would be changed. Offer Continue overwrite, I will install manually, and Cancel.",
-        "6. Refuse a symlink target, a broad/dangerous destination, an identity boundary you cannot prove, or any operation that would delete outside the exact target, even if broad permission is available.",
-        "7. If authorized, install/update the exact target and write .rolling-skill-managed.json with schema, repositoryId, skillId, versionId, commit, contentDigest, and installedAt. The marker is excluded from the content digest.",
-        "8. Recompute the installed digest, then refresh or query this Runtime's own Skill inventory when supported. If inventory cannot prove discovery, report runtimeDiscovered as null, not true.",
-        "9. If permission is insufficient, request it through the Runtime. Never elevate silently. If the user refuses, stop without pretending success.",
-        "10. Finish with exactly one result block using the schema below. Natural-language progress may appear before it, but never emit a second result block.",
+        ...procedure,
         "",
         INSTALL_RESULT_SENTINEL.open,
         JSON.stringify(finalShape, null, 2),
@@ -285,6 +305,7 @@ module.exports = {
     INSTALL_MARKER_SCHEMA,
     INSTALL_RESULT_SCHEMA,
     INSTALL_RESULT_SENTINEL,
+    DIGEST_ALGORITHM,
     buildSkillInstallationPrompt,
     freezeSkillInstallationRequest,
     parseSkillInstallationResult,

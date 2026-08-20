@@ -1225,6 +1225,100 @@ class LocalEvaluationStore {
         return copy(version)
     }
 
+    migrateActiveDatasetRubricToUnified(datasetId) {
+        const state = this.load()
+        const dataset = requireDataset(state, datasetId)
+        if (!dataset.activeRubricVersionId) {
+            throw new Error("A published dataset rubric is required before upgrading its scoring contract")
+        }
+        const legacyVersion = requireDatasetRubricVersion(
+            state,
+            dataset.activeRubricVersionId,
+        )
+        if (legacyVersion.datasetId !== dataset.id) {
+            throw new Error("Dataset active rubric does not belong to the dataset")
+        }
+        const legacyRubric = copy(validateDatasetRubric(legacyVersion.rubric))
+        if (legacyRubric.scoringModel === UNIFIED_SCORING_MODEL) {
+            throw new Error("The active dataset rubric already uses the unified scoring model")
+        }
+        if (Object.hasOwn(legacyRubric, "scoringModel")) {
+            throw new Error("The active dataset rubric uses an unsupported scoring model")
+        }
+        const activeEvaluation = state.evaluationRuns.some(
+            (entry) =>
+                entry.datasetId === dataset.id &&
+                (entry.status === "queued" || entry.status === "running"),
+        )
+        if (activeEvaluation) {
+            throw new Error("Finish or stop the active evaluation before upgrading the dataset rubric")
+        }
+        const activeCalibration = state.curationSessions.some(
+            (entry) =>
+                entry.datasetId === dataset.id &&
+                entry.operation === "calibration" &&
+                entry.status !== "archived" &&
+                entry.status !== "cancelled",
+        )
+        if (activeCalibration) {
+            throw new Error("Finish or discard the active Case calibration before upgrading the dataset rubric")
+        }
+        const activeRubricSession = state.rubricSessions.some(
+            (entry) =>
+                entry.datasetId === dataset.id &&
+                entry.status !== "archived" &&
+                entry.status !== "cancelled",
+        )
+        if (activeRubricSession) {
+            throw new Error("Finish or discard the active Rubric Agent editing session before upgrading the dataset rubric")
+        }
+
+        const rubric = copy(validateDatasetRubric({
+            ...legacyRubric,
+            scoringModel: UNIFIED_SCORING_MODEL,
+        }))
+        const unchangedContent = copy(rubric)
+        delete unchangedContent.scoringModel
+        if (JSON.stringify(unchangedContent) !== JSON.stringify(legacyRubric)) {
+            throw new Error("Dataset rubric content changed during the scoring-contract upgrade")
+        }
+
+        const versionNumber = state.datasetRubricVersions
+            .filter((entry) => entry.datasetId === dataset.id)
+            .reduce((highest, entry) => Math.max(highest, Number(entry.version) || 0), 0) + 1
+        const now = new Date().toISOString()
+        const version = {
+            id: randomUUID(),
+            datasetId: dataset.id,
+            version: versionNumber,
+            rubric,
+            rubricDigest: datasetRubricDigest(rubric),
+            skillReference: copy(legacyVersion.skillReference),
+            skillEvidenceDigest: legacyVersion.skillEvidenceDigest,
+            sourceSessionId: null,
+            baseVersionId: legacyVersion.id,
+            createdAt: now,
+            publishedAt: now,
+        }
+        state.datasetRubricVersions.push(version)
+        dataset.activeRubricVersionId = version.id
+        for (const entry of state.cases.filter((candidate) => candidate.datasetId === dataset.id)) {
+            const currentForLegacy =
+                entry.rubricVersionId === legacyVersion.id &&
+                entry.rubricCalibration?.status === "current" &&
+                entry.rubricCalibration?.rubricVersionId === legacyVersion.id
+            const previousRubricVersionId = entry.rubricVersionId ?? null
+            if (currentForLegacy) entry.rubricVersionId = version.id
+            entry.rubricCalibration = {
+                status: currentForLegacy ? "current" : "needed",
+                rubricVersionId: version.id,
+                previousRubricVersionId,
+            }
+        }
+        this.persist()
+        return copy(version)
+    }
+
     saveCase(input) {
         const state = this.load()
         const question = String(input.question ?? "").trim()

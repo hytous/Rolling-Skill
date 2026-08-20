@@ -37,9 +37,11 @@ path, capabilities, and stable `runtimeId` of every compatible result.
 DeepSeek Harness checks an explicitly selected executable, `ROLLING_SKILL_DSH_BIN`, `PATH`,
 Homebrew/system paths, and common user-local locations including `~/.local/bin/dsh`. A compatible
 candidate must expose the `web` profile's dynamic `--port` Host mode. Rolling Skill starts and stops
-that local Host itself, uses its typed HTTP RPC API for sessions, models, Skills, history, tools, and
-turn cancellation, and polls durable session events for live progress. The adapter is marked
-Developer Preview because the upstream Host API is not yet a stable compatibility contract.
+that localhost Host itself, uses its typed HTTP RPC API for sessions, models, Skills, history,
+tools, responses, and turn cancellation, and receives live session events from the
+`/api/events.mux` WebSocket. Durable history is read when a turn starts and as recovery after a mux
+reconnect; it is not continuously polled while a turn runs. The adapter is marked Developer Preview
+because the upstream Host API is not yet a stable compatibility contract.
 
 Finder-launched apps receive a minimal macOS `PATH`. CodeBuddy installations whose executable uses
 `#!/usr/bin/env node` are still supported: the compatibility probe prepends the executable's own
@@ -60,7 +62,10 @@ The active runtime's model catalog is loaded through its provider adapter. The t
 select a model, reasoning effort, and conversation permission mode; each editable Case Draft can
 select its model and effort. Settings provides defaults
 for new tasks, Rubric Agent tasks, Curator tasks, Judge tasks, and Automatic Capture. No model names are bundled into the desktop
-application.
+application. Reasoning effort is capability-gated per model: Rolling Skill passes only values
+advertised by the runtime catalog. In particular, a DeepSeek Harness model such as
+`wetv-glm/glm-5.3` may advertise no reasoning efforts and a `null` default, in which case the turn
+must omit reasoning effort instead of sending a generic value such as `low`.
 
 ## Settings and appearance
 
@@ -88,6 +93,17 @@ ACP permission requests to a local approval dialog, shows the runtime, workspace
 tool input, and returns the exact option selected by the operator. Requests without an explicit
 reject option are cancelled safely. New CodeBuddy conversations default to Auto review instead of
 Don't ask.
+
+DeepSeek Harness offers Full local access (`danger-full-access`), Workspace only
+(`workspace-write`), and Read only. The selected mode is applied when Rolling Skill launches the
+local Host and can be changed per conversation through the runtime's `/permission` command without
+embedding or replacing `dsh`. In an ordinary task, runtime approval requests and questions are
+relayed to the matching conversation: approvals preserve the options supplied by the runtime, and
+questions support the runtime's single-choice, multiple-choice, and free-text fields. Responses are
+returned through `POST /api/respond`; stopping or switching tasks cannot route a late response into
+a different Host process. Evaluation targets and Judges are non-interactive, so a requested
+approval is rejected or a question is cancelled and that Case fails immediately instead of waiting
+for unattended UI input.
 
 Rolling Skill does not create a container or require Docker. CodeBuddy's permission mode controls
 tool approval, while CodeBuddy's optional shell sandbox is a separate runtime feature. The Electron
@@ -131,10 +147,116 @@ but does not persist command output, tool results, or file diffs. Activity that 
 from the runtime's own history cannot be reconstructed; its raw trace remains available when the
 conversation originally ran through Rolling Skill.
 
+## Raw Case inbox and external Tool
+
+The Chat surface has a right-side **Raw Cases** inbox for questions that are worth keeping but have
+not been run, verified, or curated yet. Pending questions are grouped by Skill. They can be edited
+or deleted, sent verbatim to the current idle conversation, or sent verbatim to a new conversation
+using the active runtime plus the visible model, reasoning-effort, and permission settings. Rolling
+Skill does not prepend `/skill`, attach a structured Skill reference, or otherwise alter the
+question. A Raw Case leaves the inbox only after the runtime accepts its turn.
+
+When an original conversation range has been frozen for Curator, Chat gives that full range a pale
+draft marker. After **Done** creates the formal Case, the range changes to the saved marker and its
+assistant action reads **Curate again**. The original conversation remains usable, and repeat
+curation is still allowed for a different dataset.
+
+The macOS build also writes an executable named `rolling-skill-tool` beside `Rolling Skill.app`.
+Other Agent platforms can enqueue questions while the App is closed without opening a local port:
+
+```bash
+./rolling-skill-tool enqueue \
+  --skill billing-cost-management \
+  --question '查一下 7 月账单，各业务混元 3 多少成本？'
+
+printf '%s' '{"skill":{"name":"billing-cost-management"},"cases":[{"question":"问题一"},{"question":"问题二","note":"稍后验证"}]}' \
+  | ./rolling-skill-tool enqueue --json -
+
+./rolling-skill-tool list --skill billing-cost-management --json
+```
+
+For an MCP-capable Agent, configure the same executable as a stdio server with the `mcp` argument:
+
+```json
+{
+  "mcpServers": {
+    "rolling-skill-raw-cases": {
+      "command": "/absolute/path/to/rolling-skill-tool",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+It exposes `rolling_skill_enqueue_raw_cases` and `rolling_skill_list_raw_cases`. The Tool cannot
+execute a runtime, delete formal Cases, or change evaluation datasets. App and Tool communicate
+through an append-only, owner-readable JSONL event file; exact pending duplicates under the same
+normalized Skill name are reported instead of appended again. A batch accepts at most 200 entries,
+one question accepts at most 120,000 characters, and total batch question text is limited to
+1,000,000 characters.
+
+## Managed Skill repositories
+
+Use **Skill management** under the Rolling Skill logo to maintain editable, local-first Skill source
+repositories separately from runtime installations. A repository can be imported from a folder,
+ZIP archive, local Git repository, or authenticated HTTPS/SSH Git URL. URL import is a one-time
+clone in this phase; Rolling Skill does not require or publish to a remote repository.
+
+Every import is copied into Rolling Skill's Application Support directory as an independent Git
+working repository. Folder and ZIP imports receive a new local Git history; Git imports retain
+their source history. A repository may contain one or several Skills, each discovered from its own
+`SKILL.md`. **Reveal repository** opens that managed copy in Finder for editing; it never redirects
+edits back into the imported folder or ZIP. **Refresh** performs a bounded rescan rather than merely
+reloading the registry, so a repaired manifest or newly added Skill appears without restarting the
+App. Renaming a Skill at an existing root is rejected until an explicit identity migration exists,
+which prevents Dataset bindings from silently moving to a different Skill. The workbench shows the repository, Skill manifest, and
+immutable version records:
+
+- **Working** is the editable repository content and is not a testable version by itself;
+- **Candidate** is a committed snapshot created from reviewed Working changes;
+- **Released** is a named Candidate protected by an annotated Git tag; and
+- **Deprecated** keeps a Released version and its history visible while marking it unsuitable for
+  new installations.
+
+Local paths are selected only by the Electron main process and never exposed as arbitrary renderer
+filesystem access. ZIP imports reject traversal, absolute paths, escaping symlinks, duplicate
+entries, special files, excessive size/count, and suspicious compression ratios. Repository and
+version metadata is written as one atomic transaction with owner-only permissions. Folder copying
+and repository scanning apply the same entry and byte limits before a complete source tree is
+materialized. Git commands use argument arrays without a shell, disable imported hooks, remove the
+one-time clone remote, and redact URL credentials from saved provenance and errors. Version
+digests are calculated from the committed Git tree, including force-added Skill files that a source
+`.gitignore` would otherwise omit. If the registry itself is structurally corrupt, the App preserves
+it under a timestamped quarantine name and keeps Chat available with a fresh registry plus a visible
+Skill-management warning.
+
+The **Runtime installs** tab is deliberately separate from Versions. Select one immutable Released
+version, then choose one or more detected runtimes plus each runtime's model, reasoning effort, and
+permission mode. Rolling Skill freezes the registered repository, Skill, commit, and content digest,
+then starts one visible installer Agent session per runtime. The selected runtime—not the Electron
+host—uses its own Bash/tools to discover the Skill root, export the exact Git commit, classify the
+existing target, copy or overwrite the exact Skill directory, write
+`.rolling-skill-managed.json`, refresh its inventory when supported, and report a typed result.
+Different runtimes run in parallel; jobs for the same Runtime and Skill are serialized.
+
+Only an absent or clean Rolling-Skill-managed target can proceed without another confirmation.
+Drifted, unmanaged, conflicting, or uncertain targets must be shown to the operator in the Runtime
+interaction UI before overwrite. Permission requests are also relayed to the operator; Rolling Skill
+never elevates silently. A missing, duplicated, truncated, contradictory, or identity-mismatched
+result remains **Unverified** and never advances the trusted installed-version matrix. Stopping an
+active install interrupts that Runtime turn and automatically performs a read-only inspection in
+the same installer session because a Bash command may already have changed part of the target.
+Terminal sessions retain their messages, compact tool history, Trace reference, a follow-up composer,
+and an explicit **Inspect read-only** action. Conversation follow-ups cannot rewrite the recorded
+installation outcome; use the inspect action to create a new auditable verification job.
+
+Publishing does not install anything automatically. Its toast only opens Runtime installs, and
+evaluation continues to verify the Skill actually exposed by each selected runtime.
+
 ## Chat and Skill evaluation workbench
 
-Use the switch below the Rolling Skill logo to move between the native **Chat** client and the
-**Skill evaluation** workbench. The workbench can:
+Use the switch below the Rolling Skill logo to move among the native **Chat** client, the
+**Skill evaluation** workbench, and **Skill management**. The evaluation workbench can:
 
 - create, browse, and delete local datasets;
 - export all Cases or only Good Cases as CSV, choosing either curated references or only the final
@@ -149,7 +271,9 @@ Use the switch below the Rolling Skill logo to move between the native **Chat** 
 - stop one active evaluation without affecting Chat or other concurrent runs, preserving completed
   answers and Trace evidence while cancelling current and queued Case/Judge work;
 - select multiple runtime/model/reasoning-effort configurations for one run; and
-- inspect and delete durable Case × Runtime results under **Evaluation runs / 评测记录**.
+- inspect and delete durable Case × Runtime results under **Evaluation runs / 评测记录**. A run
+  uses segmented Runtime tabs in its detail pane, so Codex, CodeBuddy, DeepSeek Harness, and later
+  providers do not form one long vertical result stream.
 
 Automatic activation sends only the frozen original user question, byte-for-byte as captured. The
 optional answer-issue description is Curator and Judge context only and can never replace the
@@ -199,11 +323,21 @@ quality verdict. As each target result completes, one independently selected rea
 grades the saved response,
 bounded Trace evidence, and a digest-pinned snapshot of the selected `SKILL.md` plus its recursively
 linked local Markdown references. A typed evidence catalog limits every assessment to stable
-response, Trace, Skill, and reference identifiers. The Skill digest is checked again immediately before and after every Case;
+response, Trace, Skill, and reference identifiers. Dataset criteria that require a query chain,
+pagination, CLI/MCP execution, or deterministic scripts cannot receive a passing rating from a
+response-only citation: the fixed validator requires at least one actual `command` or `tool_call`
+Trace citation for each applicable execution criterion. The Judge still determines whether the cited
+tool names, parameters, order, and calculation logic match the frozen Skill and Case expectations;
+the evidence-kind validator alone does not prove semantic correctness. Point-in-time numbers in a curated reference are treated as
+historical comparison values; a different live amount is not penalized when the fresh complete
+query, scope, units, sign handling, reconciliation, and deterministic calculation are supported.
+The Skill digest is checked again immediately before and after every Case;
 a changed installation rejects that target result instead of grading against a stale snapshot.
 Invalid or incomplete Judge JSON is retried once with the fixed validator error. A final Judge failure keeps
-the target response and Trace intact and marks only grading as failed. Legacy runs remain explicitly
-ungraded rather than receiving guessed scores.
+the target response and Trace intact and marks only grading as failed. Existing split-format grading
+is preserved as an immutable historical total, labeled as a legacy score, and is not presented as
+current unified-rubric detail. Runs without grading data remain explicitly ungraded rather than
+receiving guessed scores.
 
 Raw runtime JSONL is always retained unchanged. Judge evidence is a deterministic projection: noisy
 deltas are omitted, a completed CodeBuddy `tool_call` plus `tool_call_update` pair becomes one merged
@@ -231,6 +365,11 @@ creates a score-free contract with stable criterion IDs, relative weights, evide
 0/2/5/8/10 anchors, and narrow failure conditions, and accepts natural-language review messages.
 Only the operator's **Publish** action makes a revision active. Every publication creates an
 immutable version; stale concurrent drafts cannot overwrite a newer active version.
+An active Rubric from the retired split-score contract can be upgraded deterministically: the App
+creates a new immutable version by adding only `scoringModel: "unified-100/v1"`, preserves the prior
+version and every ordinary Rubric field, and carries Cases already current on that version forward
+without invoking an Agent. The action is blocked while an evaluation, Case calibration, or Rubric
+Agent editing session for the dataset is active.
 
 Case capture, Curator, Automatic Capture, and evaluation all inherit the dataset binding and active
 Rubric. The Curator must cover every dataset criterion exactly once and may add only narrow
@@ -262,16 +401,14 @@ deleted dataset was the Automatic Capture target, capture is disabled instead of
 redirected to another dataset.
 
 Codex app-server currently exposes `skills/list`, `skills/config/write`, `plugin/list`,
-`plugin/installed`, `plugin/read`, `plugin/install`, and `plugin/uninstall`. Rolling Skill's Codex
-adapter uses runtime-owned discovery and exposes provider hooks for listing and installation; it
-does not copy Skills or Plugins into an application-owned directory. A future plugin manager should
-keep this boundary for every provider: Rolling Skill presents a common inventory and explicit
-install action, while the selected runtime remains the source of truth. Installation must happen
-before an evaluation snapshot is created and must require an operator action; silently installing
-a missing Plugin during a run would contaminate reproducibility. CodeBuddy ACP does not currently
-provide a path-precise Skill inventory. DeepSeek Harness exposes a runtime-owned name-only catalog.
-Rolling Skill says that explicitly instead of fabricating paths or claiming a content match; the
-operator is responsible for confirming that the intended Skill is available to those runtimes.
+`plugin/installed`, `plugin/read`, `plugin/install`, and `plugin/uninstall`. Rolling Skill nevertheless
+keeps managed source repositories separate from runtime-owned installations and inventories. The
+provider-neutral installation protocol asks the selected Runtime Agent to discover and mutate its own
+installation, rather than teaching Rolling Skill fixed provider paths. The host accepts a success
+only when the Runtime reports the frozen identity, expected digest, management marker, and either
+runtime-inventory or filesystem verification. CodeBuddy ACP does not currently provide a path-precise
+Skill inventory. DeepSeek Harness exposes a runtime-owned name-only catalog. Rolling Skill records
+those precision limits instead of fabricating paths or claiming a stronger content match.
 
 ## Provider architecture
 
@@ -298,9 +435,9 @@ bash desktop/rolling-skill/scripts/build-macos-app.sh
 ```
 
 The script installs desktop dependencies, runs unit and discovered-runtime integration tests,
-packages the Apple Silicon Electron client, refuses any bundle containing an embedded Codex
+packages the Apple Silicon Electron client and standalone Raw Case CLI/MCP Tool, refuses any bundle containing an embedded Codex
 runtime, CodeBuddy runtime, or `dsh` executable, creates or reuses the local keychain signing identity, and writes the signed
-`Rolling Skill.app` at the repository root. Private signing material remains in the login keychain
+`Rolling Skill.app` and `rolling-skill-tool` at the repository root. Private signing material remains in the login keychain
 and is never written to the repository. It requires Node.js 22 or newer and automatically tries a
 local Homebrew Node when the current shell resolves an older version. It targets macOS 13 or newer.
 
@@ -368,15 +505,24 @@ Local state is stored under `~/Library/Application Support/Rolling Skill/`:
 | --- | --- |
 | `evaluation-store.json` | Datasets, Rubric versions/sessions, cases, Curator sessions/revisions, settings, and immutable evaluation runs |
 | `preferences.json` | Selected workspace and optional runtime selection |
-| `traces/*.jsonl` | Append-only runtime events with runtime identity metadata |
+| `raw-case-events.jsonl` | Append-only Raw Case inbox events shared with the external CLI/MCP Tool |
+| `skill-registry.json` | Atomic registry of managed repositories, Skills, Candidates, Releases, and deprecation state |
+| `skill-installations.json` | Runtime installer jobs, ordered message/tool timelines, typed results, and trusted installed-version matrix |
+| `repositories/<repository-id>/` | Independent editable Git repository for each imported Skill source |
+| `traces/*.jsonl` and `traces/skill-installations/` | Append-only runtime events with runtime identity metadata |
 
 ## Security model
 
 - Runtime probes and launches use fixed executable/argument arrays with `shell: false`.
+- Skill installation source identity comes only from a registered Released version. The renderer
+  cannot supply a repository path, destination, commit, or expected digest. Runtime installers may
+  request permission or destructive confirmation, but they cannot silently broaden it; a stopped
+  installer is followed only by a provider-mapped read-only inspection.
 - Source Codex and Codex evaluation threads use the selected local-access policy, defaulting to
   `danger-full-access`; Codex Rubric Agent and Curator threads remain forced to `read-only`. CodeBuddy uses its own
-  ACP permission mode because it does not expose the same OS workspace sandbox. Codex threads use
-  `approvalPolicy: never`.
+  ACP permission mode because it does not expose the same OS workspace sandbox. DeepSeek Harness
+  uses its runtime-native `danger-full-access`, `workspace-write`, or `read-only` permission mode.
+  Codex threads use `approvalPolicy: never`.
 - The renderer has Node integration disabled, context isolation enabled, and Chromium sandboxing
   enabled.
 - The preload bridge exposes only runtime, workspace, thread, turn, dataset, and trace operations;
@@ -384,7 +530,8 @@ Local state is stored under `~/Library/Application Support/Rolling Skill/`:
 - Packaged renderer files are the only internal navigation target. Validated HTTP/HTTPS links are
   handed to macOS, validated absolute local paths are revealed in Finder, and all other navigation
   is blocked.
-- Dataset writes are atomic and trace files are append-only with owner-only permissions.
+- Dataset and managed-Skill registry writes are atomic; Trace and Raw Case event files are
+  append-only with owner-only permissions.
 
 ## Tests
 
@@ -406,6 +553,14 @@ Older Rolling Skill builds probed an env-based CodeBuddy launcher with Finder's 
 `/usr/bin/env node` failed even though Terminal discovery worked. Rebuild the current app; its
 probe prepends CodeBuddy's executable directory. Use **Settings → Runtime… → Rescan** after replacing
 an older packaged app.
+
+### DeepSeek Harness rejects a reasoning-effort value
+
+Reasoning effort support belongs to the selected model, not to the provider as a whole. Rolling
+Skill reads `reasoningEfforts` and `defaultReasoningEffort` from the DeepSeek Harness model catalog.
+If the selected model reports an empty effort list and a `null` default (as
+`wetv-glm/glm-5.3` currently does), leave effort unset. Sending `low`, `medium`, or another value to
+such a model is a runtime compatibility error rather than an authentication failure.
 
 ### Codex originator compatibility mode
 

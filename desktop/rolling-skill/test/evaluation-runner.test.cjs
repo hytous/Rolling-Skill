@@ -168,6 +168,69 @@ describe("multi-runtime evaluation runner", () => {
         assert.equal(resultPatches.get("result").traceReference, "trace://target.jsonl#L2-L9")
     })
 
+    it("continues with the next Case after a non-interactive runtime request fails fast", async () => {
+        const resultPatches = new Map()
+        const questions = []
+        let clientOptions = null
+        const runner = new EvaluationRunner({
+            store: {
+                updateEvaluationRun() {},
+                updateEvaluationResult(_runId, resultId, patch) {
+                    resultPatches.set(resultId, {...resultPatches.get(resultId), ...patch})
+                },
+            },
+            runtimeRegistry: {
+                createClient(_descriptor, options) {
+                    clientOptions = options
+                    return {
+                        start: async () => {},
+                        async runEvaluationCase({question}) {
+                            questions.push(question)
+                            if (question === "needs-input") {
+                                const error = new Error("The evaluation required an interactive user answer")
+                                error.code = "EVALUATION_INTERACTION_REQUIRED"
+                                throw error
+                            }
+                            return {response: "completed without interaction", durationMs: 1}
+                        },
+                        stop: async () => {},
+                    }
+                },
+            },
+            workspaceRoot: "/workspace",
+            traceDirectory: "/traces",
+        })
+
+        const completed = await runner.run({
+            id: "run-interactive-request",
+            activationMode: "automatic",
+            runtimeConfigurations: [
+                {runtimeId: "deepseek-harness:local", providerId: "deepseek-harness", executablePath: "/dsh"},
+            ],
+            results: [
+                {
+                    id: "result-needs-input",
+                    runtimeId: "deepseek-harness:local",
+                    status: "queued",
+                    caseSnapshot: curatedCase("case-needs-input", "needs-input"),
+                },
+                {
+                    id: "result-next",
+                    runtimeId: "deepseek-harness:local",
+                    status: "queued",
+                    caseSnapshot: curatedCase("case-next", "next-case"),
+                },
+            ],
+        })
+
+        assert.equal(clientOptions.nonInteractive, true)
+        assert.deepEqual(questions, ["needs-input", "next-case"])
+        assert.equal(resultPatches.get("result-needs-input").status, "failed")
+        assert.match(resultPatches.get("result-needs-input").error, /interactive user answer/)
+        assert.equal(resultPatches.get("result-next").status, "completed")
+        assert.equal(completed.status, "partial")
+    })
+
     it("sends only the frozen original question to the target runtime", async () => {
         const calls = []
         const runner = new EvaluationRunner({

@@ -120,6 +120,10 @@ function threadKey(record) {
     return `${record.runtimeId}\u0000${record.threadId}`
 }
 
+function turnKey(runtimeId, threadId, turnId) {
+    return `${runtimeId}\u0000${threadId}\u0000${turnId}`
+}
+
 class ThreadActivityStore {
     constructor(path, options = {}) {
         if (typeof path !== "string" || !path.trim()) {
@@ -134,6 +138,7 @@ class ThreadActivityStore {
             flushDelayMs: positiveInteger(options.flushDelayMs, DEFAULT_FLUSH_DELAY_MS),
         }
         this.state = this.load()
+        this.latestAgentMessageByTurn = new Map()
         this.dirty = false
         this.flushTimer = null
         this.lastPersistError = null
@@ -161,6 +166,9 @@ class ThreadActivityStore {
                     sequence: recordSequence,
                     order: positiveInteger(candidate.order, recordSequence),
                     updatedAt: compactText(candidate.updatedAt, 100) ?? "",
+                    ...(Object.hasOwn(candidate, "afterAgentMessageId")
+                        ? {afterAgentMessageId: identifier(candidate.afterAgentMessageId)}
+                        : {}),
                 }
                 const key = recordKey(record)
                 const previous = byKey.get(key)
@@ -220,12 +228,34 @@ class ThreadActivityStore {
     }
 
     updateNotification(runtimeId, message, updatedAt = new Date().toISOString()) {
-        if (message?.method !== "item/started" && message?.method !== "item/completed") return null
         runtimeId = identifier(runtimeId)
         const threadId = identifier(message.params?.threadId)
-        const turnId = identifier(message.params?.turnId)
+        const turnId = identifier(message.params?.turnId ?? message.params?.turn?.id)
+        if (!runtimeId || !threadId || !turnId) return null
+        const currentTurnKey = turnKey(runtimeId, threadId, turnId)
+        if (message.method === "turn/started") {
+            this.latestAgentMessageByTurn.set(currentTurnKey, null)
+            return null
+        }
+        if (message.method === "turn/completed") {
+            this.latestAgentMessageByTurn.delete(currentTurnKey)
+            return null
+        }
+        const eventItem = message.params?.item
+        const agentMessageId = identifier(
+            message.method === "item/agentMessage/delta"
+                ? message.params?.itemId
+                : eventItem?.type === "agentMessage"
+                  ? eventItem.id
+                  : null,
+        )
+        if (agentMessageId) {
+            this.latestAgentMessageByTurn.set(currentTurnKey, agentMessageId)
+            return null
+        }
+        if (message?.method !== "item/started" && message?.method !== "item/completed") return null
         const nextItem = compactActivity(message.params?.item, this.options)
-        if (!runtimeId || !threadId || !turnId || !nextItem) return null
+        if (!nextItem) return null
 
         const key = recordKey({runtimeId, threadId, turnId, item: nextItem})
         const previousIndex = this.state.records.findIndex((record) => recordKey(record) === key)
@@ -243,6 +273,11 @@ class ThreadActivityStore {
             sequence: (this.state.sequence += 1),
             order: previous?.order ?? this.state.sequence,
             updatedAt: compactText(updatedAt, 100) ?? "",
+            ...(previous && Object.hasOwn(previous, "afterAgentMessageId")
+                ? {afterAgentMessageId: previous.afterAgentMessageId}
+                : this.latestAgentMessageByTurn.has(currentTurnKey)
+                  ? {afterAgentMessageId: this.latestAgentMessageByTurn.get(currentTurnKey)}
+                  : {}),
         }
         if (previousIndex >= 0) this.state.records.splice(previousIndex, 1)
         this.state.records.push(record)
@@ -289,7 +324,7 @@ class ThreadActivityStore {
         const byTurn = new Map()
         for (const activity of activities) {
             const turnActivities = byTurn.get(activity.turnId) ?? []
-            turnActivities.push(activity.item)
+            turnActivities.push(activity)
             byTurn.set(activity.turnId, turnActivities)
         }
 
@@ -299,23 +334,87 @@ class ThreadActivityStore {
                 const items = [...(turn.items ?? [])]
                 const existingIds = new Set(items.map((item) => item?.id).filter(Boolean))
                 const turnFinished = turn.status && turn.status !== "inProgress"
-                const missing = (byTurn.get(turn.id) ?? [])
-                    .filter((item) => !existingIds.has(item.id))
-                    .map((item) =>
-                        turnFinished && ["inProgress", "running", "working"].includes(item.status)
-                            ? {...item, status: "unknown"}
-                            : item,
+                const turnActivities = byTurn.get(turn.id) ?? []
+                const missing = turnActivities
+                    .filter((record) => !existingIds.has(record.item.id))
+                    .map((record) => ({
+                        ...record,
+                        item:
+                            turnFinished && ["inProgress", "running", "working"].includes(record.item.status)
+                                ? {...record.item, status: "unknown"}
+                                : record.item,
+                    }))
+                const legacy = []
+                const merged = [...items]
+                for (const record of missing) {
+                    if (!Object.hasOwn(record, "afterAgentMessageId")) {
+                        legacy.push(record.item)
+                        continue
+                    }
+                    const anchor = record.afterAgentMessageId
+                    if (anchor && !existingIds.has(anchor)) {
+                        legacy.push(record.item)
+                        continue
+                    }
+                    const siblings = turnActivities.filter(
+                        (candidate) =>
+                            Object.hasOwn(candidate, "afterAgentMessageId") &&
+                            candidate.afterAgentMessageId === anchor,
                     )
+                    const siblingIndex = siblings.findIndex(
+                        (candidate) => candidate.item.id === record.item.id,
+                    )
+                    let insertionIndex = -1
+                    for (let index = siblingIndex - 1; index >= 0; index -= 1) {
+                        const previousIndex = merged.findIndex(
+                            (item) => item.id === siblings[index].item.id,
+                        )
+                        if (previousIndex >= 0) {
+                            insertionIndex = previousIndex + 1
+                            break
+                        }
+                    }
+                    if (insertionIndex < 0) {
+                        for (let index = siblingIndex + 1; index < siblings.length; index += 1) {
+                            const nextIndex = merged.findIndex(
+                                (item) => item.id === siblings[index].item.id,
+                            )
+                            if (nextIndex >= 0) {
+                                insertionIndex = nextIndex
+                                break
+                            }
+                        }
+                    }
+                    if (insertionIndex < 0 && anchor) {
+                        const anchorIndex = merged.findIndex((item) => item.id === anchor)
+                        insertionIndex = merged.findIndex(
+                            (item, index) => index > anchorIndex && item.type === "agentMessage",
+                        )
+                        if (insertionIndex < 0) insertionIndex = merged.length
+                    }
+                    if (insertionIndex < 0) {
+                        insertionIndex = merged.findIndex((item) => item.type === "agentMessage")
+                        if (insertionIndex < 0) insertionIndex = merged.length
+                    }
+                    merged.splice(insertionIndex, 0, {...record.item})
+                }
                 let insertionIndex = -1
-                for (let index = items.length - 1; index >= 0; index -= 1) {
-                    if (items[index]?.type === "agentMessage") {
+                for (let index = merged.length - 1; index >= 0; index -= 1) {
+                    if (merged[index]?.type === "agentMessage") {
                         insertionIndex = index
                         break
                     }
                 }
-                if (insertionIndex < 0) insertionIndex = items.length
-                items.splice(insertionIndex, 0, ...missing.map((item) => ({...item})))
-                return {...turn, items}
+                if (insertionIndex < 0) insertionIndex = merged.length
+                merged.splice(insertionIndex, 0, ...legacy.map((item) => ({...item})))
+                const lastAgent = [...items].reverse().find((item) => item?.type === "agentMessage")
+                if (turn.status === "inProgress") {
+                    this.latestAgentMessageByTurn.set(
+                        turnKey(runtimeId, threadId, turn.id),
+                        lastAgent?.id ?? null,
+                    )
+                }
+                return {...turn, items: merged}
             }),
         }
     }

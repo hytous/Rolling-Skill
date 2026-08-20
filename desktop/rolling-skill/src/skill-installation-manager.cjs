@@ -62,6 +62,12 @@ function traceReferenceFor(client) {
     return client?.recorder?.latestReference ?? client?.state?.()?.traceReference ?? null
 }
 
+function readOnlyPermissionMode(providerId) {
+    if (providerId === "codex" || providerId === "deepseek-harness") return "read-only"
+    if (providerId === "codebuddy") return "plan"
+    return null
+}
+
 class SkillInstallationManager {
     constructor(options = {}) {
         this.store = options.store
@@ -132,6 +138,7 @@ class SkillInstallationManager {
             if (seen.has(descriptor.runtimeId)) throw new Error("Duplicate Runtime installation target")
             seen.add(descriptor.runtimeId)
             const job = this.store.createJob({
+                operation: "install",
                 runtime: publicRuntime(descriptor),
                 request,
                 modelId: optionalText(target.modelId, "Installation model", 300),
@@ -143,6 +150,52 @@ class SkillInstallationManager {
             this.emit(job.id)
         }
         return jobs
+    }
+
+    async inspect(jobId) {
+        const parent = this.store.getJob(requiredText(jobId, "Installation job id", 200))
+        const descriptor = this.runtimeById(parent.runtime.runtimeId)
+        const permissionMode = readOnlyPermissionMode(descriptor.providerId)
+        if (!permissionMode) throw new Error("This Runtime has no supported read-only permission mode")
+        const job = this.store.createJob({
+            operation: "inspect",
+            parentJobId: parent.id,
+            threadId: parent.threadId,
+            runtime: publicRuntime(descriptor),
+            request: parent.request,
+            modelId: parent.modelId,
+            effort: parent.effort,
+            permissionMode,
+        })
+        this.schedule(job)
+        this.emit(job.id)
+        return job
+    }
+
+    async send(jobId, text) {
+        const job = this.store.getJob(requiredText(jobId, "Installation job id", 200))
+        text = requiredText(text, "Installer message", 120_000)
+        if (!TERMINAL_STATUSES.has(job.status) || !job.threadId) {
+            throw new Error("The installer session is not ready for a follow-up")
+        }
+        if (this.operations.has(job.id) || job.conversationStatus === "running") {
+            throw new Error("The installer session is already running")
+        }
+        const key = `${job.runtime.runtimeId}\0${job.request.source.skillId}`
+        const previous = this.queueTails.get(key) ?? Promise.resolve()
+        const operation = previous.then(
+            () => this.executeConversation(job.id, text),
+            () => this.executeConversation(job.id, text),
+        )
+        const tail = operation.catch(() => {}).finally(() => {
+            if (this.queueTails.get(key) === tail) this.queueTails.delete(key)
+        })
+        this.queueTails.set(key, tail)
+        const tracked = operation.finally(() => {
+            if (this.operations.get(job.id) === tracked) this.operations.delete(job.id)
+        })
+        this.operations.set(job.id, tracked)
+        return this.store.getJob(job.id)
     }
 
     schedule(job) {
@@ -169,7 +222,15 @@ class SkillInstallationManager {
 
     async interaction(jobId, status, callback, request) {
         const job = this.store.getJob(jobId)
-        if (TERMINAL_STATUSES.has(job.status)) return null
+        if (TERMINAL_STATUSES.has(job.status)) {
+            if (job.conversationStatus !== "running" || typeof callback !== "function") return null
+            return callback({
+                ...request,
+                jobId,
+                runtime: job.runtime,
+                threadId: request.sessionId ?? request.params?.sessionId ?? job.threadId,
+            })
+        }
         this.store.updateJob(jobId, {status})
         this.emit(jobId)
         try {
@@ -221,7 +282,9 @@ class SkillInstallationManager {
         this.store.updateJob(jobId, {status: "running"})
         this.store.appendMessage(jobId, {
             role: "user",
-            content: `Install ${job.request.skillName} ${job.request.versionLabel} in ${job.runtime.displayName}`,
+            content: job.operation === "inspect"
+                ? `Inspect ${job.request.skillName} ${job.request.versionLabel} in ${job.runtime.displayName}`
+                : `Install ${job.request.skillName} ${job.request.versionLabel} in ${job.runtime.displayName}`,
         })
         this.emit(jobId)
         job = this.store.getJob(jobId)
@@ -231,6 +294,8 @@ class SkillInstallationManager {
             threadId: null,
             turnId: null,
             cancelRequested: false,
+            cancelWake: null,
+            inspecting: false,
         }
         this.controls.set(jobId, control)
         try {
@@ -245,7 +310,9 @@ class SkillInstallationManager {
                 threadSource: "subagent",
                 ephemeral: false,
             }
-            const threadResponse = await client.startThread(profile)
+            const threadResponse = job.operation === "inspect" && job.threadId
+                ? await client.resumeThread(job.threadId, profile)
+                : await client.startThread(profile)
             control.threadId = requiredText(threadResponse?.thread?.id, "Installer thread id", 300)
             this.store.updateJob(jobId, {
                 threadId: control.threadId,
@@ -257,17 +324,30 @@ class SkillInstallationManager {
             })
             this.emit(jobId)
             const prompt = buildSkillInstallationPrompt(job.request, {
-                operation: "install",
+                operation: job.operation,
                 requestedPermission: job.permissionMode,
                 priorInstallation: this.store.installationMatrix(job.request.source.skillId)
                     .find((entry) => entry.runtimeId === job.runtime.runtimeId) ?? null,
             })
             const output = await this.runTurn({client, jobId, threadId: control.threadId, prompt, profile, control})
             if (control.cancelRequested || output.turnStatus === "interrupted" || output.turnStatus === "cancelled") {
-                return this.finish(jobId, "cancelled", {
-                    rawResult: output.response,
-                    traceReference: traceReferenceFor(client),
-                    error: {code: "INSTALLATION_CANCELLED", message: "Installation cancelled by user"},
+                if (job.operation === "inspect") {
+                    return this.finish(jobId, "unverified", {
+                        rawResult: output.response,
+                        traceReference: traceReferenceFor(client),
+                        error: {
+                            code: "INSPECTION_CANCELLED",
+                            message: "Read-only inspection was cancelled before verification completed",
+                        },
+                    })
+                }
+                return this.inspectAfterCancellation({
+                    client,
+                    descriptor,
+                    jobId,
+                    threadId: control.threadId,
+                    profile,
+                    control,
                 })
             }
             this.store.updateJob(jobId, {status: "verifying", rawResult: output.response})
@@ -275,6 +355,9 @@ class SkillInstallationManager {
             let parsed
             try {
                 parsed = parseSkillInstallationResult(output.response, job.request)
+                if (job.operation === "inspect" && parsed.operation !== "inspect") {
+                    throw new Error("Inspection result must report an inspect operation")
+                }
             } catch (error) {
                 return this.finish(jobId, "unverified", {
                     rawResult: output.response,
@@ -293,12 +376,168 @@ class SkillInstallationManager {
             const current = this.store.getJob(jobId)
             if (TERMINAL_STATUSES.has(current.status)) return current
             const cancelled = control.cancelRequested || error?.code === "INSTALLATION_CANCELLED"
+            if (cancelled && job.operation === "inspect") {
+                return this.finish(jobId, "unverified", {
+                    traceReference: traceReferenceFor(client),
+                    error: {
+                        code: "INSPECTION_CANCELLED",
+                        message: "Read-only inspection was cancelled before verification completed",
+                    },
+                })
+            }
+            if (cancelled && control.threadId && !control.inspecting) {
+                return this.inspectAfterCancellation({
+                    client,
+                    descriptor,
+                    jobId,
+                    threadId: control.threadId,
+                    profile: {
+                        ...(job.modelId ? {model: job.modelId} : {}),
+                        ...(job.effort ? {effort: job.effort} : {}),
+                        ...permission,
+                        threadSource: "subagent",
+                        ephemeral: false,
+                    },
+                    control,
+                })
+            }
             return this.finish(jobId, cancelled ? "cancelled" : "failed", {
                 traceReference: traceReferenceFor(client),
                 error: cancelled
                     ? {code: "INSTALLATION_CANCELLED", message: "Installation cancelled by user"}
                     : errorRecord(error),
             })
+        } finally {
+            this.controls.delete(jobId)
+            await client.stop?.().catch(() => {})
+        }
+    }
+
+    async inspectAfterCancellation({client, descriptor, jobId, threadId, profile, control}) {
+        control.inspecting = true
+        control.turnId = null
+        const current = this.store.getJob(jobId)
+        if (TERMINAL_STATUSES.has(current.status)) return current
+        if (current.status !== "verifying") {
+            this.store.updateJob(jobId, {status: "verifying"})
+        }
+        this.store.appendMessage(jobId, {
+            role: "user",
+            content: "The installation was interrupted. Inspect the target read-only and report its current state.",
+        })
+        this.emit(jobId)
+        const permissionMode = readOnlyPermissionMode(descriptor.providerId)
+        if (!permissionMode) {
+            return this.finish(jobId, "unverified", {
+                traceReference: traceReferenceFor(client),
+                error: {
+                    code: "POST_CANCEL_INSPECTION_UNSUPPORTED",
+                    message: "This Runtime has no supported read-only permission mode",
+                },
+            })
+        }
+        let inspectPermission
+        try {
+            inspectPermission = this.resolvePermission(descriptor.providerId, permissionMode) ?? {}
+        } catch (error) {
+            return this.finish(jobId, "unverified", {
+                traceReference: traceReferenceFor(client),
+                error: errorRecord(error, "POST_CANCEL_INSPECTION_PERMISSION_FAILED"),
+            })
+        }
+        const request = this.store.getJob(jobId).request
+        const prompt = buildSkillInstallationPrompt(request, {
+            operation: "inspect",
+            requestedPermission: permissionMode,
+            priorInstallation: this.store.installationMatrix(request.source.skillId)
+                .find((entry) => entry.runtimeId === descriptor.runtimeId) ?? null,
+        })
+        try {
+            const output = await this.runTurn({
+                client,
+                jobId,
+                threadId,
+                prompt,
+                profile: {...profile, ...inspectPermission},
+                control,
+            })
+            if (output.turnStatus === "interrupted" || output.turnStatus === "cancelled") {
+                throw Object.assign(new Error("Read-only inspection was interrupted"), {
+                    code: "POST_CANCEL_INSPECTION_INTERRUPTED",
+                })
+            }
+            const parsed = parseSkillInstallationResult(output.response, request)
+            if (parsed.operation !== "inspect") {
+                throw new Error("Post-cancellation result must report an inspect operation")
+            }
+            return this.finish(jobId, "cancelled", {
+                parsedResult: parsed,
+                rawResult: output.response,
+                traceReference: traceReferenceFor(client),
+                error: {
+                    code: "INSTALLATION_CANCELLED",
+                    message: "Installation cancelled by user; the target was inspected read-only",
+                },
+            })
+        } catch (error) {
+            return this.finish(jobId, "unverified", {
+                traceReference: traceReferenceFor(client),
+                error: errorRecord(error, "POST_CANCEL_INSPECTION_FAILED"),
+            })
+        }
+    }
+
+    async executeConversation(jobId, text) {
+        const job = this.store.getJob(jobId)
+        const descriptor = this.runtimeById(job.runtime.runtimeId)
+        this.store.updateJob(jobId, {
+            conversationStatus: "running",
+            conversationError: null,
+        })
+        this.store.appendMessage(jobId, {role: "user", content: text})
+        this.emit(jobId)
+        const {client, permission} = this.clientFor(job, descriptor)
+        const control = {
+            client,
+            threadId: job.threadId,
+            turnId: null,
+            cancelRequested: false,
+            cancelWake: null,
+            inspecting: false,
+            conversation: true,
+        }
+        this.controls.set(jobId, control)
+        try {
+            await client.start()
+            const profile = {
+                ...(job.modelId ? {model: job.modelId} : {}),
+                ...(job.effort ? {effort: job.effort} : {}),
+                ...permission,
+                threadSource: "subagent",
+                ephemeral: false,
+            }
+            await client.resumeThread(job.threadId, profile)
+            const output = await this.runTurn({
+                client,
+                jobId,
+                threadId: job.threadId,
+                prompt: text,
+                profile,
+                control,
+            })
+            this.store.updateJob(jobId, {
+                conversationStatus: "idle",
+                conversationError: output.turnStatus === "interrupted" || output.turnStatus === "cancelled"
+                    ? {code: "INSTALLER_CONVERSATION_CANCELLED", message: "Installer follow-up cancelled"}
+                    : null,
+            })
+            return this.emit(jobId)
+        } catch (error) {
+            this.store.updateJob(jobId, {
+                conversationStatus: "failed",
+                conversationError: errorRecord(error, "INSTALLER_CONVERSATION_FAILED"),
+            })
+            return this.emit(jobId)
         } finally {
             this.controls.delete(jobId)
             await client.stop?.().catch(() => {})
@@ -321,11 +560,16 @@ class SkillInstallationManager {
                 if (settled) return
                 settled = true
                 clearTimeout(timer)
+                if (control.cancelWake === cancelWake) control.cancelWake = null
                 client.off("notification", onNotification)
                 client.off("state", onState)
                 client.off("runtimeError", onRuntimeError)
                 operation(value)
             }
+            const cancelWake = () => finish(resolve, {
+                response: assistantTexts.join("\n\n"),
+                turnStatus: "interrupted",
+            })
             const onRuntimeError = (error) => finish(reject, error)
             const onState = (state) => {
                 if (state?.status === "stopped" || state?.status === "error") {
@@ -377,6 +621,7 @@ class SkillInstallationManager {
             client.on("notification", onNotification)
             client.on("state", onState)
             client.on("runtimeError", onRuntimeError)
+            control.cancelWake = cancelWake
             timer = setTimeout(() => {
                 if (control.turnId) void client.interruptTurn?.(threadId, control.turnId).catch(() => {})
                 finish(reject, Object.assign(new Error("Installation turn timed out"), {
@@ -396,8 +641,17 @@ class SkillInstallationManager {
 
     async cancel(jobId) {
         const job = this.store.getJob(requiredText(jobId, "Installation job id", 200))
-        if (TERMINAL_STATUSES.has(job.status)) return job
         const control = this.controls.get(job.id)
+        if (TERMINAL_STATUSES.has(job.status)) {
+            if (!control) return job
+            if (control.cancelRequested) return this.store.getJob(job.id)
+            control.cancelRequested = true
+            if (control.threadId && control.turnId) {
+                await control.client.interruptTurn(control.threadId, control.turnId)
+            }
+            control.cancelWake?.()
+            return this.store.getJob(job.id)
+        }
         if (!control) {
             const cancelled = this.store.completeJob(job.id, {
                 status: "cancelled",
@@ -406,10 +660,16 @@ class SkillInstallationManager {
             this.emit(job.id)
             return cancelled
         }
+        if (control.cancelRequested) return this.store.getJob(job.id)
         control.cancelRequested = true
+        if (job.status !== "verifying") {
+            this.store.updateJob(job.id, {status: "verifying"})
+            this.emit(job.id)
+        }
         if (control.threadId && control.turnId) {
             await control.client.interruptTurn(control.threadId, control.turnId)
         }
+        control.cancelWake?.()
         return this.store.getJob(job.id)
     }
 

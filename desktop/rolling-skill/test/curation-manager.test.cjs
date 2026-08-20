@@ -483,6 +483,53 @@ describe("curation manager", () => {
         assert.equal(JSON.stringify(activity).includes("private streamed answer"), false)
     })
 
+    it("coalesces repeated Curator reasoning activity before it crosses IPC", async () => {
+        const activity = []
+        const scheduledActivity = []
+        manager = new CurationManager({
+            store,
+            getRuntime: async () => runtime,
+            getRuntimeDescriptor: () => ({runtimeId: "codex-alpha"}),
+            onChanged: (session) => changed.push(session),
+            onActivity: (entry) => activity.push(entry),
+            schedule: (task) => task(),
+            scheduleActivity(callback, delayMs) {
+                const timer = {callback, delayMs}
+                scheduledActivity.push(timer)
+                return timer
+            },
+            cancelActivity() {},
+        })
+        const session = await manager.createSession({
+            datasetId: store.listDatasets()[0].id,
+            caseType: "goodcase",
+            sourceThreadId: "source-thread",
+            endItemId: "answer-1",
+        })
+        await manager.waitForIdle(session.id)
+        const running = store.getCurationSession(session.id)
+        activity.length = 0
+        scheduledActivity.length = 0
+
+        for (let index = 0; index < 100; index += 1) {
+            await manager.handleNotification({
+                method: "item/started",
+                params: {
+                    threadId: running.curator.threadId,
+                    turnId: running.curator.currentTurnId,
+                    item: {type: "reasoning", summary: [`chunk-${index}`]},
+                },
+            })
+        }
+
+        assert.equal(activity.length, 0)
+        assert.equal(scheduledActivity.length, 1)
+        assert.equal(scheduledActivity[0].delayMs, 250)
+        scheduledActivity[0].callback()
+        assert.equal(activity.length, 1)
+        assert.equal(activity[0].stage, "analyzing")
+    })
+
     it("forwards stable message locators when live ids differ from thread/read ids", async () => {
         runtime.readThread = async (threadId) => {
             assert.equal(threadId, "source-thread")

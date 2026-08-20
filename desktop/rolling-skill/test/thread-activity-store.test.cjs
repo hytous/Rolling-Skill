@@ -479,6 +479,105 @@ describe("thread activity persistence", () => {
         )
     })
 
+    it("restores omitted activity after the assistant output that preceded it", () => {
+        const {store} = temporaryStore()
+        const assistant = (itemId) =>
+            notification("item/completed", "agentMessage", {text: itemId}, {itemId})
+
+        store.recordNotification("codex:alpha", assistant("agent-a"))
+        store.recordNotification(
+            "codex:alpha",
+            notification(
+                "item/started",
+                "commandExecution",
+                {command: "command-a", status: "inProgress"},
+                {itemId: "command-a"},
+            ),
+        )
+        store.recordNotification("codex:alpha", assistant("agent-b"))
+        store.recordNotification(
+            "codex:alpha",
+            notification(
+                "item/completed",
+                "commandExecution",
+                {command: "command-a", status: "completed"},
+                {itemId: "command-a"},
+            ),
+        )
+        store.recordNotification(
+            "codex:alpha",
+            notification(
+                "item/completed",
+                "mcpToolCall",
+                {server: "billing", tool: "query", status: "completed"},
+                {itemId: "tool-b"},
+            ),
+        )
+        store.recordNotification("codex:alpha", assistant("agent-c"))
+
+        const merged = store.mergeThread("codex:alpha", {
+            id: "thread-1",
+            turns: [{
+                id: "turn-1",
+                status: "completed",
+                items: [
+                    {id: "user-1", type: "userMessage", content: []},
+                    {id: "agent-a", type: "agentMessage", text: "A"},
+                    {id: "agent-b", type: "agentMessage", text: "B"},
+                    {id: "agent-c", type: "agentMessage", text: "C"},
+                ],
+            }],
+        })
+
+        assert.deepEqual(
+            merged.turns[0].items.map((item) => item.id),
+            ["user-1", "agent-a", "command-a", "agent-b", "tool-b", "agent-c"],
+        )
+        assert.equal(store.list("codex:alpha", "thread-1")[0].afterAgentMessageId, "agent-a")
+        assert.equal(store.list("codex:alpha", "thread-1")[1].afterAgentMessageId, "agent-b")
+    })
+
+    it("keeps restored activity after an earlier persisted activity in the same output segment", () => {
+        const {store} = temporaryStore()
+        store.recordNotification(
+            "codex:alpha",
+            notification("item/completed", "agentMessage", {text: "A"}, {itemId: "agent-a"}),
+        )
+        for (const itemId of ["command-a", "command-b"]) {
+            store.recordNotification(
+                "codex:alpha",
+                notification(
+                    "item/completed",
+                    "commandExecution",
+                    {command: itemId, status: "completed"},
+                    {itemId},
+                ),
+            )
+        }
+        store.recordNotification(
+            "codex:alpha",
+            notification("item/completed", "agentMessage", {text: "B"}, {itemId: "agent-b"}),
+        )
+
+        const merged = store.mergeThread("codex:alpha", {
+            id: "thread-1",
+            turns: [{
+                id: "turn-1",
+                status: "completed",
+                items: [
+                    {id: "agent-a", type: "agentMessage", text: "A"},
+                    {id: "command-a", type: "commandExecution", command: "command-a"},
+                    {id: "agent-b", type: "agentMessage", text: "B"},
+                ],
+            }],
+        })
+
+        assert.deepEqual(
+            merged.turns[0].items.map((item) => item.id),
+            ["agent-a", "command-a", "command-b", "agent-b"],
+        )
+    })
+
     it("does not restore a stale running status into a completed turn", () => {
         const {store} = temporaryStore()
         store.recordNotification(

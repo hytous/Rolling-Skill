@@ -17,6 +17,8 @@ const settings = {
     },
 }
 
+let lastRuntimeQuestionResponse = null
+
 function conversationThread(id, name, marker) {
     const turns = Array.from({length: 18}, (_unused, index) => ({
         id: `${id}-turn-${index}`,
@@ -110,7 +112,15 @@ function curationSession(overrides = {}) {
         issueDescription: "回答遗漏了一个业务线。",
         episode: {
             originalQuestion: "查一下7月份账单，各业务混元3多少成本？",
-            items: [{id: "thread-a-user-0", type: "userMessage"}],
+            source: {
+                threadId: "thread-a",
+                startItemId: "thread-a-user-0",
+                endItemId: "thread-a-agent-0",
+            },
+            items: [
+                {id: "thread-a-user-0", type: "userMessage"},
+                {id: "thread-a-agent-0", type: "agentMessage"},
+            ],
             toolActivity: [{signature: "billing-cli cost query"}],
         },
         skillReference: {name: "billing-cost-management"},
@@ -137,6 +147,19 @@ function curationSession(overrides = {}) {
 }
 
 let smokeCurationSession = curationSession()
+let smokeRawCases = [{
+    id: "raw-case-smoke",
+    question: "查一下还没验证的 8 月账单问题",
+    skill: {
+        name: "billing-cost-management",
+        path: "/tmp/rolling-skill-renderer-smoke/billing-cost-management/SKILL.md",
+    },
+    note: "Renderer smoke",
+    source: {kind: "external-mcp"},
+    createdAt: "2026-08-19T10:00:00.000Z",
+    updatedAt: "2026-08-19T10:00:00.000Z",
+}]
+let lastRawCaseTurnText = null
 const smokeEvaluationCase = {
     id: "case-smoke",
     datasetId: "dataset-smoke",
@@ -176,6 +199,44 @@ let lastCurationInput = null
 let lastCalibrationInput = null
 const notificationListeners = new Set()
 const runtimeStateListeners = new Set()
+let observationSequence = 0
+let threadObservation = null
+let deliveredTimelineNotifications = 0
+let blockedTimelineNotifications = 0
+
+const summaryNotificationMethods = new Set([
+    "thread/started",
+    "thread/archived",
+    "thread/unarchived",
+    "thread/name/updated",
+    "thread/status/changed",
+])
+
+function notificationThreadId(message) {
+    return message?.params?.threadId ?? message?.params?.thread?.id ?? null
+}
+
+function emitRuntimeNotification(message) {
+    if (summaryNotificationMethods.has(message?.method)) {
+        for (const listener of notificationListeners) listener(message)
+        return
+    }
+    const threadId = notificationThreadId(message)
+    if (!threadObservation || threadObservation.threadId !== threadId) {
+        blockedTimelineNotifications += 1
+        return
+    }
+    if (threadObservation.phase !== "live") {
+        threadObservation.buffer.push(message)
+        return
+    }
+    deliveredTimelineNotifications += 1
+    for (const listener of notificationListeners) listener(message)
+}
+const runtimeQuestionListeners = new Set()
+const runtimeQuestionResolvedListeners = new Set()
+const rawCasesChangedListeners = new Set()
+const managedSkillsChangedListeners = new Set()
 const curationChangedListeners = new Set()
 const curationActivityListeners = new Set()
 const rubricChangedListeners = new Set()
@@ -190,6 +251,73 @@ const smokeSkillReference = {
     description: "Smoke Skill",
     runtimeId: "codex:renderer-smoke",
     confirmedAt: "2026-08-13T00:00:00.000Z",
+}
+const smokeManagedRepository = {
+    id: "managed-repository-smoke",
+    displayName: "Billing Skill",
+    defaultBranch: "main",
+    source: {kind: "folder", location: "billing-cost-management"},
+    createdAt: "2026-08-20T00:00:00.000Z",
+    updatedAt: "2026-08-20T00:00:00.000Z",
+}
+const smokeManagedSkill = {
+    id: "managed-skill-smoke",
+    repositoryId: smokeManagedRepository.id,
+    name: "billing-cost-management",
+    description: "Smoke managed Skill",
+    skillRoot: ".",
+    manifestPath: "SKILL.md",
+    status: "valid",
+    warnings: [],
+    executableFiles: [],
+}
+const smokeManagedSkillTwo = {
+    ...smokeManagedSkill,
+    id: "managed-skill-smoke-two",
+    name: "billing-cost-analysis",
+    description: "Second managed Skill",
+    skillRoot: "skills/analysis",
+    manifestPath: "skills/analysis/SKILL.md",
+}
+let smokeManagedVersions = [{
+    id: "managed-version-smoke",
+    repositoryId: smokeManagedRepository.id,
+    skillId: smokeManagedSkill.id,
+    skillRoot: ".",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    contentDigest: `sha256:${"a".repeat(64)}`,
+    state: "candidate",
+    versionLabel: null,
+    createdBy: "import",
+    createdAt: "2026-08-20T00:00:00.000Z",
+    releasedAt: null,
+    deprecatedAt: null,
+}, {
+    id: "managed-version-released-smoke",
+    repositoryId: smokeManagedRepository.id,
+    skillId: smokeManagedSkillTwo.id,
+    skillRoot: smokeManagedSkillTwo.skillRoot,
+    commit: "89abcdef0123456789abcdef0123456789abcdef",
+    contentDigest: `sha256:${"b".repeat(64)}`,
+    state: "released",
+    versionLabel: "v0.9.0",
+    createdBy: "import",
+    createdAt: "2026-08-19T00:00:00.000Z",
+    releasedAt: "2026-08-19T00:01:00.000Z",
+    deprecatedAt: null,
+}]
+
+function smokeManagedOverview() {
+    return {
+        repositories: [smokeManagedRepository],
+        skills: [smokeManagedSkill, smokeManagedSkillTwo],
+        versions: smokeManagedVersions,
+    }
+}
+
+function emitManagedSkillsChanged() {
+    const overview = smokeManagedOverview()
+    for (const listener of managedSkillsChangedListeners) listener(overview)
 }
 const smokeRubric = {
     schemaVersion: "rolling-skill-dataset-rubric/v1",
@@ -359,6 +487,36 @@ const smokeEvaluationRun = {
             gradingStatus: "completed",
             durationMs: 64_000,
             response: "Smoke CodeBuddy evaluation answer",
+            scoreContract: {
+                a: {dimensions: [{
+                    id: "skill_activation",
+                    criterion: "Read and apply the selected Skill.",
+                }]},
+                b: {criteria: [{
+                    id: "H1",
+                    criterion: "Use the correct billing workflow.",
+                }]},
+            },
+            judgment: {
+                aAssessments: [{
+                    dimensionId: "skill_activation",
+                    status: "scored",
+                    level: 3,
+                    evidenceRefs: ["trace:L1"],
+                    rationale: "Legacy Skill evidence remains inspectable.",
+                }],
+                bAssessments: [{
+                    criterionId: "H1",
+                    status: "scored",
+                    rating: 7,
+                    confidence: 0.8,
+                    verificationStatus: "partially_verified",
+                    verifiableFields: ["billing period"],
+                    crossChecks: ["response against Trace"],
+                    evidenceRefs: ["response", "trace:L2"],
+                    rationale: "Legacy workflow evidence remains inspectable.",
+                }],
+            },
             computedScore: {
                 aScore: 28,
                 bScore: 38,
@@ -411,17 +569,39 @@ contextBridge.exposeInMainWorld("rollingSkill", {
             workspaceRoot: "/tmp/rolling-skill-renderer-smoke",
             runtime: {
                 runtimeId: "codex:renderer-smoke",
+                providerId: "codex",
                 displayName: "Codex",
                 version: "smoke",
                 executablePath: "/usr/local/bin/codex",
                 source: "smoke fixture",
                 capabilities: ["thread-archive", "sandbox-policy"],
             },
-            availableRuntimes: [],
+            availableRuntimes: [{
+                runtimeId: "codex:renderer-smoke",
+                providerId: "codex",
+                displayName: "Codex",
+                version: "smoke",
+                executablePath: "/usr/local/bin/codex",
+                efforts: ["low", "medium", "high", "xhigh"],
+                models: ["gpt-5.6-sol"],
+            }],
         },
         workspaceRoot: "/tmp/rolling-skill-renderer-smoke",
         datasets: smokeDatasets,
         curationSessions: [smokeCurationSession],
+        sourceCurationMarkers: [{
+            id: smokeCurationSession.id,
+            datasetId: smokeCurationSession.datasetId,
+            caseId: null,
+            status: smokeCurationSession.status,
+            threadId: "thread-a",
+            startItemId: "thread-a-user-0",
+            endItemId: "thread-a-agent-0",
+            itemIds: ["thread-a-user-0", "thread-a-agent-0"],
+        }],
+        rawCases: smokeRawCases,
+        managedSkills: smokeManagedOverview(),
+        skillInstallations: {jobs: [], matrix: []},
         settings,
     }),
     listModels: async () => {
@@ -438,19 +618,183 @@ contextBridge.exposeInMainWorld("rollingSkill", {
             }],
         }
     },
+    listModelsForRuntime: async () => ({
+        data: [{
+            id: "gpt-5.6-sol",
+            model: "gpt-5.6-sol",
+            displayName: "GPT-5.6-Sol",
+            isDefault: true,
+            reasoningEfforts: ["low", "medium", "high", "xhigh"],
+        }],
+    }),
     listThreads: async (archived = false) => ({
         data: archived ? [] : Object.values(threads).map(({turns: _turns, ...thread}) => thread),
         nextCursor: null,
     }),
     readThread: async (threadId) => {
+        const epoch = ++observationSequence
+        const observation = {epoch, threadId, phase: "snapshot", buffer: []}
+        threadObservation = observation
         readCount += 1
         if (readCount > 1) await new Promise((resolve) => setTimeout(resolve, 70))
         if (nextReadFailureThreadId === threadId) {
             nextReadFailureThreadId = null
             throw new Error(`smoke read failure for ${threadId}`)
         }
-        return {thread: threads[threadId]}
+        if (threadObservation === observation) {
+            threadObservation.phase = "catch-up"
+            threadObservation.buffer = []
+        }
+        return {thread: threads[threadId], rollingSkillObservationEpoch: epoch}
     },
+    drainThreadObservation: async (epoch) => {
+        if (!threadObservation || threadObservation.epoch !== epoch) {
+            return {matched: false, notifications: [], live: false, reloadRequired: false}
+        }
+        const notifications = threadObservation.buffer.splice(0)
+        if (!notifications.length) threadObservation.phase = "live"
+        return {
+            matched: true,
+            notifications,
+            live: threadObservation.phase === "live",
+            reloadRequired: false,
+        }
+    },
+    clearThreadObservation: async (epoch = null) => {
+        if (threadObservation && (epoch == null || threadObservation.epoch === epoch)) {
+            threadObservation = null
+        }
+        return {cleared: !threadObservation}
+    },
+    startThread: async () => {
+        const id = `thread-raw-${Date.now()}`
+        threads[id] = {
+            id,
+            name: "Raw Case task",
+            preview: "Raw Case",
+            updatedAt: Date.now(),
+            status: "idle",
+            turns: [],
+        }
+        return {thread: threads[id], rollingSkillObservationEpoch: ++observationSequence}
+    },
+    startTurn: async (threadId, text) => {
+        lastRawCaseTurnText = text
+        const turn = {
+            id: `${threadId}-raw-turn`,
+            status: "inProgress",
+            items: [{
+                id: `${threadId}-raw-user`,
+                type: "userMessage",
+                content: [{type: "text", text}],
+            }],
+        }
+        threads[threadId].turns.push(turn)
+        return {turn}
+    },
+    listRawCases: async (skillName = null) => smokeRawCases.filter(
+        (entry) => !skillName || entry.skill.name.toLowerCase() === skillName.toLowerCase(),
+    ),
+    addRawCases: async (cases_) => {
+        const created = cases_.map((entry, index) => ({
+            id: `raw-case-added-${Date.now()}-${index}`,
+            ...entry,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+        }))
+        smokeRawCases = [...created, ...smokeRawCases]
+        for (const listener of rawCasesChangedListeners) listener(smokeRawCases)
+        return {created, duplicates: [], rejected: []}
+    },
+    updateRawCase: async (id, changes) => {
+        smokeRawCases = smokeRawCases.map((entry) =>
+            entry.id === id ? {...entry, ...changes, updatedAt: new Date().toISOString()} : entry,
+        )
+        for (const listener of rawCasesChangedListeners) listener(smokeRawCases)
+        return smokeRawCases.find((entry) => entry.id === id)
+    },
+    deleteRawCase: async (id) => {
+        const removed = smokeRawCases.find((entry) => entry.id === id)
+        smokeRawCases = smokeRawCases.filter((entry) => entry.id !== id)
+        for (const listener of rawCasesChangedListeners) listener(smokeRawCases)
+        return removed
+    },
+    markRawCaseDispatched: async (id) => {
+        smokeRawCases = smokeRawCases.filter((entry) => entry.id !== id)
+        for (const listener of rawCasesChangedListeners) listener(smokeRawCases)
+        return {id}
+    },
+    onRawCasesChanged: (listener) => {
+        rawCasesChangedListeners.add(listener)
+        return () => rawCasesChangedListeners.delete(listener)
+    },
+    listManagedSkills: async () => smokeManagedOverview(),
+    listSkillInstallations: async () => ({jobs: [], matrix: []}),
+    startSkillInstallations: async () => [],
+    cancelSkillInstallation: async () => null,
+    inspectSkillInstallation: async () => null,
+    sendSkillInstallationMessage: async () => null,
+    respondSkillInstallationQuestion: async () => ({accepted: true}),
+    rescanManagedSkills: async () => ({...smokeManagedOverview(), failures: []}),
+    importManagedSkill: async () => ({cancelled: true}),
+    readManagedSkill: async (skillId) => {
+        const skill = [smokeManagedSkill, smokeManagedSkillTwo].find((entry) => entry.id === skillId)
+        if (!skill) throw new Error("Unknown smoke managed Skill")
+        return {
+            repository: smokeManagedRepository,
+            skill,
+            manifest: `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n${skill === smokeManagedSkillTwo ? "Second managed Skill" : "Use the smoke workflow."}\n`,
+            snapshot: {digest: `sha256:${(skill === smokeManagedSkillTwo ? "b" : "a").repeat(64)}`},
+            versions: smokeManagedVersions.filter((version) => version.skillId === skill.id),
+        }
+    },
+    createManagedSkillCandidate: async ({skillId}) => {
+        const candidate = {
+            id: "managed-version-created-smoke",
+            repositoryId: smokeManagedRepository.id,
+            skillId,
+            skillRoot: smokeManagedSkill.skillRoot,
+            commit: "fedcba9876543210fedcba9876543210fedcba98",
+            contentDigest: `sha256:${"c".repeat(64)}`,
+            state: "candidate",
+            versionLabel: null,
+            createdBy: "user",
+            createdAt: new Date().toISOString(),
+            releasedAt: null,
+            deprecatedAt: null,
+        }
+        smokeManagedVersions = [candidate, ...smokeManagedVersions]
+        emitManagedSkillsChanged()
+        return candidate
+    },
+    releaseManagedSkillVersion: async ({versionId, versionLabel}) => {
+        smokeManagedVersions = smokeManagedVersions.map((version) =>
+            version.id === versionId
+                ? {...version, state: "released", versionLabel, releasedAt: new Date().toISOString()}
+                : version,
+        )
+        emitManagedSkillsChanged()
+        return smokeManagedVersions.find((version) => version.id === versionId)
+    },
+    deprecateManagedSkillVersion: async ({versionId}) => {
+        smokeManagedVersions = smokeManagedVersions.map((version) =>
+            version.id === versionId
+                ? {...version, deprecatedAt: new Date().toISOString()}
+                : version,
+        )
+        emitManagedSkillsChanged()
+        return smokeManagedVersions.find((version) => version.id === versionId)
+    },
+    revealManagedSkillRepository: async () => "/tmp/rolling-skill-renderer-smoke/managed-skills",
+    onManagedSkillsChanged: (listener) => {
+        managedSkillsChangedListeners.add(listener)
+        return () => managedSkillsChangedListeners.delete(listener)
+    },
+    onSkillInstallationsChanged: noOpSubscription,
+    onSkillInstallationQuestion: noOpSubscription,
+    onSkillInstallationQuestionResolved: noOpSubscription,
+    onManagedSkillVersionReleased: noOpSubscription,
+    smokeLastRawCaseTurnText: () => lastRawCaseTurnText,
     listSkills: async () => ({
         data: [{
             cwd: "/tmp/rolling-skill-renderer-smoke",
@@ -618,9 +962,56 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         notificationListeners.add(listener)
         return () => notificationListeners.delete(listener)
     },
-    smokeEmitNotification: (message) => {
-        for (const listener of notificationListeners) listener(message)
+    onRuntimeQuestion: (listener) => {
+        runtimeQuestionListeners.add(listener)
+        return () => runtimeQuestionListeners.delete(listener)
     },
+    onRuntimeQuestionResolved: (listener) => {
+        runtimeQuestionResolvedListeners.add(listener)
+        return () => runtimeQuestionResolvedListeners.delete(listener)
+    },
+    respondRuntimeQuestion: async ({requestId, cancelled, answers}) => {
+        lastRuntimeQuestionResponse = {requestId, cancelled, answers}
+        for (const listener of runtimeQuestionResolvedListeners) {
+            listener({requestId, reason: cancelled ? "cancelled" : "answered"})
+        }
+        return {accepted: true}
+    },
+    smokeEmitRuntimeQuestion: (request) => {
+        for (const listener of runtimeQuestionListeners) listener(request)
+    },
+    smokeLastRuntimeQuestionResponse: () => lastRuntimeQuestionResponse,
+    smokeEmitNotification: (message) => {
+        emitRuntimeNotification(message)
+    },
+    smokeAppendBackgroundAnswer: (threadId, text, deltaCount = 100) => {
+        const turnId = `${threadId}-background-turn`
+        const itemId = `${threadId}-background-agent`
+        const item = {id: itemId, type: "agentMessage", text}
+        const turn = {id: turnId, status: "completed", items: [item]}
+        threads[threadId].turns.push(turn)
+        threads[threadId].updatedAt += 1
+        for (let index = 0; index < deltaCount; index += 1) {
+            emitRuntimeNotification({
+                method: "item/agentMessage/delta",
+                params: {threadId, turnId, itemId, delta: "."},
+            })
+        }
+        emitRuntimeNotification({
+            method: "item/completed",
+            params: {threadId, turnId, item},
+        })
+        emitRuntimeNotification({
+            method: "turn/completed",
+            params: {threadId, turn},
+        })
+    },
+    smokeNotificationRoutingMetrics: () => ({
+        observedThreadId: threadObservation?.threadId ?? null,
+        observationPhase: threadObservation?.phase ?? null,
+        deliveredTimelineNotifications,
+        blockedTimelineNotifications,
+    }),
     smokeFailNextRead: (threadId) => {
         nextReadFailureThreadId = threadId
     },

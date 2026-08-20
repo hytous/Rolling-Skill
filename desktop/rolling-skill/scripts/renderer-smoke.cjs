@@ -101,6 +101,183 @@ async function run() {
         throw new Error(`Conversation scrolling is animated: ${markdownAndActivity.scrollBehavior}`)
     }
 
+    const rawCaseInitial = await inspect(window, `(() => ({
+        panelVisible: document.querySelector("#raw-case-panel").classList.contains("visible"),
+        grouped: Boolean(document.querySelector(".raw-case-skill-group")),
+        question: document.querySelector("[data-raw-case-id=raw-case-smoke] .raw-case-card-question")?.textContent,
+        markedItems: document.querySelectorAll(".source-case-range.draft").length,
+        markerStatus: document.querySelector(".source-case-range-status")?.textContent,
+    }))()`)
+    if (
+        !rawCaseInitial.panelVisible ||
+        !rawCaseInitial.grouped ||
+        rawCaseInitial.question !== "查一下还没验证的 8 月账单问题" ||
+        rawCaseInitial.markedItems !== 2 ||
+        !rawCaseInitial.markerStatus?.includes("Case 草稿")
+    ) {
+        throw new Error(`Raw Case inbox or source marker missing: ${JSON.stringify(rawCaseInitial)}`)
+    }
+
+    await inspect(window, `(() => {
+        document.querySelector("#raw-case-skill").value = "billing-cost-management"
+        document.querySelector("#raw-case-question").value = "尚未发送的 Raw Case 表单草稿"
+        document.querySelector("#raw-case-note").value = "不要被重绘清空"
+        window.rollingSkill.smokeEmitNotification({
+            method: "thread/name/updated",
+            params: {threadId: "thread-a", name: "Thread A"},
+        })
+    })()`)
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    const rawDraft = await inspect(window, `(() => ({
+        question: document.querySelector("#raw-case-question").value,
+        note: document.querySelector("#raw-case-note").value,
+    }))()`)
+    if (rawDraft.question !== "尚未发送的 Raw Case 表单草稿" || rawDraft.note !== "不要被重绘清空") {
+        throw new Error(`Raw Case form draft was cleared by render: ${JSON.stringify(rawDraft)}`)
+    }
+    await inspect(window, 'document.querySelector("#raw-case-form").requestSubmit()')
+    await waitFor(window, 'Boolean(document.querySelector("[data-raw-case-id^=raw-case-added-]"))')
+    await inspect(window, 'document.querySelector("[data-raw-case-id^=raw-case-added-] [data-delete-raw-case]").click()')
+    await waitFor(window, '!document.querySelector("[data-raw-case-id^=raw-case-added-]")')
+
+    await inspect(window, `window.rollingSkill.smokeEmitRuntimeQuestion({
+        requestId: "question-thread-b",
+        threadId: "thread-b",
+        questions: [{id: "hidden", question: "Only Thread B should display this question."}],
+    })`)
+    if (await inspect(window, 'Boolean(document.querySelector("[data-runtime-question-id=question-thread-b]"))')) {
+        throw new Error("A runtime question leaked into a different conversation")
+    }
+    await inspect(window, 'document.querySelector("[data-thread-id=thread-b]").click()')
+    await waitFor(window, 'document.querySelector("[data-runtime-question-id=question-thread-b]")')
+    await inspect(window, 'document.querySelector("[data-runtime-question-id=question-thread-b] [data-cancel-runtime-question]").click()')
+    await waitFor(window, '!document.querySelector("[data-runtime-question-id=question-thread-b]")')
+    await inspect(window, 'document.querySelector("[data-thread-id=thread-a]").click()')
+    await waitFor(window, 'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation")')
+
+    await inspect(window, `window.rollingSkill.smokeEmitRuntimeQuestion({
+        requestId: "question-thread-a",
+        threadId: "thread-a",
+        questions: [
+            {
+                id: "region",
+                header: "Region",
+                question: "Choose one region.",
+                options: [{label: "APAC"}, {label: "Europe"}],
+            },
+            {
+                id: "models",
+                question: "Choose models.",
+                multiSelect: true,
+                options: [{label: "GLM"}, {label: "DeepSeek"}],
+            },
+            {id: "note", question: "Add a note."},
+        ],
+    })`)
+    await waitFor(window, 'document.querySelector("[data-runtime-question-id=question-thread-a]")')
+    await inspect(window, `(() => {
+        const form = document.querySelector("[data-runtime-question-id=question-thread-a]")
+        form.querySelector('[data-runtime-question-option="0"][value="APAC"]').click()
+        for (const input of form.querySelectorAll('[data-runtime-question-option="1"]')) input.click()
+        const custom = form.querySelector('[data-runtime-question-custom="2"]')
+        custom.value = "Use the latest bill."
+        form.requestSubmit()
+    })()`)
+    await waitFor(window, '!document.querySelector("[data-runtime-question-id=question-thread-a]")')
+    const runtimeQuestionResponse = await inspect(window, 'window.rollingSkill.smokeLastRuntimeQuestionResponse()')
+    if (
+        runtimeQuestionResponse?.requestId !== "question-thread-a" ||
+        runtimeQuestionResponse.cancelled ||
+        JSON.stringify(runtimeQuestionResponse.answers) !== JSON.stringify([
+            {id: "region", selected: ["APAC"]},
+            {id: "models", selected: ["GLM", "DeepSeek"]},
+            {id: "note", selected: [], custom: "Use the latest bill."},
+        ])
+    ) {
+        throw new Error(`Runtime question answers were not preserved: ${JSON.stringify(runtimeQuestionResponse)}`)
+    }
+
+    await inspect(window, `(() => {
+        const composer = document.querySelector("#composer-input")
+        composer.value = "保留在当前对话里的未发送草稿"
+        composer.dispatchEvent(new Event("input", {bubbles: true}))
+        document.querySelector("#conversation-scroll").scrollTop = 240
+        document.querySelector("[data-surface=skills]").click()
+    })()`)
+    await waitFor(window, 'document.querySelector("[data-managed-skill-id=managed-skill-smoke]")')
+    const managedSkillSurface = await inspect(window, `(() => ({
+        visible: !document.querySelector("#skill-management-workbench").classList.contains("hidden"),
+        repositories: document.querySelectorAll(".managed-repository-card").length,
+        skills: document.querySelectorAll("[data-managed-skill-id]").length,
+        skill: document.querySelector("[data-managed-skill-id=managed-skill-smoke]")?.textContent,
+        manifest: document.querySelector(".managed-skill-manifest")?.textContent,
+        versions: document.querySelectorAll(".managed-version-card").length,
+        imports: document.querySelectorAll("[data-import-skill]").length,
+        gridColumns: getComputedStyle(document.querySelector(".skill-management-grid")).gridTemplateColumns,
+        panelRects: [...document.querySelector(".skill-management-grid").children].map((entry) => {
+            const rect = entry.getBoundingClientRect()
+            return {left: Math.round(rect.left), top: Math.round(rect.top), width: Math.round(rect.width)}
+        }),
+    }))()`)
+    if (
+        !managedSkillSurface.visible ||
+        managedSkillSurface.repositories !== 1 ||
+        managedSkillSurface.skills !== 2 ||
+        !managedSkillSurface.skill?.includes("billing-cost-management") ||
+        !managedSkillSurface.manifest?.includes("Smoke managed Skill") ||
+        managedSkillSurface.versions !== 1 ||
+        managedSkillSurface.imports !== 4
+    ) {
+        throw new Error(`Managed Skill workbench is incomplete: ${JSON.stringify(managedSkillSurface)}`)
+    }
+    await inspect(window, 'document.querySelector("[data-managed-skill-id=managed-skill-smoke-two]").click()')
+    await waitFor(window, 'document.querySelector(".managed-skill-manifest")?.textContent.includes("Second managed Skill")')
+    await inspect(window, 'document.querySelector("[data-managed-skill-id=managed-skill-smoke]").click()')
+    await waitFor(window, 'document.querySelector(".managed-skill-manifest")?.textContent.includes("Smoke managed Skill")')
+    await inspect(window, 'document.querySelector("[data-import-skill=git-url]").click()')
+    await waitFor(window, 'document.querySelector("#managed-git-url-dialog").open')
+    await inspect(window, 'document.querySelector("#cancel-managed-git-url").click()')
+    await waitFor(window, '!document.querySelector("#managed-git-url-dialog").open')
+    await inspect(window, 'document.querySelector("[data-create-managed-candidate=managed-skill-smoke]").click()')
+    await waitFor(window, 'document.querySelector("#managed-candidate-dialog").open')
+    await inspect(window, `(() => {
+        document.querySelector("#managed-candidate-message").value = "Renderer smoke candidate"
+        document.querySelector("#managed-candidate-form").requestSubmit()
+    })()`)
+    await waitFor(window, 'document.querySelector("[data-release-managed-version=managed-version-created-smoke]")')
+    await inspect(window, 'document.querySelector("[data-release-managed-version=managed-version-created-smoke]").click()')
+    await waitFor(window, 'document.querySelector("#managed-release-dialog").open')
+    await inspect(window, `(() => {
+        document.querySelector("#managed-release-label").value = "v1.0.0"
+        document.querySelector("#managed-release-form").requestSubmit()
+    })()`)
+    await waitFor(window, 'document.querySelector("[data-deprecate-managed-version=managed-version-created-smoke]")')
+    await inspect(window, 'document.querySelector("[data-managed-skill-side-view=installations]").click()')
+    await waitFor(window, 'document.querySelector(\'[data-managed-install-runtime-id="codex:renderer-smoke"]\')')
+    const managedSkillInstallations = await inspect(window, `(() => ({
+        visible: !document.querySelector("#managed-skill-installations").classList.contains("hidden"),
+        version: document.querySelector("#managed-install-version").value,
+        runtimes: document.querySelectorAll(".managed-install-runtime-row").length,
+        model: document.querySelector("[data-managed-install-runtime-model]")?.value,
+        permissions: document.querySelector("[data-managed-install-runtime-permission]")?.options.length,
+        startEnabled: !document.querySelector("#start-managed-skill-installations").disabled,
+    }))()`)
+    if (
+        !managedSkillInstallations.visible ||
+        managedSkillInstallations.version !== "managed-version-created-smoke" ||
+        managedSkillInstallations.runtimes !== 1 ||
+        managedSkillInstallations.permissions < 3 ||
+        !managedSkillInstallations.startEnabled
+    ) {
+        throw new Error(`Managed Skill Runtime installs are incomplete: ${JSON.stringify(managedSkillInstallations)}`)
+    }
+    await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
+    await waitFor(window, '!document.querySelector("#conversation-scroll").classList.contains("hidden")')
+    const restoredChatDraft = await inspect(window, 'document.querySelector("#composer-input").value')
+    if (restoredChatDraft !== "保留在当前对话里的未发送草稿") {
+        throw new Error(`Managed Skill surface cleared the Chat draft: ${restoredChatDraft}`)
+    }
+
     await inspect(window, 'document.querySelector("[data-surface=evaluation]").click()')
     await waitFor(window, 'document.querySelector("[data-evaluation-case-id=case-smoke] strong")')
     const caseCard = await inspect(window, `(() => ({
@@ -263,55 +440,113 @@ async function run() {
     if (!evaluationDuration.includes("1:05") || evaluationDuration.includes("65000 ms")) {
         throw new Error(`Evaluation duration did not use minute-second format: ${evaluationDuration}`)
     }
-    const evaluationRuntimeGroups = await inspect(window, `(() => ({
+    const initialEvaluationRuntime = await inspect(window, `(() => ({
+        tabs: [...document.querySelectorAll("[data-evaluation-runtime-view]")].map((entry) => ({
+            id: entry.dataset.evaluationRuntimeView,
+            active: entry.classList.contains("active"),
+            selected: entry.getAttribute("aria-selected"),
+        })),
         ids: [...document.querySelectorAll("[data-evaluation-runtime-group]")].map(
             (entry) => entry.dataset.evaluationRuntimeGroup,
         ),
         codexCases: document.querySelectorAll(
             '[data-evaluation-runtime-group="codex:renderer-smoke"] .evaluation-result-card',
         ).length,
-        codebuddyCases: document.querySelectorAll(
-            '[data-evaluation-runtime-group="codebuddy:renderer-smoke"] .evaluation-result-card',
-        ).length,
-        codebuddyText: document.querySelector(
-            '[data-evaluation-runtime-group="codebuddy:renderer-smoke"]',
-        )?.textContent,
         codexText: document.querySelector(
             '[data-evaluation-runtime-group="codex:renderer-smoke"]',
         )?.textContent,
     }))()`)
     if (
-        evaluationRuntimeGroups.ids.join(",") !==
-        "codex:renderer-smoke,codebuddy:renderer-smoke" ||
-        evaluationRuntimeGroups.codexCases !== 2 ||
-        evaluationRuntimeGroups.codebuddyCases !== 2
+        initialEvaluationRuntime.tabs.map((entry) => entry.id).join(",") !==
+            "codex:renderer-smoke,codebuddy:renderer-smoke" ||
+        initialEvaluationRuntime.tabs[0]?.active !== true ||
+        initialEvaluationRuntime.tabs[0]?.selected !== "true" ||
+        initialEvaluationRuntime.ids.join(",") !== "codex:renderer-smoke" ||
+        initialEvaluationRuntime.codexCases !== 2
     ) {
         throw new Error(
-            `Evaluation results were not grouped by Runtime: ${JSON.stringify(evaluationRuntimeGroups)}`,
+            `Evaluation Runtime tabs did not default to Codex: ${JSON.stringify(initialEvaluationRuntime)}`,
         )
     }
     if (
-        !evaluationRuntimeGroups.codebuddyText.includes("66/100") ||
-        !evaluationRuntimeGroups.codebuddyText.includes("仅作诊断")
+        !initialEvaluationRuntime.codexText.includes("84/100") ||
+        !initialEvaluationRuntime.codexText.includes("统一 Skill 评分标准") ||
+        initialEvaluationRuntime.codexText.includes("A · 通用") ||
+        initialEvaluationRuntime.codexText.includes("B · 灵活")
     ) {
         throw new Error(
-            `Diagnostic CodeBuddy score was not displayed: ${evaluationRuntimeGroups.codebuddyText}`,
+            `Unified score was not rendered as one rubric: ${initialEvaluationRuntime.codexText}`,
         )
     }
+
+    await inspect(window, 'document.querySelector("[data-evaluation-runtime-view=\\"codebuddy:renderer-smoke\\"]").click()')
+    await waitFor(window, 'document.querySelector("[data-evaluation-runtime-group=\\"codebuddy:renderer-smoke\\"]")')
+    const codeBuddyEvaluationRuntime = await inspect(window, `(() => ({
+        selected: document.querySelector(
+            '[data-evaluation-runtime-view="codebuddy:renderer-smoke"]',
+        )?.getAttribute("aria-selected"),
+        panelRole: document.querySelector(
+            '[data-evaluation-runtime-group="codebuddy:renderer-smoke"]',
+        )?.getAttribute("role"),
+        ids: [...document.querySelectorAll("[data-evaluation-runtime-group]")].map(
+            (entry) => entry.dataset.evaluationRuntimeGroup,
+        ),
+        cases: document.querySelectorAll(
+            '[data-evaluation-runtime-group="codebuddy:renderer-smoke"] .evaluation-result-card',
+        ).length,
+        text: document.querySelector(
+            '[data-evaluation-runtime-group="codebuddy:renderer-smoke"]',
+        )?.textContent,
+    }))()`)
     if (
-        !evaluationRuntimeGroups.codexText.includes("84/100") ||
-        !evaluationRuntimeGroups.codexText.includes("统一 Skill 评分标准") ||
-        evaluationRuntimeGroups.codexText.includes("A · 通用") ||
-        evaluationRuntimeGroups.codexText.includes("B · 灵活")
+        codeBuddyEvaluationRuntime.ids.join(",") !== "codebuddy:renderer-smoke" ||
+        codeBuddyEvaluationRuntime.selected !== "true" ||
+        codeBuddyEvaluationRuntime.panelRole !== "tabpanel" ||
+        codeBuddyEvaluationRuntime.cases !== 2 ||
+        !codeBuddyEvaluationRuntime.text.includes("66/100") ||
+        !codeBuddyEvaluationRuntime.text.includes("旧版评分记录") ||
+        !codeBuddyEvaluationRuntime.text.includes("Legacy Skill evidence remains inspectable.") ||
+        !codeBuddyEvaluationRuntime.text.includes("Legacy workflow evidence remains inspectable.") ||
+        codeBuddyEvaluationRuntime.text.includes("A · 通用") ||
+        codeBuddyEvaluationRuntime.text.includes("B · 灵活")
     ) {
         throw new Error(
-            `Unified score was not rendered as one rubric: ${evaluationRuntimeGroups.codexText}`,
+            `Legacy CodeBuddy grading was not shown neutrally: ${JSON.stringify(codeBuddyEvaluationRuntime)}`,
         )
     }
+    await inspect(window, `(() => {
+        const tab = document.querySelector('[data-evaluation-runtime-view="codebuddy:renderer-smoke"]')
+        tab.focus()
+        tab.dispatchEvent(new KeyboardEvent("keydown", {key: "ArrowLeft", bubbles: true}))
+    })()`)
+    await waitFor(window, 'document.querySelector("[data-evaluation-runtime-view=\\"codex:renderer-smoke\\"]")?.getAttribute("aria-selected") === "true"')
     await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
 
     await inspect(window, 'document.querySelector("#topbar-curations").click()')
     await waitFor(window, 'document.querySelector("#curation-drawer").classList.contains("visible")')
+    const rawCaseAndCurationLayout = await inspect(window, `(() => {
+        const rawCases = document.querySelector("#raw-case-panel")
+        const curation = document.querySelector("#curation-drawer")
+        const rawCasesVisible = rawCases.classList.contains("visible")
+        return {
+            viewportWidth: window.innerWidth,
+            rawCasesVisible,
+            overlap: rawCasesVisible
+                ? Math.max(0, curation.getBoundingClientRect().right - rawCases.getBoundingClientRect().left)
+                : null,
+        }
+    })()`)
+    if (rawCaseAndCurationLayout.viewportWidth > 1120) {
+        if (!rawCaseAndCurationLayout.rawCasesVisible || rawCaseAndCurationLayout.overlap > 1) {
+            throw new Error(
+                `Case drafts covered the persistent Raw Case rail: ${JSON.stringify(rawCaseAndCurationLayout)}`,
+            )
+        }
+    } else if (rawCaseAndCurationLayout.rawCasesVisible) {
+        throw new Error(
+            `Compact layout kept two competing drawers open: ${JSON.stringify(rawCaseAndCurationLayout)}`,
+        )
+    }
     await inspect(window, 'document.querySelector("[data-curation-id=curation-live-smoke]").click()')
     await waitFor(window, 'document.querySelector(".curation-live-activity")')
     await inspect(window, `window.rollingSkill.smokeEmitCurationActivity({
@@ -322,6 +557,10 @@ async function run() {
         lastActivityAt: Date.now(),
         noisyOutput: "huge-noisy-curator-output",
     })`)
+    await waitFor(
+        window,
+        'document.querySelector(".curation-live-activity")?.textContent.includes("sed -n 1,632p")',
+    )
     const liveCuration = await inspect(window, `(() => ({
         text: document.querySelector(".curation-live-activity")?.textContent,
         effort: document.querySelector("[data-curation-effort=curation-live-smoke] option[value='']")?.textContent,
@@ -346,6 +585,36 @@ async function run() {
     }
     if (liveCuration.conversation.includes("rolling-skill-curated-case/v1")) {
         throw new Error("Structured reference JSON was repeated in the Curator conversation")
+    }
+
+    const curationBurst = await inspect(window, `(async () => {
+        const card = document.querySelector(".curation-live-activity")
+        let mutations = 0
+        const observer = new MutationObserver((records) => { mutations += records.length })
+        observer.observe(card, {
+            subtree: true,
+            childList: true,
+            characterData: true,
+            attributes: true,
+        })
+        for (let index = 0; index < 40; index += 1) {
+            window.rollingSkill.smokeEmitCurationActivity({
+                sessionId: "curation-live-smoke",
+                stage: "analyzing",
+                summary: \`reasoning-burst-\${index}\`,
+                startedAt: Date.now() - 2_000,
+                lastActivityAt: Date.now(),
+            })
+        }
+        await new Promise((resolve) => setTimeout(resolve, 120))
+        observer.disconnect()
+        return {mutations, text: card.textContent}
+    })()`)
+    if (!curationBurst.text.includes("reasoning-burst-39")) {
+        throw new Error(`Curator activity burst lost its latest state: ${JSON.stringify(curationBurst)}`)
+    }
+    if (curationBurst.mutations > 12) {
+        throw new Error(`Curator activity burst caused excessive DOM churn: ${JSON.stringify(curationBurst)}`)
     }
 
     await inspect(window, `window.rollingSkill.smokeEmitCurationChanged({
@@ -466,6 +735,19 @@ async function run() {
     }
     await inspect(window, 'document.querySelector("#topbar-curations").click()')
 
+    const caseCaptureReady = await inspect(window, `(() => ({
+        buttons: document.querySelectorAll("[data-save-case]").length,
+        title: document.querySelector("#active-title")?.textContent,
+        loading: Boolean(document.querySelector(".loading-conversation")),
+        failed: Boolean(document.querySelector(".thread-load-failed")),
+        error: document.querySelector("#error-banner")?.textContent,
+        messages: document.querySelectorAll(".message.assistant").length,
+        curationOpen: document.querySelector("#curation-drawer")?.classList.contains("visible"),
+        routing: window.rollingSkill.smokeNotificationRoutingMetrics(),
+    }))()`)
+    if (!caseCaptureReady.buttons) {
+        throw new Error(`Conversation unavailable before Case capture: ${JSON.stringify(caseCaptureReady)}`)
+    }
     await inspect(window, `(() => {
         window.rollingSkill.smokeFailNextCuration()
         document.querySelector("[data-save-case]")?.click()
@@ -518,6 +800,12 @@ async function run() {
     }
     await inspect(window, 'document.querySelector("#close-case-dialog")?.click()')
     await waitFor(window, '!document.querySelector("#save-case-dialog")?.open')
+    await inspect(window, 'document.querySelector("#close-curations")?.click()')
+    await waitFor(window, '!document.querySelector("#curation-drawer")?.classList.contains("visible")')
+    await waitFor(
+        window,
+        'window.rollingSkill.smokeNotificationRoutingMetrics().observationPhase === "live" && !document.querySelector(".loading-conversation")',
+    )
 
     const alphaPosition = await inspect(
         window,
@@ -532,6 +820,43 @@ async function run() {
         })()`,
     )
     await new Promise((resolve) => setTimeout(resolve, 50))
+    await inspect(
+        window,
+        `(async () => {
+            const item = [...document.querySelectorAll(".message.assistant")]
+                .find((entry) => entry.textContent.includes("Alpha response 17"))
+            window.__streamTurnBlock = item.closest(".turn-block")
+            for (let index = 0; index < 20; index += 1) {
+                window.rollingSkill.smokeEmitNotification({
+                    method: "item/agentMessage/delta",
+                    params: {
+                        threadId: "thread-a",
+                        turnId: "thread-a-turn-17",
+                        itemId: "thread-a-agent-17",
+                        delta: String(index % 10),
+                    },
+                })
+                await new Promise((resolve) => setTimeout(resolve, 8))
+            }
+            return true
+        })()`,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const boundedStreamingRender = await inspect(
+        window,
+        `(() => {
+            const item = [...document.querySelectorAll(".message.assistant")]
+                .find((entry) => entry.textContent.includes("Alpha response 17"))
+            return {
+                sameTurnBlock: item.closest(".turn-block") === window.__streamTurnBlock,
+                complete: item.querySelector(".message-body").textContent
+                    .endsWith("01234567890123456789"),
+            }
+        })()`,
+    )
+    if (!boundedStreamingRender.sameTurnBlock || !boundedStreamingRender.complete) {
+        throw new Error(`Streaming deltas rebuilt the conversation or lost text: ${JSON.stringify(boundedStreamingRender)}`)
+    }
     await inspect(
         window,
         `window.rollingSkill.smokeEmitNotification({
@@ -561,6 +886,30 @@ async function run() {
     if ((await inspect(window, 'document.querySelector("#composer-input").value')) !== "") {
         throw new Error("Thread B inherited Thread A's draft")
     }
+    const backgroundRoutingBefore = await inspect(
+        window,
+        'window.rollingSkill.smokeNotificationRoutingMetrics()',
+    )
+    await inspect(
+        window,
+        'window.rollingSkill.smokeAppendBackgroundAnswer("thread-a", "Background answer recovered from runtime history", 100)',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    const backgroundRoutingAfter = await inspect(
+        window,
+        'window.rollingSkill.smokeNotificationRoutingMetrics()',
+    )
+    if (
+        backgroundRoutingAfter.deliveredTimelineNotifications !==
+            backgroundRoutingBefore.deliveredTimelineNotifications ||
+        backgroundRoutingAfter.blockedTimelineNotifications -
+            backgroundRoutingBefore.blockedTimelineNotifications < 102 ||
+        (await inspect(window, 'document.querySelector("#conversation")?.textContent.includes("Background answer recovered")'))
+    ) {
+        throw new Error(
+            `Background conversation events reached the visible timeline: ${JSON.stringify({backgroundRoutingBefore, backgroundRoutingAfter})}`,
+        )
+    }
     await inspect(
         window,
         `(() => {
@@ -573,7 +922,7 @@ async function run() {
     await inspect(window, 'document.querySelector("[data-thread-id=thread-a]").click()')
     await waitFor(
         window,
-        'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation") && document.querySelector("#composer-input").value === "draft-alpha"',
+        'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation") && document.querySelector("#composer-input").value === "draft-alpha" && document.querySelector("#conversation")?.textContent.includes("Background answer recovered from runtime history")',
     )
     await new Promise((resolve) => setTimeout(resolve, 50))
     const restoredAlphaPosition = await inspect(
@@ -717,6 +1066,18 @@ async function run() {
     }
     await inspect(window, 'document.querySelector("#cancel-settings").click()')
 
+    await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
+    await inspect(window, 'document.querySelector("[data-thread-view=current]").click()')
+    await inspect(window, 'document.querySelector("[data-thread-id=thread-a]").click()')
+    await waitFor(window, 'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation")')
+    await waitFor(window, '!document.querySelector("[data-dispatch-raw-case=raw-case-smoke][data-dispatch-mode=current]").disabled')
+    await inspect(window, 'document.querySelector("[data-dispatch-raw-case=raw-case-smoke][data-dispatch-mode=current]").click()')
+    await waitFor(window, '!document.querySelector("[data-raw-case-id=raw-case-smoke]")')
+    const rawCaseTurnText = await inspect(window, 'window.rollingSkill.smokeLastRawCaseTurnText()')
+    if (rawCaseTurnText !== "查一下还没验证的 8 月账单问题") {
+        throw new Error(`Raw Case was not dispatched verbatim: ${JSON.stringify(rawCaseTurnText)}`)
+    }
+
     if (rendererErrors.length) throw new Error(`Renderer console errors: ${rendererErrors.join(" | ")}`)
     const screenshotPath = process.env.ROLLING_SKILL_RENDERER_SMOKE_SCREENSHOT
     if (screenshotPath) {
@@ -735,6 +1096,11 @@ async function run() {
             await waitFor(window, 'document.querySelector("#export-dataset-dialog").open')
             await inspect(window, 'document.querySelector("#export-case-scope").value = "goodcase"')
             await inspect(window, 'document.querySelector("#export-output-mode").value = "original"')
+        } else if (process.env.ROLLING_SKILL_RENDERER_SMOKE_SCREENSHOT_SURFACE === "skills") {
+            await inspect(window, 'document.querySelector("[data-surface=skills]").click()')
+            await waitFor(window, 'document.querySelector("[data-managed-skill-id=managed-skill-smoke]")')
+            await inspect(window, 'document.querySelector("[data-managed-skill-id=managed-skill-smoke]").click()')
+            await waitFor(window, 'document.querySelector(".managed-skill-manifest")')
         } else {
             await inspect(window, 'document.querySelector("[data-thread-view=current]").click()')
             await waitFor(window, 'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation")')
@@ -751,6 +1117,9 @@ async function run() {
             newTaskDraft: true,
             restoredScrollTop: restoredAlphaPosition,
             streamingPositionHeld: true,
+            boundedStreamingRender: true,
+            backgroundNotificationRouting: true,
+            backgroundThreadCatchUp: true,
             readFailureRecovered: true,
             emptyArchiveLoadCancelled: true,
             staleRuntimeModelsIgnored: true,
@@ -764,11 +1133,19 @@ async function run() {
             rubricActivityPatched: true,
             evaluationDurationMinuteSecond: true,
             curatorLiveActivity: true,
+            curatorActivityBackpressure: curationBurst.mutations <= 12,
             curatorReferenceCard: true,
             curatorDraftRemainsSaveable: true,
             curatorDraftPreservedOnEffortChange: true,
             badcaseFailureLed: true,
             settingsActionsPinned: true,
+            rawCaseInbox: true,
+            rawCaseVerbatimDispatch: true,
+            sourceCaseRangeMarker: true,
+            managedSkillRepositories: true,
+            managedSkillInstallations: true,
+            managedSkillGridColumns: managedSkillSurface.gridColumns,
+            managedSkillPanelRects: managedSkillSurface.panelRects,
             rendererErrors: 0,
         })}\n`,
     )

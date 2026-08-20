@@ -141,6 +141,7 @@ class FakeClient extends EventEmitter {
     }
 
     async resumeThread(threadId, options) {
+        this.resumedThreadId = threadId
         this.threadOptions = options
         return {thread: {id: threadId}}
     }
@@ -182,7 +183,15 @@ function successfulBehavior(options = {}) {
             const items = options.items ?? [
                 {id: "message-1", type: "agentMessage", text: "Checking target"},
                 {id: "command-1", type: "commandExecution", command: "git archive", status: "completed"},
-                {id: "message-2", type: "agentMessage", text: resultText(request)},
+                {
+                    id: "message-2",
+                    type: "agentMessage",
+                    text: resultText(request, {
+                        operation: turn.prompt.includes('"operation": "inspect"')
+                            ? "inspect"
+                            : "install",
+                    }),
+                },
             ]
             for (const item of items) {
                 client.emit("notification", {
@@ -383,7 +392,7 @@ describe("Runtime Skill installation manager", () => {
         assert.equal(clients[0].stopped, true)
     })
 
-    it("interrupts an active turn and ends the job as cancelled", async () => {
+    it("interrupts an active turn, performs a read-only inspection, and keeps the job cancelled", async () => {
         const turnStarted = deferred()
         const behavior = {
             runtimeId: "codex:one",
@@ -391,7 +400,25 @@ describe("Runtime Skill installation manager", () => {
             turnSequence: 1,
             requestForPrompt: () => null,
             async run(client, turn) {
-                turnStarted.resolve({client, turn})
+                if (client.startedTurns.length === 1) {
+                    turnStarted.resolve({client, turn})
+                    return
+                }
+                const text = resultText(client.options.installationRequest, {
+                    operation: "inspect",
+                })
+                client.emit("notification", {
+                    method: "item/completed",
+                    params: {
+                        threadId: turn.threadId,
+                        turnId: turn.turnId,
+                        item: {id: "inspect-result", type: "agentMessage", text},
+                    },
+                })
+                client.emit("notification", {
+                    method: "turn/completed",
+                    params: {threadId: turn.threadId, turn: {id: turn.turnId, status: "completed"}},
+                })
             },
             onInterrupt(client, turn) {
                 client.emit("notification", {
@@ -409,6 +436,49 @@ describe("Runtime Skill installation manager", () => {
         await manager.wait(job.id)
 
         assert.equal(client.interrupts.length, 1)
-        assert.equal(store.getJob(job.id).status, "cancelled")
+        assert.equal(client.startedTurns.length, 2)
+        assert.match(client.startedTurns[1].prompt, /"operation": "inspect"/u)
+        assert.equal(client.startedTurns[1].options.permissionMode, "read-only")
+        const stored = store.getJob(job.id)
+        assert.equal(stored.status, "cancelled")
+        assert.equal(stored.parsedResult.operation, "inspect")
+    })
+
+    it("starts an explicit read-only inspection in the existing installer thread", async () => {
+        const {manager, store, clients, start} = fixture()
+        const [installed] = await start()
+        await manager.wait(installed.id)
+
+        const inspected = await manager.inspect(installed.id)
+        await manager.wait(inspected.id)
+
+        assert.equal(clients.length, 2)
+        assert.equal(clients[1].resumedThreadId, store.getJob(installed.id).threadId)
+        assert.equal(clients[1].threadOptions.permissionMode, "read-only")
+        const stored = store.getJob(inspected.id)
+        assert.equal(stored.operation, "inspect")
+        assert.equal(stored.parentJobId, installed.id)
+        assert.equal(stored.status, "succeeded")
+        assert.equal(stored.parsedResult.operation, "inspect")
+    })
+
+    it("continues a terminal installer session without changing its trusted outcome", async () => {
+        const {manager, store, clients, start} = fixture()
+        const [installed] = await start()
+        await manager.wait(installed.id)
+        const before = store.getJob(installed.id)
+
+        await manager.send(installed.id, "Explain how the destination was discovered.")
+        await manager.wait(installed.id)
+
+        const after = store.getJob(installed.id)
+        assert.equal(clients.length, 2)
+        assert.equal(clients[1].resumedThreadId, before.threadId)
+        assert.equal(after.status, "succeeded")
+        assert.equal(after.conversationStatus, "idle")
+        assert.equal(after.completedAt, before.completedAt)
+        assert.ok(after.timeline.some(
+            (entry) => entry.role === "user" && entry.content.includes("destination was discovered"),
+        ))
     })
 })

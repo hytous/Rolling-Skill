@@ -181,6 +181,45 @@ describe("Rubric Agent manager", () => {
         assert.equal(sessionCopies, 0)
     })
 
+    it("coalesces repeated Rubric Agent reasoning activity before it crosses IPC", async () => {
+        const activity = []
+        const scheduledActivity = []
+        manager = new RubricManager({
+            store,
+            getRuntime: async () => runtime,
+            getRuntimeDescriptor: () => ({runtimeId: "codex:alpha", providerId: "codex"}),
+            onActivity: (entry) => activity.push(entry),
+            schedule: (task) => task(),
+            scheduleActivity(callback, delayMs) {
+                const timer = {callback, delayMs}
+                scheduledActivity.push(timer)
+                return timer
+            },
+            cancelActivity() {},
+        })
+        const session = await start()
+        activity.length = 0
+        scheduledActivity.length = 0
+
+        for (let index = 0; index < 100; index += 1) {
+            await manager.handleNotification({
+                method: "item/started",
+                params: {
+                    threadId: session.rubricAgent.threadId,
+                    turnId: session.rubricAgent.currentTurnId,
+                    item: {type: "reasoning", summary: [`chunk-${index}`]},
+                },
+            })
+        }
+
+        assert.equal(activity.length, 1)
+        assert.equal(scheduledActivity.length, 1)
+        assert.equal(scheduledActivity[0].delayMs, 250)
+        scheduledActivity[0].callback()
+        assert.equal(activity.length, 2)
+        assert.equal(activity.at(-1).stage, "analyzing")
+    })
+
     it("keeps conversational review while applying complete JSON revisions", async () => {
         let session = await start()
         session = await complete(session)

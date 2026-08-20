@@ -179,4 +179,18 @@ describe("Runtime-driven Skill installation protocol", () => {
         assert.doesNotMatch(prompt, /\.codex\/skills|\.codebuddy\/skills|\.dsh\/skills/u)
         assert.doesNotMatch(prompt, /Codex|CodeBuddy|DeepSeek Harness/u)
     })
+
+    it("builds an inspect-only recovery prompt that forbids filesystem changes", () => {
+        const request = fixtureRequest()
+        const prompt = buildSkillInstallationPrompt(request, {
+            operation: "inspect",
+            requestedPermission: "read-only",
+        })
+
+        assert.match(prompt, /strictly read-only/u)
+        assert.match(prompt, /Do not create, edit, move, delete, overwrite, or chmod/u)
+        assert.match(prompt, /Do not request write permission/u)
+        assert.match(prompt, /"operation": "inspect"/u)
+        assert.doesNotMatch(prompt, /If authorized, install\/update/u)
+    })
 })

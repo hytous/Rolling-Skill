@@ -293,6 +293,103 @@ describe("unified evaluation grading contract", () => {
         assert.equal(JSON.stringify(contract).includes('"record"'), false)
     })
 
+    it("requires real execution Trace citations before a workflow criterion can receive a passing rating", () => {
+        const contract = scoreContract({evidenceCatalog: evidenceCatalog()})
+        const workflow = contract.criteria.find((entry) => entry.id === "R1")
+        assert.deepEqual(workflow.requiredEvidenceGroups, [
+            {
+                id: "skill_execution",
+                kinds: ["skill_read"],
+            },
+            {
+                id: "runtime_execution",
+                kinds: ["command", "tool_call"],
+            },
+            {
+                id: "agent_response",
+                kinds: ["response"],
+            },
+        ])
+
+        const responseOnly = passingJudge(contract)
+        assert.throws(
+            () => validateJudgeResult(responseOnly, contract),
+            /R1.*skill_execution.*typed evidence/i,
+        )
+
+        const activationOnlyCatalog = evidenceCatalog()
+        activationOnlyCatalog.entries[2] = {
+            id: "trace:L1",
+            source: "trace",
+            kind: "skill_activation",
+            kinds: ["skill_activation"],
+            sequence: 1,
+        }
+        const activationOnlyContract = scoreContract({evidenceCatalog: activationOnlyCatalog})
+        const activationOnly = passingJudge(activationOnlyContract)
+        activationOnly.assessments.find((entry) => entry.criterionId === "R1").evidenceRefs = [
+            "response",
+            "trace:L1",
+            "trace:L2",
+        ]
+        assert.throws(
+            () => validateJudgeResult(activationOnly, activationOnlyContract),
+            /R1.*skill_execution.*skill_read/i,
+        )
+
+        const traceBacked = passingJudge(contract)
+        traceBacked.assessments.find((entry) => entry.criterionId === "R1").evidenceRefs = [
+            "response",
+            "trace:L1",
+            "trace:L2",
+        ]
+        assert.doesNotThrow(() => validateJudgeResult(traceBacked, contract))
+    })
+
+    it("requires a typed reference-read event when the published rubric makes that read mandatory", () => {
+        const rubric = datasetRubric()
+        rubric.criteria[0].evidenceRequirements.push(
+            "Read the required reference before the dependent operation.",
+        )
+        const catalog = evidenceCatalog()
+        catalog.entries.push({
+            id: "trace:L3",
+            source: "trace",
+            kind: "reference_read",
+            kinds: ["reference_read"],
+            sequence: 3,
+        })
+        const contract = scoreContract({
+            rubricVersion: rubricVersion(rubric),
+            evidenceCatalog: catalog,
+        })
+        assert.deepEqual(
+            contract.criteria.find((entry) => entry.id === "R1").requiredEvidenceGroups,
+            [
+                {id: "skill_execution", kinds: ["skill_read"]},
+                {id: "required_references", kinds: ["reference_read"]},
+                {id: "runtime_execution", kinds: ["command", "tool_call"]},
+                {id: "agent_response", kinds: ["response"]},
+            ],
+        )
+
+        const missingReferenceRead = passingJudge(contract)
+        missingReferenceRead.assessments.find((entry) => entry.criterionId === "R1").evidenceRefs = [
+            "response",
+            "trace:L1",
+            "trace:L2",
+        ]
+        assert.throws(
+            () => validateJudgeResult(missingReferenceRead, contract),
+            /R1.*required_references.*reference_read/i,
+        )
+
+        missingReferenceRead.assessments.find((entry) => entry.criterionId === "R1").evidenceRefs.push(
+            "trace:L3",
+        )
+        assert.doesNotThrow(() => validateJudgeResult(missingReferenceRead, contract))
+    })
+
     it("asks the Judge for one assessment list and never for A/B or scores", () => {
         const catalog = evidenceCatalog()
         const contract = scoreContract({evidenceCatalog: catalog})
@@ -310,6 +407,9 @@ describe("unified evaluation grading contract", () => {
         assert.doesNotMatch(prompt, /aAssessments|bAssessments|A assessment|B assessment/)
         assert.match(prompt, /Do not return any score or verdict field/)
         assert.match(prompt, /automatic_failure[\s\S]*rating must be either 0 or 10/i)
+        assert.match(prompt, /point-in-time numeric facts/i)
+        assert.match(prompt, /do not penalize a different live value/i)
+        assert.match(prompt, /response description cannot prove that an execution happened/i)
         assert.equal(prompt.split("Skill contents").length - 1, 1)
     })
 

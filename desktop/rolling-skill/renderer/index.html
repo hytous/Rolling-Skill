@@ -22,6 +22,7 @@
                     <div id="surface-switch" class="surface-switch" role="group" aria-label="Main surface">
                         <button class="active" type="button" data-surface="chat" data-i18n="chat">Chat</button>
                         <button type="button" data-surface="evaluation" data-i18n="skillEvaluation">Skill evaluation</button>
+                        <button type="button" data-surface="skills" data-i18n="skillManagement">Skill management</button>
                     </div>
                     <button id="new-task" class="new-task-button" type="button">
                         <span aria-hidden="true">＋</span>
@@ -76,6 +77,10 @@
                     <button id="runtime-status" class="runtime-status starting" type="button">
                         <span class="runtime-dot" aria-hidden="true"></span>
                         <span id="runtime-label" data-i18n="detectingRuntimes">Detecting local runtimes</span>
+                    </button>
+                    <button id="topbar-raw-cases" class="topbar-button raw-case-toggle" type="button">
+                        <span data-i18n="rawCases">Raw Cases</span>
+                        <span id="raw-case-count" class="raw-case-count">0</span>
                     </button>
                     <button id="topbar-curations" class="topbar-button" type="button" data-i18n="caseDrafts">Case drafts</button>
                     <button id="topbar-trace" class="topbar-button" type="button" data-i18n="trace">Trace</button>
@@ -237,7 +242,87 @@
                         <div id="evaluation-run-detail" class="evaluation-run-detail"></div>
                     </section>
                 </section>
+
+                <section id="skill-management-workbench" class="skill-management-workbench hidden" aria-label="Skill management">
+                    <header class="skill-management-header">
+                        <div>
+                            <div class="drawer-eyebrow" data-i18n="skillRepositoryWorkbench">SKILL REPOSITORY WORKBENCH</div>
+                            <h1 data-i18n="managedSkillRepositories">Managed Skill repositories</h1>
+                            <p data-i18n="managedSkillHelp">Import editable repositories, review working changes, and release immutable Skill versions.</p>
+                        </div>
+                        <div class="skill-import-actions">
+                            <button type="button" data-import-skill="folder" data-i18n="importFolder">Import folder</button>
+                            <button type="button" data-import-skill="zip" data-i18n="importZip">Import ZIP</button>
+                            <button type="button" data-import-skill="local-git" data-i18n="importGitRepository">Import local Git</button>
+                            <button type="button" data-import-skill="git-url" data-i18n="cloneGitUrl">Clone Git URL</button>
+                            <button id="refresh-managed-skills" type="button" data-i18n="refresh">Refresh</button>
+                        </div>
+                    </header>
+                    <p id="managed-skill-error" class="managed-skill-error hidden" role="alert"></p>
+                    <div class="skill-management-grid">
+                        <aside class="managed-skill-panel managed-repository-panel">
+                            <div class="managed-skill-panel-head">
+                                <span data-i18n="managedRepositories">Repositories</span>
+                                <strong id="managed-repository-count">0</strong>
+                            </div>
+                            <nav id="managed-repository-list" class="managed-repository-list"></nav>
+                        </aside>
+                        <section id="managed-skill-detail" class="managed-skill-panel managed-skill-detail"></section>
+                        <aside class="managed-skill-panel managed-skill-side-panel">
+                            <div id="managed-skill-side-tabs" class="managed-skill-side-tabs" role="tablist">
+                                <button class="active" type="button" role="tab" aria-selected="true" data-managed-skill-side-view="versions" data-i18n="managedVersions">Versions</button>
+                                <button type="button" role="tab" aria-selected="false" data-managed-skill-side-view="installations" data-i18n="runtimeInstallations">Runtime installs</button>
+                            </div>
+                            <div id="managed-skill-versions" class="managed-skill-versions"></div>
+                            <div id="managed-skill-installations" class="managed-skill-installations hidden">
+                                <label class="managed-install-field">
+                                    <span data-i18n="releasedVersion">Released version</span>
+                                    <select id="managed-install-version"></select>
+                                </label>
+                                <div id="managed-install-runtime-list" class="managed-install-runtime-list"></div>
+                                <button id="start-managed-skill-installations" class="primary managed-install-start" type="button" data-i18n="installWithRuntimes">Install with selected runtimes</button>
+                                <div class="managed-install-section-head" data-i18n="installationJobs">Installation jobs</div>
+                                <div id="managed-install-job-list" class="managed-install-job-list"></div>
+                                <section id="managed-install-session" class="managed-install-session"></section>
+                                <div class="managed-install-session-actions">
+                                    <button id="inspect-managed-skill-installation" class="hidden" type="button" data-i18n="inspectInstallation">Inspect read-only</button>
+                                    <button id="cancel-managed-skill-installation" class="stop-button managed-install-stop hidden" type="button" title="Stop installation"><span aria-hidden="true"></span></button>
+                                </div>
+                            </div>
+                        </aside>
+                    </div>
+                </section>
             </main>
+
+            <aside id="raw-case-panel" class="raw-case-panel visible" aria-label="Raw Case inbox">
+                <header class="drawer-header raw-case-header">
+                    <div>
+                        <div class="drawer-eyebrow" data-i18n="rawCaseInbox">RAW CASE INBOX</div>
+                        <h2 data-i18n="rawCases">Raw Cases</h2>
+                    </div>
+                    <button id="close-raw-cases" class="icon-button large" type="button" title="Close Raw Cases">×</button>
+                </header>
+                <form id="raw-case-form" class="raw-case-form">
+                    <label>
+                        <span data-i18n="skill">Skill</span>
+                        <input id="raw-case-skill" type="text" maxlength="200" list="raw-case-skill-options" required data-i18n-placeholder="rawCaseSkillPlaceholder" placeholder="Skill name" />
+                        <datalist id="raw-case-skill-options"></datalist>
+                    </label>
+                    <label>
+                        <span data-i18n="rawCaseQuestion">Question</span>
+                        <textarea id="raw-case-question" rows="3" maxlength="120000" required data-i18n-placeholder="rawCaseQuestionPlaceholder" placeholder="Save an unverified question…"></textarea>
+                    </label>
+                    <label>
+                        <span data-i18n="noteOptional">Note · optional</span>
+                        <input id="raw-case-note" type="text" maxlength="10000" data-i18n-placeholder="rawCaseNotePlaceholder" placeholder="Why keep this case?" />
+                    </label>
+                    <div class="raw-case-form-actions">
+                        <button id="cancel-raw-case-edit" class="hidden" type="button" data-i18n="cancel">Cancel</button>
+                        <button id="add-raw-case" class="primary" type="submit" data-i18n="addToInbox">Add to inbox</button>
+                    </div>
+                </form>
+                <div id="raw-case-list" class="raw-case-list"></div>
+            </aside>
 
             <aside id="trace-drawer" class="trace-drawer" aria-label="Local trace">
                 <header class="drawer-header">
@@ -643,6 +728,63 @@
             </form>
         </dialog>
 
+        <dialog id="managed-git-url-dialog" class="case-dialog confirm-dialog">
+            <form id="managed-git-url-form" class="confirm-dialog-body">
+                <div class="dialog-header">
+                    <div><div class="drawer-eyebrow">GIT IMPORT</div><h2 data-i18n="cloneGitUrl">Clone Git URL</h2></div>
+                    <button id="close-managed-git-url-dialog" class="icon-button large" type="button">×</button>
+                </div>
+                <label class="field">
+                    <span data-i18n="gitUrl">Git URL</span>
+                    <input id="managed-git-url" type="text" maxlength="8192" autocomplete="off" required placeholder="https://… or git@host:owner/repo.git" />
+                </label>
+                <p id="managed-git-url-error" class="case-dialog-error hidden" role="alert"></p>
+                <div class="dialog-footer">
+                    <span></span>
+                    <button id="cancel-managed-git-url" type="button" data-i18n="cancel">Cancel</button>
+                    <button id="confirm-managed-git-url" class="primary" type="submit" data-i18n="import">Import</button>
+                </div>
+            </form>
+        </dialog>
+
+        <dialog id="managed-candidate-dialog" class="case-dialog confirm-dialog">
+            <form id="managed-candidate-form" class="confirm-dialog-body">
+                <div class="dialog-header">
+                    <div><div class="drawer-eyebrow">CANDIDATE</div><h2 data-i18n="createCandidate">Create candidate</h2></div>
+                    <button id="close-managed-candidate-dialog" class="icon-button large" type="button">×</button>
+                </div>
+                <label class="field">
+                    <span data-i18n="candidateMessage">Change summary</span>
+                    <textarea id="managed-candidate-message" rows="4" maxlength="2000" required></textarea>
+                </label>
+                <p id="managed-candidate-error" class="case-dialog-error hidden" role="alert"></p>
+                <div class="dialog-footer">
+                    <span></span>
+                    <button id="cancel-managed-candidate" type="button" data-i18n="cancel">Cancel</button>
+                    <button id="confirm-managed-candidate" class="primary" type="submit" data-i18n="createCandidate">Create candidate</button>
+                </div>
+            </form>
+        </dialog>
+
+        <dialog id="managed-release-dialog" class="case-dialog confirm-dialog">
+            <form id="managed-release-form" class="confirm-dialog-body">
+                <div class="dialog-header">
+                    <div><div class="drawer-eyebrow">RELEASE</div><h2 data-i18n="releaseVersion">Release version</h2></div>
+                    <button id="close-managed-release-dialog" class="icon-button large" type="button">×</button>
+                </div>
+                <label class="field">
+                    <span data-i18n="versionLabel">Version label</span>
+                    <input id="managed-release-label" type="text" maxlength="64" required placeholder="v1.0.0" />
+                </label>
+                <p id="managed-release-error" class="case-dialog-error hidden" role="alert"></p>
+                <div class="dialog-footer">
+                    <span></span>
+                    <button id="cancel-managed-release" type="button" data-i18n="cancel">Cancel</button>
+                    <button id="confirm-managed-release" class="primary" type="submit" data-i18n="releaseVersion">Release version</button>
+                </div>
+            </form>
+        </dialog>
+
         <div id="toast" class="toast hidden" role="status"></div>
         <script src="../node_modules/marked/lib/marked.umd.js"></script>
         <script src="../node_modules/he/he.js"></script>
@@ -650,6 +792,7 @@
         <script src="message-markdown.js"></script>
         <script src="thread-view-state.js"></script>
         <script src="command-activity.js"></script>
+        <script src="stream-render-queue.js"></script>
         <script src="evaluation-format.js"></script>
         <script src="case-calibration-batch.js"></script>
         <script src="renderer.js"></script>

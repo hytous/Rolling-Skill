@@ -14,6 +14,12 @@ const CODEBUDDY_PERMISSION_MODES = Object.freeze([
     {value: "fullAccess", label: "fullLocalAccess"},
 ])
 
+const DEEPSEEK_HARNESS_PERMISSION_MODES = Object.freeze([
+    {value: "danger-full-access", label: "fullLocalAccess"},
+    {value: "workspace-write", label: "workspaceOnlyAccess"},
+    {value: "read-only", label: "readOnlyAccess"},
+])
+
 function resolveExecutionPolicy(settings = {}) {
     return {
         sandbox: settings.localAccess === "workspace" ? "workspace-write" : "danger-full-access",
@@ -26,6 +32,9 @@ function permissionModeOptions(providerId) {
     if (providerId === "codebuddy") {
         return CODEBUDDY_PERMISSION_MODES.map((entry) => ({...entry}))
     }
+    if (providerId === "deepseek-harness") {
+        return DEEPSEEK_HARNESS_PERMISSION_MODES.map((entry) => ({...entry}))
+    }
     return []
 }
 
@@ -34,11 +43,13 @@ function defaultPermissionMode(providerId, settings = {}) {
         return settings.localAccess === "workspace" ? "workspace" : "full"
     }
     if (providerId === "codebuddy") return "auto"
+    if (providerId === "deepseek-harness") {
+        return settings.localAccess === "workspace" ? "workspace-write" : "danger-full-access"
+    }
     return null
 }
 
 function resolveRuntimePermission(providerId, requestedMode, settings = {}) {
-    if (providerId === "deepseek-harness") return {}
     const permissionMode = requestedMode || defaultPermissionMode(providerId, settings)
     const supported =
         providerId === "codebuddy"
@@ -59,6 +70,9 @@ function resolveRuntimePermission(providerId, requestedMode, settings = {}) {
                       : "workspace-write",
             approvalPolicy: "never",
         }
+    }
+    if (providerId === "deepseek-harness") {
+        return {permissionMode}
     }
     return {permissionMode}
 }

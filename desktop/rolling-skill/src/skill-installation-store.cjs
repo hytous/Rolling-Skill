@@ -18,6 +18,8 @@ const SKILL_INSTALLATION_STORE_SCHEMA = "rolling-skill-installations/v1"
 const MAX_STORE_BYTES = 24 * 1024 * 1024
 const MAX_ENTRY_BYTES = 128 * 1024
 const MAX_TIMELINE_ENTRIES = 2_000
+const OPERATIONS = new Set(["install", "inspect"])
+const CONVERSATION_STATUSES = new Set(["idle", "running", "failed"])
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "unverified"])
 const NONTERMINAL_STATUSES = new Set([
     "queued",
@@ -131,6 +133,12 @@ function validateState(state) {
         jobIds.add(id)
         normalizeRuntime(job.runtime)
         normalizeRequest(job.request)
+        if (!OPERATIONS.has(job.operation)) throw new Error("Skill installation operation is invalid")
+        nullableText(job.parentJobId, "Parent installation job id", 200)
+        if (!CONVERSATION_STATUSES.has(job.conversationStatus)) {
+            throw new Error("Skill installation conversation status is invalid")
+        }
+        normalizeError(job.conversationError)
         if (!ALL_STATUSES.has(job.status)) throw new Error("Skill installation job status is invalid")
         if (!Array.isArray(job.messages) || !Array.isArray(job.activities) || !Array.isArray(job.timeline)) {
             throw new Error("Skill installation timeline is invalid")
@@ -184,6 +192,10 @@ class SkillInstallationStore {
         try {
             const parsed = JSON.parse(readFileSync(this.path, "utf8"))
             for (const job of parsed.jobs ?? []) {
+                job.operation ??= "install"
+                job.parentJobId ??= null
+                job.conversationStatus ??= "idle"
+                job.conversationError ??= null
                 if (Array.isArray(job.timeline)) continue
                 job.timeline = [
                     ...(job.messages ?? []).map((entry) => ({...entry, kind: "message"})),
@@ -208,6 +220,16 @@ class SkillInstallationStore {
                 message: "Rolling Skill stopped before the installation task reached a verified result",
             }
             job.completedAt = now
+            job.updatedAt = now
+            recovered = true
+        }
+        for (const job of this.state.jobs) {
+            if (job.conversationStatus !== "running") continue
+            job.conversationStatus = "failed"
+            job.conversationError = {
+                code: "INSTALLER_CONVERSATION_INTERRUPTED",
+                message: "Rolling Skill stopped before the installer follow-up completed",
+            }
             job.updatedAt = now
             recovered = true
         }
@@ -260,6 +282,8 @@ class SkillInstallationStore {
         const now = new Date().toISOString()
         const job = {
             id: randomUUID(),
+            operation: OPERATIONS.has(input.operation) ? input.operation : "install",
+            parentJobId: nullableText(input.parentJobId, "Parent installation job id", 200),
             runtime: normalizeRuntime(input.runtime),
             request: normalizeRequest(input.request),
             modelId: nullableText(input.modelId, "Installation model", 300),
@@ -269,8 +293,10 @@ class SkillInstallationStore {
             effectiveEffort: null,
             effectivePermissionMode: null,
             status: "queued",
-            threadId: null,
+            threadId: nullableText(input.threadId, "Installer thread id", 300),
             turnId: null,
+            conversationStatus: "idle",
+            conversationError: null,
             messages: [],
             activities: [],
             timeline: [],
@@ -321,6 +347,8 @@ class SkillInstallationStore {
             "rawResult",
             "parsedResult",
             "error",
+            "conversationStatus",
+            "conversationError",
         ])
         for (const key of Object.keys(patch)) {
             if (!allowed.has(key)) throw new Error(`Unsupported Skill installation job field: ${key}`)
@@ -331,10 +359,15 @@ class SkillInstallationStore {
             if (!job.startedAt && nextStatus !== "queued") job.startedAt = new Date().toISOString()
             for (const key of allowed) {
                 if (!Object.hasOwn(patch, key) || key === "status") continue
-                job[key] = key === "error" ? normalizeError(patch[key]) : copy(patch[key])
+                job[key] = key === "error" || key === "conversationError"
+                    ? normalizeError(patch[key])
+                    : copy(patch[key])
+            }
+            if (!CONVERSATION_STATUSES.has(job.conversationStatus)) {
+                throw new Error("Skill installation conversation status is invalid")
             }
             job.updatedAt = new Date().toISOString()
-            if (TERMINAL_STATUSES.has(nextStatus)) job.completedAt = job.updatedAt
+            if (TERMINAL_STATUSES.has(nextStatus) && !job.completedAt) job.completedAt = job.updatedAt
             return job
         })
     }

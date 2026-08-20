@@ -8,6 +8,11 @@ const {TraceRecorder} = require("./trace-recorder.cjs")
 
 const DEFAULT_POLL_INTERVAL_MS = 180
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000
+const DEFAULT_STARTUP_RETRY_DELAY_MS = 50
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 2_000
+const DEFAULT_MUX_RECONNECT_DELAY_MS = 500
+const MAX_MUX_RECONNECT_DELAY_MS = 5_000
+const DSH_PERMISSION_MODES = new Set(["read-only", "workspace-write", "danger-full-access"])
 
 function encodeModelId(provider, model) {
     provider = String(provider ?? "").trim()
@@ -109,6 +114,12 @@ function toolItem(call, result = null) {
     }
 }
 
+function toolCallIdFromResult(event) {
+    return event?.data?.message?.content?.find(
+        (block) => block?.type === "tool-result",
+    )?.toolCallId ?? event?.data?.message?.source?.callId ?? null
+}
+
 function threadFromHistory({summary = {}, entries = [], workspaceRoot = null}) {
     const turns = new Map()
     const toolCalls = new Map()
@@ -191,7 +202,11 @@ function threadFromHistory({summary = {}, entries = [], workspaceRoot = null}) {
         if (event.type === "turn/end") {
             const turn = ensureTurn(event.data.turn)
             const kind = event.data.reason?.kind
-            turn.status = kind === "completed" ? "completed" : kind === "aborted" ? "interrupted" : "failed"
+            turn.status = kind === "completed"
+                ? "completed"
+                : kind === "aborted" || kind === "interrupted"
+                  ? "interrupted"
+                  : "failed"
             if (turn.status === "failed") {
                 turn.error = {
                     message: event.data.reason?.error?.message ?? `DeepSeek Harness turn ended: ${kind ?? "unknown"}`,
@@ -244,8 +259,15 @@ class DeepSeekHarnessClient extends EventEmitter {
         workspaceRoot,
         spawnProcess = spawn,
         fetchImpl = globalThis.fetch,
+        webSocketFactory = null,
+        executionPolicy = null,
+        nonInteractive = false,
+        requestPermission = null,
+        requestQuestion = null,
         pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
         startupTimeoutMs = DEFAULT_STARTUP_TIMEOUT_MS,
+        startupRetryDelayMs = DEFAULT_STARTUP_RETRY_DELAY_MS,
+        shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS,
     }) {
         super()
         this.binaryPath = binaryPath
@@ -254,8 +276,25 @@ class DeepSeekHarnessClient extends EventEmitter {
         this.workspaceRoot = workspaceRoot
         this.spawnProcess = spawnProcess
         this.fetchImpl = fetchImpl
+        this.webSocketFactory = webSocketFactory ?? ((url) => {
+            if (typeof globalThis.WebSocket !== "function") {
+                throw new Error("This app cannot open the DeepSeek Harness event stream")
+            }
+            return new globalThis.WebSocket(url)
+        })
+        this.executionPolicy = executionPolicy ?? {}
+        this.nonInteractive = Boolean(nonInteractive)
+        const requestedDefaultPermission =
+            this.executionPolicy.permissionMode ?? this.executionPolicy.sandbox
+        this.defaultPermissionMode = DSH_PERMISSION_MODES.has(requestedDefaultPermission)
+            ? requestedDefaultPermission
+            : "workspace-write"
+        this.requestPermission = requestPermission
+        this.requestQuestion = requestQuestion
         this.pollIntervalMs = pollIntervalMs
         this.startupTimeoutMs = startupTimeoutMs
+        this.startupRetryDelayMs = Math.max(1, Number(startupRetryDelayMs) || DEFAULT_STARTUP_RETRY_DELAY_MS)
+        this.shutdownTimeoutMs = Math.max(1, Number(shutdownTimeoutMs) || DEFAULT_SHUTDOWN_TIMEOUT_MS)
         this.child = null
         this.baseUrl = null
         this.ready = false
@@ -264,8 +303,17 @@ class DeepSeekHarnessClient extends EventEmitter {
         this.recorder = null
         this.pendingTurns = new Map()
         this.catalogSessionId = null
+        this.modelCatalog = null
         this.processEpoch = 0
         this.recordedEventSequences = new Map()
+        this.recordedToolCalls = new Map()
+        this.sessionPermissions = new Map()
+        this.liveEventBuffers = new Map()
+        this.muxSocket = null
+        this.muxReconnectTimer = null
+        this.muxReconnectAttempt = 0
+        this.pendingInteractions = new Map()
+        this.pendingNonInteractiveFailures = new Map()
     }
 
     state() {
@@ -293,6 +341,11 @@ class DeepSeekHarnessClient extends EventEmitter {
         if (!this.binaryPath) throw new Error("The selected local DeepSeek Harness runtime is unavailable")
         if (typeof this.fetchImpl !== "function") throw new Error("This app cannot connect to a DeepSeek Harness Host")
         this.stopping = false
+        this.catalogSessionId = null
+        this.modelCatalog = null
+        this.recordedEventSequences.clear()
+        this.recordedToolCalls.clear()
+        this.liveEventBuffers.clear()
         this.recorder = new TraceRecorder(this.traceDirectory, {
             sessionId: `deepseek-harness-${new Date().toISOString().replace(/[:.]/g, "-")}`,
             runtime: this.runtimeDescriptor,
@@ -306,6 +359,7 @@ class DeepSeekHarnessClient extends EventEmitter {
                 env: {
                     ...process.env,
                     PATH: `${dirname(this.binaryPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+                    DSH_PERMISSION_MODE: this.defaultPermissionMode,
                 },
                 shell: false,
                 stdio: ["ignore", "pipe", "pipe"],
@@ -326,15 +380,19 @@ class DeepSeekHarnessClient extends EventEmitter {
 
         try {
             this.baseUrl = await this.waitForHostUrl(child, epoch)
-            await this.request("host.describe", {})
+            await this.waitForHostReady(child, epoch)
             if (this.child !== child || this.processEpoch !== epoch) {
                 throw new Error("DeepSeek Harness Host changed during startup")
             }
             this.ready = true
+            this.openMux(child, epoch)
             this.emit("state", this.state())
             return this.state()
         } catch (error) {
-            if (this.child === child && !child.killed) child.kill("SIGTERM")
+            if (this.child === child) await this.terminateProcess(child)
+            if (this.child === child && this.processEpoch === epoch) {
+                this.handleExit(error, child, epoch)
+            }
             throw error
         }
     }
@@ -363,36 +421,92 @@ class DeepSeekHarnessClient extends EventEmitter {
         })
     }
 
+    async waitForHostReady(child, epoch) {
+        const deadline = Date.now() + this.startupTimeoutMs
+        let lastError = null
+        while (Date.now() < deadline) {
+            if (this.child !== child || this.processEpoch !== epoch) {
+                throw new Error("DeepSeek Harness Host changed during startup")
+            }
+            try {
+                let remaining = Math.max(1, deadline - Date.now())
+                const description = await this.request("host.describe", {}, {timeoutMs: remaining})
+                remaining = Math.max(1, deadline - Date.now())
+                this.modelCatalog = await this.request("llm.models", {}, {timeoutMs: remaining})
+                return description
+            } catch (error) {
+                if (error?.code !== "HOST_CONNECTION_FAILED") throw error
+                lastError = error
+            }
+            const remaining = deadline - Date.now()
+            if (remaining > 0) await delay(Math.min(this.startupRetryDelayMs, remaining))
+        }
+        throw new Error(
+            `Timed out waiting for the DeepSeek Harness Host HTTP endpoint${lastError ? `: ${lastError.message}` : ""}`,
+            {cause: lastError ?? undefined},
+        )
+    }
+
     handleExit(error, child = this.child, epoch = this.processEpoch) {
         if (this.child !== child || this.processEpoch !== epoch) return
+        this.closeMux()
+        this.cancelPendingInteractions()
         this.child = null
         this.baseUrl = null
         this.ready = false
+        this.modelCatalog = null
         this.pendingTurns.clear()
+        this.pendingNonInteractiveFailures.clear()
+        this.sessionPermissions.clear()
         this.emit("state", {...this.state(), error: this.stopping ? null : error.message})
         if (!this.stopping) this.emit("runtimeError", error)
     }
 
-    async request(method, payload = {}) {
+    async request(method, payload = {}, {timeoutMs = null} = {}) {
         if (!this.baseUrl) throw new Error("DeepSeek Harness Host is not running")
         const rpcId = randomUUID()
         const envelope = {type: "client-request", rpcId, method, payload}
         this.recorder?.record("outbound", {method, params: payload, rpcId})
+        const boundedTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+            ? Math.max(1, Number(timeoutMs))
+            : null
+        const controller = boundedTimeoutMs ? new AbortController() : null
+        const timeout = controller
+            ? setTimeout(() => controller.abort(), boundedTimeoutMs)
+            : null
+        timeout?.unref?.()
         let response
         try {
             response = await this.fetchImpl(`${this.baseUrl}/api/${method}`, {
                 method: "POST",
                 headers: {"content-type": "application/json", accept: "application/json"},
                 body: JSON.stringify(envelope),
+                ...(controller ? {signal: controller.signal} : {}),
             })
         } catch (error) {
-            throw new Error(`DeepSeek Harness ${method} request failed: ${error?.message ?? String(error)}`)
+            if (timeout) clearTimeout(timeout)
+            const connectionError = new Error(
+                `DeepSeek Harness ${method} request failed: ${error?.message ?? String(error)}`,
+                {cause: error},
+            )
+            connectionError.code = "HOST_CONNECTION_FAILED"
+            throw connectionError
         }
         let body
         try {
             body = await response.json()
-        } catch {
+        } catch (error) {
+            if (controller?.signal.aborted) {
+                const connectionError = new Error(
+                    `DeepSeek Harness ${method} request failed: request timed out after ${boundedTimeoutMs}ms`,
+                    {cause: error},
+                )
+                connectionError.code = "HOST_CONNECTION_FAILED"
+                throw connectionError
+            }
             throw new Error(`DeepSeek Harness ${method} returned an invalid response (${response.status})`)
+        } finally {
+            if (timeout) clearTimeout(timeout)
         }
         if (!response.ok || body?.type !== "server-response" || body.rpcId !== rpcId || !body?.result?.ok) {
             const failure = body?.result?.error ?? {}
@@ -408,6 +522,359 @@ class DeepSeekHarnessClient extends EventEmitter {
         return body.result.value
     }
 
+    async respond(message) {
+        if (!this.baseUrl) throw new Error("DeepSeek Harness Host is not running")
+        this.recorder?.record("outbound", {method: "respond", rpcId: message.rpcId, params: message})
+        const response = await this.fetchImpl(`${this.baseUrl}/api/respond`, {
+            method: "POST",
+            headers: {"content-type": "application/json", accept: "application/json"},
+            body: JSON.stringify(message),
+        })
+        let receipt
+        try {
+            receipt = await response.json()
+        } catch {
+            throw new Error(`DeepSeek Harness respond returned an invalid response (${response.status})`)
+        }
+        if (!response.ok) throw new Error(`DeepSeek Harness respond failed (${response.status})`)
+        if (receipt?.accepted === false && receipt.reason === "bad-response") {
+            throw new Error("DeepSeek Harness rejected an invalid interaction response")
+        }
+        if (receipt?.accepted !== true && receipt?.reason !== "not-pending") {
+            throw new Error("DeepSeek Harness returned an invalid interaction receipt")
+        }
+        this.recorder?.record("inbound", {
+            method: "respond",
+            rpcId: message.rpcId,
+            result: receipt,
+        })
+        return receipt
+    }
+
+    muxUrl() {
+        const url = new URL("/api/events.mux", this.baseUrl)
+        url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
+        return url.toString()
+    }
+
+    openMux(child = this.child, epoch = this.processEpoch) {
+        if (
+            this.stopping ||
+            !this.baseUrl ||
+            this.child !== child ||
+            this.processEpoch !== epoch ||
+            this.muxSocket
+        ) {
+            return
+        }
+        let socket
+        try {
+            socket = this.webSocketFactory(this.muxUrl())
+        } catch (error) {
+            this.emit("runtimeLog", `DeepSeek Harness event stream failed: ${error?.message ?? String(error)}`)
+            this.scheduleMuxReconnect(child, epoch)
+            return
+        }
+        this.muxSocket = socket
+        const isCurrent = () =>
+            !this.stopping &&
+            this.child === child &&
+            this.processEpoch === epoch &&
+            this.muxSocket === socket
+        const onOpen = () => {
+            if (!isCurrent()) return
+            this.muxReconnectAttempt = 0
+            this.recorder?.record("inbound", {method: "events.mux/open", processEpoch: epoch})
+            void this.recoverPendingTurns().catch((error) => {
+                this.emit("runtimeLog", `DeepSeek Harness history recovery failed: ${error?.message ?? String(error)}`)
+            })
+        }
+        const onMessage = (event) => {
+            if (!isCurrent()) return
+            try {
+                const raw = typeof event?.data === "string"
+                    ? event.data
+                    : Buffer.isBuffer(event?.data)
+                      ? event.data.toString("utf8")
+                      : String(event?.data ?? "")
+                const envelope = JSON.parse(raw)
+                if (envelope?.type !== "server-request" || !envelope.rpcId || !envelope.payload?.type) {
+                    throw new Error("invalid server-request envelope")
+                }
+                this.recorder?.record("inbound", {
+                    method: "events.mux",
+                    rpcId: envelope.rpcId,
+                    params: envelope.payload,
+                })
+                this.handleMuxEnvelope(envelope, epoch)
+            } catch (error) {
+                this.emit("runtimeLog", `DeepSeek Harness dropped an invalid event frame: ${error?.message ?? String(error)}`)
+            }
+        }
+        const onClose = () => {
+            if (this.muxSocket !== socket) return
+            this.muxSocket = null
+            if (!this.stopping && this.child === child && this.processEpoch === epoch) {
+                this.scheduleMuxReconnect(child, epoch)
+            }
+        }
+        const onError = (error) => {
+            if (!isCurrent()) return
+            const message = error?.message ?? "WebSocket connection failed"
+            this.emit("runtimeLog", `DeepSeek Harness event stream error: ${message}`)
+        }
+        socket.addEventListener("open", onOpen)
+        socket.addEventListener("message", onMessage)
+        socket.addEventListener("close", onClose, {once: true})
+        socket.addEventListener("error", onError)
+    }
+
+    scheduleMuxReconnect(child, epoch) {
+        if (this.stopping || this.muxReconnectTimer || this.child !== child || this.processEpoch !== epoch) return
+        const delayMs = Math.min(
+            MAX_MUX_RECONNECT_DELAY_MS,
+            DEFAULT_MUX_RECONNECT_DELAY_MS * (2 ** this.muxReconnectAttempt),
+        )
+        this.muxReconnectAttempt += 1
+        this.muxReconnectTimer = setTimeout(() => {
+            this.muxReconnectTimer = null
+            this.openMux(child, epoch)
+        }, delayMs)
+        this.muxReconnectTimer.unref?.()
+    }
+
+    closeMux() {
+        if (this.muxReconnectTimer) clearTimeout(this.muxReconnectTimer)
+        this.muxReconnectTimer = null
+        const socket = this.muxSocket
+        this.muxSocket = null
+        if (!socket) return
+        try {
+            socket.close(1000, "Rolling Skill stopped")
+        } catch {
+            // A failed or already-closed socket needs no further cleanup.
+        }
+    }
+
+    bufferLiveEntry(sessionId, entry) {
+        const buffer = this.liveEventBuffers.get(sessionId) ?? []
+        if (!buffer.some((candidate) => candidate.event?.seq === entry.event?.seq)) buffer.push(entry)
+        buffer.sort((left, right) => Number(left.event?.seq ?? -1) - Number(right.event?.seq ?? -1))
+        if (buffer.length > 500) buffer.splice(0, buffer.length - 500)
+        this.liveEventBuffers.set(sessionId, buffer)
+    }
+
+    handleMuxEnvelope(envelope, epoch) {
+        const payload = envelope.payload
+        if (payload.type === "session/event") {
+            const entry = {
+                event: payload.event,
+                ...(payload.view ? {view: payload.view.view ?? payload.view} : {}),
+            }
+            this.bufferLiveEntry(payload.sessionId, entry)
+            const pending = this.pendingTurns.get(payload.sessionId)
+            if (pending && Number(entry.event?.seq) > pending.lastSeq) {
+                this.processLiveEntries(pending, [entry])
+            } else {
+                this.recordHistoryEvents(payload.sessionId, [entry])
+            }
+            return
+        }
+        if (payload.type === "approval/requested" || payload.type === "question/requested") {
+            if (this.pendingInteractions.has(envelope.rpcId)) return
+            const controller = new AbortController()
+            const token = {
+                rpcId: envelope.rpcId,
+                type: payload.type,
+                payload,
+                epoch,
+                controller,
+            }
+            this.pendingInteractions.set(envelope.rpcId, token)
+            void this.resolveInteraction(token).catch((error) => {
+                if (this.pendingInteractions.get(token.rpcId) !== token) return
+                this.emit("runtimeLog", `DeepSeek Harness interaction failed: ${error?.message ?? String(error)}`)
+            })
+            return
+        }
+        if (payload.type === "approval/resolved") {
+            for (const token of this.pendingInteractions.values()) {
+                if (token.payload.approvalId === payload.approvalId) this.finishInteraction(token)
+            }
+            return
+        }
+        if (payload.type === "question/resolved") {
+            const token = this.pendingInteractions.get(payload.questionRpcId)
+            if (token) this.finishInteraction(token)
+        }
+    }
+
+    finishInteraction(token) {
+        if (this.pendingInteractions.get(token.rpcId) !== token) return
+        this.pendingInteractions.delete(token.rpcId)
+        token.controller.abort()
+    }
+
+    cancelPendingInteractions() {
+        for (const token of this.pendingInteractions.values()) token.controller.abort()
+        this.pendingInteractions.clear()
+    }
+
+    interactionIsCurrent(token) {
+        return (
+            !this.stopping &&
+            this.ready &&
+            token.epoch === this.processEpoch &&
+            this.pendingInteractions.get(token.rpcId) === token &&
+            !token.controller.signal.aborted
+        )
+    }
+
+    async resolveInteraction(token) {
+        const {payload} = token
+        let message
+        if (payload.type === "approval/requested") {
+            const options = [
+                {optionId: "allowed-once", kind: "allow_once", name: "Allow once"},
+                {optionId: "rejected", kind: "reject", name: "Reject"},
+            ]
+            let selected = "rejected"
+            if (!this.nonInteractive && typeof this.requestPermission === "function") {
+                selected = await this.requestPermission({
+                    processEpoch: token.epoch,
+                    rpcId: token.rpcId,
+                    options,
+                    params: {
+                        sessionId: payload.sessionId,
+                        approvalId: payload.approvalId,
+                        toolName: payload.toolName,
+                        reason: payload.reason ?? "",
+                        toolCall: {
+                            name: payload.toolName,
+                            rawInput: payload.reason ?? "",
+                        },
+                    },
+                }).catch(() => "rejected")
+            }
+            const outcome = selected === "allowed-once" ? "allowed-once" : "rejected"
+            message = {
+                type: "client-response",
+                rpcId: token.rpcId,
+                result: {
+                    ok: true,
+                    value: {
+                        sessionId: payload.sessionId,
+                        approvalId: payload.approvalId,
+                        outcome,
+                    },
+                },
+            }
+        } else {
+            let answer = null
+            if (!this.nonInteractive && typeof this.requestQuestion === "function") {
+                answer = await this.requestQuestion({
+                    processEpoch: token.epoch,
+                    rpcId: token.rpcId,
+                    sessionId: payload.sessionId,
+                    questions: payload.questions,
+                    signal: token.controller.signal,
+                }).catch(() => null)
+            }
+            message = answer?.answers
+                ? {
+                      type: "client-response",
+                      rpcId: token.rpcId,
+                      result: {
+                          ok: true,
+                          value: {sessionId: payload.sessionId, answer},
+                      },
+                  }
+                : {
+                      type: "client-response",
+                      rpcId: token.rpcId,
+                      result: {
+                          ok: false,
+                          error: {
+                              code: "cancelled",
+                              message: "User cancelled the question",
+                              details: {},
+                          },
+                      },
+                  }
+        }
+        if (!this.interactionIsCurrent(token)) return
+        let responseError = null
+        try {
+            await this.respond(message)
+        } catch (error) {
+            responseError = error
+        }
+        const processIsCurrent =
+            !this.stopping &&
+            this.ready &&
+            token.epoch === this.processEpoch
+        if (this.nonInteractive && processIsCurrent) {
+            const error = new Error(
+                payload.type === "approval/requested"
+                    ? "The evaluation required an interactive permission decision"
+                    : "The evaluation required an interactive user answer",
+            )
+            error.code = "EVALUATION_INTERACTION_REQUIRED"
+            const pending = this.pendingTurns.get(payload.sessionId)
+            if (pending) {
+                this.failPendingTurn(pending, error)
+            } else {
+                this.pendingNonInteractiveFailures.set(payload.sessionId, error)
+            }
+            void this.request("session.cancel", {sessionId: payload.sessionId}).catch(() => {})
+            this.finishInteraction(token)
+        }
+        if (responseError) throw responseError
+    }
+
+    async recoverPendingTurns() {
+        for (const pending of this.pendingTurns.values()) {
+            if (pending.stopped) continue
+            const tail = await this.historyTail(pending.threadId)
+            const fresh = (tail.events ?? []).filter((entry) => Number(entry.event?.seq) > pending.lastSeq)
+            if (fresh.length) this.processLiveEntries(pending, fresh)
+        }
+    }
+
+    async terminateProcess(child) {
+        if (!child) return
+        if (child.exitCode !== undefined && child.exitCode !== null) return
+        if (child.signalCode !== undefined && child.signalCode !== null) return
+        await new Promise((resolve) => {
+            let settled = false
+            let timeout = null
+            const finish = () => {
+                if (settled) return
+                settled = true
+                if (timeout) clearTimeout(timeout)
+                child.off("close", finish)
+                resolve()
+            }
+            child.once("close", finish)
+            try {
+                child.kill("SIGTERM")
+            } catch {
+                finish()
+                return
+            }
+            if (settled) return
+            timeout = setTimeout(() => {
+                try {
+                    child.kill("SIGKILL")
+                } catch {
+                    // The Host may have exited between the grace deadline and escalation.
+                }
+                finish()
+            }, this.shutdownTimeoutMs)
+            timeout.unref?.()
+        })
+    }
+
     setWorkspace(workspaceRoot) {
         this.workspaceRoot = workspaceRoot
         this.catalogSessionId = null
@@ -415,7 +882,7 @@ class DeepSeekHarnessClient extends EventEmitter {
     }
 
     async listModels() {
-        const catalog = await this.request("llm.models", {})
+        const catalog = this.modelCatalog ?? await this.request("llm.models", {})
         const data = []
         for (const group of catalog.groups ?? []) {
             for (const model of group.models ?? []) {
@@ -520,7 +987,11 @@ class DeepSeekHarnessClient extends EventEmitter {
         const {items} = await this.listSessionSummaries()
         const existing = items.find((entry) => entry.cwd === this.workspaceRoot)
         if (existing) {
-            this.catalogSessionId = existing.sessionId
+            const attached = await this.request("session.create", {
+                cwd: this.workspaceRoot,
+                sessionId: existing.sessionId,
+            })
+            this.catalogSessionId = attached.sessionId
             return this.catalogSessionId
         }
         const created = await this.request("session.create", {cwd: this.workspaceRoot})
@@ -549,6 +1020,20 @@ class DeepSeekHarnessClient extends EventEmitter {
     }
 
     async configureSession(sessionId, options = {}) {
+        const requestedPermission = options.permissionMode ?? options.sandbox
+        const permissionMode = DSH_PERMISSION_MODES.has(requestedPermission)
+            ? requestedPermission
+            : this.defaultPermissionMode
+        if (this.sessionPermissions.get(sessionId) !== permissionMode) {
+            const command = await this.request("commands/execute", {
+                args: {agentId: sessionId, line: `/permission ${permissionMode}`},
+            })
+            const result = command?.result ?? command
+            if (result?.kind === "error") {
+                throw new Error(result.text || `DeepSeek Harness could not select ${permissionMode}`)
+            }
+            this.sessionPermissions.set(sessionId, permissionMode)
+        }
         if (!options.model && !options.effort) return null
         let route
         if (options.model) route = decodeModelId(options.model)
@@ -573,6 +1058,7 @@ class DeepSeekHarnessClient extends EventEmitter {
 
     async startThread(options = {}) {
         const created = await this.request("session.create", {cwd: this.workspaceRoot})
+        this.sessionPermissions.set(created.sessionId, this.defaultPermissionMode)
         const selected = await this.configureSession(created.sessionId, options)
         const models = selected ? null : await this.request("session.models", {sessionId: created.sessionId})
         const current = selected ?? models?.current ?? null
@@ -589,6 +1075,7 @@ class DeepSeekHarnessClient extends EventEmitter {
             recencyAt: now,
             turns: [],
             modelProvider: "deepseek-harness",
+            permissionMode: this.sessionPermissions.get(created.sessionId),
             threadSource: options.threadSource ?? "user",
         }
         this.emitNotification("thread/started", {thread})
@@ -657,20 +1144,31 @@ class DeepSeekHarnessClient extends EventEmitter {
             turnNumber,
             turnId,
             lastSeq: startEvent.event.seq,
+            entries: [...(tail.events ?? [])],
             chunks: new Map(),
             toolCalls: new Map(),
             stopped: false,
         }
         this.pendingTurns.set(threadId, pending)
         this.emitNotification("turn/started", {threadId, turn})
-        void this.watchTurn(pending)
+        const interactionFailure = this.pendingNonInteractiveFailures.get(threadId)
+        if (interactionFailure) {
+            this.pendingNonInteractiveFailures.delete(threadId)
+            this.failPendingTurn(pending, interactionFailure)
+            void this.request("session.cancel", {sessionId: threadId}).catch(() => {})
+            return {turn}
+        }
+        const buffered = (this.liveEventBuffers.get(threadId) ?? []).filter(
+            (entry) => Number(entry.event?.seq) > pending.lastSeq,
+        )
+        if (buffered.length) this.processLiveEntries(pending, buffered)
         return {turn}
     }
 
     emitNotification(method, params) {
         const message = {method, params}
         this.emit("notification", message)
-        this.emit(method, params)
+        if (method !== "error" || this.listenerCount("error") > 0) this.emit(method, params)
     }
 
     recordHistoryEvents(sessionId, entries) {
@@ -678,6 +1176,11 @@ class DeepSeekHarnessClient extends EventEmitter {
         if (!recorded) {
             recorded = new Set()
             this.recordedEventSequences.set(sessionId, recorded)
+        }
+        let toolCalls = this.recordedToolCalls.get(sessionId)
+        if (!toolCalls) {
+            toolCalls = new Map()
+            this.recordedToolCalls.set(sessionId, toolCalls)
         }
         for (const entry of entries ?? []) {
             const event = entry?.event
@@ -687,7 +1190,15 @@ class DeepSeekHarnessClient extends EventEmitter {
             }
             recorded.add(event.seq)
             let item = null
-            if (event.type === "tool/call") item = toolItem({...event, view: entry.view})
+            if (event.type === "tool/call") {
+                const call = {...event, view: entry.view}
+                toolCalls.set(event.data.callId, call)
+                item = toolItem(call)
+            }
+            if (event.type === "tool/result") {
+                const call = toolCalls.get(toolCallIdFromResult(event))
+                if (call) item = toolItem(call, event)
+            }
             this.recorder?.record("inbound", {
                 method: "session/event",
                 params: {threadId: sessionId, event, ...(item ? {item} : {})},
@@ -696,8 +1207,18 @@ class DeepSeekHarnessClient extends EventEmitter {
     }
 
     processLiveEntries(pending, entries) {
-        this.recordHistoryEvents(pending.threadId, entries)
-        for (const entry of entries) {
+        const fresh = (entries ?? []).filter(
+            (entry) => Number(entry.event?.seq) > pending.lastSeq,
+        )
+        if (!fresh.length) return
+        pending.lastSeq = Math.max(
+            pending.lastSeq,
+            ...fresh.map((entry) => Number(entry.event?.seq ?? pending.lastSeq)),
+        )
+        pending.entries.push(...fresh)
+        this.recordHistoryEvents(pending.threadId, fresh)
+        let ended = null
+        for (const entry of fresh) {
             const event = entry.event
             if (event.type === "assistant/chunk" && event.data.turn === pending.turnNumber) {
                 const chunk = event.data.chunk ?? {}
@@ -737,9 +1258,7 @@ class DeepSeekHarnessClient extends EventEmitter {
                 continue
             }
             if (event.type === "tool/result" && event.data.turn === pending.turnNumber) {
-                const callId = event.data?.message?.content?.find(
-                    (block) => block?.type === "tool-result",
-                )?.toolCallId ?? event.data?.message?.source?.callId
+                const callId = toolCallIdFromResult(event)
                 const call = pending.toolCalls.get(callId)
                 if (call) {
                     this.emitNotification("item/completed", {
@@ -785,71 +1304,65 @@ class DeepSeekHarnessClient extends EventEmitter {
                     threadName: event.data.title,
                 })
             }
+            if (event.type === "turn/end" && event.data.turn === pending.turnNumber) ended = entry
         }
+        if (ended) this.finishPendingTurn(pending, ended)
     }
 
-    async watchTurn(pending) {
-        try {
-            while (!this.stopping && !pending.stopped && this.pendingTurns.get(pending.threadId) === pending) {
-                const tail = await this.historyTail(pending.threadId)
-                const fresh = (tail.events ?? []).filter((entry) => entry.event?.seq > pending.lastSeq)
-                if (fresh.length) {
-                    pending.lastSeq = fresh.at(-1).event.seq
-                    this.processLiveEntries(pending, fresh)
-                }
-                const ended = (tail.events ?? []).find(
-                    (entry) => entry.event?.type === "turn/end" && entry.event.data.turn === pending.turnNumber,
-                )
-                if (ended) {
-                    const thread = threadFromHistory({
-                        summary: {
-                            sessionId: pending.threadId,
-                            updatedAt: ended.event.time,
-                            running: false,
-                            cwd: this.workspaceRoot,
-                        },
-                        entries: tail.events ?? [],
-                        workspaceRoot: this.workspaceRoot,
-                    })
-                    const turn = thread.turns.find((entry) => entry.id === pending.turnId) ?? {
-                        id: pending.turnId,
-                        status: "failed",
-                        items: [],
-                        error: {message: "DeepSeek Harness turn history is incomplete"},
-                    }
-                    this.pendingTurns.delete(pending.threadId)
-                    if (turn.status === "failed") {
-                        this.emitNotification("error", {
-                            threadId: pending.threadId,
-                            turnId: pending.turnId,
-                            error: turn.error,
-                            willRetry: false,
-                        })
-                    }
-                    this.emitNotification("turn/completed", {threadId: pending.threadId, turn})
-                    return
-                }
-                await delay(this.pollIntervalMs)
-            }
-        } catch (error) {
-            if (this.stopping || pending.stopped) return
-            this.pendingTurns.delete(pending.threadId)
+    finishPendingTurn(pending, ended) {
+        if (this.pendingTurns.get(pending.threadId) !== pending) return
+        this.pendingNonInteractiveFailures.delete(pending.threadId)
+        const thread = threadFromHistory({
+            summary: {
+                sessionId: pending.threadId,
+                updatedAt: ended.event.time,
+                running: false,
+                cwd: this.workspaceRoot,
+            },
+            entries: pending.entries,
+            workspaceRoot: this.workspaceRoot,
+        })
+        const turn = thread.turns.find((entry) => entry.id === pending.turnId) ?? {
+            id: pending.turnId,
+            status: "failed",
+            items: [],
+            error: {message: "DeepSeek Harness turn history is incomplete"},
+        }
+        this.pendingTurns.delete(pending.threadId)
+        if (turn.status === "failed") {
             this.emitNotification("error", {
                 threadId: pending.threadId,
                 turnId: pending.turnId,
-                error: {message: error?.message ?? String(error)},
+                error: turn.error,
                 willRetry: false,
             })
-            this.emitNotification("turn/completed", {
-                threadId: pending.threadId,
-                turn: {
-                    id: pending.turnId,
-                    status: "failed",
-                    items: [],
-                    error: {message: error?.message ?? String(error)},
-                },
-            })
         }
+        this.emitNotification("turn/completed", {threadId: pending.threadId, turn})
+    }
+
+    failPendingTurn(pending, error) {
+        if (this.pendingTurns.get(pending.threadId) !== pending) return
+        this.pendingNonInteractiveFailures.delete(pending.threadId)
+        this.pendingTurns.delete(pending.threadId)
+        const normalized = {
+            message: error?.message ?? String(error),
+            ...(error?.code ? {code: error.code} : {}),
+        }
+        this.emitNotification("error", {
+            threadId: pending.threadId,
+            turnId: pending.turnId,
+            error: normalized,
+            willRetry: false,
+        })
+        this.emitNotification("turn/completed", {
+            threadId: pending.threadId,
+            turn: {
+                id: pending.turnId,
+                status: "failed",
+                items: [],
+                error: normalized,
+            },
+        })
     }
 
     async interruptTurn(threadId) {
@@ -877,8 +1390,17 @@ class DeepSeekHarnessClient extends EventEmitter {
                 if (message?.method !== "turn/completed" || message.params?.threadId !== threadId) return
                 cleanup()
                 const turn = message.params.turn
-                if (turn?.status === "failed") reject(new Error(turn.error?.message ?? "The DeepSeek Harness turn failed"))
-                else resolve(turn)
+                if (turn?.status === "completed") resolve(turn)
+                else {
+                    const error = new Error(
+                        turn?.error?.message ??
+                        (turn?.status === "interrupted"
+                            ? "The DeepSeek Harness turn was interrupted"
+                            : "The DeepSeek Harness turn failed"),
+                    )
+                    if (turn?.error?.code) error.code = turn.error.code
+                    reject(error)
+                }
             }
             const onState = (state) => {
                 if (state?.status !== "stopped") return
@@ -955,6 +1477,17 @@ class DeepSeekHarnessClient extends EventEmitter {
                     lastActivityAt,
                 })
             }
+            if (error?.code === "EVALUATION_INTERACTION_REQUIRED") {
+                throw evaluationTurnError(error.message, {
+                    code: error.code,
+                    recorder: this.recorder,
+                    traceMark,
+                    threadId,
+                    turnId,
+                    startedAt,
+                    lastActivityAt,
+                })
+            }
             throw error
         } finally {
             completion.cleanup()
@@ -976,22 +1509,15 @@ class DeepSeekHarnessClient extends EventEmitter {
 
     async stop() {
         this.stopping = true
+        this.closeMux()
+        this.cancelPendingInteractions()
         for (const pending of this.pendingTurns.values()) pending.stopped = true
         this.pendingTurns.clear()
+        this.pendingNonInteractiveFailures.clear()
         const child = this.child
         const epoch = this.processEpoch
         if (!child) return
-        await new Promise((resolve) => {
-            const timeout = setTimeout(() => {
-                if (!child.killed) child.kill("SIGKILL")
-                resolve()
-            }, 2_000)
-            child.once("close", () => {
-                clearTimeout(timeout)
-                resolve()
-            })
-            child.kill("SIGTERM")
-        })
+        await this.terminateProcess(child)
         if (this.child === child && this.processEpoch === epoch) {
             this.handleExit(new Error("DeepSeek Harness Host stopped"), child, epoch)
         }

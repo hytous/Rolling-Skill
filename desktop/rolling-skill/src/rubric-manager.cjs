@@ -5,6 +5,7 @@ const {
     buildRubricFollowUpPrompt,
     parseDatasetRubric,
 } = require("./dataset-rubric.cjs")
+const {LiveActivityCoalescer} = require("./live-activity-coalescer.cjs")
 
 const RUBRIC_NOTIFICATION_METHODS = new Set([
     "thread/settings/updated",
@@ -38,12 +39,21 @@ class RubricManager {
         onChanged = () => {},
         onActivity = () => {},
         schedule = (task) => Promise.resolve().then(task),
+        activityIntervalMs,
+        scheduleActivity = setTimeout,
+        cancelActivity = clearTimeout,
     }) {
         this.store = store
         this.getRuntime = getRuntime
         this.getRuntimeDescriptor = getRuntimeDescriptor
         this.onChanged = onChanged
         this.onActivity = onActivity
+        this.activityCoalescer = new LiveActivityCoalescer({
+            emit: onActivity,
+            intervalMs: activityIntervalMs,
+            schedule: scheduleActivity,
+            cancel: cancelActivity,
+        })
         this.schedule = schedule
         this.tasks = new Map()
         this.threadSessions = new Map()
@@ -86,7 +96,7 @@ class RubricManager {
         }
         if (activity.terminal) this.activities.delete(session.id)
         else this.activities.set(session.id, activity)
-        this.onActivity(activity)
+        this.activityCoalescer.publish(activity)
         return activity
     }
 

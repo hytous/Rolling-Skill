@@ -1,6 +1,6 @@
 {
     "name": "rolling-skill-desktop",
-    "version": "0.9.0",
+    "version": "0.9.3",
     "private": true,
     "author": "Rolling Skill",
     "description": "Native-window macOS client for the Rolling Skill evaluation workbench",
@@ -10,12 +10,16 @@
         "render:icon": "electron scripts/render-icon.cjs assets/icon-s-keycap-orange.svg assets/icon-s-keycap-orange.png",
         "test": "node --test test/*.test.cjs",
         "smoke:renderer": "electron scripts/renderer-smoke.cjs",
-        "pack:mac": "npm run render:icon && electron-builder --mac dir --arm64",
+        "build:tool": "node scripts/build-external-tool.mjs",
+        "pack:mac": "npm run render:icon && npm run build:tool && electron-builder --mac dir --arm64",
         "dist:mac": "npm run render:icon && electron-builder --mac dmg zip --arm64"
     },
     "devDependencies": {
+        "@modelcontextprotocol/client": "^2.0.0",
         "electron": "^43.3.0",
-        "electron-builder": "^26.0.12"
+        "electron-builder": "^26.0.12",
+        "esbuild": "^0.25.12",
+        "yazl": "^3.3.1"
     },
     "build": {
         "appId": "com.rolling-skill.desktop",
@@ -42,7 +46,11 @@
         }
     },
     "dependencies": {
+        "@modelcontextprotocol/server": "^2.0.0",
         "he": "^1.2.0",
-        "marked": "^15.0.12"
+        "marked": "^15.0.12",
+        "yaml": "^2.9.0",
+        "yauzl": "^3.4.0",
+        "zod": "^4.4.3"
     }
 }

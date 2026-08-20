@@ -7,6 +7,7 @@ const {
     parseCuratorDraft,
 } = require("./episode-curation.cjs")
 const {commandActivityDetail} = require("../renderer/command-activity.js")
+const {LiveActivityCoalescer} = require("./live-activity-coalescer.cjs")
 
 const ACTIVITY_SUMMARY_LIMIT = 240
 const CURATION_NOTIFICATION_METHODS = new Set([
@@ -108,12 +109,21 @@ class CurationManager {
         onChanged = () => {},
         onActivity = () => {},
         schedule = (task) => Promise.resolve().then(task),
+        activityIntervalMs,
+        scheduleActivity = setTimeout,
+        cancelActivity = clearTimeout,
     }) {
         this.store = store
         this.getRuntime = getRuntime
         this.getRuntimeDescriptor = getRuntimeDescriptor
         this.onChanged = onChanged
         this.onActivity = onActivity
+        this.activityCoalescer = new LiveActivityCoalescer({
+            emit: onActivity,
+            intervalMs: activityIntervalMs,
+            schedule: scheduleActivity,
+            cancel: cancelActivity,
+        })
         this.schedule = schedule
         this.tasks = new Map()
         this.threadSessions = new Map()
@@ -157,7 +167,7 @@ class CurationManager {
         }
         if (activity.terminal) this.activities.delete(session.id)
         else this.activities.set(session.id, activity)
-        this.onActivity(activity)
+        this.activityCoalescer.publish(activity)
         return activity
     }
 

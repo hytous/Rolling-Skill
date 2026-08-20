@@ -6,6 +6,8 @@ DESKTOP_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPOSITORY_ROOT="$(cd "$DESKTOP_ROOT/../.." && pwd)"
 BUILT_APP="$DESKTOP_ROOT/dist/mac-arm64/Rolling Skill.app"
 TARGET_APP="$REPOSITORY_ROOT/Rolling Skill.app"
+BUILT_TOOL="$DESKTOP_ROOT/dist-tools/rolling-skill-tool"
+TARGET_TOOL="$REPOSITORY_ROOT/rolling-skill-tool"
 SIGN_IDENTITY="$(/bin/bash "$SCRIPT_DIR/ensure-local-signing-identity.sh")"
 REQUIRED_NODE_MAJOR=22
 
@@ -55,5 +57,8 @@ if [[ -e "$TARGET_APP" ]]; then
     /bin/rm -rf "$TARGET_APP"
 fi
 /usr/bin/ditto "$BUILT_APP" "$TARGET_APP"
+/bin/cp "$BUILT_TOOL" "$TARGET_TOOL"
+/bin/chmod 755 "$TARGET_TOOL"
 
 echo "Rolling Skill Desktop is ready: $TARGET_APP"
+echo "Rolling Skill Raw Case Tool is ready: $TARGET_TOOL"

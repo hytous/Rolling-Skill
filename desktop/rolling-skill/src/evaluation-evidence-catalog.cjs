@@ -77,6 +77,15 @@ function hasSkillMention(record) {
     return false
 }
 
+function hasSkillInvocation(record) {
+    return nestedObjects(record).some((candidate) => {
+        if (String(candidate.type ?? "").toLowerCase() !== "user/message") return false
+        const source = object(candidate.data).source
+        return source?.kind === "skill-invocation" &&
+            typeof source.name === "string" && Boolean(source.name)
+    })
+}
+
 function eventKinds(record) {
     const kinds = new Set()
     const types = structuredTypes(record)
@@ -96,6 +105,10 @@ function eventKinds(record) {
     const codeBuddyCompleted = String(codeBuddyUpdate.status ?? "").toLowerCase() === "completed"
 
     if (hasSkillMention(record)) kinds.add("skill_activation")
+    if (hasSkillInvocation(record)) {
+        kinds.add("skill_activation")
+        kinds.add("skill_read")
+    }
     if (types.some((value) => /commandexecution|executecommand|shell|terminal/iu.test(value))) {
         kinds.add("command")
     }

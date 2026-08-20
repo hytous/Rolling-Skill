@@ -35,7 +35,7 @@ describe("local-first desktop surface", () => {
         assert.match(appIcon, /data-keycap-side/)
         assert.match(appIcon, /data-keycap-top/)
         assert.match(packageJson, /assets\/icon-s-keycap-orange\.png/)
-        assert.match(packageJson, /"pack:mac":\s*"npm run render:icon && electron-builder/)
+        assert.match(packageJson, /"pack:mac":\s*"npm run render:icon && npm run build:tool && electron-builder/)
         assert.equal(inAppLogo.trim(), appIcon.trim())
         assert.doesNotMatch(`${previousAppIcon}\n${appIcon}\n${inAppLogo}`, /#F2F25C/i)
         assert.doesNotMatch(styles, /filter:\s*hue-rotate/)
@@ -218,6 +218,83 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /state\.activeThreadId !== submittedThreadId/)
     })
 
+    it("renders DeepSeek Harness questions in chat without replacing the task composer", () => {
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        assert.match(renderer, /pendingRuntimeQuestions/)
+        assert.match(renderer, /onRuntimeQuestion/)
+        assert.match(renderer, /function renderRuntimeQuestion/)
+        assert.match(renderer, /respondRuntimeQuestion/)
+        assert.match(renderer, /question\.multiSelect/)
+        assert.match(renderer, /question\.options/)
+        assert.match(renderer, /custom/)
+        assert.match(renderer, /state\.activeThreadId/)
+        assert.match(styles, /\.runtime-question-card/)
+        assert.match(styles, /\.runtime-question-options/)
+    })
+
+    it("provides a Skill-grouped Raw Case inbox with verbatim runtime dispatch", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        assert.match(html, /id="topbar-raw-cases"/)
+        assert.match(html, /id="raw-case-panel"/)
+        assert.match(html, /id="raw-case-form"/)
+        assert.match(html, /id="raw-case-skill"/)
+        assert.match(html, /id="raw-case-question"/)
+        assert.match(html, /id="raw-case-list"/)
+        assert.match(renderer, /function renderRawCases\(/)
+        assert.match(renderer, /function dispatchRawCase\(/)
+        assert.match(renderer, /markRawCaseDispatched/)
+        assert.match(renderer, /rawCase\.question/)
+        assert.doesNotMatch(renderer, /\[\s*rawCase\.question\s*,\s*\{\s*type:\s*"skill"/)
+        assert.match(styles, /\.raw-case-panel/)
+        assert.match(styles, /\.raw-case-skill-group/)
+        assert.match(styles, /@media \(max-width: 1120px\)[\s\S]*\.raw-case-panel\.visible/s)
+        assert.match(
+            styles,
+            /\.app-shell:has\(\.raw-case-panel\.visible\):has\(\.trace-drawer\.visible\)[\s\S]{0,500}var\(--drawer-width\)[\s\S]{0,120}var\(--raw-case-width\)/,
+        )
+        assert.doesNotMatch(
+            styles,
+            /:has\(\.trace-drawer\.visible\) \.raw-case-panel[\s\S]{0,100}display:\s*none/,
+        )
+    })
+
+    it("marks source timeline ranges that already have a Case draft or saved Case", () => {
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        assert.match(renderer, /sourceCurationMarkers/)
+        assert.match(renderer, /curationMarkerForItem/)
+        assert.match(renderer, /source-case-range/)
+        assert.match(renderer, /source-case-range-status/)
+        assert.match(renderer, /curateAgain/)
+        assert.match(styles, /\.source-case-range\.draft/)
+        assert.match(styles, /\.source-case-range\.archived/)
+    })
+
+    it("offers all three native DeepSeek Harness permission presets in the task composer", () => {
+        const renderer = source("renderer/renderer.js")
+        const optionsStart = renderer.indexOf("function permissionModeOptions")
+        const optionsEnd = renderer.indexOf("function defaultPermissionMode", optionsStart)
+        const options = renderer.slice(optionsStart, optionsEnd)
+        const defaultStart = optionsEnd
+        const defaultEnd = renderer.indexOf("function renderPermissionModePicker", defaultStart)
+        const defaults = renderer.slice(defaultStart, defaultEnd)
+
+        assert.ok(optionsStart >= 0 && optionsEnd > optionsStart)
+        assert.match(options, /providerId === "deepseek-harness"/)
+        assert.match(options, /value:\s*"danger-full-access"/)
+        assert.match(options, /value:\s*"workspace-write"/)
+        assert.match(options, /value:\s*"read-only"/)
+        assert.match(defaults, /providerId === "deepseek-harness"/)
+        assert.match(defaults, /"danger-full-access"/)
+        assert.match(defaults, /"workspace-write"/)
+    })
+
     it("routes core runtime and Curator chrome through localization keys", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")
@@ -267,6 +344,57 @@ describe("local-first desktop surface", () => {
         assert.match(styles, /\.evaluation-workbench\s*\{[^}]*grid-row:\s*2\s*\/\s*-1/s)
     })
 
+    it("adds a responsive managed Skill repository workbench without disturbing Chat drafts", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        assert.match(html, /data-surface="skills"/)
+        assert.match(html, /id="skill-management-workbench"/)
+        assert.match(html, /id="managed-repository-list"/)
+        assert.match(html, /id="managed-skill-detail"/)
+        assert.match(html, /id="managed-skill-versions"/)
+        assert.match(html, /id="managed-skill-side-tabs"/)
+        assert.match(html, /data-managed-skill-side-view="versions"/)
+        assert.match(html, /data-managed-skill-side-view="installations"/)
+        assert.match(html, /id="managed-skill-installations"/)
+        assert.match(html, /id="managed-install-version"/)
+        assert.match(html, /id="managed-install-runtime-list"/)
+        assert.match(html, /id="start-managed-skill-installations"/)
+        assert.match(html, /id="managed-install-job-list"/)
+        assert.match(html, /id="managed-install-session"/)
+        assert.match(html, /id="cancel-managed-skill-installation"/)
+        assert.match(html, /id="inspect-managed-skill-installation"/)
+        for (const kind of ["zip", "folder", "local-git", "git-url"]) {
+            assert.match(html, new RegExp(`data-import-skill="${kind}"`))
+        }
+        assert.match(html, /id="managed-git-url-dialog"/)
+        assert.match(html, /id="managed-candidate-dialog"/)
+        assert.match(html, /id="managed-release-dialog"/)
+        assert.match(renderer, /managedSkills:\s*\{repositories:\s*\[\],\s*skills:\s*\[\],\s*versions:\s*\[\]\}/)
+        assert.match(renderer, /renderSkillManagementWorkbench/)
+        assert.match(renderer, /loadManagedSkills/)
+        assert.match(renderer, /rescanManagedSkills/)
+        assert.match(renderer, /importManagedGitUrl/)
+        assert.match(renderer, /importManagedSkill/)
+        assert.match(renderer, /createManagedSkillCandidate/)
+        assert.match(renderer, /releaseManagedSkillVersion/)
+        assert.match(renderer, /surface !== "chat" && surface !== "evaluation" && surface !== "skills"/)
+        assert.match(renderer, /initial\.managedSkills/)
+        assert.match(renderer, /onManagedSkillsChanged/)
+        assert.match(renderer, /onSkillInstallationsChanged/)
+        assert.match(renderer, /startManagedSkillInstallations/)
+        assert.match(renderer, /renderManagedSkillInstallations/)
+        assert.match(renderer, /sendSkillInstallationMessage/)
+        assert.match(styles, /\.workbench\.skills-mode\s*>\s*\.conversation-scroll/)
+        assert.match(styles, /\.skill-management-grid\s*\{[^}]*grid-template-columns:/s)
+        assert.match(styles, /\.managed-install-runtime-row/)
+        assert.match(styles, /\.managed-install-timeline/)
+        assert.match(styles, /\.managed-install-composer/)
+        assert.match(styles, /@media\s*\(max-width:\s*760px\)[\s\S]*\.skill-management-grid/s)
+        assert.doesNotMatch(styles, /body\.(?:busy|loading)[^}]*cursor:\s*(?:wait|progress)/s)
+    })
+
     it("manages one versioned dataset rubric before Case curation and evaluation", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")
@@ -291,6 +419,8 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /onRubricActivity[\s\S]*patchRubricActivityCard/)
         assert.match(renderer, /publishRubricSession/)
         assert.match(renderer, /discardRubricSession/)
+        assert.match(renderer, /dataset\.migrateLegacyRubric/)
+        assert.match(renderer, /migrateLegacyDatasetRubric/)
         assert.match(renderer, /data-rubric-model/)
         assert.match(renderer, /data-rubric-effort/)
         assert.match(renderer, /rubricCalibration\?\.status === "needed"/)
@@ -298,9 +428,11 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /state\.rubricSessions\.some\(\(session\) => session\.id === activity\.sessionId\)/)
         assert.match(preload, /listDatasetRubricVersions/)
         assert.match(preload, /getActiveDatasetRubric/)
+        assert.match(preload, /migrateLegacyDatasetRubric/)
         assert.match(preload, /onRubricChanged/)
         assert.match(main, /rubrics:create/)
         assert.match(main, /rubrics:publish/)
+        assert.match(main, /rubrics:migrate-legacy-contract/)
         assert.match(main, /requirePublishedDatasetRubric\(dataset\)/)
         assert.match(styles, /\.dataset-rubric-card/)
         assert.match(styles, /\.rubric-drawer\.visible/)
@@ -360,7 +492,7 @@ describe("local-first desktop surface", () => {
         assert.match(styles, /\.evaluation-case-row:hover\s+\.evaluation-case-delete/)
     })
 
-    it("configures an independent Judge and renders unified grading with legacy history support", () => {
+    it("configures an independent Judge and renders unified grading with neutral legacy history", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")
         const styles = source("renderer/styles.css")
@@ -384,14 +516,9 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /judgeModelsLoading/)
         assert.match(renderer, /judgeModelsUnavailable/)
         assert.match(renderer, /judge\.displayName \|\| run\.judgeConfiguration\?\.displayName/)
-        assert.match(renderer, /gradingMaxima\(result\)/)
-        assert.match(renderer, /scoreContract\?\.a\?\.maxScore/)
-        assert.match(renderer, /scoreContract\?\.b\?\.maxScore/)
         assert.match(renderer, /计算一个统一百分制总分/)
         assert.match(renderer, /settings\.judgeProfile/)
         assert.match(renderer, /gradingStatus/)
-        assert.match(renderer, /computedScore\.dimensionScores/)
-        assert.match(renderer, /computedScore\.bCriterionScores/)
         assert.match(renderer, /computedScore\.criterionScores/)
         assert.match(renderer, /scoreContract\.criteria/)
         assert.match(renderer, /judgment\.assessments/)
@@ -408,18 +535,10 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /verificationStatus/)
         assert.match(renderer, /verifiableFields/)
         assert.match(renderer, /crossChecks/)
-        for (const dimension of [
-            "skill_activation",
-            "required_references",
-            "tool_policy",
-            "workflow_order",
-            "completeness_artifacts",
-            "deterministic_processing",
-            "evidence_output",
-            "error_recovery",
-        ]) {
-            assert.match(renderer, new RegExp(`${dimension}:`))
-        }
+        assert.match(renderer, /legacySplitGrading/)
+        assert.match(renderer, /evaluationRuntimeViewByRun/)
+        assert.match(renderer, /runtimeView\.dataset\.evaluationRuntimeView/)
+        assert.match(renderer, /data-evaluation-runtime-view/)
         assert.match(styles, /\.evaluation-score-summary/)
         assert.match(styles, /\.evaluation-grading-breakdown/)
         assert.match(styles, /@media \(max-width: 900px\)[\s\S]*\.evaluation-grid/)

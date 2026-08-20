@@ -2,6 +2,7 @@ const assert = require("node:assert/strict")
 const {describe, it} = require("node:test")
 
 const {
+    defaultPermissionMode,
     permissionModeOptions,
     resolveExecutionPolicy,
     resolveRuntimePermission,
@@ -39,8 +40,33 @@ describe("runtime execution policy", () => {
         assert.deepEqual(resolveRuntimePermission("codebuddy", "delegate"), {
             permissionMode: "delegate",
         })
-        assert.deepEqual(resolveRuntimePermission("deepseek-harness", null), {})
         assert.equal(permissionModeOptions("codebuddy").some((entry) => entry.value === "dontAsk"), true)
         assert.throws(() => resolveRuntimePermission("codebuddy", "bad mode"), /permission mode/i)
+    })
+
+    it("maps DeepSeek Harness permissions to its three native sandbox modes", () => {
+        assert.deepEqual(permissionModeOptions("deepseek-harness"), [
+            {value: "danger-full-access", label: "fullLocalAccess"},
+            {value: "workspace-write", label: "workspaceOnlyAccess"},
+            {value: "read-only", label: "readOnlyAccess"},
+        ])
+        assert.equal(defaultPermissionMode("deepseek-harness"), "danger-full-access")
+        assert.equal(
+            defaultPermissionMode("deepseek-harness", {localAccess: "workspace"}),
+            "workspace-write",
+        )
+        assert.deepEqual(resolveRuntimePermission("deepseek-harness", null), {
+            permissionMode: "danger-full-access",
+        })
+        assert.deepEqual(resolveRuntimePermission("deepseek-harness", null, {localAccess: "workspace"}), {
+            permissionMode: "workspace-write",
+        })
+        assert.deepEqual(resolveRuntimePermission("deepseek-harness", "read-only"), {
+            permissionMode: "read-only",
+        })
+        assert.throws(
+            () => resolveRuntimePermission("deepseek-harness", "bypassPermissions"),
+            /permission mode/i,
+        )
     })
 })

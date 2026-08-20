@@ -297,6 +297,167 @@ describe("dataset rubric lifecycle", () => {
         }), /unified scoring model/i)
     })
 
+    it("upgrades only the active legacy scoring contract and carries current Cases forward", () => {
+        const {store, dataset, skillEvidence} = fixture()
+        const session = startSession(store, dataset, skillEvidence)
+        const legacy = rubric("legacy")
+        delete legacy.scoringModel
+        store.recordRubricRevision(session.id, {rubric: legacy, assistantText: "legacy"})
+        const first = store.publishRubricSession(session.id)
+        const curation = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            episode: episode(),
+            curator: {},
+        })
+        store.recordCurationRevision(curation.id, {
+            draft: curatedV2Draft(),
+            assistantText: "legacy Case",
+        })
+        const currentCase = store.archiveCurationSession(curation.id)
+        const staleCase = store.saveCase({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            question: "旧 Case",
+            answer: "旧答案",
+        })
+        const firstBefore = store.getDatasetRubricVersion(first.id)
+        const currentBefore = store.listCases(dataset.id).find((entry) => entry.id === currentCase.id)
+
+        const second = store.migrateActiveDatasetRubricToUnified(dataset.id)
+        const versions = store.listDatasetRubricVersions(dataset.id)
+        const currentAfter = store.listCases(dataset.id).find((entry) => entry.id === currentCase.id)
+        const staleAfter = store.listCases(dataset.id).find((entry) => entry.id === staleCase.id)
+        const migratedContent = structuredClone(second.rubric)
+        delete migratedContent.scoringModel
+
+        assert.equal(second.version, 2)
+        assert.equal(second.baseVersionId, first.id)
+        assert.equal(second.sourceSessionId, null)
+        assert.equal(second.skillEvidenceDigest, first.skillEvidenceDigest)
+        assert.deepEqual(second.skillReference, first.skillReference)
+        assert.equal(second.rubric.scoringModel, UNIFIED_SCORING_MODEL)
+        assert.deepEqual(migratedContent, firstBefore.rubric)
+        assert.deepEqual(versions.map((entry) => entry.id), [second.id, first.id])
+        assert.equal("scoringModel" in store.getDatasetRubricVersion(first.id).rubric, false)
+        assert.equal(store.getDataset(dataset.id).activeRubricVersionId, second.id)
+        assert.equal(currentAfter.id, currentBefore.id)
+        assert.equal(currentAfter.answer, currentBefore.answer)
+        assert.deepEqual(currentAfter.curated, currentBefore.curated)
+        assert.equal(currentAfter.rubricVersionId, second.id)
+        assert.deepEqual(currentAfter.rubricCalibration, {
+            status: "current",
+            rubricVersionId: second.id,
+            previousRubricVersionId: first.id,
+        })
+        assert.equal(staleAfter.rubricVersionId ?? null, null)
+        assert.deepEqual(staleAfter.rubricCalibration, {
+            status: "needed",
+            rubricVersionId: second.id,
+            previousRubricVersionId: null,
+        })
+        assert.equal(store.listRubricSessions(dataset.id).length, 0)
+
+        const run = store.createEvaluationRun({
+            datasetId: dataset.id,
+            caseIds: [currentCase.id],
+            selectionMode: "selected",
+            activationMode: "automatic",
+            skillEvidence,
+            runtimeConfigurations: [{
+                runtimeId: "codex:alpha",
+                providerId: "codex",
+                executablePath: "/usr/local/bin/codex",
+            }],
+        })
+        assert.equal(run.rubricVersionSnapshot.id, second.id)
+    })
+
+    it("rejects a legacy contract upgrade while the dataset has an active evaluation", () => {
+        const {store, dataset, skillEvidence} = fixture()
+        const session = startSession(store, dataset, skillEvidence)
+        const legacy = rubric("legacy")
+        delete legacy.scoringModel
+        store.recordRubricRevision(session.id, {rubric: legacy, assistantText: "legacy"})
+        const first = store.publishRubricSession(session.id)
+        store.state.evaluationRuns.push({
+            id: "active-run",
+            datasetId: dataset.id,
+            status: "running",
+        })
+
+        assert.throws(
+            () => store.migrateActiveDatasetRubricToUnified(dataset.id),
+            /active evaluation/i,
+        )
+        assert.equal(store.getDataset(dataset.id).activeRubricVersionId, first.id)
+        assert.deepEqual(store.listDatasetRubricVersions(dataset.id).map((entry) => entry.id), [first.id])
+    })
+
+    it("rejects a legacy contract upgrade while Case calibration is active", () => {
+        const {store, dataset, skillEvidence} = fixture()
+        const session = startSession(store, dataset, skillEvidence)
+        const legacy = rubric("legacy")
+        delete legacy.scoringModel
+        store.recordRubricRevision(session.id, {rubric: legacy, assistantText: "legacy"})
+        const first = store.publishRubricSession(session.id)
+        const curation = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            episode: episode(),
+            curator: {},
+        })
+        store.recordCurationRevision(curation.id, {
+            draft: curatedV2Draft(),
+            assistantText: "legacy Case",
+        })
+        const savedCase = store.archiveCurationSession(curation.id)
+        const storedCase = store.state.cases.find((entry) => entry.id === savedCase.id)
+        storedCase.rubricCalibration.status = "needed"
+        store.createCaseCalibrationSession({
+            datasetId: dataset.id,
+            caseId: savedCase.id,
+            curator: {},
+        })
+
+        assert.throws(
+            () => store.migrateActiveDatasetRubricToUnified(dataset.id),
+            /active Case calibration/i,
+        )
+        assert.equal(store.getDataset(dataset.id).activeRubricVersionId, first.id)
+        assert.deepEqual(store.listDatasetRubricVersions(dataset.id).map((entry) => entry.id), [first.id])
+    })
+
+    it("rejects a legacy contract upgrade while Rubric Agent editing is active", () => {
+        const {store, dataset, skillEvidence} = fixture()
+        const session = startSession(store, dataset, skillEvidence)
+        const legacy = rubric("legacy")
+        delete legacy.scoringModel
+        store.recordRubricRevision(session.id, {rubric: legacy, assistantText: "legacy"})
+        const first = store.publishRubricSession(session.id)
+        startSession(store, dataset, skillEvidence, first.id)
+
+        assert.throws(
+            () => store.migrateActiveDatasetRubricToUnified(dataset.id),
+            /Rubric Agent editing/i,
+        )
+        assert.equal(store.getDataset(dataset.id).activeRubricVersionId, first.id)
+    })
+
+    it("rejects repeated or non-legacy scoring-contract upgrades", () => {
+        const {store, dataset, skillEvidence} = fixture()
+        const session = startSession(store, dataset, skillEvidence)
+        store.recordRubricRevision(session.id, {rubric: rubric(), assistantText: "unified"})
+        const published = store.publishRubricSession(session.id)
+
+        assert.throws(
+            () => store.migrateActiveDatasetRubricToUnified(dataset.id),
+            /already uses the unified scoring model/i,
+        )
+        assert.equal(store.getDataset(dataset.id).activeRubricVersionId, published.id)
+        assert.deepEqual(store.listDatasetRubricVersions(dataset.id).map((entry) => entry.id), [published.id])
+    })
+
     it("calibrates an existing Case in place against the active rubric and preserves history", () => {
         const {store, dataset, skillEvidence} = fixture()
         let rubricSession = startSession(store, dataset, skillEvidence)
