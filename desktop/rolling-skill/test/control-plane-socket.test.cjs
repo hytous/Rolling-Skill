@@ -9,15 +9,16 @@ const {describe, it} = require("node:test")
 
 const {createPublicControlError} = require("../src/control-plane/contracts.cjs")
 const {
+    CONTROL_SOCKET_BIND_DIRECTORY_PREFIX,
+    CONTROL_SOCKET_BIND_RECOVERY_PREFIX,
     CONTROL_SOCKET_DIRECTORY,
     CONTROL_SOCKET_NAME,
     CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX,
-    CONTROL_SOCKET_LIVE_PREFIX,
     CONTROL_SOCKET_QUARANTINE_PREFIX,
     DEFAULT_MAX_IN_FLIGHT_REQUESTS,
     DEFAULT_MAX_QUEUED_RESPONSES,
     DEFAULT_MAX_QUEUED_RESPONSE_BYTES,
-    MAX_CONTROL_LIVE_BIND_ATTEMPTS,
+    MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS,
     MAX_CONTROL_MESSAGE_BYTES,
     MAX_CONTROL_SOCKET_PATH_BYTES,
     ControlSocketServer,
@@ -32,21 +33,38 @@ const {
     ControlSocketClient,
 } = require("../src/control-plane/socket-client.cjs")
 
+const temporaryCleanupByDirectory = new Map()
+
+function registerTemporaryDirectoryCleanup(t, directory) {
+    const cleanup = {beforeRemove: []}
+    temporaryCleanupByDirectory.set(directory, cleanup)
+    t.after(async () => {
+        try {
+            for (const callback of cleanup.beforeRemove) await callback()
+        } finally {
+            temporaryCleanupByDirectory.delete(directory)
+            await fs.promises.rm(directory, {recursive: true, force: true})
+        }
+    })
+}
+
+function registerControlServerCleanup(t, userData, server) {
+    const temporaryCleanup = temporaryCleanupByDirectory.get(userData)
+    if (temporaryCleanup) temporaryCleanup.beforeRemove.push(() => server.close())
+    else t.after(async () => server.close())
+}
+
 async function temporaryUserData(t) {
     const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "rolling-control-"))
     await fs.promises.chmod(directory, 0o700)
-    t.after(async () => {
-        await fs.promises.rm(directory, {recursive: true, force: true})
-    })
+    registerTemporaryDirectoryCleanup(t, directory)
     return directory
 }
 
 async function temporaryShortUserData(t) {
     const directory = await fs.promises.mkdtemp(path.join("/tmp", "rolling-control-"))
     await fs.promises.chmod(directory, 0o700)
-    t.after(async () => {
-        await fs.promises.rm(directory, {recursive: true, force: true})
-    })
+    registerTemporaryDirectoryCleanup(t, directory)
     return directory
 }
 
@@ -84,7 +102,7 @@ async function startControlServer(t, controlPlane, options = {}) {
     const userData = options.userData ?? await temporaryUserData(t)
     const server = new ControlSocketServer({userData, controlPlane, ...options})
     await server.start()
-    t.after(async () => server.close())
+    registerControlServerCleanup(t, userData, server)
     return {server, userData}
 }
 
@@ -228,6 +246,166 @@ function assertFixedControlError(error, secrets = []) {
 }
 
 describe("owner-only control socket transport", () => {
+    it("keeps the private bind namespace read-only for the listener lifetime", async (t) => {
+        assert.equal(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX, ".b-")
+        assert.equal(CONTROL_SOCKET_BIND_RECOVERY_PREFIX, ".r-")
+        const userData = await temporaryShortUserData(t)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({ok: true})},
+        })
+        t.after(async () => server.close().catch(() => {}))
+        await server.start()
+        const controlDir = path.dirname(server.socketPath)
+        const bindNames = (await fs.promises.readdir(controlDir))
+            .filter((name) => /^\.b-[A-Za-z0-9_-]{11}$/u.test(name))
+        assert.equal(bindNames.length, 1)
+        const bindDir = path.join(controlDir, bindNames[0])
+        const bindPath = path.join(bindDir, "s")
+        const bindDirStat = await fs.promises.lstat(bindDir)
+        const bindStat = await fs.promises.lstat(bindPath)
+        const publicStat = await fs.promises.lstat(server.socketPath)
+        assert.equal(bindDirStat.isDirectory(), true)
+        assert.equal(bindDirStat.mode & 0o777, 0o500)
+        assert.equal(bindStat.isSocket(), true)
+        assert.equal(bindStat.dev, publicStat.dev)
+        assert.equal(bindStat.ino, publicStat.ino)
+        await assert.rejects(fs.promises.unlink(bindPath), (error) =>
+            error?.code === "EACCES" || error?.code === "EPERM")
+
+        await server.close()
+        assert.deepEqual(
+            (await fs.promises.readdir(controlDir)).filter((name) =>
+                name === CONTROL_SOCKET_NAME || name.startsWith(".b-") ||
+                name.startsWith(".r-")),
+            [],
+        )
+    })
+
+    it("preserves a forced bind-path replacement in a recovery directory", async (t) => {
+        const userData = await temporaryShortUserData(t)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        t.after(async () => server.close().catch(() => {}))
+        await server.start()
+        const controlDir = path.dirname(server.socketPath)
+        const bindName = (await fs.promises.readdir(controlDir))
+            .find((name) => /^\.b-[A-Za-z0-9_-]{11}$/u.test(name))
+        assert.ok(bindName)
+        const bindDir = path.join(controlDir, bindName)
+        const bindPath = path.join(bindDir, "s")
+
+        await fs.promises.chmod(bindDir, 0o700)
+        await fs.promises.unlink(bindPath)
+        await fs.promises.writeFile(bindPath, "forced replacement", {mode: 0o600})
+        await fs.promises.chmod(bindDir, 0o500)
+
+        await assert.rejects(server.close(), /bind|recovery|mismatch|replacement/i)
+        await assert.rejects(fs.promises.lstat(server.socketPath), {code: "ENOENT"})
+        const recoveryNames = (await fs.promises.readdir(controlDir))
+            .filter((name) => /^\.r-[A-Za-z0-9_-]{11}$/u.test(name))
+        assert.equal(recoveryNames.length, 1)
+        const recoveryDir = path.join(controlDir, recoveryNames[0])
+        assert.equal(
+            await fs.promises.readFile(path.join(recoveryDir, "s"), "utf8"),
+            "forced replacement",
+        )
+        await fs.promises.chmod(recoveryDir, 0o700)
+    })
+
+    it("moves a forced bind-directory replacement into recovery without deleting it", async (t) => {
+        const userData = await temporaryShortUserData(t)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        t.after(async () => server.close().catch(() => {}))
+        await server.start()
+        const controlDir = path.dirname(server.socketPath)
+        const bindName = (await fs.promises.readdir(controlDir))
+            .find((name) => /^\.b-[A-Za-z0-9_-]{11}$/u.test(name))
+        assert.ok(bindName)
+        const bindDir = path.join(controlDir, bindName)
+        const bindPath = path.join(bindDir, "s")
+
+        await fs.promises.chmod(bindDir, 0o700)
+        await fs.promises.unlink(bindPath)
+        await fs.promises.rmdir(bindDir)
+        await fs.promises.mkdir(bindDir, {mode: 0o700})
+        await fs.promises.writeFile(bindPath, "directory replacement", {mode: 0o600})
+        await fs.promises.chmod(bindDir, 0o500)
+
+        await assert.rejects(server.close(), /bind|recovery|mismatch|identity/i)
+        await assert.rejects(fs.promises.lstat(server.socketPath), {code: "ENOENT"})
+        const recoveryNames = (await fs.promises.readdir(controlDir))
+            .filter((name) => /^\.r-[A-Za-z0-9_-]{11}$/u.test(name))
+        assert.equal(recoveryNames.length, 1)
+        const recoveryDir = path.join(controlDir, recoveryNames[0])
+        assert.equal(
+            await fs.promises.readFile(path.join(recoveryDir, "s"), "utf8"),
+            "directory replacement",
+        )
+        await fs.promises.chmod(recoveryDir, 0o700)
+    })
+
+    it("continues stale bind cleanup after a crash immediately following quarantine", async (t) => {
+        const userData = await temporaryShortUserData(t)
+        const serverModule = require.resolve("../src/control-plane/socket-server.cjs")
+        const source = [
+            'const fs = require("node:fs")',
+            'const path = require("node:path")',
+            'const {ControlSocketServer} = require(process.argv[1])',
+            'const server = new ControlSocketServer({userData: process.argv[2], controlPlane: {invoke: async () => ({})}})',
+            'server.start().then(() => {',
+            '  const renameSync = fs.renameSync',
+            '  fs.renameSync = (source, destination) => {',
+            '    renameSync(source, destination)',
+            '    if (/^\\.b-[A-Za-z0-9_-]{11}$/.test(path.basename(source)) && path.basename(destination).startsWith(".r-")) process.kill(process.pid, "SIGKILL")',
+            '  }',
+            '  process.stdout.write("ready\\n")',
+            '  setImmediate(() => server.close())',
+            '}, (error) => { process.stderr.write(error.stack); process.exit(1) })',
+        ].join(";")
+        const child = spawn(process.execPath, ["-e", source, serverModule, userData], {
+            stdio: ["ignore", "pipe", "pipe"],
+        })
+        let stderr = ""
+        child.stderr.on("data", (chunk) => {
+            stderr += chunk.toString("utf8")
+        })
+        const exitPromise = once(child, "exit")
+        await Promise.race([
+            once(child.stdout, "data"),
+            exitPromise.then(([code, signal]) => {
+                throw new Error(`cleanup crash fixture exited ${code}/${signal}: ${stderr}`)
+            }),
+        ])
+        const [code, signal] = await exitPromise
+        assert.equal(code, null)
+        assert.equal(signal, "SIGKILL")
+
+        const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
+        assert.equal(
+            (await fs.promises.readdir(controlDir))
+                .filter((name) => /^\.r-[A-Za-z0-9_-]{11}$/u.test(name)).length,
+            1,
+        )
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({ok: true})},
+        })
+        await server.start()
+        await server.close()
+        assert.deepEqual(
+            (await fs.promises.readdir(controlDir)).filter((name) =>
+                name === CONTROL_SOCKET_NAME || name.startsWith(".b-") ||
+                name.startsWith(".r-")),
+            [],
+        )
+    })
+
     it("routes a request with session authority and returns one JSON result", async (t) => {
         const invocations = []
         const {server, userData} = await startControlServer(t, {
@@ -1118,6 +1296,7 @@ describe("owner-only control socket transport", () => {
     it("waits for a published start boundary before completing close", async (t) => {
         const userData = await temporaryShortUserData(t)
         const socketPath = expectedSocketPath(userData)
+        const controlDir = path.dirname(socketPath)
         const server = new ControlSocketServer({
             userData,
             controlPlane: {invoke: async () => ({})},
@@ -1143,6 +1322,13 @@ describe("owner-only control socket transport", () => {
         try {
             const starting = server.start()
             await entered
+            const bindName = (await fs.promises.readdir(controlDir))
+                .find((name) => /^\.b-[A-Za-z0-9_-]{11}$/u.test(name))
+            assert.ok(bindName)
+            assert.equal(
+                (await fs.promises.lstat(path.join(controlDir, bindName))).mode & 0o777,
+                0o500,
+            )
             const closing = server.close()
             let closeSettled = false
             closing.then(() => {
@@ -1168,12 +1354,13 @@ describe("owner-only control socket transport", () => {
         }
         assert.deepEqual(
             (await fs.promises.readdir(path.dirname(socketPath))).filter((name) =>
-                name === CONTROL_SOCKET_NAME || name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+                name === CONTROL_SOCKET_NAME ||
+                name.startsWith(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX)),
             [],
         )
     })
 
-    it("cancels startup while the live socket is being secured", async (t) => {
+    it("cancels startup while the bind socket is being secured", async (t) => {
         const userData = await temporaryShortUserData(t)
         const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
         const server = new ControlSocketServer({
@@ -1181,17 +1368,21 @@ describe("owner-only control socket transport", () => {
             controlPlane: {invoke: async () => ({})},
         })
         const originalChmod = fs.promises.chmod
-        let releaseLiveChmod
-        let liveChmodEntered
+        let releaseBindChmod
+        let bindChmodEntered
         const gate = new Promise((resolve) => {
-            releaseLiveChmod = resolve
+            releaseBindChmod = resolve
         })
         const entered = new Promise((resolve) => {
-            liveChmodEntered = resolve
+            bindChmodEntered = resolve
         })
         fs.promises.chmod = async (candidate, mode) => {
-            if (path.basename(candidate).startsWith(CONTROL_SOCKET_LIVE_PREFIX)) {
-                liveChmodEntered()
+            if (
+                path.basename(candidate) === "s" &&
+                path.basename(path.dirname(candidate))
+                    .startsWith(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX)
+            ) {
+                bindChmodEntered()
                 await gate
             }
             return originalChmod(candidate, mode)
@@ -1206,17 +1397,18 @@ describe("owner-only control socket transport", () => {
             })
             await nextTurn()
             assert.equal(closeSettled, false)
-            releaseLiveChmod()
+            releaseBindChmod()
             await assert.rejects(starting, /closed/i)
             await closing
         } finally {
-            releaseLiveChmod()
+            releaseBindChmod()
             fs.promises.chmod = originalChmod
             await server.close().catch(() => {})
         }
         assert.deepEqual(
             (await fs.promises.readdir(controlDir)).filter((name) =>
-                name === CONTROL_SOCKET_NAME || name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+                name === CONTROL_SOCKET_NAME ||
+                name.startsWith(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX)),
             [],
         )
     })
@@ -1236,8 +1428,10 @@ describe("owner-only control socket transport", () => {
         fs.linkSync = (source, destination) => {
             if (
                 destination === socketPath &&
-                path.dirname(source) === controlDir &&
-                path.basename(source).startsWith(CONTROL_SOCKET_LIVE_PREFIX)
+                path.basename(source) === "s" &&
+                path.dirname(path.dirname(source)) === controlDir &&
+                path.basename(path.dirname(source))
+                    .startsWith(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX)
             ) publication = fs.lstatSync(source)
             return originalLinkSync(source, destination)
         }
@@ -1252,13 +1446,16 @@ describe("owner-only control socket transport", () => {
         assert.equal(publicStat.isSocket(), true)
         assert.equal(publicStat.dev, publication.dev)
         assert.equal(publicStat.ino, publication.ino)
-        const liveNames = (await fs.promises.readdir(controlDir))
-            .filter((name) => name.startsWith(CONTROL_SOCKET_LIVE_PREFIX))
-        assert.equal(liveNames.length, 1)
-        const liveStat = await fs.promises.lstat(path.join(controlDir, liveNames[0]))
-        assert.equal(liveStat.isSocket(), true)
-        assert.equal(liveStat.dev, publicStat.dev)
-        assert.equal(liveStat.ino, publicStat.ino)
+        const bindNames = (await fs.promises.readdir(controlDir))
+            .filter((name) => /^\.b-[A-Za-z0-9_-]{11}$/u.test(name))
+        assert.equal(bindNames.length, 1)
+        const bindDir = path.join(controlDir, bindNames[0])
+        const bindDirectoryStat = await fs.promises.lstat(bindDir)
+        const bindStat = await fs.promises.lstat(path.join(bindDir, "s"))
+        assert.equal(bindDirectoryStat.mode & 0o777, 0o500)
+        assert.equal(bindStat.isSocket(), true)
+        assert.equal(bindStat.dev, publicStat.dev)
+        assert.equal(bindStat.ino, publicStat.ino)
 
         const electronExecutable = require("electron")
         for (const [runtime, executable] of [
@@ -1273,12 +1470,13 @@ describe("owner-only control socket transport", () => {
         await server.close()
         assert.deepEqual(
             (await fs.promises.readdir(controlDir)).filter((name) =>
-                name === CONTROL_SOCKET_NAME || name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+                name === CONTROL_SOCKET_NAME ||
+                name.startsWith(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX)),
             [],
         )
     })
 
-    it("recovers public and live links left by a crashed server", async (t) => {
+    it("recovers public and private bind links left by a crashed server", async (t) => {
         const userData = await temporaryShortUserData(t)
         const socketPath = expectedSocketPath(userData)
         const serverModule = require.resolve("../src/control-plane/socket-server.cjs")
@@ -1306,12 +1504,15 @@ describe("owner-only control socket transport", () => {
 
         const controlDir = path.dirname(socketPath)
         const crashedPublic = await fs.promises.lstat(socketPath)
-        const crashedLiveNames = (await fs.promises.readdir(controlDir))
-            .filter((name) => /^\.l-[A-Za-z0-9_-]{11}$/u.test(name))
-        assert.equal(crashedLiveNames.length, 1)
-        const crashedLive = await fs.promises.lstat(path.join(controlDir, crashedLiveNames[0]))
-        assert.equal(crashedLive.dev, crashedPublic.dev)
-        assert.equal(crashedLive.ino, crashedPublic.ino)
+        const crashedBindNames = (await fs.promises.readdir(controlDir))
+            .filter((name) => /^\.b-[A-Za-z0-9_-]{11}$/u.test(name))
+        assert.equal(crashedBindNames.length, 1)
+        const crashedBindDir = path.join(controlDir, crashedBindNames[0])
+        const crashedBindDirectoryStat = await fs.promises.lstat(crashedBindDir)
+        const crashedBind = await fs.promises.lstat(path.join(crashedBindDir, "s"))
+        assert.equal(crashedBindDirectoryStat.mode & 0o777, 0o500)
+        assert.equal(crashedBind.dev, crashedPublic.dev)
+        assert.equal(crashedBind.ino, crashedPublic.ino)
 
         const server = new ControlSocketServer({
             userData,
@@ -1323,48 +1524,88 @@ describe("owner-only control socket transport", () => {
         await server.close()
         assert.deepEqual(
             (await fs.promises.readdir(controlDir)).filter((name) =>
-                name === CONTROL_SOCKET_NAME || name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+                name === CONTROL_SOCKET_NAME ||
+                name.startsWith(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX)),
             [],
         )
     })
 
-    it("refuses active, regular, or symlinked strict live names and ignores other names", async (t) => {
-        for (const kind of ["active", "file", "symlink"]) {
+    it("fails closed on unsafe strict bind namespaces and ignores unmatched names", async (t) => {
+        for (const kind of [
+            "active",
+            "file",
+            "symlink",
+            "inner-file",
+            "inner-symlink",
+            "extra-entry",
+        ]) {
             await t.test(kind, async (caseTest) => {
                 const userData = await temporaryUserData(caseTest)
                 const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
-                const livePath = path.join(controlDir, ".l-AAAAAAAAAAA")
+                const bindDir = path.join(controlDir, ".b-AAAAAAAAAAA")
+                const bindPath = path.join(bindDir, "s")
                 await fs.promises.mkdir(controlDir, {mode: 0o700})
                 let active = null
                 if (kind === "active") {
-                    active = await listenUnixServer(caseTest, livePath, (socket) => socket.end())
+                    await fs.promises.mkdir(bindDir, {mode: 0o700})
+                    active = net.createServer((socket) => socket.end())
+                    await new Promise((resolve, reject) => {
+                        active.once("error", reject)
+                        active.listen(bindPath, resolve)
+                    })
+                    await fs.promises.chmod(bindDir, 0o500)
                 } else if (kind === "file") {
-                    await fs.promises.writeFile(livePath, "live sentinel")
+                    await fs.promises.writeFile(bindDir, "bind sentinel")
+                } else if (kind === "symlink") {
+                    const target = path.join(userData, "bind-target")
+                    await fs.promises.mkdir(target)
+                    await fs.promises.symlink(target, bindDir)
                 } else {
-                    const target = path.join(userData, "live-target")
-                    await fs.promises.writeFile(target, "target")
-                    await fs.promises.symlink(target, livePath)
+                    await fs.promises.mkdir(bindDir, {mode: 0o700})
+                    if (kind === "inner-symlink") {
+                        const target = path.join(userData, "inner-target")
+                        await fs.promises.writeFile(target, "target")
+                        await fs.promises.symlink(target, bindPath)
+                    } else {
+                        await fs.promises.writeFile(bindPath, "inner sentinel")
+                    }
+                    if (kind === "extra-entry") {
+                        await fs.promises.writeFile(path.join(bindDir, "extra"), "extra")
+                    }
+                    await fs.promises.chmod(bindDir, 0o500)
                 }
                 const server = new ControlSocketServer({
                     userData,
                     controlPlane: {invoke: async () => ({})},
                 })
-                await assert.rejects(server.start(), /active|in use|non-socket|refus/i)
-                const occupant = await fs.promises.lstat(livePath)
-                if (kind === "active") {
-                    assert.equal(active.listening, true)
-                    assert.equal(occupant.isSocket(), true)
-                } else if (kind === "file") {
-                    assert.equal(await fs.promises.readFile(livePath, "utf8"), "live sentinel")
-                } else {
-                    assert.equal(occupant.isSymbolicLink(), true)
+                try {
+                    await assert.rejects(server.start(), /active|in use|directory|entry|socket|refus/i)
+                    const occupant = await fs.promises.lstat(bindDir)
+                    if (kind === "active") {
+                        assert.equal(active.listening, true)
+                        assert.equal((await fs.promises.lstat(bindPath)).isSocket(), true)
+                    } else if (kind === "file") {
+                        assert.equal(await fs.promises.readFile(bindDir, "utf8"), "bind sentinel")
+                    } else if (kind === "symlink") {
+                        assert.equal(occupant.isSymbolicLink(), true)
+                    } else if (kind === "inner-symlink") {
+                        assert.equal((await fs.promises.lstat(bindPath)).isSymbolicLink(), true)
+                    } else {
+                        assert.equal(await fs.promises.readFile(bindPath, "utf8"), "inner sentinel")
+                    }
+                } finally {
+                    await server.close().catch(() => {})
+                    if (active?.listening) await new Promise((resolve) => active.close(resolve))
+                    if (fs.existsSync(bindDir) && !fs.lstatSync(bindDir).isSymbolicLink()) {
+                        await fs.promises.chmod(bindDir, 0o700)
+                    }
                 }
             })
         }
 
         const ignoredUserData = await temporaryUserData(t)
         const ignoredDir = path.join(ignoredUserData, CONTROL_SOCKET_DIRECTORY)
-        const ignoredPath = path.join(ignoredDir, ".l-not-a-strict-live-name")
+        const ignoredPath = path.join(ignoredDir, ".b-not-a-strict-bind-name")
         await fs.promises.mkdir(ignoredDir, {mode: 0o700})
         await fs.promises.writeFile(ignoredPath, "ignore me")
         const server = new ControlSocketServer({
@@ -1376,42 +1617,45 @@ describe("owner-only control socket transport", () => {
         assert.equal(await fs.promises.readFile(ignoredPath, "utf8"), "ignore me")
     })
 
-    it("does not delete a strict live-path replacement raced into quarantine", async (t) => {
+    it("preserves a stale bind replacement raced into directory quarantine", async (t) => {
         const userData = await temporaryUserData(t)
         const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
-        const livePath = path.join(controlDir, ".l-AAAAAAAAAAA")
-        await fs.promises.mkdir(controlDir, {mode: 0o700})
-        await makeStaleUnixSocket(livePath)
+        const bindDir = path.join(controlDir, ".b-AAAAAAAAAAA")
+        const bindPath = path.join(bindDir, "s")
+        await fs.promises.mkdir(bindDir, {recursive: true, mode: 0o700})
+        await makeStaleUnixSocket(bindPath)
+        await fs.promises.chmod(bindDir, 0o500)
         const server = new ControlSocketServer({
             userData,
             controlPlane: {invoke: async () => ({})},
         })
         const originalRenameSync = fs.renameSync
         let exchanged = false
+        let recoveryPath = null
         fs.renameSync = (source, destination) => {
             if (
-                !exchanged && source === livePath &&
-                path.basename(destination).startsWith(".l-stale-")
+                !exchanged && source === bindDir &&
+                path.basename(destination).startsWith(CONTROL_SOCKET_BIND_RECOVERY_PREFIX)
             ) {
                 exchanged = true
-                fs.unlinkSync(source)
-                fs.writeFileSync(source, "live replacement", {mode: 0o600})
+                fs.unlinkSync(bindPath)
+                fs.writeFileSync(bindPath, "bind replacement", {mode: 0o600})
+                recoveryPath = destination
             }
             return originalRenameSync(source, destination)
         }
         try {
-            await assert.rejects(server.start(), /changed|quarantine|stale/i)
+            await assert.rejects(server.start(), /bind|recovery|mismatch|changed/i)
         } finally {
             fs.renameSync = originalRenameSync
             await server.close().catch(() => {})
         }
         assert.equal(exchanged, true)
-        assert.equal(await fs.promises.readFile(livePath, "utf8"), "live replacement")
-        assert.deepEqual(
-            (await fs.promises.readdir(controlDir))
-                .filter((name) => name.startsWith(".l-stale-")),
-            [],
+        assert.equal(
+            await fs.promises.readFile(path.join(recoveryPath, "s"), "utf8"),
+            "bind replacement",
         )
+        await fs.promises.chmod(recoveryPath, 0o700)
     })
 
     it("does not depend on private Node server fields", async () => {
@@ -1559,7 +1803,7 @@ describe("owner-only control socket transport", () => {
         assert.equal(server.connectionCount, 0)
     })
 
-    it("closes and removes every socket path when live-socket chmod fails", async (t) => {
+    it("closes and removes every socket path when bind-socket chmod fails", async (t) => {
         const userData = await temporaryUserData(t)
         const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
         const server = new ControlSocketServer({
@@ -1569,14 +1813,18 @@ describe("owner-only control socket transport", () => {
         const originalChmod = fs.promises.chmod
         let injected = false
         fs.promises.chmod = async (candidate, mode) => {
-            if (path.basename(candidate).startsWith(CONTROL_SOCKET_LIVE_PREFIX)) {
+            if (
+                path.basename(candidate) === "s" &&
+                path.basename(path.dirname(candidate))
+                    .startsWith(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX)
+            ) {
                 injected = true
-                throw new Error("injected live chmod failure")
+                throw new Error("injected bind chmod failure")
             }
             return originalChmod(candidate, mode)
         }
         try {
-            await assert.rejects(server.start(), /live chmod failure/)
+            await assert.rejects(server.start(), /bind chmod failure/)
         } finally {
             fs.promises.chmod = originalChmod
             await server.close().catch(() => {})
@@ -1585,16 +1833,100 @@ describe("owner-only control socket transport", () => {
         assert.deepEqual(
             (await fs.promises.readdir(controlDir)).filter((name) =>
                 name === CONTROL_SOCKET_NAME ||
-                name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+                name.startsWith(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX)),
             [],
         )
     })
 
-    it("rejects over-budget public and live paths without truncated leftovers", async (t) => {
+    it("protects the bind namespace before native close during startup cleanup", async (t) => {
+        const userData = await temporaryShortUserData(t)
+        const socketPath = expectedSocketPath(userData)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        const originalLinkSync = fs.linkSync
+        const originalClose = net.Server.prototype.close
+        let bindPath = null
+        let modeAtClose = null
+        let unlinkErrorCode = null
+        fs.linkSync = (source, destination) => {
+            if (destination === socketPath) {
+                bindPath = source
+                throw new Error("injected publish failure")
+            }
+            return originalLinkSync(source, destination)
+        }
+        net.Server.prototype.close = function close(callback) {
+            if (bindPath) {
+                modeAtClose = fs.lstatSync(path.dirname(bindPath)).mode & 0o777
+                try {
+                    fs.unlinkSync(bindPath)
+                } catch (error) {
+                    unlinkErrorCode = error?.code
+                }
+            }
+            return originalClose.call(this, callback)
+        }
+        try {
+            await assert.rejects(server.start(), /publish/i)
+        } finally {
+            fs.linkSync = originalLinkSync
+            net.Server.prototype.close = originalClose
+            await server.close().catch(() => {})
+        }
+        assert.equal(modeAtClose, 0o500)
+        assert.ok(unlinkErrorCode === "EACCES" || unlinkErrorCode === "EPERM")
+        assert.deepEqual(await fs.promises.readdir(path.dirname(socketPath)), [])
+    })
+
+    it("installs a read-only guard when the bind namespace is missing before close", async (t) => {
+        const userData = await temporaryShortUserData(t)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        await server.start()
+        const controlDir = path.dirname(server.socketPath)
+        const bindName = (await fs.promises.readdir(controlDir))
+            .find((name) => /^\.b-[A-Za-z0-9_-]{11}$/u.test(name))
+        assert.ok(bindName)
+        const bindDir = path.join(controlDir, bindName)
+        const bindPath = path.join(bindDir, "s")
+        await fs.promises.chmod(bindDir, 0o700)
+        await fs.promises.unlink(bindPath)
+        await fs.promises.rmdir(bindDir)
+
+        const originalClose = net.Server.prototype.close
+        let guardObserved = false
+        net.Server.prototype.close = function close(callback) {
+            const guard = fs.lstatSync(bindDir)
+            guardObserved = guard.isDirectory() && (guard.mode & 0o777) === 0o500
+            assert.throws(
+                () => fs.writeFileSync(bindPath, "replacement"),
+                (error) => error?.code === "EACCES" || error?.code === "EPERM",
+            )
+            return originalClose.call(this, callback)
+        }
+        try {
+            await server.close()
+        } finally {
+            net.Server.prototype.close = originalClose
+            await server.close().catch(() => {})
+        }
+        assert.equal(guardObserved, true)
+        assert.deepEqual(await fs.promises.readdir(controlDir), [])
+    })
+
+    it("rejects over-budget public and bind namespace paths without leftovers", async (t) => {
         const expectedMaximum = process.platform === "linux" ? 107 : 103
         assert.equal(MAX_CONTROL_SOCKET_PATH_BYTES, expectedMaximum)
+        assert.equal(
+            Buffer.byteLength(CONTROL_SOCKET_BIND_RECOVERY_PREFIX),
+            Buffer.byteLength(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX),
+        )
         for (const [kind, targetPublicBytes] of [
-            ["live", expectedMaximum - 1],
+            ["bind", expectedMaximum - 1],
             ["public", expectedMaximum + 1],
         ]) {
             await t.test(kind, async (pathTest) => {
@@ -1624,7 +1956,7 @@ describe("owner-only control socket transport", () => {
                     assert.deepEqual(
                         (await fs.promises.readdir(controlDir)).filter((name) =>
                             name === CONTROL_SOCKET_NAME ||
-                            name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+                            name.startsWith(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX)),
                         [],
                     )
                 }
@@ -1632,34 +1964,35 @@ describe("owner-only control socket transport", () => {
         }
     })
 
-    it("bounds collisions while choosing an unpredictable live path", async (t) => {
-        assert.ok(Number.isSafeInteger(MAX_CONTROL_LIVE_BIND_ATTEMPTS))
-        assert.ok(MAX_CONTROL_LIVE_BIND_ATTEMPTS > 0)
+    it("bounds collisions while choosing an unpredictable bind namespace", async (t) => {
+        assert.ok(Number.isSafeInteger(MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS))
+        assert.ok(MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS > 0)
         const userData = await temporaryShortUserData(t)
         const server = new ControlSocketServer({
             userData,
             controlPlane: {invoke: async () => ({})},
         })
-        const originalListen = net.Server.prototype.listen
+        const originalMkdirSync = fs.mkdirSync
         let attempts = 0
-        net.Server.prototype.listen = function listen(candidate, ...args) {
-            if (path.basename(candidate).startsWith(CONTROL_SOCKET_LIVE_PREFIX)) {
+        fs.mkdirSync = (candidate, options) => {
+            if (
+                /^\.b-[A-Za-z0-9_-]{11}$/u.test(path.basename(candidate)) &&
+                path.basename(path.dirname(candidate)) === CONTROL_SOCKET_DIRECTORY
+            ) {
                 attempts += 1
-                const error = Object.assign(new Error("injected live collision"), {
-                    code: "EADDRINUSE",
+                throw Object.assign(new Error("injected bind collision"), {
+                    code: "EEXIST",
                 })
-                queueMicrotask(() => this.emit("error", error))
-                return this
             }
-            return originalListen.call(this, candidate, ...args)
+            return originalMkdirSync(candidate, options)
         }
         try {
             await assert.rejects(server.start(), /collision|unique|in use/i)
         } finally {
-            net.Server.prototype.listen = originalListen
+            fs.mkdirSync = originalMkdirSync
             await server.close().catch(() => {})
         }
-        assert.equal(attempts, MAX_CONTROL_LIVE_BIND_ATTEMPTS)
+        assert.equal(attempts, MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS)
     })
 
     it("never overwrites a publish-race file, socket, or symlink", async (t) => {
@@ -1688,7 +2021,9 @@ describe("owner-only control socket transport", () => {
                 fs.linkSync = (source, destination) => {
                     if (
                         !raced && destination === socketPath &&
-                        path.basename(source).startsWith(CONTROL_SOCKET_LIVE_PREFIX)
+                        path.basename(source) === "s" &&
+                        path.basename(path.dirname(source))
+                            .startsWith(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX)
                     ) {
                         raced = true
                         if (kind === "file") {
@@ -1721,7 +2056,8 @@ describe("owner-only control socket transport", () => {
                 }
                 assert.deepEqual(
                     (await fs.promises.readdir(controlDir))
-                        .filter((name) => name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+                        .filter((name) =>
+                            name.startsWith(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX)),
                     [],
                 )
             })
@@ -1742,7 +2078,7 @@ describe("owner-only control socket transport", () => {
             controlPlane: {invoke: async () => ({ok: true})},
         })
         await server.start()
-        t.after(async () => server.close())
+        registerControlServerCleanup(t, userData, server)
         const replacementIdentity = await fs.promises.lstat(socketPath)
         assert.notEqual(replacementIdentity.ino, staleIdentity.ino)
         assert.deepEqual(
