@@ -113,6 +113,18 @@ describe("control-plane contracts", () => {
         }
     })
 
+    it("rejects undefined instead of treating it as an empty input object", () => {
+        for (const method of [
+            "context.get",
+            "raw_cases.list",
+            "datasets.list",
+            "evaluations.list",
+            "skills.list",
+        ]) {
+            assert.throws(() => parseControlInput(method, undefined), /object|undefined/iu)
+        }
+    })
+
     it("applies pagination defaults and preserves valid filters", () => {
         assert.deepEqual(parseControlInput("raw_cases.list", {
             skillName: "billing",

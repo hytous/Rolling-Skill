@@ -279,7 +279,7 @@ function parseWithSchema(schema, value, {method, code}) {
     }
 }
 
-function parseControlInput(method, input = {}) {
+function parseControlInput(method, input) {
     const definition = controlDefinition(method)
     return parseWithSchema(definition.input, input, {method, code: "INVALID_ARGUMENT"})
 }
