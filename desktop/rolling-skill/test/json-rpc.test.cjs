@@ -32,6 +32,44 @@ describe("Codex app-server JSONL framing", () => {
         assert.equal(errors[0].line, "not-json")
         assert.deepEqual(messages, [{id: 2, result: {}}])
     })
+
+    it("bounds incomplete frames by bytes and becomes terminal after overflow", () => {
+        const messages = []
+        const errors = []
+        const oversizedUtf8 = '{"x":"界"}'
+        assert.ok(Buffer.byteLength(oversizedUtf8, "utf8") > oversizedUtf8.length)
+        const decoder = new JsonLineDecoder(
+            (message) => messages.push(message),
+            (error, line) => errors.push({error, line}),
+            {maximumBufferBytes: oversizedUtf8.length},
+        )
+
+        decoder.push(Buffer.from(oversizedUtf8.slice(0, 6), "utf8"))
+        decoder.push(Buffer.from(oversizedUtf8.slice(6), "utf8"))
+        decoder.push('\n{"id":3,"result":{}}\n')
+
+        assert.equal(errors.length, 1)
+        assert.match(errors[0].error.message, /maximum buffer/i)
+        assert.equal(errors[0].line, null)
+        assert.deepEqual(messages, [])
+    })
+
+    it("decodes bounded multi-line chunks and a final frame without a newline", () => {
+        const messages = []
+        const errors = []
+        const decoder = new JsonLineDecoder(
+            (message) => messages.push(message),
+            (error) => errors.push(error),
+            {maximumBufferBytes: 10},
+        )
+
+        decoder.push('{"id":1}\n{"id":')
+        decoder.push('2}\n')
+        decoder.end('{"id":3}')
+
+        assert.deepEqual(messages, [{id: 1}, {id: 2}, {id: 3}])
+        assert.deepEqual(errors, [])
+    })
 })
 
 describe("JSON-RPC request correlation", () => {
@@ -59,4 +97,3 @@ describe("JSON-RPC request correlation", () => {
         await assert.rejects(interrupted.promise, /runtime exited/)
     })
 })
-

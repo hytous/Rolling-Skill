@@ -1,25 +1,56 @@
 class JsonLineDecoder {
-    constructor(onMessage, onError = () => {}) {
+    constructor(onMessage, onError = () => {}, {maximumBufferBytes = Infinity} = {}) {
         this.onMessage = onMessage
         this.onError = onError
-        this.buffer = ""
+        this.maximumBufferBytes = maximumBufferBytes
+        this.buffer = Buffer.alloc(0)
+        this.terminated = false
     }
 
     push(chunk) {
-        this.buffer += chunk.toString("utf8")
-        let newline = this.buffer.indexOf("\n")
+        if (this.terminated) return false
+        const incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        if (incoming.length === 0) return true
+        this.buffer = this.buffer.length === 0
+            ? Buffer.from(incoming)
+            : Buffer.concat([this.buffer, incoming])
+        let newline = this.buffer.indexOf(0x0a)
         while (newline >= 0) {
-            const line = this.buffer.slice(0, newline).trim()
+            if (newline > this.maximumBufferBytes) return this.#overflow()
+            const line = this.buffer.subarray(0, newline).toString("utf8").trim()
             this.buffer = this.buffer.slice(newline + 1)
-            if (line) {
-                try {
-                    this.onMessage(JSON.parse(line))
-                } catch (error) {
-                    this.onError(error, line)
-                }
-            }
-            newline = this.buffer.indexOf("\n")
+            this.#decode(line)
+            if (this.terminated) return false
+            newline = this.buffer.indexOf(0x0a)
         }
+        if (this.buffer.length > this.maximumBufferBytes) return this.#overflow()
+        return true
+    }
+
+    end(chunk) {
+        if (chunk !== undefined && !this.push(chunk)) return false
+        if (this.terminated) return false
+        if (this.buffer.length > this.maximumBufferBytes) return this.#overflow()
+        const line = this.buffer.toString("utf8").trim()
+        this.buffer = Buffer.alloc(0)
+        this.#decode(line)
+        return !this.terminated
+    }
+
+    #decode(line) {
+        if (!line) return
+        try {
+            this.onMessage(JSON.parse(line))
+        } catch (error) {
+            this.onError(error, line)
+        }
+    }
+
+    #overflow() {
+        this.buffer = Buffer.alloc(0)
+        this.terminated = true
+        this.onError(new RangeError("JSON line exceeded the maximum buffer bytes"), null)
+        return false
     }
 }
 
@@ -66,4 +97,3 @@ class RpcRequestTracker {
 }
 
 module.exports = {JsonLineDecoder, RpcRequestTracker}
-
