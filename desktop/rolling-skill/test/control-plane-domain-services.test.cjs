@@ -124,22 +124,28 @@ describe("control-plane domain services", () => {
         assert.equal(stored.skill.name, "billing")
     })
 
-    it("rejects Tool-supplied absolute Skill paths before calling the Raw Case store", async () => {
+    it("rejects every Tool-supplied Skill path before calling the Raw Case store", async () => {
         const {dependencies, rawCaseStore} = fixture()
         const services = createDomainServices(dependencies)
 
-        await assert.rejects(
-            services["raw_cases.enqueue"]({
-                cases: [{
-                    question: "question",
-                    skill: {name: "billing", path: "/tmp/attacker-skill"},
-                    note: "",
-                    source: {kind: "operator"},
-                }],
-                idempotencyKey: "enqueue-unsafe",
-            }, serviceContext()),
-            (error) => error.code === "INVALID_ARGUMENT",
-        )
+        for (const [index, path] of [
+            "/tmp/attacker-skill",
+            "billing",
+            "",
+        ].entries()) {
+            await assert.rejects(
+                services["raw_cases.enqueue"]({
+                    cases: [{
+                        question: "question",
+                        skill: {name: "billing", path},
+                        note: "",
+                        source: {kind: "operator"},
+                    }],
+                    idempotencyKey: `enqueue-unsafe-${index}`,
+                }, serviceContext()),
+                (error) => error.code === "INVALID_ARGUMENT",
+            )
+        }
         assert.equal(rawCaseStore.addMany.mock.callCount(), 0)
     })
 
@@ -181,26 +187,33 @@ describe("control-plane domain services", () => {
     it("resolves opaque Raw Case and evaluation run owners with an exact subject binding", async () => {
         const services = createDomainServices(fixture().dependencies)
 
-        assert.deepEqual(await services.resolveScope(
+        const rawResolution = await services.resolveScope(
             "raw_cases.update",
             {id: "raw-2", changes: {note: "updated"}, idempotencyKey: "update-1"},
             serviceContext().grant,
-        ), {
+        )
+        assert.deepEqual(rawResolution.scope, {
             method: "raw_cases.update",
             mode: "access",
             subject: {kind: "raw_case", id: "raw-2"},
             skillIds: ["skill-1"],
         })
-        assert.deepEqual(await services.resolveScope(
+        assert.ok(Object.isFrozen(rawResolution.executionContext))
+        assert.equal(rawResolution.executionContext.rawCase.id, "raw-2")
+
+        const runResolution = await services.resolveScope(
             "evaluations.cancel",
             {runId: "run-1", idempotencyKey: "cancel-1"},
             serviceContext().grant,
-        ), {
+        )
+        assert.deepEqual(runResolution.scope, {
             method: "evaluations.cancel",
             mode: "access",
             subject: {kind: "evaluation_run", id: "run-1"},
             datasetIds: ["dataset-1"],
         })
+        assert.ok(Object.isFrozen(runResolution.executionContext))
+        assert.equal(runResolution.executionContext.run.id, "run-1")
         await assert.rejects(
             services.resolveScope(
                 "raw_cases.dispatch",
@@ -236,6 +249,36 @@ describe("control-plane domain services", () => {
             (error) => error.code === "NOT_FOUND",
         )
         assert.equal(dependencies.startEvaluation.mock.callCount(), 1)
+    })
+
+    it("resolves direct Runtime, Dataset, and Skill IDs into frozen execution contexts", async () => {
+        const services = createDomainServices(fixture().dependencies)
+
+        const runtime = await services.resolveScope(
+            "runtimes.models",
+            {runtimeId: "runtime-1"},
+            serviceContext().grant,
+        )
+        const dataset = await services.resolveScope(
+            "datasets.get",
+            {datasetId: "dataset-1", includeCases: true},
+            serviceContext().grant,
+        )
+        const skill = await services.resolveScope(
+            "skills.get",
+            {skillId: "skill-1"},
+            serviceContext().grant,
+        )
+
+        assert.equal(runtime.executionContext.runtime.runtimeId, "runtime-1")
+        assert.equal(dataset.executionContext.dataset.id, "dataset-1")
+        assert.deepEqual(dataset.executionContext.cases.map((entry) => entry.id), ["case-1"])
+        assert.equal(skill.executionContext.skill.id, "skill-1")
+        assert.equal(skill.executionContext.detail.repository.managedPath, undefined)
+        for (const resolution of [runtime, dataset, skill]) {
+            assert.equal(resolution.scope, null)
+            assert.ok(Object.isFrozen(resolution.executionContext))
+        }
     })
 
     it("dispatches only with the trusted discovered runtime descriptor", async () => {

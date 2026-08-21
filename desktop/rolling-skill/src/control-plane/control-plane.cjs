@@ -1,5 +1,6 @@
 const {createHash} = require("node:crypto")
 
+const {CapabilityError} = require("./capability-store.cjs")
 const {
     CONTROL_METHODS,
     PUBLIC_CONTROL_ERROR_CODES,
@@ -56,27 +57,11 @@ function decisionError(decision, action) {
     return error
 }
 
-function ownDataValue(value, key) {
-    try {
-        const descriptor = Object.getOwnPropertyDescriptor(value, key)
-        return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined
-    } catch {
-        return undefined
-    }
-}
-
-function safeControlError(error, method) {
+function safeControlError(error) {
     if (publicControlError(error).code !== "CONTROL_ERROR") return error
-    const code = (typeof error === "object" && error !== null) || typeof error === "function"
-        ? ownDataValue(error, "code")
-        : undefined
-    if (code === "INVALID_ARGUMENT") {
-        return createPublicControlError("INVALID_ARGUMENT", {
-            details: {method, issues: [{path: []}]},
-            internalMessage: "Invalid domain service input",
-        })
+    if (error instanceof CapabilityError && CAPABILITY_PUBLIC_CODES.has(error.code)) {
+        return createPublicControlError(error.code)
     }
-    if (CAPABILITY_PUBLIC_CODES.has(code)) return createPublicControlError(code)
     return stableError("CONTROL_ERROR")
 }
 
@@ -141,17 +126,7 @@ class IdempotencyCache {
 
     makeRoom() {
         if (this.entries.size < this.limit) return
-        let oldest = null
-        for (const [key, entry] of this.entries) {
-            if (entry.state !== "terminal") continue
-            if (oldest === null || entry.completedAt < oldest.entry.completedAt) {
-                oldest = {key, entry}
-            }
-        }
-        if (oldest !== null) this.entries.delete(oldest.key)
-        if (this.entries.size >= this.limit) {
-            throw createPublicControlError("IDEMPOTENCY_CAPACITY")
-        }
+        throw createPublicControlError("IDEMPOTENCY_CAPACITY")
     }
 
     prepare(capabilityId, method, input) {
@@ -305,7 +280,7 @@ function boundedAuditId(value) {
     return `sha256:${createHash("sha256").update(value, "utf8").digest("hex").slice(0, 24)}`
 }
 
-function auditObjectIds(input, resolution) {
+function auditObjectIds(input, resolution, bearerSecret) {
     const candidates = {
         rawCaseIds: [input?.id],
         datasetIds: [input?.datasetId, ...(resolution?.datasetIds ?? [])],
@@ -324,7 +299,10 @@ function auditObjectIds(input, resolution) {
     }
     const result = {}
     for (const [key, values] of Object.entries(candidates)) {
-        const normalized = [...new Set(values.map(boundedAuditId).filter(Boolean))].slice(0, 20)
+        const normalized = [...new Set(values
+            .filter((value) => value !== bearerSecret)
+            .map(boundedAuditId)
+            .filter(Boolean))].slice(0, 20)
         if (normalized.length > 0) result[key] = normalized
     }
     return result
@@ -437,15 +415,18 @@ class ControlPlane {
         const startedAt = state.clock()
         let method = boundedAuditMethod(undefined)
         let envelope = null
+        let bearerSecret = null
         let input = null
         let grant = null
         let resolution = null
+        let executionContext = null
         let outcome = "error"
         let errorCode = null
         let idempotencyOwner = null
         let executionStarted = false
         try {
             envelope = snapshotControlRequest(request)
+            bearerSecret = typeof envelope.token === "string" ? envelope.token : null
             method = boundedAuditMethod(envelope.method)
             const definition = controlDefinition(envelope.method)
             method = envelope.method
@@ -472,7 +453,20 @@ class ControlPlane {
 
             const source = await trustedResolution(state.services, method, input, grant)
             if (source !== null && source !== undefined) {
-                resolution = source
+                if (Object.hasOwn(source, "scope") && Object.hasOwn(source, "executionContext")) {
+                    resolution = source.scope
+                    executionContext = source.executionContext
+                    if (
+                        executionContext !== null &&
+                        (!executionContext ||
+                            typeof executionContext !== "object" ||
+                            !Object.isFrozen(executionContext))
+                    ) {
+                        throw new Error("Control execution context must be immutable")
+                    }
+                } else {
+                    resolution = source
+                }
             }
             const resolvedScope = resolution === null ? undefined : createResolvedScope(resolution)
 
@@ -514,6 +508,7 @@ class ControlPlane {
                 sessionId: grant.sessionId,
                 grant,
                 scopeFilter: decision.scopeFilter ?? null,
+                executionContext,
             })
             executionStarted = true
             const rawResult = await state.services[method](input, context)
@@ -540,9 +535,9 @@ class ControlPlane {
                 : 0
             writeAudit(state, {
                 capabilityId: grant?.id ?? null,
-                sessionId: boundedAuditId(grant?.sessionId ?? envelope?.sessionId),
+                sessionId: grant === null ? null : boundedAuditId(grant.sessionId),
                 method,
-                objectIds: auditObjectIds(input, resolution),
+                objectIds: auditObjectIds(input, resolution, bearerSecret),
                 durationMs,
                 outcome,
                 errorCode,

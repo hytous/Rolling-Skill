@@ -1,5 +1,3 @@
-const {isAbsolute, win32} = require("node:path")
-
 const {
     CONTROL_METHODS,
     createPublicControlError,
@@ -15,20 +13,11 @@ const FILTER_METHODS = Object.freeze({
     "skills.list": "skillIds",
 })
 
-const SAFE_ERROR_MESSAGES = Object.freeze({
-    INVALID_ARGUMENT: "Invalid domain service input",
-    NOT_FOUND: "Control object was not found",
-})
-
-class DomainServiceError extends Error {
-    constructor(code) {
-        super(SAFE_ERROR_MESSAGES[code] ?? "Control operation failed")
-        this.code = code
-    }
-}
-
-function invalidArgument() {
-    return new DomainServiceError("INVALID_ARGUMENT")
+function invalidArgument(method, path) {
+    return createPublicControlError("INVALID_ARGUMENT", {
+        details: {method, issues: [{path}]},
+        internalMessage: "Tool-supplied Skill paths are not accepted",
+    })
 }
 
 function notFound(resource) {
@@ -39,18 +28,36 @@ function clone(value) {
     return value === undefined ? undefined : structuredClone(value)
 }
 
+function immutableSnapshot(value) {
+    const snapshot = clone(value)
+    const freeze = (candidate) => {
+        if (!candidate || typeof candidate !== "object" || Object.isFrozen(candidate)) {
+            return candidate
+        }
+        for (const child of Object.values(candidate)) freeze(child)
+        return Object.freeze(candidate)
+    }
+    return freeze(snapshot)
+}
+
+function scopeResolution(scope, executionContext = null) {
+    return Object.freeze({
+        scope: scope === null ? null : immutableSnapshot(scope),
+        executionContext: executionContext === null
+            ? null
+            : immutableSnapshot(executionContext),
+    })
+}
+
+function trustedExecution(context, method) {
+    const execution = context?.executionContext
+    return execution?.method === method && Object.isFrozen(execution) ? execution : null
+}
+
 function identifier(value) {
     return typeof value === "string" && value.length > 0 && value.length <= 200
         ? value
         : null
-}
-
-function toolPathIsAbsolute(value) {
-    return typeof value === "string" && (isAbsolute(value) || win32.isAbsolute(value))
-}
-
-function normalizedPath(value) {
-    return typeof value === "string" ? value.replace(/\\/gu, "/").replace(/\/$/u, "") : null
 }
 
 function arrayFromInventory(value, keys = []) {
@@ -112,6 +119,12 @@ function createDomainServices(dependencies = {}) {
         return runtime
     }
 
+    function requireRuntimeFrom(inventory, runtimeId) {
+        const runtime = inventory.find((entry) => entry?.runtimeId === runtimeId)
+        if (!runtime) throw notFound("runtime")
+        return runtime
+    }
+
     async function skillInventory() {
         const overview = typeof managedSkillManager?.overview === "function"
             ? await managedSkillManager.overview()
@@ -119,33 +132,21 @@ function createDomainServices(dependencies = {}) {
         return clone(arrayFromInventory(overview, ["skills"]))
     }
 
-    function skillPathAliases(skill) {
-        return unique([
-            skill?.path,
-            skill?.skillRoot,
-            skill?.manifestPath,
-        ].map(normalizedPath).filter(Boolean))
-    }
-
-    async function resolveSkillReference(reference, {toolSupplied = false} = {}) {
-        if (!reference || typeof reference !== "object") throw invalidArgument()
+    async function resolveSkillReference(reference, {
+        method = null,
+        path = [],
+        toolSupplied = false,
+    } = {}) {
+        if (!reference || typeof reference !== "object") throw notFound("skill")
         const name = identifier(reference.name)
-        if (name === null) throw invalidArgument()
-        if (toolSupplied && toolPathIsAbsolute(reference.path)) throw invalidArgument()
+        if (name === null) throw notFound("skill")
+        if (toolSupplied && typeof reference.path === "string") {
+            throw invalidArgument(method, [...path, "path"])
+        }
 
         const candidates = (await skillInventory()).filter((skill) => skill?.name === name)
-        if (candidates.length === 0) throw notFound("skill")
-        let selected = candidates.length === 1 ? candidates[0] : null
-        const requestedPath = normalizedPath(reference.path)
-        if (requestedPath !== null) {
-            const pathMatches = candidates.filter((skill) =>
-                skillPathAliases(skill).includes(requestedPath),
-            )
-            if (pathMatches.length === 1) selected = pathMatches[0]
-            else if (toolSupplied || selected === null) throw notFound("skill")
-        }
-        if (!selected) throw notFound("skill")
-        return selected
+        if (candidates.length !== 1) throw notFound("skill")
+        return candidates[0]
     }
 
     function canonicalSkillReference(skill) {
@@ -184,7 +185,6 @@ function createDomainServices(dependencies = {}) {
             if (!dataset || dataset.id !== datasetId) throw notFound("dataset")
             return clone(dataset)
         } catch (error) {
-            if (error instanceof DomainServiceError) throw error
             throw notFound("dataset")
         }
     }
@@ -195,17 +195,22 @@ function createDomainServices(dependencies = {}) {
             .filter((entry) => entry?.datasetId === datasetId)
     }
 
-    async function validateEvaluationStart(input) {
-        await requireDataset(input.datasetId)
+    async function evaluationStartSnapshot(input) {
+        const dataset = await requireDataset(input.datasetId)
         const cases = await casesForDataset(input.datasetId)
         const caseIds = new Set(cases.map((entry) => entry.id))
         if (input.caseIds.some((caseId) => !caseIds.has(caseId))) {
             throw notFound("case")
         }
-        for (const profile of input.runtimeConfigurations) {
-            await requireRuntime(profile.runtimeId)
-        }
-        await requireRuntime(input.judgeConfiguration.runtimeId)
+        const inventory = await runtimeInventory()
+        const runtimes = input.runtimeConfigurations.map((profile) =>
+            requireRuntimeFrom(inventory, profile.runtimeId),
+        )
+        const judgeRuntime = requireRuntimeFrom(
+            inventory,
+            input.judgeConfiguration.runtimeId,
+        )
+        return {dataset, cases, runtimes, judgeRuntime}
     }
 
     async function runInventory(datasetId = null) {
@@ -227,7 +232,6 @@ function createDomainServices(dependencies = {}) {
             if (!run || run.id !== runId) throw notFound("evaluation_run")
             return clone(run)
         } catch (error) {
-            if (error instanceof DomainServiceError) throw error
             throw notFound("evaluation_run")
         }
     }
@@ -236,6 +240,19 @@ function createDomainServices(dependencies = {}) {
         const skill = (await skillInventory()).find((entry) => entry?.id === skillId)
         if (!skill) throw notFound("skill")
         return skill
+    }
+
+    async function requireSkillDetail(skillId) {
+        const skill = await requireSkill(skillId)
+        if (typeof managedSkillManager?.readSkill !== "function") throw notFound("skill")
+        let detail
+        try {
+            detail = sanitizedSkillDetail(await managedSkillManager.readSkill(skillId))
+        } catch {
+            throw notFound("skill")
+        }
+        if (detail?.skill?.id !== skill.id) throw notFound("skill")
+        return {detail, skill}
     }
 
     async function filteredRawCases(input, context) {
@@ -271,58 +288,100 @@ function createDomainServices(dependencies = {}) {
     }
 
     async function resolveScope(method, input, grant) {
-        if (Object.hasOwn(FILTER_METHODS, method)) return filterResolution(method, grant)
+        if (Object.hasOwn(FILTER_METHODS, method)) {
+            return scopeResolution(await filterResolution(method, grant))
+        }
         if (method === "evaluations.list" && input.datasetId === null) {
             const granted = new Set(Array.isArray(grant?.scopes?.datasetIds)
                 ? grant.scopes.datasetIds
                 : [])
-            return {
+            return scopeResolution({
                 method,
                 mode: "filter",
                 datasetIds: (await datasetInventory())
                     .map((entry) => entry?.id)
                     .filter((id) => granted.has(id)),
-            }
+            })
         }
         if (method === "raw_cases.enqueue") {
-            const skillIds = []
-            for (const rawCase of input.cases) {
-                skillIds.push((await resolveSkillReference(rawCase.skill, {toolSupplied: true})).id)
+            const skills = []
+            for (let index = 0; index < input.cases.length; index += 1) {
+                skills.push(await resolveSkillReference(input.cases[index].skill, {
+                    method,
+                    path: ["cases", index, "skill"],
+                    toolSupplied: true,
+                }))
             }
-            return {method, mode: "access", skillIds: unique(skillIds)}
+            return scopeResolution(
+                {method, mode: "access", skillIds: unique(skills.map((skill) => skill.id))},
+                {method, skills},
+            )
         }
         if (method === "raw_cases.update" || method === "raw_cases.dispatch") {
             const rawCase = await requireRawCase(input.id)
-            const skillIds = [(await resolveSkillReference(rawCase.skill)).id]
+            const skill = await resolveSkillReference(rawCase.skill)
+            const skillIds = [skill.id]
+            let targetSkill = null
             if (method === "raw_cases.update" && input.changes.skill) {
-                skillIds.push((await resolveSkillReference(
+                targetSkill = await resolveSkillReference(
                     input.changes.skill,
-                    {toolSupplied: true},
-                )).id)
+                    {method, path: ["changes", "skill"], toolSupplied: true},
+                )
+                skillIds.push(targetSkill.id)
             }
+            let runtime = null
             if (method === "raw_cases.dispatch") {
-                await requireRuntime(input.runtime.runtimeId)
+                runtime = await requireRuntime(input.runtime.runtimeId)
             }
-            return {
+            return scopeResolution({
                 method,
                 mode: "access",
                 subject: {kind: "raw_case", id: rawCase.id},
                 skillIds: unique(skillIds),
-            }
+            }, {method, rawCase, runtime, skill, targetSkill})
         }
         if (method === "evaluations.get" || method === "evaluations.cancel") {
             const run = await requireEvaluationRun(input.runId)
-            return {
+            return scopeResolution({
                 method,
                 mode: "access",
                 subject: {kind: "evaluation_run", id: run.id},
                 datasetIds: [run.datasetId],
-            }
+            }, {method, run})
         }
         if (method === "evaluations.start") {
-            await validateEvaluationStart(input)
+            return scopeResolution(null, {
+                method,
+                ...await evaluationStartSnapshot(input),
+            })
         }
-        return null
+        if (method === "runtimes.models") {
+            return scopeResolution(null, {
+                method,
+                runtime: await requireRuntime(input.runtimeId),
+            })
+        }
+        if (method === "datasets.get") {
+            const dataset = await requireDataset(input.datasetId)
+            return scopeResolution(null, {
+                method,
+                dataset,
+                cases: input.includeCases ? await casesForDataset(dataset.id) : null,
+            })
+        }
+        if (method === "evaluations.list" && input.datasetId !== null) {
+            return scopeResolution(null, {
+                method,
+                dataset: await requireDataset(input.datasetId),
+            })
+        }
+        if (method === "skills.get") {
+            return scopeResolution(null, {
+                method,
+                ...await requireSkillDetail(input.skillId),
+            })
+        }
+        return scopeResolution(null)
     }
 
     const handlers = {
@@ -341,10 +400,17 @@ function createDomainServices(dependencies = {}) {
             return {rawCases: page.items, nextCursor: page.nextCursor}
         },
 
-        async "raw_cases.enqueue"(input) {
+        async "raw_cases.enqueue"(input, context) {
+            const execution = trustedExecution(context, "raw_cases.enqueue")
             const cases = []
-            for (const rawCase of input.cases) {
-                const skill = await resolveSkillReference(rawCase.skill, {toolSupplied: true})
+            for (let index = 0; index < input.cases.length; index += 1) {
+                const rawCase = input.cases[index]
+                const skill = execution?.skills[index] ??
+                    await resolveSkillReference(rawCase.skill, {
+                        method: "raw_cases.enqueue",
+                        path: ["cases", index, "skill"],
+                        toolSupplied: true,
+                    })
                 cases.push({
                     ...clone(rawCase),
                     question: rawCase.question,
@@ -355,21 +421,28 @@ function createDomainServices(dependencies = {}) {
             return clone(await rawCaseStore.addMany(cases))
         },
 
-        async "raw_cases.update"(input) {
-            await requireRawCase(input.id)
+        async "raw_cases.update"(input, context) {
+            const execution = trustedExecution(context, "raw_cases.update")
+            if (execution === null) await requireRawCase(input.id)
             const changes = clone(input.changes)
             if (changes.skill) {
-                const skill = await resolveSkillReference(changes.skill, {toolSupplied: true})
+                const skill = execution?.targetSkill ??
+                    await resolveSkillReference(changes.skill, {
+                        method: "raw_cases.update",
+                        path: ["changes", "skill"],
+                        toolSupplied: true,
+                    })
                 changes.skill = canonicalSkillReference(skill)
             }
             if (typeof rawCaseStore?.update !== "function") throw new Error("Raw Case store unavailable")
             return {rawCase: clone(await rawCaseStore.update(input.id, changes))}
         },
 
-        async "raw_cases.dispatch"(input) {
-            const rawCase = await requireRawCase(input.id)
-            const skill = await resolveSkillReference(rawCase.skill)
-            const descriptor = await requireRuntime(input.runtime.runtimeId)
+        async "raw_cases.dispatch"(input, context) {
+            const execution = trustedExecution(context, "raw_cases.dispatch")
+            const rawCase = execution?.rawCase ?? await requireRawCase(input.id)
+            const skill = execution?.skill ?? await resolveSkillReference(rawCase.skill)
+            const descriptor = execution?.runtime ?? await requireRuntime(input.runtime.runtimeId)
             if (typeof dispatchRawCase !== "function") throw new Error("Runtime dispatch unavailable")
             const result = await dispatchRawCase({
                 rawCase,
@@ -392,8 +465,9 @@ function createDomainServices(dependencies = {}) {
             }
         },
 
-        async "runtimes.models"(input) {
-            const runtime = await requireRuntime(input.runtimeId)
+        async "runtimes.models"(input, context) {
+            const execution = trustedExecution(context, "runtimes.models")
+            const runtime = execution?.runtime ?? await requireRuntime(input.runtimeId)
             if (typeof listModelsForRuntime !== "function") return {models: []}
             const result = await listModelsForRuntime(runtime.runtimeId, clone(runtime))
             return {models: clone(arrayFromInventory(result, ["models", "data"]))}
@@ -406,10 +480,13 @@ function createDomainServices(dependencies = {}) {
             return {datasets: page.items, nextCursor: page.nextCursor}
         },
 
-        async "datasets.get"(input) {
-            const dataset = await requireDataset(input.datasetId)
+        async "datasets.get"(input, context) {
+            const execution = trustedExecution(context, "datasets.get")
+            const dataset = execution?.dataset ?? await requireDataset(input.datasetId)
             const result = {dataset}
-            if (input.includeCases) result.cases = await casesForDataset(dataset.id)
+            if (input.includeCases) {
+                result.cases = execution?.cases ?? await casesForDataset(dataset.id)
+            }
             return result
         },
 
@@ -419,24 +496,31 @@ function createDomainServices(dependencies = {}) {
                 const allowed = scopeIds(context, "datasetIds")
                 runs = runs.filter((entry) => allowed.has(entry.datasetId))
             } else {
-                await requireDataset(input.datasetId)
+                const execution = trustedExecution(context, "evaluations.list")
+                if (execution === null) await requireDataset(input.datasetId)
             }
             const page = paginate(runs, input)
             return {runs: page.items, nextCursor: page.nextCursor}
         },
 
-        async "evaluations.get"(input) {
-            return {run: await requireEvaluationRun(input.runId)}
+        async "evaluations.get"(input, context) {
+            const execution = trustedExecution(context, "evaluations.get")
+            return {run: execution?.run ?? await requireEvaluationRun(input.runId)}
         },
 
-        async "evaluations.start"(input) {
-            await validateEvaluationStart(input)
+        async "evaluations.start"(input, context) {
+            const execution = trustedExecution(context, "evaluations.start") ??
+                immutableSnapshot({
+                    method: "evaluations.start",
+                    ...await evaluationStartSnapshot(input),
+                })
             if (typeof startEvaluation !== "function") throw new Error("Evaluation start unavailable")
-            return {run: clone(await startEvaluation(clone(input)))}
+            return {run: clone(await startEvaluation(clone(input), execution))}
         },
 
-        async "evaluations.cancel"(input) {
-            await requireEvaluationRun(input.runId)
+        async "evaluations.cancel"(input, context) {
+            const execution = trustedExecution(context, "evaluations.cancel")
+            if (execution === null) await requireEvaluationRun(input.runId)
             if (typeof evaluationRunner?.cancel !== "function") {
                 throw new Error("Evaluation cancellation unavailable")
             }
@@ -450,10 +534,10 @@ function createDomainServices(dependencies = {}) {
             return {skills: page.items, nextCursor: page.nextCursor}
         },
 
-        async "skills.get"(input) {
-            await requireSkill(input.skillId)
-            if (typeof managedSkillManager?.readSkill !== "function") throw notFound("skill")
-            return {skill: sanitizedSkillDetail(await managedSkillManager.readSkill(input.skillId))}
+        async "skills.get"(input, context) {
+            const execution = trustedExecution(context, "skills.get")
+            const detail = execution?.detail ?? (await requireSkillDetail(input.skillId)).detail
+            return {skill: detail}
         },
     }
 

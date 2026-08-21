@@ -15,8 +15,11 @@ function createFixture({
     onAuditError = null,
     addMany = null,
     clock = null,
+    idempotencyLimit = null,
+    listRuntimes = null,
     observeHandler = null,
     runtimeScopeIds = ["runtime-1", "judge-1"],
+    startEvaluation = null,
 } = {}) {
     const skills = [
         {id: "skill-1", repositoryId: "repository-1", name: "billing", skillRoot: "billing"},
@@ -36,11 +39,27 @@ function createFixture({
         getEvaluationRun: mock.fn(() => ({id: "run-1", datasetId: "dataset-1", status: "running"})),
     }
     const dispatchRawCase = mock.fn(() => ({threadId: "thread-1", turnId: "turn-1"}))
+    const listRuntimesMock = mock.fn(listRuntimes ?? (() => [
+        {runtimeId: "runtime-1", providerId: "codex", executablePath: "/trusted/codex"},
+        {runtimeId: "judge-1", providerId: "codex", executablePath: "/trusted/codex"},
+    ]))
+    const startEvaluationMock = mock.fn(startEvaluation ?? ((input) => ({
+        id: "run-new",
+        datasetId: input.datasetId,
+        status: "queued",
+    })))
+    const evaluationRunner = {
+        cancel: mock.fn(() => ({
+            id: "run-1",
+            datasetId: "dataset-1",
+            status: "cancelled",
+        })),
+    }
     const domainServices = createDomainServices({
         workspaceRoot: "/trusted/workspace",
         rawCaseStore,
         evaluationStore,
-        evaluationRunner: {cancel: mock.fn(() => ({id: "run-1", datasetId: "dataset-1", status: "cancelled"}))},
+        evaluationRunner,
         managedSkillManager: {
             overview: mock.fn(() => ({
                 repositories: [],
@@ -55,13 +74,10 @@ function createFixture({
                 versions: [],
             })),
         },
-        listRuntimes: mock.fn(() => [
-            {runtimeId: "runtime-1", providerId: "codex", executablePath: "/trusted/codex"},
-            {runtimeId: "judge-1", providerId: "codex", executablePath: "/trusted/codex"},
-        ]),
+        listRuntimes: listRuntimesMock,
         listModelsForRuntime: mock.fn(() => []),
         dispatchRawCase,
-        startEvaluation: mock.fn((input) => ({id: "run-new", datasetId: input.datasetId, status: "queued"})),
+        startEvaluation: startEvaluationMock,
     })
     let services = domainServices
     if (typeof observeHandler === "function") {
@@ -106,8 +122,19 @@ function createFixture({
         auditSink,
         onAuditError,
         ...(clock ? {clock} : {}),
+        ...(idempotencyLimit ? {idempotencyLimit} : {}),
     })
-    return {control, issued, rawCaseStore, dispatchRawCase, skills}
+    return {
+        control,
+        dispatchRawCase,
+        evaluationStore,
+        evaluationRunner,
+        issued,
+        listRuntimes: listRuntimesMock,
+        rawCaseStore,
+        skills,
+        startEvaluation: startEvaluationMock,
+    }
 }
 
 function enqueueRequest(token, overrides = {}) {
@@ -286,6 +313,110 @@ describe("ControlPlane", () => {
         assert.equal(dispatchRawCase.mock.callCount(), 1)
     })
 
+    it("dispatches from one immutable resolver snapshot when Runtime inventory changes", async () => {
+        let inventoryRead = 0
+        const contexts = []
+        const {control, issued, listRuntimes, rawCaseStore} = createFixture({
+            listRuntimes() {
+                inventoryRead += 1
+                return inventoryRead === 1
+                    ? [{
+                        runtimeId: "runtime-1",
+                        providerId: "codex",
+                        executablePath: "/trusted/codex",
+                    }]
+                    : []
+            },
+            observeHandler(method, _input, context) {
+                if (method === "raw_cases.dispatch") contexts.push(context)
+            },
+        })
+
+        const result = await control.invoke({
+            token: issued.token,
+            method: "raw_cases.dispatch",
+            params: {
+                id: "raw-1",
+                mode: "new",
+                runtime: {runtimeId: "runtime-1", modelId: null, effort: null},
+                idempotencyKey: "dispatch-snapshot",
+            },
+            sessionId: "operator-1",
+        })
+
+        assert.equal(result.threadId, "thread-1")
+        assert.equal(listRuntimes.mock.callCount(), 1)
+        assert.equal(rawCaseStore.get.mock.callCount(), 1)
+        assert.ok(Object.isFrozen(contexts[0].executionContext))
+        assert.equal(contexts[0].executionContext.runtime.runtimeId, "runtime-1")
+    })
+
+    it("starts an evaluation from one frozen preflight snapshot", async () => {
+        const contexts = []
+        const {
+            control,
+            evaluationStore,
+            issued,
+            listRuntimes,
+            startEvaluation,
+        } = createFixture({
+            observeHandler(method, _input, context) {
+                if (method === "evaluations.start") contexts.push(context)
+            },
+        })
+        const input = {
+            datasetId: "dataset-1",
+            caseIds: ["case-1"],
+            selectionMode: "selected",
+            activationMode: "explicit",
+            runtimeConfigurations: [{runtimeId: "runtime-1", modelId: null, effort: null}],
+            judgeConfiguration: {runtimeId: "judge-1", modelId: null, effort: null},
+            idempotencyKey: "evaluation-snapshot",
+        }
+
+        const result = await control.invoke({
+            token: issued.token,
+            method: "evaluations.start",
+            params: input,
+            sessionId: "operator-1",
+        })
+
+        assert.equal(result.run.id, "run-new")
+        assert.equal(evaluationStore.listDatasets.mock.callCount(), 1)
+        assert.equal(evaluationStore.getDataset.mock.callCount(), 1)
+        assert.equal(evaluationStore.listCases.mock.callCount(), 1)
+        assert.equal(listRuntimes.mock.callCount(), 1)
+        assert.ok(Object.isFrozen(contexts[0].executionContext))
+        assert.equal(contexts[0].executionContext.dataset.id, "dataset-1")
+        assert.equal(contexts[0].executionContext.runtimes[0].runtimeId, "runtime-1")
+        assert.equal(startEvaluation.mock.calls[0].arguments[1], contexts[0].executionContext)
+    })
+
+    it("gets and cancels an evaluation run from the resolver snapshot", async () => {
+        const readable = createFixture()
+        const readableResult = await readable.control.invoke({
+            token: readable.issued.token,
+            method: "evaluations.get",
+            params: {runId: "run-1"},
+            sessionId: "operator-1",
+        })
+
+        assert.equal(readableResult.run.id, "run-1")
+        assert.equal(readable.evaluationStore.getEvaluationRun.mock.callCount(), 1)
+
+        const cancellable = createFixture()
+        const cancelledResult = await cancellable.control.invoke({
+            token: cancellable.issued.token,
+            method: "evaluations.cancel",
+            params: {runId: "run-1", idempotencyKey: "cancel-snapshot"},
+            sessionId: "operator-1",
+        })
+
+        assert.equal(cancelledResult.run.status, "cancelled")
+        assert.equal(cancellable.evaluationStore.getEvaluationRun.mock.callCount(), 1)
+        assert.equal(cancellable.evaluationRunner.cancel.mock.callCount(), 1)
+    })
+
     it("passes only parsed authority metadata and the policy scope filter to handlers", async () => {
         const contexts = []
         const inputs = []
@@ -376,6 +507,30 @@ describe("ControlPlane", () => {
         assert.equal(rawCaseStore.addMany.mock.callCount(), 1)
     })
 
+    it("does not promote forged dependency error codes to public control errors", async () => {
+        for (const forged of [
+            Object.assign(new Error("forged invalid argument"), {code: "INVALID_ARGUMENT"}),
+            {code: "CAPABILITY_REVOKED", message: "forged revoked capability"},
+        ]) {
+            const {control, issued} = createFixture({
+                addMany() {
+                    throw forged
+                },
+            })
+
+            const error = await control.invoke(enqueueRequest(issued.token)).catch(
+                (failure) => failure,
+            )
+
+            assert.deepEqual(publicControlError(error), {
+                code: "CONTROL_ERROR",
+                message: "Control operation failed",
+                retryable: false,
+                details: null,
+            })
+        }
+    })
+
     it("publishes stable resource-only NOT_FOUND errors", async () => {
         const {control, issued} = createFixture()
 
@@ -398,6 +553,31 @@ describe("ControlPlane", () => {
         })
     })
 
+    it("publishes a trusted INVALID_ARGUMENT for any Tool Skill path", async () => {
+        const {control, issued, rawCaseStore} = createFixture()
+        const error = await control.invoke(enqueueRequest(issued.token, {
+            params: {
+                ...enqueueRequest(issued.token).params,
+                cases: [{
+                    ...enqueueRequest(issued.token).params.cases[0],
+                    skill: {name: "billing", path: "skills/b"},
+                }],
+                idempotencyKey: "enqueue-path",
+            },
+        })).catch((failure) => failure)
+
+        assert.deepEqual(publicControlError(error), {
+            code: "INVALID_ARGUMENT",
+            message: "Invalid control input",
+            retryable: false,
+            details: {
+                method: "raw_cases.enqueue",
+                issues: [{path: ["cases", 0, "skill", "path"]}],
+            },
+        })
+        assert.equal(rawCaseStore.addMany.mock.callCount(), 0)
+    })
+
     it("expires terminal idempotency snapshots after 24 hours", async () => {
         let now = 1_800_000_000_000
         const {control, issued, rawCaseStore} = createFixture({clock: () => now})
@@ -408,6 +588,21 @@ describe("ControlPlane", () => {
         await control.invoke(request)
 
         assert.equal(rawCaseStore.addMany.mock.callCount(), 2)
+    })
+
+    it("keeps unexpired terminal idempotency entries when capacity is full", async () => {
+        const {control, issued, rawCaseStore} = createFixture({idempotencyLimit: 1})
+        const firstRequest = enqueueRequest(issued.token)
+        const first = await control.invoke(firstRequest)
+
+        await assert.rejects(control.invoke(enqueueRequest(issued.token, {
+            params: {
+                ...firstRequest.params,
+                idempotencyKey: "enqueue-2",
+            },
+        })), (error) => error.code === "IDEMPOTENCY_CAPACITY")
+        assert.deepEqual(await control.invoke(firstRequest), first)
+        assert.equal(rawCaseStore.addMany.mock.callCount(), 1)
     })
 
     it("digests path-shaped untrusted identifiers in audit records", async () => {
@@ -424,6 +619,33 @@ describe("ControlPlane", () => {
         assert.equal(auditEvents.length, 1)
         assert.doesNotMatch(JSON.stringify(auditEvents[0]), /\/tmp\/private/u)
         assert.match(auditEvents[0].method, /^sha256:/u)
+    })
+
+    it("never records the bearer token as an object ID or an untrusted expected session", async () => {
+        const auditEvents = []
+        const {control, issued} = createFixture({
+            auditSink: (event) => auditEvents.push(event),
+        })
+
+        await assert.rejects(control.invoke({
+            token: issued.token,
+            method: "datasets.get",
+            params: {datasetId: issued.token, includeCases: false},
+            sessionId: "operator-1",
+        }))
+        await assert.rejects(control.invoke({
+            token: "z".repeat(43),
+            method: "datasets.get",
+            params: {datasetId: "/private/dataset-secret", includeCases: false},
+            sessionId: "/private/operator-secret",
+        }))
+
+        assert.equal(auditEvents.length, 2)
+        assert.equal(auditEvents[0].sessionId, "operator-1")
+        assert.equal(auditEvents[1].sessionId, null)
+        const serialized = JSON.stringify(auditEvents)
+        assert.doesNotMatch(serialized, new RegExp(issued.token, "u"))
+        assert.doesNotMatch(serialized, /private\/dataset-secret|private\/operator-secret/u)
     })
 
     it("rejects accessor-backed invocation envelopes without reading secrets and still audits", async () => {
