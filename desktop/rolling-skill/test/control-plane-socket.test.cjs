@@ -12,10 +12,13 @@ const {
     CONTROL_SOCKET_DIRECTORY,
     CONTROL_SOCKET_NAME,
     CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX,
+    CONTROL_SOCKET_LIVE_PREFIX,
     CONTROL_SOCKET_QUARANTINE_PREFIX,
     DEFAULT_MAX_IN_FLIGHT_REQUESTS,
     DEFAULT_MAX_QUEUED_RESPONSES,
+    MAX_CONTROL_LIVE_BIND_ATTEMPTS,
     MAX_CONTROL_MESSAGE_BYTES,
+    MAX_CONTROL_SOCKET_PATH_BYTES,
     ControlSocketServer,
     attachControlSocketConnection,
 } = require("../src/control-plane/socket-server.cjs")
@@ -29,6 +32,15 @@ const {
 
 async function temporaryUserData(t) {
     const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "rolling-control-"))
+    await fs.promises.chmod(directory, 0o700)
+    t.after(async () => {
+        await fs.promises.rm(directory, {recursive: true, force: true})
+    })
+    return directory
+}
+
+async function temporaryShortUserData(t) {
+    const directory = await fs.promises.mkdtemp(path.join("/tmp", "rolling-control-"))
     await fs.promises.chmod(directory, 0o700)
     t.after(async () => {
         await fs.promises.rm(directory, {recursive: true, force: true})
@@ -116,6 +128,32 @@ async function makeStaleUnixSocket(socketPath) {
     child.kill("SIGKILL")
     await once(child, "exit")
     assert.equal((await fs.promises.lstat(socketPath)).isSocket(), true)
+}
+
+async function invokeControlSocketFrom(executable, socketPath, id) {
+    const source = [
+        'const net = require("node:net")',
+        "const socket = net.createConnection(process.argv[1])",
+        'let buffer = ""',
+        'socket.on("connect", () => socket.write(JSON.stringify({id: process.argv[2], method: "context.get", params: {runtime: process.argv[2]}, token: "opaque", sessionId: "operator"}) + "\\n"))',
+        'socket.on("data", (chunk) => { buffer += chunk.toString("utf8"); const newline = buffer.indexOf("\\n"); if (newline >= 0) { process.stdout.write(buffer.slice(0, newline)); socket.destroy() } })',
+        'socket.on("error", (error) => { process.stderr.write(error.message); process.exitCode = 1 })',
+    ].join(";")
+    const child = spawn(executable, ["-e", source, socketPath, id], {
+        env: {...process.env, ELECTRON_RUN_AS_NODE: "1"},
+        stdio: ["ignore", "pipe", "pipe"],
+    })
+    let stdout = ""
+    let stderr = ""
+    child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString("utf8")
+    })
+    child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString("utf8")
+    })
+    const [code] = await once(child, "exit")
+    assert.equal(code, 0, stderr)
+    return JSON.parse(stdout)
 }
 
 function controlRequestLine(id, params = {}) {
@@ -789,24 +827,61 @@ describe("owner-only control socket transport", () => {
         assert.equal(await fs.promises.readFile(replacementPath, "utf8"), "replacement")
     })
 
-    it("disables Node pathname cleanup before closing the listening handle", async (t) => {
-        const {server} = await startControlServer(t, {invoke: async () => ({})})
-        const socketPath = server.socketPath
-        const originalClose = net.Server.prototype.close
-        let pipeNameAtClose
-        net.Server.prototype.close = function close(callback) {
-            pipeNameAtClose = this._pipeName
-            fs.unlinkSync(socketPath)
-            fs.writeFileSync(socketPath, "before-handle-close", {mode: 0o600})
-            return originalClose.call(this, callback)
+    it("publishes one hard-linked socket usable by Node and Electron", async (t) => {
+        const userData = await temporaryShortUserData(t)
+        const socketPath = expectedSocketPath(userData)
+        const controlDir = path.dirname(socketPath)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {
+                invoke: async ({params}) => ({runtime: params.runtime}),
+            },
+        })
+        const originalLinkSync = fs.linkSync
+        let publication = null
+        fs.linkSync = (source, destination) => {
+            if (
+                destination === socketPath &&
+                path.dirname(source) === controlDir &&
+                path.basename(source).startsWith(CONTROL_SOCKET_LIVE_PREFIX)
+            ) publication = fs.lstatSync(source)
+            return originalLinkSync(source, destination)
         }
         try {
-            await server.close()
+            await server.start()
         } finally {
-            net.Server.prototype.close = originalClose
+            fs.linkSync = originalLinkSync
         }
-        assert.equal(pipeNameAtClose, null)
-        assert.equal(await fs.promises.readFile(socketPath, "utf8"), "before-handle-close")
+        t.after(async () => server.close())
+        assert.ok(publication)
+        const publicStat = await fs.promises.lstat(socketPath)
+        assert.equal(publicStat.isSocket(), true)
+        assert.equal(publicStat.dev, publication.dev)
+        assert.equal(publicStat.ino, publication.ino)
+        assert.deepEqual(
+            (await fs.promises.readdir(controlDir))
+                .filter((name) => name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+            [],
+        )
+
+        const electronExecutable = require("electron")
+        for (const [runtime, executable] of [
+            ["node", process.execPath],
+            ["electron", electronExecutable],
+        ]) {
+            assert.deepEqual(
+                await invokeControlSocketFrom(executable, socketPath, runtime),
+                {id: runtime, result: {runtime}},
+            )
+        }
+    })
+
+    it("does not depend on private Node server fields", async () => {
+        const source = await fs.promises.readFile(
+            require.resolve("../src/control-plane/socket-server.cjs"),
+            "utf8",
+        )
+        assert.doesNotMatch(source, /(?:\._(?:pipeName|handle)\b|["']_(?:pipeName|handle)["'])/u)
     })
 
     it("quarantines a replacement created after the close callback", async (t) => {
@@ -944,6 +1019,175 @@ describe("owner-only control socket transport", () => {
         }
         await assert.rejects(fs.promises.lstat(socketPath), {code: "ENOENT"})
         assert.equal(server.connectionCount, 0)
+    })
+
+    it("closes and removes every socket path when live-socket chmod fails", async (t) => {
+        const userData = await temporaryUserData(t)
+        const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        const originalChmod = fs.promises.chmod
+        let injected = false
+        fs.promises.chmod = async (candidate, mode) => {
+            if (path.basename(candidate).startsWith(CONTROL_SOCKET_LIVE_PREFIX)) {
+                injected = true
+                throw new Error("injected live chmod failure")
+            }
+            return originalChmod(candidate, mode)
+        }
+        try {
+            await assert.rejects(server.start(), /live chmod failure/)
+        } finally {
+            fs.promises.chmod = originalChmod
+            await server.close().catch(() => {})
+        }
+        assert.equal(injected, true)
+        assert.deepEqual(
+            (await fs.promises.readdir(controlDir)).filter((name) =>
+                name === CONTROL_SOCKET_NAME ||
+                name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+            [],
+        )
+    })
+
+    it("rejects over-budget public and live paths without truncated leftovers", async (t) => {
+        const expectedMaximum = process.platform === "linux" ? 107 : 103
+        assert.equal(MAX_CONTROL_SOCKET_PATH_BYTES, expectedMaximum)
+        for (const [kind, targetPublicBytes] of [
+            ["live", expectedMaximum - 1],
+            ["public", expectedMaximum + 1],
+        ]) {
+            await t.test(kind, async (pathTest) => {
+                const parent = await fs.promises.mkdtemp(path.join("/tmp", "rolling-long-"))
+                pathTest.after(async () => {
+                    await fs.promises.rm(parent, {recursive: true, force: true})
+                })
+                const publicSuffix = path.join("control", CONTROL_SOCKET_NAME)
+                const nestedLength = targetPublicBytes -
+                    Buffer.byteLength(`${parent}${path.sep}${publicSuffix}`, "utf8") - 1
+                assert.ok(nestedLength > 0)
+                const userData = path.join(parent, "x".repeat(nestedLength))
+                await fs.promises.mkdir(userData, {mode: 0o700})
+                const socketPath = expectedSocketPath(userData)
+                assert.equal(Buffer.byteLength(socketPath, "utf8"), targetPublicBytes)
+                const server = new ControlSocketServer({
+                    userData,
+                    controlPlane: {invoke: async () => ({})},
+                })
+                try {
+                    await assert.rejects(server.start(), /socket path.*too long|path budget/i)
+                } finally {
+                    await server.close().catch(() => {})
+                }
+                const controlDir = path.dirname(socketPath)
+                if (fs.existsSync(controlDir)) {
+                    assert.deepEqual(
+                        (await fs.promises.readdir(controlDir)).filter((name) =>
+                            name === CONTROL_SOCKET_NAME ||
+                            name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+                        [],
+                    )
+                }
+            })
+        }
+    })
+
+    it("bounds collisions while choosing an unpredictable live path", async (t) => {
+        assert.ok(Number.isSafeInteger(MAX_CONTROL_LIVE_BIND_ATTEMPTS))
+        assert.ok(MAX_CONTROL_LIVE_BIND_ATTEMPTS > 0)
+        const userData = await temporaryShortUserData(t)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        const originalListen = net.Server.prototype.listen
+        let attempts = 0
+        net.Server.prototype.listen = function listen(candidate, ...args) {
+            if (path.basename(candidate).startsWith(CONTROL_SOCKET_LIVE_PREFIX)) {
+                attempts += 1
+                const error = Object.assign(new Error("injected live collision"), {
+                    code: "EADDRINUSE",
+                })
+                queueMicrotask(() => this.emit("error", error))
+                return this
+            }
+            return originalListen.call(this, candidate, ...args)
+        }
+        try {
+            await assert.rejects(server.start(), /collision|unique|in use/i)
+        } finally {
+            net.Server.prototype.listen = originalListen
+            await server.close().catch(() => {})
+        }
+        assert.equal(attempts, MAX_CONTROL_LIVE_BIND_ATTEMPTS)
+    })
+
+    it("never overwrites a publish-race file, socket, or symlink", async (t) => {
+        for (const kind of ["file", "socket", "symlink"]) {
+            await t.test(kind, async (raceTest) => {
+                const userData = await temporaryUserData(raceTest)
+                const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
+                const socketPath = path.join(controlDir, CONTROL_SOCKET_NAME)
+                await fs.promises.mkdir(controlDir, {mode: 0o700})
+                const preparedSocket = path.join(controlDir, "prepared.sock")
+                const symlinkTarget = path.join(userData, "symlink-target")
+                let expectedSocketIdentity = null
+                if (kind === "socket") {
+                    await makeStaleUnixSocket(preparedSocket)
+                    expectedSocketIdentity = await fs.promises.lstat(preparedSocket)
+                } else if (kind === "symlink") {
+                    await fs.promises.writeFile(symlinkTarget, "target")
+                }
+
+                const server = new ControlSocketServer({
+                    userData,
+                    controlPlane: {invoke: async () => ({})},
+                })
+                const originalLinkSync = fs.linkSync
+                let raced = false
+                fs.linkSync = (source, destination) => {
+                    if (
+                        !raced && destination === socketPath &&
+                        path.basename(source).startsWith(CONTROL_SOCKET_LIVE_PREFIX)
+                    ) {
+                        raced = true
+                        if (kind === "file") {
+                            fs.writeFileSync(destination, "publish-race file", {mode: 0o600})
+                        } else if (kind === "socket") {
+                            fs.renameSync(preparedSocket, destination)
+                        } else {
+                            fs.symlinkSync(symlinkTarget, destination)
+                        }
+                    }
+                    return originalLinkSync(source, destination)
+                }
+                try {
+                    await assert.rejects(server.start(), /publish|exist|link|race/i)
+                } finally {
+                    fs.linkSync = originalLinkSync
+                    await server.close().catch(() => {})
+                }
+                assert.equal(raced, true)
+                const occupant = await fs.promises.lstat(socketPath)
+                if (kind === "file") {
+                    assert.equal(await fs.promises.readFile(socketPath, "utf8"), "publish-race file")
+                } else if (kind === "socket") {
+                    assert.equal(occupant.isSocket(), true)
+                    assert.equal(occupant.dev, expectedSocketIdentity.dev)
+                    assert.equal(occupant.ino, expectedSocketIdentity.ino)
+                } else {
+                    assert.equal(occupant.isSymbolicLink(), true)
+                    assert.equal(await fs.promises.readlink(socketPath), symlinkTarget)
+                }
+                assert.deepEqual(
+                    (await fs.promises.readdir(controlDir))
+                        .filter((name) => name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+                    [],
+                )
+            })
+        }
     })
 
     it("replaces only a stale socket at the exact configured path", async (t) => {
