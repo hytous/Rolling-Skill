@@ -1,4 +1,4 @@
-const {METHOD_DEFINITIONS} = require("./contracts.cjs")
+const {METHOD_DEFINITIONS, controlDefinition} = require("./contracts.cjs")
 
 const PHASE_ONE_ACTIONS = new Set(
     Object.values(METHOD_DEFINITIONS).map(({action}) => action),
@@ -11,6 +11,32 @@ const SCOPE_DEFINITIONS = Object.freeze([
 ])
 
 const ALLOW_WITHOUT_RESERVATION = Object.freeze({decision: "allow", reservation: null})
+
+const APPROVAL_METHOD_DEFINITIONS = Object.freeze({
+    "datasets.delete": Object.freeze({action: "datasets.delete", reason: "destructive_action"}),
+    "datasets.delete_case": Object.freeze({
+        action: "datasets.delete",
+        reason: "destructive_action",
+    }),
+    "raw_cases.delete": Object.freeze({
+        action: "raw_cases.delete",
+        reason: "destructive_action",
+    }),
+    "evaluations.delete": Object.freeze({
+        action: "evaluations.delete",
+        reason: "destructive_action",
+    }),
+    "skills.delete": Object.freeze({action: "skills.delete", reason: "destructive_action"}),
+    "skills.release": Object.freeze({action: "skills.release", reason: "release"}),
+    "skills.install": Object.freeze({action: "skills.install", reason: "installation"}),
+    "installations.start": Object.freeze({
+        action: "installations.execute",
+        reason: "installation",
+    }),
+    "rubrics.publish": Object.freeze({action: "rubrics.publish", reason: "rubric_publish"}),
+    "budget.expand": Object.freeze({action: "budget.expand", reason: "budget_expansion"}),
+    "budgets.expand": Object.freeze({action: "budget.expand", reason: "budget_expansion"}),
+})
 
 function deepFreeze(value) {
     if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value
@@ -63,22 +89,27 @@ function requestedScope(input, {budget} = {}) {
     return deepFreeze(scope)
 }
 
-function approvalReason(method, action) {
-    if (
-        method === "budget.expand" ||
-        method === "budgets.expand" ||
-        action === "budget.expand"
-    ) return "budget_expansion"
-    if (/(?:^|\.)(?:delete|delete_case)$/u.test(method)) return "destructive_action"
-    if (method === "skills.release" || action === "skills.release") return "release"
-    if (
-        method === "skills.install" ||
-        method === "installations.start" ||
-        action === "skills.install" ||
-        action === "installations.execute"
-    ) return "installation"
-    if (method === "rubrics.publish" || action === "rubrics.publish") return "rubric_publish"
-    return null
+function policyMethodDefinition(method) {
+    let contract
+    try {
+        contract = controlDefinition(method)
+    } catch {
+        contract = null
+    }
+
+    let approval = null
+    try {
+        if (Object.hasOwn(APPROVAL_METHOD_DEFINITIONS, method)) {
+            approval = APPROVAL_METHOD_DEFINITIONS[method]
+        }
+    } catch {
+        return null
+    }
+
+    if (contract !== null) {
+        return {action: contract.action, reason: approval?.reason ?? null}
+    }
+    return approval
 }
 
 function approvalDecision(reason, input) {
@@ -135,10 +166,17 @@ function reserveBudget(grant, usage, {budgetKey, usageKey}) {
 }
 
 function decideControlPolicy({grant, method, action, input, usage = {}} = {}) {
-    const reason = approvalReason(method, action)
-    if (reason !== null) return approvalDecision(reason, input)
+    const definition = policyMethodDefinition(method)
+    if (definition === null) {
+        return deny("UNKNOWN_CONTROL_METHOD", "Unknown control method")
+    }
+    const canonicalAction = definition.action
+    if (action !== undefined && action !== canonicalAction) {
+        return deny("METHOD_ACTION_MISMATCH", "Action does not match the control method")
+    }
+    if (definition.reason !== null) return approvalDecision(definition.reason, input)
 
-    if (!Array.isArray(grant?.actions) || !grant.actions.includes(action)) {
+    if (!Array.isArray(grant?.actions) || !grant.actions.includes(canonicalAction)) {
         return deny(
             "ACTION_NOT_GRANTED",
             "Action is not granted for this Operator session",
@@ -148,14 +186,14 @@ function decideControlPolicy({grant, method, action, input, usage = {}} = {}) {
     const scopeDenial = checkObjectScope(grant, input)
     if (scopeDenial !== null) return scopeDenial
 
-    if (!PHASE_ONE_ACTIONS.has(action)) {
+    if (!PHASE_ONE_ACTIONS.has(canonicalAction)) {
         return deny(
             "ACTION_NOT_ALLOWED",
             "Action is not available in control-plane phase one",
         )
     }
 
-    if (action === "runtime.execute") {
+    if (canonicalAction === "runtime.execute") {
         if (method !== "raw_cases.dispatch") {
             return deny(
                 "ACTION_NOT_ALLOWED",
@@ -168,7 +206,7 @@ function decideControlPolicy({grant, method, action, input, usage = {}} = {}) {
         })
     }
 
-    if (action === "evaluations.execute") {
+    if (canonicalAction === "evaluations.execute") {
         if (method === "evaluations.cancel") return ALLOW_WITHOUT_RESERVATION
         if (method === "evaluations.start") {
             return reserveBudget(grant, usage, {

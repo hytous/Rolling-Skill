@@ -69,6 +69,51 @@ describe("control-plane policy", () => {
         })
     })
 
+    it("rejects an Evaluation method disguised as a granted read action", () => {
+        const policy = createControlPolicy()
+
+        assert.deepEqual(policy.decide({
+            grant: grant({actions: Object.freeze(["datasets.read"])}),
+            method: "evaluations.start",
+            action: "datasets.read",
+            input: {datasetId: "dataset-1"},
+        }), {
+            decision: "deny",
+            code: "METHOD_ACTION_MISMATCH",
+            message: "Action does not match the control method",
+        })
+    })
+
+    it("rejects Runtime dispatch disguised as a granted Raw Case read", () => {
+        const policy = createControlPolicy()
+
+        assert.deepEqual(policy.decide({
+            grant: grant({actions: Object.freeze(["raw_cases.read"])}),
+            method: "raw_cases.dispatch",
+            action: "raw_cases.read",
+            input: {runtime: {runtimeId: "runtime-1"}},
+        }), {
+            decision: "deny",
+            code: "METHOD_ACTION_MISMATCH",
+            message: "Action does not match the control method",
+        })
+    })
+
+    it("returns a stable denial for an unknown method instead of allowing its claimed action", () => {
+        const policy = createControlPolicy()
+
+        assert.deepEqual(policy.decide({
+            grant: grant({actions: Object.freeze(["datasets.read"])}),
+            method: "unknown.internal-secret-method",
+            action: "datasets.read",
+            input: {},
+        }), {
+            decision: "deny",
+            code: "UNKNOWN_CONTROL_METHOD",
+            message: "Unknown control method",
+        })
+    })
+
     it("denies each referenced Skill, Dataset, and Runtime outside its object scope", () => {
         const policy = createControlPolicy()
         const cases = [
@@ -285,18 +330,4 @@ describe("control-plane policy", () => {
         })
     })
 
-    it("denies unsupported granted actions instead of treating them as reads or writes", () => {
-        const policy = createControlPolicy()
-
-        assert.deepEqual(policy.decide({
-            grant: grant({actions: Object.freeze(["skills.write"])}),
-            method: "skills.update",
-            action: "skills.write",
-            input: {skillId: "skill-1"},
-        }), {
-            decision: "deny",
-            code: "ACTION_NOT_ALLOWED",
-            message: "Action is not available in control-plane phase one",
-        })
-    })
 })
