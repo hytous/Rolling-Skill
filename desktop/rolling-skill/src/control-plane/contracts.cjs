@@ -10,8 +10,6 @@ const MAX_RAW_CASE_NOTE_LENGTH = 10_000
 const MAX_SKILL_PATH_LENGTH = 4_000
 const MAX_EVALUATION_CASES = 1_000
 const MAX_EVALUATION_RUNTIMES = 50
-const MAX_PUBLIC_MESSAGE_LENGTH = 4_000
-const MAX_PUBLIC_DETAIL_LENGTH = 1_000
 const MAX_PUBLIC_DETAIL_ITEMS = 50
 
 const reasoningEffort = z.enum([
@@ -149,12 +147,17 @@ function strictEvaluationStart() {
 
 function pageResult(name) {
     return z.object({
-        [name]: z.array(z.any()),
+        [name]: z.array(z.any()).max(MAX_PAGE_SIZE),
         nextCursor: cursor.nullable(),
     }).strict()
 }
 
-const METHOD_DEFINITIONS = Object.freeze({
+function freezeMethodDefinitions(definitions) {
+    for (const definition of Object.values(definitions)) Object.freeze(definition)
+    return Object.freeze(definitions)
+}
+
+const METHOD_DEFINITIONS = freezeMethodDefinitions({
     "context.get": {
         action: "context.read",
         input: z.object({}).strict(),
@@ -247,22 +250,102 @@ const METHOD_DEFINITIONS = Object.freeze({
 })
 
 const CONTROL_METHODS = Object.freeze(Object.keys(METHOD_DEFINITIONS))
+const CONTROL_ACTIONS = Object.freeze([
+    ...new Set(CONTROL_METHODS.map((method) => METHOD_DEFINITIONS[method].action)),
+])
+
+const validationPathSegment = z.union([
+    z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,63}$/u),
+    z.number().int().min(0).max(1_000_000),
+])
+
+const validationErrorDetails = z.object({
+    method: z.enum(CONTROL_METHODS),
+    issues: z.array(z.object({
+        path: z.array(validationPathSegment).max(16),
+    }).strict()).min(1).max(20),
+}).strict()
+
+const forbiddenErrorDetails = z.object({
+    action: z.enum(CONTROL_ACTIONS),
+    retryAfterMs: z.number().int().min(0).max(86_400_000).optional(),
+    scopes: z.array(z.enum(CONTROL_ACTIONS)).max(MAX_PUBLIC_DETAIL_ITEMS).optional(),
+}).strict()
+
+const PUBLIC_CONTROL_ERROR_DEFINITIONS = Object.freeze({
+    UNKNOWN_CONTROL_METHOD: Object.freeze({
+        message: "Unknown control method",
+        retryable: false,
+        details: z.null(),
+    }),
+    INVALID_ARGUMENT: Object.freeze({
+        message: "Invalid control input",
+        retryable: false,
+        details: validationErrorDetails,
+    }),
+    INVALID_RESULT: Object.freeze({
+        message: "Invalid control result",
+        retryable: false,
+        details: validationErrorDetails,
+    }),
+    FORBIDDEN: Object.freeze({
+        message: "Control action is forbidden",
+        retryable: false,
+        details: forbiddenErrorDetails,
+    }),
+})
+
+const PUBLIC_CONTROL_ERROR_CODES = Object.freeze(Object.keys(PUBLIC_CONTROL_ERROR_DEFINITIONS))
+const trustedPublicErrors = new WeakMap()
+const fallbackPublicError = Object.freeze({
+    code: "CONTROL_ERROR",
+    message: "Control operation failed",
+    retryable: false,
+    details: null,
+})
+
+function copyPublicDetails(details) {
+    return details === null ? null : JSON.parse(JSON.stringify(details))
+}
+
+function createPublicControlError(code, {details = null, internalMessage, cause} = {}) {
+    if (!Object.hasOwn(PUBLIC_CONTROL_ERROR_DEFINITIONS, code)) {
+        throw new TypeError("Unknown public control error code")
+    }
+    const definition = PUBLIC_CONTROL_ERROR_DEFINITIONS[code]
+    const safeDetails = definition.details.parse(details)
+    const error = new Error(
+        typeof internalMessage === "string" ? internalMessage : definition.message,
+        cause === undefined ? undefined : {cause},
+    )
+    error.code = code
+    error.retryable = definition.retryable
+    error.details = copyPublicDetails(safeDetails)
+    trustedPublicErrors.set(error, Object.freeze({
+        code,
+        message: definition.message,
+        retryable: definition.retryable,
+        details: safeDetails,
+    }))
+    return error
+}
 
 function controlDefinition(method) {
     if (Object.hasOwn(METHOD_DEFINITIONS, method)) return METHOD_DEFINITIONS[method]
-    const error = new Error(`Unknown control method: ${String(method).slice(0, MAX_IDENTIFIER_LENGTH)}`)
-    error.code = "UNKNOWN_CONTROL_METHOD"
-    error.retryable = false
-    throw error
+    throw createPublicControlError("UNKNOWN_CONTROL_METHOD", {
+        internalMessage: `Unknown control method: ${String(method).slice(0, MAX_IDENTIFIER_LENGTH)}`,
+    })
 }
 
 function validationDetails(error, method) {
     return {
         method,
-        issues: error.issues.slice(0, 20).map((issue) => {
-            const path = issue.path.length ? `${issue.path.join(".")}: ` : ""
-            return `${path}${issue.message}`.slice(0, MAX_PUBLIC_DETAIL_LENGTH)
-        }),
+        issues: error.issues.slice(0, 20).map((issue) => ({
+            path: issue.path.slice(0, 16).filter((segment) =>
+                (typeof segment === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(segment)) ||
+                (Number.isSafeInteger(segment) && segment >= 0 && segment <= 1_000_000),
+            ),
+        })),
     }
 }
 
@@ -271,9 +354,11 @@ function parseWithSchema(schema, value, {method, code}) {
         return schema.parse(value)
     } catch (error) {
         if (error instanceof z.ZodError) {
-            error.code = code
-            error.retryable = false
-            error.details = validationDetails(error, method)
+            throw createPublicControlError(code, {
+                details: validationDetails(error, method),
+                internalMessage: error.message,
+                cause: error,
+            })
         }
         throw error
     }
@@ -289,60 +374,18 @@ function parseControlOutput(method, output) {
     return parseWithSchema(definition.output, output, {method, code: "INVALID_RESULT"})
 }
 
-function publicDetailValue(value) {
-    if (value === null || typeof value === "boolean") return value
-    if (typeof value === "string") return value.slice(0, MAX_PUBLIC_DETAIL_LENGTH)
-    if (typeof value === "number" && Number.isFinite(value)) return value
-    if (!Array.isArray(value) || value.length > MAX_PUBLIC_DETAIL_ITEMS) return undefined
-    const items = value.map(publicDetailValue)
-    return items.every((item) => item !== undefined && !Array.isArray(item)) ? items : undefined
-}
-
-function publicDetails(details) {
-    if (!details || typeof details !== "object" || Array.isArray(details)) return null
-    try {
-        const prototype = Object.getPrototypeOf(details)
-        if (prototype !== Object.prototype && prototype !== null) return null
-        const result = {}
-        for (const key of Object.keys(details)) {
-            if (Object.keys(result).length >= MAX_PUBLIC_DETAIL_ITEMS) break
-            if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(key)) continue
-            if (/(?:authorization|cause|error|password|secret|stack|token)/iu.test(key)) continue
-            const value = details[key]
-            const safeValue = publicDetailValue(value)
-            if (safeValue !== undefined) result[key] = safeValue
-        }
-        return Object.keys(result).length ? result : null
-    } catch {
-        return null
-    }
-}
-
 function publicControlError(error) {
-    let code = "CONTROL_ERROR"
-    let message = "Control operation failed"
-    let retryable = false
-    let details = null
-    try {
-        const candidateCode = error?.code
-        const candidateMessage = error?.message
-        const candidateRetryable = error?.retryable
-        const candidateDetails = error?.details
-        if (
-            typeof candidateCode === "string" &&
-            /^[A-Z][A-Z0-9_]{0,63}$/u.test(candidateCode)
-        ) {
-            code = candidateCode
-        }
-        if (typeof candidateMessage === "string" && candidateMessage) {
-            message = candidateMessage.slice(0, MAX_PUBLIC_MESSAGE_LENGTH)
-        }
-        retryable = candidateRetryable === true
-        details = publicDetails(candidateDetails)
-    } catch {
-        // Keep the fixed safe defaults when error metadata uses throwing accessors.
+    const trusted =
+        (typeof error === "object" && error !== null) || typeof error === "function"
+            ? trustedPublicErrors.get(error)
+            : null
+    const source = trusted ?? fallbackPublicError
+    return {
+        code: source.code,
+        message: source.message,
+        retryable: source.retryable,
+        details: copyPublicDetails(source.details),
     }
-    return {code, message, retryable, details}
 }
 
 module.exports = {
@@ -350,7 +393,9 @@ module.exports = {
     DEFAULT_PAGE_LIMIT,
     MAX_PAGE_SIZE,
     METHOD_DEFINITIONS,
+    PUBLIC_CONTROL_ERROR_CODES,
     controlDefinition,
+    createPublicControlError,
     decodeCursor,
     encodeCursor,
     parseControlInput,

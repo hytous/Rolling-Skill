@@ -5,6 +5,7 @@ const {
     CONTROL_METHODS,
     METHOD_DEFINITIONS,
     controlDefinition,
+    createPublicControlError,
     decodeCursor,
     encodeCursor,
     parseControlInput,
@@ -103,6 +104,23 @@ describe("control-plane contracts", () => {
             },
         )
         assert.deepEqual(Object.keys(METHOD_DEFINITIONS), CONTROL_METHODS)
+    })
+
+    it("freezes every method definition against action and schema replacement", () => {
+        assert.ok(Object.isFrozen(METHOD_DEFINITIONS))
+        for (const method of CONTROL_METHODS) {
+            const definition = controlDefinition(method)
+            const {action, input, output} = definition
+
+            assert.ok(Object.isFrozen(definition), `${method} definition should be frozen`)
+            assert.equal(Reflect.set(definition, "action", "context.read"), false)
+            assert.equal(Reflect.set(definition, "input", null), false)
+            assert.equal(Reflect.deleteProperty(definition, "output"), false)
+            assert.equal(Reflect.set(METHOD_DEFINITIONS, method, {}), false)
+            assert.equal(controlDefinition(method).action, action)
+            assert.equal(controlDefinition(method).input, input)
+            assert.equal(controlDefinition(method).output, output)
+        }
     })
 
     it("rejects unknown methods before attempting to parse input or output", () => {
@@ -371,72 +389,156 @@ describe("control-plane contracts", () => {
         )
     })
 
-    it("returns a bounded public error without stacks, causes, secrets, or nested errors", () => {
-        const nested = new Error("database internals")
-        const error = Object.assign(new Error("denied"), {
-            code: "FORBIDDEN",
-            retryable: true,
-            details: {
-                action: "evaluations.execute",
-                retryAfterMs: 250,
-                scopes: ["evaluations.read", "evaluations.execute"],
-                nested: {host: "private-host"},
-                error: nested,
-                stack: "private stack",
-                token: "secret-token",
-            },
-            arbitrary: "must not leak",
-            cause: nested,
-        })
-
-        const result = publicControlError(error)
-
-        assert.deepEqual(Object.keys(result), ["code", "message", "retryable", "details"])
-        assert.deepEqual(result, {
-            code: "FORBIDDEN",
-            message: "denied",
-            retryable: true,
-            details: {
-                action: "evaluations.execute",
-                retryAfterMs: 250,
-                scopes: ["evaluations.read", "evaluations.execute"],
-            },
-        })
-        assert.equal("stack" in result, false)
-        assert.equal(JSON.stringify(result).includes("private-host"), false)
-        assert.equal(JSON.stringify(result).includes("secret-token"), false)
-        assert.equal(JSON.stringify(result).includes("database internals"), false)
+    it("rejects more than 100 records in every paginated output", () => {
+        for (const [method, field] of [
+            ["raw_cases.list", "rawCases"],
+            ["datasets.list", "datasets"],
+            ["evaluations.list", "runs"],
+            ["skills.list", "skills"],
+        ]) {
+            assert.doesNotThrow(() => parseControlOutput(method, {
+                [field]: Array.from({length: 100}, (_, index) => ({id: `item-${index}`})),
+                nextCursor: null,
+            }))
+            assert.throws(
+                () => parseControlOutput(method, {
+                    [field]: Array.from({length: 101}, (_, index) => ({id: `item-${index}`})),
+                    nextCursor: null,
+                }),
+                new RegExp(`${field}|100`, "u"),
+            )
+        }
     })
 
-    it("normalizes invalid error metadata to safe defaults", () => {
-        assert.deepEqual(publicControlError({
-            message: "x".repeat(5_000),
-            code: "bad code",
-            retryable: "yes",
-            details: {nested: {value: true}},
-        }), {
+    it("publishes only errors created through the trusted public-error mechanism", () => {
+        const error = createPublicControlError("FORBIDDEN", {
+            details: {
+                action: "evaluations.execute",
+                retryAfterMs: 250,
+                scopes: ["evaluations.read", "evaluations.execute"],
+            },
+            internalMessage: "denied by credential at /Users/private/control.sock",
+        })
+        error.code = "STACK_LEAK"
+        error.message = "postgres://admin:password@db.internal/control"
+        error.details = {apiKey: "secret-token"}
+
+        assert.deepEqual(publicControlError(error), {
+            code: "FORBIDDEN",
+            message: "Control action is forbidden",
+            retryable: false,
+            details: {
+                action: "evaluations.execute",
+                retryAfterMs: 250,
+                scopes: ["evaluations.read", "evaluations.execute"],
+            },
+        })
+        assert.throws(
+            () => createPublicControlError("NOT_WHITELISTED", {}),
+            /public control error code/i,
+        )
+        assert.throws(
+            () => createPublicControlError("FORBIDDEN", {
+                details: {action: "evaluations.execute", apiKey: "secret"},
+            }),
+            /apiKey|unrecognized/i,
+        )
+        assert.throws(
+            () => createPublicControlError("INVALID_ARGUMENT", {
+                details: {method: "datasets.get", issues: ["apiKey=secret"]},
+            }),
+            /issues|object/i,
+        )
+    })
+
+    it("uses a fixed fallback for ordinary errors regardless of message or metadata", () => {
+        const secretText = [
+            "postgres://admin:password@db.internal/control",
+            "/Users/private/control.sock",
+            "apiKey=secret",
+            "cookie=session-secret",
+            "credential=private-key",
+        ].join(" ")
+        const ordinary = Object.assign(new Error(secretText), {
+            code: "FORBIDDEN",
+            retryable: true,
+            details: {action: "evaluations.execute", apiKey: "secret-token"},
+        })
+        const inherited = Object.create({
+            code: "FORBIDDEN",
+            message: secretText,
+            retryable: true,
+            details: {cookie: "secret-cookie"},
+        })
+        const expected = {
             code: "CONTROL_ERROR",
-            message: "x".repeat(4_000),
+            message: "Control operation failed",
+            retryable: false,
+            details: null,
+        }
+
+        assert.deepEqual(publicControlError(ordinary), expected)
+        assert.deepEqual(publicControlError(inherited), expected)
+        assert.equal(JSON.stringify(publicControlError(ordinary)).includes("secret"), false)
+    })
+
+    it("does not inspect accessors or proxies on untrusted errors", () => {
+        let propertyReads = 0
+        const accessorError = Object.create(null, {
+            code: {get: () => { propertyReads += 1; throw new Error("credential") }},
+            message: {get: () => { propertyReads += 1; throw new Error("apiKey") }},
+            details: {get: () => { propertyReads += 1; throw new Error("cookie") }},
+        })
+        const proxyError = new Proxy({}, {
+            get() {
+                throw new Error("Proxy leaked a local path")
+            },
+        })
+        const functionProxyError = new Proxy(() => {}, {
+            get() {
+                throw new Error("Function proxy leaked a credential")
+            },
+        })
+        const revoked = Proxy.revocable({}, {})
+        revoked.revoke()
+        const expected = {
+            code: "CONTROL_ERROR",
+            message: "Control operation failed",
+            retryable: false,
+            details: null,
+        }
+
+        assert.deepEqual(publicControlError(accessorError), expected)
+        assert.deepEqual(publicControlError(proxyError), expected)
+        assert.deepEqual(publicControlError(functionProxyError), expected)
+        assert.deepEqual(publicControlError(revoked.proxy), expected)
+        assert.equal(propertyReads, 0)
+    })
+
+    it("marks contract validation and unknown-method errors as trusted safe errors", () => {
+        let validationError
+        let unknownMethodError
+        try {
+            parseControlInput("datasets.get", {datasetId: "x".repeat(201)})
+        } catch (error) {
+            validationError = error
+        }
+        try {
+            controlDefinition("credential=private")
+        } catch (error) {
+            unknownMethodError = error
+        }
+
+        const validation = publicControlError(validationError)
+        assert.equal(validation.code, "INVALID_ARGUMENT")
+        assert.equal(validation.message, "Invalid control input")
+        assert.equal(validation.details.method, "datasets.get")
+        assert.deepEqual(validation.details.issues[0], {path: ["datasetId"]})
+        assert.deepEqual(publicControlError(unknownMethodError), {
+            code: "UNKNOWN_CONTROL_METHOD",
+            message: "Unknown control method",
             retryable: false,
             details: null,
         })
-    })
-
-    it("reads error metadata once and bounds the number of public detail fields", () => {
-        let codeReads = 0
-        const changingError = {
-            get code() {
-                codeReads += 1
-                return codeReads < 3 ? "FORBIDDEN" : "STACK_LEAK"
-            },
-            message: "denied",
-        }
-        const manyDetails = Object.fromEntries(
-            Array.from({length: 60}, (_, index) => [`field${index}`, index]),
-        )
-
-        assert.equal(publicControlError(changingError).code, "FORBIDDEN")
-        assert.equal(codeReads, 1)
-        assert.equal(Object.keys(publicControlError({details: manyDetails}).details).length, 50)
     })
 })
