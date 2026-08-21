@@ -53,7 +53,7 @@ describe("rolling-skill external Raw Case tool", () => {
 
         assert.equal(enqueueResult.created.length, 1)
         assert.equal(listResult.rawCases.length, 1)
-        assert.equal(listResult.rawCases[0].question, question.trim())
+        assert.equal(listResult.rawCases[0].question, question)
         assert.equal(listResult.rawCases[0].skill.name, "billing-cost-management")
         assert.equal(store.list()[0].source.kind, "external-cli")
         store.close()

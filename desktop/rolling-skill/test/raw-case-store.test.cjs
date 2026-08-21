@@ -97,6 +97,44 @@ describe("raw case event store", () => {
         store.close()
     })
 
+    it("preserves intentional Raw Case question whitespace across add, batch, and update", () => {
+        const {store} = fixture()
+        const addedQuestion = "\n  first line\nsecond line with trailing spaces  \n"
+        const batchQuestion = "  batch question\t\n"
+        const updatedQuestion = "\n updated question  \n"
+
+        const added = store.add(input(addedQuestion))
+        const batch = store.addMany([input(batchQuestion)])
+        const updated = store.update(added.id, {question: updatedQuestion})
+
+        assert.equal(added.question, addedQuestion)
+        assert.equal(batch.created[0].question, batchQuestion)
+        assert.equal(updated.question, updatedQuestion)
+        assert.equal(store.get(added.id).question, updatedQuestion)
+        store.close()
+    })
+
+    it("uses trimmed question text only for blank checks and deduplication", () => {
+        const {store} = fixture()
+        const first = store.add(input("\n  same question  \n"))
+        const duplicate = store.add(input("same question"))
+
+        assert.equal(first.question, "\n  same question  \n")
+        assert.equal(duplicate.created, false)
+        assert.equal(duplicate.duplicateOf, first.id)
+        assert.throws(() => store.add(input(" \n\t ")), /question/u)
+        store.close()
+    })
+
+    it("applies the question length limit to the original unmodified text", () => {
+        const {store} = fixture()
+        const oversizedOnlyBecauseOfWhitespace = ` ${"x".repeat(119_999)} `
+
+        assert.equal(oversizedOnlyBecauseOfWhitespace.length, 120_001)
+        assert.throws(() => store.add(input(oversizedOnlyBecauseOfWhitespace)), /120000/u)
+        store.close()
+    })
+
     it("supports bounded batch insertion and reports duplicate and rejected rows", () => {
         const {store} = fixture()
         const result = store.addMany([

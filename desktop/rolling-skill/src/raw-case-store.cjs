@@ -68,8 +68,8 @@ function normalizeSkill(value) {
 }
 
 function normalizeQuestion(value) {
-    const question = String(value ?? "").trim()
-    if (!question) throw new Error("Raw Case question is required")
+    const question = String(value ?? "")
+    if (!question.trim()) throw new Error("Raw Case question is required")
     if (question.length > MAX_QUESTION_LENGTH) {
         throw new Error(`Raw Case question must not exceed ${MAX_QUESTION_LENGTH} characters`)
     }
