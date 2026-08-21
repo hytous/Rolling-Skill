@@ -27,6 +27,14 @@ const SCOPE_REQUIREMENTS = Object.freeze({
     "skills.list": Object.freeze({mode: "filter", keys: Object.freeze(["skillIds"])}),
 })
 const RESOLVED_SCOPE_KEYS = Object.freeze(["skillIds", "datasetIds", "runtimeIds"])
+const RESOLVED_SCOPE_SOURCE_KEYS = new Set(["method", "mode", "subject", ...RESOLVED_SCOPE_KEYS])
+const RESOLVED_SCOPE_SUBJECT_KEYS = new Set(["kind", "id"])
+const ACCESS_SCOPE_SUBJECTS = Object.freeze({
+    "raw_cases.update": Object.freeze({kind: "raw_case", inputKey: "id"}),
+    "raw_cases.dispatch": Object.freeze({kind: "raw_case", inputKey: "id"}),
+    "evaluations.get": Object.freeze({kind: "evaluation_run", inputKey: "runId"}),
+    "evaluations.cancel": Object.freeze({kind: "evaluation_run", inputKey: "runId"}),
+})
 
 const APPROVAL_METHOD_DEFINITIONS = Object.freeze({
     "datasets.delete": Object.freeze({action: "datasets.delete", reason: "destructive_action"}),
@@ -60,6 +68,44 @@ function deepFreeze(value) {
     return Object.freeze(value)
 }
 
+function defineOwnData(target, key, value) {
+    Object.defineProperty(target, key, {
+        configurable: true,
+        enumerable: true,
+        value,
+        writable: true,
+    })
+}
+
+function snapshotPolicyRecord(value, allowedKeys) {
+    try {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            throw new TypeError("Invalid resolved scope source data")
+        }
+        const prototype = Object.getPrototypeOf(value)
+        if (prototype !== Object.prototype && prototype !== null) {
+            throw new TypeError("Invalid resolved scope source data")
+        }
+        const descriptors = Object.getOwnPropertyDescriptors(value)
+        const snapshot = new Map()
+        for (const key of Reflect.ownKeys(descriptors)) {
+            const descriptor = descriptors[key]
+            if (
+                typeof key !== "string" ||
+                !allowedKeys.has(key) ||
+                descriptor === undefined ||
+                !Object.hasOwn(descriptor, "value")
+            ) {
+                throw new TypeError("Invalid resolved scope source data")
+            }
+            snapshot.set(key, descriptor.value)
+        }
+        return snapshot
+    } catch {
+        throw new TypeError("Invalid resolved scope source data")
+    }
+}
+
 function policyIdentifier(value) {
     return typeof value === "string" &&
         value.length > 0 &&
@@ -80,7 +126,7 @@ function normalizedPolicyIds(value) {
         if (id === null) return null
         if (!seen.has(id)) {
             seen.add(id)
-            ids.push(id)
+            defineOwnData(ids, ids.length, id)
         }
     }
     return Object.freeze(ids)
@@ -117,30 +163,55 @@ function createBudgetSnapshot({capabilityId, sessionId, usage, revision} = {}) {
 }
 
 function createResolvedScope(source = {}) {
-    if (typeof source !== "object" || source === null || Array.isArray(source)) {
+    const sourceSnapshot = snapshotPolicyRecord(source, RESOLVED_SCOPE_SOURCE_KEYS)
+    const method = policyIdentifier(sourceSnapshot.get("method"))
+    const mode = sourceSnapshot.get("mode")
+    if (method === null || (mode !== "access" && mode !== "filter")) {
         throw new TypeError("Invalid resolved scope source data")
     }
-    const allowedKeys = new Set(["method", "mode", ...RESOLVED_SCOPE_KEYS])
-    if (Reflect.ownKeys(source).some((key) => typeof key !== "string" || !allowedKeys.has(key))) {
-        throw new TypeError("Invalid resolved scope source data")
-    }
-    const method = policyIdentifier(source.method)
-    if (method === null || (source.mode !== "access" && source.mode !== "filter")) {
-        throw new TypeError("Invalid resolved scope source data")
+    const subjectDefinition = Object.hasOwn(ACCESS_SCOPE_SUBJECTS, method)
+        ? ACCESS_SCOPE_SUBJECTS[method]
+        : null
+    let subject = null
+    if (mode === "filter" || subjectDefinition === null) {
+        if (sourceSnapshot.has("subject")) {
+            throw new TypeError("Invalid resolved scope source data")
+        }
+    } else {
+        if (!sourceSnapshot.has("subject")) {
+            throw new TypeError("Invalid resolved scope source data")
+        }
+        const subjectSnapshot = snapshotPolicyRecord(
+            sourceSnapshot.get("subject"),
+            RESOLVED_SCOPE_SUBJECT_KEYS,
+        )
+        const kind = subjectSnapshot.get("kind")
+        const id = policyIdentifier(subjectSnapshot.get("id"))
+        if (
+            subjectSnapshot.size !== RESOLVED_SCOPE_SUBJECT_KEYS.size ||
+            kind !== subjectDefinition.kind ||
+            id === null
+        ) {
+            throw new TypeError("Invalid resolved scope source data")
+        }
+        subject = deepFreeze({kind, id})
     }
     const ids = {}
     const provided = []
     for (const key of RESOLVED_SCOPE_KEYS) {
-        if (Object.hasOwn(source, key)) {
-            const normalized = normalizedPolicyIds(source[key])
+        if (sourceSnapshot.has(key)) {
+            const normalized = normalizedPolicyIds(sourceSnapshot.get(key))
             if (normalized === null) throw new TypeError("Invalid resolved scope source data")
-            ids[key] = normalized
-            provided.push(key)
+            defineOwnData(ids, key, normalized)
+            defineOwnData(provided, provided.length, key)
         } else {
-            ids[key] = Object.freeze([])
+            defineOwnData(ids, key, Object.freeze([]))
         }
     }
-    const scope = deepFreeze({method, mode: source.mode, ...ids})
+    const scope = {method, mode}
+    for (const key of RESOLVED_SCOPE_KEYS) defineOwnData(scope, key, ids[key])
+    if (subject !== null) defineOwnData(scope, "subject", subject)
+    deepFreeze(scope)
     resolvedScopeBrands.set(scope, Object.freeze({
         scope,
         provided: Object.freeze(provided),
@@ -256,6 +327,13 @@ function unresolvedScope() {
     )
 }
 
+function mismatchedScopeSubject() {
+    return deny(
+        "OBJECT_SCOPE_SUBJECT_MISMATCH",
+        "Resolved object scope belongs to a different request subject",
+    )
+}
+
 function checkObjectScope(grant, method, input, resolvedScope) {
     const directDenial = checkIdsWithinGrant(grant, canonicalObjectIds(input))
     if (directDenial !== null) return {denial: directDenial, scopeFilter: null}
@@ -278,6 +356,20 @@ function checkObjectScope(grant, method, input, resolvedScope) {
         )
     ) {
         return {denial: unresolvedScope(), scopeFilter: null}
+    }
+
+    const subjectDefinition = Object.hasOwn(ACCESS_SCOPE_SUBJECTS, method)
+        ? ACCESS_SCOPE_SUBJECTS[method]
+        : null
+    if (subjectDefinition !== null) {
+        const requestedId = policyIdentifier(input?.[subjectDefinition.inputKey])
+        if (
+            requestedId === null ||
+            branded.scope.subject?.kind !== subjectDefinition.kind ||
+            branded.scope.subject.id !== requestedId
+        ) {
+            return {denial: mismatchedScopeSubject(), scopeFilter: null}
+        }
     }
 
     const resolvedDenial = checkIdsWithinGrant(grant, branded.scope)

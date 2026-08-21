@@ -224,11 +224,17 @@ describe("control-plane policy", () => {
         }), expected)
         assert.deepEqual(policy.decide({
             ...request,
-            resolvedScope: resolvedScope("raw_cases.dispatch", {skillIds: ["skill-1"]}),
+            resolvedScope: resolvedScope("raw_cases.dispatch", {
+                subject: {kind: "raw_case", id: "raw-case-1"},
+                skillIds: ["skill-1"],
+            }),
         }), expected)
         assert.deepEqual(policy.decide({
             ...request,
-            resolvedScope: resolvedScope("raw_cases.update", {skillIds: []}),
+            resolvedScope: resolvedScope("raw_cases.update", {
+                subject: {kind: "raw_case", id: "raw-case-1"},
+                skillIds: [],
+            }),
         }), expected)
         assert.deepEqual(policy.decide({
             ...request,
@@ -237,6 +243,155 @@ describe("control-plane policy", () => {
                 skillIds: ["skill-1"],
             }),
         }), expected)
+    })
+
+    it("creates own normalized IDs and provided keys despite inherited numeric setters", () => {
+        const policy = createControlPolicy()
+        const authority = grant({
+            scopes: Object.freeze({
+                skillIds: Object.freeze(["skill-2"]),
+                datasetIds: Object.freeze(["dataset-1"]),
+                runtimeIds: Object.freeze(["runtime-1", "judge-1"]),
+            }),
+        })
+        const original = Object.getOwnPropertyDescriptor(Array.prototype, "0")
+        let scope
+        let decision
+        try {
+            Object.defineProperty(Array.prototype, "0", {
+                configurable: true,
+                set(value) {
+                    const replacement = value === "skill-2"
+                        ? "skill-1"
+                        : value === "skillIds" ? "runtimeIds" : value
+                    Object.defineProperty(this, "0", {
+                        configurable: true,
+                        enumerable: true,
+                        value: replacement,
+                        writable: true,
+                    })
+                },
+            })
+            scope = createResolvedScope({
+                method: "raw_cases.enqueue",
+                mode: "access",
+                skillIds: ["skill-2"],
+            })
+            decision = policy.decide({
+                grant: authority,
+                method: "raw_cases.enqueue",
+                action: "raw_cases.write",
+                input: {
+                    cases: [{question: "Question", skill: {name: "billing"}}],
+                    idempotencyKey: "enqueue-1",
+                },
+                resolvedScope: scope,
+            })
+        } finally {
+            if (original === undefined) delete Array.prototype["0"]
+            else Object.defineProperty(Array.prototype, "0", original)
+        }
+
+        assert.deepEqual(scope.skillIds, ["skill-2"])
+        assert.deepEqual(decision, {decision: "allow", reservation: null})
+    })
+
+    it("denies replaying an access resolution for another opaque subject", () => {
+        const policy = createControlPolicy()
+        const authority = grant()
+        const cases = [
+            {
+                method: "raw_cases.update",
+                action: "raw_cases.write",
+                input: {id: "raw-case-2", changes: {note: "updated"}},
+                subject: {kind: "raw_case", id: "raw-case-1"},
+                scope: {skillIds: ["skill-1"]},
+            },
+            {
+                method: "raw_cases.dispatch",
+                action: "runtime.execute",
+                input: {id: "raw-case-2", runtime: {runtimeId: "runtime-1"}},
+                subject: {kind: "raw_case", id: "raw-case-1"},
+                scope: {skillIds: ["skill-1"]},
+            },
+            {
+                method: "evaluations.get",
+                action: "evaluations.read",
+                input: {runId: "run-2"},
+                subject: {kind: "evaluation_run", id: "run-1"},
+                scope: {datasetIds: ["dataset-1"]},
+            },
+            {
+                method: "evaluations.cancel",
+                action: "evaluations.execute",
+                input: {runId: "run-2", idempotencyKey: "cancel-2"},
+                subject: {kind: "evaluation_run", id: "run-1"},
+                scope: {datasetIds: ["dataset-1"]},
+            },
+        ]
+
+        for (const {method, action, input, subject, scope} of cases) {
+            assert.deepEqual(policy.decide({
+                grant: authority,
+                method,
+                action,
+                input,
+                resolvedScope: createResolvedScope({
+                    method,
+                    mode: "access",
+                    subject,
+                    ...scope,
+                }),
+            }), {
+                decision: "deny",
+                code: "OBJECT_SCOPE_SUBJECT_MISMATCH",
+                message: "Resolved object scope belongs to a different request subject",
+            })
+        }
+    })
+
+    it("requires strict own-data subjects only for opaque access resolutions", () => {
+        assert.throws(() => createResolvedScope({
+            method: "raw_cases.update",
+            mode: "access",
+            skillIds: ["skill-1"],
+        }), /resolved scope/iu)
+        assert.throws(() => createResolvedScope({
+            method: "raw_cases.update",
+            mode: "access",
+            subject: {kind: "evaluation_run", id: "raw-case-1"},
+            skillIds: ["skill-1"],
+        }), /resolved scope/iu)
+        assert.throws(() => createResolvedScope({
+            method: "raw_cases.update",
+            mode: "access",
+            subject: Object.create({kind: "raw_case", id: "raw-case-1"}),
+            skillIds: ["skill-1"],
+        }), /resolved scope/iu)
+
+        let getterCalls = 0
+        const accessorSubject = {kind: "raw_case"}
+        Object.defineProperty(accessorSubject, "id", {
+            enumerable: true,
+            get() {
+                getterCalls += 1
+                return "raw-case-1"
+            },
+        })
+        assert.throws(() => createResolvedScope({
+            method: "raw_cases.update",
+            mode: "access",
+            subject: accessorSubject,
+            skillIds: ["skill-1"],
+        }), /resolved scope/iu)
+        assert.equal(getterCalls, 0)
+
+        assert.throws(() => createResolvedScope({
+            method: "raw_cases.list",
+            mode: "filter",
+            subject: {kind: "raw_case", id: "raw-case-1"},
+            skillIds: ["skill-1"],
+        }), /resolved scope/iu)
     })
 
     it("denies Raw Case update and dispatch when the resolved owner Skill is outside scope", () => {
@@ -253,14 +408,20 @@ describe("control-plane policy", () => {
             method: "raw_cases.update",
             action: "raw_cases.write",
             input: {id: "raw-case-outside", changes: {note: "updated"}},
-            resolvedScope: resolvedScope("raw_cases.update", {skillIds: ["skill-2"]}),
+            resolvedScope: resolvedScope("raw_cases.update", {
+                subject: {kind: "raw_case", id: "raw-case-outside"},
+                skillIds: ["skill-2"],
+            }),
         }), expected)
         assert.deepEqual(policy.decide({
             grant: authority,
             method: "raw_cases.dispatch",
             action: "runtime.execute",
             input: {id: "raw-case-outside", runtime: {runtimeId: "runtime-1"}},
-            resolvedScope: resolvedScope("raw_cases.dispatch", {skillIds: ["skill-2"]}),
+            resolvedScope: resolvedScope("raw_cases.dispatch", {
+                subject: {kind: "raw_case", id: "raw-case-outside"},
+                skillIds: ["skill-2"],
+            }),
             budgetSnapshot: budgetSnapshot(authority),
         }), expected)
     })
@@ -279,14 +440,20 @@ describe("control-plane policy", () => {
             method: "evaluations.get",
             action: "evaluations.read",
             input: {runId: "run-outside"},
-            resolvedScope: resolvedScope("evaluations.get", {datasetIds: ["dataset-2"]}),
+            resolvedScope: resolvedScope("evaluations.get", {
+                subject: {kind: "evaluation_run", id: "run-outside"},
+                datasetIds: ["dataset-2"],
+            }),
         }), expected)
         assert.deepEqual(policy.decide({
             grant: authority,
             method: "evaluations.cancel",
             action: "evaluations.execute",
             input: {runId: "run-outside", idempotencyKey: "cancel-outside"},
-            resolvedScope: resolvedScope("evaluations.cancel", {datasetIds: ["dataset-2"]}),
+            resolvedScope: resolvedScope("evaluations.cancel", {
+                subject: {kind: "evaluation_run", id: "run-outside"},
+                datasetIds: ["dataset-2"],
+            }),
             budgetSnapshot: budgetSnapshot(authority),
         }), expected)
     })
@@ -396,14 +563,20 @@ describe("control-plane policy", () => {
             method: "raw_cases.update",
             action: "raw_cases.write",
             input: {id: "raw-case-1", changes: {note: "updated"}},
-            resolvedScope: resolvedScope("raw_cases.update", {skillIds: ["skill-1"]}),
+            resolvedScope: resolvedScope("raw_cases.update", {
+                subject: {kind: "raw_case", id: "raw-case-1"},
+                skillIds: ["skill-1"],
+            }),
         }), {decision: "allow", reservation: null})
         assert.deepEqual(policy.decide({
             grant: authority,
             method: "evaluations.get",
             action: "evaluations.read",
             input: {runId: "run-1"},
-            resolvedScope: resolvedScope("evaluations.get", {datasetIds: ["dataset-1"]}),
+            resolvedScope: resolvedScope("evaluations.get", {
+                subject: {kind: "evaluation_run", id: "run-1"},
+                datasetIds: ["dataset-1"],
+            }),
         }), {decision: "allow", reservation: null})
     })
 
@@ -418,16 +591,22 @@ describe("control-plane policy", () => {
             grant: authority,
             method: "raw_cases.dispatch",
             action: "runtime.execute",
-            input: {runtime: {runtimeId: "runtime-1"}},
-            resolvedScope: resolvedScope("raw_cases.dispatch", {skillIds: ["skill-1"]}),
+            input: {id: "raw-case-1", runtime: {runtimeId: "runtime-1"}},
+            resolvedScope: resolvedScope("raw_cases.dispatch", {
+                subject: {kind: "raw_case", id: "raw-case-1"},
+                skillIds: ["skill-1"],
+            }),
             budgetSnapshot: snapshot,
         })
         const second = policy.decide({
             grant: authority,
             method: "raw_cases.dispatch",
             action: "runtime.execute",
-            input: {runtime: {runtimeId: "runtime-1"}},
-            resolvedScope: resolvedScope("raw_cases.dispatch", {skillIds: ["skill-1"]}),
+            input: {id: "raw-case-1", runtime: {runtimeId: "runtime-1"}},
+            resolvedScope: resolvedScope("raw_cases.dispatch", {
+                subject: {kind: "raw_case", id: "raw-case-1"},
+                skillIds: ["skill-1"],
+            }),
             budgetSnapshot: snapshot,
         })
 
@@ -490,8 +669,11 @@ describe("control-plane policy", () => {
             grant: authority,
             method: "raw_cases.dispatch",
             action: "runtime.execute",
-            input: {runtime: {runtimeId: "runtime-1"}},
-            resolvedScope: resolvedScope("raw_cases.dispatch", {skillIds: ["skill-1"]}),
+            input: {id: "raw-case-1", runtime: {runtimeId: "runtime-1"}},
+            resolvedScope: resolvedScope("raw_cases.dispatch", {
+                subject: {kind: "raw_case", id: "raw-case-1"},
+                skillIds: ["skill-1"],
+            }),
             budgetSnapshot: budgetSnapshot(authority, {
                 usage: {runtimeTurns: 4, evaluations: 0},
             }),
@@ -528,7 +710,10 @@ describe("control-plane policy", () => {
             method: "evaluations.cancel",
             action: "evaluations.execute",
             input: {runId: "run-1", idempotencyKey: "cancel-1"},
-            resolvedScope: resolvedScope("evaluations.cancel", {datasetIds: ["dataset-1"]}),
+            resolvedScope: resolvedScope("evaluations.cancel", {
+                subject: {kind: "evaluation_run", id: "run-1"},
+                datasetIds: ["dataset-1"],
+            }),
             budgetSnapshot: budgetSnapshot(authority, {
                 usage: {runtimeTurns: 4, evaluations: 1},
             }),

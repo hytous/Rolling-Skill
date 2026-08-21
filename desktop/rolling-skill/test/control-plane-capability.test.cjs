@@ -449,6 +449,45 @@ describe("control-plane capability store", () => {
         assert.equal(arrayGetterCalls, 0)
     })
 
+    it("creates own array elements despite inherited numeric setters", () => {
+        const original = Object.getOwnPropertyDescriptor(Array.prototype, "0")
+        let issued
+        let store
+        try {
+            Object.defineProperty(Array.prototype, "0", {
+                configurable: true,
+                set(value) {
+                    const replacement = value === "raw_cases.read"
+                        ? "evaluations.execute"
+                        : value === "skill-2" ? "skill-1" : value
+                    Object.defineProperty(this, "0", {
+                        configurable: true,
+                        enumerable: true,
+                        value: replacement,
+                        writable: true,
+                    })
+                },
+            })
+            ;({store} = createFixture())
+            issued = issueOperator(store, {
+                actions: ["raw_cases.read"],
+                scopes: {
+                    skillIds: ["skill-2"],
+                    datasetIds: [],
+                    runtimeIds: [],
+                },
+            })
+        } finally {
+            if (original === undefined) delete Array.prototype["0"]
+            else Object.defineProperty(Array.prototype, "0", original)
+        }
+
+        const authority = store.authorize(issued.token, "raw_cases.read")
+        assert.deepEqual(authority.actions, ["raw_cases.read"])
+        assert.deepEqual(authority.scopes.skillIds, ["skill-2"])
+        assert.throws(() => store.authorize(issued.token, "evaluations.execute"), /not granted/u)
+    })
+
     it("normalizes throwing and revoked Proxy inputs without leaking trap failures", () => {
         const {store} = createFixture()
         const throwing = new Proxy({}, {

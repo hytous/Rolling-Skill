@@ -92,7 +92,7 @@ function snapshotArray(value, label, maximum) {
             if (!dataDescriptor(descriptor)) {
                 throw capabilityRequestError(`${label} must be a safe dense data array`)
             }
-            snapshot.push(descriptor.value)
+            defineOwnData(snapshot, snapshot.length, descriptor.value)
         }
         return snapshot
     } catch (error) {
@@ -147,7 +147,7 @@ function normalizeActions(actions) {
         }
         if (!seen.has(action)) {
             seen.add(action)
-            normalized.push(action)
+            defineOwnData(normalized, normalized.length, action)
         }
     }
     return Object.freeze(normalized)
@@ -161,7 +161,7 @@ function normalizeScopeIds(value, key) {
         const normalizedId = normalizeIdentifier(id, key)
         if (!seen.has(normalizedId)) {
             seen.add(normalizedId)
-            normalized.push(normalizedId)
+            defineOwnData(normalized, normalized.length, normalizedId)
         }
     }
     return Object.freeze(normalized)
