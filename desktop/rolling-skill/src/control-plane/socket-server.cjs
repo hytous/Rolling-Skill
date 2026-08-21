@@ -8,11 +8,14 @@ const {publicControlError} = require("./contracts.cjs")
 
 const CONTROL_SOCKET_DIRECTORY = "control"
 const CONTROL_SOCKET_NAME = "control.sock"
+const CONTROL_SOCKET_QUARANTINE_PREFIX = ".control.sock.stale-"
 const MAX_CONTROL_MESSAGE_BYTES = 1_048_576
 const MAX_CONTROL_REQUEST_ID_LENGTH = 200
 const MAX_CONTROL_METHOD_LENGTH = 200
 const MAX_CONTROL_TOKEN_LENGTH = 4_096
 const MAX_CONTROL_SESSION_ID_LENGTH = 200
+const DEFAULT_MAX_IN_FLIGHT_REQUESTS = 32
+const DEFAULT_MAX_QUEUED_RESPONSES = 32
 const FORBIDDEN_OBJECT_KEYS = new Set(["__proto__", "prototype", "constructor"])
 const stateByServer = new WeakMap()
 
@@ -176,7 +179,45 @@ async function removeStaleSocket(socketPath) {
     if (!current.isSocket() || !sameFile(initial, current)) {
         throw new Error("Control socket path changed while checking stale state")
     }
-    await fs.promises.unlink(socketPath)
+    const controlDir = path.dirname(socketPath)
+    if (path.basename(socketPath) !== CONTROL_SOCKET_NAME) {
+        throw new Error("Control socket path is not the exact configured child")
+    }
+    const quarantinePath = path.join(
+        controlDir,
+        `${CONTROL_SOCKET_QUARANTINE_PREFIX}${process.pid}-${randomUUID()}`,
+    )
+    if (
+        path.dirname(quarantinePath) !== controlDir ||
+        !path.basename(quarantinePath).startsWith(CONTROL_SOCKET_QUARANTINE_PREFIX)
+    ) throw new Error("Control socket quarantine path is invalid")
+
+    fs.renameSync(socketPath, quarantinePath)
+    const quarantined = await fs.promises.lstat(quarantinePath)
+    if (quarantined.isSocket() && sameFile(current, quarantined)) {
+        fs.unlinkSync(quarantinePath)
+        return
+    }
+
+    let restored = false
+    if (!await existingLstat(socketPath)) {
+        try {
+            fs.linkSync(quarantinePath, socketPath)
+            const linked = await fs.promises.lstat(socketPath)
+            if (!sameFile(linked, quarantined)) {
+                throw new Error("Restored control socket replacement changed identity")
+            }
+            fs.unlinkSync(quarantinePath)
+            restored = true
+        } catch (error) {
+            if (error?.code !== "EEXIST") {
+                throw new Error("Control socket quarantine restore failed", {cause: error})
+            }
+        }
+    }
+    throw new Error(restored
+        ? "Stale control socket changed before quarantine and was restored"
+        : "Stale control socket changed before quarantine; replacement remains quarantined")
 }
 
 async function removeOwnedSocket(socketPath, identity) {
@@ -207,8 +248,7 @@ async function restoreReplacement(socketPath, preservedPath) {
     await fs.promises.rename(preservedPath, socketPath)
 }
 
-function writeResponse(socket, response) {
-    if (socket.destroyed || !socket.writable) return
+function serializeResponse(response) {
     let line
     try {
         line = `${JSON.stringify(response)}\n`
@@ -218,13 +258,125 @@ function writeResponse(socket, response) {
             error: publicControlError(null),
         })}\n`
     }
-    try {
-        socket.write(line, (error) => {
-            if (error && !socket.destroyed) socket.destroy()
-        })
-    } catch {
-        socket.destroy()
+    return line
+}
+
+function attachControlSocketConnection(socket, controlPlane, {
+    maxInFlightRequests = DEFAULT_MAX_IN_FLIGHT_REQUESTS,
+    maxQueuedResponses = DEFAULT_MAX_QUEUED_RESPONSES,
+} = {}) {
+    if (
+        !Number.isSafeInteger(maxInFlightRequests) || maxInFlightRequests < 1 ||
+        !Number.isSafeInteger(maxQueuedResponses) || maxQueuedResponses < 1
+    ) throw new TypeError("Control socket connection limits must be positive integers")
+
+    const state = {
+        inFlight: 0,
+        paused: false,
+        outputBackpressured: false,
+        responseQueue: [],
+        closed: false,
     }
+    const pause = () => {
+        if (state.closed || state.paused) return
+        state.paused = true
+        socket.pause()
+    }
+    const close = () => {
+        if (state.closed) return
+        state.closed = true
+        state.responseQueue.length = 0
+        if (!socket.destroyed) socket.destroy()
+    }
+    const maybeResume = () => {
+        if (
+            state.closed || socket.destroyed || !state.paused ||
+            state.inFlight >= maxInFlightRequests ||
+            state.outputBackpressured || state.responseQueue.length > 0
+        ) return
+        state.paused = false
+        socket.resume()
+    }
+    const writeLine = (line) => {
+        if (state.closed || socket.destroyed || !socket.writable) return false
+        try {
+            const accepted = socket.write(line, (error) => {
+                if (error) close()
+            })
+            if (!accepted) {
+                state.outputBackpressured = true
+                pause()
+            }
+            return true
+        } catch {
+            close()
+            return false
+        }
+    }
+    const send = (response) => {
+        if (state.closed || socket.destroyed) return
+        const line = serializeResponse(response)
+        if (state.outputBackpressured || state.responseQueue.length > 0) {
+            if (state.responseQueue.length >= maxQueuedResponses) {
+                close()
+                return
+            }
+            state.responseQueue.push(line)
+            return
+        }
+        writeLine(line)
+    }
+    const settle = (response) => {
+        if (state.closed) return
+        state.inFlight -= 1
+        send(response)
+        maybeResume()
+    }
+    const decoder = new JsonLineDecoder(
+        (message) => {
+            if (state.closed || socket.destroyed) return
+            if (state.inFlight >= maxInFlightRequests) {
+                pause()
+                close()
+                return
+            }
+            const request = parseRequest(message)
+            if (!request) {
+                close()
+                return
+            }
+            state.inFlight += 1
+            if (state.inFlight >= maxInFlightRequests) pause()
+            Promise.resolve()
+                .then(() => controlPlane.invoke(request.invocation))
+                .then(
+                    (result) => settle({id: request.id, result}),
+                    (error) => settle({id: request.id, error: publicControlError(error)}),
+                )
+                .catch(close)
+        },
+        close,
+        {maximumBufferBytes: MAX_CONTROL_MESSAGE_BYTES},
+    )
+    const onData = (chunk) => decoder.push(chunk)
+    const onDrain = () => {
+        if (state.closed) return
+        state.outputBackpressured = false
+        while (!state.outputBackpressured && state.responseQueue.length > 0) {
+            const line = state.responseQueue.shift()
+            if (!writeLine(line)) return
+        }
+        maybeResume()
+    }
+    const onClose = () => {
+        state.closed = true
+        state.responseQueue.length = 0
+    }
+    socket.on("data", onData)
+    socket.on("drain", onDrain)
+    socket.on("error", close)
+    socket.once("close", onClose)
+    return {close}
 }
 
 class ControlSocketServer {
@@ -309,31 +461,8 @@ class ControlSocketServer {
             return
         }
         state.connections.add(socket)
-        socket.on("error", () => {})
         socket.once("close", () => state.connections.delete(socket))
-        const decoder = new JsonLineDecoder(
-            (message) => {
-                if (socket.destroyed) return
-                const request = parseRequest(message)
-                if (!request) {
-                    socket.destroy()
-                    return
-                }
-                Promise.resolve()
-                    .then(() => state.controlPlane.invoke(request.invocation))
-                    .then(
-                        (result) => writeResponse(socket, {id: request.id, result}),
-                        (error) => writeResponse(socket, {
-                            id: request.id,
-                            error: publicControlError(error),
-                        }),
-                    )
-                    .catch(() => socket.destroy())
-            },
-            () => socket.destroy(),
-            {maximumBufferBytes: MAX_CONTROL_MESSAGE_BYTES},
-        )
-        socket.on("data", (chunk) => decoder.push(chunk))
+        attachControlSocketConnection(socket, state.controlPlane)
     }
 
     close() {
@@ -362,7 +491,11 @@ class ControlSocketServer {
 module.exports = {
     CONTROL_SOCKET_DIRECTORY,
     CONTROL_SOCKET_NAME,
+    CONTROL_SOCKET_QUARANTINE_PREFIX,
+    DEFAULT_MAX_IN_FLIGHT_REQUESTS,
+    DEFAULT_MAX_QUEUED_RESPONSES,
     MAX_CONTROL_MESSAGE_BYTES,
     MAX_CONTROL_REQUEST_ID_LENGTH,
     ControlSocketServer,
+    attachControlSocketConnection,
 }

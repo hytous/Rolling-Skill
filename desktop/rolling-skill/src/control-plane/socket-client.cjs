@@ -3,6 +3,11 @@ const path = require("node:path")
 const {randomUUID} = require("node:crypto")
 
 const {JsonLineDecoder} = require("../json-rpc.cjs")
+const {
+    PUBLIC_CONTROL_ERROR_CODES,
+    createPublicControlError,
+    publicControlError,
+} = require("./contracts.cjs")
 
 const DEFAULT_CONTROL_SOCKET_TIMEOUT_MS = 15_000
 const MAX_CONTROL_MESSAGE_BYTES = 1_048_576
@@ -10,9 +15,11 @@ const MAX_CONTROL_REQUEST_ID_LENGTH = 200
 const MAX_CONTROL_METHOD_LENGTH = 200
 const MAX_CONTROL_TOKEN_LENGTH = 4_096
 const MAX_CONTROL_SESSION_ID_LENGTH = 200
-const MAX_PENDING_REQUESTS = 1_024
-const MAX_IGNORED_RESPONSE_IDS = 1_024
+const DEFAULT_MAX_PENDING_REQUESTS = 64
+const DEFAULT_MAX_UNSENT_REQUESTS = 64
+const MAX_IGNORED_RESPONSE_IDS = 64
 const FORBIDDEN_OBJECT_KEYS = new Set(["__proto__", "prototype", "constructor"])
+const PUBLIC_CONTROL_ERROR_CODE_SET = new Set(PUBLIC_CONTROL_ERROR_CODES)
 const stateByClient = new WeakMap()
 
 function isPlainObject(value) {
@@ -80,7 +87,16 @@ function validateConstructorOptions(options) {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
         throw new TypeError("Control socket timeout must be positive")
     }
-    return timeoutMs
+    const maxPendingRequests = options.maxPendingRequests ?? DEFAULT_MAX_PENDING_REQUESTS
+    const maxUnsentRequests = options.maxUnsentRequests ?? DEFAULT_MAX_UNSENT_REQUESTS
+    if (
+        !Number.isSafeInteger(maxPendingRequests) || maxPendingRequests < 1 ||
+        !Number.isSafeInteger(maxUnsentRequests) || maxUnsentRequests < 1
+    ) throw new TypeError("Control socket queue limits must be positive integers")
+    if (options.socketFactory !== undefined && typeof options.socketFactory !== "function") {
+        throw new TypeError("Control socket factory must be a function")
+    }
+    return {timeoutMs, maxPendingRequests, maxUnsentRequests}
 }
 
 function validateResponse(message) {
@@ -118,10 +134,16 @@ function validateResponse(message) {
 
 function rejectPending(state, error) {
     for (const pending of state.pending.values()) {
-        state.clearTimeoutFn(pending.timer)
+        if (pending.timer !== null) state.clearTimeoutFn(pending.timer)
         pending.reject(error)
     }
     state.pending.clear()
+    state.unsentQueue.length = 0
+}
+
+function removeUnsentRequest(state, id) {
+    const index = state.unsentQueue.indexOf(id)
+    if (index >= 0) state.unsentQueue.splice(index, 1)
 }
 
 function detachSocket(state, socket) {
@@ -136,16 +158,46 @@ function terminate(state, error, {permanent = true} = {}) {
         state.closed = true
         state.ignoredResponseIds.clear()
     }
+    state.outputBackpressured = false
     rejectPending(state, error)
     const socket = state.socket
     if (socket && !socket.destroyed) socket.destroy()
 }
 
-function safeRemoteMessage(state, message) {
-    if (message.includes(state.token) || message.includes(state.sessionId)) {
-        return "Control operation failed"
+function containsAuthorityString(root, state) {
+    const pending = [root]
+    while (pending.length > 0) {
+        const value = pending.pop()
+        if (typeof value === "string") {
+            if (value.includes(state.token) || value.includes(state.sessionId)) return true
+            continue
+        }
+        if (typeof value !== "object" || value === null) continue
+        const descriptors = Object.getOwnPropertyDescriptors(value)
+        for (const [key, descriptor] of Object.entries(descriptors)) {
+            if (key.includes(state.token) || key.includes(state.sessionId)) return true
+            if (Object.hasOwn(descriptor, "value")) pending.push(descriptor.value)
+        }
     }
-    return message
+    return false
+}
+
+function canonicalRemoteError(state, remoteError) {
+    const fallback = publicControlError(null)
+    if (containsAuthorityString(remoteError, state)) return fallback
+    if (!PUBLIC_CONTROL_ERROR_CODE_SET.has(remoteError.code)) return fallback
+    try {
+        const canonical = publicControlError(createPublicControlError(remoteError.code, {
+            details: remoteError.details,
+        }))
+        if (
+            remoteError.message !== canonical.message ||
+            remoteError.retryable !== canonical.retryable
+        ) return fallback
+        return canonical
+    } catch {
+        return fallback
+    }
 }
 
 function settleResponse(state, message) {
@@ -161,33 +213,99 @@ function settleResponse(state, message) {
         return
     }
     state.pending.delete(response.id)
-    state.clearTimeoutFn(pending.timer)
+    removeUnsentRequest(state, response.id)
+    if (pending.timer !== null) state.clearTimeoutFn(pending.timer)
     if (response.kind === "result") {
         pending.resolve(response.value)
         return
     }
-    const error = new Error(safeRemoteMessage(state, response.value.message))
-    error.code = response.value.code
-    error.retryable = response.value.retryable
-    error.details = response.value.details
+    const published = canonicalRemoteError(state, response.value)
+    const error = new Error(published.message)
+    error.code = published.code
+    error.retryable = published.retryable
+    error.details = published.details
     pending.reject(error)
+}
+
+function failPendingWrite(state, id) {
+    const pending = state.pending.get(id)
+    if (!pending) return
+    state.pending.delete(id)
+    removeUnsentRequest(state, id)
+    if (pending.timer !== null) state.clearTimeoutFn(pending.timer)
+    pending.reject(genericError("Control socket write failed"))
+    terminate(state, genericError("Control socket disconnected"))
+}
+
+function writePendingRequest(state, pending) {
+    const socket = state.socket
+    if (!socket || socket.destroyed || state.closed) {
+        failPendingWrite(state, pending.id)
+        return false
+    }
+    pending.sent = true
+    pending.queued = false
+    try {
+        const accepted = socket.write(pending.line, (error) => {
+            if (error) failPendingWrite(state, pending.id)
+        })
+        if (!accepted) state.outputBackpressured = true
+        return true
+    } catch {
+        failPendingWrite(state, pending.id)
+        return false
+    }
+}
+
+function queueOrWritePendingRequest(state, pending) {
+    if (!state.outputBackpressured && state.unsentQueue.length === 0) {
+        writePendingRequest(state, pending)
+        return
+    }
+    if (state.unsentQueue.length >= state.maxUnsentRequests) {
+        state.pending.delete(pending.id)
+        if (pending.timer !== null) state.clearTimeoutFn(pending.timer)
+        pending.reject(genericError(
+            "Control socket backpressure queue is full",
+            "CONTROL_BACKPRESSURE",
+        ))
+        return
+    }
+    pending.queued = true
+    state.unsentQueue.push(pending.id)
+}
+
+function flushUnsentRequests(state, socket) {
+    if (state.closed || state.socket !== socket || socket.destroyed) return
+    state.outputBackpressured = false
+    while (!state.outputBackpressured && state.unsentQueue.length > 0) {
+        const id = state.unsentQueue.shift()
+        const pending = state.pending.get(id)
+        if (!pending) continue
+        if (!writePendingRequest(state, pending)) return
+    }
 }
 
 class ControlSocketClient {
     constructor(options = {}) {
-        const timeoutMs = validateConstructorOptions(options)
+        const limits = validateConstructorOptions(options)
         stateByClient.set(this, {
             socketPath: options.socketPath,
             token: options.token,
             sessionId: options.sessionId,
-            timeoutMs,
+            timeoutMs: limits.timeoutMs,
+            maxPendingRequests: limits.maxPendingRequests,
+            maxUnsentRequests: limits.maxUnsentRequests,
             idFactory: options.idFactory ?? randomUUID,
             setTimeoutFn: options.setTimeoutFn ?? setTimeout,
             clearTimeoutFn: options.clearTimeoutFn ?? clearTimeout,
+            socketFactory: options.socketFactory ?? ((socketPath) => net.createConnection(socketPath)),
             socket: null,
             connected: false,
             connectPromise: null,
             pending: new Map(),
+            unsentQueue: [],
+            outputBackpressured: false,
             ignoredResponseIds: new Set(),
             closed: false,
         })
@@ -198,7 +316,17 @@ class ControlSocketClient {
         if (state.connected && state.socket && !state.socket.destroyed) return state.socket
         if (state.connectPromise) return state.connectPromise
 
-        const socket = net.createConnection(state.socketPath)
+        let socket
+        try {
+            socket = state.socketFactory(state.socketPath)
+            if (!socket || typeof socket.on !== "function" || typeof socket.write !== "function") {
+                throw new TypeError("Invalid socket")
+            }
+        } catch {
+            const error = genericError("Control socket connection failed")
+            terminate(state, error)
+            throw error
+        }
         state.socket = socket
         const decoder = new JsonLineDecoder(
             (message) => settleResponse(state, message),
@@ -211,6 +339,7 @@ class ControlSocketClient {
         state.connectPromise = new Promise((resolve, reject) => {
             let connecting = true
             socket.on("data", (chunk) => decoder.push(chunk))
+            socket.on("drain", () => flushUnsentRequests(state, socket))
             socket.on("error", () => {
                 const error = genericError("Control socket connection failed")
                 if (connecting) {
@@ -252,6 +381,10 @@ class ControlSocketClient {
             throw new TypeError("Control request is invalid")
         }
         if (!isPlainObject(options)) throw new TypeError("Control request options are invalid")
+        if (state.closed) throw genericError("Control socket client is closed")
+        if (state.pending.size >= state.maxPendingRequests) {
+            throw genericError("Control socket has too many pending requests")
+        }
         let id
         try {
             id = options.id ?? state.idFactory()
@@ -261,9 +394,6 @@ class ControlSocketClient {
         if (!isBoundedString(id, MAX_CONTROL_REQUEST_ID_LENGTH)) {
             throw new TypeError("Control request id is invalid")
         }
-        if (state.pending.size >= MAX_PENDING_REQUESTS) {
-            throw genericError("Control socket has too many pending requests")
-        }
         if (state.pending.has(id) || state.ignoredResponseIds.has(id)) {
             throw new TypeError("Control request id is already in use")
         }
@@ -271,11 +401,6 @@ class ControlSocketClient {
         if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
             throw new TypeError("Control request timeout must be positive")
         }
-        const socket = await this.#connect(state)
-        if (state.closed || socket.destroyed) {
-            throw genericError("Control socket client is closed")
-        }
-
         let line
         try {
             line = `${JSON.stringify({
@@ -292,37 +417,55 @@ class ControlSocketClient {
             throw new RangeError("Control request exceeds the maximum message size")
         }
 
-        return new Promise((resolve, reject) => {
-            const timer = state.setTimeoutFn(() => {
-                const pending = state.pending.get(id)
-                if (!pending) return
+        let resolveRequest
+        let rejectRequest
+        const requestPromise = new Promise((resolve, reject) => {
+            resolveRequest = resolve
+            rejectRequest = reject
+        })
+        requestPromise.catch(() => {})
+        const pending = {
+            id,
+            line,
+            resolve: resolveRequest,
+            reject: rejectRequest,
+            timer: null,
+            sent: false,
+            queued: false,
+        }
+        state.pending.set(id, pending)
+
+        let socket
+        try {
+            socket = await this.#connect(state)
+        } catch {
+            return requestPromise
+        }
+        if (state.closed || socket.destroyed) {
+            if (state.pending.has(id)) {
                 state.pending.delete(id)
+                pending.reject(genericError("Control socket client is closed"))
+            }
+            return requestPromise
+        }
+        if (!state.pending.has(id)) return requestPromise
+
+        pending.timer = state.setTimeoutFn(() => {
+            const pending = state.pending.get(id)
+            if (!pending) return
+            state.pending.delete(id)
+            removeUnsentRequest(state, id)
+            if (pending.sent) {
                 if (state.ignoredResponseIds.size >= MAX_IGNORED_RESPONSE_IDS) {
                     const oldest = state.ignoredResponseIds.values().next().value
                     state.ignoredResponseIds.delete(oldest)
                 }
                 state.ignoredResponseIds.add(id)
-                reject(genericError("Control socket request timed out", "CONTROL_TIMEOUT"))
-            }, timeoutMs)
-            state.pending.set(id, {resolve, reject, timer})
-            try {
-                socket.write(line, (error) => {
-                    if (!error) return
-                    const pending = state.pending.get(id)
-                    if (!pending) return
-                    state.pending.delete(id)
-                    state.clearTimeoutFn(pending.timer)
-                    pending.reject(genericError("Control socket write failed"))
-                    terminate(state, genericError("Control socket disconnected"))
-                })
-            } catch {
-                const pending = state.pending.get(id)
-                state.pending.delete(id)
-                state.clearTimeoutFn(pending.timer)
-                pending.reject(genericError("Control socket write failed"))
-                terminate(state, genericError("Control socket disconnected"))
             }
-        })
+            pending.reject(genericError("Control socket request timed out", "CONTROL_TIMEOUT"))
+        }, timeoutMs)
+        queueOrWritePendingRequest(state, pending)
+        return requestPromise
     }
 
     call(method, params, options) {
@@ -334,6 +477,7 @@ class ControlSocketClient {
         if (state.closed) return
         state.closed = true
         state.ignoredResponseIds.clear()
+        state.outputBackpressured = false
         rejectPending(state, genericError("Control socket client is closed"))
         if (state.socket && !state.socket.destroyed) state.socket.destroy()
     }
@@ -341,6 +485,8 @@ class ControlSocketClient {
 
 module.exports = {
     DEFAULT_CONTROL_SOCKET_TIMEOUT_MS,
+    DEFAULT_MAX_PENDING_REQUESTS,
+    DEFAULT_MAX_UNSENT_REQUESTS,
     MAX_CONTROL_REQUEST_ID_LENGTH,
     ControlSocketClient,
 }

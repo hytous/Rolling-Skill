@@ -4,18 +4,24 @@ const net = require("node:net")
 const os = require("node:os")
 const path = require("node:path")
 const {spawn} = require("node:child_process")
-const {once} = require("node:events")
+const {EventEmitter, once} = require("node:events")
 const {describe, it} = require("node:test")
 
 const {createPublicControlError} = require("../src/control-plane/contracts.cjs")
 const {
     CONTROL_SOCKET_DIRECTORY,
     CONTROL_SOCKET_NAME,
+    CONTROL_SOCKET_QUARANTINE_PREFIX,
+    DEFAULT_MAX_IN_FLIGHT_REQUESTS,
+    DEFAULT_MAX_QUEUED_RESPONSES,
     MAX_CONTROL_MESSAGE_BYTES,
     ControlSocketServer,
+    attachControlSocketConnection,
 } = require("../src/control-plane/socket-server.cjs")
 const {
     DEFAULT_CONTROL_SOCKET_TIMEOUT_MS,
+    DEFAULT_MAX_PENDING_REQUESTS,
+    DEFAULT_MAX_UNSENT_REQUESTS,
     MAX_CONTROL_REQUEST_ID_LENGTH,
     ControlSocketClient,
 } = require("../src/control-plane/socket-client.cjs")
@@ -111,6 +117,75 @@ async function makeStaleUnixSocket(socketPath) {
     assert.equal((await fs.promises.lstat(socketPath)).isSocket(), true)
 }
 
+function controlRequestLine(id, params = {}) {
+    return `${JSON.stringify({
+        id,
+        method: "context.get",
+        params,
+        token: "opaque",
+        sessionId: "operator",
+    })}\n`
+}
+
+function nextTurn() {
+    return new Promise((resolve) => setImmediate(resolve))
+}
+
+class FakeSocket extends EventEmitter {
+    constructor({autoConnect = false, writeResults = []} = {}) {
+        super()
+        this.destroyed = false
+        this.writable = true
+        this.writes = []
+        this.writeResults = [...writeResults]
+        this.pauseCount = 0
+        this.resumeCount = 0
+        if (autoConnect) queueMicrotask(() => this.emit("connect"))
+    }
+
+    write(line, callback) {
+        if (this.destroyed) throw new Error("fake socket is destroyed")
+        this.writes.push(line)
+        if (callback) queueMicrotask(() => callback())
+        return this.writeResults.length > 0 ? this.writeResults.shift() : true
+    }
+
+    pause() {
+        this.pauseCount += 1
+        return this
+    }
+
+    resume() {
+        this.resumeCount += 1
+        return this
+    }
+
+    destroy() {
+        if (this.destroyed) return this
+        this.destroyed = true
+        this.writable = false
+        queueMicrotask(() => this.emit("close"))
+        return this
+    }
+}
+
+function assertFixedControlError(error, secrets = []) {
+    assert.equal(error.code, "CONTROL_ERROR")
+    assert.equal(error.message, "Control operation failed")
+    assert.equal(error.retryable, false)
+    assert.equal(error.details, null)
+    assert.equal(Object.hasOwn(error, "cause"), false)
+    assert.equal(Object.hasOwn(error, "rawResponse"), false)
+    const serialized = JSON.stringify({
+        code: error.code,
+        message: error.message,
+        retryable: error.retryable,
+        details: error.details,
+    })
+    for (const secret of secrets) assert.equal(serialized.includes(secret), false)
+    return true
+}
+
 describe("owner-only control socket transport", () => {
     it("routes a request with session authority and returns one JSON result", async (t) => {
         const invocations = []
@@ -182,6 +257,89 @@ describe("owner-only control socket transport", () => {
             assert.doesNotMatch(error.message, /password|stack|token-not|session-not/u)
             return true
         })
+    })
+
+    it("rebuilds remote public errors and rejects secret or untrusted provenance", async (t) => {
+        const userData = await temporaryUserData(t)
+        const socketPath = path.join(userData, "remote-errors.sock")
+        const remoteErrors = new Map([
+            ["secret-code", {
+                code: "CONTROL_BUSY",
+                message: "Control operation is busy",
+                retryable: true,
+                details: null,
+            }],
+            ["secret-message", {
+                code: "CONTROL_BUSY",
+                message: "before-message-secret-after",
+                retryable: true,
+                details: null,
+            }],
+            ["secret-details", {
+                code: "FORBIDDEN",
+                message: "Control action is forbidden",
+                retryable: false,
+                details: {action: "context.read", scopes: ["raw_cases.read"]},
+            }],
+            ["invalid-code", {
+                code: "REMOTE_PRIVATE_FAILURE",
+                message: "remote private failure",
+                retryable: true,
+                details: {raw: "private"},
+            }],
+            ["invalid-message", {
+                code: "CONTROL_BUSY",
+                message: "spoofed public message",
+                retryable: true,
+                details: null,
+            }],
+            ["invalid-details", {
+                code: "FORBIDDEN",
+                message: "Control action is forbidden",
+                retryable: false,
+                details: {action: "not-an-action"},
+            }],
+        ])
+        await listenUnixServer(t, socketPath, (socket) => {
+            let buffer = ""
+            socket.on("data", (chunk) => {
+                buffer += chunk.toString("utf8")
+                let newline = buffer.indexOf("\n")
+                while (newline >= 0) {
+                    const request = JSON.parse(buffer.slice(0, newline))
+                    buffer = buffer.slice(newline + 1)
+                    socket.write(`${JSON.stringify({
+                        id: request.id,
+                        error: remoteErrors.get(request.id),
+                    })}\n`)
+                    newline = buffer.indexOf("\n")
+                }
+            })
+        })
+
+        const scenarios = [
+            {id: "secret-code", token: "CONTROL_BUSY", sessionId: "operator-code"},
+            {id: "secret-message", token: "message-secret", sessionId: "operator-message"},
+            {id: "secret-details", token: "opaque-detail", sessionId: "cases.read"},
+            {id: "invalid-code", token: "opaque-code", sessionId: "operator-invalid-code"},
+            {id: "invalid-message", token: "opaque-message", sessionId: "operator-invalid-message"},
+            {id: "invalid-details", token: "opaque-details", sessionId: "operator-invalid-details"},
+        ]
+        for (const scenario of scenarios) {
+            const client = new ControlSocketClient({
+                socketPath,
+                token: scenario.token,
+                sessionId: scenario.sessionId,
+            })
+            t.after(() => client.close())
+            await assert.rejects(
+                client.invoke("context.get", {}, {id: scenario.id}),
+                (error) => assertFixedControlError(
+                    error,
+                    [scenario.token, scenario.sessionId, "before-", "-after"],
+                ),
+            )
+        }
     })
 
     it("closes only malformed or oversized connections and continues serving clients", async (t) => {
@@ -314,6 +472,202 @@ describe("owner-only control socket transport", () => {
         assert.deepEqual(await first, {order: 1})
     })
 
+    it("bounds server in-flight dispatch and pauses until work settles", async () => {
+        assert.equal(DEFAULT_MAX_IN_FLIGHT_REQUESTS, 32)
+        assert.equal(DEFAULT_MAX_QUEUED_RESPONSES, 32)
+        const resolvers = new Map()
+        const calls = []
+        const socket = new FakeSocket()
+        attachControlSocketConnection(socket, {
+            invoke({params}) {
+                calls.push(params.order)
+                return new Promise((resolve) => resolvers.set(params.order, resolve))
+            },
+        }, {maxInFlightRequests: 2, maxQueuedResponses: 2})
+
+        socket.emit("data", Buffer.from(
+            controlRequestLine("one", {order: 1}) +
+            controlRequestLine("two", {order: 2}),
+        ))
+        await nextTurn()
+        assert.deepEqual(calls, [1, 2])
+        assert.equal(socket.pauseCount, 1)
+        assert.equal(socket.destroyed, false)
+
+        resolvers.get(1)({order: 1})
+        await nextTurn()
+        assert.equal(socket.resumeCount, 1)
+
+        const overflowCalls = []
+        const overflowSocket = new FakeSocket()
+        attachControlSocketConnection(overflowSocket, {
+            invoke({params}) {
+                overflowCalls.push(params.order)
+                return new Promise(() => {})
+            },
+        }, {maxInFlightRequests: 2, maxQueuedResponses: 2})
+        overflowSocket.emit("data", Buffer.from(
+            [1, 2, 3].map((order) =>
+                controlRequestLine(`overflow-${order}`, {order}),
+            ).join(""),
+        ))
+        await nextTurn()
+        assert.deepEqual(overflowCalls, [1, 2])
+        assert.equal(overflowSocket.destroyed, true)
+    })
+
+    it("queues server responses after write false and caps that queue", async () => {
+        const socket = new FakeSocket({writeResults: [false, true, true]})
+        const resolvers = new Map()
+        attachControlSocketConnection(socket, {
+            invoke({params}) {
+                return new Promise((resolve) => resolvers.set(params.order, resolve))
+            },
+        }, {maxInFlightRequests: 3, maxQueuedResponses: 2})
+        socket.emit("data", Buffer.from(
+            [1, 2, 3].map((order) =>
+                controlRequestLine(`response-${order}`, {order}),
+            ).join(""),
+        ))
+        await nextTurn()
+        resolvers.get(1)({order: 1})
+        resolvers.get(2)({order: 2})
+        resolvers.get(3)({order: 3})
+        await nextTurn()
+
+        assert.equal(socket.writes.length, 1)
+        assert.ok(socket.pauseCount >= 1)
+        socket.emit("drain")
+        await nextTurn()
+        assert.deepEqual(
+            socket.writes.map((line) => JSON.parse(line).id),
+            ["response-1", "response-2", "response-3"],
+        )
+        assert.ok(socket.resumeCount >= 1)
+
+        const bounded = new FakeSocket({writeResults: [false]})
+        const boundedResolvers = new Map()
+        attachControlSocketConnection(bounded, {
+            invoke({params}) {
+                return new Promise((resolve) => boundedResolvers.set(params.order, resolve))
+            },
+        }, {maxInFlightRequests: 4, maxQueuedResponses: 1})
+        bounded.emit("data", Buffer.from(
+            [1, 2, 3, 4].map((order) =>
+                controlRequestLine(`bounded-${order}`, {order}),
+            ).join(""),
+        ))
+        await nextTurn()
+        for (const resolve of boundedResolvers.values()) resolve({ok: true})
+        await nextTurn()
+        assert.equal(bounded.writes.length, 1)
+        assert.equal(bounded.destroyed, true)
+    })
+
+    it("caps client pending and unsent queues without leaking authority", async (t) => {
+        assert.equal(DEFAULT_MAX_PENDING_REQUESTS, 64)
+        assert.equal(DEFAULT_MAX_UNSENT_REQUESTS, 64)
+        const pendingSocket = new FakeSocket({autoConnect: true})
+        const pendingClient = new ControlSocketClient({
+            socketPath: path.join(os.tmpdir(), "pending-limit.sock"),
+            token: "pending-limit-token",
+            sessionId: "pending-limit-session",
+            socketFactory: () => pendingSocket,
+            maxPendingRequests: 2,
+        })
+        t.after(() => pendingClient.close())
+        const one = pendingClient.invoke("context.get", {}, {id: "pending-one"})
+        const two = pendingClient.invoke("context.get", {}, {id: "pending-two"})
+        const oneRejected = assert.rejects(one, /closed/i)
+        const twoRejected = assert.rejects(two, /closed/i)
+        await assert.rejects(
+            pendingClient.invoke("context.get", {}, {id: "pending-three"}),
+            (error) => {
+                assert.match(error.message, /pending requests/i)
+                assert.doesNotMatch(error.message, /pending-limit-token|pending-limit-session/u)
+                return true
+            },
+        )
+        pendingClient.close()
+        await Promise.all([oneRejected, twoRejected])
+
+        const queueSocket = new FakeSocket({autoConnect: true, writeResults: [false, true]})
+        const queueClient = new ControlSocketClient({
+            socketPath: path.join(os.tmpdir(), "unsent-limit.sock"),
+            token: "unsent-limit-token",
+            sessionId: "unsent-limit-session",
+            socketFactory: () => queueSocket,
+            maxPendingRequests: 4,
+            maxUnsentRequests: 1,
+        })
+        t.after(() => queueClient.close())
+        const sent = queueClient.invoke("context.get", {}, {
+            id: "sent-first",
+            timeoutMs: 1_000,
+        })
+        await waitFor(() => queueSocket.writes.length === 1)
+        const queued = queueClient.invoke("context.get", {}, {
+            id: "queued-second",
+            timeoutMs: 1_000,
+        })
+        await nextTurn()
+        assert.equal(queueSocket.writes.length, 1)
+        await assert.rejects(
+            queueClient.invoke("context.get", {}, {id: "queue-overflow"}),
+            (error) => {
+                assert.match(error.message, /backpressure|queue/i)
+                assert.doesNotMatch(error.message, /unsent-limit-token|unsent-limit-session/u)
+                return true
+            },
+        )
+        queueSocket.emit("drain")
+        await nextTurn()
+        assert.deepEqual(
+            queueSocket.writes.map((line) => JSON.parse(line).id),
+            ["sent-first", "queued-second"],
+        )
+        queueSocket.emit("data", Buffer.from(
+            '{"id":"sent-first","result":{"order":1}}\n' +
+            '{"id":"queued-second","result":{"order":2}}\n',
+        ))
+        assert.deepEqual(await sent, {order: 1})
+        assert.deepEqual(await queued, {order: 2})
+    })
+
+    it("removes timed-out unsent requests and clears drain listeners on close", async (t) => {
+        const socket = new FakeSocket({autoConnect: true, writeResults: [false, false]})
+        const client = new ControlSocketClient({
+            socketPath: path.join(os.tmpdir(), "unsent-timeout.sock"),
+            token: "timeout-queue-token",
+            sessionId: "timeout-queue-session",
+            socketFactory: () => socket,
+            maxPendingRequests: 4,
+            maxUnsentRequests: 1,
+        })
+        const sent = client.invoke("context.get", {}, {id: "sent", timeoutMs: 1_000})
+        await waitFor(() => socket.writes.length === 1)
+        const timedOut = client.invoke("context.get", {}, {id: "timed-out", timeoutMs: 10})
+        await assert.rejects(timedOut, /timed out/i)
+        const replacement = client.invoke("context.get", {}, {
+            id: "replacement",
+            timeoutMs: 1_000,
+        })
+        await nextTurn()
+        socket.emit("drain")
+        await nextTurn()
+        assert.deepEqual(
+            socket.writes.map((line) => JSON.parse(line).id),
+            ["sent", "replacement"],
+        )
+
+        const sentRejected = assert.rejects(sent, /closed/i)
+        const replacementRejected = assert.rejects(replacement, /closed/i)
+        client.close()
+        await Promise.all([sentRejected, replacementRejected])
+        await nextTurn()
+        assert.equal(socket.listenerCount("drain"), 0)
+    })
+
     it("rejects every pending request on remote disconnect and explicit close", async (t) => {
         const remoteUserData = await temporaryUserData(t)
         const remotePath = path.join(remoteUserData, "remote.sock")
@@ -440,6 +794,7 @@ describe("owner-only control socket transport", () => {
         const socketPath = path.join(controlDir, CONTROL_SOCKET_NAME)
         await fs.promises.mkdir(controlDir, {mode: 0o700})
         await makeStaleUnixSocket(socketPath)
+        const staleIdentity = await fs.promises.lstat(socketPath)
 
         const server = new ControlSocketServer({
             userData,
@@ -448,6 +803,13 @@ describe("owner-only control socket transport", () => {
         })
         await server.start()
         t.after(async () => server.close())
+        const replacementIdentity = await fs.promises.lstat(socketPath)
+        assert.notEqual(replacementIdentity.ino, staleIdentity.ino)
+        assert.deepEqual(
+            (await fs.promises.readdir(controlDir))
+                .filter((name) => name.startsWith(CONTROL_SOCKET_QUARANTINE_PREFIX)),
+            [],
+        )
         const client = new ControlSocketClient({
             socketPath,
             token: "opaque",
@@ -455,6 +817,117 @@ describe("owner-only control socket transport", () => {
         })
         t.after(() => client.close())
         assert.deepEqual(await client.invoke("context.get", {}), {ok: true})
+    })
+
+    it("quarantines a raced regular replacement without deleting it", async (t) => {
+        const userData = await temporaryUserData(t)
+        const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
+        const socketPath = path.join(controlDir, CONTROL_SOCKET_NAME)
+        await fs.promises.mkdir(controlDir, {mode: 0o700})
+        await makeStaleUnixSocket(socketPath)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        t.after(async () => server.close())
+
+        const renameSync = fs.renameSync
+        let exchanged = false
+        fs.renameSync = (source, destination) => {
+            if (!exchanged && source === socketPath) {
+                exchanged = true
+                fs.unlinkSync(source)
+                fs.writeFileSync(source, "regular replacement", {mode: 0o600})
+            }
+            return renameSync(source, destination)
+        }
+        try {
+            await assert.rejects(server.start(), /changed|quarantine|stale/i)
+        } finally {
+            fs.renameSync = renameSync
+        }
+        assert.equal(await fs.promises.readFile(socketPath, "utf8"), "regular replacement")
+        assert.deepEqual(
+            (await fs.promises.readdir(controlDir))
+                .filter((name) => name.startsWith(CONTROL_SOCKET_QUARANTINE_PREFIX)),
+            [],
+        )
+    })
+
+    it("quarantines a raced socket replacement without deleting it", async (t) => {
+        const userData = await temporaryUserData(t)
+        const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
+        const socketPath = path.join(controlDir, CONTROL_SOCKET_NAME)
+        const preparedReplacement = path.join(controlDir, "r.sock")
+        await fs.promises.mkdir(controlDir, {mode: 0o700})
+        await makeStaleUnixSocket(socketPath)
+        await makeStaleUnixSocket(preparedReplacement)
+        const preparedIdentity = await fs.promises.lstat(preparedReplacement)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        t.after(async () => server.close())
+
+        const renameSync = fs.renameSync
+        let exchanged = false
+        fs.renameSync = (source, destination) => {
+            if (!exchanged && source === socketPath) {
+                exchanged = true
+                fs.unlinkSync(source)
+                renameSync(preparedReplacement, source)
+            }
+            return renameSync(source, destination)
+        }
+        try {
+            await assert.rejects(server.start(), /changed|quarantine|stale/i)
+        } finally {
+            fs.renameSync = renameSync
+        }
+        const restored = await fs.promises.lstat(socketPath)
+        assert.equal(restored.isSocket(), true)
+        assert.equal(restored.dev, preparedIdentity.dev)
+        assert.equal(restored.ino, preparedIdentity.ino)
+    })
+
+    it("never overwrites a new socket-path occupant when quarantine restore fails", async (t) => {
+        const userData = await temporaryUserData(t)
+        const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
+        const socketPath = path.join(controlDir, CONTROL_SOCKET_NAME)
+        await fs.promises.mkdir(controlDir, {mode: 0o700})
+        await makeStaleUnixSocket(socketPath)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        t.after(async () => server.close())
+
+        const renameSync = fs.renameSync
+        let exchanged = false
+        fs.renameSync = (source, destination) => {
+            if (!exchanged && source === socketPath) {
+                exchanged = true
+                fs.unlinkSync(source)
+                fs.writeFileSync(source, "quarantined replacement", {mode: 0o600})
+                renameSync(source, destination)
+                fs.writeFileSync(source, "new occupant", {mode: 0o600})
+                return
+            }
+            return renameSync(source, destination)
+        }
+        try {
+            await assert.rejects(server.start(), /restore|occupied|quarantine|changed/i)
+        } finally {
+            fs.renameSync = renameSync
+        }
+        assert.equal(await fs.promises.readFile(socketPath, "utf8"), "new occupant")
+        const quarantines = (await fs.promises.readdir(controlDir))
+            .filter((name) => name.startsWith(CONTROL_SOCKET_QUARANTINE_PREFIX))
+        assert.equal(quarantines.length, 1)
+        assert.equal(
+            await fs.promises.readFile(path.join(controlDir, quarantines[0]), "utf8"),
+            "quarantined replacement",
+        )
     })
 
     it("refuses active sockets, files, symlinks, and alternate control directories", async (t) => {
