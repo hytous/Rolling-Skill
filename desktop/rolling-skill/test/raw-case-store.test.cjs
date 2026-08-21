@@ -9,6 +9,7 @@ const {
     RawCaseStore,
     defaultRawCaseEventsPath,
     readRawCaseEvents,
+    reduceRawCaseEvents,
 } = require("../src/raw-case-store.cjs")
 
 const temporaryDirectories = []
@@ -161,6 +162,81 @@ describe("raw case event store", () => {
         reopened.close()
     })
 
+    it("accepts only the caller's event when two store instances interleave one revision", () => {
+        const {path, store: firstStore} = fixture()
+        const secondStore = new RawCaseStore(path)
+        const created = firstStore.add(input("original"))
+        const appendFirst = firstStore.append.bind(firstStore)
+        let winner
+        firstStore.append = (event) => {
+            winner = secondStore.updateIfCurrent(created.id, {
+                expectedRevision: created.revision,
+                expectedSkillName: created.skill.name,
+            }, {question: "second store wins"})
+            return appendFirst(event)
+        }
+
+        let loserResult = null
+        assert.throws(() => {
+            loserResult = firstStore.updateIfCurrent(created.id, {
+                expectedRevision: created.revision,
+                expectedSkillName: created.skill.name,
+            }, {question: "first store loses"})
+        }, (error) => error.code === "RAW_CASE_CONFLICT")
+
+        assert.equal(winner.question, "second store wins")
+        assert.equal(winner.revision, 2)
+        assert.equal(loserResult, null)
+        assert.equal(firstStore.get(created.id).question, "second store wins")
+        assert.equal(firstStore.get(created.id).revision, 2)
+        assert.equal(readRawCaseEvents(path).events.length, 3)
+        firstStore.close()
+        secondStore.close()
+    })
+
+    it("tracks only the last applied event internally and never publishes its event ID", () => {
+        const events = [
+            {
+                schemaVersion: RAW_CASE_EVENT_SCHEMA,
+                eventId: "added-event",
+                type: "added",
+                rawCase: {
+                    id: "raw-1",
+                    question: "original",
+                    skill: {name: "billing"},
+                    revision: 1,
+                },
+            },
+            {
+                schemaVersion: RAW_CASE_EVENT_SCHEMA,
+                eventId: "winner-event",
+                type: "updated",
+                rawCaseId: "raw-1",
+                expectedRevision: 1,
+                expectedSkillName: "billing",
+                changes: {question: "winner"},
+            },
+            {
+                schemaVersion: RAW_CASE_EVENT_SCHEMA,
+                eventId: "stale-event",
+                type: "updated",
+                rawCaseId: "raw-1",
+                expectedRevision: 1,
+                expectedSkillName: "billing",
+                changes: {question: "stale"},
+            },
+        ]
+        const reduced = reduceRawCaseEvents(events)
+        const {path, store} = fixture()
+        store.append({type: "test-directory-initialization"})
+        writeFileSync(path, `${events.map(JSON.stringify).join("\n")}\n`, "utf8")
+
+        assert.equal(reduced[0].question, "winner")
+        assert.equal(reduced[0]._lastAppliedEventId, "winner-event")
+        assert.equal(Object.hasOwn(store.get("raw-1"), "_lastAppliedEventId"), false)
+        store.close()
+    })
+
     it("deduplicates pending questions by trimmed text and normalized Skill name", () => {
         const {store} = fixture()
         const first = store.add(input("  同一个问题  "))
@@ -177,6 +253,35 @@ describe("raw case event store", () => {
         assert.equal(duplicate.duplicateOf, first.id)
         assert.equal(differentSkill.question, "同一个问题")
         assert.equal(store.list().length, 2)
+        store.close()
+    })
+
+    it("persists bounded stable Skill IDs and deduplicates ID-owned records by ID", () => {
+        const {store} = fixture()
+        const first = store.add({
+            ...input("same question"),
+            skill: {id: "skill-1", name: "Billing"},
+        })
+        const sameNameDifferentId = store.add({
+            ...input("same question"),
+            skill: {id: "skill-2", name: " billing "},
+        })
+        const sameIdDifferentName = store.add({
+            ...input(" same question "),
+            skill: {id: "skill-1", name: "renamed-billing"},
+        })
+
+        assert.equal(first.skill.id, "skill-1")
+        assert.equal(store.get(first.id).skill.id, "skill-1")
+        assert.equal(sameNameDifferentId.skill.id, "skill-2")
+        assert.equal(sameIdDifferentName.created, false)
+        assert.equal(sameIdDifferentName.duplicateOf, first.id)
+        for (const id of ["", " skill-1 ", "skill\n1", "x".repeat(201)]) {
+            assert.throws(() => store.add({
+                ...input(`invalid id ${JSON.stringify(id)}`),
+                skill: {id, name: "billing"},
+            }), /Skill ID/u)
+        }
         store.close()
     })
 

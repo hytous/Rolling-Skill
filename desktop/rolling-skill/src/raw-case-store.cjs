@@ -62,7 +62,23 @@ function normalizedSkillName(value) {
     return String(value ?? "").trim().toLocaleLowerCase("en-US")
 }
 
+function normalizedSkillId(value) {
+    if (value === undefined) return null
+    if (
+        typeof value !== "string" ||
+        value.length < 1 ||
+        value.length > MAX_SKILL_NAME_LENGTH ||
+        value.trim() !== value ||
+        !/\S/u.test(value) ||
+        /[\u0000-\u001f\u007f]/u.test(value)
+    ) {
+        throw new Error(`Skill ID must be a valid identifier of at most ${MAX_SKILL_NAME_LENGTH} characters`)
+    }
+    return value
+}
+
 function normalizeSkill(value) {
+    const id = normalizedSkillId(value?.id)
     const name = String(value?.name ?? "").trim()
     if (!name) throw new Error("Skill name is required")
     if (name.length > MAX_SKILL_NAME_LENGTH) {
@@ -72,7 +88,7 @@ function normalizeSkill(value) {
     if (path.length > MAX_SKILL_PATH_LENGTH) {
         throw new Error(`Skill path must not exceed ${MAX_SKILL_PATH_LENGTH} characters`)
     }
-    return {name, ...(path ? {path} : {})}
+    return {...(id === null ? {} : {id}), name, ...(path ? {path} : {})}
 }
 
 function normalizeQuestion(value) {
@@ -106,7 +122,16 @@ function normalizeInput(input = {}) {
 }
 
 function deduplicationKey(input) {
-    return `${normalizedSkillName(input.skill?.name)}\u0000${String(input.question ?? "").trim()}`
+    let owner
+    try {
+        owner = normalizedSkillId(input.skill?.id)
+    } catch {
+        owner = null
+    }
+    const skillKey = owner === null
+        ? `name:${normalizedSkillName(input.skill?.name)}`
+        : `id:${owner}`
+    return `${skillKey}\u0000${String(input.question ?? "").trim()}`
 }
 
 function recordRevision(value) {
@@ -150,6 +175,7 @@ function reduceRawCaseEvents(events) {
                 ...rawCase,
                 revision: recordRevision(rawCase.revision),
                 _sequence: sequence,
+                _lastAppliedEventId: typeof event.eventId === "string" ? event.eventId : null,
             })
             continue
         }
@@ -180,6 +206,7 @@ function reduceRawCaseEvents(events) {
                 updatedAt: event.occurredAt ?? current.updatedAt,
                 revision: current.revision + 1,
                 _sequence: current._sequence,
+                _lastAppliedEventId: typeof event.eventId === "string" ? event.eventId : null,
             })
         } else if (event.type === "deleted" || event.type === "dispatched") {
             records.delete(id)
@@ -190,7 +217,7 @@ function reduceRawCaseEvents(events) {
 
 function publicRecord(record) {
     if (!record) return null
-    const {_sequence, ...value} = record
+    const {_lastAppliedEventId, _sequence, ...value} = record
     return jsonCopy(value)
 }
 
@@ -311,16 +338,19 @@ class RawCaseStore {
             note: normalized.note,
             source: normalized.source,
         }
-        this.append({
+        const event = this.append({
             type: "updated",
             rawCaseId: current.id,
             expectedRevision: current.revision,
             expectedSkillName: current.skill.name,
             changes: eventChanges,
         })
-        const updated = this.get(current.id)
-        if (updated?.revision !== current.revision + 1) throw new RawCaseConflictError()
-        return updated
+        const updated = this.read().records.find((record) => record.id === current.id) ?? null
+        if (
+            updated?.revision !== current.revision + 1 ||
+            updated?._lastAppliedEventId !== event.eventId
+        ) throw new RawCaseConflictError()
+        return publicRecord(updated)
     }
 
     delete(id) {
