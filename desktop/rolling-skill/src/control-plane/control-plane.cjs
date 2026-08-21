@@ -58,11 +58,29 @@ function decisionError(decision, action) {
 }
 
 function safeControlError(error) {
-    if (publicControlError(error).code !== "CONTROL_ERROR") return error
-    if (error instanceof CapabilityError && CAPABILITY_PUBLIC_CODES.has(error.code)) {
-        return createPublicControlError(error.code)
-    }
+    try {
+        if (publicControlError(error).code !== "CONTROL_ERROR") return error
+    } catch {}
     return stableError("CONTROL_ERROR")
+}
+
+function authorizationError(error) {
+    let capabilityError = false
+    try {
+        capabilityError = error instanceof CapabilityError
+    } catch {
+        return stableError("CONTROL_ERROR")
+    }
+    if (!capabilityError) return stableError("CONTROL_ERROR")
+    let code
+    try {
+        code = error.code
+    } catch {
+        return stableError("CONTROL_ERROR")
+    }
+    return CAPABILITY_PUBLIC_CODES.has(code)
+        ? createPublicControlError(code)
+        : stableError("CONTROL_ERROR")
 }
 
 function terminalErrorSnapshot(error) {
@@ -288,13 +306,13 @@ function boundedAuditId(value, bearerSecret = null) {
     return `sha256:${createHash("sha256").update(value, "utf8").digest("hex").slice(0, 24)}`
 }
 
-function auditObjectIds(input, resolution, bearerSecret) {
+function auditObjectIds(input, resolvedScope, bearerSecret) {
     const candidates = {
         rawCaseIds: [input?.id],
-        datasetIds: [input?.datasetId, ...(resolution?.datasetIds ?? [])],
+        datasetIds: [input?.datasetId, ...(resolvedScope?.datasetIds ?? [])],
         caseIds: Array.isArray(input?.caseIds) ? input.caseIds : [],
         runIds: [input?.runId],
-        skillIds: [input?.skillId, ...(resolution?.skillIds ?? [])],
+        skillIds: [input?.skillId, ...(resolvedScope?.skillIds ?? [])],
         runtimeIds: [
             input?.runtimeId,
             input?.runtime?.runtimeId,
@@ -302,7 +320,7 @@ function auditObjectIds(input, resolution, bearerSecret) {
                 ? input.runtimeConfigurations.map((entry) => entry?.runtimeId)
                 : []),
             input?.judgeConfiguration?.runtimeId,
-            ...(resolution?.runtimeIds ?? []),
+            ...(resolvedScope?.runtimeIds ?? []),
         ],
     }
     const result = {}
@@ -352,10 +370,37 @@ function snapshotControlRequest(value) {
     }
 }
 
-function auditFailure(state) {
+function observeWithoutThrow(value, onRejected = null) {
+    const reject = () => {
+        if (onRejected === null) return
+        try {
+            onRejected()
+        } catch {}
+    }
+    let operation
     try {
-        state.onAuditError?.(Object.freeze({code: "AUDIT_SINK_FAILED"}))
-    } catch {}
+        operation = Promise.resolve(value)
+    } catch {
+        reject()
+        return
+    }
+    try {
+        operation.then(undefined, () => {
+            reject()
+        })
+    } catch {
+        reject()
+    }
+}
+
+function auditFailure(state) {
+    let diagnostic
+    try {
+        diagnostic = state.onAuditError?.(Object.freeze({code: "AUDIT_SINK_FAILED"}))
+    } catch {
+        return
+    }
+    observeWithoutThrow(diagnostic)
 }
 
 function sanitizeAuditValue(value, bearerSecret) {
@@ -377,14 +422,57 @@ function sanitizeAuditValue(value, bearerSecret) {
 
 function writeAudit(state, event, bearerSecret) {
     if (!state.auditSink) return
-    const frozen = immutableSnapshot(sanitizeAuditValue(event, bearerSecret))
+    let operation
     try {
-        const operation = typeof state.auditSink === "function"
+        const frozen = immutableSnapshot(sanitizeAuditValue(event, bearerSecret))
+        operation = typeof state.auditSink === "function"
             ? state.auditSink(frozen)
             : state.auditSink.record(frozen)
-        if (operation && typeof operation.then === "function") {
-            operation.catch(() => auditFailure(state))
+    } catch {
+        auditFailure(state)
+        return
+    }
+    observeWithoutThrow(operation, () => auditFailure(state))
+}
+
+function auditTimestamp(state) {
+    try {
+        const value = state.clock()
+        return Number.isFinite(value) ? value : null
+    } catch {
+        return null
+    }
+}
+
+function finalizeAudit(state, {
+    bearerSecret,
+    capabilityId,
+    errorCode,
+    input,
+    method,
+    outcome,
+    resolvedScope,
+    sessionId,
+    startedAt,
+}) {
+    if (!state.auditSink) return
+    try {
+        const finishedAt = auditTimestamp(state)
+        if (finishedAt === null || startedAt === null) {
+            auditFailure(state)
+            return
         }
+        const elapsed = finishedAt - startedAt
+        const durationMs = Number.isFinite(elapsed) ? Math.max(0, Math.trunc(elapsed)) : 0
+        writeAudit(state, {
+            capabilityId,
+            sessionId,
+            method,
+            objectIds: auditObjectIds(input, resolvedScope, bearerSecret),
+            durationMs,
+            outcome,
+            errorCode,
+        }, bearerSecret)
     } catch {
         auditFailure(state)
     }
@@ -437,13 +525,16 @@ class ControlPlane {
 
     async invoke(request = {}) {
         const state = stateByControlPlane.get(this)
-        const startedAt = state.clock()
+        const startedAt = state.auditSink ? auditTimestamp(state) : null
         let method = boundedAuditMethod(undefined)
         let envelope = null
         let bearerSecret = null
         let input = null
         let grant = null
+        let auditCapabilityId = null
+        let auditSessionId = null
         let resolution = null
+        let resolvedScope
         let executionContext = null
         let outcome = "error"
         let errorCode = null
@@ -457,11 +548,17 @@ class ControlPlane {
             method = envelope.method
             input = parseControlInput(method, envelope.params)
             if (identifier(envelope.sessionId) === null) throw invalidEnvelope(method, "sessionId")
-            grant = state.capabilities.authorize(
-                envelope.token,
-                definition.action,
-                envelope.sessionId,
-            )
+            try {
+                grant = state.capabilities.authorize(
+                    envelope.token,
+                    definition.action,
+                    envelope.sessionId,
+                )
+            } catch (error) {
+                throw authorizationError(error)
+            }
+            auditCapabilityId = boundedAuditId(grant.id, bearerSecret)
+            auditSessionId = boundedAuditId(grant.sessionId, bearerSecret)
 
             const idempotency = state.idempotency.prepare(grant.id, method, input)
             if (idempotency.kind === "replay") {
@@ -493,7 +590,7 @@ class ControlPlane {
                     resolution = source
                 }
             }
-            const resolvedScope = resolution === null ? undefined : createResolvedScope(resolution)
+            resolvedScope = resolution === null ? undefined : createResolvedScope(resolution)
 
             let decision = null
             for (let attempt = 0; attempt < MAX_BUDGET_CAS_ATTEMPTS; attempt += 1) {
@@ -547,26 +644,28 @@ class ControlPlane {
         } catch (error) {
             const safe = safeControlError(error, method)
             if (idempotencyOwner) {
-                if (executionStarted) state.idempotency.completeError(idempotencyOwner, safe)
+                if (executionStarted && safe.code !== "CONTROL_BUSY") {
+                    state.idempotency.completeError(idempotencyOwner, safe)
+                }
                 else state.idempotency.fail(idempotencyOwner, safe)
                 idempotencyOwner = null
             }
             errorCode = safe.code ?? "CONTROL_ERROR"
             throw safe
         } finally {
-            const finishedAt = state.clock()
-            const durationMs = Number.isFinite(finishedAt - startedAt)
-                ? Math.max(0, Math.trunc(finishedAt - startedAt))
-                : 0
-            writeAudit(state, {
-                capabilityId: grant?.id ?? null,
-                sessionId: grant === null ? null : boundedAuditId(grant.sessionId, bearerSecret),
-                method,
-                objectIds: auditObjectIds(input, resolution, bearerSecret),
-                durationMs,
-                outcome,
-                errorCode,
-            }, bearerSecret)
+            if (state.auditSink) {
+                finalizeAudit(state, {
+                    bearerSecret,
+                    capabilityId: auditCapabilityId,
+                    sessionId: auditSessionId,
+                    method,
+                    input,
+                    resolvedScope,
+                    startedAt,
+                    outcome,
+                    errorCode,
+                })
+            }
         }
     }
 }

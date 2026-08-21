@@ -1,8 +1,12 @@
 const assert = require("node:assert/strict")
+const {mkdtempSync, rmSync} = require("node:fs")
+const {tmpdir} = require("node:os")
+const {join} = require("node:path")
 const {describe, it, mock} = require("node:test")
 
 const {CONTROL_METHODS, encodeCursor} = require("../src/control-plane/contracts.cjs")
 const {createDomainServices} = require("../src/control-plane/domain-services.cjs")
+const {RawCaseStore} = require("../src/raw-case-store.cjs")
 
 function fixture(overrides = {}) {
     const skills = [
@@ -433,5 +437,155 @@ describe("control-plane domain services", () => {
         assert.equal(request.runtime.executablePath, "/trusted/codex")
         assert.equal(request.runtime.modelId, "model-1")
         assert.deepEqual(result, {threadId: "thread-runtime-1", turnId: null})
+    })
+
+    it("uses the resolved Raw Case revision and owner for compare-and-set updates", async () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-control-cas-"))
+        const store = new RawCaseStore(join(directory, "raw-cases.jsonl"))
+        try {
+            const created = store.add({
+                question: "original",
+                skill: {name: "owner-a"},
+                note: "",
+                source: {kind: "operator"},
+            })
+            const skills = ["a", "b", "c"].map((suffix) => ({
+                id: `skill-${suffix}`,
+                name: `owner-${suffix}`,
+                repositoryId: `repository-${suffix}`,
+            }))
+            const {dependencies} = fixture({
+                rawCaseStore: store,
+                managedSkillManager: {
+                    overview: mock.fn(() => ({skills: structuredClone(skills)})),
+                },
+            })
+            const services = createDomainServices(dependencies)
+            const firstGrant = {
+                ...serviceContext().grant,
+                scopes: {...serviceContext().grant.scopes, skillIds: ["skill-a", "skill-b"]},
+            }
+            const secondGrant = {
+                ...serviceContext().grant,
+                scopes: {...serviceContext().grant.scopes, skillIds: ["skill-a", "skill-c"]},
+            }
+            const firstInput = {
+                id: created.id,
+                changes: {skill: {name: "owner-b"}},
+                idempotencyKey: "update-b",
+            }
+            const secondInput = {
+                id: created.id,
+                changes: {skill: {name: "owner-c"}},
+                idempotencyKey: "update-c",
+            }
+            const firstResolution = await services.resolveScope(
+                "raw_cases.update",
+                firstInput,
+                firstGrant,
+            )
+            const secondResolution = await services.resolveScope(
+                "raw_cases.update",
+                secondInput,
+                secondGrant,
+            )
+
+            const first = await services["raw_cases.update"](firstInput, {
+                ...serviceContext(),
+                grant: firstGrant,
+                executionContext: firstResolution.executionContext,
+            })
+            await assert.rejects(services["raw_cases.update"](secondInput, {
+                ...serviceContext(),
+                grant: secondGrant,
+                executionContext: secondResolution.executionContext,
+            }), (error) => error.code === "CONTROL_BUSY")
+
+            assert.equal(first.rawCase.revision, 2)
+            assert.equal(first.rawCase.skill.name, "owner-b")
+            assert.equal(store.get(created.id).revision, 2)
+            assert.equal(store.get(created.id).skill.name, "owner-b")
+        } finally {
+            store.close()
+            rmSync(directory, {recursive: true, force: true})
+        }
+    })
+
+    it("normalizes legacy Skill names and disambiguates writes inside the capability scope", async () => {
+        const legacy = fixture({
+            rawCaseStore: {
+                list: mock.fn(() => [{
+                    id: "raw-legacy",
+                    question: "legacy",
+                    skill: {name: "  BILLING  "},
+                }]),
+            },
+            managedSkillManager: {
+                overview: mock.fn(() => ({
+                    skills: [{id: "skill-1", name: "billing", repositoryId: "repository-1"}],
+                })),
+            },
+        })
+        const legacyServices = createDomainServices(legacy.dependencies)
+        const legacyResolution = await legacyServices.resolveScope(
+            "raw_cases.list",
+            {skillName: null, cursor: null, limit: 100},
+            serviceContext().grant,
+        )
+        const legacyResult = await legacyServices["raw_cases.list"](
+            {skillName: null, cursor: null, limit: 100},
+            snapshotContext(legacyResolution, {skillIds: ["skill-1"]}),
+        )
+
+        assert.deepEqual(legacyResult.rawCases.map((entry) => entry.id), ["raw-legacy"])
+
+        const addMany = mock.fn((cases) => ({created: structuredClone(cases), duplicates: [], rejected: []}))
+        const duplicateSkills = [
+            {id: "skill-1", name: "Billing", repositoryId: "repository-1"},
+            {id: "skill-2", name: "billing", repositoryId: "repository-2"},
+        ]
+        const duplicate = fixture({
+            rawCaseStore: {addMany},
+            managedSkillManager: {
+                overview: mock.fn(() => ({skills: structuredClone(duplicateSkills)})),
+            },
+        })
+        const duplicateServices = createDomainServices(duplicate.dependencies)
+        const input = {
+            cases: [{
+                question: "scoped owner",
+                skill: {name: "  BILLING  "},
+                note: "",
+                source: {kind: "operator"},
+            }],
+            idempotencyKey: "enqueue-scoped",
+        }
+        const oneOwnerGrant = {
+            ...serviceContext().grant,
+            scopes: {...serviceContext().grant.scopes, skillIds: ["skill-2"]},
+        }
+        const resolution = await duplicateServices.resolveScope(
+            "raw_cases.enqueue",
+            input,
+            oneOwnerGrant,
+        )
+        await duplicateServices["raw_cases.enqueue"](input, {
+            ...serviceContext(),
+            grant: oneOwnerGrant,
+            executionContext: resolution.executionContext,
+        })
+
+        assert.deepEqual(resolution.scope.skillIds, ["skill-2"])
+        assert.equal(addMany.mock.calls[0].arguments[0][0].skill.name, "billing")
+
+        const ambiguousGrant = {
+            ...serviceContext().grant,
+            scopes: {...serviceContext().grant.scopes, skillIds: ["skill-1", "skill-2"]},
+        }
+        await assert.rejects(duplicateServices.resolveScope(
+            "raw_cases.enqueue",
+            {...input, idempotencyKey: "enqueue-ambiguous"},
+            ambiguousGrant,
+        ), (error) => error.code === "INVALID_ARGUMENT")
     })
 })

@@ -2,7 +2,10 @@ const assert = require("node:assert/strict")
 const {createHash} = require("node:crypto")
 const {describe, it, mock} = require("node:test")
 
-const {CapabilityStore} = require("../src/control-plane/capability-store.cjs")
+const {
+    CapabilityError,
+    CapabilityStore,
+} = require("../src/control-plane/capability-store.cjs")
 const {publicControlError} = require("../src/control-plane/contracts.cjs")
 const {
     ControlPlane,
@@ -10,6 +13,7 @@ const {
 } = require("../src/control-plane/control-plane.cjs")
 const {createDomainServices} = require("../src/control-plane/domain-services.cjs")
 const {createControlPolicy} = require("../src/control-plane/policy.cjs")
+const {RawCaseConflictError} = require("../src/raw-case-store.cjs")
 
 function createFixture({
     auditSink = null,
@@ -19,18 +23,31 @@ function createFixture({
     idempotencyLimit = null,
     listRuntimes = null,
     observeHandler = null,
+    resolveScope = null,
     runtimeScopeIds = ["runtime-1", "judge-1"],
     startEvaluation = null,
+    updateIfCurrent = null,
 } = {}) {
     const skills = [
         {id: "skill-1", repositoryId: "repository-1", name: "billing", skillRoot: "billing"},
     ]
-    const rawCases = [{id: "raw-1", question: "existing", skill: {name: "billing"}}]
+    const rawCases = [{
+        id: "raw-1",
+        question: "existing",
+        skill: {name: "billing"},
+        revision: 1,
+    }]
     const rawCaseStore = {
         list: mock.fn(() => structuredClone(rawCases)),
         get: mock.fn((id) => structuredClone(rawCases.find((entry) => entry.id === id) ?? null)),
         addMany: mock.fn(addMany ?? ((cases) => ({created: structuredClone(cases), duplicates: [], rejected: []}))),
         update: mock.fn((id, changes) => ({...structuredClone(rawCases[0]), ...structuredClone(changes), id})),
+        updateIfCurrent: mock.fn(updateIfCurrent ?? ((id, _expected, changes) => ({
+            ...structuredClone(rawCases[0]),
+            ...structuredClone(changes),
+            id,
+            revision: 2,
+        }))),
     }
     const evaluationStore = {
         listDatasets: mock.fn(() => [{id: "dataset-1", name: "Billing"}]),
@@ -94,6 +111,13 @@ function createFixture({
             value: domainServices.resolveScope,
         })
     }
+    if (typeof resolveScope === "function") {
+        services = {...services}
+        Object.defineProperty(services, "resolveScope", {
+            enumerable: false,
+            value: resolveScope,
+        })
+    }
     const capabilities = new CapabilityStore()
     const issued = capabilities.issue({
         sessionId: "operator-1",
@@ -126,6 +150,7 @@ function createFixture({
         ...(idempotencyLimit ? {idempotencyLimit} : {}),
     })
     return {
+        capabilities,
         control,
         dispatchRawCase,
         evaluationStore,
@@ -133,6 +158,7 @@ function createFixture({
         issued,
         listRuntimes: listRuntimesMock,
         rawCaseStore,
+        services,
         skills,
         startEvaluation: startEvaluationMock,
     }
@@ -512,6 +538,7 @@ describe("ControlPlane", () => {
         for (const forged of [
             Object.assign(new Error("forged invalid argument"), {code: "INVALID_ARGUMENT"}),
             {code: "CAPABILITY_REVOKED", message: "forged revoked capability"},
+            new CapabilityError("CAPABILITY_REVOKED", "service forged revoked capability"),
         ]) {
             const {control, issued} = createFixture({
                 addMany() {
@@ -530,6 +557,69 @@ describe("ControlPlane", () => {
                 details: null,
             })
         }
+    })
+
+    it("translates capability errors only at the authorize provenance boundary", async () => {
+        const fixture = createFixture()
+        const hostile = new Proxy({}, {
+            getPrototypeOf() {
+                throw new Error("hostile capability prototype")
+            },
+        })
+        const control = new ControlPlane({
+            services: fixture.services,
+            capabilities: {
+                authorize() {
+                    throw hostile
+                },
+            },
+            policy: createControlPolicy(),
+        })
+
+        const error = await control.invoke(enqueueRequest("not-a-live-token")).catch(
+            (failure) => failure,
+        )
+
+        assert.deepEqual(publicControlError(error), {
+            code: "CONTROL_ERROR",
+            message: "Control operation failed",
+            retryable: false,
+            details: null,
+        })
+    })
+
+    it("does not cache a Raw Case compare-and-set miss as a terminal idempotent error", async () => {
+        let attempt = 0
+        const fixture = createFixture({
+            updateIfCurrent(id, _expected, changes) {
+                attempt += 1
+                if (attempt === 1) throw new RawCaseConflictError()
+                return {
+                    id,
+                    question: "existing",
+                    skill: {name: "billing"},
+                    note: changes.note,
+                    revision: 2,
+                }
+            },
+        })
+        const request = {
+            token: fixture.issued.token,
+            method: "raw_cases.update",
+            params: {
+                id: "raw-1",
+                changes: {note: "updated"},
+                idempotencyKey: "update-retry",
+            },
+            sessionId: "operator-1",
+        }
+
+        await assert.rejects(fixture.control.invoke(request), (error) =>
+            error.code === "CONTROL_BUSY" && error.retryable === true)
+        const retried = await fixture.control.invoke(request)
+
+        assert.equal(retried.rawCase.note, "updated")
+        assert.equal(fixture.rawCaseStore.updateIfCurrent.mock.callCount(), 2)
     })
 
     it("publishes stable resource-only NOT_FOUND errors", async () => {
@@ -717,5 +807,134 @@ describe("ControlPlane", () => {
         })
         assert.equal(auditEvents.length, 1)
         assert.doesNotMatch(JSON.stringify(auditEvents[0]), /bearer-secret|private\/token/u)
+    })
+
+    it("keeps successful operations independent from absent or hostile audit clocks", async () => {
+        const withoutSink = createFixture({
+            clock() {
+                throw new Error("audit clock unavailable")
+            },
+        })
+        const resultWithoutSink = await withoutSink.control.invoke({
+            token: withoutSink.issued.token,
+            method: "datasets.list",
+            params: {},
+            sessionId: "operator-1",
+        })
+
+        let reads = 0
+        const auditEvents = []
+        const hostileFinalClock = createFixture({
+            auditSink: (event) => auditEvents.push(event),
+            clock() {
+                reads += 1
+                if (reads > 1) throw new Error("audit final clock unavailable")
+                return 1_800_000_000_000
+            },
+        })
+        const resultWithSink = await hostileFinalClock.control.invoke({
+            token: hostileFinalClock.issued.token,
+            method: "datasets.list",
+            params: {},
+            sessionId: "operator-1",
+        })
+
+        assert.equal(resultWithoutSink.datasets[0].id, "dataset-1")
+        assert.equal(resultWithSink.datasets[0].id, "dataset-1")
+        assert.equal(auditEvents.length, 0)
+    })
+
+    it("audits only the branded scope snapshot after hostile resolver mutation", async () => {
+        for (const mutate of [
+            (scope) => Object.defineProperty(scope, "datasetIds", {
+                configurable: true,
+                get() {
+                    throw new Error("hostile scope getter")
+                },
+            }),
+            (scope) => {
+                scope.datasetIds = {}
+            },
+            (scope) => {
+                scope.datasetIds = new Proxy([], {
+                    get(target, key, receiver) {
+                        if (key === Symbol.iterator) throw new Error("hostile scope proxy")
+                        return Reflect.get(target, key, receiver)
+                    },
+                })
+            },
+        ]) {
+            const sourceScope = {
+                method: "datasets.list",
+                mode: "filter",
+                datasetIds: ["dataset-1"],
+            }
+            const auditEvents = []
+            const fixture = createFixture({
+                auditSink: (event) => auditEvents.push(event),
+                resolveScope: () => ({scope: sourceScope, executionContext: null}),
+                observeHandler(method) {
+                    if (method === "datasets.list") mutate(sourceScope)
+                },
+            })
+
+            const result = await fixture.control.invoke({
+                token: fixture.issued.token,
+                method: "datasets.list",
+                params: {},
+                sessionId: "operator-1",
+            })
+
+            assert.equal(result.datasets[0].id, "dataset-1")
+            assert.equal(auditEvents.length, 1)
+            assert.deepEqual(auditEvents[0].objectIds.datasetIds, ["dataset-1"])
+        }
+    })
+
+    it("observes hostile asynchronous audit failures without unhandled rejections", async () => {
+        const unhandled = []
+        const listener = (reason) => unhandled.push(reason)
+        process.on("unhandledRejection", listener)
+        try {
+            const rejected = createFixture({
+                auditSink: () => Promise.reject(new Error("async sink rejection")),
+                onAuditError: () => Promise.reject(new Error("async diagnostic rejection")),
+            })
+            const hostileCatch = createFixture({
+                auditSink: () => Object.defineProperty({
+                    then(resolve) {
+                        resolve()
+                    },
+                }, "catch", {
+                    get() {
+                        throw new Error("hostile catch getter")
+                    },
+                }),
+                onAuditError: () => Promise.reject(new Error("hostile diagnostic rejection")),
+            })
+            const hostileThen = createFixture({
+                auditSink: () => Object.defineProperty({}, "then", {
+                    get() {
+                        throw new Error("hostile then getter")
+                    },
+                }),
+                onAuditError: () => Promise.reject(new Error("then diagnostic rejection")),
+            })
+
+            for (const fixture of [rejected, hostileCatch, hostileThen]) {
+                const result = await fixture.control.invoke({
+                    token: fixture.issued.token,
+                    method: "datasets.list",
+                    params: {},
+                    sessionId: "operator-1",
+                })
+                assert.equal(result.datasets[0].id, "dataset-1")
+            }
+            await new Promise((resolve) => setImmediate(resolve))
+            await new Promise((resolve) => setImmediate(resolve))
+            assert.deepEqual(unhandled, [])
+        } finally {
+            process.off("unhandledRejection", listener)
+        }
     })
 })

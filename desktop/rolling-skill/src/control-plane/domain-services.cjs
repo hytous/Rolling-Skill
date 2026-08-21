@@ -4,6 +4,10 @@ const {
     decodeCursor,
     encodeCursor,
 } = require("./contracts.cjs")
+const {
+    normalizedSkillName,
+    RawCaseConflictError,
+} = require("../raw-case-store.cjs")
 
 const FILTER_METHODS = Object.freeze({
     "context.get": "runtimeIds",
@@ -13,10 +17,10 @@ const FILTER_METHODS = Object.freeze({
     "skills.list": "skillIds",
 })
 
-function invalidArgument(method, path) {
+function invalidArgument(method, path, internalMessage = "Invalid control domain input") {
     return createPublicControlError("INVALID_ARGUMENT", {
         details: {method, issues: [{path}]},
-        internalMessage: "Tool-supplied Skill paths are not accepted",
+        internalMessage,
     })
 }
 
@@ -133,19 +137,46 @@ function createDomainServices(dependencies = {}) {
     }
 
     function resolveSkillReferenceFrom(reference, inventory, {
+        grant = null,
         method = null,
         path = [],
         toolSupplied = false,
     } = {}) {
         if (!reference || typeof reference !== "object") throw notFound("skill")
-        const name = identifier(reference.name)
-        if (name === null) throw notFound("skill")
         if (toolSupplied && typeof reference.path === "string") {
-            throw invalidArgument(method, [...path, "path"])
+            throw invalidArgument(
+                method,
+                [...path, "path"],
+                "Tool-supplied Skill paths are not accepted",
+            )
         }
 
-        const candidates = inventory.filter((skill) => skill?.name === name)
-        if (candidates.length !== 1) throw notFound("skill")
+        const stableId = identifier(reference.skillId) ?? identifier(reference.id)
+        let candidates
+        if (stableId !== null) {
+            candidates = inventory.filter((skill) => skill?.id === stableId)
+        } else {
+            const name = identifier(reference.name)
+            if (name === null) throw notFound("skill")
+            const normalizedName = normalizedSkillName(name)
+            candidates = inventory.filter(
+                (skill) => normalizedSkillName(skill?.name) === normalizedName,
+            )
+        }
+        if (grant !== null) {
+            const grantedIds = new Set(
+                Array.isArray(grant?.scopes?.skillIds) ? grant.scopes.skillIds : [],
+            )
+            candidates = candidates.filter((skill) => grantedIds.has(skill?.id))
+        }
+        if (candidates.length === 0) throw notFound("skill")
+        if (candidates.length > 1) {
+            throw invalidArgument(
+                method,
+                stableId === null ? [...path, "name"] : [...path, "skillId"],
+                "Skill reference is ambiguous inside the capability scope",
+            )
+        }
         return candidates[0]
     }
 
@@ -266,10 +297,16 @@ function createDomainServices(dependencies = {}) {
         const skills = execution?.skills ?? await skillInventory()
         const visible = []
         for (const record of records) {
-            try {
-                const owner = resolveSkillReferenceFrom(record.skill, skills)
-                if (allowed.has(owner.id)) visible.push(record)
-            } catch {}
+            const stableId = identifier(record?.skill?.skillId) ?? identifier(record?.skill?.id)
+            const candidates = stableId === null
+                ? skills.filter((skill) =>
+                    normalizedSkillName(skill?.name) ===
+                        normalizedSkillName(record?.skill?.name))
+                : skills.filter((skill) => skill?.id === stableId)
+            if (
+                candidates.length > 0 &&
+                candidates.every((candidate) => allowed.has(candidate?.id))
+            ) visible.push(record)
         }
         return visible
     }
@@ -324,9 +361,11 @@ function createDomainServices(dependencies = {}) {
             }, {method, datasets, runs})
         }
         if (method === "raw_cases.enqueue") {
+            const inventory = await skillInventory()
             const skills = []
             for (let index = 0; index < input.cases.length; index += 1) {
-                skills.push(await resolveSkillReference(input.cases[index].skill, {
+                skills.push(resolveSkillReferenceFrom(input.cases[index].skill, inventory, {
+                    grant,
                     method,
                     path: ["cases", index, "skill"],
                     toolSupplied: true,
@@ -339,13 +378,20 @@ function createDomainServices(dependencies = {}) {
         }
         if (method === "raw_cases.update" || method === "raw_cases.dispatch") {
             const rawCase = await requireRawCase(input.id)
-            const skill = await resolveSkillReference(rawCase.skill)
+            const inventory = await skillInventory()
+            const skill = resolveSkillReferenceFrom(rawCase.skill, inventory, {grant, method})
             const skillIds = [skill.id]
             let targetSkill = null
             if (method === "raw_cases.update" && input.changes.skill) {
-                targetSkill = await resolveSkillReference(
+                targetSkill = resolveSkillReferenceFrom(
                     input.changes.skill,
-                    {method, path: ["changes", "skill"], toolSupplied: true},
+                    inventory,
+                    {
+                        grant,
+                        method,
+                        path: ["changes", "skill"],
+                        toolSupplied: true,
+                    },
                 )
                 skillIds.push(targetSkill.id)
             }
@@ -432,6 +478,7 @@ function createDomainServices(dependencies = {}) {
                 const rawCase = input.cases[index]
                 const skill = execution?.skills[index] ??
                     await resolveSkillReference(rawCase.skill, {
+                        grant: context?.grant,
                         method: "raw_cases.enqueue",
                         path: ["cases", index, "skill"],
                         toolSupplied: true,
@@ -448,25 +495,43 @@ function createDomainServices(dependencies = {}) {
 
         async "raw_cases.update"(input, context) {
             const execution = trustedExecution(context, "raw_cases.update")
-            if (execution === null) await requireRawCase(input.id)
+            const rawCase = execution?.rawCase ?? await requireRawCase(input.id)
             const changes = clone(input.changes)
             if (changes.skill) {
                 const skill = execution?.targetSkill ??
                     await resolveSkillReference(changes.skill, {
+                        grant: context?.grant,
                         method: "raw_cases.update",
                         path: ["changes", "skill"],
                         toolSupplied: true,
                     })
                 changes.skill = canonicalSkillReference(skill)
             }
-            if (typeof rawCaseStore?.update !== "function") throw new Error("Raw Case store unavailable")
-            return {rawCase: clone(await rawCaseStore.update(input.id, changes))}
+            if (typeof rawCaseStore?.updateIfCurrent !== "function") {
+                throw new Error("Raw Case store unavailable")
+            }
+            try {
+                return {rawCase: clone(await rawCaseStore.updateIfCurrent(input.id, {
+                    expectedRevision: rawCase.revision,
+                    expectedSkillName: rawCase.skill?.name,
+                }, changes))}
+            } catch (error) {
+                let conflict = false
+                try {
+                    conflict = error instanceof RawCaseConflictError
+                } catch {}
+                if (conflict) throw createPublicControlError("CONTROL_BUSY")
+                throw error
+            }
         },
 
         async "raw_cases.dispatch"(input, context) {
             const execution = trustedExecution(context, "raw_cases.dispatch")
             const rawCase = execution?.rawCase ?? await requireRawCase(input.id)
-            const skill = execution?.skill ?? await resolveSkillReference(rawCase.skill)
+            const skill = execution?.skill ?? await resolveSkillReference(rawCase.skill, {
+                grant: context?.grant,
+                method: "raw_cases.dispatch",
+            })
             const descriptor = execution?.runtime ?? await requireRuntime(input.runtime.runtimeId)
             if (typeof dispatchRawCase !== "function") throw new Error("Runtime dispatch unavailable")
             const result = await dispatchRawCase({
