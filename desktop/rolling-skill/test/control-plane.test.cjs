@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict")
+const {createHash} = require("node:crypto")
 const {describe, it, mock} = require("node:test")
 
 const {CapabilityStore} = require("../src/control-plane/capability-store.cjs")
@@ -646,6 +647,46 @@ describe("ControlPlane", () => {
         const serialized = JSON.stringify(auditEvents)
         assert.doesNotMatch(serialized, new RegExp(issued.token, "u"))
         assert.doesNotMatch(serialized, /private\/dataset-secret|private\/operator-secret/u)
+    })
+
+    it("recursively redacts the bearer when it is embedded in any audit string", async () => {
+        const auditEvents = []
+        const {control, issued} = createFixture({
+            auditSink: (event) => auditEvents.push(event),
+        })
+        const embedded = `prefix-${issued.token}-suffix`
+        const tokenDigest = createHash("sha256").update(issued.token, "utf8").digest("hex")
+
+        const datasetError = await control.invoke({
+            token: issued.token,
+            method: "datasets.get",
+            params: {datasetId: embedded, includeCases: false},
+            sessionId: "operator-1",
+        }).catch((error) => error)
+        const methodError = await control.invoke({
+            token: issued.token,
+            method: `prefix.token${issued.token}.suffix`,
+            params: {},
+            sessionId: "operator-1",
+        }).catch((error) => error)
+        const sessionError = await control.invoke({
+            token: issued.token,
+            method: "datasets.list",
+            params: {},
+            sessionId: embedded,
+        }).catch((error) => error)
+
+        assert.equal(publicControlError(datasetError).code, "NOT_FOUND")
+        assert.equal(publicControlError(methodError).code, "UNKNOWN_CONTROL_METHOD")
+        assert.equal(publicControlError(sessionError).code, "CAPABILITY_SESSION_MISMATCH")
+        assert.equal(auditEvents.length, 3)
+        assert.deepEqual(auditEvents[0].objectIds.datasetIds, ["[redacted]"])
+        assert.equal(auditEvents[1].method, "[redacted]")
+        assert.equal(auditEvents[2].sessionId, null)
+        const serialized = JSON.stringify(auditEvents)
+        assert.equal(serialized.includes(issued.token), false)
+        assert.equal(serialized.includes(tokenDigest), false)
+        assert.equal(serialized.includes(tokenDigest.slice(0, 24)), false)
     })
 
     it("rejects accessor-backed invocation envelopes without reading secrets and still audits", async () => {

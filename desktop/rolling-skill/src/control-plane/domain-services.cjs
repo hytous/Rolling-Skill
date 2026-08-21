@@ -132,7 +132,7 @@ function createDomainServices(dependencies = {}) {
         return clone(arrayFromInventory(overview, ["skills"]))
     }
 
-    async function resolveSkillReference(reference, {
+    function resolveSkillReferenceFrom(reference, inventory, {
         method = null,
         path = [],
         toolSupplied = false,
@@ -144,9 +144,13 @@ function createDomainServices(dependencies = {}) {
             throw invalidArgument(method, [...path, "path"])
         }
 
-        const candidates = (await skillInventory()).filter((skill) => skill?.name === name)
+        const candidates = inventory.filter((skill) => skill?.name === name)
         if (candidates.length !== 1) throw notFound("skill")
         return candidates[0]
+    }
+
+    async function resolveSkillReference(reference, options) {
+        return resolveSkillReferenceFrom(reference, await skillInventory(), options)
     }
 
     function canonicalSkillReference(skill) {
@@ -255,53 +259,69 @@ function createDomainServices(dependencies = {}) {
         return {detail, skill}
     }
 
-    async function filteredRawCases(input, context) {
+    async function filteredRawCases(input, context, execution = null) {
         const allowed = scopeIds(context, "skillIds")
         if (allowed.size === 0) return []
-        const records = await rawCaseInventory(input.skillName)
+        const records = execution?.rawCases ?? await rawCaseInventory(input.skillName)
+        const skills = execution?.skills ?? await skillInventory()
         const visible = []
         for (const record of records) {
             try {
-                const owner = await resolveSkillReference(record.skill)
+                const owner = resolveSkillReferenceFrom(record.skill, skills)
                 if (allowed.has(owner.id)) visible.push(record)
             } catch {}
         }
         return visible
     }
 
-    async function filterResolution(method, grant) {
+    async function filterResolution(method, input, grant) {
         const key = FILTER_METHODS[method]
         const granted = new Set(Array.isArray(grant?.scopes?.[key]) ? grant.scopes[key] : [])
         let inventoryIds = []
+        let executionContext
         if (key === "runtimeIds") {
-            inventoryIds = (await runtimeInventory()).map((entry) => entry?.runtimeId)
+            const runtimes = await runtimeInventory()
+            inventoryIds = runtimes.map((entry) => entry?.runtimeId)
+            executionContext = {method, runtimes}
         } else if (key === "datasetIds") {
-            inventoryIds = (await datasetInventory()).map((entry) => entry?.id)
+            const datasets = await datasetInventory()
+            inventoryIds = datasets.map((entry) => entry?.id)
+            executionContext = {method, datasets}
         } else {
-            inventoryIds = (await skillInventory()).map((entry) => entry?.id)
+            const skills = await skillInventory()
+            inventoryIds = skills.map((entry) => entry?.id)
+            executionContext = {
+                method,
+                skills,
+                rawCases: method === "raw_cases.list"
+                    ? await rawCaseInventory(input.skillName)
+                    : null,
+            }
         }
-        return {
+        return scopeResolution({
             method,
             mode: "filter",
             [key]: unique(inventoryIds.filter((id) => granted.has(id))),
-        }
+        }, executionContext)
     }
 
     async function resolveScope(method, input, grant) {
         if (Object.hasOwn(FILTER_METHODS, method)) {
-            return scopeResolution(await filterResolution(method, grant))
+            return filterResolution(method, input, grant)
         }
         if (method === "evaluations.list" && input.datasetId === null) {
             const granted = new Set(Array.isArray(grant?.scopes?.datasetIds)
                 ? grant.scopes.datasetIds
                 : [])
+            const datasets = await datasetInventory()
+            const runs = await runInventory(null)
             return scopeResolution({
                 method,
                 mode: "filter",
-                datasetIds: (await datasetInventory())
+                datasetIds: datasets
                     .map((entry) => entry?.id)
                     .filter((id) => granted.has(id)),
-            })
+            }, {method, datasets, runs})
         }
         if (method === "raw_cases.enqueue") {
             const skills = []
@@ -370,9 +390,11 @@ function createDomainServices(dependencies = {}) {
             })
         }
         if (method === "evaluations.list" && input.datasetId !== null) {
+            const dataset = await requireDataset(input.datasetId)
             return scopeResolution(null, {
                 method,
-                dataset: await requireDataset(input.datasetId),
+                dataset,
+                runs: await runInventory(dataset.id),
             })
         }
         if (method === "skills.get") {
@@ -387,7 +409,9 @@ function createDomainServices(dependencies = {}) {
     const handlers = {
         async "context.get"(_input, context) {
             const allowed = scopeIds(context, "runtimeIds")
-            const runtimes = (await runtimeInventory())
+            const execution = trustedExecution(context, "context.get")
+            const inventory = execution?.runtimes ?? await runtimeInventory()
+            const runtimes = inventory
                 .filter((entry) => allowed.has(entry.runtimeId))
             const workspaceRoot = typeof dependencies.workspaceRoot === "function"
                 ? await dependencies.workspaceRoot()
@@ -396,7 +420,8 @@ function createDomainServices(dependencies = {}) {
         },
 
         async "raw_cases.list"(input, context) {
-            const page = paginate(await filteredRawCases(input, context), input)
+            const execution = trustedExecution(context, "raw_cases.list")
+            const page = paginate(await filteredRawCases(input, context, execution), input)
             return {rawCases: page.items, nextCursor: page.nextCursor}
         },
 
@@ -459,9 +484,10 @@ function createDomainServices(dependencies = {}) {
 
         async "runtimes.list"(_input, context) {
             const allowed = scopeIds(context, "runtimeIds")
+            const execution = trustedExecution(context, "runtimes.list")
+            const runtimes = execution?.runtimes ?? await runtimeInventory()
             return {
-                runtimes: (await runtimeInventory())
-                    .filter((entry) => allowed.has(entry.runtimeId)),
+                runtimes: runtimes.filter((entry) => allowed.has(entry.runtimeId)),
             }
         },
 
@@ -475,7 +501,9 @@ function createDomainServices(dependencies = {}) {
 
         async "datasets.list"(input, context) {
             const allowed = scopeIds(context, "datasetIds")
-            const datasets = (await datasetInventory()).filter((entry) => allowed.has(entry.id))
+            const execution = trustedExecution(context, "datasets.list")
+            const inventory = execution?.datasets ?? await datasetInventory()
+            const datasets = inventory.filter((entry) => allowed.has(entry.id))
             const page = paginate(datasets, input)
             return {datasets: page.items, nextCursor: page.nextCursor}
         },
@@ -491,7 +519,8 @@ function createDomainServices(dependencies = {}) {
         },
 
         async "evaluations.list"(input, context) {
-            let runs = await runInventory(input.datasetId)
+            const execution = trustedExecution(context, "evaluations.list")
+            let runs = execution?.runs ?? await runInventory(input.datasetId)
             if (input.datasetId === null) {
                 const allowed = scopeIds(context, "datasetIds")
                 runs = runs.filter((entry) => allowed.has(entry.datasetId))
@@ -529,7 +558,9 @@ function createDomainServices(dependencies = {}) {
 
         async "skills.list"(input, context) {
             const allowed = scopeIds(context, "skillIds")
-            const skills = (await skillInventory()).filter((entry) => allowed.has(entry.id))
+            const execution = trustedExecution(context, "skills.list")
+            const inventory = execution?.skills ?? await skillInventory()
+            const skills = inventory.filter((entry) => allowed.has(entry.id))
             const page = paginate(skills, input)
             return {skills: page.items, nextCursor: page.nextCursor}
         },

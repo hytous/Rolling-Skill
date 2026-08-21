@@ -99,6 +99,13 @@ function serviceContext(scopeFilter = null) {
     }
 }
 
+function snapshotContext(resolution, scopeFilter) {
+    return {
+        ...serviceContext(scopeFilter),
+        executionContext: resolution.executionContext,
+    }
+}
+
 describe("control-plane domain services", () => {
     it("returns exactly one enumerable handler for every control contract", () => {
         const services = createDomainServices(fixture().dependencies)
@@ -182,6 +189,134 @@ describe("control-plane domain services", () => {
             await services["runtimes.list"]({}, serviceContext({runtimeIds: []})),
             {runtimes: []},
         )
+        assert.deepEqual(
+            await services["raw_cases.list"](
+                {skillName: null, cursor: null, limit: 100},
+                serviceContext({skillIds: []}),
+            ),
+            {rawCases: [], nextCursor: null},
+        )
+        assert.deepEqual(
+            await services["evaluations.list"](
+                {datasetId: null, cursor: null, limit: 100},
+                serviceContext({datasetIds: []}),
+            ),
+            {runs: [], nextCursor: null},
+        )
+    })
+
+    it("uses one frozen authorized inventory snapshot for every list handler", async () => {
+        const runtimeFixture = fixture()
+        let runtimeRead = 0
+        runtimeFixture.dependencies.listRuntimes = mock.fn(() => [{
+            runtimeId: "runtime-1",
+            marker: ++runtimeRead === 1 ? "authorized" : "changed",
+        }])
+        const runtimeServices = createDomainServices(runtimeFixture.dependencies)
+        const runtimeResolution = await runtimeServices.resolveScope(
+            "runtimes.list",
+            {},
+            serviceContext().grant,
+        )
+        const runtimeResult = await runtimeServices["runtimes.list"](
+            {},
+            snapshotContext(runtimeResolution, {runtimeIds: ["runtime-1"]}),
+        )
+
+        const datasetFixture = fixture()
+        let datasetRead = 0
+        datasetFixture.evaluationStore.listDatasets = mock.fn(() => [{
+            id: "dataset-1",
+            marker: ++datasetRead === 1 ? "authorized" : "changed",
+        }])
+        const datasetServices = createDomainServices(datasetFixture.dependencies)
+        const datasetResolution = await datasetServices.resolveScope(
+            "datasets.list",
+            {cursor: null, limit: 100},
+            serviceContext().grant,
+        )
+        const datasetResult = await datasetServices["datasets.list"](
+            {cursor: null, limit: 100},
+            snapshotContext(datasetResolution, {datasetIds: ["dataset-1"]}),
+        )
+
+        const skillFixture = fixture()
+        let skillRead = 0
+        skillFixture.managedSkillManager.overview = mock.fn(() => ({
+            skills: [{
+                id: "skill-1",
+                name: "billing",
+                marker: ++skillRead === 1 ? "authorized" : "changed",
+            }],
+        }))
+        const skillServices = createDomainServices(skillFixture.dependencies)
+        const skillResolution = await skillServices.resolveScope(
+            "skills.list",
+            {cursor: null, limit: 100},
+            serviceContext().grant,
+        )
+        const skillResult = await skillServices["skills.list"](
+            {cursor: null, limit: 100},
+            snapshotContext(skillResolution, {skillIds: ["skill-1"]}),
+        )
+
+        const rawFixture = fixture()
+        let rawRead = 0
+        rawFixture.rawCaseStore.list = mock.fn(() => [{
+            id: "raw-1",
+            question: ++rawRead === 1 ? "authorized" : "changed",
+            skill: {name: "billing"},
+        }])
+        const rawServices = createDomainServices(rawFixture.dependencies)
+        const rawResolution = await rawServices.resolveScope(
+            "raw_cases.list",
+            {skillName: null, cursor: null, limit: 100},
+            serviceContext().grant,
+        )
+        const rawResult = await rawServices["raw_cases.list"](
+            {skillName: null, cursor: null, limit: 100},
+            snapshotContext(rawResolution, {skillIds: ["skill-1"]}),
+        )
+
+        const evaluationFixture = fixture()
+        let runRead = 0
+        evaluationFixture.evaluationStore.listEvaluationRunSummaries = mock.fn(() => [{
+            id: "run-1",
+            datasetId: "dataset-1",
+            status: ++runRead === 1 ? "authorized" : "changed",
+        }])
+        const evaluationServices = createDomainServices(evaluationFixture.dependencies)
+        const evaluationResolution = await evaluationServices.resolveScope(
+            "evaluations.list",
+            {datasetId: null, cursor: null, limit: 100},
+            serviceContext().grant,
+        )
+        const evaluationResult = await evaluationServices["evaluations.list"](
+            {datasetId: null, cursor: null, limit: 100},
+            snapshotContext(evaluationResolution, {datasetIds: ["dataset-1"]}),
+        )
+
+        assert.equal(runtimeFixture.dependencies.listRuntimes.mock.callCount(), 1)
+        assert.equal(runtimeResult.runtimes[0].marker, "authorized")
+        assert.equal(datasetFixture.evaluationStore.listDatasets.mock.callCount(), 1)
+        assert.equal(datasetResult.datasets[0].marker, "authorized")
+        assert.equal(skillFixture.managedSkillManager.overview.mock.callCount(), 1)
+        assert.equal(skillResult.skills[0].marker, "authorized")
+        assert.equal(rawFixture.rawCaseStore.list.mock.callCount(), 1)
+        assert.equal(rawFixture.managedSkillManager.overview.mock.callCount(), 1)
+        assert.equal(rawResult.rawCases[0].question, "authorized")
+        assert.equal(evaluationFixture.evaluationStore.listDatasets.mock.callCount(), 1)
+        assert.equal(evaluationFixture.evaluationStore.listEvaluationRunSummaries.mock.callCount(), 1)
+        assert.equal(evaluationResult.runs[0].status, "authorized")
+        for (const resolution of [
+            runtimeResolution,
+            datasetResolution,
+            skillResolution,
+            rawResolution,
+            evaluationResolution,
+        ]) {
+            assert.ok(Object.isFrozen(resolution.executionContext))
+        }
     })
 
     it("resolves opaque Raw Case and evaluation run owners with an exact subject binding", async () => {

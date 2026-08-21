@@ -274,8 +274,16 @@ class BudgetLedger {
     }
 }
 
-function boundedAuditId(value) {
+function containsAuditSecret(value, bearerSecret) {
+    return typeof value === "string" &&
+        typeof bearerSecret === "string" &&
+        bearerSecret.length > 0 &&
+        value.includes(bearerSecret)
+}
+
+function boundedAuditId(value, bearerSecret = null) {
     if (typeof value !== "string" || value.length === 0) return null
+    if (containsAuditSecret(value, bearerSecret)) return "[redacted]"
     if (value.length <= 200 && !/[\\/\u0000-\u001f\u007f]/u.test(value)) return value
     return `sha256:${createHash("sha256").update(value, "utf8").digest("hex").slice(0, 24)}`
 }
@@ -300,15 +308,15 @@ function auditObjectIds(input, resolution, bearerSecret) {
     const result = {}
     for (const [key, values] of Object.entries(candidates)) {
         const normalized = [...new Set(values
-            .filter((value) => value !== bearerSecret)
-            .map(boundedAuditId)
+            .map((value) => boundedAuditId(value, bearerSecret))
             .filter(Boolean))].slice(0, 20)
         if (normalized.length > 0) result[key] = normalized
     }
     return result
 }
 
-function boundedAuditMethod(value) {
+function boundedAuditMethod(value, bearerSecret = null) {
+    if (containsAuditSecret(value, bearerSecret)) return "[redacted]"
     if (
         typeof value === "string" &&
         value.length <= 200 &&
@@ -350,9 +358,26 @@ function auditFailure(state) {
     } catch {}
 }
 
-function writeAudit(state, event) {
+function sanitizeAuditValue(value, bearerSecret) {
+    if (typeof value === "string") {
+        return containsAuditSecret(value, bearerSecret) ? "[redacted]" : value
+    }
+    if (Array.isArray(value)) {
+        return value.map((entry) => sanitizeAuditValue(entry, bearerSecret))
+    }
+    if (value && typeof value === "object") {
+        const sanitized = {}
+        for (const [key, entry] of Object.entries(value)) {
+            sanitized[key] = sanitizeAuditValue(entry, bearerSecret)
+        }
+        return sanitized
+    }
+    return value
+}
+
+function writeAudit(state, event, bearerSecret) {
     if (!state.auditSink) return
-    const frozen = immutableSnapshot(event)
+    const frozen = immutableSnapshot(sanitizeAuditValue(event, bearerSecret))
     try {
         const operation = typeof state.auditSink === "function"
             ? state.auditSink(frozen)
@@ -427,7 +452,7 @@ class ControlPlane {
         try {
             envelope = snapshotControlRequest(request)
             bearerSecret = typeof envelope.token === "string" ? envelope.token : null
-            method = boundedAuditMethod(envelope.method)
+            method = boundedAuditMethod(envelope.method, bearerSecret)
             const definition = controlDefinition(envelope.method)
             method = envelope.method
             input = parseControlInput(method, envelope.params)
@@ -535,13 +560,13 @@ class ControlPlane {
                 : 0
             writeAudit(state, {
                 capabilityId: grant?.id ?? null,
-                sessionId: grant === null ? null : boundedAuditId(grant.sessionId),
+                sessionId: grant === null ? null : boundedAuditId(grant.sessionId, bearerSecret),
                 method,
                 objectIds: auditObjectIds(input, resolution, bearerSecret),
                 durationMs,
                 outcome,
                 errorCode,
-            })
+            }, bearerSecret)
         }
     }
 }
