@@ -9,6 +9,8 @@ const {publicControlError} = require("./contracts.cjs")
 const CONTROL_SOCKET_DIRECTORY = "control"
 const CONTROL_SOCKET_NAME = "control.sock"
 const CONTROL_SOCKET_QUARANTINE_PREFIX = ".control.sock.stale-"
+const CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX = ".control.sock.close-"
+const CONTROL_SOCKET_HANDLE_QUARANTINE_PREFIX = ".control.sock.handle-"
 const MAX_CONTROL_MESSAGE_BYTES = 1_048_576
 const MAX_CONTROL_REQUEST_ID_LENGTH = 200
 const MAX_CONTROL_METHOD_LENGTH = 200
@@ -220,32 +222,180 @@ async function removeStaleSocket(socketPath) {
         : "Stale control socket changed before quarantine; replacement remains quarantined")
 }
 
-async function removeOwnedSocket(socketPath, identity) {
-    if (!identity) return
-    const current = await existingLstat(socketPath)
-    if (current?.isSocket() && sameFile(current, identity)) {
-        await fs.promises.unlink(socketPath)
+function quarantinePath(socketPath, prefix) {
+    const controlDir = path.dirname(socketPath)
+    if (path.basename(socketPath) !== CONTROL_SOCKET_NAME) {
+        throw new Error("Control socket path is not the exact configured child")
     }
-}
-
-async function preserveReplacement(socketPath, identity) {
-    if (!socketPath || !identity) return null
-    const current = await existingLstat(socketPath)
-    if (!current || sameFile(current, identity)) return null
-    const preservedPath = path.join(
-        path.dirname(socketPath),
-        `.${CONTROL_SOCKET_NAME}.preserved-${process.pid}-${randomUUID()}`,
+    const quarantinePath = path.join(
+        controlDir,
+        `${prefix}${process.pid}-${randomUUID()}`,
     )
-    await fs.promises.rename(socketPath, preservedPath)
-    return preservedPath
+    if (
+        path.dirname(quarantinePath) !== controlDir ||
+        !path.basename(quarantinePath).startsWith(prefix)
+    ) throw new Error("Control socket quarantine path is invalid")
+    return quarantinePath
 }
 
-async function restoreReplacement(socketPath, preservedPath) {
-    if (!preservedPath) return
-    if (await existingLstat(socketPath)) {
-        throw new Error("Control socket path changed while restoring a preserved replacement")
+function tryRestoreQuarantinedPath(socketPath, quarantinePath, identity) {
+    try {
+        fs.linkSync(quarantinePath, socketPath)
+    } catch (error) {
+        if (error?.code === "EEXIST") return false
+        throw new Error("Control socket close quarantine restore failed", {cause: error})
     }
-    await fs.promises.rename(preservedPath, socketPath)
+    const restored = fs.lstatSync(socketPath)
+    if (!sameFile(restored, identity)) {
+        throw new Error("Restored control socket replacement changed identity")
+    }
+    fs.unlinkSync(quarantinePath)
+    return true
+}
+
+async function cleanupClosedSocketPath(socketPath, serverIdentity) {
+    if (!socketPath || !serverIdentity) return
+    if (!await existingLstat(socketPath)) return
+
+    const closedQuarantinePath = quarantinePath(
+        socketPath,
+        CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX,
+    )
+    try {
+        fs.renameSync(socketPath, closedQuarantinePath)
+    } catch (error) {
+        if (error?.code === "ENOENT") return
+        throw new Error("Control socket close quarantine failed", {cause: error})
+    }
+
+    const quarantined = await fs.promises.lstat(closedQuarantinePath)
+    if (quarantined.isSocket() && sameFile(quarantined, serverIdentity)) {
+        fs.unlinkSync(closedQuarantinePath)
+        return
+    }
+    if (tryRestoreQuarantinedPath(
+        socketPath,
+        closedQuarantinePath,
+        quarantined,
+    )) return
+    throw new Error(
+        "Control socket close quarantine is occupied; replacement remains quarantined",
+    )
+}
+
+function disableNodePipePathCleanup(server, socketPath) {
+    // Compatibility boundary for the current Node/Electron net.Server: on Unix,
+    // close() unlinks its exact `_pipeName`. Clear only that verified own field so
+    // a pathname replacement cannot be removed while the listening handle closes.
+    const descriptor = Object.getOwnPropertyDescriptor(server, "_pipeName")
+    if (
+        !descriptor || !Object.hasOwn(descriptor, "value") ||
+        descriptor.value !== socketPath || descriptor.writable !== true
+    ) {
+        throw new Error("Cannot safely disable Node control socket pathname cleanup")
+    }
+    server._pipeName = null
+    const cleared = Object.getOwnPropertyDescriptor(server, "_pipeName")
+    if (!cleared || cleared.value !== null) {
+        throw new Error("Cannot safely disable Node control socket pathname cleanup")
+    }
+}
+
+function guardNativePipeHandleClose(server, socketPath) {
+    const handle = server?._handle
+    const nativeClose = handle?.close
+    if (!handle || typeof nativeClose !== "function") {
+        throw new Error("Cannot safely guard the Node control socket handle")
+    }
+    let quarantine = null
+    let quarantineIdentity = null
+    let guardError = null
+    let finalized = false
+
+    const finalize = () => {
+        if (finalized) return
+        finalized = true
+        if (!quarantine) return
+        try {
+            if (!tryRestoreQuarantinedPath(
+                socketPath,
+                quarantine,
+                quarantineIdentity,
+            )) {
+                guardError = new Error(
+                    "Control socket handle quarantine is occupied; replacement remains quarantined",
+                )
+            }
+        } catch (error) {
+            guardError = error
+        }
+    }
+    server.prependOnceListener("close", finalize)
+
+    const guardedClose = function guardedControlSocketHandleClose(...args) {
+        try {
+            let current
+            try {
+                current = fs.lstatSync(socketPath)
+            } catch (error) {
+                if (error?.code !== "ENOENT") throw error
+            }
+            if (current) {
+                quarantine = quarantinePath(
+                    socketPath,
+                    CONTROL_SOCKET_HANDLE_QUARANTINE_PREFIX,
+                )
+                fs.renameSync(socketPath, quarantine)
+                quarantineIdentity = fs.lstatSync(quarantine)
+            }
+            return Reflect.apply(nativeClose, this, args)
+        } catch (error) {
+            guardError = new Error("Control socket handle close guard failed", {cause: error})
+            finalize()
+            throw guardError
+        }
+    }
+    handle.close = guardedClose
+    if (handle.close !== guardedClose) {
+        server.off("close", finalize)
+        throw new Error("Cannot safely guard the Node control socket handle")
+    }
+    return {
+        finish() {
+            if (!finalized) finalize()
+            return guardError
+        },
+    }
+}
+
+async function closeListeningHandle(server, socketPath) {
+    if (!server?.listening) return
+    disableNodePipePathCleanup(server, socketPath)
+    // libuv versions that unlink a bound pipe from the native handle ignore
+    // `_pipeName`. Guard that synchronous close boundary too, then restore the
+    // exact quarantined inode before user close callbacks run.
+    const handleGuard = guardNativePipeHandleClose(server, socketPath)
+    let closeError = null
+    try {
+        await new Promise((resolve, reject) => {
+            try {
+                server.close((error) => error ? reject(error) : resolve())
+            } catch (error) {
+                reject(error)
+            }
+        })
+    } catch (error) {
+        closeError = error
+    }
+    const guardError = handleGuard.finish()
+    if (closeError && guardError) {
+        throw new AggregateError(
+            [closeError, guardError],
+            "Control socket handle close and quarantine restoration failed",
+        )
+    }
+    if (closeError) throw closeError
+    if (guardError) throw guardError
 }
 
 function serializeResponse(response) {
@@ -446,11 +596,8 @@ class ControlSocketServer {
             state.socketIdentity = socketStat
             return this
         } catch (error) {
-            await new Promise((resolve) => {
-                if (server.listening) server.close(resolve)
-                else resolve()
-            })
-            await removeOwnedSocket(state.socketPath, state.socketIdentity)
+            await closeListeningHandle(server, state.socketPath)
+            await cleanupClosedSocketPath(state.socketPath, state.socketIdentity)
             throw error
         }
     }
@@ -476,21 +623,35 @@ class ControlSocketServer {
     async #close(state) {
         for (const socket of state.connections) socket.destroy()
         state.connections.clear()
-        const preservedPath = await preserveReplacement(
-            state.socketPath,
-            state.socketIdentity,
-        )
-        if (state.server?.listening) {
-            await new Promise((resolve) => state.server.close(resolve))
+        let closeError = null
+        try {
+            await closeListeningHandle(state.server, state.socketPath)
+        } catch (error) {
+            closeError = error
         }
-        await removeOwnedSocket(state.socketPath, state.socketIdentity)
-        await restoreReplacement(state.socketPath, preservedPath)
+        if (closeError && state.server?.listening) throw closeError
+
+        let cleanupError = null
+        try {
+            await cleanupClosedSocketPath(state.socketPath, state.socketIdentity)
+        } catch (error) {
+            cleanupError = error
+        }
+        if (closeError && cleanupError) {
+            throw new AggregateError(
+                [closeError, cleanupError],
+                "Control socket close and cleanup failed",
+            )
+        }
+        if (closeError) throw closeError
+        if (cleanupError) throw cleanupError
     }
 }
 
 module.exports = {
     CONTROL_SOCKET_DIRECTORY,
     CONTROL_SOCKET_NAME,
+    CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX,
     CONTROL_SOCKET_QUARANTINE_PREFIX,
     DEFAULT_MAX_IN_FLIGHT_REQUESTS,
     DEFAULT_MAX_QUEUED_RESPONSES,

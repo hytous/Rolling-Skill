@@ -11,6 +11,7 @@ const {createPublicControlError} = require("../src/control-plane/contracts.cjs")
 const {
     CONTROL_SOCKET_DIRECTORY,
     CONTROL_SOCKET_NAME,
+    CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX,
     CONTROL_SOCKET_QUARANTINE_PREFIX,
     DEFAULT_MAX_IN_FLIGHT_REQUESTS,
     DEFAULT_MAX_QUEUED_RESPONSES,
@@ -786,6 +787,163 @@ describe("owner-only control socket transport", () => {
         await fs.promises.writeFile(replacementPath, "replacement", {mode: 0o600})
         await replacementServer.close()
         assert.equal(await fs.promises.readFile(replacementPath, "utf8"), "replacement")
+    })
+
+    it("disables Node pathname cleanup before closing the listening handle", async (t) => {
+        const {server} = await startControlServer(t, {invoke: async () => ({})})
+        const socketPath = server.socketPath
+        const originalClose = net.Server.prototype.close
+        let pipeNameAtClose
+        net.Server.prototype.close = function close(callback) {
+            pipeNameAtClose = this._pipeName
+            fs.unlinkSync(socketPath)
+            fs.writeFileSync(socketPath, "before-handle-close", {mode: 0o600})
+            return originalClose.call(this, callback)
+        }
+        try {
+            await server.close()
+        } finally {
+            net.Server.prototype.close = originalClose
+        }
+        assert.equal(pipeNameAtClose, null)
+        assert.equal(await fs.promises.readFile(socketPath, "utf8"), "before-handle-close")
+    })
+
+    it("quarantines a replacement created after the close callback", async (t) => {
+        const {server} = await startControlServer(t, {invoke: async () => ({})})
+        const socketPath = server.socketPath
+        const originalClose = net.Server.prototype.close
+        const originalRenameSync = fs.renameSync
+        let quarantined = false
+        net.Server.prototype.close = function close(callback) {
+            return originalClose.call(this, (...args) => {
+                if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
+                fs.writeFileSync(socketPath, "after-close-callback", {mode: 0o600})
+                callback?.(...args)
+            })
+        }
+        fs.renameSync = (source, destination) => {
+            if (
+                source === socketPath &&
+                path.basename(destination).startsWith(CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX)
+            ) quarantined = true
+            return originalRenameSync(source, destination)
+        }
+        try {
+            await server.close()
+        } finally {
+            net.Server.prototype.close = originalClose
+            fs.renameSync = originalRenameSync
+        }
+        assert.equal(quarantined, true)
+        assert.equal(await fs.promises.readFile(socketPath, "utf8"), "after-close-callback")
+    })
+
+    it("keeps a new occupant created after post-close quarantine", async (t) => {
+        const {server} = await startControlServer(t, {invoke: async () => ({})})
+        const socketPath = server.socketPath
+        const controlDir = path.dirname(socketPath)
+        const originalRenameSync = fs.renameSync
+        let injected = false
+        fs.renameSync = (source, destination) => {
+            if (
+                !injected && source === socketPath &&
+                path.basename(destination).startsWith(CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX)
+            ) {
+                injected = true
+                originalRenameSync(source, destination)
+                fs.writeFileSync(source, "after-quarantine", {mode: 0o600})
+                return
+            }
+            return originalRenameSync(source, destination)
+        }
+        try {
+            await server.close()
+        } finally {
+            fs.renameSync = originalRenameSync
+        }
+        assert.equal(injected, true)
+        assert.equal(await fs.promises.readFile(socketPath, "utf8"), "after-quarantine")
+        assert.deepEqual(
+            (await fs.promises.readdir(controlDir))
+                .filter((name) => name.startsWith(CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX)),
+            [],
+        )
+    })
+
+    it("keeps close idempotent when a raced replacement cannot be restored", async (t) => {
+        const userData = await temporaryUserData(t)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        await server.start()
+        const socketPath = server.socketPath
+        const controlDir = path.dirname(socketPath)
+        await fs.promises.unlink(socketPath)
+        await fs.promises.writeFile(socketPath, "quarantined-close-replacement", {mode: 0o600})
+
+        const originalRenameSync = fs.renameSync
+        let injected = false
+        fs.renameSync = (source, destination) => {
+            if (
+                !injected && source === socketPath &&
+                path.basename(destination).startsWith(CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX)
+            ) {
+                injected = true
+                originalRenameSync(source, destination)
+                fs.writeFileSync(source, "new-close-occupant", {mode: 0o600})
+                return
+            }
+            return originalRenameSync(source, destination)
+        }
+        try {
+            const first = server.close()
+            const second = server.close()
+            assert.equal(second, first)
+            await Promise.all([
+                assert.rejects(first, /close|quarantine|restore|occupied/i),
+                assert.rejects(second, /close|quarantine|restore|occupied/i),
+            ])
+        } finally {
+            fs.renameSync = originalRenameSync
+        }
+        assert.equal(await fs.promises.readFile(socketPath, "utf8"), "new-close-occupant")
+        const quarantines = (await fs.promises.readdir(controlDir))
+            .filter((name) => name.startsWith(CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX))
+        assert.equal(quarantines.length, 1)
+        assert.equal(
+            await fs.promises.readFile(path.join(controlDir, quarantines[0]), "utf8"),
+            "quarantined-close-replacement",
+        )
+        assert.equal(server.connectionCount, 0)
+    })
+
+    it("cleans up its socket when the close callback reports a failure", async (t) => {
+        const userData = await temporaryUserData(t)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        await server.start()
+        const socketPath = server.socketPath
+        const originalClose = net.Server.prototype.close
+        net.Server.prototype.close = function close(callback) {
+            return originalClose.call(this, () => callback?.(new Error("injected close failure")))
+        }
+        try {
+            const first = server.close()
+            const second = server.close()
+            assert.equal(second, first)
+            await Promise.all([
+                assert.rejects(first, /close failure/),
+                assert.rejects(second, /close failure/),
+            ])
+        } finally {
+            net.Server.prototype.close = originalClose
+        }
+        await assert.rejects(fs.promises.lstat(socketPath), {code: "ENOENT"})
+        assert.equal(server.connectionCount, 0)
     })
 
     it("replaces only a stale socket at the exact configured path", async (t) => {
