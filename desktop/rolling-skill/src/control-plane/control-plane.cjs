@@ -1,5 +1,8 @@
 const {createHash} = require("node:crypto")
 
+const intrinsicPromiseResolve = Promise.resolve.bind(Promise)
+const intrinsicPromiseThen = Promise.prototype.then
+
 const {CapabilityError} = require("./capability-store.cjs")
 const {
     CONTROL_METHODS,
@@ -377,17 +380,24 @@ function observeWithoutThrow(value, onRejected = null) {
             onRejected()
         } catch {}
     }
-    let operation
     try {
-        operation = Promise.resolve(value)
+        intrinsicPromiseThen.call(value, undefined, reject)
+        return
+    } catch (error) {
+        if (!(error instanceof TypeError)) {
+            reject()
+            return
+        }
+    }
+    let assimilated
+    try {
+        assimilated = intrinsicPromiseResolve(value)
     } catch {
         reject()
         return
     }
     try {
-        operation.then(undefined, () => {
-            reject()
-        })
+        intrinsicPromiseThen.call(assimilated, undefined, reject)
     } catch {
         reject()
     }

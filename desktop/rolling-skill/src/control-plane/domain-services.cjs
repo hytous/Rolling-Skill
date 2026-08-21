@@ -185,12 +185,7 @@ function createDomainServices(dependencies = {}) {
     }
 
     function canonicalSkillReference(skill) {
-        const reference = {name: skill.name}
-        const trustedPath = typeof skill.path === "string" && skill.path
-            ? skill.path
-            : null
-        if (trustedPath) reference.path = trustedPath
-        return reference
+        return {id: skill.id, name: skill.name}
     }
 
     async function rawCaseInventory(skillName = null) {

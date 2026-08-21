@@ -894,6 +894,15 @@ describe("ControlPlane", () => {
     it("observes hostile asynchronous audit failures without unhandled rejections", async () => {
         const unhandled = []
         const listener = (reason) => unhandled.push(reason)
+        const rejectedNativeWithOwnThen = (message) => {
+            const operation = Promise.reject(new Error(message))
+            Object.defineProperty(operation, "then", {
+                get() {
+                    throw new Error("hostile native Promise then getter")
+                },
+            })
+            return operation
+        }
         process.on("unhandledRejection", listener)
         try {
             const rejected = createFixture({
@@ -920,8 +929,23 @@ describe("ControlPlane", () => {
                 }),
                 onAuditError: () => Promise.reject(new Error("then diagnostic rejection")),
             })
+            const nativeSink = createFixture({
+                auditSink: () => rejectedNativeWithOwnThen("native sink rejection"),
+            })
+            const nativeDiagnostic = createFixture({
+                auditSink() {
+                    throw new Error("synchronous sink rejection")
+                },
+                onAuditError: () => rejectedNativeWithOwnThen("native diagnostic rejection"),
+            })
 
-            for (const fixture of [rejected, hostileCatch, hostileThen]) {
+            for (const fixture of [
+                rejected,
+                hostileCatch,
+                hostileThen,
+                nativeSink,
+                nativeDiagnostic,
+            ]) {
                 const result = await fixture.control.invoke({
                     token: fixture.issued.token,
                     method: "datasets.list",

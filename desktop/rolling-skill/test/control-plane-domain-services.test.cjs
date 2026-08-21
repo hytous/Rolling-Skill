@@ -588,4 +588,90 @@ describe("control-plane domain services", () => {
             ambiguousGrant,
         ), (error) => error.code === "INVALID_ARGUMENT")
     })
+
+    it("persists the resolved Skill ID and filters same-name records by that stable owner", async () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-control-owner-"))
+        const store = new RawCaseStore(join(directory, "raw-cases.jsonl"))
+        try {
+            const skills = [
+                {
+                    id: "skill-1",
+                    name: "Billing",
+                    path: "/trusted/repository-1/billing",
+                    repositoryId: "repository-1",
+                },
+                {
+                    id: "skill-2",
+                    name: "billing",
+                    path: "/trusted/repository-2/billing",
+                    repositoryId: "repository-2",
+                },
+            ]
+            const {dependencies} = fixture({
+                rawCaseStore: store,
+                managedSkillManager: {
+                    overview: mock.fn(() => ({skills: structuredClone(skills)})),
+                },
+            })
+            const services = createDomainServices(dependencies)
+            const ownerGrant = {
+                ...serviceContext().grant,
+                scopes: {...serviceContext().grant.scopes, skillIds: ["skill-2"]},
+            }
+            const otherGrant = {
+                ...serviceContext().grant,
+                scopes: {...serviceContext().grant.scopes, skillIds: ["skill-1"]},
+            }
+            const enqueueInput = {
+                cases: [{
+                    question: "stable owner",
+                    skill: {name: " BILLING "},
+                    note: "",
+                    source: {kind: "operator"},
+                }],
+                idempotencyKey: "enqueue-stable-owner",
+            }
+            const enqueueResolution = await services.resolveScope(
+                "raw_cases.enqueue",
+                enqueueInput,
+                ownerGrant,
+            )
+            const enqueued = await services["raw_cases.enqueue"](enqueueInput, {
+                ...serviceContext(),
+                grant: ownerGrant,
+                executionContext: enqueueResolution.executionContext,
+            })
+
+            assert.deepEqual(enqueued.created[0].skill, {id: "skill-2", name: "billing"})
+            assert.deepEqual(store.get(enqueued.created[0].id).skill, {
+                id: "skill-2",
+                name: "billing",
+            })
+
+            const ownerResolution = await services.resolveScope(
+                "raw_cases.list",
+                {skillName: null, cursor: null, limit: 100},
+                ownerGrant,
+            )
+            const visible = await services["raw_cases.list"](
+                {skillName: null, cursor: null, limit: 100},
+                snapshotContext(ownerResolution, {skillIds: ["skill-2"]}),
+            )
+            const otherResolution = await services.resolveScope(
+                "raw_cases.list",
+                {skillName: null, cursor: null, limit: 100},
+                otherGrant,
+            )
+            const hidden = await services["raw_cases.list"](
+                {skillName: null, cursor: null, limit: 100},
+                snapshotContext(otherResolution, {skillIds: ["skill-1"]}),
+            )
+
+            assert.deepEqual(visible.rawCases.map((entry) => entry.id), [enqueued.created[0].id])
+            assert.deepEqual(hidden.rawCases, [])
+        } finally {
+            store.close()
+            rmSync(directory, {recursive: true, force: true})
+        }
+    })
 })
