@@ -29,7 +29,7 @@ Rolling Skill 已经具备较完整的内部控制面：
 ```text
 Operator Agent
       │
- MCP / CLI Tool
+ Provider-native Tool / MCP / CLI
       │
 Tool Gateway ── Policy Engine
       │
@@ -92,7 +92,8 @@ Operator 看到的是少量领域工具，而不是所有内部 IPC：
 
 App 主进程监听仅当前 macOS 用户可访问的本地 Unix domain socket，不开放 TCP 端口。Operator 会话启动时获得短期、限定范围的 capability。传输适配如下：
 
-- Runtime 支持 MCP 时，由 provider adapter 为该 Operator 会话启动预授权的 stdio MCP bridge；
+- Codex app-server 使用线程级 `dynamicTools` 和 `item/tool/call` 请求直接连接 Tool Gateway，不修改用户的全局 MCP 配置；
+- CodeBuddy ACP 通过 `session/new.mcpServers` 为该 Operator 会话启动预授权的 stdio MCP bridge；
 - Runtime 无法可靠连接 MCP 时，Agent 通过 Bash 调用 `rolling-skill-tool control ... --json`，CLI 仍连接同一 socket 和控制面；
 - Renderer 继续通过受限 preload API 调用同一控制面；
 - 现有 Raw Case CLI/MCP 保持可在 App 关闭时写入 owner-only JSONL，它不自动获得其他控制权限。
@@ -113,7 +114,7 @@ App 主进程监听仅当前 macOS 用户可访问的本地 Unix domain socket�
 
 这份内部 Operator 协议不是待评测 Skill，不安装到 Runtime Skill 目录，也不参与 Skill 自动触发评分。不同 Runtime 的 adapter 负责用其支持的最高优先级指令和工具机制承载同一协议。
 
-启动前执行 capability preflight。如果所选 Runtime 缺少可用的 MCP/CLI 工具传输、必要的文件工具或对应权限，任务在运行任何有成本的步骤前失败，并明确列出缺少的能力。
+启动前执行 capability preflight。如果所选 Runtime 缺少可用的 provider-native Tool、MCP/CLI 工具传输、必要的文件工具或对应权限，任务在运行任何有成本的步骤前失败，并明确列出缺少的能力。
 
 ## 权限与预算策略
 
