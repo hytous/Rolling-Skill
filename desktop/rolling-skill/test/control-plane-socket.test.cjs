@@ -16,6 +16,7 @@ const {
     CONTROL_SOCKET_QUARANTINE_PREFIX,
     DEFAULT_MAX_IN_FLIGHT_REQUESTS,
     DEFAULT_MAX_QUEUED_RESPONSES,
+    DEFAULT_MAX_QUEUED_RESPONSE_BYTES,
     MAX_CONTROL_LIVE_BIND_ATTEMPTS,
     MAX_CONTROL_MESSAGE_BYTES,
     MAX_CONTROL_SOCKET_PATH_BYTES,
@@ -26,6 +27,7 @@ const {
     DEFAULT_CONTROL_SOCKET_TIMEOUT_MS,
     DEFAULT_MAX_PENDING_REQUESTS,
     DEFAULT_MAX_UNSENT_REQUESTS,
+    DEFAULT_MAX_USED_REQUEST_IDS,
     MAX_CONTROL_REQUEST_ID_LENGTH,
     ControlSocketClient,
 } = require("../src/control-plane/socket-client.cjs")
@@ -403,6 +405,15 @@ describe("owner-only control socket transport", () => {
         oversized.write(Buffer.alloc(MAX_CONTROL_MESSAGE_BYTES + 1, 0x61))
         await oversizedClosed
 
+        const invalidUtf8 = await connectRaw(server.socketPath)
+        const invalidUtf8Closed = once(invalidUtf8, "close")
+        invalidUtf8.write(Buffer.concat([
+            Buffer.from('{"id":"invalid-utf8","method":"context.get","params":{"x":"'),
+            Buffer.from([0xc0, 0xaf]),
+            Buffer.from('"},"token":"opaque","sessionId":"operator"}\n'),
+        ]))
+        await invalidUtf8Closed
+
         const client = new ControlSocketClient({
             socketPath: server.socketPath,
             token: "opaque",
@@ -444,7 +455,7 @@ describe("owner-only control socket transport", () => {
         assert.equal(Object.prototype.polluted, undefined)
     })
 
-    it("uses a 15-second default timeout and removes only the timed-out request", async (t) => {
+    it("uses a 15-second default timeout and reconnects after isolating that connection", async (t) => {
         assert.equal(DEFAULT_CONTROL_SOCKET_TIMEOUT_MS, 15_000)
         let releaseSlow
         const {server} = await startControlServer(t, {
@@ -474,6 +485,7 @@ describe("owner-only control socket transport", () => {
 
         const slow = client.invoke("context.get", {}, {id: "slow"})
         await waitFor(() => timerCallback !== null)
+        await waitFor(() => typeof releaseSlow === "function")
         assert.equal(observedDelay, 15_000)
         timerCallback()
         await assert.rejects(slow, (error) => {
@@ -482,7 +494,7 @@ describe("owner-only control socket transport", () => {
             return true
         })
         assert.deepEqual(
-            await client.invoke("runtimes.list", {}, {id: "still-live"}),
+            await client.invoke("runtimes.list", {}, {id: "after-timeout"}),
             {runtimes: []},
         )
         releaseSlow({late: true})
@@ -537,25 +549,70 @@ describe("owner-only control socket transport", () => {
         await nextTurn()
         assert.equal(socket.resumeCount, 1)
 
-        const overflowCalls = []
-        const overflowSocket = new FakeSocket()
-        attachControlSocketConnection(overflowSocket, {
+        const batchedCalls = []
+        const batchedResolvers = new Map()
+        const batchedSocket = new FakeSocket()
+        attachControlSocketConnection(batchedSocket, {
             invoke({params}) {
-                overflowCalls.push(params.order)
-                return new Promise(() => {})
+                batchedCalls.push(params.order)
+                return new Promise((resolve) => batchedResolvers.set(params.order, resolve))
             },
         }, {maxInFlightRequests: 2, maxQueuedResponses: 2})
-        overflowSocket.emit("data", Buffer.from(
-            [1, 2, 3].map((order) =>
-                controlRequestLine(`overflow-${order}`, {order}),
+        batchedSocket.emit("data", Buffer.from(
+            [1, 2, 3, 4, 5].map((order) =>
+                controlRequestLine(`batched-${order}`, {order}),
             ).join(""),
         ))
         await nextTurn()
-        assert.deepEqual(overflowCalls, [1, 2])
-        assert.equal(overflowSocket.destroyed, true)
+        assert.deepEqual(batchedCalls, [1, 2])
+        assert.equal(batchedSocket.destroyed, false)
+
+        batchedResolvers.get(1)({order: 1})
+        await nextTurn()
+        assert.deepEqual(batchedCalls, [1, 2, 3])
+        batchedResolvers.get(2)({order: 2})
+        await nextTurn()
+        assert.deepEqual(batchedCalls, [1, 2, 3, 4])
+        batchedResolvers.get(3)({order: 3})
+        await nextTurn()
+        assert.deepEqual(batchedCalls, [1, 2, 3, 4, 5])
+        assert.equal(batchedSocket.destroyed, false)
+    })
+
+    it("dispatches 64 requests from one chunk in two default-sized batches", async () => {
+        const calls = []
+        const resolvers = new Map()
+        const socket = new FakeSocket()
+        attachControlSocketConnection(socket, {
+            invoke({params}) {
+                calls.push(params.order)
+                return new Promise((resolve) => resolvers.set(params.order, resolve))
+            },
+        })
+        socket.emit("data", Buffer.from(
+            Array.from({length: 64}, (_, index) =>
+                controlRequestLine(`batch-${index + 1}`, {order: index + 1}),
+            ).join(""),
+        ))
+        await nextTurn()
+        assert.equal(calls.length, 32)
+        assert.equal(socket.destroyed, false)
+
+        for (let order = 1; order <= 32; order += 1) {
+            resolvers.get(order)({order})
+        }
+        await nextTurn()
+        assert.equal(calls.length, 64)
+        assert.equal(socket.destroyed, false)
+        for (let order = 33; order <= 64; order += 1) {
+            resolvers.get(order)({order})
+        }
+        await nextTurn()
+        assert.equal(socket.writes.length, 64)
     })
 
     it("queues server responses after write false and caps that queue", async () => {
+        assert.equal(DEFAULT_MAX_QUEUED_RESPONSE_BYTES, 4 * 1_048_576)
         const socket = new FakeSocket({writeResults: [false, true, true]})
         const resolvers = new Map()
         attachControlSocketConnection(socket, {
@@ -603,9 +660,64 @@ describe("owner-only control socket transport", () => {
         assert.equal(bounded.destroyed, true)
     })
 
+    it("replaces an oversized domain result with a bounded public INVALID_RESULT", async (t) => {
+        const {server} = await startControlServer(t, {
+            async invoke() {
+                return {
+                    rawCases: [{blob: "x".repeat(MAX_CONTROL_MESSAGE_BYTES + 200_000)}],
+                    nextCursor: null,
+                }
+            },
+        })
+        const client = new ControlSocketClient({
+            socketPath: server.socketPath,
+            token: "oversized-result-token",
+            sessionId: "oversized-result-session",
+        })
+        t.after(() => client.close())
+
+        await assert.rejects(
+            client.invoke("raw_cases.list", {}),
+            (error) => {
+                assert.equal(error.code, "INVALID_RESULT")
+                assert.equal(error.message, "Invalid control result")
+                assert.deepEqual(error.details, {
+                    method: "raw_cases.list",
+                    issues: [{path: ["limit"]}],
+                })
+                return true
+            },
+        )
+    })
+
+    it("caps the server response queue by encoded bytes", async () => {
+        const socket = new FakeSocket({writeResults: [false]})
+        const resolvers = new Map()
+        attachControlSocketConnection(socket, {
+            invoke({params}) {
+                return new Promise((resolve) => resolvers.set(params.order, resolve))
+            },
+        }, {
+            maxInFlightRequests: 3,
+            maxQueuedResponses: 10,
+            maxQueuedResponseBytes: 250,
+        })
+        socket.emit("data", Buffer.from(
+            [1, 2, 3].map((order) =>
+                controlRequestLine(`byte-bounded-${order}`, {order}),
+            ).join(""),
+        ))
+        await nextTurn()
+        for (const resolve of resolvers.values()) resolve({blob: "x".repeat(120)})
+        await nextTurn()
+
+        assert.equal(socket.writes.length, 1)
+        assert.equal(socket.destroyed, true)
+    })
+
     it("caps client pending and unsent queues without leaking authority", async (t) => {
-        assert.equal(DEFAULT_MAX_PENDING_REQUESTS, 64)
-        assert.equal(DEFAULT_MAX_UNSENT_REQUESTS, 64)
+        assert.equal(DEFAULT_MAX_PENDING_REQUESTS, 32)
+        assert.equal(DEFAULT_MAX_UNSENT_REQUESTS, 32)
         const pendingSocket = new FakeSocket({autoConnect: true})
         const pendingClient = new ControlSocketClient({
             socketPath: path.join(os.tmpdir(), "pending-limit.sock"),
@@ -673,38 +785,140 @@ describe("owner-only control socket transport", () => {
         assert.deepEqual(await queued, {order: 2})
     })
 
-    it("removes timed-out unsent requests and clears drain listeners on close", async (t) => {
-        const socket = new FakeSocket({autoConnect: true, writeResults: [false, false]})
+    it("isolates a timed-out generation, rejects its peers, and ignores its late response", async (t) => {
+        const firstSocket = new FakeSocket({writeResults: [false]})
+        const secondSocket = new FakeSocket()
+        const sockets = [firstSocket, secondSocket]
         const client = new ControlSocketClient({
             socketPath: path.join(os.tmpdir(), "unsent-timeout.sock"),
             token: "timeout-queue-token",
             sessionId: "timeout-queue-session",
-            socketFactory: () => socket,
+            socketFactory: () => {
+                const socket = sockets.shift()
+                queueMicrotask(() => socket.emit("connect"))
+                return socket
+            },
             maxPendingRequests: 4,
-            maxUnsentRequests: 1,
+            maxUnsentRequests: 2,
         })
-        const sent = client.invoke("context.get", {}, {id: "sent", timeoutMs: 1_000})
-        await waitFor(() => socket.writes.length === 1)
-        const timedOut = client.invoke("context.get", {}, {id: "timed-out", timeoutMs: 10})
+        t.after(() => client.close())
+        const timedOut = client.invoke("context.get", {}, {id: "same-id", timeoutMs: 10})
+        await waitFor(() => firstSocket.writes.length === 1)
+        const peer = client.invoke("context.get", {}, {id: "peer", timeoutMs: 50})
+        const peerRejected = assert.rejects(peer, /disconnected/i)
         await assert.rejects(timedOut, /timed out/i)
+        await peerRejected
+        assert.equal(firstSocket.destroyed, true)
+
+        let replacementSettled = false
         const replacement = client.invoke("context.get", {}, {
-            id: "replacement",
+            id: "same-id",
             timeoutMs: 1_000,
+        }).finally(() => {
+            replacementSettled = true
         })
+        await waitFor(() => secondSocket.writes.length === 1)
+        firstSocket.emit("data", Buffer.from(
+            '{"id":"same-id","result":{"source":"old"}}\n',
+        ))
         await nextTurn()
-        socket.emit("drain")
-        await nextTurn()
-        assert.deepEqual(
-            socket.writes.map((line) => JSON.parse(line).id),
-            ["sent", "replacement"],
+        assert.equal(replacementSettled, false)
+        secondSocket.emit("data", Buffer.from(
+            '{"id":"same-id","result":{"source":"new"}}\n',
+        ))
+        assert.deepEqual(await replacement, {source: "new"})
+        assert.equal(firstSocket.listenerCount("drain"), 0)
+    })
+
+    it("starts timeout accounting before a connection attempt completes", async (t) => {
+        const socket = new FakeSocket()
+        const client = new ControlSocketClient({
+            socketPath: path.join(os.tmpdir(), "connect-timeout.sock"),
+            token: "connect-timeout-token",
+            sessionId: "connect-timeout-session",
+            socketFactory: () => socket,
+        })
+        t.after(() => client.close())
+        const startedAt = Date.now()
+
+        await assert.rejects(
+            client.invoke("context.get", {}, {id: "connect-timeout", timeoutMs: 10}),
+            (error) => error.code === "CONTROL_TIMEOUT",
+        )
+        assert.ok(Date.now() - startedAt < 500)
+        assert.equal(socket.destroyed, true)
+    })
+
+    it("never reuses an ID on the same connection but permits it after reconnect", async (t) => {
+        const firstSocket = new FakeSocket()
+        const secondSocket = new FakeSocket()
+        const sockets = [firstSocket, secondSocket]
+        const client = new ControlSocketClient({
+            socketPath: path.join(os.tmpdir(), "id-lifecycle.sock"),
+            token: "id-lifecycle-token",
+            sessionId: "id-lifecycle-session",
+            socketFactory: () => {
+                const socket = sockets.shift()
+                queueMicrotask(() => socket.emit("connect"))
+                return socket
+            },
+        })
+        t.after(() => client.close())
+
+        const first = client.invoke("context.get", {}, {id: "once"})
+        await waitFor(() => firstSocket.writes.length === 1)
+        firstSocket.emit("data", Buffer.from('{"id":"once","result":{"n":1}}\n'))
+        assert.deepEqual(await first, {n: 1})
+        await assert.rejects(
+            client.invoke("context.get", {}, {id: "once"}),
+            /already in use/i,
         )
 
-        const sentRejected = assert.rejects(sent, /closed/i)
-        const replacementRejected = assert.rejects(replacement, /closed/i)
+        firstSocket.destroy()
+        const reused = client.invoke("context.get", {}, {id: "once"})
+        await waitFor(() => secondSocket.writes.length === 1)
+        secondSocket.emit("data", Buffer.from('{"id":"once","result":{"n":2}}\n'))
+        assert.deepEqual(await reused, {n: 2})
+    })
+
+    it("bounds used IDs and rotates only after the connection has no pending work", async (t) => {
+        assert.equal(DEFAULT_MAX_USED_REQUEST_IDS, 4_096)
+        const sockets = []
+        const client = new ControlSocketClient({
+            socketPath: path.join(os.tmpdir(), "id-capacity.sock"),
+            token: "id-capacity-token",
+            sessionId: "id-capacity-session",
+            maxUsedRequestIds: 2,
+            socketFactory: () => {
+                const socket = new FakeSocket()
+                sockets.push(socket)
+                queueMicrotask(() => socket.emit("connect"))
+                return socket
+            },
+        })
+        t.after(() => client.close())
+
+        for (const id of ["first", "second"]) {
+            const request = client.invoke("context.get", {}, {id})
+            await waitFor(() => sockets[0].writes.some((line) => JSON.parse(line).id === id))
+            sockets[0].emit("data", Buffer.from(`${JSON.stringify({id, result: {id}})}\n`))
+            assert.deepEqual(await request, {id})
+        }
+        const rotated = client.invoke("context.get", {}, {id: "third"})
+        await waitFor(() => sockets.length === 2 && sockets[1].writes.length === 1)
+        assert.equal(sockets[0].destroyed, true)
+        sockets[1].emit("data", Buffer.from('{"id":"third","result":{"id":"third"}}\n'))
+        assert.deepEqual(await rotated, {id: "third"})
+
+        const pending = client.invoke("context.get", {}, {id: "capacity-pending"})
+        await waitFor(() => sockets[1].writes.length === 2)
+        await assert.rejects(
+            client.invoke("context.get", {}, {id: "capacity-overflow"}),
+            (error) => error.code === "CONTROL_CAPACITY",
+        )
+        const pendingRejected = assert.rejects(pending, /closed/i)
         client.close()
-        await Promise.all([sentRejected, replacementRejected])
-        await nextTurn()
-        assert.equal(socket.listenerCount("drain"), 0)
+        await pendingRejected
     })
 
     it("rejects every pending request on remote disconnect and explicit close", async (t) => {
@@ -827,6 +1041,186 @@ describe("owner-only control socket transport", () => {
         assert.equal(await fs.promises.readFile(replacementPath, "utf8"), "replacement")
     })
 
+    it("keeps close permanent even after startup had completed", async (t) => {
+        const userData = await temporaryUserData(t)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        await server.start()
+        await server.close()
+
+        await assert.rejects(server.start(), /closed/i)
+        await assert.rejects(connectRaw(server.socketPath), /ENOENT|refused|connect/i)
+    })
+
+    it("waits for a start blocked before server creation and then closes it", async (t) => {
+        const userData = await temporaryShortUserData(t)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        const originalLstat = fs.promises.lstat
+        const originalListen = net.Server.prototype.listen
+        let releasePreparation
+        let preparationEntered
+        let rawServer = null
+        const preparationGate = new Promise((resolve) => {
+            releasePreparation = resolve
+        })
+        const entered = new Promise((resolve) => {
+            preparationEntered = resolve
+        })
+        fs.promises.lstat = async (candidate) => {
+            if (candidate === userData) {
+                preparationEntered()
+                await preparationGate
+            }
+            return originalLstat(candidate)
+        }
+        net.Server.prototype.listen = function listen(...args) {
+            rawServer = this
+            return originalListen.apply(this, args)
+        }
+        let starting
+        let closing
+        try {
+            starting = server.start()
+            await entered
+            closing = server.close()
+            let closeSettled = false
+            closing.then(() => {
+                closeSettled = true
+            }, () => {
+                closeSettled = true
+            })
+            await nextTurn()
+            const settledBeforeRelease = closeSettled
+            releasePreparation()
+            const startOutcome = await starting.then(
+                () => ({status: "fulfilled"}),
+                (error) => ({status: "rejected", error}),
+            )
+            await closing.catch(() => {})
+            assert.equal(settledBeforeRelease, false)
+            assert.equal(startOutcome.status, "rejected")
+            assert.match(startOutcome.error.message, /closed/i)
+        } finally {
+            releasePreparation()
+            fs.promises.lstat = originalLstat
+            net.Server.prototype.listen = originalListen
+            if (rawServer?.listening) await new Promise((resolve) => rawServer.close(resolve))
+        }
+        const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
+        if (fs.existsSync(controlDir)) assert.deepEqual(await fs.promises.readdir(controlDir), [])
+    })
+
+    it("waits for a published start boundary before completing close", async (t) => {
+        const userData = await temporaryShortUserData(t)
+        const socketPath = expectedSocketPath(userData)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        const originalLstat = fs.promises.lstat
+        let releasePublished
+        let publishedEntered
+        let blocked = false
+        const publishedGate = new Promise((resolve) => {
+            releasePublished = resolve
+        })
+        const entered = new Promise((resolve) => {
+            publishedEntered = resolve
+        })
+        fs.promises.lstat = async (candidate) => {
+            if (!blocked && candidate === socketPath && fs.existsSync(socketPath)) {
+                blocked = true
+                publishedEntered()
+                await publishedGate
+            }
+            return originalLstat(candidate)
+        }
+        try {
+            const starting = server.start()
+            await entered
+            const closing = server.close()
+            let closeSettled = false
+            closing.then(() => {
+                closeSettled = true
+            }, () => {
+                closeSettled = true
+            })
+            await nextTurn()
+            const settledBeforeRelease = closeSettled
+            releasePublished()
+            const startOutcome = await starting.then(
+                () => ({status: "fulfilled"}),
+                (error) => ({status: "rejected", error}),
+            )
+            await closing.catch(() => {})
+            assert.equal(settledBeforeRelease, false)
+            assert.equal(startOutcome.status, "rejected")
+            assert.match(startOutcome.error.message, /closed/i)
+        } finally {
+            releasePublished()
+            fs.promises.lstat = originalLstat
+            await server.close().catch(() => {})
+        }
+        assert.deepEqual(
+            (await fs.promises.readdir(path.dirname(socketPath))).filter((name) =>
+                name === CONTROL_SOCKET_NAME || name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+            [],
+        )
+    })
+
+    it("cancels startup while the live socket is being secured", async (t) => {
+        const userData = await temporaryShortUserData(t)
+        const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        const originalChmod = fs.promises.chmod
+        let releaseLiveChmod
+        let liveChmodEntered
+        const gate = new Promise((resolve) => {
+            releaseLiveChmod = resolve
+        })
+        const entered = new Promise((resolve) => {
+            liveChmodEntered = resolve
+        })
+        fs.promises.chmod = async (candidate, mode) => {
+            if (path.basename(candidate).startsWith(CONTROL_SOCKET_LIVE_PREFIX)) {
+                liveChmodEntered()
+                await gate
+            }
+            return originalChmod(candidate, mode)
+        }
+        try {
+            const starting = server.start()
+            await entered
+            const closing = server.close()
+            let closeSettled = false
+            closing.finally(() => {
+                closeSettled = true
+            })
+            await nextTurn()
+            assert.equal(closeSettled, false)
+            releaseLiveChmod()
+            await assert.rejects(starting, /closed/i)
+            await closing
+        } finally {
+            releaseLiveChmod()
+            fs.promises.chmod = originalChmod
+            await server.close().catch(() => {})
+        }
+        assert.deepEqual(
+            (await fs.promises.readdir(controlDir)).filter((name) =>
+                name === CONTROL_SOCKET_NAME || name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+            [],
+        )
+    })
+
     it("publishes one hard-linked socket usable by Node and Electron", async (t) => {
         const userData = await temporaryShortUserData(t)
         const socketPath = expectedSocketPath(userData)
@@ -858,11 +1252,13 @@ describe("owner-only control socket transport", () => {
         assert.equal(publicStat.isSocket(), true)
         assert.equal(publicStat.dev, publication.dev)
         assert.equal(publicStat.ino, publication.ino)
-        assert.deepEqual(
-            (await fs.promises.readdir(controlDir))
-                .filter((name) => name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
-            [],
-        )
+        const liveNames = (await fs.promises.readdir(controlDir))
+            .filter((name) => name.startsWith(CONTROL_SOCKET_LIVE_PREFIX))
+        assert.equal(liveNames.length, 1)
+        const liveStat = await fs.promises.lstat(path.join(controlDir, liveNames[0]))
+        assert.equal(liveStat.isSocket(), true)
+        assert.equal(liveStat.dev, publicStat.dev)
+        assert.equal(liveStat.ino, publicStat.ino)
 
         const electronExecutable = require("electron")
         for (const [runtime, executable] of [
@@ -874,6 +1270,148 @@ describe("owner-only control socket transport", () => {
                 {id: runtime, result: {runtime}},
             )
         }
+        await server.close()
+        assert.deepEqual(
+            (await fs.promises.readdir(controlDir)).filter((name) =>
+                name === CONTROL_SOCKET_NAME || name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+            [],
+        )
+    })
+
+    it("recovers public and live links left by a crashed server", async (t) => {
+        const userData = await temporaryShortUserData(t)
+        const socketPath = expectedSocketPath(userData)
+        const serverModule = require.resolve("../src/control-plane/socket-server.cjs")
+        const source = [
+            'const {ControlSocketServer} = require(process.argv[1])',
+            'const server = new ControlSocketServer({userData: process.argv[2], controlPlane: {invoke: async () => ({})}})',
+            'server.start().then(() => process.stdout.write("ready\\n"), (error) => { process.stderr.write(error.stack); process.exit(1) })',
+            'setInterval(() => {}, 1000)',
+        ].join(";")
+        const child = spawn(process.execPath, ["-e", source, serverModule, userData], {
+            stdio: ["ignore", "pipe", "pipe"],
+        })
+        let stderr = ""
+        child.stderr.on("data", (chunk) => {
+            stderr += chunk.toString("utf8")
+        })
+        await Promise.race([
+            once(child.stdout, "data"),
+            once(child, "exit").then(([code]) => {
+                throw new Error(`crash fixture exited ${code}: ${stderr}`)
+            }),
+        ])
+        child.kill("SIGKILL")
+        await once(child, "exit")
+
+        const controlDir = path.dirname(socketPath)
+        const crashedPublic = await fs.promises.lstat(socketPath)
+        const crashedLiveNames = (await fs.promises.readdir(controlDir))
+            .filter((name) => /^\.l-[A-Za-z0-9_-]{11}$/u.test(name))
+        assert.equal(crashedLiveNames.length, 1)
+        const crashedLive = await fs.promises.lstat(path.join(controlDir, crashedLiveNames[0]))
+        assert.equal(crashedLive.dev, crashedPublic.dev)
+        assert.equal(crashedLive.ino, crashedPublic.ino)
+
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({ok: true})},
+        })
+        await server.start()
+        const replacement = await fs.promises.lstat(socketPath)
+        assert.notEqual(replacement.ino, crashedPublic.ino)
+        await server.close()
+        assert.deepEqual(
+            (await fs.promises.readdir(controlDir)).filter((name) =>
+                name === CONTROL_SOCKET_NAME || name.startsWith(CONTROL_SOCKET_LIVE_PREFIX)),
+            [],
+        )
+    })
+
+    it("refuses active, regular, or symlinked strict live names and ignores other names", async (t) => {
+        for (const kind of ["active", "file", "symlink"]) {
+            await t.test(kind, async (caseTest) => {
+                const userData = await temporaryUserData(caseTest)
+                const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
+                const livePath = path.join(controlDir, ".l-AAAAAAAAAAA")
+                await fs.promises.mkdir(controlDir, {mode: 0o700})
+                let active = null
+                if (kind === "active") {
+                    active = await listenUnixServer(caseTest, livePath, (socket) => socket.end())
+                } else if (kind === "file") {
+                    await fs.promises.writeFile(livePath, "live sentinel")
+                } else {
+                    const target = path.join(userData, "live-target")
+                    await fs.promises.writeFile(target, "target")
+                    await fs.promises.symlink(target, livePath)
+                }
+                const server = new ControlSocketServer({
+                    userData,
+                    controlPlane: {invoke: async () => ({})},
+                })
+                await assert.rejects(server.start(), /active|in use|non-socket|refus/i)
+                const occupant = await fs.promises.lstat(livePath)
+                if (kind === "active") {
+                    assert.equal(active.listening, true)
+                    assert.equal(occupant.isSocket(), true)
+                } else if (kind === "file") {
+                    assert.equal(await fs.promises.readFile(livePath, "utf8"), "live sentinel")
+                } else {
+                    assert.equal(occupant.isSymbolicLink(), true)
+                }
+            })
+        }
+
+        const ignoredUserData = await temporaryUserData(t)
+        const ignoredDir = path.join(ignoredUserData, CONTROL_SOCKET_DIRECTORY)
+        const ignoredPath = path.join(ignoredDir, ".l-not-a-strict-live-name")
+        await fs.promises.mkdir(ignoredDir, {mode: 0o700})
+        await fs.promises.writeFile(ignoredPath, "ignore me")
+        const server = new ControlSocketServer({
+            userData: ignoredUserData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        await server.start()
+        await server.close()
+        assert.equal(await fs.promises.readFile(ignoredPath, "utf8"), "ignore me")
+    })
+
+    it("does not delete a strict live-path replacement raced into quarantine", async (t) => {
+        const userData = await temporaryUserData(t)
+        const controlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY)
+        const livePath = path.join(controlDir, ".l-AAAAAAAAAAA")
+        await fs.promises.mkdir(controlDir, {mode: 0o700})
+        await makeStaleUnixSocket(livePath)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        const originalRenameSync = fs.renameSync
+        let exchanged = false
+        fs.renameSync = (source, destination) => {
+            if (
+                !exchanged && source === livePath &&
+                path.basename(destination).startsWith(".l-stale-")
+            ) {
+                exchanged = true
+                fs.unlinkSync(source)
+                fs.writeFileSync(source, "live replacement", {mode: 0o600})
+            }
+            return originalRenameSync(source, destination)
+        }
+        try {
+            await assert.rejects(server.start(), /changed|quarantine|stale/i)
+        } finally {
+            fs.renameSync = originalRenameSync
+            await server.close().catch(() => {})
+        }
+        assert.equal(exchanged, true)
+        assert.equal(await fs.promises.readFile(livePath, "utf8"), "live replacement")
+        assert.deepEqual(
+            (await fs.promises.readdir(controlDir))
+                .filter((name) => name.startsWith(".l-stale-")),
+            [],
+        )
     })
 
     it("does not depend on private Node server fields", async () => {

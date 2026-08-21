@@ -1,3 +1,5 @@
+const {TextDecoder} = require("node:util")
+
 class JsonLineDecoder {
     constructor(onMessage, onError = () => {}, {maximumBufferBytes = Infinity} = {}) {
         this.onMessage = onMessage
@@ -5,6 +7,8 @@ class JsonLineDecoder {
         this.maximumBufferBytes = maximumBufferBytes
         this.buffer = Buffer.alloc(0)
         this.terminated = false
+        this.paused = false
+        this.textDecoder = new TextDecoder("utf-8", {fatal: true})
     }
 
     push(chunk) {
@@ -14,13 +18,33 @@ class JsonLineDecoder {
         this.buffer = this.buffer.length === 0
             ? Buffer.from(incoming)
             : Buffer.concat([this.buffer, incoming])
+        if (this.paused) {
+            if (this.buffer.length > this.maximumBufferBytes) return this.#overflow()
+            return false
+        }
+        return this.#drain()
+    }
+
+    resume() {
+        if (this.terminated) return false
+        if (!this.paused) return true
+        this.paused = false
+        return this.#drain()
+    }
+
+    #drain() {
         let newline = this.buffer.indexOf(0x0a)
         while (newline >= 0) {
             if (newline > this.maximumBufferBytes) return this.#overflow()
-            const line = this.buffer.subarray(0, newline).toString("utf8").trim()
+            const lineBytes = this.buffer.subarray(0, newline)
             this.buffer = this.buffer.slice(newline + 1)
-            this.#decode(line)
+            const delivered = this.#decode(lineBytes)
             if (this.terminated) return false
+            if (delivered === false) {
+                this.paused = true
+                if (this.buffer.length > this.maximumBufferBytes) return this.#overflow()
+                return false
+            }
             newline = this.buffer.indexOf(0x0a)
         }
         if (this.buffer.length > this.maximumBufferBytes) return this.#overflow()
@@ -31,18 +55,29 @@ class JsonLineDecoder {
         if (chunk !== undefined && !this.push(chunk)) return false
         if (this.terminated) return false
         if (this.buffer.length > this.maximumBufferBytes) return this.#overflow()
-        const line = this.buffer.toString("utf8").trim()
+        const line = this.buffer
         this.buffer = Buffer.alloc(0)
-        this.#decode(line)
-        return !this.terminated
+        const delivered = this.#decode(line)
+        if (delivered === false) this.paused = true
+        return !this.terminated && !this.paused
     }
 
-    #decode(line) {
-        if (!line) return
+    #decode(lineBytes) {
+        let line
         try {
-            this.onMessage(JSON.parse(line))
+            line = this.textDecoder.decode(lineBytes).trim()
+        } catch (error) {
+            this.buffer = Buffer.alloc(0)
+            this.terminated = true
+            this.onError(error, null)
+            return false
+        }
+        if (!line) return true
+        try {
+            return this.onMessage(JSON.parse(line))
         } catch (error) {
             this.onError(error, line)
+            return true
         }
     }
 

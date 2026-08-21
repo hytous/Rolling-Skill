@@ -4,7 +4,7 @@ const path = require("node:path")
 const {randomBytes, randomUUID} = require("node:crypto")
 
 const {JsonLineDecoder} = require("../json-rpc.cjs")
-const {publicControlError} = require("./contracts.cjs")
+const {createPublicControlError, publicControlError} = require("./contracts.cjs")
 
 const CONTROL_SOCKET_DIRECTORY = "control"
 const CONTROL_SOCKET_NAME = "control.sock"
@@ -12,6 +12,7 @@ const CONTROL_SOCKET_QUARANTINE_PREFIX = ".control.sock.stale-"
 const CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX = ".control.sock.close-"
 const CONTROL_SOCKET_LIVE_PREFIX = ".l-"
 const CONTROL_SOCKET_LIVE_CLEANUP_PREFIX = ".l-cleanup-"
+const CONTROL_SOCKET_STALE_LIVE_CLEANUP_PREFIX = ".l-stale-"
 const MAX_CONTROL_LIVE_BIND_ATTEMPTS = 8
 const MAX_CONTROL_SOCKET_PATH_BYTES = process.platform === "linux" ? 107 : 103
 const MAX_CONTROL_MESSAGE_BYTES = 1_048_576
@@ -21,6 +22,8 @@ const MAX_CONTROL_TOKEN_LENGTH = 4_096
 const MAX_CONTROL_SESSION_ID_LENGTH = 200
 const DEFAULT_MAX_IN_FLIGHT_REQUESTS = 32
 const DEFAULT_MAX_QUEUED_RESPONSES = 32
+const DEFAULT_MAX_QUEUED_RESPONSE_BYTES = 4 * MAX_CONTROL_MESSAGE_BYTES
+const CONTROL_SOCKET_LIVE_NAME_PATTERN = /^\.l-[A-Za-z0-9_-]{11}$/
 const FORBIDDEN_OBJECT_KEYS = new Set(["__proto__", "prototype", "constructor"])
 const stateByServer = new WeakMap()
 
@@ -103,7 +106,7 @@ async function existingLstat(candidate) {
     }
 }
 
-async function prepareControlDirectory(userData, configuredControlDir) {
+async function prepareControlDirectory(userData, configuredControlDir, ensureOpen = () => {}) {
     if (typeof userData !== "string" || !path.isAbsolute(userData) || path.resolve(userData) !== userData) {
         throw new Error("userData must be an exact absolute directory")
     }
@@ -113,29 +116,39 @@ async function prepareControlDirectory(userData, configuredControlDir) {
         throw new Error("Control directory must be the exact configured child")
     }
 
+    ensureOpen()
     const userDataStat = await fs.promises.lstat(userData)
+    ensureOpen()
     if (userDataStat.isSymbolicLink() || !userDataStat.isDirectory()) {
         throw new Error("userData must be a real directory")
     }
     checkOwner(userDataStat, "userData")
     const realUserData = await fs.promises.realpath(userData)
+    ensureOpen()
 
     try {
+        ensureOpen()
         await fs.promises.mkdir(controlDir, {mode: 0o700})
     } catch (error) {
         if (error?.code !== "EEXIST") throw error
     }
+    ensureOpen()
     const controlStat = await fs.promises.lstat(controlDir)
+    ensureOpen()
     if (controlStat.isSymbolicLink() || !controlStat.isDirectory()) {
         throw new Error("Control directory must be a real directory, not a symlink")
     }
     checkOwner(controlStat, "Control directory")
     const realControlDir = await fs.promises.realpath(controlDir)
+    ensureOpen()
     if (realControlDir !== path.join(realUserData, CONTROL_SOCKET_DIRECTORY)) {
         throw new Error("Control directory must be the exact configured child")
     }
+    ensureOpen()
     await fs.promises.chmod(controlDir, 0o700)
+    ensureOpen()
     const securedStat = await fs.promises.lstat(controlDir)
+    ensureOpen()
     checkOwner(securedStat, "Control directory")
     if ((securedStat.mode & 0o777) !== 0o700) {
         throw new Error("Control directory permissions are not private")
@@ -169,34 +182,35 @@ function sameFile(left, right) {
     return left.dev === right.dev && left.ino === right.ino
 }
 
-async function removeStaleSocket(socketPath) {
+async function removeStaleSocketAtPath(socketPath, {
+    label,
+    quarantinePrefix,
+    validatePath,
+    ensureOpen = () => {},
+}) {
+    validatePath(socketPath)
+    ensureOpen()
     const initial = await existingLstat(socketPath)
+    ensureOpen()
     if (!initial) return
     if (initial.isSymbolicLink() || !initial.isSocket()) {
-        throw new Error("Refusing to replace a non-socket control socket path")
+        throw new Error(`Refusing to replace a non-socket ${label} path`)
     }
-    checkOwner(initial, "Control socket")
-    if (await probeSocket(socketPath) === "active") {
-        throw new Error("Control socket is active or already in use")
+    checkOwner(initial, label)
+    const socketState = await probeSocket(socketPath)
+    ensureOpen()
+    if (socketState === "active") {
+        throw new Error(`${label} is active or already in use`)
     }
     const current = await existingLstat(socketPath)
+    ensureOpen()
     if (!current) return
     if (!current.isSocket() || !sameFile(initial, current)) {
         throw new Error("Control socket path changed while checking stale state")
     }
-    const controlDir = path.dirname(socketPath)
-    if (path.basename(socketPath) !== CONTROL_SOCKET_NAME) {
-        throw new Error("Control socket path is not the exact configured child")
-    }
-    const quarantinePath = path.join(
-        controlDir,
-        `${CONTROL_SOCKET_QUARANTINE_PREFIX}${process.pid}-${randomUUID()}`,
-    )
-    if (
-        path.dirname(quarantinePath) !== controlDir ||
-        !path.basename(quarantinePath).startsWith(CONTROL_SOCKET_QUARANTINE_PREFIX)
-    ) throw new Error("Control socket quarantine path is invalid")
+    const quarantinePath = controlledSibling(socketPath, quarantinePrefix)
 
+    ensureOpen()
     fs.renameSync(socketPath, quarantinePath)
     const quarantined = await fs.promises.lstat(quarantinePath)
     if (quarantined.isSocket() && sameFile(current, quarantined)) {
@@ -223,6 +237,42 @@ async function removeStaleSocket(socketPath) {
     throw new Error(restored
         ? "Stale control socket changed before quarantine and was restored"
         : "Stale control socket changed before quarantine; replacement remains quarantined")
+}
+
+async function removeStaleSocket(socketPath, ensureOpen) {
+    return removeStaleSocketAtPath(socketPath, {
+        label: "Control socket",
+        quarantinePrefix: CONTROL_SOCKET_QUARANTINE_PREFIX,
+        ensureOpen,
+        validatePath(candidate) {
+            if (path.basename(candidate) !== CONTROL_SOCKET_NAME) {
+                throw new Error("Control socket path is not the exact configured child")
+            }
+        },
+    })
+}
+
+async function removeStaleLiveSockets(controlDir, ensureOpen = () => {}) {
+    ensureOpen()
+    const names = await fs.promises.readdir(controlDir)
+    ensureOpen()
+    for (const name of names) {
+        if (!CONTROL_SOCKET_LIVE_NAME_PATTERN.test(name)) continue
+        ensureOpen()
+        const candidate = path.join(controlDir, name)
+        await removeStaleSocketAtPath(candidate, {
+            label: "Control live socket",
+            quarantinePrefix: CONTROL_SOCKET_STALE_LIVE_CLEANUP_PREFIX,
+            ensureOpen,
+            validatePath(socketPath) {
+                if (
+                    path.dirname(socketPath) !== controlDir ||
+                    !CONTROL_SOCKET_LIVE_NAME_PATTERN.test(path.basename(socketPath))
+                ) throw new Error("Control live socket path is invalid")
+            },
+        })
+        ensureOpen()
+    }
 }
 
 function controlledSibling(candidate, prefix) {
@@ -270,7 +320,7 @@ function listenAtPath(server, socketPath) {
     })
 }
 
-async function listenOnUniqueLivePath(server, controlDir) {
+async function listenOnUniqueLivePath(server, controlDir, ensureOpen = () => {}) {
     let collision = null
     for (let attempt = 0; attempt < MAX_CONTROL_LIVE_BIND_ATTEMPTS; attempt += 1) {
         const candidate = createLiveSocketPath(controlDir)
@@ -278,6 +328,7 @@ async function listenOnUniqueLivePath(server, controlDir) {
             await listenAtPath(server, candidate)
             return candidate
         } catch (error) {
+            ensureOpen()
             if (error?.code !== "EADDRINUSE") throw error
             collision = error
         }
@@ -383,7 +434,38 @@ async function cleanupServerSocketPaths({
     }
 }
 
-function serializeResponse(response) {
+function ensureServerIsOpen(state) {
+    if (state.closed) throw new Error("Control socket server is closed")
+}
+
+async function stopAndCleanupServer(state) {
+    for (const socket of state.connections) socket.destroy()
+    state.connections.clear()
+    let closeError = null
+    try {
+        await closeListeningServer(state.server)
+    } catch (error) {
+        closeError = error
+    }
+    if (closeError && state.server?.listening) throw closeError
+
+    let cleanupError = null
+    try {
+        await cleanupServerSocketPaths(state)
+    } catch (error) {
+        cleanupError = error
+    }
+    if (closeError && cleanupError) {
+        throw new AggregateError(
+            [closeError, cleanupError],
+            "Control socket close and cleanup failed",
+        )
+    }
+    if (closeError) throw closeError
+    if (cleanupError) throw cleanupError
+}
+
+function serializeResponse(response, method) {
     let line
     try {
         line = `${JSON.stringify(response)}\n`
@@ -393,16 +475,33 @@ function serializeResponse(response) {
             error: publicControlError(null),
         })}\n`
     }
-    return line
+    if (Buffer.byteLength(line, "utf8") - 1 <= MAX_CONTROL_MESSAGE_BYTES) {
+        return {line, bytes: Buffer.byteLength(line, "utf8")}
+    }
+    if (!Object.hasOwn(response, "result")) return null
+    let boundedError
+    try {
+        boundedError = publicControlError(createPublicControlError("INVALID_RESULT", {
+            details: {method, issues: [{path: ["limit"]}]},
+        }))
+    } catch {
+        boundedError = publicControlError(null)
+    }
+    line = `${JSON.stringify({id: response.id, error: boundedError})}\n`
+    const bytes = Buffer.byteLength(line, "utf8")
+    if (bytes - 1 > MAX_CONTROL_MESSAGE_BYTES) return null
+    return {line, bytes}
 }
 
 function attachControlSocketConnection(socket, controlPlane, {
     maxInFlightRequests = DEFAULT_MAX_IN_FLIGHT_REQUESTS,
     maxQueuedResponses = DEFAULT_MAX_QUEUED_RESPONSES,
+    maxQueuedResponseBytes = DEFAULT_MAX_QUEUED_RESPONSE_BYTES,
 } = {}) {
     if (
         !Number.isSafeInteger(maxInFlightRequests) || maxInFlightRequests < 1 ||
-        !Number.isSafeInteger(maxQueuedResponses) || maxQueuedResponses < 1
+        !Number.isSafeInteger(maxQueuedResponses) || maxQueuedResponses < 1 ||
+        !Number.isSafeInteger(maxQueuedResponseBytes) || maxQueuedResponseBytes < 1
     ) throw new TypeError("Control socket connection limits must be positive integers")
 
     const state = {
@@ -410,6 +509,7 @@ function attachControlSocketConnection(socket, controlPlane, {
         paused: false,
         outputBackpressured: false,
         responseQueue: [],
+        responseQueueBytes: 0,
         closed: false,
     }
     const pause = () => {
@@ -421,6 +521,7 @@ function attachControlSocketConnection(socket, controlPlane, {
         if (state.closed) return
         state.closed = true
         state.responseQueue.length = 0
+        state.responseQueueBytes = 0
         if (!socket.destroyed) socket.destroy()
     }
     const maybeResume = () => {
@@ -429,6 +530,7 @@ function attachControlSocketConnection(socket, controlPlane, {
             state.inFlight >= maxInFlightRequests ||
             state.outputBackpressured || state.responseQueue.length > 0
         ) return
+        if (!decoder.resume()) return
         state.paused = false
         socket.resume()
     }
@@ -448,57 +550,74 @@ function attachControlSocketConnection(socket, controlPlane, {
             return false
         }
     }
-    const send = (response) => {
+    const send = (response, method) => {
         if (state.closed || socket.destroyed) return
-        const line = serializeResponse(response)
+        const serialized = serializeResponse(response, method)
+        if (!serialized) {
+            close()
+            return
+        }
+        const {line, bytes} = serialized
         if (state.outputBackpressured || state.responseQueue.length > 0) {
-            if (state.responseQueue.length >= maxQueuedResponses) {
+            if (
+                state.responseQueue.length >= maxQueuedResponses ||
+                state.responseQueueBytes + bytes > maxQueuedResponseBytes
+            ) {
                 close()
                 return
             }
-            state.responseQueue.push(line)
+            state.responseQueue.push(serialized)
+            state.responseQueueBytes += bytes
             return
         }
         writeLine(line)
     }
-    const settle = (response) => {
+    const settle = (response, method) => {
         if (state.closed) return
         state.inFlight -= 1
-        send(response)
+        send(response, method)
         maybeResume()
     }
     const decoder = new JsonLineDecoder(
         (message) => {
             if (state.closed || socket.destroyed) return
-            if (state.inFlight >= maxInFlightRequests) {
-                pause()
-                close()
-                return
-            }
             const request = parseRequest(message)
             if (!request) {
                 close()
                 return
             }
             state.inFlight += 1
-            if (state.inFlight >= maxInFlightRequests) pause()
             Promise.resolve()
                 .then(() => controlPlane.invoke(request.invocation))
                 .then(
-                    (result) => settle({id: request.id, result}),
-                    (error) => settle({id: request.id, error: publicControlError(error)}),
+                    (result) => settle(
+                        {id: request.id, result},
+                        request.invocation.method,
+                    ),
+                    (error) => settle(
+                        {id: request.id, error: publicControlError(error)},
+                        request.invocation.method,
+                    ),
                 )
                 .catch(close)
+            if (state.inFlight >= maxInFlightRequests) {
+                pause()
+                return false
+            }
+            return true
         },
         close,
         {maximumBufferBytes: MAX_CONTROL_MESSAGE_BYTES},
     )
-    const onData = (chunk) => decoder.push(chunk)
+    const onData = (chunk) => {
+        if (!decoder.push(chunk)) pause()
+    }
     const onDrain = () => {
         if (state.closed) return
         state.outputBackpressured = false
         while (!state.outputBackpressured && state.responseQueue.length > 0) {
-            const line = state.responseQueue.shift()
+            const {line, bytes} = state.responseQueue.shift()
+            state.responseQueueBytes -= bytes
             if (!writeLine(line)) return
         }
         maybeResume()
@@ -506,6 +625,7 @@ function attachControlSocketConnection(socket, controlPlane, {
     const onClose = () => {
         state.closed = true
         state.responseQueue.length = 0
+        state.responseQueueBytes = 0
     }
     socket.on("data", onData)
     socket.on("drain", onDrain)
@@ -542,37 +662,54 @@ class ControlSocketServer {
 
     start() {
         const state = stateByServer.get(this)
+        if (state.closed) return Promise.reject(new Error("Control socket server is closed"))
         if (state.startPromise) return state.startPromise
         state.startPromise = this.#start(state)
         return state.startPromise
     }
 
     async #start(state) {
-        if (state.closed) throw new Error("Control socket server is closed")
+        ensureServerIsOpen(state)
         if (!state.controlPlane || typeof state.controlPlane.invoke !== "function") {
             throw new Error("A control plane is required")
         }
         const layout = await prepareControlDirectory(
             state.userData,
             state.configuredControlDir,
+            () => ensureServerIsOpen(state),
         )
+        ensureServerIsOpen(state)
         state.socketPath = layout.socketPath
         assertSocketPathWithinBudget(state.socketPath, "Control socket path")
-        await removeStaleSocket(state.socketPath)
+        ensureServerIsOpen(state)
+        await removeStaleLiveSockets(layout.controlDir, () => ensureServerIsOpen(state))
+        ensureServerIsOpen(state)
+        await removeStaleSocket(state.socketPath, () => ensureServerIsOpen(state))
+        ensureServerIsOpen(state)
 
         const server = net.createServer((socket) => this.#accept(state, socket))
         state.server = server
         server.on("error", () => {})
         try {
-            state.bindPath = await listenOnUniqueLivePath(server, layout.controlDir)
+            ensureServerIsOpen(state)
+            state.bindPath = await listenOnUniqueLivePath(
+                server,
+                layout.controlDir,
+                () => ensureServerIsOpen(state),
+            )
+            ensureServerIsOpen(state)
 
             const boundStat = await fs.promises.lstat(state.bindPath)
+            ensureServerIsOpen(state)
             if (!boundStat.isSocket()) throw new Error("Control live socket path is not a socket")
             checkOwner(boundStat, "Control live socket")
             state.socketIdentity = boundStat
 
+            ensureServerIsOpen(state)
             await fs.promises.chmod(state.bindPath, 0o600)
+            ensureServerIsOpen(state)
             const securedStat = await fs.promises.lstat(state.bindPath)
+            ensureServerIsOpen(state)
             if (!securedStat.isSocket() || !sameFile(securedStat, boundStat)) {
                 throw new Error("Control live socket changed while securing permissions")
             }
@@ -582,6 +719,7 @@ class ControlSocketServer {
             }
             state.socketIdentity = securedStat
 
+            ensureServerIsOpen(state)
             try {
                 fs.linkSync(state.bindPath, state.socketPath)
             } catch (error) {
@@ -590,7 +728,9 @@ class ControlSocketServer {
                 })
             }
             state.publicPublished = true
+            ensureServerIsOpen(state)
             const publicStat = await fs.promises.lstat(state.socketPath)
+            ensureServerIsOpen(state)
             if (!publicStat.isSocket() || !sameFile(publicStat, securedStat)) {
                 throw new Error("Published control socket changed identity")
             }
@@ -600,33 +740,22 @@ class ControlSocketServer {
             }
 
             const liveStat = await fs.promises.lstat(state.bindPath)
+            ensureServerIsOpen(state)
             if (!liveStat.isSocket() || !sameFile(liveStat, securedStat)) {
-                throw new Error("Control live socket changed before publication cleanup")
+                throw new Error("Control live socket changed after publication")
             }
-            fs.unlinkSync(state.bindPath)
+            ensureServerIsOpen(state)
             return this
         } catch (error) {
-            let closeError = null
-            try {
-                await closeListeningServer(server)
-            } catch (caught) {
-                closeError = caught
-            }
-            if (closeError && server.listening) {
-                throw new AggregateError(
-                    [error, closeError],
-                    "Control socket startup failed and its server could not close",
-                )
-            }
             let cleanupError = null
             try {
-                await cleanupServerSocketPaths(state)
+                await stopAndCleanupServer(state)
             } catch (caught) {
                 cleanupError = caught
             }
-            if (closeError || cleanupError) {
+            if (cleanupError) {
                 throw new AggregateError(
-                    [error, closeError, cleanupError].filter(Boolean),
+                    [error, cleanupError],
                     "Control socket startup and cleanup failed",
                 )
             }
@@ -653,30 +782,14 @@ class ControlSocketServer {
     }
 
     async #close(state) {
-        for (const socket of state.connections) socket.destroy()
-        state.connections.clear()
-        let closeError = null
-        try {
-            await closeListeningServer(state.server)
-        } catch (error) {
-            closeError = error
+        if (state.startPromise) {
+            try {
+                await state.startPromise
+            } catch {
+                // Startup owns its cleanup; close retries it below for idempotence.
+            }
         }
-        if (closeError && state.server?.listening) throw closeError
-
-        let cleanupError = null
-        try {
-            await cleanupServerSocketPaths(state)
-        } catch (error) {
-            cleanupError = error
-        }
-        if (closeError && cleanupError) {
-            throw new AggregateError(
-                [closeError, cleanupError],
-                "Control socket close and cleanup failed",
-            )
-        }
-        if (closeError) throw closeError
-        if (cleanupError) throw cleanupError
+        await stopAndCleanupServer(state)
     }
 }
 
@@ -688,6 +801,7 @@ module.exports = {
     CONTROL_SOCKET_QUARANTINE_PREFIX,
     DEFAULT_MAX_IN_FLIGHT_REQUESTS,
     DEFAULT_MAX_QUEUED_RESPONSES,
+    DEFAULT_MAX_QUEUED_RESPONSE_BYTES,
     MAX_CONTROL_LIVE_BIND_ATTEMPTS,
     MAX_CONTROL_MESSAGE_BYTES,
     MAX_CONTROL_REQUEST_ID_LENGTH,
