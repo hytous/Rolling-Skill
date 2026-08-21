@@ -9,6 +9,7 @@
 !.env.example
 
 /.local/
+/.worktrees/
 /Rolling Skill.app/
 /rolling-skill-tool
 /Stop Rolling Skill.app/
