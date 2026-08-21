@@ -78,6 +78,89 @@ describe("raw case event store", () => {
         store.close()
     })
 
+    it("assigns monotonic revisions while preserving legacy added and updated events", () => {
+        const {path, store} = fixture()
+        const created = store.add(input("legacy question"))
+        store.update(created.id, {question: "legacy update"})
+        const legacyEvents = readFileSync(path, "utf8")
+            .trim()
+            .split("\n")
+            .map(JSON.parse)
+        delete legacyEvents[0].rawCase.revision
+        delete legacyEvents[1].expectedRevision
+        delete legacyEvents[1].expectedSkillName
+        writeFileSync(path, `${legacyEvents.map(JSON.stringify).join("\n")}\n`, "utf8")
+
+        const reopened = new RawCaseStore(path)
+        const legacyRecord = reopened.get(created.id)
+
+        assert.equal(legacyRecord.question, "legacy update")
+        assert.equal(legacyRecord.revision, 2)
+        reopened.close()
+    })
+
+    it("atomically rejects a stale revision and owner without appending an effective update", () => {
+        const {path, store} = fixture()
+        const created = store.add(input("original"))
+
+        const first = store.updateIfCurrent(created.id, {
+            expectedRevision: created.revision,
+            expectedSkillName: created.skill.name,
+        }, {
+            question: "owner B update",
+            skill: {name: "owner-b"},
+        })
+        const eventCountAfterFirst = readRawCaseEvents(path).events.length
+        let conflict
+        assert.throws(() => store.updateIfCurrent(created.id, {
+            expectedRevision: created.revision,
+            expectedSkillName: created.skill.name,
+        }, {
+            question: "stale owner C update",
+            skill: {name: "owner-c"},
+        }), (error) => {
+            conflict = error
+            return true
+        })
+
+        assert.equal(created.revision, 1)
+        assert.equal(first.revision, 2)
+        assert.equal(first.skill.name, "owner-b")
+        assert.equal(conflict.code, "RAW_CASE_CONFLICT")
+        assert.equal(readRawCaseEvents(path).events.length, eventCountAfterFirst)
+        assert.equal(store.get(created.id).question, "owner B update")
+        assert.equal(store.get(created.id).skill.name, "owner-b")
+        store.close()
+    })
+
+    it("ignores a persisted stale update event during reduction", () => {
+        const {path, store} = fixture()
+        const created = store.add(input("original"))
+        const current = store.updateIfCurrent(created.id, {
+            expectedRevision: created.revision,
+            expectedSkillName: created.skill.name,
+        }, {question: "current"})
+        const staleEvent = {
+            schemaVersion: RAW_CASE_EVENT_SCHEMA,
+            eventId: "stale-event",
+            occurredAt: new Date().toISOString(),
+            type: "updated",
+            rawCaseId: created.id,
+            expectedRevision: 1,
+            expectedSkillName: created.skill.name,
+            changes: {question: "stale replay"},
+        }
+        writeFileSync(path, `${readFileSync(path, "utf8")}${JSON.stringify(staleEvent)}\n`, "utf8")
+
+        const reopened = new RawCaseStore(path)
+        const reduced = reopened.get(created.id)
+
+        assert.equal(current.revision, 2)
+        assert.equal(reduced.revision, 2)
+        assert.equal(reduced.question, "current")
+        reopened.close()
+    })
+
     it("deduplicates pending questions by trimmed text and normalized Skill name", () => {
         const {store} = fixture()
         const first = store.add(input("  同一个问题  "))

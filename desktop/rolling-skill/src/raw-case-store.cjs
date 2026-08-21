@@ -19,6 +19,14 @@ const MAX_SKILL_NAME_LENGTH = 200
 const MAX_SKILL_PATH_LENGTH = 4_000
 const MAX_NOTE_LENGTH = 10_000
 
+class RawCaseConflictError extends Error {
+    constructor() {
+        super("Raw Case changed since it was resolved")
+        this.name = "RawCaseConflictError"
+        this.code = "RAW_CASE_CONFLICT"
+    }
+}
+
 function defaultRawCaseEventsPath({
     homeDirectory = homedir(),
     platform = process.platform,
@@ -101,6 +109,10 @@ function deduplicationKey(input) {
     return `${normalizedSkillName(input.skill?.name)}\u0000${String(input.question ?? "").trim()}`
 }
 
+function recordRevision(value) {
+    return Number.isSafeInteger(value) && value >= 1 ? value : 1
+}
+
 function readRawCaseEvents(path = defaultRawCaseEventsPath()) {
     if (!existsSync(path)) return {events: [], warnings: []}
     const source = readFileSync(path, "utf8")
@@ -133,8 +145,10 @@ function reduceRawCaseEvents(events) {
     for (const event of events) {
         sequence += 1
         if (event.type === "added" && event.rawCase?.id) {
+            const rawCase = jsonCopy(event.rawCase)
             records.set(event.rawCase.id, {
-                ...jsonCopy(event.rawCase),
+                ...rawCase,
+                revision: recordRevision(rawCase.revision),
                 _sequence: sequence,
             })
             continue
@@ -143,12 +157,28 @@ function reduceRawCaseEvents(events) {
         if (!id || !records.has(id)) continue
         if (event.type === "updated") {
             const current = records.get(id)
+            if (
+                Object.hasOwn(event, "expectedRevision") &&
+                (!Number.isSafeInteger(event.expectedRevision) ||
+                    event.expectedRevision < 1 ||
+                    event.expectedRevision !== current.revision)
+            ) {
+                continue
+            }
+            if (
+                Object.hasOwn(event, "expectedSkillName") &&
+                normalizedSkillName(event.expectedSkillName) !==
+                    normalizedSkillName(current.skill?.name)
+            ) {
+                continue
+            }
             records.set(id, {
                 ...current,
                 ...jsonCopy(event.changes ?? {}),
                 id,
                 createdAt: current.createdAt,
                 updatedAt: event.occurredAt ?? current.updatedAt,
+                revision: current.revision + 1,
                 _sequence: current._sequence,
             })
         } else if (event.type === "deleted" || event.type === "dispatched") {
@@ -214,6 +244,7 @@ class RawCaseStore {
             ...normalized,
             createdAt: now,
             updatedAt: now,
+            revision: 1,
         }
         this.append({type: "added", rawCase})
         return publicRecord(rawCase)
@@ -251,6 +282,22 @@ class RawCaseStore {
 
     update(id, changes = {}) {
         const current = this.requireRecord(id)
+        return this.updateIfCurrent(id, {
+            expectedRevision: current.revision,
+            expectedSkillName: current.skill.name,
+        }, changes)
+    }
+
+    updateIfCurrent(id, {expectedRevision, expectedSkillName} = {}, changes = {}) {
+        const current = this.requireRecord(id)
+        if (
+            !Number.isSafeInteger(expectedRevision) ||
+            expectedRevision < 1 ||
+            current.revision !== expectedRevision ||
+            normalizedSkillName(current.skill?.name) !== normalizedSkillName(expectedSkillName)
+        ) {
+            throw new RawCaseConflictError()
+        }
         const normalized = normalizeInput({
             ...current,
             ...changes,
@@ -264,8 +311,16 @@ class RawCaseStore {
             note: normalized.note,
             source: normalized.source,
         }
-        this.append({type: "updated", rawCaseId: current.id, changes: eventChanges})
-        return this.get(current.id)
+        this.append({
+            type: "updated",
+            rawCaseId: current.id,
+            expectedRevision: current.revision,
+            expectedSkillName: current.skill.name,
+            changes: eventChanges,
+        })
+        const updated = this.get(current.id)
+        if (updated?.revision !== current.revision + 1) throw new RawCaseConflictError()
+        return updated
     }
 
     delete(id) {
@@ -343,6 +398,7 @@ module.exports = {
     MAX_BATCH_TEXT_LENGTH,
     MAX_QUESTION_LENGTH,
     RAW_CASE_EVENT_SCHEMA,
+    RawCaseConflictError,
     RawCaseStore,
     defaultRawCaseEventsPath,
     normalizedSkillName,
