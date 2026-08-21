@@ -272,6 +272,33 @@ const forbiddenErrorDetails = z.object({
     scopes: z.array(z.enum(CONTROL_ACTIONS)).max(MAX_PUBLIC_DETAIL_ITEMS).optional(),
 }).strict()
 
+const notFoundErrorDetails = z.object({
+    resource: z.enum([
+        "raw_case",
+        "evaluation_run",
+        "dataset",
+        "case",
+        "skill",
+        "runtime",
+        "model",
+    ]),
+}).strict()
+
+const idempotencyConflictDetails = z.object({
+    method: z.enum(CONTROL_METHODS),
+}).strict()
+
+const approvalRequiredDetails = z.object({
+    action: z.enum(CONTROL_ACTIONS),
+    reason: z.enum([
+        "destructive_action",
+        "release",
+        "installation",
+        "rubric_publish",
+        "budget_expansion",
+    ]),
+}).strict()
+
 const PUBLIC_CONTROL_ERROR_DEFINITIONS = Object.freeze({
     UNKNOWN_CONTROL_METHOD: Object.freeze({
         message: "Unknown control method",
@@ -292,6 +319,56 @@ const PUBLIC_CONTROL_ERROR_DEFINITIONS = Object.freeze({
         message: "Control action is forbidden",
         retryable: false,
         details: forbiddenErrorDetails,
+    }),
+    NOT_FOUND: Object.freeze({
+        message: "Control object was not found",
+        retryable: false,
+        details: notFoundErrorDetails,
+    }),
+    IDEMPOTENCY_CONFLICT: Object.freeze({
+        message: "Idempotency key conflicts with another request",
+        retryable: false,
+        details: idempotencyConflictDetails,
+    }),
+    CONTROL_BUSY: Object.freeze({
+        message: "Control operation is busy",
+        retryable: true,
+        details: z.null(),
+    }),
+    IDEMPOTENCY_CAPACITY: Object.freeze({
+        message: "Idempotency capacity is temporarily unavailable",
+        retryable: true,
+        details: z.null(),
+    }),
+    CAPABILITY_INVALID: Object.freeze({
+        message: "Control capability is invalid",
+        retryable: false,
+        details: z.null(),
+    }),
+    CAPABILITY_REVOKED: Object.freeze({
+        message: "Control capability is revoked",
+        retryable: false,
+        details: z.null(),
+    }),
+    CAPABILITY_EXPIRED: Object.freeze({
+        message: "Control capability is expired",
+        retryable: false,
+        details: z.null(),
+    }),
+    CAPABILITY_SESSION_MISMATCH: Object.freeze({
+        message: "Control capability belongs to another Operator session",
+        retryable: false,
+        details: z.null(),
+    }),
+    CAPABILITY_ACTION_NOT_GRANTED: Object.freeze({
+        message: "Control capability does not grant this action",
+        retryable: false,
+        details: z.null(),
+    }),
+    APPROVAL_REQUIRED: Object.freeze({
+        message: "Control action requires approval",
+        retryable: false,
+        details: approvalRequiredDetails,
     }),
 })
 

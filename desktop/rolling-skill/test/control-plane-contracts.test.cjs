@@ -451,6 +451,51 @@ describe("control-plane contracts", () => {
         )
     })
 
+    it("defines strict safe public errors for control-domain failures", () => {
+        const cases = [
+            ["NOT_FOUND", {resource: "raw_case"}, "Control object was not found", false],
+            ["IDEMPOTENCY_CONFLICT", {method: "raw_cases.enqueue"}, "Idempotency key conflicts with another request", false],
+            ["CONTROL_BUSY", null, "Control operation is busy", true],
+            ["IDEMPOTENCY_CAPACITY", null, "Idempotency capacity is temporarily unavailable", true],
+            ["CAPABILITY_INVALID", null, "Control capability is invalid", false],
+            ["CAPABILITY_REVOKED", null, "Control capability is revoked", false],
+            ["CAPABILITY_EXPIRED", null, "Control capability is expired", false],
+            ["CAPABILITY_SESSION_MISMATCH", null, "Control capability belongs to another Operator session", false],
+            ["CAPABILITY_ACTION_NOT_GRANTED", null, "Control capability does not grant this action", false],
+            ["APPROVAL_REQUIRED", {
+                action: "evaluations.execute",
+                reason: "budget_expansion",
+            }, "Control action requires approval", false],
+        ]
+
+        for (const [code, details, message, retryable] of cases) {
+            const error = createPublicControlError(code, {
+                details,
+                internalMessage: "/private/path bearer-secret",
+            })
+            assert.deepEqual(publicControlError(error), {code, message, retryable, details})
+        }
+
+        for (const invalid of [
+            ["NOT_FOUND", {resource: "filesystem"}],
+            ["NOT_FOUND", {resource: "dataset", id: "/private/dataset"}],
+            ["IDEMPOTENCY_CONFLICT", {method: "unknown.method"}],
+            ["CONTROL_BUSY", {retryAfterMs: 1}],
+            ["CAPABILITY_INVALID", {}],
+            ["APPROVAL_REQUIRED", {action: "evaluations.execute", reason: "arbitrary"}],
+            ["APPROVAL_REQUIRED", {
+                action: "evaluations.execute",
+                reason: "budget_expansion",
+                payload: "secret",
+            }],
+        ]) {
+            assert.throws(
+                () => createPublicControlError(invalid[0], {details: invalid[1]}),
+                /invalid|unrecognized|expected|resource|method|reason|payload/iu,
+            )
+        }
+    })
+
     it("uses a fixed fallback for ordinary errors regardless of message or metadata", () => {
         const secretText = [
             "postgres://admin:password@db.internal/control",
