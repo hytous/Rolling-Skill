@@ -11,6 +11,22 @@ const SCOPE_DEFINITIONS = Object.freeze([
 ])
 
 const ALLOW_WITHOUT_RESERVATION = Object.freeze({decision: "allow", reservation: null})
+const budgetSnapshotBrands = new WeakMap()
+const resolvedScopeBrands = new WeakMap()
+
+const SCOPE_REQUIREMENTS = Object.freeze({
+    "context.get": Object.freeze({mode: "filter", keys: Object.freeze(["runtimeIds"])}),
+    "raw_cases.list": Object.freeze({mode: "filter", keys: Object.freeze(["skillIds"])}),
+    "raw_cases.enqueue": Object.freeze({mode: "access", keys: Object.freeze(["skillIds"])}),
+    "raw_cases.update": Object.freeze({mode: "access", keys: Object.freeze(["skillIds"])}),
+    "raw_cases.dispatch": Object.freeze({mode: "access", keys: Object.freeze(["skillIds"])}),
+    "runtimes.list": Object.freeze({mode: "filter", keys: Object.freeze(["runtimeIds"])}),
+    "datasets.list": Object.freeze({mode: "filter", keys: Object.freeze(["datasetIds"])}),
+    "evaluations.get": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
+    "evaluations.cancel": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
+    "skills.list": Object.freeze({mode: "filter", keys: Object.freeze(["skillIds"])}),
+})
+const RESOLVED_SCOPE_KEYS = Object.freeze(["skillIds", "datasetIds", "runtimeIds"])
 
 const APPROVAL_METHOD_DEFINITIONS = Object.freeze({
     "datasets.delete": Object.freeze({action: "datasets.delete", reason: "destructive_action"}),
@@ -42,6 +58,94 @@ function deepFreeze(value) {
     if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value
     for (const child of Object.values(value)) deepFreeze(child)
     return Object.freeze(value)
+}
+
+function policyIdentifier(value) {
+    return typeof value === "string" &&
+        value.length > 0 &&
+        value.length <= 200 &&
+        value.trim() === value &&
+        /\S/u.test(value) &&
+        !/[\u0000-\u001f\u007f]/u.test(value)
+        ? value
+        : null
+}
+
+function normalizedPolicyIds(value) {
+    if (!Array.isArray(value) || value.length > 256) return null
+    const ids = []
+    const seen = new Set()
+    for (const candidate of value) {
+        const id = policyIdentifier(candidate)
+        if (id === null) return null
+        if (!seen.has(id)) {
+            seen.add(id)
+            ids.push(id)
+        }
+    }
+    return Object.freeze(ids)
+}
+
+function createBudgetSnapshot({capabilityId, sessionId, usage, revision} = {}) {
+    const normalizedCapabilityId = policyIdentifier(capabilityId)
+    const normalizedSessionId = policyIdentifier(sessionId)
+    if (
+        normalizedCapabilityId === null ||
+        normalizedSessionId === null ||
+        typeof usage !== "object" ||
+        usage === null ||
+        !Number.isSafeInteger(usage.runtimeTurns) ||
+        usage.runtimeTurns < 0 ||
+        !Number.isSafeInteger(usage.evaluations) ||
+        usage.evaluations < 0 ||
+        !Number.isSafeInteger(revision) ||
+        revision < 0
+    ) {
+        throw new TypeError("Invalid budget snapshot source data")
+    }
+    const snapshot = deepFreeze({
+        capabilityId: normalizedCapabilityId,
+        sessionId: normalizedSessionId,
+        usage: {
+            runtimeTurns: usage.runtimeTurns,
+            evaluations: usage.evaluations,
+        },
+        revision,
+    })
+    budgetSnapshotBrands.set(snapshot, snapshot)
+    return snapshot
+}
+
+function createResolvedScope(source = {}) {
+    if (typeof source !== "object" || source === null || Array.isArray(source)) {
+        throw new TypeError("Invalid resolved scope source data")
+    }
+    const allowedKeys = new Set(["method", "mode", ...RESOLVED_SCOPE_KEYS])
+    if (Reflect.ownKeys(source).some((key) => typeof key !== "string" || !allowedKeys.has(key))) {
+        throw new TypeError("Invalid resolved scope source data")
+    }
+    const method = policyIdentifier(source.method)
+    if (method === null || (source.mode !== "access" && source.mode !== "filter")) {
+        throw new TypeError("Invalid resolved scope source data")
+    }
+    const ids = {}
+    const provided = []
+    for (const key of RESOLVED_SCOPE_KEYS) {
+        if (Object.hasOwn(source, key)) {
+            const normalized = normalizedPolicyIds(source[key])
+            if (normalized === null) throw new TypeError("Invalid resolved scope source data")
+            ids[key] = normalized
+            provided.push(key)
+        } else {
+            ids[key] = Object.freeze([])
+        }
+    }
+    const scope = deepFreeze({method, mode: source.mode, ...ids})
+    resolvedScopeBrands.set(scope, Object.freeze({
+        scope,
+        provided: Object.freeze(provided),
+    }))
+    return scope
 }
 
 function uniqueStrings(values) {
@@ -125,8 +229,7 @@ function deny(code, message) {
     return Object.freeze({decision: "deny", code, message})
 }
 
-function checkObjectScope(grant, input) {
-    const referenced = canonicalObjectIds(input)
+function checkIdsWithinGrant(grant, referenced) {
     for (const {key, singular} of SCOPE_DEFINITIONS) {
         const granted = new Set(Array.isArray(grant?.scopes?.[key]) ? grant.scopes[key] : [])
         if (referenced[key].some((id) => !granted.has(id))) {
@@ -139,33 +242,127 @@ function checkObjectScope(grant, input) {
     return null
 }
 
-function usageValue(usage, key) {
-    const value = usage?.[key] ?? 0
-    return Number.isSafeInteger(value) && value >= 0 ? value : null
+function scopeRequirement(method, input) {
+    if (method === "evaluations.list" && input?.datasetId === null) {
+        return {mode: "filter", keys: ["datasetIds"]}
+    }
+    return Object.hasOwn(SCOPE_REQUIREMENTS, method) ? SCOPE_REQUIREMENTS[method] : null
 }
 
-function reserveBudget(grant, usage, {budgetKey, usageKey}) {
-    const used = usageValue(usage, usageKey)
+function unresolvedScope() {
+    return deny(
+        "OBJECT_SCOPE_UNRESOLVED",
+        "Object scope could not be resolved for this control method",
+    )
+}
+
+function checkObjectScope(grant, method, input, resolvedScope) {
+    const directDenial = checkIdsWithinGrant(grant, canonicalObjectIds(input))
+    if (directDenial !== null) return {denial: directDenial, scopeFilter: null}
+
+    const requirement = scopeRequirement(method, input)
+    if (requirement === null) return {denial: null, scopeFilter: null}
+
+    const branded =
+        typeof resolvedScope === "object" && resolvedScope !== null
+            ? resolvedScopeBrands.get(resolvedScope)
+            : null
+    if (
+        branded === undefined ||
+        branded === null ||
+        branded.scope.method !== method ||
+        branded.scope.mode !== requirement.mode ||
+        requirement.keys.some((key) =>
+            !branded.provided.includes(key) ||
+            (requirement.mode === "access" && branded.scope[key].length === 0),
+        )
+    ) {
+        return {denial: unresolvedScope(), scopeFilter: null}
+    }
+
+    const resolvedDenial = checkIdsWithinGrant(grant, branded.scope)
+    if (resolvedDenial !== null) return {denial: resolvedDenial, scopeFilter: null}
+
+    if (requirement.mode !== "filter") return {denial: null, scopeFilter: null}
+    const scopeFilter = {}
+    for (const key of requirement.keys) scopeFilter[key] = branded.scope[key]
+    return {denial: null, scopeFilter: deepFreeze(scopeFilter)}
+}
+
+function allowWithoutReservation(scopeFilter) {
+    if (scopeFilter === null) return ALLOW_WITHOUT_RESERVATION
+    return deepFreeze({decision: "allow", reservation: null, scopeFilter})
+}
+
+function trustedBudgetSnapshot(grant, budgetSnapshot) {
+    const snapshot =
+        typeof budgetSnapshot === "object" && budgetSnapshot !== null
+            ? budgetSnapshotBrands.get(budgetSnapshot)
+            : null
+    if (snapshot === undefined || snapshot === null) {
+        return {
+            denial: deny("BUDGET_SNAPSHOT_INVALID", "A trusted budget snapshot is required"),
+            snapshot: null,
+        }
+    }
+    if (snapshot.capabilityId !== grant?.id || snapshot.sessionId !== grant?.sessionId) {
+        return {
+            denial: deny(
+                "BUDGET_SNAPSHOT_MISMATCH",
+                "Budget snapshot belongs to a different capability session",
+            ),
+            snapshot: null,
+        }
+    }
+    return {denial: null, snapshot}
+}
+
+function reserveBudget(grant, snapshot, {budgetKey, usageKey}) {
+    const used = snapshot.usage[usageKey]
     const limit = grant?.budget?.[budgetKey]
-    if (used === null || !Number.isSafeInteger(limit) || limit < 0) {
+    if (!Number.isSafeInteger(limit) || limit < 0) {
         return deny("INVALID_BUDGET_USAGE", "Budget usage is not valid")
     }
-    if (used + 1 > limit) {
+    const requested = used + 1
+    const nextRevision = snapshot.revision + 1
+    if (!Number.isSafeInteger(requested) || !Number.isSafeInteger(nextRevision)) {
+        return deny(
+            "BUDGET_ARITHMETIC_OVERFLOW",
+            "Budget reservation would exceed safe integer bounds",
+        )
+    }
+    if (requested > limit) {
         return deepFreeze({
             decision: "approval_required",
             reason: "budget_expansion",
             requestedScope: {
-                budget: {[budgetKey]: used + 1},
+                budget: {[budgetKey]: requested},
             },
         })
     }
     return deepFreeze({
         decision: "allow",
-        reservation: {budgetKey, usageKey, amount: 1, used, limit},
+        reservation: {
+            capabilityId: snapshot.capabilityId,
+            sessionId: snapshot.sessionId,
+            budgetKey,
+            usageKey,
+            amount: 1,
+            expectedUsed: used,
+            expectedRevision: snapshot.revision,
+            limit,
+        },
     })
 }
 
-function decideControlPolicy({grant, method, action, input, usage = {}} = {}) {
+function decideControlPolicy({
+    grant,
+    method,
+    action,
+    input,
+    budgetSnapshot,
+    resolvedScope,
+} = {}) {
     const definition = policyMethodDefinition(method)
     if (definition === null) {
         return deny("UNKNOWN_CONTROL_METHOD", "Unknown control method")
@@ -183,14 +380,21 @@ function decideControlPolicy({grant, method, action, input, usage = {}} = {}) {
         )
     }
 
-    const scopeDenial = checkObjectScope(grant, input)
-    if (scopeDenial !== null) return scopeDenial
+    const scopeState = checkObjectScope(grant, method, input, resolvedScope)
+    if (scopeState.denial !== null) return scopeState.denial
 
     if (!PHASE_ONE_ACTIONS.has(canonicalAction)) {
         return deny(
             "ACTION_NOT_ALLOWED",
             "Action is not available in control-plane phase one",
         )
+    }
+
+    let budgetState = null
+    if (canonicalAction === "runtime.execute" || canonicalAction === "evaluations.execute") {
+        const trusted = trustedBudgetSnapshot(grant, budgetSnapshot)
+        if (trusted.denial !== null) return trusted.denial
+        budgetState = trusted.snapshot
     }
 
     if (canonicalAction === "runtime.execute") {
@@ -200,16 +404,18 @@ function decideControlPolicy({grant, method, action, input, usage = {}} = {}) {
                 "Action is not available in control-plane phase one",
             )
         }
-        return reserveBudget(grant, usage, {
+        return reserveBudget(grant, budgetState, {
             budgetKey: "maxRuntimeTurns",
             usageKey: "runtimeTurns",
         })
     }
 
     if (canonicalAction === "evaluations.execute") {
-        if (method === "evaluations.cancel") return ALLOW_WITHOUT_RESERVATION
+        if (method === "evaluations.cancel") {
+            return allowWithoutReservation(scopeState.scopeFilter)
+        }
         if (method === "evaluations.start") {
-            return reserveBudget(grant, usage, {
+            return reserveBudget(grant, budgetState, {
                 budgetKey: "maxEvaluations",
                 usageKey: "evaluations",
             })
@@ -220,7 +426,7 @@ function decideControlPolicy({grant, method, action, input, usage = {}} = {}) {
         )
     }
 
-    return ALLOW_WITHOUT_RESERVATION
+    return allowWithoutReservation(scopeState.scopeFilter)
 }
 
 class ControlPolicy {
@@ -235,7 +441,9 @@ function createControlPolicy() {
 
 module.exports = {
     ControlPolicy,
+    createBudgetSnapshot,
     createControlPolicy,
+    createResolvedScope,
     decide: decideControlPolicy,
     decideControlPolicy,
 }

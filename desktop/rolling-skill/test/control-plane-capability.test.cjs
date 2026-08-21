@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict")
+const crypto = require("node:crypto")
 const {describe, it} = require("node:test")
 
 const {
@@ -41,6 +42,16 @@ function captureError(callback, pattern) {
         captured = error
         return pattern.test(error.message)
     })
+    return captured
+}
+
+function captureInvalidRequest(callback) {
+    let captured
+    assert.throws(callback, (error) => {
+        captured = error
+        return true
+    })
+    assert.equal(captured.code, "INVALID_CAPABILITY_REQUEST")
     return captured
 }
 
@@ -95,6 +106,62 @@ describe("control-plane capability store", () => {
             assert.equal(left.byteLength, 32)
             assert.equal(right.byteLength, 32)
         }
+    })
+
+    it("compares first, last, and unknown valid tokens against every live digest", () => {
+        const {store, timingCalls} = createFixture()
+        const first = issueOperator(store)
+        issueOperator(store, {sessionId: "operator-2"})
+        const last = issueOperator(store, {sessionId: "operator-3"})
+        const unknown = "z".repeat(43)
+
+        for (const [token, expectedSessionId] of [
+            [first.token, "operator-1"],
+            [last.token, "operator-3"],
+            [unknown, null],
+        ]) {
+            timingCalls.length = 0
+            if (expectedSessionId === null) {
+                assert.throws(() => store.authorize(token, "raw_cases.read"), /not recognized/u)
+            } else {
+                assert.equal(store.authorize(token, "raw_cases.read").sessionId, expectedSessionId)
+            }
+            assert.equal(timingCalls.length, 3)
+            const expectedDigest = crypto.createHash("sha256").update(token, "utf8").digest()
+            for (const [candidate, stored] of timingCalls) {
+                assert.equal(candidate.byteLength, 32)
+                assert.equal(stored.byteLength, 32)
+                assert.ok(candidate.equals(expectedDigest))
+            }
+        }
+    })
+
+    it("offers injected hash-only record metadata without exposing a token or digest value", () => {
+        let randomCall = 0
+        const observed = []
+        const store = new CapabilityStore({
+            clock: () => 1_800_000_000_000,
+            randomBytes(size) {
+                randomCall += 1
+                return Buffer.alloc(size, randomCall)
+            },
+            recordObserver(metadata) {
+                observed.push(metadata)
+            },
+        })
+        const issued = issueOperator(store)
+
+        assert.equal(observed.length, 1)
+        assert.deepEqual(observed[0], {
+            id: issued.id,
+            storedFields: ["grant", "tokenHash", "revokedAt"],
+            tokenHashByteLength: 32,
+        })
+        assert.ok(Object.isFrozen(observed[0]))
+        assert.ok(Object.isFrozen(observed[0].storedFields))
+        assert.equal(Object.hasOwn(observed[0], "token"), false)
+        assert.equal(Object.hasOwn(observed[0], "tokenHash"), false)
+        assert.equal(JSON.stringify(observed[0]).includes(issued.token), false)
     })
 
     it("binds a token to exactly one expected Operator session", () => {
@@ -199,6 +266,204 @@ describe("control-plane capability store", () => {
             () => issueOperator(store, {rendererSuppliedPath: "/tmp/secret"}),
             /Unknown capability request/u,
         )
+    })
+
+    it("accepts only ordinary own-data records for request, scopes, and budget", () => {
+        const {store} = createFixture()
+        const customPrototype = {inherited: true}
+
+        captureInvalidRequest(() => store.issue(Object.assign(Object.create(customPrototype), {
+            sessionId: "operator-1",
+            actions: ["raw_cases.read"],
+            expiresInMs: minute,
+        })))
+        captureInvalidRequest(() => issueOperator(store, {
+            scopes: Object.assign(Object.create(customPrototype), {
+                skillIds: [],
+                datasetIds: [],
+                runtimeIds: [],
+            }),
+        }))
+        captureInvalidRequest(() => issueOperator(store, {
+            budget: Object.assign(Object.create(customPrototype), {
+                maxRuntimeTurns: 1,
+                maxEvaluations: 1,
+            }),
+        }))
+
+        const nullRecordRequest = Object.assign(Object.create(null), {
+            sessionId: "operator-null-prototype",
+            actions: ["raw_cases.read"],
+            scopes: Object.assign(Object.create(null), {
+                skillIds: ["skill-1"],
+                datasetIds: [],
+                runtimeIds: [],
+            }),
+            expiresInMs: minute,
+            budget: Object.assign(Object.create(null), {
+                maxRuntimeTurns: 0,
+                maxEvaluations: 0,
+            }),
+        })
+        const issued = store.issue(nullRecordRequest)
+        assert.equal(store.authorize(issued.token, "raw_cases.read").sessionId, "operator-null-prototype")
+    })
+
+    it("ignores inherited authority at every optional and required record layer", () => {
+        const {store} = createFixture()
+        const poisoned = {
+            actions: ["raw_cases.read"],
+            sessionId: "inherited-session",
+            expiresInMs: minute,
+            scopes: {skillIds: ["skill-inherited"], datasetIds: [], runtimeIds: []},
+            budget: {maxRuntimeTurns: 99, maxEvaluations: 99},
+            skillIds: ["skill-inherited"],
+            datasetIds: ["dataset-inherited"],
+            runtimeIds: ["runtime-inherited"],
+            maxRuntimeTurns: 99,
+            maxEvaluations: 99,
+        }
+        try {
+            for (const [key, value] of Object.entries(poisoned)) {
+                Object.defineProperty(Object.prototype, key, {
+                    configurable: true,
+                    enumerable: false,
+                    value,
+                })
+            }
+
+            captureInvalidRequest(() => store.issue({}))
+            const withoutOptionalAuthority = store.issue({
+                sessionId: "operator-1",
+                actions: ["raw_cases.read"],
+                expiresInMs: minute,
+            })
+            const firstGrant = store.authorize(withoutOptionalAuthority.token, "raw_cases.read")
+            assert.deepEqual(firstGrant.scopes, {skillIds: [], datasetIds: [], runtimeIds: []})
+            assert.deepEqual(firstGrant.budget, {maxRuntimeTurns: 0, maxEvaluations: 0})
+
+            const emptyOwnRecords = store.issue({
+                sessionId: "operator-2",
+                actions: ["raw_cases.read"],
+                scopes: {},
+                expiresInMs: minute,
+                budget: {},
+            })
+            const secondGrant = store.authorize(emptyOwnRecords.token, "raw_cases.read")
+            assert.deepEqual(secondGrant.scopes, {skillIds: [], datasetIds: [], runtimeIds: []})
+            assert.deepEqual(secondGrant.budget, {maxRuntimeTurns: 0, maxEvaluations: 0})
+        } finally {
+            for (const key of Object.keys(poisoned)) delete Object.prototype[key]
+        }
+    })
+
+    it("rejects accessors without invoking them at any capability record layer", () => {
+        const {store} = createFixture()
+        let getterCalls = 0
+        const topLevel = {
+            sessionId: "operator-1",
+            scopes: {},
+            expiresInMs: minute,
+            budget: {},
+        }
+        Object.defineProperty(topLevel, "actions", {
+            enumerable: true,
+            get() {
+                getterCalls += 1
+                return ["raw_cases.read"]
+            },
+        })
+        const scopes = {datasetIds: [], runtimeIds: []}
+        Object.defineProperty(scopes, "skillIds", {
+            enumerable: true,
+            get() {
+                getterCalls += 1
+                return ["skill-1"]
+            },
+        })
+        const budget = {maxEvaluations: 1}
+        Object.defineProperty(budget, "maxRuntimeTurns", {
+            enumerable: true,
+            get() {
+                getterCalls += 1
+                return 1
+            },
+        })
+
+        captureInvalidRequest(() => store.issue(topLevel))
+        captureInvalidRequest(() => issueOperator(store, {scopes}))
+        captureInvalidRequest(() => issueOperator(store, {budget}))
+        assert.equal(getterCalls, 0)
+    })
+
+    it("uses one descriptor snapshot and never reads capability fields through Proxy get traps", () => {
+        const {store} = createFixture()
+        const target = {
+            sessionId: "operator-1",
+            actions: ["raw_cases.read"],
+            scopes: {skillIds: ["skill-1"], datasetIds: [], runtimeIds: []},
+            expiresInMs: minute,
+            budget: {maxRuntimeTurns: 0, maxEvaluations: 0},
+        }
+        let getCalls = 0
+        const request = new Proxy(target, {
+            get(object, key, receiver) {
+                getCalls += 1
+                if (key === "actions") return ["evaluations.execute"]
+                return Reflect.get(object, key, receiver)
+            },
+        })
+
+        const issued = store.issue(request)
+        assert.equal(getCalls, 0)
+        assert.equal(store.authorize(issued.token, "raw_cases.read").sessionId, "operator-1")
+        assert.throws(
+            () => store.authorize(issued.token, "evaluations.execute"),
+            /not granted/u,
+        )
+    })
+
+    it("rejects sparse, accessor-backed, symbol-extended, and hostile Proxy arrays", () => {
+        const {store} = createFixture()
+        let arrayGetterCalls = 0
+        const accessorActions = []
+        Object.defineProperty(accessorActions, "0", {
+            enumerable: true,
+            get() {
+                arrayGetterCalls += 1
+                return "raw_cases.read"
+            },
+        })
+        const symbolActions = ["raw_cases.read"]
+        symbolActions[Symbol("authority")] = "evaluations.execute"
+        const throwingActions = new Proxy(["raw_cases.read"], {
+            ownKeys() {
+                throw new Error("secret array trap")
+            },
+        })
+
+        for (const actions of [Array(1), accessorActions, symbolActions, throwingActions]) {
+            const error = captureInvalidRequest(() => issueOperator(store, {actions}))
+            assert.doesNotMatch(error.message, /secret array trap/u)
+        }
+        assert.equal(arrayGetterCalls, 0)
+    })
+
+    it("normalizes throwing and revoked Proxy inputs without leaking trap failures", () => {
+        const {store} = createFixture()
+        const throwing = new Proxy({}, {
+            getPrototypeOf() {
+                throw new Error("secret prototype trap")
+            },
+        })
+        const revocable = Proxy.revocable({}, {})
+        revocable.revoke()
+
+        for (const request of [throwing, revocable.proxy]) {
+            const error = captureInvalidRequest(() => store.issue(request))
+            assert.equal(error.code, "INVALID_CAPABILITY_REQUEST")
+            assert.doesNotMatch(error.message, /secret|proxy|revoked/iu)
+        }
     })
 
     it("enforces the positive, finite, integral 24-hour lifetime limit", () => {

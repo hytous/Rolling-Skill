@@ -1,7 +1,11 @@
 const assert = require("node:assert/strict")
 const {describe, it} = require("node:test")
 
-const {createControlPolicy} = require("../src/control-plane/policy.cjs")
+const {
+    createBudgetSnapshot,
+    createControlPolicy,
+    createResolvedScope,
+} = require("../src/control-plane/policy.cjs")
 
 function grant(overrides = {}) {
     return Object.freeze({
@@ -28,6 +32,20 @@ function grant(overrides = {}) {
     })
 }
 
+function budgetSnapshot(authority, overrides = {}) {
+    return createBudgetSnapshot({
+        capabilityId: authority.id,
+        sessionId: authority.sessionId,
+        usage: {runtimeTurns: 0, evaluations: 0},
+        revision: 7,
+        ...overrides,
+    })
+}
+
+function resolvedScope(method, {mode = "access", ...ids} = {}) {
+    return createResolvedScope({method, mode, ...ids})
+}
+
 describe("control-plane policy", () => {
     it("allows granted reads and Raw Case writes without a budget reservation", () => {
         const policy = createControlPolicy()
@@ -50,6 +68,7 @@ describe("control-plane policy", () => {
                 idempotencyKey: "enqueue-1",
                 commit: "renderer-commit",
             },
+            resolvedScope: resolvedScope("raw_cases.enqueue", {skillIds: ["skill-1"]}),
         }), {decision: "allow", reservation: null})
     })
 
@@ -179,47 +198,267 @@ describe("control-plane policy", () => {
         })
     })
 
+    it("fails closed for missing, forged, wrong-method, or incomplete owner resolution", () => {
+        const policy = createControlPolicy()
+        const authority = grant()
+        const request = {
+            grant: authority,
+            method: "raw_cases.update",
+            action: "raw_cases.write",
+            input: {id: "raw-case-1", changes: {note: "updated"}},
+        }
+        const expected = {
+            decision: "deny",
+            code: "OBJECT_SCOPE_UNRESOLVED",
+            message: "Object scope could not be resolved for this control method",
+        }
+
+        assert.deepEqual(policy.decide(request), expected)
+        assert.deepEqual(policy.decide({
+            ...request,
+            resolvedScope: Object.freeze({
+                method: "raw_cases.update",
+                mode: "access",
+                skillIds: Object.freeze(["skill-1"]),
+            }),
+        }), expected)
+        assert.deepEqual(policy.decide({
+            ...request,
+            resolvedScope: resolvedScope("raw_cases.dispatch", {skillIds: ["skill-1"]}),
+        }), expected)
+        assert.deepEqual(policy.decide({
+            ...request,
+            resolvedScope: resolvedScope("raw_cases.update", {skillIds: []}),
+        }), expected)
+        assert.deepEqual(policy.decide({
+            ...request,
+            resolvedScope: resolvedScope("raw_cases.update", {
+                mode: "filter",
+                skillIds: ["skill-1"],
+            }),
+        }), expected)
+    })
+
+    it("denies Raw Case update and dispatch when the resolved owner Skill is outside scope", () => {
+        const policy = createControlPolicy()
+        const authority = grant()
+        const expected = {
+            decision: "deny",
+            code: "OBJECT_OUT_OF_SCOPE",
+            message: "Skill is outside this Operator session",
+        }
+
+        assert.deepEqual(policy.decide({
+            grant: authority,
+            method: "raw_cases.update",
+            action: "raw_cases.write",
+            input: {id: "raw-case-outside", changes: {note: "updated"}},
+            resolvedScope: resolvedScope("raw_cases.update", {skillIds: ["skill-2"]}),
+        }), expected)
+        assert.deepEqual(policy.decide({
+            grant: authority,
+            method: "raw_cases.dispatch",
+            action: "runtime.execute",
+            input: {id: "raw-case-outside", runtime: {runtimeId: "runtime-1"}},
+            resolvedScope: resolvedScope("raw_cases.dispatch", {skillIds: ["skill-2"]}),
+            budgetSnapshot: budgetSnapshot(authority),
+        }), expected)
+    })
+
+    it("denies Evaluation get and cancel when the resolved owner Dataset is outside scope", () => {
+        const policy = createControlPolicy()
+        const authority = grant()
+        const expected = {
+            decision: "deny",
+            code: "OBJECT_OUT_OF_SCOPE",
+            message: "Dataset is outside this Operator session",
+        }
+
+        assert.deepEqual(policy.decide({
+            grant: authority,
+            method: "evaluations.get",
+            action: "evaluations.read",
+            input: {runId: "run-outside"},
+            resolvedScope: resolvedScope("evaluations.get", {datasetIds: ["dataset-2"]}),
+        }), expected)
+        assert.deepEqual(policy.decide({
+            grant: authority,
+            method: "evaluations.cancel",
+            action: "evaluations.execute",
+            input: {runId: "run-outside", idempotencyKey: "cancel-outside"},
+            resolvedScope: resolvedScope("evaluations.cancel", {datasetIds: ["dataset-2"]}),
+            budgetSnapshot: budgetSnapshot(authority),
+        }), expected)
+    })
+
+    it("requires a Dataset filter when evaluations.list has no direct Dataset", () => {
+        const policy = createControlPolicy()
+        const authority = grant()
+        const request = {
+            grant: authority,
+            method: "evaluations.list",
+            action: "evaluations.read",
+            input: {datasetId: null},
+        }
+
+        assert.deepEqual(policy.decide(request), {
+            decision: "deny",
+            code: "OBJECT_SCOPE_UNRESOLVED",
+            message: "Object scope could not be resolved for this control method",
+        })
+        const allowed = policy.decide({
+            ...request,
+            resolvedScope: resolvedScope("evaluations.list", {
+                mode: "filter",
+                datasetIds: ["dataset-1"],
+            }),
+        })
+        assert.deepEqual(allowed, {
+            decision: "allow",
+            reservation: null,
+            scopeFilter: {datasetIds: ["dataset-1"]},
+        })
+        assert.ok(Object.isFrozen(allowed))
+        assert.ok(Object.isFrozen(allowed.scopeFilter))
+        assert.ok(Object.isFrozen(allowed.scopeFilter.datasetIds))
+    })
+
+    it("returns executable filters for every unfiltered phase-one list", () => {
+        const policy = createControlPolicy()
+        const authority = grant()
+        const cases = [
+            ["context.get", "context.read", "runtimeIds", ["runtime-1"]],
+            ["raw_cases.list", "raw_cases.read", "skillIds", ["skill-1"]],
+            ["runtimes.list", "runtimes.read", "runtimeIds", ["runtime-1", "judge-1"]],
+            ["datasets.list", "datasets.read", "datasetIds", ["dataset-1"]],
+            ["skills.list", "skills.read", "skillIds", ["skill-1"]],
+        ]
+
+        for (const [method, action, scopeKey, ids] of cases) {
+            const withoutFilter = policy.decide({grant: authority, method, action, input: {}})
+            assert.equal(withoutFilter.decision, "deny")
+            assert.equal(withoutFilter.code, "OBJECT_SCOPE_UNRESOLVED")
+
+            assert.deepEqual(policy.decide({
+                grant: authority,
+                method,
+                action,
+                input: {},
+                resolvedScope: resolvedScope(method, {mode: "filter", [scopeKey]: ids}),
+            }), {
+                decision: "allow",
+                reservation: null,
+                scopeFilter: {[scopeKey]: ids},
+            })
+        }
+    })
+
+    it("does not turn a branded list filter into authority outside the grant", () => {
+        const policy = createControlPolicy()
+        const authority = grant()
+        const cases = [
+            ["raw_cases.list", "raw_cases.read", "skillIds", "skill-2", "Skill"],
+            ["runtimes.list", "runtimes.read", "runtimeIds", "runtime-2", "Runtime"],
+            ["datasets.list", "datasets.read", "datasetIds", "dataset-2", "Dataset"],
+            ["skills.list", "skills.read", "skillIds", "skill-2", "Skill"],
+        ]
+
+        for (const [method, action, scopeKey, outsideId, type] of cases) {
+            assert.deepEqual(policy.decide({
+                grant: authority,
+                method,
+                action,
+                input: {},
+                resolvedScope: resolvedScope(method, {
+                    mode: "filter",
+                    [scopeKey]: [outsideId],
+                }),
+            }), {
+                decision: "deny",
+                code: "OBJECT_OUT_OF_SCOPE",
+                message: `${type} is outside this Operator session`,
+            })
+        }
+    })
+
+    it("allows valid direct and resolved object paths without widening scope", () => {
+        const policy = createControlPolicy()
+        const authority = grant()
+
+        assert.deepEqual(policy.decide({
+            grant: authority,
+            method: "runtimes.models",
+            action: "runtimes.read",
+            input: {runtimeId: "runtime-1"},
+        }), {decision: "allow", reservation: null})
+        assert.deepEqual(policy.decide({
+            grant: authority,
+            method: "raw_cases.update",
+            action: "raw_cases.write",
+            input: {id: "raw-case-1", changes: {note: "updated"}},
+            resolvedScope: resolvedScope("raw_cases.update", {skillIds: ["skill-1"]}),
+        }), {decision: "allow", reservation: null})
+        assert.deepEqual(policy.decide({
+            grant: authority,
+            method: "evaluations.get",
+            action: "evaluations.read",
+            input: {runId: "run-1"},
+            resolvedScope: resolvedScope("evaluations.get", {datasetIds: ["dataset-1"]}),
+        }), {decision: "allow", reservation: null})
+    })
+
     it("returns a side-effect-free Runtime-turn reservation while budget remains", () => {
         const policy = createControlPolicy()
         const authority = grant()
-        const usage = {runtimeTurns: 3, evaluations: 0}
+        const snapshot = budgetSnapshot(authority, {
+            usage: {runtimeTurns: 3, evaluations: 0},
+        })
 
         const first = policy.decide({
             grant: authority,
             method: "raw_cases.dispatch",
             action: "runtime.execute",
             input: {runtime: {runtimeId: "runtime-1"}},
-            usage,
+            resolvedScope: resolvedScope("raw_cases.dispatch", {skillIds: ["skill-1"]}),
+            budgetSnapshot: snapshot,
         })
         const second = policy.decide({
             grant: authority,
             method: "raw_cases.dispatch",
             action: "runtime.execute",
             input: {runtime: {runtimeId: "runtime-1"}},
-            usage,
+            resolvedScope: resolvedScope("raw_cases.dispatch", {skillIds: ["skill-1"]}),
+            budgetSnapshot: snapshot,
         })
 
         assert.deepEqual(first, {
             decision: "allow",
             reservation: {
+                capabilityId: "cap-1",
+                sessionId: "operator-1",
                 budgetKey: "maxRuntimeTurns",
                 usageKey: "runtimeTurns",
                 amount: 1,
-                used: 3,
+                expectedUsed: 3,
+                expectedRevision: 7,
                 limit: 4,
             },
         })
         assert.deepEqual(second, first)
-        assert.deepEqual(usage, {runtimeTurns: 3, evaluations: 0})
+        assert.deepEqual(snapshot.usage, {runtimeTurns: 3, evaluations: 0})
+        assert.equal(first.reservation.expectedRevision, second.reservation.expectedRevision)
         assert.ok(Object.isFrozen(first))
         assert.ok(Object.isFrozen(first.reservation))
+        assert.ok(Object.isFrozen(snapshot))
+        assert.ok(Object.isFrozen(snapshot.usage))
     })
 
     it("returns an Evaluation reservation while evaluation budget remains", () => {
         const policy = createControlPolicy()
+        const authority = grant()
 
         assert.deepEqual(policy.decide({
-            grant: grant(),
+            grant: authority,
             method: "evaluations.start",
             action: "evaluations.execute",
             input: {
@@ -227,14 +466,17 @@ describe("control-plane policy", () => {
                 runtimeConfigurations: [{runtimeId: "runtime-1"}],
                 judgeConfiguration: {runtimeId: "judge-1"},
             },
-            usage: {runtimeTurns: 0, evaluations: 0},
+            budgetSnapshot: budgetSnapshot(authority),
         }), {
             decision: "allow",
             reservation: {
+                capabilityId: "cap-1",
+                sessionId: "operator-1",
                 budgetKey: "maxEvaluations",
                 usageKey: "evaluations",
                 amount: 1,
-                used: 0,
+                expectedUsed: 0,
+                expectedRevision: 7,
                 limit: 1,
             },
         })
@@ -242,20 +484,24 @@ describe("control-plane policy", () => {
 
     it("requires budget-expansion approval when an execution would exceed its limit", () => {
         const policy = createControlPolicy()
+        const authority = grant()
 
         assert.deepEqual(policy.decide({
-            grant: grant(),
+            grant: authority,
             method: "raw_cases.dispatch",
             action: "runtime.execute",
             input: {runtime: {runtimeId: "runtime-1"}},
-            usage: {runtimeTurns: 4, evaluations: 0},
+            resolvedScope: resolvedScope("raw_cases.dispatch", {skillIds: ["skill-1"]}),
+            budgetSnapshot: budgetSnapshot(authority, {
+                usage: {runtimeTurns: 4, evaluations: 0},
+            }),
         }), {
             decision: "approval_required",
             reason: "budget_expansion",
             requestedScope: {budget: {maxRuntimeTurns: 5}},
         })
         assert.deepEqual(policy.decide({
-            grant: grant(),
+            grant: authority,
             method: "evaluations.start",
             action: "evaluations.execute",
             input: {
@@ -263,7 +509,9 @@ describe("control-plane policy", () => {
                 runtimeConfigurations: [{runtimeId: "runtime-1"}],
                 judgeConfiguration: {runtimeId: "judge-1"},
             },
-            usage: {runtimeTurns: 0, evaluations: 1},
+            budgetSnapshot: budgetSnapshot(authority, {
+                usage: {runtimeTurns: 0, evaluations: 1},
+            }),
         }), {
             decision: "approval_required",
             reason: "budget_expansion",
@@ -273,14 +521,193 @@ describe("control-plane policy", () => {
 
     it("allows cancellation without reserving or expanding execution budget", () => {
         const policy = createControlPolicy()
+        const authority = grant()
 
         assert.deepEqual(policy.decide({
-            grant: grant(),
+            grant: authority,
             method: "evaluations.cancel",
             action: "evaluations.execute",
             input: {runId: "run-1", idempotencyKey: "cancel-1"},
-            usage: {runtimeTurns: 4, evaluations: 1},
+            resolvedScope: resolvedScope("evaluations.cancel", {datasetIds: ["dataset-1"]}),
+            budgetSnapshot: budgetSnapshot(authority, {
+                usage: {runtimeTurns: 4, evaluations: 1},
+            }),
         }), {decision: "allow", reservation: null})
+    })
+
+    it("fails closed when an execution has no branded budget snapshot", () => {
+        const policy = createControlPolicy()
+        const authority = grant()
+        const request = {
+            grant: authority,
+            method: "evaluations.start",
+            action: "evaluations.execute",
+            input: {
+                datasetId: "dataset-1",
+                runtimeConfigurations: [{runtimeId: "runtime-1"}],
+                judgeConfiguration: {runtimeId: "judge-1"},
+            },
+        }
+        const expected = {
+            decision: "deny",
+            code: "BUDGET_SNAPSHOT_INVALID",
+            message: "A trusted budget snapshot is required",
+        }
+
+        assert.deepEqual(policy.decide(request), expected)
+        assert.deepEqual(policy.decide({
+            ...request,
+            budgetSnapshot: Object.freeze({
+                capabilityId: "cap-1",
+                sessionId: "operator-1",
+                usage: Object.freeze({runtimeTurns: 0, evaluations: 0}),
+                revision: 7,
+            }),
+        }), expected)
+    })
+
+    it("rejects a branded budget snapshot owned by another capability or session", () => {
+        const policy = createControlPolicy()
+        const authority = grant()
+        const request = {
+            grant: authority,
+            method: "evaluations.start",
+            action: "evaluations.execute",
+            input: {
+                datasetId: "dataset-1",
+                runtimeConfigurations: [{runtimeId: "runtime-1"}],
+                judgeConfiguration: {runtimeId: "judge-1"},
+            },
+        }
+        const expected = {
+            decision: "deny",
+            code: "BUDGET_SNAPSHOT_MISMATCH",
+            message: "Budget snapshot belongs to a different capability session",
+        }
+
+        assert.deepEqual(policy.decide({
+            ...request,
+            budgetSnapshot: createBudgetSnapshot({
+                capabilityId: "cap-other",
+                sessionId: "operator-1",
+                usage: {runtimeTurns: 0, evaluations: 0},
+                revision: 1,
+            }),
+        }), expected)
+        assert.deepEqual(policy.decide({
+            ...request,
+            budgetSnapshot: createBudgetSnapshot({
+                capabilityId: "cap-1",
+                sessionId: "operator-other",
+                usage: {runtimeTurns: 0, evaluations: 0},
+                revision: 1,
+            }),
+        }), expected)
+    })
+
+    it("keeps budget snapshots independent across capability sessions", () => {
+        const policy = createControlPolicy()
+        const firstGrant = grant()
+        const secondGrant = grant({id: "cap-2", sessionId: "operator-2"})
+        const input = {
+            datasetId: "dataset-1",
+            runtimeConfigurations: [{runtimeId: "runtime-1"}],
+            judgeConfiguration: {runtimeId: "judge-1"},
+        }
+
+        const first = policy.decide({
+            grant: firstGrant,
+            method: "evaluations.start",
+            action: "evaluations.execute",
+            input,
+            budgetSnapshot: budgetSnapshot(firstGrant, {
+                usage: {runtimeTurns: 0, evaluations: 1},
+                revision: 9,
+            }),
+        })
+        const second = policy.decide({
+            grant: secondGrant,
+            method: "evaluations.start",
+            action: "evaluations.execute",
+            input,
+            budgetSnapshot: budgetSnapshot(secondGrant, {revision: 2}),
+        })
+
+        assert.equal(first.decision, "approval_required")
+        assert.equal(second.decision, "allow")
+        assert.equal(second.reservation.capabilityId, "cap-2")
+        assert.equal(second.reservation.sessionId, "operator-2")
+        assert.equal(second.reservation.expectedRevision, 2)
+    })
+
+    it("rejects unsafe budget arithmetic instead of overflowing a reservation or approval", () => {
+        const policy = createControlPolicy()
+        const authority = grant({
+            budget: Object.freeze({
+                maxRuntimeTurns: Number.MAX_SAFE_INTEGER,
+                maxEvaluations: Number.MAX_SAFE_INTEGER,
+            }),
+        })
+        const expected = {
+            decision: "deny",
+            code: "BUDGET_ARITHMETIC_OVERFLOW",
+            message: "Budget reservation would exceed safe integer bounds",
+        }
+
+        assert.deepEqual(policy.decide({
+            grant: authority,
+            method: "evaluations.start",
+            action: "evaluations.execute",
+            input: {
+                datasetId: "dataset-1",
+                runtimeConfigurations: [{runtimeId: "runtime-1"}],
+                judgeConfiguration: {runtimeId: "judge-1"},
+            },
+            budgetSnapshot: budgetSnapshot(authority, {
+                usage: {runtimeTurns: 0, evaluations: Number.MAX_SAFE_INTEGER},
+                revision: 1,
+            }),
+        }), expected)
+        assert.deepEqual(policy.decide({
+            grant: authority,
+            method: "evaluations.start",
+            action: "evaluations.execute",
+            input: {
+                datasetId: "dataset-1",
+                runtimeConfigurations: [{runtimeId: "runtime-1"}],
+                judgeConfiguration: {runtimeId: "judge-1"},
+            },
+            budgetSnapshot: budgetSnapshot(authority, {
+                revision: Number.MAX_SAFE_INTEGER,
+            }),
+        }), expected)
+    })
+
+    it("rejects malformed budget snapshot source data", () => {
+        const authority = grant()
+
+        for (const request of [
+            {
+                capabilityId: authority.id,
+                sessionId: authority.sessionId,
+                usage: {runtimeTurns: 0},
+                revision: 1,
+            },
+            {
+                capabilityId: authority.id,
+                sessionId: authority.sessionId,
+                usage: {runtimeTurns: -1, evaluations: 0},
+                revision: 1,
+            },
+            {
+                capabilityId: authority.id,
+                sessionId: authority.sessionId,
+                usage: {runtimeTurns: 0, evaluations: 0},
+                revision: -1,
+            },
+        ]) {
+            assert.throws(() => createBudgetSnapshot(request), /budget snapshot/iu)
+        }
     })
 
     it("always requires approval for delete, release, install, and Rubric publish", () => {

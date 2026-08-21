@@ -37,17 +37,85 @@ function capabilityRequestError(message) {
     return new CapabilityError("INVALID_CAPABILITY_REQUEST", message)
 }
 
-function assertPlainObject(value, label) {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        throw capabilityRequestError(`${label} must be an object`)
+function dataDescriptor(descriptor) {
+    return descriptor !== undefined && Object.hasOwn(descriptor, "value")
+}
+
+function snapshotRecord(value, label) {
+    try {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            throw capabilityRequestError(`${label} must be a safe plain data record`)
+        }
+        const prototype = Object.getPrototypeOf(value)
+        if (prototype !== Object.prototype && prototype !== null) {
+            throw capabilityRequestError(`${label} must be a safe plain data record`)
+        }
+        const descriptors = Object.getOwnPropertyDescriptors(value)
+        const snapshot = new Map()
+        for (const key of Reflect.ownKeys(descriptors)) {
+            const descriptor = descriptors[key]
+            if (typeof key !== "string" || !dataDescriptor(descriptor)) {
+                throw capabilityRequestError(`${label} must contain only own data properties`)
+            }
+            snapshot.set(key, descriptor.value)
+        }
+        return snapshot
+    } catch (error) {
+        if (error instanceof CapabilityError && error.code === "INVALID_CAPABILITY_REQUEST") {
+            throw error
+        }
+        throw capabilityRequestError(`${label} must be a safe plain data record`)
     }
 }
 
-function assertKnownKeys(value, allowedKeys, message) {
-    const unknown = Reflect.ownKeys(value).find(
-        (key) => typeof key !== "string" || !allowedKeys.has(key),
-    )
-    if (unknown !== undefined) throw capabilityRequestError(message)
+function snapshotArray(value, label, maximum) {
+    try {
+        if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+            throw capabilityRequestError(`${label} must be a safe dense data array`)
+        }
+        const descriptors = Object.getOwnPropertyDescriptors(value)
+        const keys = Reflect.ownKeys(descriptors)
+        const lengthDescriptor = descriptors.length
+        if (
+            !dataDescriptor(lengthDescriptor) ||
+            !Number.isSafeInteger(lengthDescriptor.value) ||
+            lengthDescriptor.value < 0 ||
+            lengthDescriptor.value > maximum ||
+            keys.length !== lengthDescriptor.value + 1 ||
+            keys.some((key) => typeof key !== "string")
+        ) {
+            throw capabilityRequestError(`${label} must be a safe dense data array`)
+        }
+        const snapshot = []
+        for (let index = 0; index < lengthDescriptor.value; index += 1) {
+            const descriptor = descriptors[String(index)]
+            if (!dataDescriptor(descriptor)) {
+                throw capabilityRequestError(`${label} must be a safe dense data array`)
+            }
+            snapshot.push(descriptor.value)
+        }
+        return snapshot
+    } catch (error) {
+        if (error instanceof CapabilityError && error.code === "INVALID_CAPABILITY_REQUEST") {
+            throw error
+        }
+        throw capabilityRequestError(`${label} must be a safe dense data array`)
+    }
+}
+
+function assertKnownKeys(snapshot, allowedKeys, message) {
+    for (const key of snapshot.keys()) {
+        if (!allowedKeys.has(key)) throw capabilityRequestError(message)
+    }
+}
+
+function defineOwnData(target, key, value) {
+    Object.defineProperty(target, key, {
+        configurable: true,
+        enumerable: true,
+        value,
+        writable: true,
+    })
 }
 
 function normalizeIdentifier(value, label) {
@@ -67,12 +135,13 @@ function normalizeIdentifier(value, label) {
 }
 
 function normalizeActions(actions) {
-    if (!Array.isArray(actions) || actions.length < 1 || actions.length > CAPABILITY_ACTIONS.length) {
+    const source = snapshotArray(actions, "Capability actions", CAPABILITY_ACTIONS.length)
+    if (source.length < 1) {
         throw capabilityRequestError("Capability actions must be a non-empty bounded array")
     }
     const normalized = []
     const seen = new Set()
-    for (const action of actions) {
+    for (const action of source) {
         if (typeof action !== "string" || !CAPABILITY_ACTION_SET.has(action)) {
             throw capabilityRequestError("Unknown capability action")
         }
@@ -85,14 +154,10 @@ function normalizeActions(actions) {
 }
 
 function normalizeScopeIds(value, key) {
-    if (!Array.isArray(value) || value.length > MAX_SCOPE_IDS) {
-        throw capabilityRequestError(
-            `${key} must be an array containing at most ${MAX_SCOPE_IDS} identifiers`,
-        )
-    }
+    const source = snapshotArray(value, key, MAX_SCOPE_IDS)
     const normalized = []
     const seen = new Set()
-    for (const id of value) {
+    for (const id of source) {
         const normalizedId = normalizeIdentifier(id, key)
         if (!seen.has(normalizedId)) {
             seen.add(normalizedId)
@@ -102,11 +167,17 @@ function normalizeScopeIds(value, key) {
     return Object.freeze(normalized)
 }
 
-function normalizeScopes(scopes) {
-    assertPlainObject(scopes, "Capability scopes")
-    assertKnownKeys(scopes, SCOPE_KEY_SET, "Unknown capability scope")
+function normalizeScopes(scopes, present) {
+    const snapshot = present ? snapshotRecord(scopes, "Capability scopes") : new Map()
+    assertKnownKeys(snapshot, SCOPE_KEY_SET, "Unknown capability scope")
     const normalized = {}
-    for (const key of SCOPE_KEYS) normalized[key] = normalizeScopeIds(scopes[key] ?? [], key)
+    for (const key of SCOPE_KEYS) {
+        defineOwnData(
+            normalized,
+            key,
+            normalizeScopeIds(snapshot.has(key) ? snapshot.get(key) : [], key),
+        )
+    }
     return Object.freeze(normalized)
 }
 
@@ -117,11 +188,17 @@ function normalizeBudgetLimit(value, key) {
     return value
 }
 
-function normalizeBudget(budget) {
-    assertPlainObject(budget, "Capability budget")
-    assertKnownKeys(budget, BUDGET_KEY_SET, "Unknown capability budget")
+function normalizeBudget(budget, present) {
+    const snapshot = present ? snapshotRecord(budget, "Capability budget") : new Map()
+    assertKnownKeys(snapshot, BUDGET_KEY_SET, "Unknown capability budget")
     const normalized = {}
-    for (const key of BUDGET_KEYS) normalized[key] = normalizeBudgetLimit(budget[key] ?? 0, key)
+    for (const key of BUDGET_KEYS) {
+        defineOwnData(
+            normalized,
+            key,
+            normalizeBudgetLimit(snapshot.has(key) ? snapshot.get(key) : 0, key),
+        )
+    }
     return Object.freeze(normalized)
 }
 
@@ -138,12 +215,14 @@ function normalizeLifetime(expiresInMs) {
 class CapabilityStore {
     #clock
     #randomBytes
+    #recordObserver
     #timingSafeEqual
     #records = new Map()
 
     constructor({
         clock = Date.now,
         randomBytes = crypto.randomBytes,
+        recordObserver = null,
         timingSafeEqual = crypto.timingSafeEqual,
     } = {}) {
         if (typeof clock !== "function") throw new TypeError("clock must be a function")
@@ -151,8 +230,12 @@ class CapabilityStore {
         if (typeof timingSafeEqual !== "function") {
             throw new TypeError("timingSafeEqual must be a function")
         }
+        if (recordObserver !== null && typeof recordObserver !== "function") {
+            throw new TypeError("recordObserver must be a function or null")
+        }
         this.#clock = clock
         this.#randomBytes = randomBytes
+        this.#recordObserver = recordObserver
         this.#timingSafeEqual = timingSafeEqual
     }
 
@@ -184,14 +267,14 @@ class CapabilityStore {
     }
 
     issue(request) {
-        assertPlainObject(request, "Capability request")
-        assertKnownKeys(request, REQUEST_KEYS, "Unknown capability request field")
+        const snapshot = snapshotRecord(request, "Capability request")
+        assertKnownKeys(snapshot, REQUEST_KEYS, "Unknown capability request field")
 
-        const sessionId = normalizeIdentifier(request.sessionId, "sessionId")
-        const actions = normalizeActions(request.actions)
-        const scopes = normalizeScopes(request.scopes ?? {})
-        const budget = normalizeBudget(request.budget ?? {})
-        const expiresInMs = normalizeLifetime(request.expiresInMs)
+        const sessionId = normalizeIdentifier(snapshot.get("sessionId"), "sessionId")
+        const actions = normalizeActions(snapshot.get("actions"))
+        const scopes = normalizeScopes(snapshot.get("scopes"), snapshot.has("scopes"))
+        const budget = normalizeBudget(snapshot.get("budget"), snapshot.has("budget"))
+        const expiresInMs = normalizeLifetime(snapshot.get("expiresInMs"))
         const issuedAt = this.#now()
 
         let token
@@ -215,7 +298,15 @@ class CapabilityStore {
             issuedAt,
             expiresAt: issuedAt + expiresInMs,
         })
-        this.#records.set(id, {grant, tokenHash, revokedAt: null})
+        const record = {grant, tokenHash, revokedAt: null}
+        if (this.#recordObserver !== null) {
+            this.#recordObserver(Object.freeze({
+                id,
+                storedFields: Object.freeze(Object.keys(record)),
+                tokenHashByteLength: tokenHash.byteLength,
+            }))
+        }
+        this.#records.set(id, record)
 
         return Object.freeze({...grant, token})
     }
