@@ -3,6 +3,7 @@ const fs = require("node:fs")
 const net = require("node:net")
 const os = require("node:os")
 const path = require("node:path")
+const {createHash} = require("node:crypto")
 const {spawn} = require("node:child_process")
 const {EventEmitter, once} = require("node:events")
 const {describe, it} = require("node:test")
@@ -73,8 +74,26 @@ function expectedSocketPath(userData) {
     return path.join(userData, CONTROL_SOCKET_DIRECTORY, CONTROL_SOCKET_NAME)
 }
 
-function publicRecoveryName(stat, suffix = "AAAAAAAAAAA") {
-    return `.p-${stat.dev.toString(16)}-${stat.ino.toString(16)}-${suffix}`
+function publicRecoveryName(stat, stage = 0) {
+    const digest = createHash("sha256")
+        .update(`${stat.dev}:${stat.ino}`)
+        .digest()
+    return `.p-${digest.subarray(stage * 9, (stage + 1) * 9).toString("base64url")}`
+}
+
+async function userDataForPublicPathBytes(t, targetBytes) {
+    const parent = await fs.promises.mkdtemp(path.join("/tmp", "rolling-budget-"))
+    t.after(async () => {
+        await fs.promises.rm(parent, {recursive: true, force: true})
+    })
+    const publicSuffix = path.join(CONTROL_SOCKET_DIRECTORY, CONTROL_SOCKET_NAME)
+    const nestedLength = targetBytes -
+        Buffer.byteLength(`${parent}${path.sep}${publicSuffix}`, "utf8") - 1
+    assert.ok(nestedLength > 0)
+    const userData = path.join(parent, "x".repeat(nestedLength))
+    await fs.promises.mkdir(userData, {mode: 0o700})
+    assert.equal(Buffer.byteLength(expectedSocketPath(userData), "utf8"), targetBytes)
+    return userData
 }
 
 async function waitFor(predicate, message = "condition was not met") {
@@ -412,7 +431,10 @@ describe("owner-only control socket transport", () => {
     })
 
     it("recovers an identity-named public socket after close crashes following quarantine", async (t) => {
-        const userData = await temporaryShortUserData(t)
+        const userData = await userDataForPublicPathBytes(
+            t,
+            MAX_CONTROL_SOCKET_PATH_BYTES - 4,
+        )
         const socketPath = expectedSocketPath(userData)
         const serverModule = require.resolve("../src/control-plane/socket-server.cjs")
         const source = [
@@ -455,10 +477,8 @@ describe("owner-only control socket transport", () => {
         const recoveryPath = path.join(controlDir, recoveryNames[0])
         const recoveryStat = await fs.promises.lstat(recoveryPath)
         assert.equal(recoveryStat.isSocket(), true)
-        assert.equal(
-            recoveryNames[0].startsWith(publicRecoveryName(recoveryStat, "")),
-            true,
-        )
+        assert.equal(recoveryNames[0], publicRecoveryName(recoveryStat))
+        assert.equal(Buffer.byteLength(recoveryNames[0], "utf8"), 15)
         await assert.rejects(fs.promises.lstat(socketPath), {code: "ENOENT"})
 
         const server = new ControlSocketServer({
@@ -466,6 +486,16 @@ describe("owner-only control socket transport", () => {
             controlPlane: {invoke: async () => ({ok: true})},
         })
         await server.start()
+        const electronExecutable = require("electron")
+        for (const [runtime, executable] of [
+            ["node-budget-recovery", process.execPath],
+            ["electron-budget-recovery", electronExecutable],
+        ]) {
+            assert.deepEqual(
+                await invokeControlSocketFrom(executable, socketPath, runtime),
+                {id: runtime, result: {ok: true}},
+            )
+        }
         await server.close()
         assert.deepEqual(
             (await fs.promises.readdir(controlDir)).filter((name) =>
@@ -519,10 +549,7 @@ describe("owner-only control socket transport", () => {
         assert.equal(recoveryStat.isSocket(), true)
         assert.equal(recoveryStat.dev, preparedStat.dev)
         assert.equal(recoveryStat.ino, preparedStat.ino)
-        assert.equal(
-            recoveryNames[0].startsWith(publicRecoveryName(recoveryStat, "")),
-            true,
-        )
+        assert.equal(recoveryNames[0], publicRecoveryName(recoveryStat, 1))
 
         const server = new ControlSocketServer({
             userData,
@@ -1954,6 +1981,38 @@ describe("owner-only control socket transport", () => {
         }
     })
 
+    it("never overwrites a different inode occupying its public recovery fingerprint", async (t) => {
+        const userData = await temporaryShortUserData(t)
+        const server = new ControlSocketServer({
+            userData,
+            controlPlane: {invoke: async () => ({})},
+        })
+        await server.start()
+        const socketPath = server.socketPath
+        const controlDir = path.dirname(socketPath)
+        const serverIdentity = await fs.promises.lstat(socketPath)
+        const preparedPath = path.join(controlDir, "prepared-recovery.sock")
+        await makeStaleUnixSocket(preparedPath)
+        const occupantIdentity = await fs.promises.lstat(preparedPath)
+        assert.equal(
+            occupantIdentity.dev === serverIdentity.dev &&
+                occupantIdentity.ino === serverIdentity.ino,
+            false,
+        )
+        const recoveryPath = path.join(controlDir, publicRecoveryName(serverIdentity))
+        await fs.promises.rename(preparedPath, recoveryPath)
+
+        await assert.rejects(server.close(), /public|recovery|fingerprint|occupied|collision/i)
+        const preserved = await fs.promises.lstat(recoveryPath)
+        assert.equal(preserved.isSocket(), true)
+        assert.equal(preserved.dev, occupantIdentity.dev)
+        assert.equal(preserved.ino, occupantIdentity.ino)
+        const publicSocket = await fs.promises.lstat(socketPath)
+        assert.equal(publicSocket.dev, serverIdentity.dev)
+        assert.equal(publicSocket.ino, serverIdentity.ino)
+        await assert.rejects(connectRaw(socketPath))
+    })
+
     it("quarantines a replacement created after the close callback", async (t) => {
         const {server} = await startControlServer(t, {invoke: async () => ({})})
         const socketPath = server.socketPath
@@ -2058,10 +2117,7 @@ describe("owner-only control socket transport", () => {
         const quarantines = (await fs.promises.readdir(controlDir))
             .filter((name) => name.startsWith(CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX))
         assert.equal(quarantines.length, 1)
-        assert.equal(
-            quarantines[0].startsWith(publicRecoveryName(serverIdentity, "")),
-            true,
-        )
+        assert.equal(quarantines[0], publicRecoveryName(serverIdentity))
         assert.equal(
             await fs.promises.readFile(path.join(controlDir, quarantines[0]), "utf8"),
             "quarantined-close-replacement",
@@ -2211,7 +2267,7 @@ describe("owner-only control socket transport", () => {
         assert.deepEqual(await fs.promises.readdir(controlDir), [])
     })
 
-    it("rejects over-budget public and bind namespace paths without leftovers", async (t) => {
+    it("rejects an over-budget socket layout before binding and without artifacts", async (t) => {
         const expectedMaximum = process.platform === "linux" ? 107 : 103
         assert.equal(MAX_CONTROL_SOCKET_PATH_BYTES, expectedMaximum)
         assert.equal(
@@ -2219,39 +2275,32 @@ describe("owner-only control socket transport", () => {
             Buffer.byteLength(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX),
         )
         for (const [kind, targetPublicBytes] of [
-            ["bind", expectedMaximum - 1],
+            ["private-and-recovery", expectedMaximum - 2],
             ["public", expectedMaximum + 1],
         ]) {
             await t.test(kind, async (pathTest) => {
-                const parent = await fs.promises.mkdtemp(path.join("/tmp", "rolling-long-"))
-                pathTest.after(async () => {
-                    await fs.promises.rm(parent, {recursive: true, force: true})
-                })
-                const publicSuffix = path.join("control", CONTROL_SOCKET_NAME)
-                const nestedLength = targetPublicBytes -
-                    Buffer.byteLength(`${parent}${path.sep}${publicSuffix}`, "utf8") - 1
-                assert.ok(nestedLength > 0)
-                const userData = path.join(parent, "x".repeat(nestedLength))
-                await fs.promises.mkdir(userData, {mode: 0o700})
+                const userData = await userDataForPublicPathBytes(pathTest, targetPublicBytes)
                 const socketPath = expectedSocketPath(userData)
-                assert.equal(Buffer.byteLength(socketPath, "utf8"), targetPublicBytes)
                 const server = new ControlSocketServer({
                     userData,
                     controlPlane: {invoke: async () => ({})},
                 })
+                const originalCreateServer = net.createServer
+                let serverCreations = 0
+                net.createServer = (...args) => {
+                    serverCreations += 1
+                    return originalCreateServer(...args)
+                }
                 try {
                     await assert.rejects(server.start(), /socket path.*too long|path budget/i)
                 } finally {
+                    net.createServer = originalCreateServer
                     await server.close().catch(() => {})
                 }
+                assert.equal(serverCreations, 0)
                 const controlDir = path.dirname(socketPath)
                 if (fs.existsSync(controlDir)) {
-                    assert.deepEqual(
-                        (await fs.promises.readdir(controlDir)).filter((name) =>
-                            name === CONTROL_SOCKET_NAME ||
-                            name.startsWith(CONTROL_SOCKET_BIND_DIRECTORY_PREFIX)),
-                        [],
-                    )
+                    assert.deepEqual(await fs.promises.readdir(controlDir), [])
                 }
             })
         }

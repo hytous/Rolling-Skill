@@ -1,7 +1,7 @@
 const fs = require("node:fs")
 const net = require("node:net")
 const path = require("node:path")
-const {randomBytes, randomUUID} = require("node:crypto")
+const {createHash, randomBytes, randomUUID, timingSafeEqual} = require("node:crypto")
 
 const {JsonLineDecoder} = require("../json-rpc.cjs")
 const {createPublicControlError, publicControlError} = require("./contracts.cjs")
@@ -26,7 +26,9 @@ const DEFAULT_MAX_QUEUED_RESPONSES = 32
 const DEFAULT_MAX_QUEUED_RESPONSE_BYTES = 4 * MAX_CONTROL_MESSAGE_BYTES
 const CONTROL_SOCKET_BIND_DIRECTORY_PATTERN = /^\.b-[A-Za-z0-9_-]{11}$/
 const CONTROL_SOCKET_BIND_RECOVERY_PATTERN = /^\.r-[A-Za-z0-9_-]{11}$/
-const CONTROL_SOCKET_PUBLIC_RECOVERY_PATTERN = /^\.p-([0-9a-f]+)-([0-9a-f]+)-([A-Za-z0-9_-]{11})$/
+const CONTROL_SOCKET_PUBLIC_RECOVERY_PATTERN = /^\.p-([A-Za-z0-9_-]{12})$/
+const CONTROL_SOCKET_PUBLIC_RECOVERY_FINGERPRINT_BYTES = 9
+const CONTROL_SOCKET_PUBLIC_RECOVERY_STAGES = 2
 const FORBIDDEN_OBJECT_KEYS = new Set(["__proto__", "prototype", "constructor"])
 const stateByServer = new WeakMap()
 
@@ -271,33 +273,86 @@ function assertSocketPathWithinBudget(candidate, label) {
     }
 }
 
+function assertControlSocketLayoutWithinBudget(controlDir, socketPath) {
+    const bindSuffix = "A".repeat(11)
+    const candidates = [
+        [socketPath, "Control socket path"],
+        [
+            path.join(
+                controlDir,
+                `${CONTROL_SOCKET_BIND_DIRECTORY_PREFIX}${bindSuffix}`,
+                CONTROL_SOCKET_BIND_NAME,
+            ),
+            "Control bind socket path",
+        ],
+        [
+            path.join(
+                controlDir,
+                `${CONTROL_SOCKET_BIND_RECOVERY_PREFIX}${bindSuffix}`,
+                CONTROL_SOCKET_BIND_NAME,
+            ),
+            "Control bind recovery socket path",
+        ],
+        [
+            path.join(
+                controlDir,
+                `${CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX}${"A".repeat(12)}`,
+            ),
+            "Control public recovery socket path",
+        ],
+    ]
+    for (const [candidate, label] of candidates) {
+        assertSocketPathWithinBudget(candidate, label)
+    }
+}
+
 function randomBindSuffix() {
     return randomBytes(8).toString("base64url")
 }
 
-function publicRecoveryName(identity) {
-    return `${CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX}${identity.dev.toString(16)}-${identity.ino.toString(16)}-${randomBindSuffix()}`
+function publicRecoveryFingerprints(identity) {
+    const digest = createHash("sha256")
+        .update(`${identity.dev}:${identity.ino}`)
+        .digest()
+    return Array.from({length: CONTROL_SOCKET_PUBLIC_RECOVERY_STAGES}, (_, stage) =>
+        digest.subarray(
+            stage * CONTROL_SOCKET_PUBLIC_RECOVERY_FINGERPRINT_BYTES,
+            (stage + 1) * CONTROL_SOCKET_PUBLIC_RECOVERY_FINGERPRINT_BYTES,
+        ))
 }
 
-function publicRecoveryIdentityMatches(name, identity) {
-    const match = CONTROL_SOCKET_PUBLIC_RECOVERY_PATTERN.exec(name)
-    return Boolean(match) &&
-        match[1] === identity.dev.toString(16) &&
-        match[2] === identity.ino.toString(16)
-}
-
-function createPublicRecoveryPath(socketPath, identity) {
-    const controlDir = path.dirname(socketPath)
-    for (let attempt = 0; attempt < MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS; attempt += 1) {
-        const candidate = path.join(controlDir, publicRecoveryName(identity))
-        try {
-            fs.lstatSync(candidate)
-        } catch (error) {
-            if (error?.code === "ENOENT") return candidate
-            throw error
-        }
+function publicRecoveryName(identity, stage = 0) {
+    const fingerprints = publicRecoveryFingerprints(identity)
+    if (!Number.isInteger(stage) || stage < 0 || stage >= fingerprints.length) {
+        throw new Error("Control public recovery stage is invalid")
     }
-    throw new Error("Control public recovery collisions exhausted the creation limit")
+    return `${CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX}${fingerprints[stage].toString("base64url")}`
+}
+
+function publicRecoveryStage(name, identity) {
+    const match = CONTROL_SOCKET_PUBLIC_RECOVERY_PATTERN.exec(name)
+    if (!match) return -1
+    const actual = Buffer.from(match[1], "base64url")
+    let matchingStage = -1
+    for (const [stage, expected] of publicRecoveryFingerprints(identity).entries()) {
+        const matches = actual.length === expected.length && timingSafeEqual(actual, expected)
+        if (matches) matchingStage = stage
+    }
+    return matchingStage
+}
+
+function createPublicRecoveryPath(socketPath, identity, stage = 0) {
+    const controlDir = path.dirname(socketPath)
+    const candidate = path.join(controlDir, publicRecoveryName(identity, stage))
+    try {
+        const existing = fs.lstatSync(candidate)
+        throw new Error(sameFile(existing, identity)
+            ? "Control public recovery fingerprint is already occupied"
+            : "Control public recovery fingerprint is occupied by a different identity")
+    } catch (error) {
+        if (error?.code === "ENOENT") return candidate
+        throw error
+    }
 }
 
 function validatePublicRecoveryPath(candidate, controlDir) {
@@ -319,7 +374,8 @@ async function recoverPublicSocket(candidate, ensureOpen = () => {}) {
         throw new Error("Refusing non-socket control public recovery evidence")
     }
     checkOwner(initial, "Control public recovery socket")
-    if (!publicRecoveryIdentityMatches(path.basename(candidate), initial)) {
+    const initialStage = publicRecoveryStage(path.basename(candidate), initial)
+    if (initialStage < 0) {
         throw new Error("Control public recovery socket identity does not match its name")
     }
     const socketState = await probeSocket(candidate)
@@ -333,11 +389,12 @@ async function recoverPublicSocket(candidate, ensureOpen = () => {}) {
     if (
         current.isSymbolicLink() || !current.isSocket() ||
         !sameFile(current, initial) ||
-        !publicRecoveryIdentityMatches(path.basename(candidate), current)
+        publicRecoveryStage(path.basename(candidate), current) !== initialStage
     ) throw new Error("Control public recovery changed while checking stale state")
     checkOwner(current, "Control public recovery socket")
 
-    const cleanupPath = createPublicRecoveryPath(candidate, current)
+    const cleanupStage = (initialStage + 1) % CONTROL_SOCKET_PUBLIC_RECOVERY_STAGES
+    const cleanupPath = createPublicRecoveryPath(candidate, current, cleanupStage)
     ensureOpen()
     try {
         fs.renameSync(candidate, cleanupPath)
@@ -349,7 +406,7 @@ async function recoverPublicSocket(candidate, ensureOpen = () => {}) {
     if (
         cleanup.isSymbolicLink() || !cleanup.isSocket() ||
         !sameFile(cleanup, current) ||
-        !publicRecoveryIdentityMatches(path.basename(cleanupPath), cleanup)
+        publicRecoveryStage(path.basename(cleanupPath), cleanup) !== cleanupStage
     ) {
         throw new Error("Control public recovery changed after cleanup rename")
     }
@@ -1072,7 +1129,7 @@ class ControlSocketServer {
         )
         ensureServerIsOpen(state)
         state.socketPath = layout.socketPath
-        assertSocketPathWithinBudget(state.socketPath, "Control socket path")
+        assertControlSocketLayoutWithinBudget(layout.controlDir, state.socketPath)
         ensureServerIsOpen(state)
         await recoverPublicSockets(layout.controlDir, () => ensureServerIsOpen(state))
         ensureServerIsOpen(state)
