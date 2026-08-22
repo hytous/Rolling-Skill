@@ -10,6 +10,7 @@ const CONTROL_SOCKET_DIRECTORY = "control"
 const CONTROL_SOCKET_NAME = "control.sock"
 const CONTROL_SOCKET_QUARANTINE_PREFIX = ".control.sock.stale-"
 const CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX = ".control.sock.close-"
+const CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX = ".p-"
 const CONTROL_SOCKET_BIND_DIRECTORY_PREFIX = ".b-"
 const CONTROL_SOCKET_BIND_RECOVERY_PREFIX = ".r-"
 const CONTROL_SOCKET_BIND_NAME = "s"
@@ -25,6 +26,7 @@ const DEFAULT_MAX_QUEUED_RESPONSES = 32
 const DEFAULT_MAX_QUEUED_RESPONSE_BYTES = 4 * MAX_CONTROL_MESSAGE_BYTES
 const CONTROL_SOCKET_BIND_DIRECTORY_PATTERN = /^\.b-[A-Za-z0-9_-]{11}$/
 const CONTROL_SOCKET_BIND_RECOVERY_PATTERN = /^\.r-[A-Za-z0-9_-]{11}$/
+const CONTROL_SOCKET_PUBLIC_RECOVERY_PATTERN = /^\.p-([0-9a-f]+)-([0-9a-f]+)-([A-Za-z0-9_-]{11})$/
 const FORBIDDEN_OBJECT_KEYS = new Set(["__proto__", "prototype", "constructor"])
 const stateByServer = new WeakMap()
 
@@ -273,6 +275,102 @@ function randomBindSuffix() {
     return randomBytes(8).toString("base64url")
 }
 
+function publicRecoveryName(identity) {
+    return `${CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX}${identity.dev.toString(16)}-${identity.ino.toString(16)}-${randomBindSuffix()}`
+}
+
+function publicRecoveryIdentityMatches(name, identity) {
+    const match = CONTROL_SOCKET_PUBLIC_RECOVERY_PATTERN.exec(name)
+    return Boolean(match) &&
+        match[1] === identity.dev.toString(16) &&
+        match[2] === identity.ino.toString(16)
+}
+
+function createPublicRecoveryPath(socketPath, identity) {
+    const controlDir = path.dirname(socketPath)
+    for (let attempt = 0; attempt < MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS; attempt += 1) {
+        const candidate = path.join(controlDir, publicRecoveryName(identity))
+        try {
+            fs.lstatSync(candidate)
+        } catch (error) {
+            if (error?.code === "ENOENT") return candidate
+            throw error
+        }
+    }
+    throw new Error("Control public recovery collisions exhausted the creation limit")
+}
+
+function validatePublicRecoveryPath(candidate, controlDir) {
+    if (
+        path.dirname(candidate) !== controlDir ||
+        !CONTROL_SOCKET_PUBLIC_RECOVERY_PATTERN.test(path.basename(candidate))
+    ) throw new Error("Control public recovery path is invalid")
+}
+
+async function recoverPublicSocket(candidate, ensureOpen = () => {}) {
+    const controlDir = path.dirname(candidate)
+    validatePublicRecoveryPath(candidate, controlDir)
+    assertSocketPathWithinBudget(candidate, "Control public recovery socket path")
+    ensureOpen()
+    const initial = await existingLstat(candidate)
+    ensureOpen()
+    if (!initial) return
+    if (initial.isSymbolicLink() || !initial.isSocket()) {
+        throw new Error("Refusing non-socket control public recovery evidence")
+    }
+    checkOwner(initial, "Control public recovery socket")
+    if (!publicRecoveryIdentityMatches(path.basename(candidate), initial)) {
+        throw new Error("Control public recovery socket identity does not match its name")
+    }
+    const socketState = await probeSocket(candidate)
+    ensureOpen()
+    if (socketState === "active") {
+        throw new Error("Control public recovery socket is active or already in use")
+    }
+    const current = await existingLstat(candidate)
+    ensureOpen()
+    if (!current) return
+    if (
+        current.isSymbolicLink() || !current.isSocket() ||
+        !sameFile(current, initial) ||
+        !publicRecoveryIdentityMatches(path.basename(candidate), current)
+    ) throw new Error("Control public recovery changed while checking stale state")
+    checkOwner(current, "Control public recovery socket")
+
+    const cleanupPath = createPublicRecoveryPath(candidate, current)
+    ensureOpen()
+    try {
+        fs.renameSync(candidate, cleanupPath)
+    } catch (error) {
+        if (error?.code === "ENOENT") return
+        throw new Error("Control public recovery cleanup rename failed", {cause: error})
+    }
+    const cleanup = fs.lstatSync(cleanupPath)
+    if (
+        cleanup.isSymbolicLink() || !cleanup.isSocket() ||
+        !sameFile(cleanup, current) ||
+        !publicRecoveryIdentityMatches(path.basename(cleanupPath), cleanup)
+    ) {
+        throw new Error("Control public recovery changed after cleanup rename")
+    }
+    checkOwner(cleanup, "Control public recovery socket")
+    fs.unlinkSync(cleanupPath)
+}
+
+async function recoverPublicSockets(controlDir, ensureOpen = () => {}) {
+    ensureOpen()
+    const names = await fs.promises.readdir(controlDir)
+    ensureOpen()
+    const candidates = names
+        .filter((name) => name.startsWith(CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX))
+        .sort()
+    for (const name of candidates) {
+        ensureOpen()
+        await recoverPublicSocket(path.join(controlDir, name), ensureOpen)
+        ensureOpen()
+    }
+}
+
 function validateBindNamespacePath(candidate, controlDir, {allowRecovery = false} = {}) {
     if (path.dirname(candidate) !== controlDir) {
         throw new Error("Control bind namespace must be an exact control-directory child")
@@ -368,6 +466,37 @@ function reserveBindRecoveryDirectory(controlDir) {
     })
 }
 
+function createVacantBindRecoveryPath(controlDir) {
+    for (let attempt = 0; attempt < MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS; attempt += 1) {
+        const recoveryPath = path.join(
+            controlDir,
+            `${CONTROL_SOCKET_BIND_RECOVERY_PREFIX}${randomBindSuffix()}`,
+        )
+        validateBindNamespacePath(recoveryPath, controlDir, {allowRecovery: true})
+        try {
+            fs.lstatSync(recoveryPath)
+        } catch (error) {
+            if (error?.code === "ENOENT") return recoveryPath
+            throw error
+        }
+    }
+    throw new Error("Control bind recovery collisions exhausted the creation limit")
+}
+
+function moveBindSymlinkToRecovery(bindDir, identity) {
+    const recoveryPath = createVacantBindRecoveryPath(path.dirname(bindDir))
+    try {
+        fs.renameSync(bindDir, recoveryPath)
+    } catch (error) {
+        throw new Error("Control bind symlink recovery failed", {cause: error})
+    }
+    const recovered = fs.lstatSync(recoveryPath)
+    if (!recovered.isSymbolicLink() || !sameFile(recovered, identity)) {
+        throw new Error("Control bind symlink changed while moving to recovery")
+    }
+    return recoveryPath
+}
+
 function removeRecoveryReservation(recoveryPath, reservationIdentity) {
     try {
         const current = fs.lstatSync(recoveryPath)
@@ -439,11 +568,7 @@ async function cleanupSocketPath(socketPath, serverIdentity, kind) {
     if (!socketPath || !serverIdentity) return
     validateCleanupCandidate(socketPath, kind)
     if (!await existingLstat(socketPath)) return
-    const prefix = CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX
-    const quarantinedPath = controlledSibling(
-        socketPath,
-        prefix,
-    )
+    const quarantinedPath = createPublicRecoveryPath(socketPath, serverIdentity)
     try {
         fs.renameSync(socketPath, quarantinedPath)
     } catch (error) {
@@ -518,7 +643,10 @@ async function cleanupBindNamespace(
     validateBindNamespacePath(bindDir, controlDir, {allowRecovery: true})
     const initial = await existingLstat(bindDir)
     if (!initial) return
-    if (initial.isSymbolicLink() || !initial.isDirectory()) {
+    if (initial.isSymbolicLink()) {
+        throw bindRecoveryError(moveBindSymlinkToRecovery(bindDir, initial))
+    }
+    if (!initial.isDirectory()) {
         throw new Error("Control bind namespace identity changed; evidence was retained")
     }
     checkOwner(initial, "Control bind namespace")
@@ -634,7 +762,26 @@ function protectBindNamespaceForNativeClose(state) {
         }
     }
     if (!current) throw new Error("Control bind namespace guard collisions were exhausted")
-    if (current.isSymbolicLink() || !current.isDirectory()) {
+    if (current.isSymbolicLink()) {
+        const recoveryPath = moveBindSymlinkToRecovery(state.bindDir, current)
+        fs.mkdirSync(state.bindDir, {mode: 0o700})
+        current = fs.lstatSync(state.bindDir)
+        if (current.isSymbolicLink() || !current.isDirectory()) {
+            throw new Error("Control bind namespace guard is invalid")
+        }
+        checkOwner(current, "Control bind namespace")
+        state.bindDirectoryIdentity = current
+        fs.chmodSync(state.bindDir, 0o500)
+        const protectedDirectory = fs.lstatSync(state.bindDir)
+        if (
+            protectedDirectory.isSymbolicLink() || !protectedDirectory.isDirectory() ||
+            !sameFile(protectedDirectory, current) ||
+            (protectedDirectory.mode & 0o777) !== 0o500
+        ) throw new Error("Control bind namespace changed while protecting native close")
+        checkOwner(protectedDirectory, "Control bind namespace")
+        throw bindRecoveryError(recoveryPath)
+    }
+    if (!current.isDirectory()) {
         throw new Error("Control bind namespace is unsafe for native close")
     }
     checkOwner(current, "Control bind namespace")
@@ -681,31 +828,31 @@ function ensureServerIsOpen(state) {
 }
 
 async function stopAndCleanupServer(state) {
+    const errors = []
     for (const socket of state.connections) socket.destroy()
     state.connections.clear()
-    protectBindNamespaceForNativeClose(state)
-    let closeError = null
+    try {
+        protectBindNamespaceForNativeClose(state)
+    } catch (error) {
+        errors.push(error)
+    }
     try {
         await closeListeningServer(state.server)
     } catch (error) {
-        closeError = error
+        errors.push(error)
     }
-    if (closeError && state.server?.listening) throw closeError
-
-    let cleanupError = null
     try {
         await cleanupServerSocketPaths(state)
     } catch (error) {
-        cleanupError = error
+        if (error instanceof AggregateError) errors.push(...error.errors)
+        else errors.push(error)
     }
-    if (closeError && cleanupError) {
+    if (errors.length > 0) {
         throw new AggregateError(
-            [closeError, cleanupError],
-            "Control socket close and cleanup failed",
+            errors,
+            errors.map((error) => error?.message ?? String(error)).join("; "),
         )
     }
-    if (closeError) throw closeError
-    if (cleanupError) throw cleanupError
 }
 
 function serializeResponse(response, method) {
@@ -927,6 +1074,8 @@ class ControlSocketServer {
         state.socketPath = layout.socketPath
         assertSocketPathWithinBudget(state.socketPath, "Control socket path")
         ensureServerIsOpen(state)
+        await recoverPublicSockets(layout.controlDir, () => ensureServerIsOpen(state))
+        ensureServerIsOpen(state)
         await recoverBindNamespaces(layout.controlDir, () => ensureServerIsOpen(state))
         ensureServerIsOpen(state)
         await removeStaleSocket(state.socketPath, () => ensureServerIsOpen(state))
@@ -1075,6 +1224,7 @@ module.exports = {
     CONTROL_SOCKET_DIRECTORY,
     CONTROL_SOCKET_NAME,
     CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX,
+    CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX,
     CONTROL_SOCKET_QUARANTINE_PREFIX,
     DEFAULT_MAX_IN_FLIGHT_REQUESTS,
     DEFAULT_MAX_QUEUED_RESPONSES,
