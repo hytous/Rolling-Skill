@@ -913,6 +913,7 @@ function secureFileMetadata(path, directory, maximumBytes, label) {
     if (dirname(filePath) !== parent.path) throw new Error(`${label} path escapes its private directory`)
     const status = lstatSync(filePath)
     if (status.isSymbolicLink() || !status.isFile()) throw new Error(`${label} must be a regular file, not a symbolic link`)
+    if (status.nlink !== 1) throw new Error(`${label} must have a single link`)
     if ((status.mode & 0o777) !== 0o600) throw new Error(`${label} must use owner-only mode 0600`)
     if (status.size > maximumBytes) throw new Error(`${label} exceeds its byte limit`)
     const realPath = realpathSync(filePath)
@@ -943,6 +944,7 @@ function readSecureFile(path, directory, maximumBytes, label) {
         if (!opened.isFile() || opened.dev !== before.status.dev || opened.ino !== before.status.ino) {
             throw new Error(`${label} changed while it was being opened`)
         }
+        if (opened.nlink !== 1) throw new Error(`${label} must have a single link`)
         if ((opened.mode & 0o777) !== 0o600) throw new Error(`${label} must use owner-only mode 0600`)
         if (opened.size > maximumBytes) throw new Error(`${label} exceeds its byte limit`)
         const body = Buffer.alloc(opened.size)

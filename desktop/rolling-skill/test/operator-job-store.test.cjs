@@ -3,6 +3,8 @@ const {spawnSync} = require("node:child_process")
 const {createHash} = require("node:crypto")
 const {
     chmodSync,
+    linkSync,
+    mkdirSync,
     mkdtempSync,
     readFileSync,
     realpathSync,
@@ -396,6 +398,7 @@ describe("Operator Job store", () => {
             "steps",
         ])
         assert.equal(statSync(path).mode & 0o777, 0o600)
+        assert.equal(statSync(path).nlink, 1)
         assert.equal(statSync(dirname(path)).mode & 0o777, 0o700)
         assert.equal(
             readdirSync(dirname(path)).some((name) => name.includes(".tmp-")),
@@ -584,6 +587,7 @@ describe("Operator Job store", () => {
         })
         assert.equal(external.inline, null)
         assert.ok(external.path.startsWith(dirname(store.path)))
+        assert.equal(statSync(external.path).nlink, 1)
         assert.equal(statSync(external.path).mode & 0o777, 0o600)
         assert.equal(statSync(dirname(external.path)).mode & 0o777, 0o700)
         assert.equal(external.byteLength, externalBody.byteLength)
@@ -796,6 +800,27 @@ describe("Operator Job store", () => {
         }
         assert.equal(statSync(outside).mode & 0o777, 0o644)
         assert.match(loadError?.message ?? "", /artifact|symbolic|regular|nofollow/iu)
+    })
+
+    it("rejects a hard-linked external artifact through reads and reload", () => {
+        const {path, store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        const artifact = store.createArtifact(job.id, {
+            kind: "trace",
+            name: "trace",
+            mediaType: "application/octet-stream",
+            body: Buffer.alloc(128 * 1024 + 1, 0x64),
+        })
+        const aliasDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-artifact-link-"))
+        temporaryDirectories.push(aliasDirectory)
+        const aliasPath = join(aliasDirectory, "artifact.alias")
+        linkSync(artifact.path, aliasPath)
+
+        assert.equal(statSync(artifact.path).nlink, 2)
+        assert.throws(() => store.readArtifactBody(artifact.id), /hard.?link|single link|link count|nlink/iu)
+        store.close()
+        assert.throws(() => new OperatorJobStore(path), /hard.?link|single link|link count|nlink/iu)
     })
 
     it("rejects oversized external artifacts from metadata before reading their bodies", () => {
@@ -1241,6 +1266,29 @@ describe("Operator Job store", () => {
         assert.throws(() => new OperatorJobStore(linkFixture.path), /symbolic|regular|nofollow/iu)
     })
 
+    it("rejects either name for a registry hard-linked across owner-only directories", () => {
+        const {path, store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        store.close()
+        const aliasRoot = mkdtempSync(join(tmpdir(), "rolling-skill-registry-link-"))
+        temporaryDirectories.push(aliasRoot)
+        const aliasDirectory = join(aliasRoot, "private")
+        mkdirSync(aliasDirectory, {mode: 0o700})
+        const aliasPath = join(aliasDirectory, "operator-jobs.json")
+        linkSync(path, aliasPath)
+
+        assert.equal(statSync(path).nlink, 2)
+        assert.equal(statSync(aliasPath).nlink, 2)
+        assert.throws(() => new OperatorJobStore(path), /hard.?link|single link|link count|nlink/iu)
+        assert.throws(() => new OperatorJobStore(aliasPath), /hard.?link|single link|link count|nlink/iu)
+
+        unlinkSync(aliasPath)
+        const recovered = new OperatorJobStore(path)
+        assert.equal(recovered.getJob(job.id).id, job.id)
+        assert.equal(statSync(path).nlink, 1)
+    })
+
     it("fsyncs the registry directory and cannot fail after the atomic rename", () => {
         const root = mkdtempSync(join(tmpdir(), "rolling-skill-operator-atomic-"))
         temporaryDirectories.push(root)
@@ -1279,5 +1327,6 @@ describe("Operator Job store", () => {
         assert.equal(result.status, 0, result.stderr)
         assert.ok(Number(result.stdout) >= 1, "the parent directory must be fsynced")
         assert.equal(statSync(path).mode & 0o777, 0o600)
+        assert.equal(statSync(path).nlink, 1)
     })
 })

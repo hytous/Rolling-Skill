@@ -708,9 +708,17 @@ describe("Operator Job engine", () => {
                 resolverCalls += 1
                 return resolvedSelection
             },
-            handlers: {"evaluations.start": async ({params}) => {
+            handlers: {"evaluations.start": async ({params, trustedFacts}) => {
                 handlerCalls += 1
                 handlerParams = params
+                assert.equal(params.expectedDatasetRevision, "dataset-revision-3")
+                assert.deepEqual(trustedFacts, {
+                    evaluationSelection: {
+                        datasetId: "dataset-1",
+                        caseIds: ["case-1", "case-2", "case-3"],
+                        datasetRevision: "dataset-revision-3",
+                    },
+                })
                 return {runId: "run-frozen"}
             }},
         })
@@ -734,6 +742,7 @@ describe("Operator Job engine", () => {
         })
         assert.equal(creation.request.params.selectionMode, "selected")
         assert.deepEqual(creation.request.params.caseIds, ["case-1", "case-2", "case-3"])
+        assert.equal(creation.request.params.expectedDatasetRevision, "dataset-revision-3")
         assert.equal(creation.requestedParams.selectionMode, "dataset")
         assert.deepEqual(creation.requestedParams.caseIds, [])
         assert.deepEqual(creation.trustedFacts, {
@@ -756,9 +765,14 @@ describe("Operator Job engine", () => {
                 resolverCalls += 1
                 return resolvedSelection
             },
-            handlers: {"evaluations.start": async ({params}) => {
+            handlers: {"evaluations.start": async ({params, trustedFacts}) => {
                 handlerCalls += 1
                 handlerParams = params
+                assert.equal(params.expectedDatasetRevision, "dataset-revision-3")
+                assert.equal(
+                    trustedFacts.evaluationSelection.datasetRevision,
+                    "dataset-revision-3",
+                )
                 return {runId: "run-frozen"}
             }},
         })
@@ -771,6 +785,53 @@ describe("Operator Job engine", () => {
         assert.equal(handlerCalls, 1)
         assert.equal(handlerParams.selectionMode, "selected")
         assert.deepEqual(handlerParams.caseIds, ["case-1", "case-2", "case-3"])
+        assert.equal(handlerParams.expectedDatasetRevision, "dataset-revision-3")
+    })
+
+    it("lets the Evaluation handler fail closed when the frozen Dataset revision changed", async () => {
+        const {store, session} = fixture()
+        const job = createJob(store, session.id, {budget: budget({
+            maxEvaluations: 0,
+            maxTargetExecutions: 0,
+        })})
+        let currentDatasetRevision = "dataset-revision-1"
+        const engine = new OperatorJobEngine({
+            store,
+            resolveEvaluationCaseCount: async () => ({
+                caseIds: ["case-1"],
+                datasetRevision: "dataset-revision-1",
+            }),
+            handlers: {"evaluations.start": async ({params, trustedFacts}) => {
+                assert.equal(
+                    params.expectedDatasetRevision,
+                    trustedFacts.evaluationSelection.datasetRevision,
+                )
+                if (params.expectedDatasetRevision !== currentDatasetRevision) {
+                    throw Object.assign(new Error("Dataset revision changed after selection was frozen"), {
+                        code: "DATASET_REVISION_MISMATCH",
+                    })
+                }
+                return {runId: "must-not-run"}
+            }},
+        })
+        const waiting = await engine.execute(job.id, {
+            method: "evaluations.start",
+            params: {
+                datasetId: "dataset-1",
+                caseIds: [],
+                selectionMode: "dataset",
+                runtimeConfigurations: [{runtimeId: "runtime-1"}],
+            },
+            idempotencyKey: "dataset-revision-mismatch",
+        })
+
+        currentDatasetRevision = "dataset-revision-2"
+        const result = await engine.resolveApproval(waiting.approvalId, {
+            decision: "approve",
+            scope: "action",
+        })
+        assert.equal(result.status, "failed")
+        assert.equal(result.error.code, "DATASET_REVISION_MISMATCH")
     })
 
     it("fails Dataset hard-budget preflight when a legacy resolver returns only a count", async () => {

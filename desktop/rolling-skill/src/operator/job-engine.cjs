@@ -268,7 +268,12 @@ function selectedParamsFromFacts(params, trustedFacts) {
             code: "BUDGET_SELECTION_UNRESOLVED",
         })
     }
-    return {...source, selectionMode: "selected", caseIds: cloneJson(selection.caseIds)}
+    return {
+        ...source,
+        selectionMode: "selected",
+        caseIds: cloneJson(selection.caseIds),
+        expectedDatasetRevision: selection.datasetRevision,
+    }
 }
 
 function costUnits(value) {
@@ -804,6 +809,7 @@ class OperatorJobEngine {
                 result = await this.#boundedAwait((hookSignal) => handler({
                     method: request.method,
                     params: cloneJson(request.params),
+                    trustedFacts: cloneJson(request.trustedFacts ?? {}),
                     idempotencyKey: request.idempotencyKey,
                     jobId: job.id,
                     stepId: step.id,
