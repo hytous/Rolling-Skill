@@ -5,6 +5,7 @@ const {
     chmodSync,
     mkdtempSync,
     readFileSync,
+    realpathSync,
     readdirSync,
     rmSync,
     statSync,
@@ -239,6 +240,26 @@ describe("Operator Job store", () => {
         }, (registry) => {
             registry.approvals[0].proposedMutation.params.versionId = "candidate-forged"
         }, /approval.*mutation|frozen.*Step/iu)
+
+        assertRegistryCorruptionRejected((store) => {
+            const session = createSession(store)
+            const job = createJob(store, session.id)
+            store.createStep(job.id, {
+                method: "evaluations.start",
+                params: {datasetId: "dataset-1", selectionMode: "selected", caseIds: ["case-1"]},
+                requestedParams: {datasetId: "dataset-1", selectionMode: "dataset", caseIds: []},
+                requestedReservation: {},
+                trustedFacts: {evaluationSelection: {
+                    datasetId: "dataset-1",
+                    datasetRevision: "revision-1",
+                    caseIds: ["case-1"],
+                }},
+                idempotencyKey: "frozen-dataset-selection",
+            })
+        }, (registry) => {
+            const creation = registry.events.find((event) => event.kind === "operator_step_created")
+            creation.payload.trustedFacts.evaluationSelection.caseIds = ["case-forged"]
+        }, /Step.*creation|input.*digest|immutable/iu)
     })
 
     it("requires exactly one same-Job creation event for every Step", () => {
@@ -562,7 +583,7 @@ describe("Operator Job store", () => {
             body: externalBody,
         })
         assert.equal(external.inline, null)
-        assert.ok(external.path.startsWith(dirname(path)))
+        assert.ok(external.path.startsWith(dirname(store.path)))
         assert.equal(statSync(external.path).mode & 0o777, 0o600)
         assert.equal(statSync(dirname(external.path)).mode & 0o777, 0o700)
         assert.equal(external.byteLength, externalBody.byteLength)
@@ -994,7 +1015,7 @@ describe("Operator Job store", () => {
         assert.deepEqual(transcript.payload, {channel: "user-authored"})
         assert.equal(event.detail, "legacy event")
         assert.deepEqual(event.payload, {channel: "user-authored"})
-        assert.equal(migrated.getArtifact(artifact.id).path, artifact.path)
+        assert.equal(migrated.getArtifact(artifact.id).path, realpathSync(artifact.path))
         const persisted = JSON.parse(readFileSync(path, "utf8"))
         assert.equal(persisted.schemaVersion, "rolling-skill-operator-jobs/v2")
         assert.deepEqual(persisted.sessions[0].transcript[0].payload, {

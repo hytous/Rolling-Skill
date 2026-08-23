@@ -441,6 +441,7 @@ function canonicalStepRequest(value) {
 
 function canonicalStepCreationPayload(value) {
     const fields = ["stepId", "idempotencyKey", "inputDigest", "request"]
+    if (isPlainObject(value) && Object.hasOwn(value, "requestedParams")) fields.push("requestedParams")
     if (isPlainObject(value) && Object.hasOwn(value, "requestedReservation")) fields.push("requestedReservation")
     if (isPlainObject(value) && Object.hasOwn(value, "trustedFacts")) fields.push("trustedFacts")
     exactKeys(
@@ -453,6 +454,12 @@ function canonicalStepCreationPayload(value) {
         idempotencyKey: canonicalText(value.idempotencyKey, "Operator Step event idempotency key", 500),
         inputDigest: digest(value.inputDigest, "Operator Step event input digest"),
         request: canonicalStepRequest(value.request),
+    }
+    if (Object.hasOwn(value, "requestedParams")) {
+        creation.requestedParams = boundedEnvelope(
+            requireObject(value.requestedParams, "Operator Step requested params"),
+            "Operator Step requested params",
+        )
     }
     if (Object.hasOwn(value, "requestedReservation")) {
         creation.requestedReservation = boundedEnvelope(
@@ -467,6 +474,16 @@ function canonicalStepCreationPayload(value) {
         )
     }
     return creation
+}
+
+function stepCreationDigestSource(creation) {
+    if (!Object.hasOwn(creation, "requestedParams")) return creation.request
+    const source = {request: creation.request, requestedParams: creation.requestedParams}
+    if (Object.hasOwn(creation, "requestedReservation")) {
+        source.requestedReservation = creation.requestedReservation
+    }
+    if (Object.hasOwn(creation, "trustedFacts")) source.trustedFacts = creation.trustedFacts
+    return source
 }
 
 function canonicalApproval(value) {
@@ -691,7 +708,13 @@ function migrateV1State(value, artifactDirectory) {
             requiredText(artifact.sha256, "Legacy Operator artifact digest", 64),
         )
         const expectedPath = join(artifactDirectory, expectedName)
-        if (resolve(artifact.path) !== resolve(expectedPath)) {
+        const legacyArtifact = secureFileMetadata(
+            artifact.path,
+            dirname(artifact.path),
+            MAX_ARTIFACT_BYTES,
+            "Legacy Operator artifact",
+        )
+        if (legacyArtifact.realPath !== resolve(expectedPath)) {
             throw new Error("Legacy Operator artifact path escapes its private directory")
         }
         artifact.path = expectedName
@@ -812,7 +835,7 @@ function canonicalState(value) {
         const creation = stepCreationEvents.get(step.id)
         if (!creation || creation.request.method !== step.method ||
             creation.idempotencyKey !== step.idempotencyKey || creation.inputDigest !== step.inputDigest ||
-            sha256(stableJson(creation.request)) !== step.inputDigest) {
+            sha256(stableJson(stepCreationDigestSource(creation))) !== step.inputDigest) {
             throw new Error("Operator Step creation event does not match its immutable identity")
         }
         for (const artifactId of step.outputArtifactIds) {
@@ -892,10 +915,24 @@ function secureFileMetadata(path, directory, maximumBytes, label) {
     if (status.isSymbolicLink() || !status.isFile()) throw new Error(`${label} must be a regular file, not a symbolic link`)
     if ((status.mode & 0o777) !== 0o600) throw new Error(`${label} must use owner-only mode 0600`)
     if (status.size > maximumBytes) throw new Error(`${label} exceeds its byte limit`)
-    if (realpathSync(filePath) !== join(parent.realPath, basename(filePath))) {
+    const realPath = realpathSync(filePath)
+    if (dirname(realPath) !== parent.realPath) {
         throw new Error(`${label} real path escapes its private directory`)
     }
-    return {filePath, status}
+    return {filePath, realPath, status}
+}
+
+function canonicalStorePath(value) {
+    const requestedPath = resolve(requiredText(value, "Operator Job store path", 8_192))
+    const requestedDirectory = dirname(requestedPath)
+    const parent = secureDirectory(requestedDirectory, {create: true})
+    if (!pathEntryExists(requestedPath)) return join(parent.realPath, basename(requestedPath))
+    return secureFileMetadata(
+        requestedPath,
+        requestedDirectory,
+        MAX_STORE_BYTES,
+        "Operator Job store",
+    ).realPath
 }
 
 function readSecureFile(path, directory, maximumBytes, label) {
@@ -1046,7 +1083,7 @@ class OperatorJobStore {
     }
 
     constructor(path) {
-        this.#path = resolve(requiredText(path, "Operator Job store path", 8_192))
+        this.#path = canonicalStorePath(path)
         this.#artifactDirectory = join(dirname(this.#path), "operator-artifacts")
         this.#backend = acquirePathBackend(this.#path)
         try {
@@ -1256,7 +1293,29 @@ class OperatorJobStore {
             request.reservation = requireObject(stepInput.reservation, "Operator Step reservation")
         }
         const frozenRequest = boundedEnvelope(request, "Operator Step request")
-        const inputDigest = sha256(stableJson(frozenRequest))
+        const creationFacts = {}
+        if (Object.hasOwn(stepInput, "requestedParams")) {
+            creationFacts.requestedParams = boundedEnvelope(
+                requireObject(stepInput.requestedParams, "Operator Step requested params"),
+                "Operator Step requested params",
+            )
+        }
+        if (Object.hasOwn(stepInput, "requestedReservation")) {
+            creationFacts.requestedReservation = boundedEnvelope(
+                requireObject(stepInput.requestedReservation, "Operator Step requested reservation"),
+                "Operator Step requested reservation",
+            )
+        }
+        if (Object.hasOwn(stepInput, "trustedFacts")) {
+            creationFacts.trustedFacts = boundedEnvelope(
+                requireObject(stepInput.trustedFacts, "Operator Step trusted facts"),
+                "Operator Step trusted facts",
+            )
+        }
+        const inputDigest = sha256(stableJson(stepCreationDigestSource({
+            request: frozenRequest,
+            ...creationFacts,
+        })))
         const now = nowTimestamp()
         const step = {
             id: randomUUID(),
@@ -1279,18 +1338,7 @@ class OperatorJobStore {
             idempotencyKey,
             inputDigest,
             request: frozenRequest,
-            ...(Object.hasOwn(stepInput, "requestedReservation") ? {
-                requestedReservation: boundedEnvelope(
-                    requireObject(stepInput.requestedReservation, "Operator Step requested reservation"),
-                    "Operator Step requested reservation",
-                ),
-            } : {}),
-            ...(Object.hasOwn(stepInput, "trustedFacts") ? {
-                trustedFacts: boundedEnvelope(
-                    requireObject(stepInput.trustedFacts, "Operator Step trusted facts"),
-                    "Operator Step trusted facts",
-                ),
-            } : {}),
+            ...creationFacts,
         }, "Operator Step creation event")
         return this.#mutate((state) => {
             const job = state.jobs.find((candidate) => candidate.id === step.jobId)

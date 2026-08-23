@@ -213,6 +213,64 @@ function safeProduct(left, right, label) {
     return value
 }
 
+function resolvedEvaluationSelection(value, datasetId) {
+    const fail = (message) => Object.assign(new Error(message), {
+        code: "BUDGET_SELECTION_UNRESOLVED",
+    })
+    let selection
+    try {
+        selection = requireObject(value, "Resolved Dataset evaluation selection")
+        const fields = Object.keys(selection).sort()
+        if (fields.length !== 2 || fields[0] !== "caseIds" || fields[1] !== "datasetRevision") {
+            throw new Error("must freeze exactly caseIds and datasetRevision")
+        }
+        if (!Array.isArray(selection.caseIds) || selection.caseIds.length === 0) {
+            throw new Error("must contain at least one Case")
+        }
+        const caseIds = cloneJson(selection.caseIds, "Resolved Dataset evaluation Case ids")
+            .map((caseId) => requiredText(caseId, "Resolved Dataset evaluation Case id", 300))
+        if (new Set(caseIds).size !== caseIds.length) throw new Error("has duplicate Cases")
+        return {
+            datasetId: requiredText(datasetId, "Evaluation Dataset id", 300),
+            caseIds,
+            datasetRevision: requiredText(
+                selection.datasetRevision,
+                "Resolved Dataset evaluation revision",
+                500,
+            ),
+        }
+    } catch (error) {
+        throw fail(`Dataset evaluation selection is invalid: ${error.message}`)
+    }
+}
+
+function selectedParamsFromFacts(params, trustedFacts) {
+    const source = cloneJson(params, "Operator Step params")
+    if (source.selectionMode !== "dataset") return source
+    const facts = requireObject(trustedFacts, "Operator Step trusted facts")
+    const persisted = requireObject(
+        facts.evaluationSelection,
+        "Frozen Dataset evaluation selection",
+    )
+    const fields = Object.keys(persisted).sort()
+    if (fields.length !== 3 || fields[0] !== "caseIds" || fields[1] !== "datasetId" ||
+        fields[2] !== "datasetRevision") {
+        throw Object.assign(new Error("Frozen Dataset evaluation selection has invalid fields"), {
+            code: "BUDGET_SELECTION_UNRESOLVED",
+        })
+    }
+    const selection = resolvedEvaluationSelection({
+        caseIds: persisted.caseIds,
+        datasetRevision: persisted.datasetRevision,
+    }, source.datasetId)
+    if (persisted.datasetId !== source.datasetId) {
+        throw Object.assign(new Error("Frozen Dataset evaluation selection does not match the request"), {
+            code: "BUDGET_SELECTION_UNRESOLVED",
+        })
+    }
+    return {...source, selectionMode: "selected", caseIds: cloneJson(selection.caseIds)}
+}
+
 function costUnits(value) {
     return Math.round(value * COST_SCALE)
 }
@@ -358,18 +416,17 @@ class OperatorJobEngine {
                         code: "BUDGET_SELECTION_UNRESOLVED",
                     })
                 }
-                caseCount = await this.#boundedAwait(
-                    this.#resolveEvaluationCaseCount(cloneJson(params), {signal}),
+                const selection = resolvedEvaluationSelection(await this.#boundedAwait(
+                    (hookSignal) => this.#resolveEvaluationCaseCount(
+                        cloneJson(params),
+                        {signal: hookSignal},
+                    ),
                     {signal, label: "Operator evaluation case resolution"},
-                )
-                if (!Number.isSafeInteger(caseCount) || caseCount <= 0) {
-                    throw Object.assign(new Error("Dataset evaluation size is invalid"), {
-                        code: "BUDGET_SELECTION_UNRESOLVED",
-                    })
-                }
+                ), params.datasetId)
+                caseCount = selection.caseIds.length
+                trustedFacts.evaluationSelection = selection
             }
             if (caseCount > 0) {
-                trustedFacts.evaluationCaseCount = caseCount
                 if (!Array.isArray(params.runtimeConfigurations) || params.runtimeConfigurations.length === 0) {
                     throw Object.assign(new Error("Evaluation Runtime selection is required"), {
                         code: "BUDGET_SELECTION_UNRESOLVED",
@@ -388,7 +445,13 @@ class OperatorJobEngine {
         for (const [field, amount] of Object.entries(minimum)) {
             reservation[field] = Math.max(reservation[field] ?? 0, amount)
         }
-        return {...request, reservation, trustedFacts}
+        return {
+            ...request,
+            ...(request.params.selectionMode === "dataset" ? {requestedParams: request.params} : {}),
+            params: selectedParamsFromFacts(request.params, trustedFacts),
+            reservation,
+            trustedFacts,
+        }
     }
 
     async #execute(jobId, request, signal) {
@@ -406,6 +469,7 @@ class OperatorJobEngine {
         const step = this.#store.createStep(job.id, {
             method: request.method,
             params: request.params,
+            ...(request.requestedParams ? {requestedParams: request.requestedParams} : {}),
             reservation: request.reservation,
             requestedReservation: request.requestedReservation,
             trustedFacts: request.trustedFacts,
@@ -432,7 +496,7 @@ class OperatorJobEngine {
         const requestedReservation = creation.requestedReservation ?? creation.request.reservation ?? {}
         if (stableJson({
             method: creation.request.method,
-            params: creation.request.params,
+            params: creation.requestedParams ?? creation.request.params,
             reservation: requestedReservation,
         }) !== stableJson(frozenStepRequest(request))) {
             throw new Error("Operator Step idempotency conflict: the key was used for a different request")
@@ -526,11 +590,11 @@ class OperatorJobEngine {
     async #customApprovalDecision(request, job, signal) {
         if (this.#approvalDecider) {
             return this.#boundedAwait(
-                this.#approvalDecider({
+                (hookSignal) => this.#approvalDecider({
                     method: request.method,
                     params: cloneJson(request.params),
                     job: cloneJson(job),
-                    signal,
+                    signal: hookSignal,
                 }),
                 {signal, label: "Operator approval policy"},
             )
@@ -737,20 +801,18 @@ class OperatorJobEngine {
                 const limits = this.#budgetLimits(job, step.id)
                 const remainingMs = limits.maxDurationMs - Math.max(0, this.#now() - Date.parse(job.createdAt))
                 if (remainingMs <= 0) throw timeoutError
-                const handlerPromise = Promise.resolve().then(() => handler({
+                result = await this.#boundedAwait((hookSignal) => handler({
                     method: request.method,
                     params: cloneJson(request.params),
                     idempotencyKey: request.idempotencyKey,
                     jobId: job.id,
                     stepId: step.id,
-                    signal: controller.signal,
-                }))
-                result = await this.#boundedAwait(handlerPromise, {
+                    signal: hookSignal,
+                }), {
                     signal: controller.signal,
                     label: "Operator handler",
                     timeoutMs: remainingMs,
                     timeoutError,
-                    onTimeout: () => controller.abort(timeoutError),
                 })
             } finally {
                 signal?.removeEventListener("abort", abortFromOperation)
@@ -817,39 +879,42 @@ class OperatorJobEngine {
         return JSON.parse(body.toString("utf8"))
     }
 
-    async #boundedAwait(value, {
+    async #boundedAwait(invoke, {
         signal = null,
         label,
         timeoutMs = this.#externalAwaitTimeoutMs,
         timeoutError = Object.assign(new Error(`${label} timed out`), {code: "OPERATOR_EXTERNAL_TIMEOUT"}),
-        onTimeout = null,
     }) {
+        if (typeof invoke !== "function") throw new Error(`${label} hook must be a function`)
         if (signal?.aborted) throw signal.reason ?? operatorCancellationError()
+        const controller = new AbortController()
+        const abortChild = () => controller.abort(signal?.reason ?? operatorCancellationError())
+        signal?.addEventListener("abort", abortChild, {once: true})
         let rejectAbort
         const abortPromise = new Promise((_resolve, reject) => { rejectAbort = reject })
-        const onAbort = () => rejectAbort(signal.reason ?? operatorCancellationError())
-        signal?.addEventListener("abort", onAbort, {once: true})
-        let rejectTimeout
-        const timeoutPromise = new Promise((_resolve, reject) => { rejectTimeout = reject })
+        const onAbort = () => rejectAbort(controller.signal.reason ?? operatorCancellationError())
+        controller.signal.addEventListener("abort", onAbort, {once: true})
         const cancelTimeout = segmentedTimeout(() => {
-            onTimeout?.()
-            rejectTimeout(timeoutError)
+            controller.abort(timeoutError)
         }, timeoutMs)
         try {
-            return await Promise.race([Promise.resolve(value), abortPromise, timeoutPromise])
+            if (controller.signal.aborted) throw controller.signal.reason ?? operatorCancellationError()
+            const value = invoke(controller.signal)
+            return await Promise.race([Promise.resolve(value), abortPromise])
         } finally {
             cancelTimeout()
-            signal?.removeEventListener("abort", onAbort)
+            signal?.removeEventListener("abort", abortChild)
+            controller.signal.removeEventListener("abort", onAbort)
         }
     }
 
     async #telemetry(request, signal) {
         const value = typeof this.#runtimeTelemetry === "function"
             ? await this.#boundedAwait(
-                this.#runtimeTelemetry({
+                (hookSignal) => this.#runtimeTelemetry({
                     method: request.method,
                     params: cloneJson(request.params),
-                    signal,
+                    signal: hookSignal,
                 }),
                 {signal, label: "Operator Runtime telemetry"},
             )
@@ -970,10 +1035,6 @@ class OperatorJobEngine {
         return requested
     }
 
-    #stepRequest(step) {
-        return cloneJson(this.#stepCreation(step).request)
-    }
-
     #stepCreation(step) {
         const event = this.#store.listEvents(step.jobId).find((candidate) => (
             candidate.kind === "operator_step_created" && candidate.stepId === step.id
@@ -986,14 +1047,20 @@ class OperatorJobEngine {
 
     #executionFromStep(step) {
         const creation = this.#stepCreation(step)
+        const trustedFacts = cloneJson(creation.trustedFacts ?? {})
+        const requestedParams = creation.requestedParams ?? creation.request.params
+        const params = selectedParamsFromFacts(requestedParams, trustedFacts)
+        if (stableJson(params) !== stableJson(creation.request.params)) {
+            throw new Error("Frozen Dataset evaluation selection does not match the Step request")
+        }
         return {
             method: creation.request.method,
-            params: cloneJson(creation.request.params),
+            params,
             reservation: normalizeReservation(creation.request.reservation ?? {}),
             requestedReservation: normalizeReservation(
                 creation.requestedReservation ?? creation.request.reservation ?? {},
             ),
-            trustedFacts: cloneJson(creation.trustedFacts ?? {}),
+            trustedFacts,
             idempotencyKey: step.idempotencyKey,
         }
     }
@@ -1121,13 +1188,7 @@ class OperatorJobEngine {
             this.#store.transitionStep(step.id, "succeeded", {outputArtifactIds: [priorArtifact.id]})
             return true
         }
-        const request = this.#stepRequest(step)
-        const execution = {
-            method: request.method,
-            params: request.params,
-            reservation: request.reservation ?? {},
-            idempotencyKey: step.idempotencyKey,
-        }
+        const execution = this.#executionFromStep(step)
         if (isDeleteMethod(step.method)) return false
         if (isReadMethod(step.method)) {
             const telemetry = await this.#telemetry(execution, signal)
@@ -1197,7 +1258,7 @@ class OperatorJobEngine {
         const reconciler = this.#reconcilers[kind]
         if (typeof reconciler !== "function") return null
         return this.#boundedAwait(
-            reconciler(cloneJson(input), {signal}),
+            (hookSignal) => reconciler(cloneJson(input), {signal: hookSignal}),
             {signal, label: `Operator ${kind} reconciliation`},
         )
     }
