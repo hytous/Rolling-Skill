@@ -15,7 +15,11 @@ const {
 
 const rawCase = {
     question: "Which service caused the July cost increase?",
-    skill: {name: "billing-cost-management", path: "/skills/billing/SKILL.md"},
+    skill: {
+        id: "skill-billing",
+        name: "billing-cost-management",
+        path: "/skills/billing/SKILL.md",
+    },
     note: "Compare with June",
     source: {kind: "operator"},
 }
@@ -75,7 +79,7 @@ const validOutputs = {
     "evaluations.get": {run: {id: "run-1"}},
     "evaluations.start": {run: {id: "run-1"}},
     "evaluations.cancel": {run: {id: "run-1"}},
-    "skills.list": {skills: [], nextCursor: null},
+    "skills.list": {repositories: [], skills: [], versions: [], nextCursor: null},
     "skills.get": {skill: {id: "skill-1"}},
 }
 
@@ -220,6 +224,29 @@ describe("control-plane contracts", () => {
             }),
             /executablePath|unrecognized/i,
         )
+    })
+
+    it("accepts an optional stable Skill id on Raw Case writes", () => {
+        const parsed = parseControlInput("raw_cases.enqueue", {
+            cases: [{
+                ...rawCase,
+                skill: {id: "skill-billing", name: "billing-cost-management"},
+            }],
+            idempotencyKey: "enqueue-stable-skill",
+        })
+
+        assert.deepEqual(parsed.cases[0].skill, {
+            id: "skill-billing",
+            name: "billing-cost-management",
+        })
+        assert.deepEqual(parseControlInput("raw_cases.update", {
+            id: "raw-case-1",
+            changes: {skill: {id: "skill-billing", name: "billing-cost-management"}},
+            idempotencyKey: "update-stable-skill",
+        }).changes.skill, {
+            id: "skill-billing",
+            name: "billing-cost-management",
+        })
     })
 
     it("enforces identifier, Raw Case, and batch limits", () => {
@@ -389,6 +416,74 @@ describe("control-plane contracts", () => {
         )
     })
 
+    it("defines a strict paged managed Skill overview without private paths or detail wrappers", () => {
+        const output = {
+            repositories: [{
+                id: "repository-1",
+                displayName: "Billing Skills",
+                defaultBranch: "main",
+                source: {
+                    kind: "folder",
+                    location: "billing-skills",
+                    importedAt: "2026-08-21T00:00:00.000Z",
+                },
+                createdAt: "2026-08-21T00:00:00.000Z",
+                updatedAt: "2026-08-21T00:00:00.000Z",
+            }],
+            skills: [{
+                id: "skill-1",
+                repositoryId: "repository-1",
+                name: "billing",
+                description: null,
+                skillRoot: "billing",
+                manifestPath: "billing/SKILL.md",
+                status: "valid",
+                warnings: [],
+                executableFiles: [],
+                createdAt: "2026-08-21T00:00:00.000Z",
+                updatedAt: "2026-08-21T00:00:00.000Z",
+            }],
+            versions: [{
+                id: "version-1",
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                skillRoot: "billing",
+                commit: "a".repeat(40),
+                contentDigest: `sha256:${"b".repeat(64)}`,
+                state: "candidate",
+                versionLabel: null,
+                createdBy: "import",
+                optimizationRoundId: null,
+                createdAt: "2026-08-21T00:00:00.000Z",
+                releasedAt: null,
+                deprecatedAt: null,
+            }],
+            nextCursor: null,
+        }
+
+        assert.deepEqual(parseControlOutput("skills.list", output), output)
+        assert.throws(
+            () => parseControlOutput("skills.list", {
+                ...output,
+                repositories: [{...output.repositories[0], managedPath: "/private/repository"}],
+            }),
+            /managedPath|unrecognized/iu,
+        )
+        assert.throws(
+            () => parseControlOutput("skills.list", {
+                ...output,
+                skills: [{
+                    repository: output.repositories[0],
+                    skill: output.skills[0],
+                    manifest: "---\nname: billing\n---\n",
+                    snapshot: {digest: "sha256:private"},
+                    versions: output.versions,
+                }],
+            }),
+            /skills|repository|unrecognized/iu,
+        )
+    })
+
     it("rejects more than 100 records in every paginated output", () => {
         for (const [method, field] of [
             ["raw_cases.list", "rawCases"],
@@ -396,13 +491,27 @@ describe("control-plane contracts", () => {
             ["evaluations.list", "runs"],
             ["skills.list", "skills"],
         ]) {
+            const item = method === "skills.list"
+                ? {id: "skill-1", repositoryId: "repository-1", name: "billing"}
+                : {id: "item"}
+            const related = method === "skills.list"
+                ? {repositories: [], versions: []}
+                : {}
             assert.doesNotThrow(() => parseControlOutput(method, {
-                [field]: Array.from({length: 100}, (_, index) => ({id: `item-${index}`})),
+                ...related,
+                [field]: Array.from({length: 100}, (_, index) => ({
+                    ...item,
+                    id: `item-${index}`,
+                })),
                 nextCursor: null,
             }))
             assert.throws(
                 () => parseControlOutput(method, {
-                    [field]: Array.from({length: 101}, (_, index) => ({id: `item-${index}`})),
+                    ...related,
+                    [field]: Array.from({length: 101}, (_, index) => ({
+                        ...item,
+                        id: `item-${index}`,
+                    })),
                     nextCursor: null,
                 }),
                 new RegExp(`${field}|100`, "u"),

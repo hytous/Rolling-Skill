@@ -11,6 +11,7 @@ const MAX_SKILL_PATH_LENGTH = 4_000
 const MAX_EVALUATION_CASES = 1_000
 const MAX_EVALUATION_RUNTIMES = 50
 const MAX_PUBLIC_DETAIL_ITEMS = 50
+const MAX_SKILL_PAGE_VERSIONS = 10_000
 
 const reasoningEffort = z.enum([
     "minimal",
@@ -76,6 +77,7 @@ const page = z.object({
 })
 
 const skillReferenceInput = z.object({
+    id: id.optional(),
     name: boundedText(MAX_IDENTIFIER_LENGTH, "Skill name"),
     path: z.string().max(MAX_SKILL_PATH_LENGTH).optional(),
 }).strict()
@@ -151,6 +153,56 @@ function pageResult(name) {
         nextCursor: cursor.nullable(),
     }).strict()
 }
+
+const managedSkillRepository = z.object({
+    id,
+    displayName: boundedText(MAX_IDENTIFIER_LENGTH, "Repository display name").optional(),
+    defaultBranch: boundedText(MAX_IDENTIFIER_LENGTH, "Repository default branch").optional(),
+    source: z.object({
+        kind: boundedText(40, "Repository source kind"),
+        location: boundedText(8_192, "Repository source location"),
+        importedAt: boundedText(100, "Repository import time"),
+    }).strict().optional(),
+    createdAt: boundedText(100, "Repository creation time").optional(),
+    updatedAt: boundedText(100, "Repository update time").optional(),
+}).strict()
+
+const managedSkillSummary = z.object({
+    id,
+    repositoryId: id,
+    name: boundedText(MAX_IDENTIFIER_LENGTH, "Skill name"),
+    description: z.string().max(1_024).nullable().optional(),
+    skillRoot: boundedText(MAX_SKILL_PATH_LENGTH, "Skill root").optional(),
+    manifestPath: boundedText(MAX_SKILL_PATH_LENGTH, "Skill manifest path").optional(),
+    status: boundedText(40, "Skill status").optional(),
+    warnings: z.array(z.string().max(MAX_SKILL_PATH_LENGTH)).optional(),
+    executableFiles: z.array(z.string().max(MAX_SKILL_PATH_LENGTH)).optional(),
+    createdAt: boundedText(100, "Skill creation time").optional(),
+    updatedAt: boundedText(100, "Skill update time").optional(),
+}).strict()
+
+const managedSkillVersion = z.object({
+    id,
+    repositoryId: id,
+    skillId: id,
+    skillRoot: boundedText(MAX_SKILL_PATH_LENGTH, "Version Skill root").optional(),
+    commit: boundedText(200, "Version commit").optional(),
+    contentDigest: boundedText(200, "Version content digest").optional(),
+    state: boundedText(40, "Version state").optional(),
+    versionLabel: z.string().max(64).nullable().optional(),
+    createdBy: boundedText(40, "Version creator").optional(),
+    optimizationRoundId: z.string().max(MAX_IDENTIFIER_LENGTH).nullable().optional(),
+    createdAt: boundedText(100, "Version creation time").optional(),
+    releasedAt: z.string().max(100).nullable().optional(),
+    deprecatedAt: z.string().max(100).nullable().optional(),
+}).strict()
+
+const managedSkillPageResult = z.object({
+    repositories: z.array(managedSkillRepository).max(MAX_PAGE_SIZE),
+    skills: z.array(managedSkillSummary).max(MAX_PAGE_SIZE),
+    versions: z.array(managedSkillVersion).max(MAX_SKILL_PAGE_VERSIONS),
+    nextCursor: cursor.nullable(),
+}).strict()
 
 function freezeMethodDefinitions(definitions) {
     for (const definition of Object.values(definitions)) Object.freeze(definition)
@@ -240,7 +292,7 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
     "skills.list": {
         action: "skills.read",
         input: page.strict(),
-        output: pageResult("skills"),
+        output: managedSkillPageResult,
     },
     "skills.get": {
         action: "skills.read",

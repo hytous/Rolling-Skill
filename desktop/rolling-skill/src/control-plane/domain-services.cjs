@@ -100,12 +100,20 @@ function sanitizedSkillDetail(detail) {
     return result
 }
 
+function sanitizedRepository(repository) {
+    if (!repository || typeof repository !== "object") return repository
+    const result = clone(repository)
+    delete result.managedPath
+    return result
+}
+
 function createDomainServices(dependencies = {}) {
     const {
         rawCaseStore,
         evaluationStore,
         evaluationRunner,
         managedSkillManager,
+        listRawCaseSkills,
         listRuntimes,
         listModelsForRuntime,
         dispatchRawCase,
@@ -129,11 +137,26 @@ function createDomainServices(dependencies = {}) {
         return runtime
     }
 
-    async function skillInventory() {
+    async function managedSkillOverview() {
         const overview = typeof managedSkillManager?.overview === "function"
             ? await managedSkillManager.overview()
-            : {skills: []}
-        return clone(arrayFromInventory(overview, ["skills"]))
+            : {}
+        return {
+            repositories: clone(arrayFromInventory(overview, ["repositories"]))
+                .map(sanitizedRepository),
+            skills: clone(arrayFromInventory(overview, ["skills"])),
+            versions: clone(arrayFromInventory(overview, ["versions"])),
+        }
+    }
+
+    async function managedSkillInventory() {
+        return (await managedSkillOverview()).skills
+    }
+
+    async function rawCaseSkillInventory() {
+        if (typeof listRawCaseSkills !== "function") return managedSkillInventory()
+        const inventory = await listRawCaseSkills()
+        return clone(arrayFromInventory(inventory, ["skills", "available", "data"]))
     }
 
     function resolveSkillReferenceFrom(reference, inventory, {
@@ -181,7 +204,7 @@ function createDomainServices(dependencies = {}) {
     }
 
     async function resolveSkillReference(reference, options) {
-        return resolveSkillReferenceFrom(reference, await skillInventory(), options)
+        return resolveSkillReferenceFrom(reference, await rawCaseSkillInventory(), options)
     }
 
     function canonicalSkillReference(skill) {
@@ -267,7 +290,7 @@ function createDomainServices(dependencies = {}) {
     }
 
     async function requireSkill(skillId) {
-        const skill = (await skillInventory()).find((entry) => entry?.id === skillId)
+        const skill = (await managedSkillInventory()).find((entry) => entry?.id === skillId)
         if (!skill) throw notFound("skill")
         return skill
     }
@@ -289,7 +312,7 @@ function createDomainServices(dependencies = {}) {
         const allowed = scopeIds(context, "skillIds")
         if (allowed.size === 0) return []
         const records = execution?.rawCases ?? await rawCaseInventory(input.skillName)
-        const skills = execution?.skills ?? await skillInventory()
+        const skills = execution?.skills ?? await rawCaseSkillInventory()
         const visible = []
         for (const record of records) {
             const stableId = identifier(record?.skill?.skillId) ?? identifier(record?.skill?.id)
@@ -320,11 +343,13 @@ function createDomainServices(dependencies = {}) {
             inventoryIds = datasets.map((entry) => entry?.id)
             executionContext = {method, datasets}
         } else {
-            const skills = await skillInventory()
+            const overview = method === "skills.list" ? await managedSkillOverview() : null
+            const skills = overview?.skills ?? await rawCaseSkillInventory()
             inventoryIds = skills.map((entry) => entry?.id)
             executionContext = {
                 method,
                 skills,
+                overview,
                 rawCases: method === "raw_cases.list"
                     ? await rawCaseInventory(input.skillName)
                     : null,
@@ -356,7 +381,7 @@ function createDomainServices(dependencies = {}) {
             }, {method, datasets, runs})
         }
         if (method === "raw_cases.enqueue") {
-            const inventory = await skillInventory()
+            const inventory = await rawCaseSkillInventory()
             const skills = []
             for (let index = 0; index < input.cases.length; index += 1) {
                 skills.push(resolveSkillReferenceFrom(input.cases[index].skill, inventory, {
@@ -373,7 +398,7 @@ function createDomainServices(dependencies = {}) {
         }
         if (method === "raw_cases.update" || method === "raw_cases.dispatch") {
             const rawCase = await requireRawCase(input.id)
-            const inventory = await skillInventory()
+            const inventory = await rawCaseSkillInventory()
             const skill = resolveSkillReferenceFrom(rawCase.skill, inventory, {grant, method})
             const skillIds = [skill.id]
             let targetSkill = null
@@ -619,10 +644,19 @@ function createDomainServices(dependencies = {}) {
         async "skills.list"(input, context) {
             const allowed = scopeIds(context, "skillIds")
             const execution = trustedExecution(context, "skills.list")
-            const inventory = execution?.skills ?? await skillInventory()
-            const skills = inventory.filter((entry) => allowed.has(entry.id))
+            const overview = execution?.overview ?? await managedSkillOverview()
+            const skills = overview.skills.filter((entry) => allowed.has(entry.id))
             const page = paginate(skills, input)
-            return {skills: page.items, nextCursor: page.nextCursor}
+            const skillIds = new Set(page.items.map((entry) => entry.id))
+            const repositoryIds = new Set(page.items.map((entry) => entry.repositoryId))
+            return {
+                repositories: overview.repositories
+                    .filter((entry) => repositoryIds.has(entry?.id))
+                    .map(sanitizedRepository),
+                skills: page.items,
+                versions: overview.versions.filter((entry) => skillIds.has(entry?.skillId)),
+                nextCursor: page.nextCursor,
+            }
         },
 
         async "skills.get"(input, context) {

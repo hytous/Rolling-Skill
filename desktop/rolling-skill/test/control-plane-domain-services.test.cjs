@@ -187,7 +187,7 @@ describe("control-plane domain services", () => {
         )
         assert.deepEqual(
             await services["skills.list"]({cursor: null, limit: 100}, serviceContext({skillIds: []})),
-            {skills: [], nextCursor: null},
+            {repositories: [], skills: [], versions: [], nextCursor: null},
         )
         assert.deepEqual(
             await services["runtimes.list"]({}, serviceContext({runtimeIds: []})),
@@ -321,6 +321,64 @@ describe("control-plane domain services", () => {
         ]) {
             assert.ok(Object.isFrozen(resolution.executionContext))
         }
+    })
+
+    it("pages managed Skill summaries with only their related sanitized metadata", async () => {
+        const overview = {
+            repositories: [
+                {id: "repository-1", displayName: "Billing", managedPath: "/private/billing"},
+                {id: "repository-2", displayName: "Support", managedPath: "/private/support"},
+                {id: "repository-hidden", displayName: "Hidden", managedPath: "/private/hidden"},
+            ],
+            skills: [
+                {id: "skill-1", repositoryId: "repository-1", name: "billing"},
+                {id: "skill-2", repositoryId: "repository-2", name: "support"},
+                {id: "skill-hidden", repositoryId: "repository-hidden", name: "hidden"},
+            ],
+            versions: [
+                {id: "version-1", repositoryId: "repository-1", skillId: "skill-1"},
+                {id: "version-2", repositoryId: "repository-2", skillId: "skill-2"},
+                {id: "version-hidden", repositoryId: "repository-hidden", skillId: "skill-hidden"},
+            ],
+        }
+        const {dependencies} = fixture({
+            managedSkillManager: {
+                overview: mock.fn(() => structuredClone(overview)),
+                readSkill: mock.fn(() => {
+                    throw new Error("skills.list must not read Skill detail")
+                }),
+            },
+        })
+        const services = createDomainServices(dependencies)
+        const grant = {
+            ...serviceContext().grant,
+            scopes: {
+                ...serviceContext().grant.scopes,
+                skillIds: ["skill-1", "skill-2"],
+            },
+        }
+        const resolution = await services.resolveScope(
+            "skills.list",
+            {cursor: null, limit: 1},
+            grant,
+        )
+        const result = await services["skills.list"](
+            {cursor: null, limit: 1},
+            {
+                ...serviceContext({skillIds: ["skill-1", "skill-2"]}),
+                grant,
+                executionContext: resolution.executionContext,
+            },
+        )
+
+        assert.deepEqual(result, {
+            repositories: [{id: "repository-1", displayName: "Billing"}],
+            skills: [{id: "skill-1", repositoryId: "repository-1", name: "billing"}],
+            versions: [{id: "version-1", repositoryId: "repository-1", skillId: "skill-1"}],
+            nextCursor: encodeCursor(1),
+        })
+        assert.equal(dependencies.managedSkillManager.overview.mock.callCount(), 1)
+        assert.equal(dependencies.managedSkillManager.readSkill.mock.callCount(), 0)
     })
 
     it("resolves opaque Raw Case and evaluation run owners with an exact subject binding", async () => {
@@ -587,6 +645,105 @@ describe("control-plane domain services", () => {
             {...input, idempotencyKey: "enqueue-ambiguous"},
             ambiguousGrant,
         ), (error) => error.code === "INVALID_ARGUMENT")
+    })
+
+    it("uses a trusted unified Raw Case Skill inventory without exposing it through managed Skill reads", async () => {
+        const addMany = mock.fn((cases) => ({created: structuredClone(cases), duplicates: [], rejected: []}))
+        const listRawCaseSkills = mock.fn(() => ({skills: [
+            {id: "runtime-skill-1", name: "shared", providerId: "codex"},
+            {id: "runtime-skill-2", name: "shared", providerId: "codebuddy"},
+        ]}))
+        const {dependencies} = fixture({
+            rawCaseStore: {
+                list: mock.fn(() => [{
+                    id: "raw-runtime",
+                    question: "runtime Skill",
+                    skill: {id: "runtime-skill-2", name: "shared"},
+                }]),
+                addMany,
+            },
+            listRawCaseSkills,
+        })
+        const services = createDomainServices(dependencies)
+        const grant = {
+            ...serviceContext().grant,
+            scopes: {
+                ...serviceContext().grant.scopes,
+                skillIds: ["runtime-skill-1", "runtime-skill-2", "skill-1"],
+            },
+        }
+        const exactInput = {
+            cases: [{
+                question: "use the second runtime Skill",
+                skill: {id: "runtime-skill-2", name: "shared"},
+                note: "",
+                source: {kind: "operator"},
+            }],
+            idempotencyKey: "enqueue-runtime-skill",
+        }
+        const exactResolution = await services.resolveScope(
+            "raw_cases.enqueue",
+            exactInput,
+            grant,
+        )
+        const exactResult = await services["raw_cases.enqueue"](exactInput, {
+            ...serviceContext(),
+            grant,
+            executionContext: exactResolution.executionContext,
+        })
+
+        assert.deepEqual(exactResolution.scope.skillIds, ["runtime-skill-2"])
+        assert.deepEqual(exactResult.created[0].skill, {id: "runtime-skill-2", name: "shared"})
+        assert.deepEqual(addMany.mock.calls[0].arguments[0][0].skill, {
+            id: "runtime-skill-2",
+            name: "shared",
+        })
+
+        await assert.rejects(services.resolveScope(
+            "raw_cases.enqueue",
+            {
+                ...exactInput,
+                cases: [{...exactInput.cases[0], skill: {name: "shared"}}],
+                idempotencyKey: "enqueue-ambiguous-runtime-skill",
+            },
+            grant,
+        ), (error) => error.code === "INVALID_ARGUMENT")
+
+        const listResolution = await services.resolveScope(
+            "raw_cases.list",
+            {skillName: null, cursor: null, limit: 100},
+            grant,
+        )
+        const listed = await services["raw_cases.list"](
+            {skillName: null, cursor: null, limit: 100},
+            {
+                ...serviceContext({skillIds: ["runtime-skill-2"]}),
+                grant,
+                executionContext: listResolution.executionContext,
+            },
+        )
+        assert.deepEqual(listed.rawCases.map((entry) => entry.id), ["raw-runtime"])
+
+        const managedResolution = await services.resolveScope(
+            "skills.list",
+            {cursor: null, limit: 100},
+            grant,
+        )
+        const managed = await services["skills.list"](
+            {cursor: null, limit: 100},
+            {
+                ...serviceContext({skillIds: ["runtime-skill-2", "skill-1"]}),
+                grant,
+                executionContext: managedResolution.executionContext,
+            },
+        )
+        assert.deepEqual(managed.skills.map((entry) => entry.id), ["skill-1"])
+        await assert.rejects(
+            services.resolveScope("skills.get", {skillId: "runtime-skill-2"}, grant),
+            (error) => error.code === "NOT_FOUND",
+        )
+        assert.equal(listRawCaseSkills.mock.callCount(), 3)
+        assert.ok(dependencies.managedSkillManager.overview.mock.callCount() >= 2)
     })
 
     it("persists the resolved Skill ID and filters same-name records by that stable owner", async () => {
