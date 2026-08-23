@@ -1,10 +1,55 @@
 const assert = require("node:assert/strict")
+const {createHash} = require("node:crypto")
 const {readFileSync} = require("node:fs")
 const {join} = require("node:path")
 const {describe, it} = require("node:test")
+const vm = require("node:vm")
 
 const root = join(__dirname, "..")
 const source = (path) => readFileSync(join(root, path), "utf8")
+const plain = (value) => JSON.parse(JSON.stringify(value))
+
+function preloadBridge(responder) {
+    const calls = []
+    let exposed = null
+    const ipcRenderer = {
+        invoke(channel, payload) {
+            calls.push(structuredClone({channel, payload}))
+            return Promise.resolve(responder(channel, payload, calls.length - 1))
+        },
+        on() {},
+        removeListener() {},
+    }
+    vm.runInNewContext(source("src/preload.cjs"), {
+        require(name) {
+            assert.equal(name, "electron")
+            return {
+                contextBridge: {
+                    exposeInMainWorld(name_, value) {
+                        assert.equal(name_, "rollingSkill")
+                        exposed = value
+                    },
+                },
+                ipcRenderer,
+            }
+        },
+    })
+    return {api: exposed, calls}
+}
+
+function mainFunctionContext(startName, endName, globals = {}) {
+    const main = source("src/main.cjs")
+    const start = main.indexOf(`function ${startName}`)
+    const functionEnd = main.indexOf(`\nfunction ${endName}`, start + 1)
+    const asyncEnd = main.indexOf(`\nasync function ${endName}`, start + 1)
+    const end = [functionEnd, asyncEnd]
+        .filter((candidate) => candidate > start)
+        .sort((left, right) => left - right)[0] ?? -1
+    assert.ok(start >= 0 && end > start, `missing main helper slice: ${startName}`)
+    const context = {...globals}
+    vm.runInNewContext(main.slice(start, end), context)
+    return context
+}
 
 describe("desktop main/preload bridge", () => {
     it("registers the locally discovered DeepSeek Harness provider", () => {
@@ -57,7 +102,7 @@ describe("desktop main/preload bridge", () => {
         )
         assert.match(preload, /onRubricActivity/)
         assert.match(main, /curation:create[\s\S]*?requirePublishedDatasetRubric\(dataset\)/)
-        assert.match(main, /evaluations:start[\s\S]*?requirePublishedDatasetRubric\(dataset\)/)
+        assert.match(main, /startEvaluationFromControl[\s\S]*?requirePublishedDatasetRubric\(dataset\)/)
         assert.match(store, /rubricVersionSnapshot/)
         assert.match(store, /rubricCalibration/)
         assert.match(runner, /rubricVersion:\s*run\.rubricVersionSnapshot/)
@@ -91,7 +136,7 @@ describe("desktop main/preload bridge", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")
 
-        assert.match(main, /evaluations:cancel[\s\S]{0,180}evaluationRunner\.cancel/)
+        assert.match(main, /createDomainServices[\s\S]*?evaluationRunner/)
         assert.match(preload, /cancelEvaluationRun/)
         assert.match(main, /evaluations:delete[\s\S]{0,160}deleteEvaluationRun/)
     })
@@ -251,9 +296,9 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /new RawCaseStore\(/)
         assert.match(main, /rawCaseStore\.subscribe/)
         assert.match(main, /send\("raw-cases:changed"/)
-        assert.match(main, /raw-cases:list/)
-        assert.match(main, /raw-cases:add/)
-        assert.match(main, /raw-cases:update/)
+        assert.match(main, /"raw_cases\.list"/)
+        assert.match(main, /"raw_cases\.enqueue"/)
+        assert.match(main, /"raw_cases\.update"/)
         assert.match(main, /raw-cases:delete/)
         assert.match(main, /raw-cases:mark-dispatched/)
         assert.match(preload, /listRawCases/)
@@ -271,11 +316,11 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /skill-registry\.json/)
         assert.match(main, /applicationSupportDirectory:\s*app\.getPath\("userData"\)/)
         assert.match(main, /managedSkills:\s*managedSkillManager\.overview\(\)/)
-        assert.match(main, /skill-repositories:list/)
+        assert.match(main, /"skills\.list"/)
         assert.match(main, /skill-repositories:rescan/)
         assert.match(main, /skill-repositories:import/)
         assert.match(main, /skill-repositories:reveal/)
-        assert.match(main, /managed-skills:read/)
+        assert.match(main, /"skills\.get"/)
         assert.match(main, /skill-versions:create-candidate/)
         assert.match(main, /skill-versions:release/)
         assert.match(main, /skill-versions:deprecate/)
@@ -385,5 +430,421 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /runtime:clear-observation/)
         assert.match(preload, /drainThreadObservation:[\s\S]{0,120}runtime:drain-observation/)
         assert.match(preload, /clearThreadObservation:[\s\S]{0,120}runtime:clear-observation/)
+    })
+
+    it("constructs one shared control plane after domain dependencies and closes transport first", () => {
+        const main = source("src/main.cjs")
+
+        for (const constructor of [
+            "CapabilityStore",
+            "ControlPlane",
+            "ControlSocketServer",
+        ]) {
+            assert.equal(
+                [...main.matchAll(new RegExp(`new ${constructor}\\(`, "g"))].length,
+                1,
+                `${constructor} must be constructed exactly once`,
+            )
+        }
+        assert.equal([...main.matchAll(/createControlPolicy\(\)/g)].length, 1)
+        assert.equal([...main.matchAll(/createDomainServices\(/g)].length, 1)
+
+        const runnerReady = main.indexOf("evaluationRunner = new EvaluationRunner")
+        const domainReady = main.indexOf("initializeControlPlane()", runnerReady)
+        const socketStart = main.indexOf("startControlSocket()", domainReady)
+        assert.ok(runnerReady >= 0 && domainReady > runnerReady && socketStart > domainReady)
+
+        const shutdownStart = main.indexOf("async function shutdownApplication")
+        const shutdownEnd = main.indexOf("\nfunction ", shutdownStart + 1)
+        const shutdown = main.slice(
+            shutdownStart,
+            shutdownEnd > shutdownStart ? shutdownEnd : main.length,
+        )
+        assert.match(shutdown, /controlInvocationsAccepted\s*=\s*false/)
+        assert.ok(
+            shutdown.indexOf("await stopControlPlane()") <
+                shutdown.indexOf("client?.stop?.()"),
+            "control transport must close before runtime clients",
+        )
+        assert.ok(
+            shutdown.indexOf("client?.stop?.()") < shutdown.indexOf("rawCaseStore?.close()"),
+            "stores must close after runtime clients",
+        )
+        assert.match(main, /controlSocketStartPromise/)
+        assert.match(main, /controlShutdownPromise/)
+    })
+
+    it("keeps renderer capability private, rotates scoped grants, and validates the sender", () => {
+        const main = source("src/main.cjs")
+        const preload = source("src/preload.cjs")
+
+        assert.match(main, /RENDERER_CONTROL_METHODS/)
+        for (const method of [
+            "raw_cases.list",
+            "raw_cases.enqueue",
+            "raw_cases.update",
+            "runtimes.list",
+            "runtimes.models",
+            "datasets.list",
+            "datasets.get",
+            "evaluations.list",
+            "evaluations.get",
+            "evaluations.start",
+            "evaluations.cancel",
+            "skills.list",
+            "skill_versions.list",
+            "skills.get",
+        ]) {
+            assert.match(main, new RegExp(`"${method.replace(".", "\\.")}"`))
+        }
+        assert.match(main, /event\?\.sender\s*!==\s*mainWindow\.webContents/)
+        assert.match(main, /event\.sender\.isDestroyed\(\)/)
+        assert.match(main, /Unknown renderer control method/)
+        assert.match(main, /RENDERER_FORBIDDEN_CONTROL_KEYS/)
+        assert.match(main, /token[\s\S]{0,120}sessionId[\s\S]{0,120}action[\s\S]{0,120}path[\s\S]{0,120}commit[\s\S]{0,120}usage/)
+
+        const rotationStart = main.indexOf("async function ensureRendererCapability")
+        const rotationEnd = main.indexOf("\nfunction ", rotationStart + 1)
+        const rotation = main.slice(
+            rotationStart,
+            rotationEnd > rotationStart ? rotationEnd : main.length,
+        )
+        assert.match(rotation, /scopeSignature/)
+        assert.match(rotation, /expiresAt/)
+        assert.ok(
+            rotation.indexOf("revokeRendererCapability()") <
+                rotation.indexOf("capabilityStore.issue"),
+            "scope rotation must revoke the prior session before issuing a new grant",
+        )
+        assert.match(main, /mainWindow\.on\("closed"[\s\S]{0,160}revokeRendererCapability\(\)/)
+        assert.doesNotMatch(preload, /capabilit|token/i)
+        assert.doesNotMatch(preload, /issueControl|listControl|revokeControl|controlInvoke/)
+    })
+
+    it("rejects fake senders and renderer-supplied authority before private invocation", () => {
+        const trustedSender = {isDestroyed: () => false}
+        const senderContext = mainFunctionContext(
+            "assertRendererControlSender",
+            "installControlIpc",
+            {
+                mainWindow: {
+                    isDestroyed: () => false,
+                    webContents: trustedSender,
+                },
+            },
+        )
+        assert.doesNotThrow(() => senderContext.assertRendererControlSender({sender: trustedSender}))
+        assert.throws(
+            () => senderContext.assertRendererControlSender({
+                sender: {isDestroyed: () => false},
+            }),
+            /not active/u,
+        )
+
+        const validation = mainFunctionContext(
+            "isSafeControlRecord",
+            "rendererControlParams",
+            {
+                RENDERER_FORBIDDEN_CONTROL_KEYS: new Set([
+                    "token",
+                    "sessionId",
+                    "action",
+                    "path",
+                    "commit",
+                    "usage",
+                ]),
+            },
+        )
+        assert.equal(validation.containsForbiddenControlKey({
+            method: "datasets.list",
+            params: {},
+            token: "renderer-supplied",
+        }), true)
+        assert.equal(validation.containsForbiddenControlKey({
+            method: "raw_cases.enqueue",
+            params: {cases: [{skill: {name: "billing", path: "/private"}}]},
+        }), true)
+        assert.equal(validation.containsForbiddenControlKey({
+            method: "datasets.list",
+            params: {},
+        }), false)
+    })
+
+    it("rotates the private capability only when scope or expiry changes", async () => {
+        let now = 1_000
+        let sequence = 0
+        let scopes = {skillIds: ["skill-1"], datasetIds: [], runtimeIds: []}
+        const lifecycle = []
+        const context = mainFunctionContext(
+            "revokeRendererCapability",
+            "isSafeControlRecord",
+            {
+                Date: {now: () => now},
+                Number,
+                RENDERER_CAPABILITY_LIFETIME_MS: 3_600_000,
+                RENDERER_CAPABILITY_REFRESH_MS: 60_000,
+                RENDERER_CONTROL_ACTIONS: ["skills.read"],
+                capabilityStore: {
+                    issue(request) {
+                        sequence += 1
+                        lifecycle.push(["issue", plain(request.scopes)])
+                        return {
+                            id: `cap-${sequence}`,
+                            token: `private-${sequence}`,
+                            expiresAt: now + 3_600_000,
+                        }
+                    },
+                    revokeSession(sessionId) {
+                        lifecycle.push(["revoke", sessionId])
+                    },
+                },
+                controlInvocationsAccepted: true,
+                currentRendererScopes: () => scopes,
+                randomUUID: () => `session-${sequence + 1}`,
+                rendererCapability: null,
+                rendererCapabilityRotation: Promise.resolve(),
+            },
+        )
+
+        const first = await context.ensureRendererCapability()
+        const unchanged = await context.ensureRendererCapability()
+        assert.equal(unchanged.capabilityId, first.capabilityId)
+        assert.deepEqual(lifecycle.map(([operation]) => operation), ["issue"])
+
+        scopes = {skillIds: ["skill-1", "skill-2"], datasetIds: [], runtimeIds: []}
+        const widened = await context.ensureRendererCapability()
+        assert.notEqual(widened.capabilityId, first.capabilityId)
+        assert.deepEqual(lifecycle.map(([operation]) => operation), ["issue", "revoke", "issue"])
+
+        now += 3_600_000
+        await context.ensureRendererCapability()
+        assert.deepEqual(
+            lifecycle.map(([operation]) => operation),
+            ["issue", "revoke", "issue", "revoke", "issue"],
+        )
+    })
+
+    it("builds Raw Case scope from trusted local catalogs and adds renderer-only name aliases", () => {
+        const main = source("src/main.cjs")
+        const preload = source("src/preload.cjs")
+
+        assert.match(main, /listRawCaseSkills:/)
+        assert.match(main, /managedSkillManager\.catalog\(\)/)
+        assert.match(main, /store\.listDatasets\(\)/)
+        assert.match(main, /activeRuntimeSkillCache/)
+        assert.match(main, /rawCaseStore\.list\(\)/)
+        assert.match(main, /createHash\("sha256"\)/)
+        assert.match(main, /function prepareRendererRawCaseSkillAliases/)
+        assert.match(main, /assertRendererControlSender\(event\)[\s\S]*prepareRendererRawCaseSkillAliases/)
+        assert.match(main, /prepareRendererRawCaseSkillAliases[\s\S]*ensureRendererCapability/)
+        assert.match(main, /candidates\.length === 1[\s\S]*\.id/)
+        assert.match(main, /candidates\.length === 0[\s\S]*rendererRawCaseSkillAliases\.set/)
+        assert.match(main, /candidates\.length > 1[\s\S]*return/)
+        assert.match(preload, /input\.skill\?\.id\s*\?\s*\{id:\s*input\.skill\.id\}/)
+        assert.doesNotMatch(preload, /skill:\s*\{[^}]*path:/)
+    })
+
+    it("maps trusted and previously unseen renderer Skill names to deterministic stable IDs", () => {
+        const context = mainFunctionContext(
+            "deterministicRawCaseSkillId",
+            "listModelsForRuntimeFromControl",
+            {
+                activeRuntimeSkillCache: [],
+                createHash,
+                managedSkillManager: {catalog: () => ({skills: []})},
+                normalizedSkillName: (value) => String(value ?? "").trim().toLowerCase(),
+                rawCaseStore: {list: () => []},
+                rendererRawCaseSkillAliases: new Map(),
+                store: {listDatasets: () => []},
+            },
+        )
+        const input = {
+            cases: [{question: "q", skill: {name: "Brand New Skill"}}],
+        }
+        context.prepareRendererRawCaseSkillAliases("raw_cases.enqueue", input)
+        const stableId = input.cases[0].skill.id
+        assert.match(stableId, /^skill-name-[0-9a-f]{64}$/u)
+        assert.equal(
+            context.trustedRawCaseSkills().skills.some((skill) => skill.id === stableId),
+            true,
+        )
+
+        context.managedSkillManager = {
+            catalog: () => ({skills: [{id: "managed-1", name: "Managed"}]}),
+        }
+        const managed = {cases: [{skill: {name: "managed"}}]}
+        context.prepareRendererRawCaseSkillAliases("raw_cases.enqueue", managed)
+        assert.equal(managed.cases[0].skill.id, "managed-1")
+
+        context.managedSkillManager = {
+            catalog: () => ({skills: [
+                {id: "managed-a", name: "Duplicate"},
+                {id: "managed-b", name: "duplicate"},
+            ]}),
+        }
+        const ambiguous = {cases: [{skill: {name: "DUPLICATE"}}]}
+        context.prepareRendererRawCaseSkillAliases("raw_cases.enqueue", ambiguous)
+        assert.equal(ambiguous.cases[0].skill.id, undefined)
+    })
+
+    it("starts a credential-free socket and leaves a bounded diagnostic on start failure", () => {
+        const main = source("src/main.cjs")
+        const start = main.indexOf("function startControlSocket")
+        const end = main.indexOf("\nfunction ", start + 1)
+        const lifecycle = main.slice(start, end > start ? end : main.length)
+
+        assert.match(lifecycle, /controlSocketServer\.start\(\)/)
+        assert.doesNotMatch(lifecycle, /capabilityStore\.issue|\.token|socketPath/)
+        assert.match(lifecycle, /controlSocketStartupDiagnostic/)
+        assert.match(main, /Desktop actions remain available/)
+        assert.doesNotMatch(main, /console\.(?:log|error)\([^\n]*(?:token|socketPath)/)
+    })
+
+    it("maps every migrated preload call through control:invoke without exposing credentials", async () => {
+        const pageCounts = new Map()
+        const {api, calls} = preloadBridge((_channel, envelope) => {
+            const count = pageCounts.get(envelope.method) ?? 0
+            pageCounts.set(envelope.method, count + 1)
+            switch (envelope.method) {
+                case "raw_cases.list":
+                    return count === 0
+                        ? {rawCases: [{id: "raw-1"}], nextCursor: "next-raw"}
+                        : {rawCases: [{id: "raw-2"}], nextCursor: null}
+                case "raw_cases.enqueue":
+                    return {created: [{id: "raw-3"}], duplicates: [], rejected: []}
+                case "raw_cases.update": return {rawCase: {id: "raw-1", revision: 2}}
+                case "runtimes.list": return {runtimes: [{runtimeId: "runtime-1"}]}
+                case "runtimes.models": return {models: [{id: "model-1"}]}
+                case "datasets.list":
+                    return count === 0
+                        ? {datasets: [{id: "dataset-1"}], nextCursor: "next-dataset"}
+                        : {datasets: [{id: "dataset-2"}], nextCursor: null}
+                case "datasets.get": return {dataset: {id: "dataset-1"}, cases: [{id: "case-1"}]}
+                case "evaluations.list": return {runs: [{id: "run-1"}], nextCursor: null}
+                case "evaluations.get": return {run: {id: "run-1", status: "running"}}
+                case "evaluations.start": return {run: {id: "run-2", status: "queued"}}
+                case "evaluations.cancel": return {run: {id: "run-1", status: "cancelled"}}
+                case "skills.list": return count === 0
+                    ? {
+                          repositories: [{id: "repository-1"}],
+                          skills: [{id: "skill-1", repositoryId: "repository-1"}],
+                          nextCursor: "next-skill",
+                      }
+                    : {
+                          repositories: [{id: "repository-2"}],
+                          skills: [{id: "skill-2", repositoryId: "repository-2"}],
+                          nextCursor: null,
+                      }
+                case "skill_versions.list": return count === 0
+                    ? {
+                          versions: [{id: "version-1", skillId: "skill-1"}],
+                          nextCursor: "next-version",
+                      }
+                    : {
+                          versions: [{id: "version-2", skillId: "skill-2"}],
+                          nextCursor: null,
+                      }
+                case "skills.get": return {skill: {skill: {id: "skill-1"}}}
+                default: throw new Error(`Unexpected method: ${envelope.method}`)
+            }
+        })
+
+        assert.deepEqual(plain(await api.listRawCases()), [{id: "raw-1"}, {id: "raw-2"}])
+        assert.deepEqual(
+            plain(await api.addRawCases([{
+                question: "q",
+                skill: {id: "skill-billing", name: "billing", path: "/private"},
+            }])),
+            {created: [{id: "raw-3"}], duplicates: [], rejected: []},
+        )
+        assert.deepEqual(plain(await api.updateRawCase("raw-1", {note: "updated"})), {
+            id: "raw-1",
+            revision: 2,
+        })
+        assert.deepEqual(plain(await api.listRuntimes()), [{runtimeId: "runtime-1"}])
+        assert.deepEqual(plain(await api.listModels()), {data: [{id: "model-1"}], nextCursor: null})
+        assert.deepEqual(
+            plain(await api.listModelsForRuntime("runtime-1")),
+            {data: [{id: "model-1"}], nextCursor: null},
+        )
+        assert.deepEqual(plain(await api.listDatasets()), [{id: "dataset-1"}, {id: "dataset-2"}])
+        assert.deepEqual(plain(await api.listCases("dataset-1")), [{id: "case-1"}])
+        assert.deepEqual(plain(await api.listEvaluationRuns()), [{id: "run-1"}])
+        assert.deepEqual(plain(await api.getEvaluationRun("run-1")), {id: "run-1", status: "running"})
+        assert.deepEqual(plain(await api.startEvaluationRun({datasetId: "dataset-1"})), {
+            id: "run-2",
+            status: "queued",
+        })
+        assert.deepEqual(plain(await api.cancelEvaluationRun("run-1")), {
+            id: "run-1",
+            status: "cancelled",
+        })
+        assert.deepEqual(plain(await api.listManagedSkills()), {
+            repositories: [{id: "repository-1"}, {id: "repository-2"}],
+            skills: [
+                {id: "skill-1", repositoryId: "repository-1"},
+                {id: "skill-2", repositoryId: "repository-2"},
+            ],
+            versions: [
+                {id: "version-1", skillId: "skill-1"},
+                {id: "version-2", skillId: "skill-2"},
+            ],
+        })
+        assert.deepEqual(plain(await api.readManagedSkill("skill-1")), {skill: {id: "skill-1"}})
+
+        assert.ok(calls.length > 0)
+        for (const call of calls) {
+            assert.equal(call.channel, "control:invoke")
+            assert.deepEqual(Object.keys(call.payload).sort(), ["method", "params"])
+            assert.doesNotMatch(JSON.stringify(call), /token|sessionId|action|commit|usage/)
+            assert.doesNotMatch(JSON.stringify(call.payload.params), /private/)
+        }
+        const enqueue = calls.find((call) => call.payload.method === "raw_cases.enqueue")
+        assert.deepEqual(enqueue.payload.params.cases[0].skill, {
+            id: "skill-billing",
+            name: "billing",
+        })
+        assert.equal(typeof api.deleteRawCase, "function")
+        assert.equal(typeof api.deleteEvaluationRun, "function")
+        assert.equal(typeof api.rescanManagedSkills, "function")
+        assert.equal(typeof api.createRubricSession, "function")
+        assert.equal(typeof api.createCuration, "function")
+        assert.equal(typeof api.startSkillInstallations, "function")
+    })
+
+    it("removes migrated legacy IPC handlers while retaining non-contract surfaces", () => {
+        const main = source("src/main.cjs")
+        const preload = source("src/preload.cjs")
+        for (const channel of [
+            "raw-cases:list",
+            "raw-cases:add",
+            "raw-cases:update",
+            "models:list",
+            "models:list-for-runtime",
+            "datasets:list",
+            "datasets:list-cases",
+            "evaluations:list",
+            "evaluations:get",
+            "evaluations:start",
+            "evaluations:cancel",
+            "skill-repositories:list",
+            "managed-skills:read",
+        ]) {
+            assert.doesNotMatch(main, new RegExp(`ipcMain\\.handle\\("${channel}`))
+            assert.doesNotMatch(preload, new RegExp(`ipcRenderer\\.invoke\\("${channel}`))
+        }
+        for (const channel of [
+            "raw-cases:delete",
+            "raw-cases:mark-dispatched",
+            "datasets:create",
+            "datasets:delete",
+            "evaluations:delete",
+            "curation:create",
+            "rubrics:create",
+            "skill-installations:start",
+        ]) {
+            assert.match(main, new RegExp(channel))
+            assert.match(preload, new RegExp(channel))
+        }
     })
 })

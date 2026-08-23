@@ -1,5 +1,69 @@
 const {contextBridge, ipcRenderer} = require("electron")
 
+const CONTROL_PAGE_LIMIT = 100
+
+async function invokeControl(method, params = {}) {
+    const response = await ipcRenderer.invoke("control:invoke", {method, params})
+    if (!response?.__rollingSkillControl) return response
+    if (response.ok) return response.value
+    const error = new Error(response.error?.message ?? "Control operation failed")
+    error.code = response.error?.code ?? "CONTROL_ERROR"
+    error.retryable = Boolean(response.error?.retryable)
+    error.details = response.error?.details ?? null
+    if (error.code === "APPROVAL_REQUIRED") error.decision = "approval_required"
+    throw error
+}
+
+async function collectControlPages(method, params, key) {
+    const items = []
+    let cursor = null
+    do {
+        const page = await invokeControl(method, {...params, cursor, limit: CONTROL_PAGE_LIMIT})
+        items.push(...(Array.isArray(page?.[key]) ? page[key] : []))
+        cursor = page?.nextCursor ?? null
+    } while (cursor !== null)
+    return items
+}
+
+function controlRawCase(input = {}) {
+    return {
+        question: input.question,
+        skill: {
+            ...(input.skill?.id ? {id: input.skill.id} : {}),
+            name: input.skill?.name,
+        },
+        note: input.note ?? "",
+        source: {kind: input.source?.kind ?? "operator"},
+    }
+}
+
+function controlRawCaseChanges(input = {}) {
+    return {
+        ...(Object.hasOwn(input, "question") ? {question: input.question} : {}),
+        ...(Object.hasOwn(input, "skill") ? {skill: {
+            ...(input.skill?.id ? {id: input.skill.id} : {}),
+            name: input.skill?.name,
+        }} : {}),
+        ...(Object.hasOwn(input, "note") ? {note: input.note} : {}),
+    }
+}
+
+async function collectManagedSkillOverview() {
+    const repositories = new Map()
+    const skills = []
+    let cursor = null
+    do {
+        const page = await invokeControl("skills.list", {cursor, limit: CONTROL_PAGE_LIMIT})
+        for (const repository of page?.repositories ?? []) {
+            if (repository?.id) repositories.set(repository.id, repository)
+        }
+        skills.push(...(Array.isArray(page?.skills) ? page.skills : []))
+        cursor = page?.nextCursor ?? null
+    } while (cursor !== null)
+    const versions = await collectControlPages("skill_versions.list", {}, "versions")
+    return {repositories: [...repositories.values()], skills, versions}
+}
+
 function subscribe(channel, listener) {
     const handler = (_event, payload) => listener(payload)
     ipcRenderer.on(channel, handler)
@@ -22,9 +86,16 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     unarchiveThread: (threadId) => ipcRenderer.invoke("runtime:unarchive-thread", threadId),
     openExternal: (url) => ipcRenderer.invoke("links:open-external", url),
     openLocalPath: (path) => ipcRenderer.invoke("links:open-local", path),
-    listModels: () => ipcRenderer.invoke("models:list"),
+    listRuntimes: () => invokeControl("runtimes.list").then((result) => result.runtimes),
+    listModels: () => invokeControl("runtimes.models").then((result) => ({
+        data: result.models,
+        nextCursor: null,
+    })),
     listModelsForRuntime: (runtimeId) =>
-        ipcRenderer.invoke("models:list-for-runtime", runtimeId),
+        invokeControl("runtimes.models", {runtimeId}).then((result) => ({
+            data: result.models,
+            nextCursor: null,
+        })),
     listSkills: (forceReload = false) => ipcRenderer.invoke("skills:list", {forceReload}),
     listPlugins: () => ipcRenderer.invoke("plugins:list"),
     listInstalledPlugins: () => ipcRenderer.invoke("plugins:installed"),
@@ -46,16 +117,23 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         }),
     interruptTurn: (threadId, turnId) =>
         ipcRenderer.invoke("runtime:interrupt-turn", {threadId, turnId}),
-    listRawCases: (skillName = null) => ipcRenderer.invoke("raw-cases:list", {skillName}),
-    addRawCases: (cases_) => ipcRenderer.invoke("raw-cases:add", {cases: cases_}),
-    updateRawCase: (id, changes) => ipcRenderer.invoke("raw-cases:update", {id, changes}),
+    listRawCases: (skillName = null) =>
+        collectControlPages("raw_cases.list", {skillName}, "rawCases"),
+    addRawCases: (cases_) => invokeControl("raw_cases.enqueue", {
+        cases: cases_.map(controlRawCase),
+    }),
+    updateRawCase: (id, changes) => invokeControl("raw_cases.update", {
+        id,
+        changes: controlRawCaseChanges(changes),
+    }).then((result) => result.rawCase),
     deleteRawCase: (id) => ipcRenderer.invoke("raw-cases:delete", id),
     markRawCaseDispatched: (id, threadId, mode) =>
         ipcRenderer.invoke("raw-cases:mark-dispatched", {id, threadId, mode}),
-    listManagedSkills: () => ipcRenderer.invoke("skill-repositories:list"),
+    listManagedSkills: collectManagedSkillOverview,
     rescanManagedSkills: () => ipcRenderer.invoke("skill-repositories:rescan"),
     importManagedSkill: (input) => ipcRenderer.invoke("skill-repositories:import", input),
-    readManagedSkill: (skillId) => ipcRenderer.invoke("managed-skills:read", {skillId}),
+    readManagedSkill: (skillId) => invokeControl("skills.get", {skillId})
+        .then((result) => result.skill),
     createManagedSkillCandidate: (input) =>
         ipcRenderer.invoke("skill-versions:create-candidate", input),
     releaseManagedSkillVersion: (input) =>
@@ -78,8 +156,9 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         ipcRenderer.invoke("skill-installations:respond-question", input),
     revealManagedSkillRepository: (repositoryId) =>
         ipcRenderer.invoke("skill-repositories:reveal", {repositoryId}),
-    listDatasets: () => ipcRenderer.invoke("datasets:list"),
-    listCases: (datasetId) => ipcRenderer.invoke("datasets:list-cases", datasetId),
+    listDatasets: () => collectControlPages("datasets.list", {}, "datasets"),
+    listCases: (datasetId) => invokeControl("datasets.get", {datasetId, includeCases: true})
+        .then((result) => result.cases ?? []),
     deleteCase: (datasetId, caseId) =>
         ipcRenderer.invoke("datasets:delete-case", {datasetId, caseId}),
     createDataset: (input) => ipcRenderer.invoke("datasets:create", input),
@@ -122,11 +201,15 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     updateCurationEffort: (sessionId, effort) =>
         ipcRenderer.invoke("curation:update-effort", {sessionId, effort}),
     updateCuratorProfile: (input) => ipcRenderer.invoke("curation:update-profile", input),
-    listEvaluationRuns: (datasetId = null) => ipcRenderer.invoke("evaluations:list", datasetId),
-    getEvaluationRun: (runId) => ipcRenderer.invoke("evaluations:get", runId),
-    cancelEvaluationRun: (runId) => ipcRenderer.invoke("evaluations:cancel", runId),
+    listEvaluationRuns: (datasetId = null) =>
+        collectControlPages("evaluations.list", {datasetId}, "runs"),
+    getEvaluationRun: (runId) => invokeControl("evaluations.get", {runId})
+        .then((result) => result.run),
+    cancelEvaluationRun: (runId) => invokeControl("evaluations.cancel", {runId})
+        .then((result) => result.run),
     deleteEvaluationRun: (runId) => ipcRenderer.invoke("evaluations:delete", runId),
-    startEvaluationRun: (input) => ipcRenderer.invoke("evaluations:start", input),
+    startEvaluationRun: (input) => invokeControl("evaluations.start", input)
+        .then((result) => result.run),
     respondRuntimeQuestion: (input) => ipcRenderer.invoke("runtime:respond-question", input),
     onRuntimeState: (listener) => subscribe("runtime:state", listener),
     onRuntimeNotification: (listener) => subscribe("runtime:notification", listener),

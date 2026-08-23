@@ -19,6 +19,7 @@ const {
 const {homedir} = require("node:os")
 const {join} = require("node:path")
 const {pathToFileURL} = require("node:url")
+const {createHash, randomUUID} = require("node:crypto")
 
 const {CodexRuntimeProvider} = require("./codex-runtime-provider.cjs")
 const {CodeBuddyRuntimeProvider} = require("./codebuddy-runtime-provider.cjs")
@@ -42,7 +43,7 @@ const {LocalEvaluationStore, reasoningEffort} = require("./local-store.cjs")
 const {ManagedSkillManager} = require("./managed-skill-manager.cjs")
 const {ManagedSkillStore} = require("./managed-skill-store.cjs")
 const {requireGitSourceLocation} = require("./managed-skill-git.cjs")
-const {RawCaseStore} = require("./raw-case-store.cjs")
+const {normalizedSkillName, RawCaseStore} = require("./raw-case-store.cjs")
 const {SkillInstallationManager} = require("./skill-installation-manager.cjs")
 const {SkillInstallationStore} = require("./skill-installation-store.cjs")
 const {resolveExecutionPolicy, resolveRuntimePermission} = require("./execution-policy.cjs")
@@ -52,9 +53,63 @@ const {ThreadActivityStore} = require("./thread-activity-store.cjs")
 const {RuntimeNotificationRouter} = require("./runtime-notification-router.cjs")
 const {RuntimeRegistry} = require("./runtime-registry.cjs")
 const {findGitWorkspace} = require("./workspace.cjs")
+const {
+    CapabilityStore,
+    MAX_CAPABILITY_LIFETIME_MS,
+} = require("./control-plane/capability-store.cjs")
+const {ControlPlane} = require("./control-plane/control-plane.cjs")
+const {publicControlError} = require("./control-plane/contracts.cjs")
+const {createDomainServices} = require("./control-plane/domain-services.cjs")
+const {createControlPolicy} = require("./control-plane/policy.cjs")
+const {ControlSocketServer} = require("./control-plane/socket-server.cjs")
 
 const RENDERER_FILE = join(__dirname, "..", "renderer", "index.html")
 const PRELOAD_FILE = join(__dirname, "preload.cjs")
+const RENDERER_CAPABILITY_LIFETIME_MS = Math.min(
+    60 * 60 * 1_000,
+    MAX_CAPABILITY_LIFETIME_MS,
+)
+const RENDERER_CAPABILITY_REFRESH_MS = 60 * 1_000
+const RENDERER_CONTROL_ACTIONS = Object.freeze([
+    "raw_cases.read",
+    "raw_cases.write",
+    "runtimes.read",
+    "datasets.read",
+    "evaluations.read",
+    "evaluations.execute",
+    "skills.read",
+])
+const RENDERER_CONTROL_METHODS = new Set([
+    "raw_cases.list",
+    "raw_cases.enqueue",
+    "raw_cases.update",
+    "runtimes.list",
+    "runtimes.models",
+    "datasets.list",
+    "datasets.get",
+    "evaluations.list",
+    "evaluations.get",
+    "evaluations.start",
+    "evaluations.cancel",
+    "skills.list",
+    "skill_versions.list",
+    "skills.get",
+])
+const RENDERER_CONTROL_MUTATIONS = new Set([
+    "raw_cases.enqueue",
+    "raw_cases.update",
+    "evaluations.start",
+    "evaluations.cancel",
+])
+const RENDERER_FORBIDDEN_CONTROL_KEYS = new Set([
+    "token",
+    "sessionId",
+    "action",
+    "path",
+    "commit",
+    "usage",
+])
+const CONTROL_AUDIT_LIMIT = 200
 
 let mainWindow = null
 let client = null
@@ -73,6 +128,19 @@ let managedSkillManager = null
 let managedSkillStartupError = null
 let skillInstallationStore = null
 let skillInstallationManager = null
+let capabilityStore = null
+let controlPolicy = null
+let controlServices = null
+let controlPlane = null
+let controlSocketServer = null
+let controlSocketStartPromise = null
+let controlShutdownPromise = null
+let rendererCapability = null
+let rendererCapabilityRotation = Promise.resolve()
+let activeRuntimeSkillCache = []
+let controlInvocationsAccepted = false
+let controlIpcInstalled = false
+let controlSocketStartupDiagnostic = null
 let workspaceRoot = null
 let rendererUrl = null
 let runtimeStart = null
@@ -87,6 +155,8 @@ let quitAfterRuntimeStops = false
 const loadedThreads = new Set()
 const activeThreads = new Set()
 const runtimeNotificationRouter = new RuntimeNotificationRouter()
+const controlAuditEvents = []
+const rendererRawCaseSkillAliases = new Map()
 
 app.setName("Rolling Skill")
 
@@ -524,6 +594,7 @@ function preferredRuntime() {
 }
 
 function discoverLocalRuntimes(options = {}) {
+    const previousRuntimeId = runtimeDescriptor?.runtimeId ?? null
     const preferred = options.preferredRuntime ?? preferredRuntime()
     const discovery = runtimeRegistry.discover({
         preferredRuntime: preferred,
@@ -531,6 +602,7 @@ function discoverLocalRuntimes(options = {}) {
     })
     availableRuntimes = discovery.available
     runtimeDescriptor = discovery.selected
+    if (runtimeDescriptor?.runtimeId !== previousRuntimeId) activeRuntimeSkillCache = []
     return discovery
 }
 
@@ -560,7 +632,7 @@ async function currentRuntimeSkillReference(value) {
     if (typeof runtime.listSkills !== "function") {
         throw new Error("The active runtime cannot verify installed Skills")
     }
-    const response = await runtime.listSkills({forceReload: true})
+    const response = cachedRuntimeSkills(await runtime.listSkills({forceReload: true}))
     const requested = {name, path}
     const allowNameOnly = runtimeDescriptor?.capabilities?.includes("skills-name-only")
     if (!runtimeReportsSkill(response, requested, {allowNameOnly})) {
@@ -744,6 +816,7 @@ async function chooseRuntimeExecutable() {
         })
         availableRuntimes = discovery.available
         runtimeDescriptor = selected
+        activeRuntimeSkillCache = []
         return restartRuntimeNow()
     })
 }
@@ -752,6 +825,7 @@ async function useAutomaticRuntimeSelection() {
     return enqueueRuntimeOperation(async () => {
         writePreferences({runtimeSelection: null})
         runtimeDescriptor = null
+        activeRuntimeSkillCache = []
         return restartRuntimeNow({rediscover: true})
     })
 }
@@ -768,6 +842,7 @@ async function selectDiscoveredRuntime(runtimeId) {
                 executablePath: selected.executablePath,
             },
         })
+        activeRuntimeSkillCache = []
         runtimeDescriptor = selected
         return restartRuntimeNow()
     })
@@ -810,6 +885,360 @@ function revealLocalData() {
     return store.path
 }
 
+function deterministicRawCaseSkillId(name) {
+    return `skill-name-${createHash("sha256")
+        .update(normalizedSkillName(name), "utf8")
+        .digest("hex")}`
+}
+
+function cachedRuntimeSkills(response) {
+    const skills = []
+    for (const entry of response?.data ?? []) {
+        for (const skill of entry?.skills ?? []) {
+            if (!skill?.enabled || !normalizedSkillName(skill.name)) continue
+            skills.push({
+                ...(typeof skill.id === "string" && skill.id ? {id: skill.id} : {}),
+                name: skill.name,
+            })
+        }
+    }
+    activeRuntimeSkillCache = skills
+    return response
+}
+
+function trustedRawCaseSkills() {
+    const managed = managedSkillManager.catalog().skills
+    const managedByName = new Map()
+    for (const skill of managed) {
+        const key = normalizedSkillName(skill.name)
+        const entries = managedByName.get(key) ?? []
+        entries.push(skill)
+        managedByName.set(key, entries)
+    }
+
+    const otherSources = [
+        ...store.listDatasets().map((dataset) => dataset.skillReference),
+        ...activeRuntimeSkillCache,
+        ...rawCaseStore.list().map((rawCase) => rawCase.skill),
+        ...rendererRawCaseSkillAliases.values(),
+    ]
+    const skills = new Map()
+    const add = (skill, managedSource = false) => {
+        const name = typeof skill?.name === "string" ? skill.name.trim() : ""
+        if (!name || name.length > 200) return
+        let id = typeof skill.id === "string" && skill.id
+            ? skill.id
+            : typeof skill.skillId === "string" && skill.skillId
+              ? skill.skillId
+              : null
+        if (!id) {
+            const managedMatches = managedByName.get(normalizedSkillName(name)) ?? []
+            if (!managedSource && managedMatches.length === 1) id = managedMatches[0].id
+            else if (!managedSource && managedMatches.length > 1) return
+            else id = deterministicRawCaseSkillId(name)
+        }
+        if (id.length > 200 || skills.has(id)) return
+        skills.set(id, {id, name})
+    }
+    for (const skill of managed) add(skill, true)
+    for (const skill of otherSources) add(skill)
+    return {skills: [...skills.values()]}
+}
+
+function rawCaseSkillCandidates(reference, inventory = trustedRawCaseSkills().skills) {
+    if (typeof reference?.id === "string" && reference.id) {
+        return inventory.filter((skill) => skill.id === reference.id)
+    }
+    const name = normalizedSkillName(reference?.name)
+    return inventory.filter((skill) => normalizedSkillName(skill.name) === name)
+}
+
+function prepareRendererRawCaseSkillAliases(method, input) {
+    if (method !== "raw_cases.enqueue" && method !== "raw_cases.update") return input
+    const references = method === "raw_cases.enqueue"
+        ? input.cases?.map((rawCase) => rawCase?.skill) ?? []
+        : input.changes?.skill
+          ? [input.changes.skill]
+          : []
+    for (const reference of references) {
+        if (!reference || reference.id) continue
+        const candidates = rawCaseSkillCandidates(reference)
+        if (candidates.length > 1) return input
+        if (candidates.length === 1) {
+            reference.id = candidates[0].id
+            continue
+        }
+        if (candidates.length === 0) {
+            const alias = {
+                id: deterministicRawCaseSkillId(reference.name),
+                name: String(reference.name ?? "").trim(),
+            }
+            rendererRawCaseSkillAliases.set(alias.id, alias)
+            reference.id = alias.id
+        }
+    }
+    return input
+}
+
+async function listModelsForRuntimeFromControl(runtimeId) {
+    runtimeId = requireIdentifier(runtimeId, "runtime")
+    const descriptor = availableRuntimes.find((entry) => entry.runtimeId === runtimeId)
+    if (!descriptor) throw new Error("The selected local runtime is no longer available")
+    if (descriptor.runtimeId === runtimeDescriptor?.runtimeId) {
+        const runtime = await ensureRuntime()
+        return typeof runtime.listModels === "function"
+            ? runtime.listModels()
+            : {data: [], nextCursor: null}
+    }
+    const temporaryClient = runtimeRegistry.createClient(descriptor, {
+        traceDirectory: join(app.getPath("userData"), "traces", "catalogs"),
+        workspaceRoot,
+        executionPolicy: currentExecutionPolicy(),
+    })
+    try {
+        await temporaryClient.start()
+        return typeof temporaryClient.listModels === "function"
+            ? temporaryClient.listModels()
+            : {data: [], nextCursor: null}
+    } finally {
+        await temporaryClient.stop().catch(() => {})
+    }
+}
+
+function controlScopeIds(values, key) {
+    const result = []
+    const seen = new Set()
+    for (const value of values) {
+        const id = value?.[key]
+        if (typeof id !== "string" || !id || id.length > 200 || seen.has(id)) continue
+        seen.add(id)
+        result.push(id)
+    }
+    return result.sort()
+}
+
+function currentRendererScopes() {
+    return {
+        skillIds: controlScopeIds(trustedRawCaseSkills().skills, "id"),
+        datasetIds: controlScopeIds(store.listDatasets(), "id"),
+        runtimeIds: controlScopeIds(availableRuntimes, "runtimeId"),
+    }
+}
+
+function revokeRendererCapability() {
+    if (rendererCapability && capabilityStore) {
+        capabilityStore.revokeSession(rendererCapability.sessionId)
+    }
+    rendererCapability = null
+}
+
+async function ensureRendererCapability() {
+    const operation = rendererCapabilityRotation.then(() => {
+        if (!controlInvocationsAccepted || !capabilityStore) {
+            throw new Error("Desktop control operations are unavailable")
+        }
+        const scopes = currentRendererScopes()
+        const scopeSignature = JSON.stringify(scopes)
+        const now = Date.now()
+        if (
+            rendererCapability?.scopeSignature === scopeSignature &&
+            rendererCapability.expiresAt > now + RENDERER_CAPABILITY_REFRESH_MS
+        ) return rendererCapability
+
+        revokeRendererCapability()
+        const sessionId = `renderer-${randomUUID()}`
+        const issued = capabilityStore.issue({
+            sessionId,
+            actions: RENDERER_CONTROL_ACTIONS,
+            scopes,
+            expiresInMs: RENDERER_CAPABILITY_LIFETIME_MS,
+            budget: {
+                maxRuntimeTurns: Number.MAX_SAFE_INTEGER,
+                maxEvaluations: Number.MAX_SAFE_INTEGER,
+            },
+        })
+        rendererCapability = {
+            capabilityId: issued.id,
+            sessionId,
+            token: issued.token,
+            expiresAt: issued.expiresAt,
+            scopeSignature,
+        }
+        return rendererCapability
+    })
+    rendererCapabilityRotation = operation.catch(() => {})
+    return operation
+}
+
+function isSafeControlRecord(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false
+    const prototype = Object.getPrototypeOf(value)
+    return prototype === Object.prototype || prototype === null
+}
+
+function containsForbiddenControlKey(root) {
+    const pending = [root]
+    let visited = 0
+    while (pending.length) {
+        const value = pending.pop()
+        if (!value || typeof value !== "object") continue
+        visited += 1
+        if (visited > 10_000) return true
+        const descriptors = Object.getOwnPropertyDescriptors(value)
+        for (const [key, descriptor] of Object.entries(descriptors)) {
+            if (!Object.hasOwn(descriptor, "value")) return true
+            if (RENDERER_FORBIDDEN_CONTROL_KEYS.has(key)) return true
+            if (descriptor.value && typeof descriptor.value === "object") {
+                pending.push(descriptor.value)
+            }
+        }
+    }
+    return false
+}
+
+function rendererControlParams(method, params) {
+    const input = structuredClone(params)
+    if (method === "runtimes.models" && !input.runtimeId) {
+        input.runtimeId = requireIdentifier(runtimeDescriptor?.runtimeId, "runtime")
+    }
+    if (RENDERER_CONTROL_MUTATIONS.has(method)) {
+        input.idempotencyKey = `renderer-${randomUUID()}`
+    }
+    return input
+}
+
+function publicControlResponse(error) {
+    const snapshot = publicControlError(error)
+    return {
+        __rollingSkillControl: true,
+        ok: false,
+        error: snapshot,
+    }
+}
+
+function assertRendererControlSender(event) {
+    if (
+        !mainWindow ||
+        mainWindow.isDestroyed() ||
+        event?.sender !== mainWindow.webContents ||
+        typeof event.sender.isDestroyed !== "function" ||
+        event.sender.isDestroyed()
+    ) throw new Error("Renderer control sender is not active")
+}
+
+async function invokeRendererControl(event, envelope) {
+    try {
+        assertRendererControlSender(event)
+        if (!controlInvocationsAccepted || !controlPlane) {
+            throw new Error("Desktop control operations are unavailable")
+        }
+        if (
+            !isSafeControlRecord(envelope) ||
+            !isSafeControlRecord(envelope.params) ||
+            Object.keys(envelope).length !== 2 ||
+            !Object.hasOwn(envelope, "method") ||
+            !Object.hasOwn(envelope, "params") ||
+            typeof envelope.method !== "string"
+        ) throw new Error("Invalid renderer control invocation")
+        if (!RENDERER_CONTROL_METHODS.has(envelope.method)) {
+            throw new Error("Unknown renderer control method")
+        }
+        if (containsForbiddenControlKey(envelope)) {
+            throw new Error("Renderer control input contains a forbidden field")
+        }
+        const params = prepareRendererRawCaseSkillAliases(
+            envelope.method,
+            rendererControlParams(envelope.method, envelope.params),
+        )
+        const capability = await ensureRendererCapability()
+        const value = await controlPlane.invoke({
+            token: capability.token,
+            sessionId: capability.sessionId,
+            method: envelope.method,
+            params,
+        })
+        return {__rollingSkillControl: true, ok: true, value}
+    } catch (error) {
+        return publicControlResponse(error)
+    }
+}
+
+function installControlIpc() {
+    if (controlIpcInstalled) return
+    ipcMain.removeHandler("control:invoke")
+    ipcMain.handle("control:invoke", invokeRendererControl)
+    controlIpcInstalled = true
+}
+
+function removeControlIpc() {
+    if (!controlIpcInstalled) return
+    ipcMain.removeHandler("control:invoke")
+    controlIpcInstalled = false
+}
+
+function initializeControlPlane() {
+    if (controlPlane) return controlPlane
+    capabilityStore = new CapabilityStore()
+    controlPolicy = createControlPolicy()
+    controlServices = createDomainServices({
+        rawCaseStore,
+        evaluationStore: store,
+        evaluationRunner,
+        managedSkillManager,
+        listRawCaseSkills: trustedRawCaseSkills,
+        workspaceRoot: () => workspaceRoot,
+        listRuntimes: () => availableRuntimes,
+        listModelsForRuntime: listModelsForRuntimeFromControl,
+        startEvaluation: startEvaluationFromControl,
+    })
+    controlPlane = new ControlPlane({
+        capabilities: capabilityStore,
+        policy: controlPolicy,
+        services: controlServices,
+        auditSink: {
+            record(event) {
+                if (controlAuditEvents.length === CONTROL_AUDIT_LIMIT) {
+                    controlAuditEvents.shift()
+                }
+                controlAuditEvents.push(event)
+            },
+        },
+    })
+    controlSocketServer = new ControlSocketServer({
+        userData: app.getPath("userData"),
+        controlPlane,
+    })
+    controlInvocationsAccepted = true
+    installControlIpc()
+    return controlPlane
+}
+
+function startControlSocket() {
+    if (controlSocketStartPromise) return controlSocketStartPromise
+    controlSocketStartPromise = controlSocketServer.start().catch(() => {
+        if (!controlInvocationsAccepted) return null
+        controlSocketStartupDiagnostic =
+            "Local control transport is unavailable. Desktop actions remain available."
+        dialog.showErrorBox(
+            "Rolling Skill control integration unavailable",
+            controlSocketStartupDiagnostic,
+        )
+        return null
+    })
+    return controlSocketStartPromise
+}
+
+function stopControlPlane() {
+    if (controlShutdownPromise) return controlShutdownPromise
+    controlInvocationsAccepted = false
+    removeControlIpc()
+    revokeRendererCapability()
+    controlShutdownPromise = (async () => {
+        await controlSocketServer?.close()
+    })()
+    return controlShutdownPromise
+}
+
 function installNavigationPolicy(window) {
     window.webContents.setWindowOpenHandler(({url}) => {
         if (url.startsWith("https://")) void shell.openExternal(url)
@@ -824,6 +1253,7 @@ function installNavigationPolicy(window) {
 }
 
 function createWindow() {
+    revokeRendererCapability()
     mainWindow = new BrowserWindow({
         width: 1480,
         height: 940,
@@ -861,7 +1291,10 @@ function createWindow() {
             }, 1_200)
         }
     })
+    const createdWindow = mainWindow
     mainWindow.on("closed", () => {
+        if (mainWindow !== createdWindow) return
+        revokeRendererCapability()
         mainWindow = null
     })
     void mainWindow.loadFile(RENDERER_FILE)
@@ -977,6 +1410,7 @@ function installIpc() {
             managedSkills: managedSkillManager.overview(),
             managedSkillStartupError,
             skillInstallations: skillInstallationManager.overview(),
+            controlDiagnostic: controlSocketStartupDiagnostic,
         }
     })
     ipcMain.handle("workspace:choose", chooseWorkspace)
@@ -992,18 +1426,6 @@ function installIpc() {
     )
     ipcMain.handle("runtime:open-traces", openTraceFolder)
 
-    ipcMain.handle("raw-cases:list", (_event, input = {}) =>
-        rawCaseStore.list({skillName: optionalIdentifier(input.skillName, "Skill")}),
-    )
-    ipcMain.handle("raw-cases:add", (_event, input = {}) =>
-        rawCaseStore.addMany(Array.isArray(input) ? input : input.cases),
-    )
-    ipcMain.handle("raw-cases:update", (_event, input = {}) =>
-        rawCaseStore.update(
-            requireIdentifier(input.id, "Raw Case"),
-            input.changes ?? {},
-        ),
-    )
     ipcMain.handle("raw-cases:delete", (_event, id) =>
         rawCaseStore.delete(requireIdentifier(id, "Raw Case")),
     )
@@ -1018,7 +1440,6 @@ function installIpc() {
         ),
     )
 
-    ipcMain.handle("skill-repositories:list", () => managedSkillManager.overview())
     ipcMain.handle("skill-repositories:rescan", async () => {
         const overview = await managedSkillManager.rescanAll()
         send("managed-skills:changed", overview)
@@ -1048,11 +1469,6 @@ function installIpc() {
         )
         shell.showItemInFolder(path)
         return {revealed: true}
-    })
-    ipcMain.handle("managed-skills:read", (_event, input = {}) => {
-        const detail = managedSkillManager.readSkill(requireIdentifier(input.skillId, "Skill"))
-        const {managedPath: _managedPath, ...repository} = detail.repository
-        return {...detail, repository}
     })
     ipcMain.handle("skill-versions:create-candidate", async (_event, input = {}) => {
         const candidate = await managedSkillManager.createCandidate({
@@ -1190,39 +1606,12 @@ function installIpc() {
         shell.showItemInFolder(target.path)
         return target
     })
-    ipcMain.handle("models:list", async () => {
-        const runtime = await ensureRuntime()
-        if (typeof runtime.listModels !== "function") return {data: [], nextCursor: null}
-        return runtime.listModels()
-    })
-    ipcMain.handle("models:list-for-runtime", async (_event, runtimeId) => {
-        runtimeId = requireIdentifier(runtimeId, "runtime")
-        const descriptor = availableRuntimes.find((entry) => entry.runtimeId === runtimeId)
-        if (!descriptor) throw new Error("The selected local runtime is no longer available")
-        if (descriptor.runtimeId === runtimeDescriptor?.runtimeId) {
-            const runtime = await ensureRuntime()
-            return typeof runtime.listModels === "function"
-                ? runtime.listModels()
-                : {data: [], nextCursor: null}
-        }
-        const temporaryClient = runtimeRegistry.createClient(descriptor, {
-            traceDirectory: join(app.getPath("userData"), "traces", "catalogs"),
-            workspaceRoot,
-            executionPolicy: currentExecutionPolicy(),
-        })
-        try {
-            await temporaryClient.start()
-            return typeof temporaryClient.listModels === "function"
-                ? temporaryClient.listModels()
-                : {data: [], nextCursor: null}
-        } finally {
-            await temporaryClient.stop().catch(() => {})
-        }
-    })
     ipcMain.handle("skills:list", async (_event, input = {}) => {
         const runtime = await ensureRuntime()
         if (typeof runtime.listSkills !== "function") return {data: []}
-        return runtime.listSkills({forceReload: Boolean(input.forceReload)})
+        return cachedRuntimeSkills(await runtime.listSkills({
+            forceReload: Boolean(input.forceReload),
+        }))
     })
     ipcMain.handle("plugins:list", async () => {
         const runtime = await ensureRuntime()
@@ -1245,7 +1634,7 @@ function installIpc() {
             marketplacePath: input.marketplacePath ?? null,
             remoteMarketplaceName: input.remoteMarketplaceName ?? null,
         })
-        await runtime.listSkills({forceReload: true})
+        cachedRuntimeSkills(await runtime.listSkills({forceReload: true}))
         return response
     })
     ipcMain.handle("runtime:read-thread", async (_event, threadId) => {
@@ -1410,10 +1799,6 @@ function installIpc() {
         settleRuntimeQuestion(pending, answer, input.cancelled ? "cancelled" : "answered")
         return {accepted: true}
     })
-    ipcMain.handle("datasets:list", () => store.listDatasets())
-    ipcMain.handle("datasets:list-cases", (_event, datasetId) =>
-        store.listCases(requireIdentifier(datasetId, "dataset")),
-    )
     ipcMain.handle("datasets:create", async (_event, input = {}) =>
         store.createDataset({
             name: input.name,
@@ -1640,85 +2025,75 @@ function installIpc() {
         store.updateCuratorProfile(input),
     )
 
-    ipcMain.handle("evaluations:list", (_event, datasetId) =>
-        store.listEvaluationRunSummaries(
-            datasetId ? requireIdentifier(datasetId, "dataset") : null,
-        ),
-    )
-    ipcMain.handle("evaluations:get", (_event, runId) =>
-        store.getEvaluationRun(requireIdentifier(runId, "evaluation run")),
-    )
-    ipcMain.handle("evaluations:cancel", (_event, runId) =>
-        evaluationRunner.cancel(requireIdentifier(runId, "evaluation run")),
-    )
     ipcMain.handle("evaluations:delete", (_event, runId) =>
         store.deleteEvaluationRun(requireIdentifier(runId, "evaluation run")),
     )
-    ipcMain.handle("evaluations:start", async (_event, input = {}) => {
-        const datasetId = requireIdentifier(input.datasetId, "dataset")
-        const dataset = store.getDataset(datasetId)
-        const skillReference = dataset.skillReference
-        await requireAvailableDatasetSkill(dataset)
-        requirePublishedDatasetRubric(dataset)
-        const runtimeConfigurations = await Promise.all((input.runtimeConfigurations ?? []).map(async (requested) => {
-            const runtimeId = requireIdentifier(requested.runtimeId, "runtime")
-            const descriptor = availableRuntimes.find((entry) => entry.runtimeId === runtimeId)
-            if (!descriptor) throw new Error(`Runtime ${runtimeId} is no longer available`)
-            return {
-                ...descriptor,
-                modelId: optionalIdentifier(requested.modelId, "model"),
-                effort: optionalEffort(requested.effort),
-                skillEvidenceBinding: await skillEvidenceBindingForRuntime(
-                    descriptor,
-                    skillReference,
-                ),
-            }
-        }))
-        const skillEvidence = snapshotSkillEvidence(skillReference)
-        if (skillEvidence.truncated || skillEvidence.warnings.length) {
-            const details = skillEvidence.warnings.length
-                ? skillEvidence.warnings.map((warning) => `- ${warning}`).join("\n")
-                : "- Skill evidence exceeded a snapshot limit"
-            throw new Error(`Formal evaluation requires complete Skill evidence:\n${details}`)
-        }
-        const requestedJudge = input.judgeConfiguration ?? {}
-        const judgeRuntimeId = requireIdentifier(requestedJudge.runtimeId, "Judge runtime")
-        const judgeDescriptor = availableRuntimes.find(
-            (entry) => entry.runtimeId === judgeRuntimeId,
-        )
-        if (!judgeDescriptor) {
-            throw new Error(`Judge runtime ${judgeRuntimeId} is no longer available`)
-        }
-        const judgeConfiguration = {
-            ...judgeDescriptor,
-            modelId: optionalIdentifier(requestedJudge.modelId, "Judge model"),
-            effort: optionalEffort(requestedJudge.effort),
-        }
-        const run = store.createEvaluationRun({
-            datasetId,
-            caseIds: (input.caseIds ?? []).map((caseId) =>
-                requireIdentifier(caseId, "Case"),
+}
+
+async function startEvaluationFromControl(input = {}) {
+    const datasetId = requireIdentifier(input.datasetId, "dataset")
+    const dataset = store.getDataset(datasetId)
+    const skillReference = dataset.skillReference
+    await requireAvailableDatasetSkill(dataset)
+    requirePublishedDatasetRubric(dataset)
+    const runtimeConfigurations = await Promise.all((input.runtimeConfigurations ?? []).map(async (requested) => {
+        const runtimeId = requireIdentifier(requested.runtimeId, "runtime")
+        const descriptor = availableRuntimes.find((entry) => entry.runtimeId === runtimeId)
+        if (!descriptor) throw new Error(`Runtime ${runtimeId} is no longer available`)
+        return {
+            ...descriptor,
+            modelId: optionalIdentifier(requested.modelId, "model"),
+            effort: optionalEffort(requested.effort),
+            skillEvidenceBinding: await skillEvidenceBindingForRuntime(
+                descriptor,
+                skillReference,
             ),
-            selectionMode: input.selectionMode,
-            activationMode: input.activationMode,
-            skillEvidence,
-            judgeProfile: {
-                runtimePolicy: "active",
-                modelId: judgeConfiguration.modelId,
-                effort: judgeConfiguration.effort,
-            },
-            judgeConfiguration,
-            runtimeConfigurations,
-        })
-        void evaluationRunner.run(run).catch((error) => {
-            store.updateEvaluationRun(run.id, {
-                status: "failed",
-                completedAt: new Date().toISOString(),
-            })
-            send("evaluation:changed", {runId: run.id, status: "failed", error: error.message})
-        })
-        return run
+        }
+    }))
+    const skillEvidence = snapshotSkillEvidence(skillReference)
+    if (skillEvidence.truncated || skillEvidence.warnings.length) {
+        const details = skillEvidence.warnings.length
+            ? skillEvidence.warnings.map((warning) => `- ${warning}`).join("\n")
+            : "- Skill evidence exceeded a snapshot limit"
+        throw new Error(`Formal evaluation requires complete Skill evidence:\n${details}`)
+    }
+    const requestedJudge = input.judgeConfiguration ?? {}
+    const judgeRuntimeId = requireIdentifier(requestedJudge.runtimeId, "Judge runtime")
+    const judgeDescriptor = availableRuntimes.find(
+        (entry) => entry.runtimeId === judgeRuntimeId,
+    )
+    if (!judgeDescriptor) {
+        throw new Error(`Judge runtime ${judgeRuntimeId} is no longer available`)
+    }
+    const judgeConfiguration = {
+        ...judgeDescriptor,
+        modelId: optionalIdentifier(requestedJudge.modelId, "Judge model"),
+        effort: optionalEffort(requestedJudge.effort),
+    }
+    const run = store.createEvaluationRun({
+        datasetId,
+        caseIds: (input.caseIds ?? []).map((caseId) =>
+            requireIdentifier(caseId, "Case"),
+        ),
+        selectionMode: input.selectionMode,
+        activationMode: input.activationMode,
+        skillEvidence,
+        judgeProfile: {
+            runtimePolicy: "active",
+            modelId: judgeConfiguration.modelId,
+            effort: judgeConfiguration.effort,
+        },
+        judgeConfiguration,
+        runtimeConfigurations,
     })
+    void evaluationRunner.run(run).catch((error) => {
+        store.updateEvaluationRun(run.id, {
+            status: "failed",
+            completedAt: new Date().toISOString(),
+        })
+        send("evaluation:changed", {runId: run.id, status: "failed", error: error.message})
+    })
+    return run
 }
 
 function requireIdentifier(value, label) {
@@ -1791,6 +2166,23 @@ function normalizeTurnInput(value) {
     })
     if (!hasText) throw new Error("Task input requires text")
     return normalized
+}
+
+async function shutdownApplication() {
+    controlInvocationsAccepted = false
+    await stopControlPlane()
+    const results = await Promise.allSettled([
+        client?.stop?.() ?? Promise.resolve(),
+        evaluationRunner?.stopAll?.() ?? Promise.resolve(),
+        skillInstallationManager?.stopAll?.() ?? Promise.resolve(),
+    ])
+    for (const result of results) {
+        if (result.status === "rejected") {
+            console.error("Rolling Skill runtime shutdown failed", result.reason)
+        }
+    }
+    activityStore?.flush()
+    rawCaseStore?.close()
 }
 
 const hasLock = app.requestSingleInstanceLock()
@@ -1884,6 +2276,8 @@ if (!hasLock) {
             onChanged: (update) => send("evaluation:changed", update),
         })
         discoverLocalRuntimes()
+        initializeControlPlane()
+        void startControlSocket()
         client = createClient()
         installIpc()
         installMenu()
@@ -1910,20 +2304,7 @@ if (!hasLock) {
         if (quitAfterRuntimeStops) return
         event.preventDefault()
         quitAfterRuntimeStops = true
-        void Promise.allSettled([
-            client?.stop?.() ?? Promise.resolve(),
-            evaluationRunner?.stopAll?.() ?? Promise.resolve(),
-            skillInstallationManager?.stopAll?.() ?? Promise.resolve(),
-        ])
-            .then((results) => {
-                for (const result of results) {
-                    if (result.status === "rejected") {
-                        console.error("Rolling Skill runtime shutdown failed", result.reason)
-                    }
-                }
-                activityStore?.flush()
-                rawCaseStore?.close()
-            })
+        void shutdownApplication()
             .catch((error) => console.error("Rolling Skill shutdown persistence failed", error))
             .finally(() => app.quit())
     })
