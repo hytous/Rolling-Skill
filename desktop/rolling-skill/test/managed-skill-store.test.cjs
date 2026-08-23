@@ -259,20 +259,132 @@ describe("managed Skill registry", () => {
         assert.equal(store.listVersions(skill.id).length, 1)
     })
 
-    it("scans a 100,000-version catalog once across bounded authorized pages", () => {
+    it("matches the existing version order across bounded pages", () => {
+        const {store} = fixture()
+        store.state.versions = [
+            {
+                ...versionRecord(6),
+                id: "candidate-b",
+                createdAt: "2026-08-23T06:00:00.000Z",
+            },
+            {
+                ...versionRecord(3),
+                id: "released-b",
+                state: "released",
+                versionLabel: "v3",
+                releasedAt: "2026-08-23T03:00:00.000Z",
+            },
+            {
+                ...versionRecord(5),
+                id: "candidate-new",
+                createdAt: "2026-08-23T07:00:00.000Z",
+            },
+            {
+                ...versionRecord(1),
+                id: "released-new",
+                state: "released",
+                versionLabel: "v1",
+                releasedAt: "2026-08-23T04:00:00.000Z",
+            },
+            {
+                ...versionRecord(2),
+                id: "released-a-deprecated",
+                state: "released",
+                versionLabel: "v2",
+                releasedAt: "2026-08-23T03:00:00.000Z",
+                deprecatedAt: "2026-08-23T05:00:00.000Z",
+            },
+            {
+                ...versionRecord(4),
+                id: "candidate-a",
+                createdAt: "2026-08-23T06:00:00.000Z",
+            },
+        ]
+        const buildVersionOrderIndex = store.buildVersionOrderIndex.bind(store)
+        let indexBuilds = 0
+        store.buildVersionOrderIndex = () => {
+            indexBuilds += 1
+            return buildVersionOrderIndex()
+        }
+        const expected = store.listVersions().map((version) => version.id)
+        assert.deepEqual(expected, [
+            "released-new",
+            "released-a-deprecated",
+            "released-b",
+            "candidate-new",
+            "candidate-a",
+            "candidate-b",
+        ])
+
+        const paged = []
+        let cursor = null
+        do {
+            const page = store.listVersionPage({
+                skillIds: ["skill-1"],
+                skillId: null,
+                cursor,
+                limit: 2,
+            })
+            paged.push(...page.versions.map((version) => version.id))
+            cursor = page.nextCursor
+        } while (cursor !== null)
+
+        assert.deepEqual(paged, expected)
+        assert.equal(indexBuilds, 1)
+    })
+
+    it("rebuilds order inside a transaction and restores the prior cache on rollback", () => {
+        const {store} = fixture()
+        store.state.versions = [
+            {...versionRecord(1), id: "candidate"},
+            {
+                ...versionRecord(2),
+                id: "released",
+                state: "released",
+                versionLabel: "v1",
+                releasedAt: "2026-08-23T01:00:00.000Z",
+            },
+        ]
+        assert.deepEqual(
+            store.listVersions().map((version) => version.id),
+            ["released", "candidate"],
+        )
+        const priorOrderIndex = store.versionOrderIndex
+        const persist = store.persist.bind(store)
+        store.persist = () => {
+            throw new Error("simulated version registry write failure")
+        }
+        try {
+            assert.throws(() => store.transaction(() => {
+                store.state.versions.reverse()
+                assert.deepEqual(
+                    store.listVersions().map((version) => version.id),
+                    ["released", "candidate"],
+                )
+            }), /simulated version registry write failure/i)
+        } finally {
+            store.persist = persist
+        }
+
+        assert.equal(store.versionOrderIndex, priorOrderIndex)
+        assert.deepEqual(
+            store.listVersions().map((version) => version.id),
+            ["released", "candidate"],
+        )
+    })
+
+    it("builds one stable order index while traversing 100,000 bounded version pages", () => {
         const {store} = fixture()
         const versions = Array.from({length: 100_000}, (_, index) =>
             versionRecord(index, index % 2 === 0 ? "skill-1" : "skill-2"),
         )
-        let versionReads = 0
-        store.state.versions = new Proxy(versions, {
-            get(target, property, receiver) {
-                if (typeof property === "string" && /^(?:0|[1-9]\d*)$/u.test(property)) {
-                    versionReads += 1
-                }
-                return Reflect.get(target, property, receiver)
-            },
-        })
+        store.state.versions = versions
+        const buildVersionOrderIndex = store.buildVersionOrderIndex.bind(store)
+        let indexBuilds = 0
+        store.buildVersionOrderIndex = () => {
+            indexBuilds += 1
+            return buildVersionOrderIndex()
+        }
 
         const collected = []
         let cursor = null
@@ -293,11 +405,11 @@ describe("managed Skill registry", () => {
         assert.equal(new Set(collected).size, 50_000)
         assert.equal(collected[0], "version-0")
         assert.equal(collected.at(-1), "version-99998")
-        assert.ok(versionReads <= 100_500, `expected a linear scan, observed ${versionReads}`)
+        assert.equal(indexBuilds, 1)
     })
 
     it("rejects a version cursor after any successful catalog revision", () => {
-        const {root, store} = fixture()
+        const {root, path, store} = fixture()
         const repository = addRepository(store, root)
         const skill = addSkill(store, repository.id)
         addCandidate(store, repository, skill, "a")
@@ -316,6 +428,8 @@ describe("managed Skill registry", () => {
             limit: 1,
         })
         assert.ok(first.nextCursor)
+        const firstOrderIndex = store.versionOrderIndex
+        assert.ok(firstOrderIndex)
 
         store.addVersion({
             repositoryId: repository.id,
@@ -325,6 +439,7 @@ describe("managed Skill registry", () => {
             state: "candidate",
             createdBy: "user",
         })
+        assert.equal(store.versionOrderIndex, null)
 
         assert.throws(
             () => store.listVersionPage({
@@ -335,6 +450,24 @@ describe("managed Skill registry", () => {
             }),
             (error) => error.code === "MANAGED_SKILL_VERSION_CURSOR_STALE",
         )
+
+        store.listVersionPage({
+            skillIds: [skill.id],
+            skillId: skill.id,
+            cursor: null,
+            limit: 1,
+        })
+        assert.notEqual(store.versionOrderIndex, firstOrderIndex)
+
+        const reopened = new ManagedSkillStore(path)
+        assert.equal(reopened.versionOrderIndex, null)
+        reopened.listVersionPage({
+            skillIds: [skill.id],
+            skillId: skill.id,
+            cursor: null,
+            limit: 1,
+        })
+        assert.ok(reopened.versionOrderIndex)
     })
 
     it("protects referenced repositories unless an explicit cascade is requested", () => {

@@ -206,6 +206,7 @@ class ManagedSkillStore {
         this.state = null
         this.transactionDepth = 0
         this.catalogRevision = null
+        this.versionOrderIndex = null
         this.load()
     }
 
@@ -214,6 +215,7 @@ class ManagedSkillStore {
             this.state = initialManagedSkillState()
             this.persist()
             this.catalogRevision = randomUUID()
+            this.versionOrderIndex = null
             return this.state
         }
         try {
@@ -224,6 +226,7 @@ class ManagedSkillStore {
             chmodSync(dirname(this.path), 0o700)
             chmodSync(this.path, 0o600)
             this.catalogRevision = randomUUID()
+            this.versionOrderIndex = null
             return this.state
         } catch (error) {
             if (/Unsupported managed Skill registry/u.test(error.message)) throw error
@@ -263,15 +266,19 @@ class ManagedSkillStore {
         if (typeof operation !== "function") throw new Error("Registry transaction is required")
         if (this.transactionDepth > 0) return copy(operation())
         const previous = this.state
+        const previousVersionOrderIndex = this.versionOrderIndex
         this.state = copy(previous)
+        this.versionOrderIndex = null
         this.transactionDepth = 1
         try {
             const result = operation()
             this.persist()
             this.catalogRevision = randomUUID()
+            this.versionOrderIndex = null
             return copy(result)
         } catch (error) {
             this.state = previous
+            this.versionOrderIndex = previousVersionOrderIndex
             throw error
         } finally {
             this.transactionDepth = 0
@@ -421,9 +428,19 @@ class ManagedSkillStore {
 
     listVersions(skillId = null) {
         if (skillId !== null) this.getSkill(skillId)
-        return copy(this.state.versions
-            .filter((entry) => skillId === null || entry.skillId === skillId)
-            .sort(versionOrder))
+        const versionOrderIndex = this.versionOrderIndex ?? this.buildVersionOrderIndex()
+        return copy(versionOrderIndex
+            .map((position) => this.state.versions[position])
+            .filter((entry) => skillId === null || entry.skillId === skillId))
+    }
+
+    buildVersionOrderIndex() {
+        const index = Array.from({length: this.state.versions.length}, (_, position) => position)
+        index.sort((left, right) =>
+            versionOrder(this.state.versions[left], this.state.versions[right]) || left - right,
+        )
+        this.versionOrderIndex = index
+        return index
     }
 
     listVersionPage(input = {}) {
@@ -438,6 +455,7 @@ class ManagedSkillStore {
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
             throw new Error("Managed Skill version page limit is invalid")
         }
+        const versionOrderIndex = this.versionOrderIndex ?? this.buildVersionOrderIndex()
         let sequence = 0
         if (input.cursor !== null && input.cursor !== undefined) {
             let decoded
@@ -454,7 +472,7 @@ class ManagedSkillStore {
                 throw stale
             }
             sequence = decoded.sequence
-            if (sequence > this.state.versions.length) {
+            if (sequence > versionOrderIndex.length) {
                 const invalid = new Error("Managed Skill version cursor is outside the catalog")
                 invalid.code = "MANAGED_SKILL_VERSION_CURSOR_INVALID"
                 throw invalid
@@ -464,17 +482,20 @@ class ManagedSkillStore {
         const matches = (version) => skillIds.has(version.skillId) &&
             (skillId === null || version.skillId === skillId)
         const versions = []
-        while (sequence < this.state.versions.length && versions.length < limit) {
-            const version = this.state.versions[sequence]
+        while (sequence < versionOrderIndex.length && versions.length < limit) {
+            const version = this.state.versions[versionOrderIndex[sequence]]
             sequence += 1
             if (matches(version)) versions.push(copy(version))
         }
-        while (sequence < this.state.versions.length && !matches(this.state.versions[sequence])) {
+        while (
+            sequence < versionOrderIndex.length &&
+            !matches(this.state.versions[versionOrderIndex[sequence]])
+        ) {
             sequence += 1
         }
         return {
             versions,
-            nextCursor: sequence < this.state.versions.length
+            nextCursor: sequence < versionOrderIndex.length
                 ? encodeSkillVersionCursor({revision: this.catalogRevision, sequence})
                 : null,
         }
