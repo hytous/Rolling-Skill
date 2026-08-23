@@ -1,25 +1,58 @@
 #!/usr/bin/env node
 
+import {createReadStream} from "node:fs"
 import {readFile} from "node:fs/promises"
 import process from "node:process"
 import {McpServer} from "@modelcontextprotocol/server"
 import {serveStdio} from "@modelcontextprotocol/server/stdio"
 import {z} from "zod"
 import rawCaseStoreModule from "../src/raw-case-store.cjs"
+import controlContractsModule from "../src/control-plane/contracts.cjs"
+import controlSocketClientModule from "../src/control-plane/socket-client.cjs"
 
 const {RawCaseStore} = rawCaseStoreModule
+const {
+    CONTROL_METHODS,
+    PUBLIC_CONTROL_ERROR_CODES,
+    controlDefinition,
+    createPublicControlError,
+    parseControlInput,
+    parseControlOutput,
+    publicControlError,
+} = controlContractsModule
+const {ControlSocketClient} = controlSocketClientModule
 
 const TOOL_VERSION = "0.1.0"
+const MAX_CONTROL_PARAMS_BYTES = 1_048_576
+const CONTROL_ENVIRONMENT_KEYS = Object.freeze({
+    socketPath: "ROLLING_SKILL_CONTROL_SOCKET",
+    token: "ROLLING_SKILL_CONTROL_TOKEN",
+    sessionId: "ROLLING_SKILL_CONTROL_SESSION",
+})
+const PUBLIC_CONTROL_ERROR_CODE_SET = new Set(PUBLIC_CONTROL_ERROR_CODES)
 
 function parseArguments(arguments_) {
     const [command = "help", ...tokens] = arguments_
     const options = {}
+    const positionals = []
     for (let index = 0; index < tokens.length; index += 1) {
         const token = tokens[index]
-        if (!token.startsWith("--")) throw new Error(`Unexpected argument: ${token}`)
+        if (!token.startsWith("--")) {
+            positionals.push(token)
+            continue
+        }
         const name = token.slice(2)
         if (name === "json") {
-            options.json = tokens[index + 1]
+            if (command === "list") {
+                options.json = true
+            } else {
+                if (tokens[index + 1] === undefined) throw new Error("Missing value for --json")
+                options.json = tokens[index + 1]
+                index += 1
+            }
+        } else if (name === "params-json") {
+            if (tokens[index + 1] === undefined) throw new Error("Missing value for --params-json")
+            options[name] = tokens[index + 1]
             index += 1
         } else if (name === "skill" || name === "skill-path" || name === "question" || name === "note") {
             if (tokens[index + 1] === undefined) throw new Error(`Missing value for --${name}`)
@@ -28,6 +61,12 @@ function parseArguments(arguments_) {
         } else {
             throw new Error(`Unknown option: --${name}`)
         }
+    }
+    if (command === "control") {
+        if (positionals.length !== 1) throw new Error("control requires exactly one method")
+        options.method = positionals[0]
+    } else if (positionals.length > 0) {
+        throw new Error(`Unexpected argument: ${positionals[0]}`)
     }
     return {command, options}
 }
@@ -41,6 +80,131 @@ async function readStandardInput() {
 async function readJsonInput(path) {
     if (!path) throw new Error("--json requires a file path or - for stdin")
     return JSON.parse(path === "-" ? await readStandardInput() : await readFile(path, "utf8"))
+}
+
+async function readBoundedJsonInput(path) {
+    if (!path) throw new Error("--params-json requires a file path or - for stdin")
+    const input = path === "-" ? process.stdin : createReadStream(path)
+    const chunks = []
+    let bytes = 0
+    for await (const chunk of input) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        bytes += buffer.length
+        if (bytes > MAX_CONTROL_PARAMS_BYTES) {
+            throw new RangeError("Control params exceed the maximum input size")
+        }
+        chunks.push(buffer)
+    }
+    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+    if (
+        typeof parsed !== "object" || parsed === null || Array.isArray(parsed) ||
+        Object.getPrototypeOf(parsed) !== Object.prototype
+    ) throw new TypeError("Control params must be a plain object")
+    return parsed
+}
+
+function controlCredentials(environment = process.env) {
+    const credentials = Object.fromEntries(Object.entries(CONTROL_ENVIRONMENT_KEYS).map(
+        ([name, environmentKey]) => [name, environment[environmentKey]],
+    ))
+    if (Object.values(credentials).some((value) => typeof value !== "string" || value.length === 0)) {
+        throw new Error("Rolling Skill control credentials are unavailable")
+    }
+    const configuredTimeout = environment.ROLLING_SKILL_CONTROL_TIMEOUT_MS
+    if (configuredTimeout !== undefined) {
+        if (!/^[1-9]\d{0,4}$/u.test(configuredTimeout)) {
+            throw new Error("Rolling Skill control timeout is invalid")
+        }
+        const timeoutMs = Number(configuredTimeout)
+        if (timeoutMs > 15_000) throw new Error("Rolling Skill control timeout is invalid")
+        credentials.timeoutMs = timeoutMs
+    }
+    return credentials
+}
+
+async function invokeControl(method, params, credentials = controlCredentials()) {
+    controlDefinition(method)
+    const input = parseControlInput(method, params)
+    const client = new ControlSocketClient(credentials)
+    try {
+        const output = parseControlOutput(method, await client.invoke(method, input))
+        return serializableControlResult(output, credentials)
+    } finally {
+        client.close()
+    }
+}
+
+function containsControlAuthority(root, credentials) {
+    const secrets = [credentials?.token, credentials?.sessionId].filter(
+        (secret) => typeof secret === "string" && secret.length > 0,
+    )
+    if (secrets.length === 0) return false
+    const pending = [root]
+    const visited = new WeakSet()
+    while (pending.length > 0) {
+        const value = pending.pop()
+        if (typeof value === "string") {
+            if (secrets.some((secret) => value.includes(secret))) return true
+            continue
+        }
+        if (typeof value !== "object" || value === null || visited.has(value)) continue
+        visited.add(value)
+        let descriptors
+        try {
+            descriptors = Object.getOwnPropertyDescriptors(value)
+        } catch {
+            return true
+        }
+        for (const [key, descriptor] of Object.entries(descriptors)) {
+            if (secrets.some((secret) => key.includes(secret))) return true
+            if (!Object.hasOwn(descriptor, "value")) return true
+            pending.push(descriptor.value)
+        }
+    }
+    return false
+}
+
+function serializableControlResult(result, credentials) {
+    if (containsControlAuthority(result, credentials)) {
+        throw new Error("Control result was rejected")
+    }
+    return serializableResult(result)
+}
+
+function safeControlError(error, credentials) {
+    const fallback = publicControlError(null)
+    const publish = (candidate) => containsControlAuthority(candidate, credentials)
+        ? fallback
+        : candidate
+    const trusted = publicControlError(error)
+    if (trusted.code !== fallback.code) return publish(trusted)
+    if (typeof error !== "object" || error === null) return fallback
+    let descriptors
+    try {
+        descriptors = Object.getOwnPropertyDescriptors(error)
+    } catch {
+        return fallback
+    }
+    const ownValue = (name) => {
+        const descriptor = descriptors[name]
+        return descriptor && Object.hasOwn(descriptor, "value")
+            ? descriptor.value
+            : undefined
+    }
+    const code = ownValue("code")
+    if (!PUBLIC_CONTROL_ERROR_CODE_SET.has(code)) return fallback
+    try {
+        const canonical = publicControlError(createPublicControlError(code, {
+            details: ownValue("details"),
+        }))
+        if (
+            ownValue("message") !== canonical.message ||
+            ownValue("retryable") !== canonical.retryable
+        ) return fallback
+        return publish(canonical)
+    } catch {
+        return fallback
+    }
 }
 
 function externalInput(entry, skill, sourceKind) {
@@ -140,12 +304,78 @@ function createRawCaseMcpServer() {
     return server
 }
 
+function controlToolName(method) {
+    return `rolling_skill_${method.replaceAll(".", "_")}`
+}
+
+function controlToolAnnotations(definition) {
+    const readOnly = definition.action.endsWith(".read")
+    const idempotent = readOnly || (
+        definition.input?.shape && Object.hasOwn(definition.input.shape, "idempotencyKey")
+    )
+    return {
+        readOnlyHint: readOnly,
+        destructiveHint: false,
+        idempotentHint: Boolean(idempotent),
+        openWorldHint: false,
+    }
+}
+
+function controlToolError(error, credentials) {
+    const structuredContent = safeControlError(error, credentials)
+    return {
+        content: [{type: "text", text: JSON.stringify(structuredContent)}],
+        structuredContent,
+        isError: true,
+    }
+}
+
+function createOperatorMcpServer(credentials = controlCredentials()) {
+    const client = new ControlSocketClient(credentials)
+    const server = new McpServer(
+        {name: "rolling-skill-operator", version: TOOL_VERSION},
+        {capabilities: {tools: {}}},
+    )
+    for (const method of CONTROL_METHODS) {
+        const definition = controlDefinition(method)
+        server.registerTool(
+            controlToolName(method),
+            {
+                title: `Rolling Skill ${method}`,
+                description: `Invoke the authenticated Rolling Skill ${method} control method.`,
+                inputSchema: definition.input,
+                outputSchema: definition.output,
+                annotations: {
+                    title: `Rolling Skill ${method}`,
+                    ...controlToolAnnotations(definition),
+                },
+            },
+            async (input) => {
+                try {
+                    const result = parseControlOutput(method, await client.invoke(method, input))
+                    return toolResponse(serializableControlResult(result, credentials))
+                } catch (error) {
+                    return controlToolError(error, credentials)
+                }
+            },
+        )
+    }
+    const closeServer = server.close.bind(server)
+    server.close = async () => {
+        client.close()
+        await closeServer()
+    }
+    return server
+}
+
 function usage() {
     return [
         "rolling-skill-tool enqueue --skill <name> --question <text> [--skill-path <path>] [--note <text>]",
         "rolling-skill-tool enqueue --json <file|->",
         "rolling-skill-tool list [--skill <name>] --json",
         "rolling-skill-tool mcp",
+        "rolling-skill-tool control <method> --params-json <file|->",
+        "rolling-skill-tool operator-mcp",
     ].join("\n")
 }
 
@@ -157,8 +387,22 @@ async function runCli(arguments_) {
         })
         return
     }
+    if (command === "operator-mcp") {
+        const credentials = controlCredentials()
+        serveStdio(() => createOperatorMcpServer(credentials), {onerror: () => {}})
+        return
+    }
     if (command === "help" || command === "--help" || command === "-h") {
         process.stdout.write(`${usage()}\n`)
+        return
+    }
+    if (command === "control") {
+        controlDefinition(options.method)
+        const result = await invokeControl(
+            options.method,
+            await readBoundedJsonInput(options["params-json"]),
+        )
+        process.stdout.write(`${JSON.stringify(serializableResult(result))}\n`)
         return
     }
     const store = new RawCaseStore()
@@ -191,9 +435,24 @@ async function runCli(arguments_) {
     }
 }
 
-runCli(process.argv.slice(2)).catch((error) => {
-    console.error(error?.message || String(error))
+const cliArguments = process.argv.slice(2)
+runCli(cliArguments).catch((error) => {
+    if (cliArguments[0] === "control" || cliArguments[0] === "operator-mcp") {
+        process.stderr.write(`${JSON.stringify(safeControlError(error, {
+            token: process.env.ROLLING_SKILL_CONTROL_TOKEN,
+            sessionId: process.env.ROLLING_SKILL_CONTROL_SESSION,
+        }))}\n`)
+    } else {
+        console.error(error?.message || String(error))
+    }
     process.exitCode = 1
 })
 
-export {createRawCaseMcpServer, enqueueBatch, parseArguments, runCli}
+export {
+    createOperatorMcpServer,
+    createRawCaseMcpServer,
+    enqueueBatch,
+    invokeControl,
+    parseArguments,
+    runCli,
+}
