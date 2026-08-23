@@ -25,6 +25,7 @@ const SCOPE_REQUIREMENTS = Object.freeze({
     "evaluations.get": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
     "evaluations.cancel": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
     "skills.list": Object.freeze({mode: "filter", keys: Object.freeze(["skillIds"])}),
+    "skill_versions.list": Object.freeze({mode: "filter", keys: Object.freeze(["skillIds"])}),
 })
 const RESOLVED_SCOPE_KEYS = Object.freeze(["skillIds", "datasetIds", "runtimeIds"])
 const RESOLVED_SCOPE_SOURCE_KEYS = new Set(["method", "mode", "subject", ...RESOLVED_SCOPE_KEYS])

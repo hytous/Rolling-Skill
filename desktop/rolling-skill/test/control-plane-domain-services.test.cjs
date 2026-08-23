@@ -6,6 +6,7 @@ const {describe, it, mock} = require("node:test")
 
 const {CONTROL_METHODS, encodeCursor} = require("../src/control-plane/contracts.cjs")
 const {createDomainServices} = require("../src/control-plane/domain-services.cjs")
+const {createControlPolicy, createResolvedScope} = require("../src/control-plane/policy.cjs")
 const {RawCaseStore} = require("../src/raw-case-store.cjs")
 
 function fixture(overrides = {}) {
@@ -187,7 +188,14 @@ describe("control-plane domain services", () => {
         )
         assert.deepEqual(
             await services["skills.list"]({cursor: null, limit: 100}, serviceContext({skillIds: []})),
-            {repositories: [], skills: [], versions: [], nextCursor: null},
+            {repositories: [], skills: [], nextCursor: null},
+        )
+        assert.deepEqual(
+            await services["skill_versions.list"](
+                {skillId: null, cursor: null, limit: 100},
+                serviceContext({skillIds: []}),
+            ),
+            {versions: [], nextCursor: null},
         )
         assert.deepEqual(
             await services["runtimes.list"]({}, serviceContext({runtimeIds: []})),
@@ -249,8 +257,8 @@ describe("control-plane domain services", () => {
         skillFixture.managedSkillManager.overview = mock.fn(() => ({
             skills: [{
                 id: "skill-1",
-                name: "billing",
-                marker: ++skillRead === 1 ? "authorized" : "changed",
+                repositoryId: "repository-1",
+                name: ++skillRead === 1 ? "authorized" : "changed",
             }],
         }))
         const skillServices = createDomainServices(skillFixture.dependencies)
@@ -305,7 +313,7 @@ describe("control-plane domain services", () => {
         assert.equal(datasetFixture.evaluationStore.listDatasets.mock.callCount(), 1)
         assert.equal(datasetResult.datasets[0].marker, "authorized")
         assert.equal(skillFixture.managedSkillManager.overview.mock.callCount(), 1)
-        assert.equal(skillResult.skills[0].marker, "authorized")
+        assert.equal(skillResult.skills[0].name, "authorized")
         assert.equal(rawFixture.rawCaseStore.list.mock.callCount(), 1)
         assert.equal(rawFixture.managedSkillManager.overview.mock.callCount(), 1)
         assert.equal(rawResult.rawCases[0].question, "authorized")
@@ -331,7 +339,13 @@ describe("control-plane domain services", () => {
                 {id: "repository-hidden", displayName: "Hidden", managedPath: "/private/hidden"},
             ],
             skills: [
-                {id: "skill-1", repositoryId: "repository-1", name: "billing"},
+                {
+                    id: "skill-1",
+                    repositoryId: "repository-1",
+                    name: "billing",
+                    status: "invalid",
+                    warnings: ["Private: /Users/alice/skills/billing/missing.md"],
+                },
                 {id: "skill-2", repositoryId: "repository-2", name: "support"},
                 {id: "skill-hidden", repositoryId: "repository-hidden", name: "hidden"},
             ],
@@ -373,12 +387,61 @@ describe("control-plane domain services", () => {
 
         assert.deepEqual(result, {
             repositories: [{id: "repository-1", displayName: "Billing"}],
-            skills: [{id: "skill-1", repositoryId: "repository-1", name: "billing"}],
-            versions: [{id: "version-1", repositoryId: "repository-1", skillId: "skill-1"}],
+            skills: [{
+                id: "skill-1",
+                repositoryId: "repository-1",
+                name: "billing",
+                status: "invalid",
+                warningCount: 1,
+            }],
             nextCursor: encodeCursor(1),
         })
         assert.equal(dependencies.managedSkillManager.overview.mock.callCount(), 1)
         assert.equal(dependencies.managedSkillManager.readSkill.mock.callCount(), 0)
+    })
+
+    it("paginates 100,000 managed Skill versions after authorization with bounded output", async () => {
+        const versions = Array.from({length: 100_000}, (_, index) => ({
+            id: `version-${index}`,
+            repositoryId: index % 2 === 0 ? "repository-1" : "repository-2",
+            skillId: index % 2 === 0 ? "skill-1" : "skill-2",
+            skillRoot: index % 2 === 0 ? "billing" : "support",
+            commit: String(index).padStart(40, "0"),
+            contentDigest: `sha256:${String(index).padStart(64, "0")}`,
+            state: "candidate",
+            versionLabel: null,
+            createdBy: "optimization",
+            optimizationRoundId: null,
+            createdAt: "2026-08-21T00:00:00.000Z",
+            releasedAt: null,
+            deprecatedAt: null,
+        }))
+        const {dependencies} = fixture({
+            managedSkillManager: {
+                overview: mock.fn(() => ({
+                    repositories: [],
+                    skills: [
+                        {id: "skill-1", repositoryId: "repository-1", name: "billing"},
+                        {id: "skill-2", repositoryId: "repository-2", name: "support"},
+                    ],
+                    versions,
+                })),
+            },
+        })
+        const services = createDomainServices(dependencies)
+        const grant = serviceContext().grant
+        const input = {skillId: null, cursor: null, limit: 100}
+        const resolution = await services.resolveScope("skill_versions.list", input, grant)
+        const result = await services["skill_versions.list"](
+            input,
+            snapshotContext(resolution, {skillIds: ["skill-1"]}),
+        )
+
+        assert.equal(result.versions.length, 100)
+        assert.ok(result.versions.every((entry) => entry.skillId === "skill-1"))
+        assert.equal(result.nextCursor, encodeCursor(100))
+        assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") < 1_048_576)
+        assert.equal(dependencies.managedSkillManager.overview.mock.callCount(), 1)
     })
 
     it("resolves opaque Raw Case and evaluation run owners with an exact subject binding", async () => {
@@ -476,6 +539,121 @@ describe("control-plane domain services", () => {
             assert.equal(resolution.scope, null)
             assert.ok(Object.isFrozen(resolution.executionContext))
         }
+    })
+
+    it("sanitizes absolute Skill warning paths while preserving manifest and snapshot detail", async () => {
+        const manifest = "---\nname: billing\n---\nRead references/query.md\n"
+        const snapshot = {
+            digest: "sha256:test",
+            files: [{path: "references/query.md", type: "file", executable: false, size: 12}],
+        }
+        const {dependencies} = fixture({
+            managedSkillManager: {
+                overview: mock.fn(() => ({
+                    repositories: [],
+                    skills: [{id: "skill-1", repositoryId: "repository-1", name: "billing"}],
+                    versions: [],
+                })),
+                readSkill: mock.fn(() => ({
+                    repository: {id: "repository-1", managedPath: "/Users/alice/private/repo"},
+                    skill: {
+                        id: "skill-1",
+                        repositoryId: "repository-1",
+                        name: "billing",
+                        warnings: [
+                            "Skill reference does not exist: references/missing.md",
+                            "Skill reference must be relative: /Users/alice/private/secret.md",
+                            "Could not read C:\\Users\\alice\\private\\secret.md",
+                        ],
+                    },
+                    manifest,
+                    snapshot,
+                    versions: Array.from({length: 1_000}, (_, index) => ({
+                        id: `version-${index}`,
+                        skillId: "skill-1",
+                    })),
+                })),
+            },
+        })
+        const services = createDomainServices(dependencies)
+        const result = await services["skills.get"](
+            {skillId: "skill-1"},
+            serviceContext(),
+        )
+
+        assert.equal(result.skill.repository.managedPath, undefined)
+        assert.equal(result.skill.skill.warnings[0], "Skill reference does not exist: references/missing.md")
+        assert.match(result.skill.skill.warnings[1], /absolute path omitted/iu)
+        assert.match(result.skill.skill.warnings[2], /absolute path omitted/iu)
+        assert.doesNotMatch(JSON.stringify(result), /Users[\\/]alice|private[\\/]secret/iu)
+        assert.equal(result.skill.manifest, manifest)
+        assert.deepEqual(result.skill.snapshot, snapshot)
+        assert.equal(Object.hasOwn(result.skill, "versions"), false)
+    })
+
+    it("projects every public Raw Case Skill reference without legacy paths", async () => {
+        const legacyRawCase = {
+            id: "raw-legacy-path",
+            question: "legacy path",
+            skill: {
+                id: "skill-1",
+                name: "billing",
+                path: "/Users/alice/private/billing/SKILL.md",
+            },
+            revision: 1,
+        }
+        const rawCaseStore = {
+            list: mock.fn(() => [structuredClone(legacyRawCase)]),
+            get: mock.fn(() => structuredClone(legacyRawCase)),
+            addMany: mock.fn((entries) => ({
+                created: entries.map((entry) => ({
+                    ...structuredClone(entry),
+                    id: "raw-created",
+                    skill: {...entry.skill, path: "/Users/alice/private/created/SKILL.md"},
+                })),
+                duplicates: [{
+                    index: 1,
+                    duplicateOf: "raw-legacy-path",
+                    rawCase: structuredClone(legacyRawCase),
+                }],
+                rejected: [{
+                    index: 2,
+                    input: {skill: structuredClone(legacyRawCase.skill)},
+                    error: "rejected",
+                }],
+            })),
+            updateIfCurrent: mock.fn(() => structuredClone(legacyRawCase)),
+        }
+        const {dependencies} = fixture({rawCaseStore})
+        const services = createDomainServices(dependencies)
+
+        const listed = await services["raw_cases.list"](
+            {skillName: null, cursor: null, limit: 100},
+            serviceContext({skillIds: ["skill-1"]}),
+        )
+        const enqueued = await services["raw_cases.enqueue"]({
+            cases: [{
+                question: "new",
+                skill: {id: "skill-1", name: "billing"},
+                note: "",
+                source: {kind: "operator"},
+            }],
+            idempotencyKey: "enqueue-public-projection",
+        }, serviceContext())
+        const updated = await services["raw_cases.update"]({
+            id: "raw-legacy-path",
+            changes: {note: "updated"},
+            idempotencyKey: "update-public-projection",
+        }, serviceContext())
+
+        for (const result of [listed, enqueued, updated]) {
+            assert.doesNotMatch(JSON.stringify(result), /\/Users\/alice\/private/u)
+        }
+        assert.deepEqual(listed.rawCases[0].skill, {id: "skill-1", name: "billing"})
+        assert.deepEqual(enqueued.created[0].skill, {id: "skill-1", name: "billing"})
+        assert.deepEqual(enqueued.duplicates[0].rawCase.skill, {id: "skill-1", name: "billing"})
+        assert.deepEqual(enqueued.rejected[0].input.skill, {id: "skill-1", name: "billing"})
+        assert.deepEqual(updated.rawCase.skill, {id: "skill-1", name: "billing"})
     })
 
     it("dispatches only with the trusted discovered runtime descriptor", async () => {
@@ -644,6 +822,85 @@ describe("control-plane domain services", () => {
             "raw_cases.enqueue",
             {...input, idempotencyKey: "enqueue-ambiguous"},
             ambiguousGrant,
+        ), (error) => error.code === "INVALID_ARGUMENT")
+    })
+
+    it("allows an explicit stable-id rebind of an ambiguous legacy Raw Case only with all owner scopes", async () => {
+        const legacyRawCase = {
+            id: "raw-legacy-ambiguous",
+            question: "legacy owner",
+            skill: {name: "billing", path: "/Users/alice/legacy/SKILL.md"},
+            revision: 1,
+        }
+        const updateIfCurrent = mock.fn((_id, _expected, changes) => ({
+            ...structuredClone(legacyRawCase),
+            ...structuredClone(changes),
+            revision: 2,
+        }))
+        const {dependencies} = fixture({
+            rawCaseStore: {
+                list: mock.fn(() => [structuredClone(legacyRawCase)]),
+                get: mock.fn(() => structuredClone(legacyRawCase)),
+                updateIfCurrent,
+            },
+            listRawCaseSkills: mock.fn(() => [
+                {id: "skill-1", name: "Billing", providerId: "codex"},
+                {id: "skill-2", name: "billing", providerId: "codebuddy"},
+            ]),
+        })
+        const services = createDomainServices(dependencies)
+        const input = {
+            id: legacyRawCase.id,
+            changes: {skill: {id: "skill-2", name: "billing"}},
+            idempotencyKey: "rebind-legacy-owner",
+        }
+        const fullGrant = {
+            ...serviceContext().grant,
+            scopes: {...serviceContext().grant.scopes, skillIds: ["skill-1", "skill-2"]},
+        }
+        const fullResolution = await services.resolveScope("raw_cases.update", input, fullGrant)
+        const updated = await services["raw_cases.update"](input, {
+            ...serviceContext(),
+            grant: fullGrant,
+            executionContext: fullResolution.executionContext,
+        })
+
+        assert.deepEqual(fullResolution.scope.skillIds, ["skill-1", "skill-2"])
+        assert.deepEqual(updateIfCurrent.mock.calls[0].arguments[2].skill, {
+            id: "skill-2",
+            name: "billing",
+        })
+        assert.deepEqual(updated.rawCase.skill, {id: "skill-2", name: "billing"})
+
+        const partialGrant = {
+            ...fullGrant,
+            scopes: {...fullGrant.scopes, skillIds: ["skill-2"]},
+        }
+        const partialResolution = await services.resolveScope(
+            "raw_cases.update",
+            {...input, idempotencyKey: "rebind-partial-owner"},
+            partialGrant,
+        )
+        assert.deepEqual(partialResolution.scope.skillIds, ["skill-1", "skill-2"])
+        const partialDecision = createControlPolicy().decide({
+            grant: {...partialGrant, actions: ["raw_cases.write"]},
+            method: "raw_cases.update",
+            action: "raw_cases.write",
+            input,
+            resolvedScope: createResolvedScope(partialResolution.scope),
+        })
+        assert.equal(partialDecision.decision, "deny")
+        assert.equal(partialDecision.code, "OBJECT_OUT_OF_SCOPE")
+
+        await assert.rejects(services.resolveScope(
+            "raw_cases.dispatch",
+            {
+                id: legacyRawCase.id,
+                mode: "new",
+                runtime: {runtimeId: "runtime-1", modelId: null, effort: null},
+                idempotencyKey: "dispatch-ambiguous-owner",
+            },
+            fullGrant,
         ), (error) => error.code === "INVALID_ARGUMENT")
     })
 

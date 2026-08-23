@@ -499,6 +499,7 @@ describe("control-plane policy", () => {
             ["runtimes.list", "runtimes.read", "runtimeIds", ["runtime-1", "judge-1"]],
             ["datasets.list", "datasets.read", "datasetIds", ["dataset-1"]],
             ["skills.list", "skills.read", "skillIds", ["skill-1"]],
+            ["skill_versions.list", "skills.read", "skillIds", ["skill-1"]],
         ]
 
         for (const [method, action, scopeKey, ids] of cases) {
@@ -528,6 +529,7 @@ describe("control-plane policy", () => {
             ["runtimes.list", "runtimes.read", "runtimeIds", "runtime-2", "Runtime"],
             ["datasets.list", "datasets.read", "datasetIds", "dataset-2", "Dataset"],
             ["skills.list", "skills.read", "skillIds", "skill-2", "Skill"],
+            ["skill_versions.list", "skills.read", "skillIds", "skill-2", "Skill"],
         ]
 
         for (const [method, action, scopeKey, outsideId, type] of cases) {

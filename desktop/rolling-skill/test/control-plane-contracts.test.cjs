@@ -62,6 +62,7 @@ const validInputs = {
     },
     "evaluations.cancel": {runId: "run-1", idempotencyKey: "cancel-1"},
     "skills.list": {},
+    "skill_versions.list": {},
     "skills.get": {skillId: "skill-1"},
 }
 
@@ -69,7 +70,9 @@ const validOutputs = {
     "context.get": {workspaceRoot: "/workspace", runtimes: []},
     "raw_cases.list": {rawCases: [], nextCursor: null},
     "raw_cases.enqueue": {created: [], duplicates: [], rejected: []},
-    "raw_cases.update": {rawCase: {id: "raw-case-1"}},
+    "raw_cases.update": {
+        rawCase: {id: "raw-case-1", skill: {id: "skill-1", name: "billing"}},
+    },
     "raw_cases.dispatch": {threadId: "thread-1", turnId: null},
     "runtimes.list": {runtimes: []},
     "runtimes.models": {models: []},
@@ -79,7 +82,8 @@ const validOutputs = {
     "evaluations.get": {run: {id: "run-1"}},
     "evaluations.start": {run: {id: "run-1"}},
     "evaluations.cancel": {run: {id: "run-1"}},
-    "skills.list": {repositories: [], skills: [], versions: [], nextCursor: null},
+    "skills.list": {repositories: [], skills: [], nextCursor: null},
+    "skill_versions.list": {versions: [], nextCursor: null},
     "skills.get": {skill: {id: "skill-1"}},
 }
 
@@ -104,6 +108,7 @@ describe("control-plane contracts", () => {
                 "evaluations.start": "evaluations.execute",
                 "evaluations.cancel": "evaluations.execute",
                 "skills.list": "skills.read",
+                "skill_versions.list": "skills.read",
                 "skills.get": "skills.read",
             },
         )
@@ -142,6 +147,7 @@ describe("control-plane contracts", () => {
             "datasets.list",
             "evaluations.list",
             "skills.list",
+            "skill_versions.list",
         ]) {
             assert.throws(() => parseControlInput(method, undefined), /object|undefined/iu)
         }
@@ -168,6 +174,11 @@ describe("control-plane contracts", () => {
         assert.deepEqual(parseControlInput("datasets.get", {datasetId: "dataset-1"}), {
             datasetId: "dataset-1",
             includeCases: false,
+        })
+        assert.deepEqual(parseControlInput("skill_versions.list", {}), {
+            skillId: null,
+            cursor: null,
+            limit: 50,
         })
     })
 
@@ -424,30 +435,22 @@ describe("control-plane contracts", () => {
                 defaultBranch: "main",
                 source: {
                     kind: "folder",
-                    location: "billing-skills",
-                    importedAt: "2026-08-21T00:00:00.000Z",
                 },
-                createdAt: "2026-08-21T00:00:00.000Z",
-                updatedAt: "2026-08-21T00:00:00.000Z",
             }],
             skills: [{
                 id: "skill-1",
                 repositoryId: "repository-1",
                 name: "billing",
-                description: null,
-                skillRoot: "billing",
-                manifestPath: "billing/SKILL.md",
                 status: "valid",
-                warnings: [],
-                executableFiles: [],
-                createdAt: "2026-08-21T00:00:00.000Z",
-                updatedAt: "2026-08-21T00:00:00.000Z",
+                warningCount: 0,
             }],
+            nextCursor: null,
+        }
+        const versionOutput = {
             versions: [{
                 id: "version-1",
                 repositoryId: "repository-1",
                 skillId: "skill-1",
-                skillRoot: "billing",
                 commit: "a".repeat(40),
                 contentDigest: `sha256:${"b".repeat(64)}`,
                 state: "candidate",
@@ -462,6 +465,10 @@ describe("control-plane contracts", () => {
         }
 
         assert.deepEqual(parseControlOutput("skills.list", output), output)
+        assert.deepEqual(
+            parseControlOutput("skill_versions.list", versionOutput),
+            versionOutput,
+        )
         assert.throws(
             () => parseControlOutput("skills.list", {
                 ...output,
@@ -477,11 +484,30 @@ describe("control-plane contracts", () => {
                     skill: output.skills[0],
                     manifest: "---\nname: billing\n---\n",
                     snapshot: {digest: "sha256:private"},
-                    versions: output.versions,
+                    versions: versionOutput.versions,
                 }],
             }),
             /skills|repository|unrecognized/iu,
         )
+    })
+
+    it("rejects legacy Skill paths in every typed Raw Case record output", () => {
+        const leaked = {
+            id: "raw-1",
+            question: "question",
+            skill: {id: "skill-1", name: "billing", path: "/Users/alice/private/SKILL.md"},
+        }
+
+        for (const [method, output] of [
+            ["raw_cases.list", {rawCases: [leaked], nextCursor: null}],
+            ["raw_cases.enqueue", {created: [leaked], duplicates: [], rejected: []}],
+            ["raw_cases.update", {rawCase: leaked}],
+        ]) {
+            assert.throws(
+                () => parseControlOutput(method, output),
+                /skill|path|unrecognized/iu,
+            )
+        }
     })
 
     it("rejects more than 100 records in every paginated output", () => {
@@ -490,12 +516,22 @@ describe("control-plane contracts", () => {
             ["datasets.list", "datasets"],
             ["evaluations.list", "runs"],
             ["skills.list", "skills"],
+            ["skill_versions.list", "versions"],
         ]) {
             const item = method === "skills.list"
-                ? {id: "skill-1", repositoryId: "repository-1", name: "billing"}
+                ? {
+                    id: "skill-1",
+                    repositoryId: "repository-1",
+                    name: "billing",
+                    warningCount: 0,
+                }
+                : method === "skill_versions.list"
+                    ? {id: "version-1", repositoryId: "repository-1", skillId: "skill-1"}
+                    : method === "raw_cases.list"
+                        ? {id: "raw-1", skill: {id: "skill-1", name: "billing"}}
                 : {id: "item"}
             const related = method === "skills.list"
-                ? {repositories: [], versions: []}
+                ? {repositories: []}
                 : {}
             assert.doesNotThrow(() => parseControlOutput(method, {
                 ...related,

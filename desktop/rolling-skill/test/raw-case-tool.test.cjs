@@ -630,7 +630,7 @@ describe("rolling-skill external Raw Case tool", () => {
         try {
             await client.connect(transport)
             const listed = await client.listTools()
-            assert.equal(listed.tools.length, 15)
+            assert.equal(listed.tools.length, CONTROL_METHODS.length)
             assert.deepEqual(
                 listed.tools.map((tool) => tool.name).sort(),
                 CONTROL_METHODS.map((method) => `rolling_skill_${method.replaceAll(".", "_")}`).sort(),

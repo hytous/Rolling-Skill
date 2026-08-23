@@ -15,6 +15,7 @@ const FILTER_METHODS = Object.freeze({
     "runtimes.list": "runtimeIds",
     "datasets.list": "datasetIds",
     "skills.list": "skillIds",
+    "skill_versions.list": "skillIds",
 })
 
 function invalidArgument(method, path, internalMessage = "Invalid control domain input") {
@@ -97,6 +98,45 @@ function sanitizedSkillDetail(detail) {
     if (result.repository && typeof result.repository === "object") {
         delete result.repository.managedPath
     }
+    if (Array.isArray(result.skill?.warnings)) {
+        result.skill.warnings = result.skill.warnings.map(sanitizedWarningMessage)
+    }
+    delete result.versions
+    return result
+}
+
+function sanitizedWarningMessage(warning) {
+    const message = String(warning ?? "")
+    const matches = [
+        /file:\/\/\/[^\s]*/iu.exec(message),
+        /(^|[\s(<:='"])[A-Za-z]:[\\/]/u.exec(message),
+        /(^|[\s(<:='"])\/(?!\/)/u.exec(message),
+    ].filter(Boolean)
+    if (matches.length === 0) return message
+    const pathStart = Math.min(...matches.map((match) =>
+        match.index + (match[1]?.length ?? 0),
+    ))
+    return `${message.slice(0, pathStart)}[absolute path omitted]`.trim()
+}
+
+function publicSkillReference(skill) {
+    const stableId = identifier(skill?.id) ?? identifier(skill?.skillId)
+    return {
+        ...(stableId === null ? {} : {id: stableId}),
+        name: String(skill?.name ?? ""),
+    }
+}
+
+function sanitizedRawCasePublicValue(value, seen = new WeakMap()) {
+    if (!value || typeof value !== "object") return value
+    if (seen.has(value)) return seen.get(value)
+    const result = Array.isArray(value) ? [] : {}
+    seen.set(value, result)
+    for (const [key, child] of Object.entries(value)) {
+        result[key] = key === "skill" && child && typeof child === "object"
+            ? publicSkillReference(child)
+            : sanitizedRawCasePublicValue(child, seen)
+    }
     return result
 }
 
@@ -105,6 +145,46 @@ function sanitizedRepository(repository) {
     const result = clone(repository)
     delete result.managedPath
     return result
+}
+
+function ownFields(value, keys) {
+    const result = {}
+    for (const key of keys) {
+        if (Object.hasOwn(value ?? {}, key)) result[key] = clone(value[key])
+    }
+    return result
+}
+
+function managedRepositorySummary(repository) {
+    const summary = ownFields(repository, ["id", "displayName", "defaultBranch"])
+    if (typeof repository?.source?.kind === "string") {
+        summary.source = {kind: repository.source.kind}
+    }
+    return summary
+}
+
+function managedSkillSummary(skill) {
+    return {
+        ...ownFields(skill, ["id", "repositoryId", "name", "status"]),
+        warningCount: Array.isArray(skill?.warnings) ? skill.warnings.length : 0,
+    }
+}
+
+function managedVersionSummary(version) {
+    return ownFields(version, [
+        "id",
+        "repositoryId",
+        "skillId",
+        "commit",
+        "contentDigest",
+        "state",
+        "versionLabel",
+        "createdBy",
+        "optimizationRoundId",
+        "createdAt",
+        "releasedAt",
+        "deprecatedAt",
+    ])
 }
 
 function createDomainServices(dependencies = {}) {
@@ -175,17 +255,7 @@ function createDomainServices(dependencies = {}) {
         }
 
         const stableId = identifier(reference.skillId) ?? identifier(reference.id)
-        let candidates
-        if (stableId !== null) {
-            candidates = inventory.filter((skill) => skill?.id === stableId)
-        } else {
-            const name = identifier(reference.name)
-            if (name === null) throw notFound("skill")
-            const normalizedName = normalizedSkillName(name)
-            candidates = inventory.filter(
-                (skill) => normalizedSkillName(skill?.name) === normalizedName,
-            )
-        }
+        let candidates = matchingSkillReferences(reference, inventory)
         if (grant !== null) {
             const grantedIds = new Set(
                 Array.isArray(grant?.scopes?.skillIds) ? grant.scopes.skillIds : [],
@@ -201,6 +271,19 @@ function createDomainServices(dependencies = {}) {
             )
         }
         return candidates[0]
+    }
+
+    function matchingSkillReferences(reference, inventory) {
+        const stableId = identifier(reference?.skillId) ?? identifier(reference?.id)
+        if (stableId !== null) {
+            return inventory.filter((skill) => skill?.id === stableId)
+        }
+        const name = identifier(reference?.name)
+        if (name === null) return []
+        const normalizedName = normalizedSkillName(name)
+        return inventory.filter(
+            (skill) => normalizedSkillName(skill?.name) === normalizedName,
+        )
     }
 
     async function resolveSkillReference(reference, options) {
@@ -343,7 +426,9 @@ function createDomainServices(dependencies = {}) {
             inventoryIds = datasets.map((entry) => entry?.id)
             executionContext = {method, datasets}
         } else {
-            const overview = method === "skills.list" ? await managedSkillOverview() : null
+            const overview = method === "skills.list" || method === "skill_versions.list"
+                ? await managedSkillOverview()
+                : null
             const skills = overview?.skills ?? await rawCaseSkillInventory()
             inventoryIds = skills.map((entry) => entry?.id)
             executionContext = {
@@ -399,8 +484,24 @@ function createDomainServices(dependencies = {}) {
         if (method === "raw_cases.update" || method === "raw_cases.dispatch") {
             const rawCase = await requireRawCase(input.id)
             const inventory = await rawCaseSkillInventory()
-            const skill = resolveSkillReferenceFrom(rawCase.skill, inventory, {grant, method})
-            const skillIds = [skill.id]
+            const legacyOwner = identifier(rawCase.skill?.skillId) === null &&
+                identifier(rawCase.skill?.id) === null
+            const explicitTargetId = method === "raw_cases.update"
+                ? identifier(input.changes.skill?.id)
+                : null
+            const ambiguousOwners = legacyOwner && explicitTargetId !== null
+                ? matchingSkillReferences(rawCase.skill, inventory)
+                : []
+            const explicitRebind = ambiguousOwners.length > 1
+            const skill = explicitRebind
+                ? null
+                : resolveSkillReferenceFrom(rawCase.skill, inventory, {grant, method})
+            const skillIds = explicitRebind
+                ? ambiguousOwners.map((candidate) => candidate?.id)
+                : [skill.id]
+            if (skillIds.some((skillId) => identifier(skillId) === null)) {
+                throw invalidArgument(method, ["id"], "Legacy Skill owners require stable IDs")
+            }
             let targetSkill = null
             if (method === "raw_cases.update" && input.changes.skill) {
                 targetSkill = resolveSkillReferenceFrom(
@@ -424,7 +525,7 @@ function createDomainServices(dependencies = {}) {
                 mode: "access",
                 subject: {kind: "raw_case", id: rawCase.id},
                 skillIds: unique(skillIds),
-            }, {method, rawCase, runtime, skill, targetSkill})
+            }, {method, rawCase, runtime, skill, ownerSkills: ambiguousOwners, targetSkill})
         }
         if (method === "evaluations.get" || method === "evaluations.cancel") {
             const run = await requireEvaluationRun(input.runId)
@@ -488,7 +589,10 @@ function createDomainServices(dependencies = {}) {
         async "raw_cases.list"(input, context) {
             const execution = trustedExecution(context, "raw_cases.list")
             const page = paginate(await filteredRawCases(input, context, execution), input)
-            return {rawCases: page.items, nextCursor: page.nextCursor}
+            return {
+                rawCases: page.items.map((record) => sanitizedRawCasePublicValue(record)),
+                nextCursor: page.nextCursor,
+            }
         },
 
         async "raw_cases.enqueue"(input, context) {
@@ -510,7 +614,7 @@ function createDomainServices(dependencies = {}) {
                 })
             }
             if (typeof rawCaseStore?.addMany !== "function") throw new Error("Raw Case store unavailable")
-            return clone(await rawCaseStore.addMany(cases))
+            return sanitizedRawCasePublicValue(await rawCaseStore.addMany(cases))
         },
 
         async "raw_cases.update"(input, context) {
@@ -531,7 +635,7 @@ function createDomainServices(dependencies = {}) {
                 throw new Error("Raw Case store unavailable")
             }
             try {
-                return {rawCase: clone(await rawCaseStore.updateIfCurrent(input.id, {
+                return {rawCase: sanitizedRawCasePublicValue(await rawCaseStore.updateIfCurrent(input.id, {
                     expectedRevision: rawCase.revision,
                     expectedSkillName: rawCase.skill?.name,
                 }, changes))}
@@ -647,14 +751,27 @@ function createDomainServices(dependencies = {}) {
             const overview = execution?.overview ?? await managedSkillOverview()
             const skills = overview.skills.filter((entry) => allowed.has(entry.id))
             const page = paginate(skills, input)
-            const skillIds = new Set(page.items.map((entry) => entry.id))
             const repositoryIds = new Set(page.items.map((entry) => entry.repositoryId))
             return {
                 repositories: overview.repositories
                     .filter((entry) => repositoryIds.has(entry?.id))
-                    .map(sanitizedRepository),
-                skills: page.items,
-                versions: overview.versions.filter((entry) => skillIds.has(entry?.skillId)),
+                    .map(managedRepositorySummary),
+                skills: page.items.map(managedSkillSummary),
+                nextCursor: page.nextCursor,
+            }
+        },
+
+        async "skill_versions.list"(input, context) {
+            const allowed = scopeIds(context, "skillIds")
+            const execution = trustedExecution(context, "skill_versions.list")
+            const overview = execution?.overview ?? await managedSkillOverview()
+            const versions = overview.versions.filter((entry) =>
+                allowed.has(entry?.skillId) &&
+                (input.skillId === null || entry?.skillId === input.skillId),
+            )
+            const page = paginate(versions, input)
+            return {
+                versions: page.items.map(managedVersionSummary),
                 nextCursor: page.nextCursor,
             }
         },

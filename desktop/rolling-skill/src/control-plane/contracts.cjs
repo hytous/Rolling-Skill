@@ -11,7 +11,6 @@ const MAX_SKILL_PATH_LENGTH = 4_000
 const MAX_EVALUATION_CASES = 1_000
 const MAX_EVALUATION_RUNTIMES = 50
 const MAX_PUBLIC_DETAIL_ITEMS = 50
-const MAX_SKILL_PAGE_VERSIONS = 10_000
 
 const reasoningEffort = z.enum([
     "minimal",
@@ -85,6 +84,15 @@ const skillReferenceInput = z.object({
 const rawCaseSource = z.object({
     kind: boundedText(MAX_IDENTIFIER_LENGTH, "Raw Case source kind"),
 }).strict()
+
+const publicSkillReference = z.object({
+    id: id.optional(),
+    name: boundedText(MAX_IDENTIFIER_LENGTH, "Skill name"),
+}).strict()
+
+const publicRawCaseRecord = z.object({
+    skill: publicSkillReference,
+}).passthrough()
 
 const rawCaseNote = z.string().max(MAX_RAW_CASE_NOTE_LENGTH)
 
@@ -160,32 +168,21 @@ const managedSkillRepository = z.object({
     defaultBranch: boundedText(MAX_IDENTIFIER_LENGTH, "Repository default branch").optional(),
     source: z.object({
         kind: boundedText(40, "Repository source kind"),
-        location: boundedText(8_192, "Repository source location"),
-        importedAt: boundedText(100, "Repository import time"),
     }).strict().optional(),
-    createdAt: boundedText(100, "Repository creation time").optional(),
-    updatedAt: boundedText(100, "Repository update time").optional(),
 }).strict()
 
 const managedSkillSummary = z.object({
     id,
     repositoryId: id,
     name: boundedText(MAX_IDENTIFIER_LENGTH, "Skill name"),
-    description: z.string().max(1_024).nullable().optional(),
-    skillRoot: boundedText(MAX_SKILL_PATH_LENGTH, "Skill root").optional(),
-    manifestPath: boundedText(MAX_SKILL_PATH_LENGTH, "Skill manifest path").optional(),
     status: boundedText(40, "Skill status").optional(),
-    warnings: z.array(z.string().max(MAX_SKILL_PATH_LENGTH)).optional(),
-    executableFiles: z.array(z.string().max(MAX_SKILL_PATH_LENGTH)).optional(),
-    createdAt: boundedText(100, "Skill creation time").optional(),
-    updatedAt: boundedText(100, "Skill update time").optional(),
+    warningCount: z.number().int().min(0).max(100_000),
 }).strict()
 
 const managedSkillVersion = z.object({
     id,
     repositoryId: id,
     skillId: id,
-    skillRoot: boundedText(MAX_SKILL_PATH_LENGTH, "Version Skill root").optional(),
     commit: boundedText(200, "Version commit").optional(),
     contentDigest: boundedText(200, "Version content digest").optional(),
     state: boundedText(40, "Version state").optional(),
@@ -200,7 +197,11 @@ const managedSkillVersion = z.object({
 const managedSkillPageResult = z.object({
     repositories: z.array(managedSkillRepository).max(MAX_PAGE_SIZE),
     skills: z.array(managedSkillSummary).max(MAX_PAGE_SIZE),
-    versions: z.array(managedSkillVersion).max(MAX_SKILL_PAGE_VERSIONS),
+    nextCursor: cursor.nullable(),
+}).strict()
+
+const managedSkillVersionPageResult = z.object({
+    versions: z.array(managedSkillVersion).max(MAX_PAGE_SIZE),
     nextCursor: cursor.nullable(),
 }).strict()
 
@@ -220,7 +221,10 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
         input: page.extend({
             skillName: boundedText(MAX_IDENTIFIER_LENGTH, "Skill name").nullable().default(null),
         }).strict(),
-        output: pageResult("rawCases"),
+        output: z.object({
+            rawCases: z.array(publicRawCaseRecord).max(MAX_PAGE_SIZE),
+            nextCursor: cursor.nullable(),
+        }).strict(),
     },
     "raw_cases.enqueue": {
         action: "raw_cases.write",
@@ -229,7 +233,7 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
             idempotencyKey: id,
         }).strict(),
         output: z.object({
-            created: z.array(z.any()),
+            created: z.array(publicRawCaseRecord),
             duplicates: z.array(z.any()),
             rejected: z.array(z.any()),
         }).strict(),
@@ -237,7 +241,7 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
     "raw_cases.update": {
         action: "raw_cases.write",
         input: z.object({id, changes: rawCaseChanges, idempotencyKey: id}).strict(),
-        output: z.object({rawCase: z.any()}).strict(),
+        output: z.object({rawCase: publicRawCaseRecord}).strict(),
     },
     "raw_cases.dispatch": {
         action: "runtime.execute",
@@ -293,6 +297,11 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
         action: "skills.read",
         input: page.strict(),
         output: managedSkillPageResult,
+    },
+    "skill_versions.list": {
+        action: "skills.read",
+        input: page.extend({skillId: id.nullable().default(null)}).strict(),
+        output: managedSkillVersionPageResult,
     },
     "skills.get": {
         action: "skills.read",
