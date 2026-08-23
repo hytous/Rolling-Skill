@@ -206,9 +206,12 @@ App's Application Support control directory. This describes the location class o
 not print the live socket path, a capability token, or a session credential. Starting the listener
 also issues no external capability, so connecting to the socket by itself grants no authority.
 
-The authenticated `rolling-skill-tool control` and `rolling-skill-tool operator-mcp` modes require
-the App to remain running and require an explicitly granted Operator session. A trusted launcher
-passes the concrete socket path, bearer token, and session ID only in the child process environment:
+The `rolling-skill-tool control` and `rolling-skill-tool operator-mcp` modes implement the
+authenticated transport contract, but Phase 1 deliberately ships no external Operator capability
+issuer or trusted launcher. There is currently no supported external workflow for obtaining a valid
+token and session, so these modes cannot yet authenticate to the App. A future issuer must keep the
+App running and pass the concrete socket path, bearer token, and session ID only in the launched
+child process environment:
 
 - `ROLLING_SKILL_CONTROL_SOCKET`
 - `ROLLING_SKILL_CONTROL_TOKEN`

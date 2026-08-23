@@ -1,4 +1,4 @@
-const {contextBridge} = require("electron")
+const {contextBridge, ipcRenderer} = require("electron")
 
 const settings = {
     autoCapture: false,
@@ -204,14 +204,25 @@ let threadObservation = null
 let deliveredTimelineNotifications = 0
 let blockedTimelineNotifications = 0
 const fakeControlInvocations = []
+const fakeControlMutations = new Set([
+    "raw_cases.enqueue",
+    "raw_cases.update",
+    "evaluations.start",
+    "evaluations.cancel",
+])
+let fakeControlMutationSequence = 0
 const requiredSmokeControlMethods = new Set([
+    "runtimes.list",
     "runtimes.models",
     "raw_cases.list",
     "raw_cases.enqueue",
+    "raw_cases.update",
     "datasets.list",
     "datasets.get",
     "evaluations.list",
     "evaluations.get",
+    "evaluations.start",
+    "evaluations.cancel",
     "skill_repositories.list",
     "skills.list",
     "skill_versions.list",
@@ -276,9 +287,17 @@ const smokeManagedRepository = {
     id: "managed-repository-smoke",
     displayName: "Billing Skill",
     defaultBranch: "main",
-    source: {kind: "folder", location: "billing-cost-management"},
+    source: {kind: "folder", importedAt: "2026-08-20T00:00:00.000Z"},
     createdAt: "2026-08-20T00:00:00.000Z",
     updatedAt: "2026-08-20T00:00:00.000Z",
+}
+const smokeManagedRepositoryTwo = {
+    id: "managed-repository-smoke-two",
+    displayName: "Billing Analysis Skills",
+    defaultBranch: "main",
+    source: {kind: "git", importedAt: "2026-08-19T00:00:00.000Z"},
+    createdAt: "2026-08-19T00:00:00.000Z",
+    updatedAt: "2026-08-19T00:00:00.000Z",
 }
 const smokeManagedSkill = {
     id: "managed-skill-smoke",
@@ -289,11 +308,13 @@ const smokeManagedSkill = {
     manifestPath: "SKILL.md",
     status: "valid",
     warnings: [],
+    warningCount: 0,
     executableFiles: [],
 }
 const smokeManagedSkillTwo = {
     ...smokeManagedSkill,
     id: "managed-skill-smoke-two",
+    repositoryId: smokeManagedRepositoryTwo.id,
     name: "billing-cost-analysis",
     description: "Second managed Skill",
     skillRoot: "skills/analysis",
@@ -303,7 +324,6 @@ let smokeManagedVersions = [{
     id: "managed-version-smoke",
     repositoryId: smokeManagedRepository.id,
     skillId: smokeManagedSkill.id,
-    skillRoot: ".",
     commit: "0123456789abcdef0123456789abcdef01234567",
     contentDigest: `sha256:${"a".repeat(64)}`,
     state: "candidate",
@@ -314,9 +334,8 @@ let smokeManagedVersions = [{
     deprecatedAt: null,
 }, {
     id: "managed-version-released-smoke",
-    repositoryId: smokeManagedRepository.id,
+    repositoryId: smokeManagedRepositoryTwo.id,
     skillId: smokeManagedSkillTwo.id,
-    skillRoot: smokeManagedSkillTwo.skillRoot,
     commit: "89abcdef0123456789abcdef0123456789abcdef",
     contentDigest: `sha256:${"b".repeat(64)}`,
     state: "released",
@@ -329,7 +348,7 @@ let smokeManagedVersions = [{
 
 function smokeManagedOverview() {
     return {
-        repositories: [smokeManagedRepository],
+        repositories: [smokeManagedRepository, smokeManagedRepositoryTwo],
         skills: [smokeManagedSkill, smokeManagedSkillTwo],
         versions: smokeManagedVersions,
     }
@@ -581,6 +600,8 @@ const smokeEvaluationRun = {
         },
     ],
 }
+const smokeStartedEvaluationRuns = new Map()
+let smokeEvaluationRunSequence = 0
 
 function smokeControlRawCase(input = {}) {
     return {
@@ -615,8 +636,37 @@ function smokePublicRawCase(entry) {
     }
 }
 
-async function fakeControlInvoke(method, params = {}) {
-    fakeControlInvocations.push({method, params: JSON.parse(JSON.stringify(params))})
+const smokeControlCursorSequences = new Map()
+const smokeSkillVersionRevision = "01234567-89ab-4def-8123-456789abcdef"
+
+function smokeBase64Url(value) {
+    return btoa(value).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "")
+}
+
+function smokeControlCursor(method, sequence) {
+    const cursor = smokeBase64Url(
+        method === "skill_versions.list"
+            ? `v1:${smokeSkillVersionRevision}:${sequence}`
+            : String(sequence),
+    )
+    smokeControlCursorSequences.set(`${method}:${cursor}`, sequence)
+    return cursor
+}
+
+function smokeControlPage(method, items, params) {
+    const sequence = params.cursor === null
+        ? 0
+        : smokeControlCursorSequences.get(`${method}:${params.cursor}`)
+    if (!Number.isSafeInteger(sequence)) throw new Error("Unknown smoke control cursor")
+    const pageSize = Math.min(params.limit, 1)
+    const end = Math.min(sequence + pageSize, items.length)
+    return {
+        items: items.slice(sequence, end),
+        nextCursor: end < items.length ? smokeControlCursor(method, end) : null,
+    }
+}
+
+async function fakeControlService(method, params) {
     switch (method) {
         case "runtimes.list":
             return {runtimes: [{
@@ -693,37 +743,83 @@ async function fakeControlInvoke(method, params = {}) {
         case "evaluations.list":
             return {
                 runs: !params.datasetId || params.datasetId === smokeEvaluationRun.datasetId
-                    ? [smokeEvaluationRun]
+                    ? [...smokeStartedEvaluationRuns.values()].reverse().concat(smokeEvaluationRun)
                     : [],
                 nextCursor: null,
             }
         case "evaluations.get":
-            return {run: smokeEvaluationRun}
-        case "evaluations.start":
-            return {run: {...smokeEvaluationRun, id: "run-smoke-started", status: "queued"}}
-        case "evaluations.cancel":
-            return {run: {...smokeEvaluationRun, id: params.runId, status: "cancelled"}}
-        case "skill_repositories.list":
-            return {repositories: [smokeManagedRepository], nextCursor: null}
-        case "skills.list":
-            return {
-                repositories: [smokeManagedRepository],
-                skills: [smokeManagedSkill, smokeManagedSkillTwo],
-                nextCursor: null,
+            return {run: smokeStartedEvaluationRuns.get(params.runId) ?? smokeEvaluationRun}
+        case "evaluations.start": {
+            smokeEvaluationRunSequence += 1
+            const run = {
+                ...smokeEvaluationRun,
+                id: `run-smoke-started-${smokeEvaluationRunSequence}`,
+                selectionMode: params.selectionMode,
+                activationMode: params.activationMode,
+                runtimeConfigurations: params.runtimeConfigurations,
+                status: "running",
+                createdAt: new Date().toISOString(),
+                completedAt: null,
+                caseSnapshots: params.selectionMode === "selected"
+                    ? smokeEvaluationCases.filter((entry) => params.caseIds.includes(entry.id))
+                    : smokeEvaluationCases,
+                results: [],
             }
-        case "skill_versions.list":
-            return {
-                versions: params.skillId
-                    ? smokeManagedVersions.filter((version) => version.skillId === params.skillId)
-                    : smokeManagedVersions,
-                nextCursor: null,
+            smokeStartedEvaluationRuns.set(run.id, run)
+            return {run}
+        }
+        case "evaluations.cancel": {
+            const current = smokeStartedEvaluationRuns.get(params.runId)
+            if (!current) throw new Error("Unknown smoke active evaluation")
+            const run = {
+                ...current,
+                status: "cancelled",
+                completedAt: new Date().toISOString(),
             }
+            smokeStartedEvaluationRuns.set(run.id, run)
+            return {run}
+        }
+        case "skill_repositories.list": {
+            const page = smokeControlPage(
+                method,
+                [smokeManagedRepository, smokeManagedRepositoryTwo],
+                params,
+            )
+            return {repositories: page.items, nextCursor: page.nextCursor}
+        }
+        case "skills.list": {
+            const page = smokeControlPage(
+                method,
+                [smokeManagedSkill, smokeManagedSkillTwo],
+                params,
+            )
+            return {
+                repositories: [smokeManagedRepository, smokeManagedRepositoryTwo]
+                    .filter((repository) => page.items.some(
+                        (skill) => skill.repositoryId === repository.id,
+                    )),
+                skills: page.items,
+                nextCursor: page.nextCursor,
+            }
+        }
+        case "skill_versions.list": {
+            const versions = params.skillId
+                ? smokeManagedVersions.filter((version) => version.skillId === params.skillId)
+                : smokeManagedVersions
+            const page = smokeControlPage(method, versions, params)
+            return {
+                versions: page.items,
+                nextCursor: page.nextCursor,
+            }
+        }
         case "skills.get": {
             const skill = [smokeManagedSkill, smokeManagedSkillTwo]
                 .find((entry) => entry.id === params.skillId)
             if (!skill) throw new Error("Unknown smoke managed Skill")
             return {skill: {
-                repository: smokeManagedRepository,
+                repository: skill.repositoryId === smokeManagedRepositoryTwo.id
+                    ? smokeManagedRepositoryTwo
+                    : smokeManagedRepository,
                 skill,
                 manifest: `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n${skill === smokeManagedSkillTwo ? "Second managed Skill" : "Use the smoke workflow."}\n`,
                 snapshot: {
@@ -736,9 +832,57 @@ async function fakeControlInvoke(method, params = {}) {
     }
 }
 
+async function fakeControlInvoke(method, params = {}) {
+    const input = JSON.parse(JSON.stringify(params))
+    if (method === "runtimes.models" && !input.runtimeId) input.runtimeId = currentRuntimeId
+    if (fakeControlMutations.has(method)) {
+        fakeControlMutationSequence += 1
+        input.idempotencyKey = `renderer-smoke-${fakeControlMutationSequence}`
+    }
+    const parsedInput = await ipcRenderer.invoke("smoke:parse-control-input", {
+        method,
+        value: input,
+    })
+    const invocation = {method, params: parsedInput, nextCursor: null}
+    fakeControlInvocations.push(invocation)
+    const output = await fakeControlService(method, parsedInput)
+    const parsedOutput = await ipcRenderer.invoke("smoke:parse-control-output", {
+        method,
+        value: output,
+    })
+    invocation.nextCursor = parsedOutput.nextCursor ?? null
+    return parsedOutput
+}
+
+const FAKE_CONTROL_PAGE_LIMIT = 100
+const FAKE_CONTROL_MAX_PAGES = 1_000
+const FAKE_CONTROL_MAX_ITEMS = 100_000
+
 async function fakeControlPage(method, params, key) {
-    const page = await fakeControlInvoke(method, {...params, cursor: null, limit: 100})
-    return page[key] ?? []
+    const items = []
+    const seenCursors = new Set()
+    let cursor = null
+    for (let pageNumber = 0; pageNumber < FAKE_CONTROL_MAX_PAGES; pageNumber += 1) {
+        const page = await fakeControlInvoke(method, {
+            ...params,
+            cursor,
+            limit: FAKE_CONTROL_PAGE_LIMIT,
+        })
+        const pageItems = Array.isArray(page?.[key]) ? page[key] : []
+        if (items.length + pageItems.length > FAKE_CONTROL_MAX_ITEMS) {
+            throw new Error(`Fake control pagination exceeded ${FAKE_CONTROL_MAX_ITEMS} items`)
+        }
+        items.push(...pageItems)
+        const nextCursor = page?.nextCursor ?? null
+        if (nextCursor === null) return items
+        const signature = JSON.stringify(nextCursor)
+        if (seenCursors.has(signature)) {
+            throw new Error("Fake control pagination repeated a cursor")
+        }
+        seenCursors.add(signature)
+        cursor = nextCursor
+    }
+    throw new Error(`Fake control pagination exceeded ${FAKE_CONTROL_MAX_PAGES} pages`)
 }
 
 async function fakeManagedSkillOverview() {
@@ -915,7 +1059,6 @@ contextBridge.exposeInMainWorld("rollingSkill", {
             id: "managed-version-created-smoke",
             repositoryId: smokeManagedRepository.id,
             skillId,
-            skillRoot: smokeManagedSkill.skillRoot,
             commit: "fedcba9876543210fedcba9876543210fedcba98",
             contentDigest: `sha256:${"c".repeat(64)}`,
             state: "candidate",
@@ -960,6 +1103,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         assertSmokeControlCoverage()
         return lastRawCaseTurnText
     },
+    smokeControlInvocations: () => JSON.parse(JSON.stringify(fakeControlInvocations)),
     listSkills: async () => ({
         data: [{
             cwd: "/tmp/rolling-skill-renderer-smoke",

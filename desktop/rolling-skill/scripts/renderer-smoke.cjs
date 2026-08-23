@@ -1,7 +1,12 @@
-const {app, BrowserWindow} = require("electron")
+const {app, BrowserWindow, ipcMain} = require("electron")
 const {mkdtempSync, rmSync, writeFileSync} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
+
+const {
+    parseControlInput,
+    parseControlOutput,
+} = require("../src/control-plane/contracts.cjs")
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-renderer-smoke-"))
 app.setPath("userData", join(temporaryDirectory, "profile"))
@@ -29,6 +34,10 @@ async function inspect(window, expression) {
 
 async function run() {
     await app.whenReady()
+    ipcMain.handle("smoke:parse-control-input", (_event, {method, value}) =>
+        parseControlInput(method, value))
+    ipcMain.handle("smoke:parse-control-output", (_event, {method, value}) =>
+        parseControlOutput(method, value))
     const rendererErrors = []
     const window = new BrowserWindow({
         width: Number(process.env.ROLLING_SKILL_RENDERER_SMOKE_WIDTH) || 1_180,
@@ -52,6 +61,13 @@ async function run() {
         window,
         'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation") && document.querySelector(".message-body h2")',
     )
+    const controlRuntimes = await inspect(window, "window.rollingSkill.listRuntimes()")
+    if (
+        controlRuntimes.length !== 1 ||
+        controlRuntimes[0]?.runtimeId !== "codex:renderer-smoke"
+    ) {
+        throw new Error(`Control Runtime catalog shape changed: ${JSON.stringify(controlRuntimes)}`)
+    }
 
     const markdownAndActivity = await inspect(
         window,
@@ -116,6 +132,33 @@ async function run() {
         !rawCaseInitial.markerStatus?.includes("Case 草稿")
     ) {
         throw new Error(`Raw Case inbox or source marker missing: ${JSON.stringify(rawCaseInitial)}`)
+    }
+
+    await inspect(window, 'document.querySelector("[data-edit-raw-case=raw-case-smoke]").click()')
+    await waitFor(
+        window,
+        'document.querySelector("#raw-case-question").value === "查一下还没验证的 8 月账单问题"',
+    )
+    await inspect(window, `(() => {
+        document.querySelector("#raw-case-question").value = "查一下已编辑的 8 月账单问题"
+        document.querySelector("#raw-case-note").value = "Renderer smoke edited"
+        document.querySelector("#raw-case-form").requestSubmit()
+    })()`)
+    await waitFor(
+        window,
+        'document.querySelector("[data-raw-case-id=raw-case-smoke] .raw-case-card-question")?.textContent === "查一下已编辑的 8 月账单问题"',
+    )
+    await waitFor(
+        window,
+        'document.querySelector("#cancel-raw-case-edit").classList.contains("hidden") && document.querySelector("#raw-case-question").value === ""',
+    )
+    const rawCaseUpdate = await inspect(window, `window.rollingSkill.smokeControlInvocations()
+        .filter((entry) => entry.method === "raw_cases.update").at(-1)`)
+    if (
+        rawCaseUpdate?.params?.id !== "raw-case-smoke" ||
+        rawCaseUpdate?.params?.changes?.question !== "查一下已编辑的 8 月账单问题"
+    ) {
+        throw new Error(`Raw Case edit bypassed control: ${JSON.stringify(rawCaseUpdate)}`)
     }
 
     await inspect(window, `(() => {
@@ -205,6 +248,10 @@ async function run() {
         document.querySelector("[data-surface=skills]").click()
     })()`)
     await waitFor(window, 'document.querySelector("[data-managed-skill-id=managed-skill-smoke]")')
+    await waitFor(
+        window,
+        'document.querySelector(".managed-skill-manifest")?.textContent.includes("Smoke managed Skill")',
+    )
     const managedSkillSurface = await inspect(window, `(() => ({
         visible: !document.querySelector("#skill-management-workbench").classList.contains("hidden"),
         repositories: document.querySelectorAll(".managed-repository-card").length,
@@ -221,7 +268,7 @@ async function run() {
     }))()`)
     if (
         !managedSkillSurface.visible ||
-        managedSkillSurface.repositories !== 1 ||
+        managedSkillSurface.repositories !== 2 ||
         managedSkillSurface.skills !== 2 ||
         !managedSkillSurface.skill?.includes("billing-cost-management") ||
         !managedSkillSurface.manifest?.includes("Smoke managed Skill") ||
@@ -229,6 +276,40 @@ async function run() {
         managedSkillSurface.imports !== 4
     ) {
         throw new Error(`Managed Skill workbench is incomplete: ${JSON.stringify(managedSkillSurface)}`)
+    }
+    const pagedManagedOverview = await inspect(window, "window.rollingSkill.listManagedSkills()")
+    if (
+        pagedManagedOverview.repositories.length !== 2 ||
+        pagedManagedOverview.skills.length !== 2 ||
+        pagedManagedOverview.versions.length !== 2
+    ) {
+        throw new Error(
+            `Managed Skill control pages were not aggregated: ${JSON.stringify(pagedManagedOverview)}`,
+        )
+    }
+    const managedPaginationCalls = await inspect(window, `(() => {
+        const calls = window.rollingSkill.smokeControlInvocations()
+        return Object.fromEntries([
+            "skill_repositories.list",
+            "skills.list",
+            "skill_versions.list",
+        ].map((method) => [method, calls.filter((entry) =>
+            entry.method === method &&
+            (method !== "skill_versions.list" || entry.params.skillId === null)
+        ).slice(-2)]))
+    })()`)
+    for (const [method, pages] of Object.entries(managedPaginationCalls)) {
+        if (
+            pages.length !== 2 ||
+            pages[0].params.cursor !== null ||
+            typeof pages[0].nextCursor !== "string" ||
+            pages[1].params.cursor !== pages[0].nextCursor ||
+            pages[1].nextCursor !== null
+        ) {
+            throw new Error(
+                `Managed Skill ${method} nextCursor was not followed: ${JSON.stringify(pages)}`,
+            )
+        }
     }
     await inspect(window, 'document.querySelector("[data-managed-skill-id=managed-skill-smoke-two]").click()')
     await waitFor(window, 'document.querySelector(".managed-skill-manifest")?.textContent.includes("Second managed Skill")')
@@ -254,6 +335,10 @@ async function run() {
     await waitFor(window, 'document.querySelector("[data-deprecate-managed-version=managed-version-created-smoke]")')
     await inspect(window, 'document.querySelector("[data-managed-skill-side-view=installations]").click()')
     await waitFor(window, 'document.querySelector(\'[data-managed-install-runtime-id="codex:renderer-smoke"]\')')
+    await waitFor(
+        window,
+        'document.querySelector("#managed-install-version").value === "managed-version-created-smoke" && !document.querySelector("#start-managed-skill-installations").disabled',
+    )
     const managedSkillInstallations = await inspect(window, `(() => ({
         visible: !document.querySelector("#managed-skill-installations").classList.contains("hidden"),
         version: document.querySelector("#managed-install-version").value,
@@ -333,6 +418,40 @@ async function run() {
     if (automaticCalibration.created.join(",") !== "case-smoke,case-smoke-2" ||
         automaticCalibration.archived.join(",") !== "case-smoke,case-smoke-2") {
         throw new Error(`Automatic calibration was not serialized and saved: ${JSON.stringify(automaticCalibration)}`)
+    }
+
+    await waitFor(window, '!document.querySelector("#start-evaluation").disabled')
+    await inspect(window, 'document.querySelector("#start-evaluation").click()')
+    await waitFor(window, 'document.querySelector("[data-evaluation-run-id^=run-smoke-started-] .run-status.running")')
+    const selectedEvaluationStart = await inspect(window, `window.rollingSkill.smokeControlInvocations()
+        .filter((entry) => entry.method === "evaluations.start").at(-1)`)
+    if (
+        selectedEvaluationStart?.params?.selectionMode !== "selected" ||
+        selectedEvaluationStart?.params?.caseIds?.join(",") !== "case-smoke"
+    ) {
+        throw new Error(`Selected evaluation did not use control: ${JSON.stringify(selectedEvaluationStart)}`)
+    }
+    await inspect(window, 'document.querySelector("[data-cancel-evaluation-run^=run-smoke-started-]").click()')
+    await waitFor(window, 'document.querySelector("#cancel-evaluation-run-dialog").open')
+    await inspect(window, 'document.querySelector("#confirm-cancel-evaluation-run").click()')
+    await waitFor(window, 'document.querySelector("[data-evaluation-run-id^=run-smoke-started-] .run-status.cancelled")')
+    const cancelledEvaluation = await inspect(window, `window.rollingSkill.smokeControlInvocations()
+        .filter((entry) => entry.method === "evaluations.cancel").at(-1)`)
+    if (!cancelledEvaluation?.params?.runId?.startsWith("run-smoke-started-")) {
+        throw new Error(`Running evaluation cancel bypassed control: ${JSON.stringify(cancelledEvaluation)}`)
+    }
+
+    await inspect(window, 'document.querySelector("[data-evaluation-view=cases]").click()')
+    await waitFor(window, '!document.querySelector("#start-dataset-evaluation").disabled')
+    await inspect(window, 'document.querySelector("#start-dataset-evaluation").click()')
+    await waitFor(window, 'document.querySelectorAll("[data-evaluation-run-id^=run-smoke-started-]").length === 2')
+    const datasetEvaluationStart = await inspect(window, `window.rollingSkill.smokeControlInvocations()
+        .filter((entry) => entry.method === "evaluations.start").at(-1)`)
+    if (
+        datasetEvaluationStart?.params?.selectionMode !== "dataset" ||
+        datasetEvaluationStart?.params?.caseIds?.length !== 0
+    ) {
+        throw new Error(`Dataset evaluation did not use control: ${JSON.stringify(datasetEvaluationStart)}`)
     }
 
     await inspect(window, 'window.rollingSkill.smokeResetCalibrationCases()')
@@ -433,6 +552,8 @@ async function run() {
     await waitFor(window, '!document.querySelector("#rubric-drawer").classList.contains("visible")')
     await inspect(window, 'document.querySelector("[data-evaluation-view=runs]").click()')
     await waitFor(window, 'document.querySelector("[data-evaluation-run-id=run-smoke]")')
+    await inspect(window, 'document.querySelector("[data-evaluation-run-id=run-smoke]").click()')
+    await waitFor(window, 'document.querySelector("#evaluation-run-detail")?.textContent.includes("1:05")')
     const evaluationDuration = await inspect(
         window,
         'document.querySelector("#evaluation-run-detail")?.textContent',
@@ -1074,7 +1195,7 @@ async function run() {
     await inspect(window, 'document.querySelector("[data-dispatch-raw-case=raw-case-smoke][data-dispatch-mode=current]").click()')
     await waitFor(window, '!document.querySelector("[data-raw-case-id=raw-case-smoke]")')
     const rawCaseTurnText = await inspect(window, 'window.rollingSkill.smokeLastRawCaseTurnText()')
-    if (rawCaseTurnText !== "查一下还没验证的 8 月账单问题") {
+    if (rawCaseTurnText !== "查一下已编辑的 8 月账单问题") {
         throw new Error(`Raw Case was not dispatched verbatim: ${JSON.stringify(rawCaseTurnText)}`)
     }
 
@@ -1140,10 +1261,13 @@ async function run() {
             badcaseFailureLed: true,
             settingsActionsPinned: true,
             rawCaseInbox: true,
+            rawCaseEdit: true,
             rawCaseVerbatimDispatch: true,
             sourceCaseRangeMarker: true,
             managedSkillRepositories: true,
             managedSkillInstallations: true,
+            rendererControlEvaluationStartCancel: true,
+            rendererControlRuntimeList: true,
             managedSkillGridColumns: managedSkillSurface.gridColumns,
             managedSkillPanelRects: managedSkillSurface.panelRects,
             rendererErrors: 0,
