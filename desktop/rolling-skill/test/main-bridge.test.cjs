@@ -955,6 +955,23 @@ describe("desktop main/preload bridge", () => {
             const verifiedReference = await mainReference.currentRuntimeSkillReference(
                 rendererReference,
             )
+            for (const mismatch of [
+                {providerId: "other-provider"},
+                {runtimeId: "deepseek-harness:other"},
+                {workspaceRoot: "/workspace/other"},
+            ]) {
+                const staleReference = {...rendererReference, ...mismatch}
+                await assert.rejects(
+                    mainReference.currentRuntimeSkillReference(staleReference),
+                    /name-only.*active runtime.*workspace|stale.*Skill identity/iu,
+                )
+                await assert.rejects(
+                    mainReference.requireAvailableDatasetSkill({
+                        skillReference: staleReference,
+                    }),
+                    /name-only.*active runtime.*workspace|stale.*Skill identity/iu,
+                )
+            }
             const store = new LocalEvaluationStore(join(directory, "evaluation-store.json"))
             const dataset = store.createDataset({
                 name: "DeepSeek Dataset",
@@ -1098,6 +1115,9 @@ describe("desktop main/preload bridge", () => {
             id: "local-skill-shared",
             name: "shared",
         })
+        state.rawCases.push({skill: {name: "shared"}})
+        assert.deepEqual(plain(context.rawCaseSkillReference("shared")), {name: "shared"})
+        state.rawCases = []
         state.evaluationSkills.push({
             id: "local-skill-other",
             name: "shared",

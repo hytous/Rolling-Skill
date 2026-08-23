@@ -640,6 +640,18 @@ async function currentRuntimeSkillReference(value) {
     const name = requireIdentifier(value?.name, "Skill")
     const nameOnly = value?.evidencePrecision === "name-only" && !value?.path
     const path = nameOnly ? null : requireAbsolutePath(value?.path, "Skill")
+    if (
+        nameOnly &&
+        (
+            value?.providerId !== runtimeDescriptor?.providerId ||
+            value?.runtimeId !== runtimeDescriptor?.runtimeId ||
+            value?.workspaceRoot !== workspaceRoot
+        )
+    ) {
+        throw new Error(
+            "The name-only Skill identity is stale for the active runtime and workspace",
+        )
+    }
     const runtime = await ensureRuntime()
     if (typeof runtime.listSkills !== "function") {
         throw new Error("The active runtime cannot verify installed Skills")

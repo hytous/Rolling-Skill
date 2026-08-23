@@ -2336,7 +2336,10 @@ function rawCaseSkillReference(name) {
         String(skill?.name ?? "").trim().toLocaleLowerCase("en-US") === normalized)
     const ids = new Set(candidates.map((skill) => skill?.id).filter(Boolean))
     const reference = {name: String(name ?? "").trim()}
-    if (ids.size === 1) reference.id = [...ids][0]
+    if (ids.size === 1) {
+        const [id] = ids
+        if (candidates.every((skill) => skill?.id === id)) reference.id = id
+    }
     return reference
 }
 
