@@ -29,7 +29,7 @@ const DIRECTORY = constants.O_DIRECTORY ?? 0
 
 const TERMINAL_JOB_STATUSES = new Set(["succeeded", "failed", "cancelled"])
 const JOB_TRANSITIONS = new Map([
-    ["queued", new Set(["running", "cancelling", "cancelled", "failed"])],
+    ["queued", new Set(["running", "cancelled", "failed"])],
     ["running", new Set([
         "waiting_approval",
         "paused",
@@ -40,8 +40,8 @@ const JOB_TRANSITIONS = new Map([
     ])],
     ["waiting_approval", new Set(["running", "paused", "cancelling", "failed"])],
     ["paused", new Set(["running", "cancelling"])],
-    ["cancelling", new Set(["cancelled", "failed", "needs_recovery"])],
-    ["needs_recovery", new Set(["running", "cancelling", "cancelled", "failed"])],
+    ["cancelling", new Set(["cancelled", "needs_recovery"])],
+    ["needs_recovery", new Set(["running", "cancelled", "failed"])],
 ])
 const ALL_JOB_STATUSES = new Set([...JOB_TRANSITIONS.keys(), ...TERMINAL_JOB_STATUSES])
 const STEP_STATUSES = new Set([
@@ -253,7 +253,10 @@ function normalizeBudget(value) {
         if (entry === null && (field === "maxTokens" || field === "maxReportedCost")) {
             normalized[field] = null
         } else {
-            if (!Number.isFinite(entry) || entry < 0) throw new Error(`Job budget ${field} is invalid`)
+            const valid = field === "maxReportedCost"
+                ? Number.isFinite(entry) && entry >= 0
+                : Number.isSafeInteger(entry) && entry >= 0
+            if (!valid) throw new Error(`Job budget ${field} is invalid`)
             normalized[field] = entry
         }
     }
@@ -437,17 +440,33 @@ function canonicalStepRequest(value) {
 }
 
 function canonicalStepCreationPayload(value) {
+    const fields = ["stepId", "idempotencyKey", "inputDigest", "request"]
+    if (isPlainObject(value) && Object.hasOwn(value, "requestedReservation")) fields.push("requestedReservation")
+    if (isPlainObject(value) && Object.hasOwn(value, "trustedFacts")) fields.push("trustedFacts")
     exactKeys(
         value,
-        ["stepId", "idempotencyKey", "inputDigest", "request"],
+        fields,
         "Operator Step creation event",
     )
-    return {
+    const creation = {
         stepId: canonicalText(value.stepId, "Operator Step event id", 200),
         idempotencyKey: canonicalText(value.idempotencyKey, "Operator Step event idempotency key", 500),
         inputDigest: digest(value.inputDigest, "Operator Step event input digest"),
         request: canonicalStepRequest(value.request),
     }
+    if (Object.hasOwn(value, "requestedReservation")) {
+        creation.requestedReservation = boundedEnvelope(
+            requireObject(value.requestedReservation, "Operator Step requested reservation"),
+            "Operator Step requested reservation",
+        )
+    }
+    if (Object.hasOwn(value, "trustedFacts")) {
+        creation.trustedFacts = boundedEnvelope(
+            requireObject(value.trustedFacts, "Operator Step trusted facts"),
+            "Operator Step trusted facts",
+        )
+    }
+    return creation
 }
 
 function canonicalApproval(value) {
@@ -972,26 +991,100 @@ function publicEvent(event) {
     return copy({...event.payload, id: event.id, jobId: event.jobId, sequence: event.sequence, kind: event.kind, occurredAt: event.occurredAt})
 }
 
+const PATH_BACKENDS = new Map()
+const PATH_BACKEND_FINALIZER = new FinalizationRegistry(({path, reference}) => {
+    if (PATH_BACKENDS.get(path) === reference) PATH_BACKENDS.delete(path)
+})
+
+function acquirePathBackend(path) {
+    const existingReference = PATH_BACKENDS.get(path)
+    let backend = existingReference?.deref()
+    if (!backend) {
+        backend = {
+            state: null,
+            revision: 0,
+            references: 0,
+            coordinationKey: Object.freeze({}),
+            finalizerToken: {},
+        }
+        const reference = new WeakRef(backend)
+        PATH_BACKENDS.set(path, reference)
+        PATH_BACKEND_FINALIZER.register(backend, {path, reference}, backend.finalizerToken)
+    }
+    backend.references += 1
+    return backend
+}
+
+function releasePathBackend(path, backend) {
+    backend.references -= 1
+    if (backend.references !== 0) return
+    const reference = PATH_BACKENDS.get(path)
+    if (reference?.deref() === backend) PATH_BACKENDS.delete(path)
+    PATH_BACKEND_FINALIZER.unregister(backend.finalizerToken)
+}
+
+function nextBackendRevision(backend) {
+    if (!Number.isSafeInteger(backend.revision) || backend.revision >= Number.MAX_SAFE_INTEGER) {
+        throw new Error("Operator Job store revision is exhausted")
+    }
+    return backend.revision + 1
+}
+
 class OperatorJobStore {
     #path
     #artifactDirectory
-    #state
+    #backend
+
+    get #state() {
+        if (this.#backend === null) throw new Error("Operator Job store is closed")
+        return this.#backend.state
+    }
+
+    set #state(value) {
+        if (this.#backend === null) throw new Error("Operator Job store is closed")
+        this.#backend.state = value
+    }
 
     constructor(path) {
         this.#path = resolve(requiredText(path, "Operator Job store path", 8_192))
         this.#artifactDirectory = join(dirname(this.#path), "operator-artifacts")
-        this.#state = null
-        this.load()
+        this.#backend = acquirePathBackend(this.#path)
+        try {
+            if (this.#state === null) this.load()
+        } catch (error) {
+            releasePathBackend(this.#path, this.#backend)
+            this.#backend = null
+            throw error
+        }
     }
 
     get path() {
         return this.#path
     }
 
+    get coordinationKey() {
+        if (this.#backend === null) throw new Error("Operator Job store is closed")
+        return this.#backend.coordinationKey
+    }
+
+    get revision() {
+        if (this.#backend === null) throw new Error("Operator Job store is closed")
+        return this.#backend.revision
+    }
+
+    close() {
+        if (this.#backend === null) return
+        const backend = this.#backend
+        this.#backend = null
+        releasePathBackend(this.#path, backend)
+    }
+
     load() {
         if (!pathEntryExists(this.#path)) {
             this.#state = canonicalState(initialState())
+            const nextRevision = nextBackendRevision(this.#backend)
             this.persist()
+            this.#backend.revision = nextRevision
             return this.read()
         }
         try {
@@ -1005,7 +1098,11 @@ class OperatorJobStore {
             for (const artifact of this.#state.artifacts) {
                 if (artifact.path !== null) this.#readExternalArtifact(artifact)
             }
-            if (migration.migrated) this.persist()
+            if (migration.migrated) {
+                const nextRevision = nextBackendRevision(this.#backend)
+                this.persist()
+                this.#backend.revision = nextRevision
+            }
         } catch (error) {
             throw new Error(`Could not read Operator Job store: ${error.message}`)
         }
@@ -1022,14 +1119,18 @@ class OperatorJobStore {
 
     #mutate(callback) {
         const previous = this.#state
+        const previousRevision = this.#backend.revision
+        const nextRevision = nextBackendRevision(this.#backend)
         this.#state = copy(previous)
         try {
             const result = callback(this.#state)
             this.#state = canonicalState(this.#state)
             this.persist()
+            this.#backend.revision = nextRevision
             return copy(result)
         } catch (error) {
             this.#state = previous
+            this.#backend.revision = previousRevision
             throw error
         }
     }
@@ -1178,6 +1279,18 @@ class OperatorJobStore {
             idempotencyKey,
             inputDigest,
             request: frozenRequest,
+            ...(Object.hasOwn(stepInput, "requestedReservation") ? {
+                requestedReservation: boundedEnvelope(
+                    requireObject(stepInput.requestedReservation, "Operator Step requested reservation"),
+                    "Operator Step requested reservation",
+                ),
+            } : {}),
+            ...(Object.hasOwn(stepInput, "trustedFacts") ? {
+                trustedFacts: boundedEnvelope(
+                    requireObject(stepInput.trustedFacts, "Operator Step trusted facts"),
+                    "Operator Step trusted facts",
+                ),
+            } : {}),
         }, "Operator Step creation event")
         return this.#mutate((state) => {
             const job = state.jobs.find((candidate) => candidate.id === step.jobId)
@@ -1331,7 +1444,7 @@ class OperatorJobStore {
             const job = state.jobs.find((candidate) => candidate.id === jobId)
             if (!job) throw new Error("Operator Job not found")
             if (TERMINAL_JOB_STATUSES.has(job.status) || job.status === "cancelling") return job
-            if (!JOB_TRANSITIONS.get(job.status)?.has("cancelling")) {
+            if (!["queued", "running", "waiting_approval", "paused", "needs_recovery"].includes(job.status)) {
                 throw new Error(`Operator Job cannot begin cancellation while ${job.status}`)
             }
             const now = nowTimestamp()
@@ -1713,7 +1826,9 @@ class OperatorJobStore {
                 })
             }
         }
+        const nextRevision = nextBackendRevision(this.#backend)
         this.persist()
+        this.#backend.revision = nextRevision
     }
 }
 

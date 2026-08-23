@@ -114,6 +114,7 @@ describe("Operator Job engine", () => {
             params: {datasetId: "dataset-2"},
         }), /idempotency.*different|conflict/iu)
 
+        store.close()
         const restartedStore = new OperatorJobStore(path)
         const restarted = new OperatorJobEngine({
             store: restartedStore,
@@ -122,6 +123,79 @@ describe("Operator Job engine", () => {
         const afterRestart = await restarted.execute(parent.id, request)
         assert.deepEqual(afterRestart.result, first.result)
         assert.equal(calls, 1)
+    })
+
+    it("coordinates idempotency and Job queues across Store instances for the same path", async () => {
+        const {path, store, session} = fixture()
+        const job = createJob(store, session.id)
+        const secondStore = new OperatorJobStore(path)
+        let calls = 0
+        let releaseHandler
+        let markStarted
+        const started = new Promise((resolve) => { markStarted = resolve })
+        const handlerGate = new Promise((resolve) => { releaseHandler = resolve })
+        const handler = async () => {
+            calls += 1
+            markStarted()
+            await handlerGate
+            return {ok: true}
+        }
+        const first = new OperatorJobEngine({store, handlers: {"datasets.read": handler}})
+        const second = new OperatorJobEngine({store: secondStore, handlers: {"datasets.read": handler}})
+        const request = {
+            method: "datasets.read",
+            params: {datasetId: "dataset-1"},
+            idempotencyKey: "multi-store-idempotency",
+        }
+
+        const firstExecution = first.execute(job.id, request)
+        await started
+        const secondExecution = second.execute(job.id, request)
+        releaseHandler()
+        const results = await Promise.all([firstExecution, secondExecution])
+
+        assert.equal(calls, 1)
+        assert.equal(results.every((result) => result.status === "succeeded"), true)
+        assert.equal(store.listSteps({jobId: job.id}).length, 1)
+        assert.equal(secondStore.listSteps({jobId: job.id}).length, 1)
+    })
+
+    it("serializes budget check-and-reserve across Store instances and re-enters approval on conflict", async () => {
+        const {path, store, session} = fixture()
+        const job = createJob(store, session.id, {budget: budget({maxRuntimeTurns: 1})})
+        const secondStore = new OperatorJobStore(path)
+        let calls = 0
+        let releaseHandler
+        let markStarted
+        const started = new Promise((resolve) => { markStarted = resolve })
+        const handlerGate = new Promise((resolve) => { releaseHandler = resolve })
+        const handler = async () => {
+            calls += 1
+            markStarted()
+            await handlerGate
+            return {accepted: true}
+        }
+        const first = new OperatorJobEngine({store, handlers: {"raw_cases.dispatch": handler}})
+        const second = new OperatorJobEngine({store: secondStore, handlers: {"raw_cases.dispatch": handler}})
+
+        const firstExecution = first.execute(job.id, {
+            method: "raw_cases.dispatch",
+            params: {id: "case-1"},
+            idempotencyKey: "budget-race-1",
+        })
+        await started
+        const secondExecution = second.execute(job.id, {
+            method: "raw_cases.dispatch",
+            params: {id: "case-2"},
+            idempotencyKey: "budget-race-2",
+        })
+        releaseHandler()
+        const results = await Promise.all([firstExecution, secondExecution])
+
+        assert.equal(calls, 1)
+        assert.deepEqual(results.map((result) => result.status), ["succeeded", "waiting_approval"])
+        assert.equal(store.listEvents(job.id).filter((event) => event.kind === "operator_budget_reserved").length, 1)
+        assert.equal(store.getApproval(results[1].approvalId).action, "budget.expand")
     })
 
     it("persists a frozen approval request and executes approve, reject, and expiry decisions", async () => {
@@ -306,6 +380,48 @@ describe("Operator Job engine", () => {
         assert.equal(calls, 1)
     })
 
+    it("matches an approval to the latest stable gate and never recreates a rejected later gate", async () => {
+        const {path, store, session} = fixture()
+        const job = createJob(store, session.id)
+        let requestedScope = {organizationId: "organization-1", revision: 1}
+        const request = {
+            method: "skills.release",
+            params: {skillId: "skill-1", versionId: "candidate-1", versionLabel: "v1.1.0"},
+            idempotencyKey: "stable-gate-release",
+        }
+        const decider = () => ({
+            decision: "approval_required",
+            action: "organization.release",
+            reason: "organization_review",
+            requestedScope,
+        })
+        const firstEngine = new OperatorJobEngine({store, approvalDecider: decider})
+        const mandatory = await firstEngine.execute(job.id, request)
+        const custom = await firstEngine.resolveApproval(mandatory.approvalId, {
+            decision: "approve",
+            scope: "action",
+        })
+        store.resolveApproval(custom.approvalId, {decision: "approve", scope: "action"})
+
+        requestedScope = {organizationId: "organization-1", revision: 2}
+        store.close()
+        const restartedStore = new OperatorJobStore(path)
+        const restarted = new OperatorJobEngine({store: restartedStore, approvalDecider: decider})
+        const latest = await restarted.execute(job.id, request)
+        assert.equal(latest.status, "waiting_approval")
+        assert.deepEqual(restartedStore.getApproval(latest.approvalId).scope, requestedScope)
+        restartedStore.resolveApproval(latest.approvalId, {decision: "reject", scope: "action"})
+        assert.equal(restartedStore.listApprovals(job.id).length, 3)
+        restartedStore.close()
+
+        const afterCrashStore = new OperatorJobStore(path)
+        const afterCrash = new OperatorJobEngine({store: afterCrashStore, approvalDecider: decider})
+        const rejected = await afterCrash.execute(job.id, request)
+        assert.equal(rejected.status, "failed")
+        assert.equal(rejected.error.code, "APPROVAL_REJECTED")
+        assert.equal(afterCrashStore.listApprovals(job.id).length, 3)
+    })
+
     it("resolves a durable mutation approval after restart without replaying its idempotency key", async () => {
         const {path, store, session} = fixture()
         const job = createJob(store, session.id)
@@ -322,6 +438,7 @@ describe("Operator Job engine", () => {
         const waiting = await firstEngine.execute(job.id, request)
         assert.equal((await firstEngine.execute(job.id, request)).approvalId, waiting.approvalId)
 
+        store.close()
         const restartedStore = new OperatorJobStore(path)
         const restartedEngine = new OperatorJobEngine({
             store: restartedStore,
@@ -333,6 +450,7 @@ describe("Operator Job engine", () => {
         })).status, "succeeded")
         assert.equal(releaseCalls, 1)
 
+        restartedStore.close()
         const secondRestart = new OperatorJobStore(path)
         const finalEngine = new OperatorJobEngine({
             store: secondRestart,
@@ -359,6 +477,7 @@ describe("Operator Job engine", () => {
         })
 
         let releaseCalls = 0
+        approvedFixture.store.close()
         const approvedStore = new OperatorJobStore(approvedFixture.path)
         const resumed = new OperatorJobEngine({
             store: approvedStore,
@@ -382,6 +501,7 @@ describe("Operator Job engine", () => {
             scope: "action",
             decidedBy: "user-1",
         })
+        rejectedFixture.store.close()
         const rejectedStore = new OperatorJobStore(rejectedFixture.path)
         const rejectedResumed = new OperatorJobEngine({store: rejectedStore})
         const rejected = await rejectedResumed.execute(rejectedJob.id, rejectedRequest)
@@ -404,6 +524,7 @@ describe("Operator Job engine", () => {
             if (phase !== "pending") step = store.transitionStep(step.id, "waiting_approval")
             if (phase === "job_waiting") store.transitionJob(job.id, "waiting_approval")
 
+            store.close()
             const restartedStore = new OperatorJobStore(path)
             const restartedEngine = new OperatorJobEngine({store: restartedStore})
             const result = await restartedEngine.execute(job.id, {
@@ -553,6 +674,54 @@ describe("Operator Job engine", () => {
         )
     })
 
+    it("freezes trusted Dataset selection facts before Step creation and never resolves them again", async () => {
+        const {store, session} = fixture()
+        const job = createJob(store, session.id, {budget: budget({
+            maxEvaluations: 0,
+            maxTargetExecutions: 0,
+            maxJudgeExecutions: 0,
+        })})
+        let caseCount = 3
+        let resolverCalls = 0
+        let handlerCalls = 0
+        const engine = new OperatorJobEngine({
+            store,
+            resolveEvaluationCaseCount: async () => {
+                resolverCalls += 1
+                return caseCount
+            },
+            handlers: {"evaluations.start": async () => { handlerCalls += 1; return {runId: "run-frozen"} }},
+        })
+        const request = {
+            method: "evaluations.start",
+            params: {
+                datasetId: "dataset-1",
+                caseIds: [],
+                selectionMode: "dataset",
+                runtimeConfigurations: [{runtimeId: "runtime-1"}],
+                judgeConfiguration: {runtimeId: "judge-1"},
+            },
+            idempotencyKey: "frozen-dataset-selection",
+        }
+        const waiting = await engine.execute(job.id, request)
+        const creation = store.listEvents(job.id).find((event) => event.kind === "operator_step_created")
+        assert.deepEqual(creation.request.reservation, {
+            evaluations: 1,
+            targetExecutions: 3,
+            judgeExecutions: 3,
+        })
+        assert.deepEqual(creation.trustedFacts, {evaluationCaseCount: 3})
+
+        caseCount = 50
+        const result = await engine.resolveApproval(waiting.approvalId, {
+            decision: "approve",
+            scope: "action",
+        })
+        assert.equal(result.status, "succeeded")
+        assert.equal(resolverCalls, 1)
+        assert.equal(handlerCalls, 1)
+    })
+
     it("enforces duration independently of provider telemetry", async () => {
         const {store, session} = fixture()
         const job = createJob(store, session.id, {budget: budget({maxDurationMs: 10})})
@@ -595,6 +764,36 @@ describe("Operator Job engine", () => {
         assert.equal(result.status, "failed")
         assert.equal(result.error.code, "BUDGET_DURATION_EXCEEDED")
         assert.equal(aborted, true)
+    })
+
+    it("segments a safe-integer duration without relying on Node's one-millisecond overflow timer", async () => {
+        const {store, session} = fixture()
+        const maximumTimerDelay = 2_147_483_647
+        const job = createJob(store, session.id, {
+            budget: budget({maxDurationMs: maximumTimerDelay + 10_000}),
+        })
+        const observedDelays = []
+        const nativeSetTimeout = global.setTimeout
+        global.setTimeout = (callback, delay, ...args) => {
+            observedDelays.push(delay)
+            return nativeSetTimeout(callback, Math.min(delay, 25), ...args)
+        }
+        try {
+            const engine = new OperatorJobEngine({
+                store,
+                handlers: {"datasets.read": async () => ({ok: true})},
+            })
+            assert.equal((await engine.execute(job.id, {
+                method: "datasets.read",
+                params: {datasetId: "dataset-1"},
+                idempotencyKey: "large-duration",
+            })).status, "succeeded")
+        } finally {
+            global.setTimeout = nativeSetTimeout
+        }
+        assert.equal(observedDelays.some((delay) => delay > maximumTimerDelay), false)
+        assert.equal(observedDelays.includes(maximumTimerDelay), true)
+        assert.equal(observedDelays.includes(1), false)
     })
 
     it("uses fixed precision for reported cost and rejects sparse request arrays", async () => {
@@ -707,6 +906,59 @@ describe("Operator Job engine", () => {
         assert.equal(store.listSteps({jobId: job.id})[0].status, "cancelled")
     })
 
+    it("cancels without waiting for hanging trusted pre-invoke work or a signal-ignoring handler", async () => {
+        for (const phase of ["case_resolver", "telemetry", "decider", "handler"]) {
+            const {store, session} = fixture()
+            const job = createJob(store, session.id, {objective: phase})
+            let markStarted
+            const started = new Promise((resolve) => { markStarted = resolve })
+            const hangs = () => {
+                markStarted()
+                return new Promise(() => {})
+            }
+            const options = {store, externalAwaitTimeoutMs: 5_000}
+            let request = {
+                method: "datasets.read",
+                params: {datasetId: "dataset-1"},
+                idempotencyKey: `hanging-${phase}`,
+            }
+            if (phase === "case_resolver") {
+                options.resolveEvaluationCaseCount = hangs
+                request = {
+                    method: "evaluations.start",
+                    params: {
+                        datasetId: "dataset-1",
+                        caseIds: [],
+                        selectionMode: "dataset",
+                        runtimeConfigurations: [{runtimeId: "runtime-1"}],
+                        judgeConfiguration: {runtimeId: "judge-1"},
+                    },
+                    idempotencyKey: `hanging-${phase}`,
+                }
+            } else if (phase === "telemetry") {
+                options.runtimeTelemetry = hangs
+            } else if (phase === "decider") {
+                options.approvalDecider = hangs
+            } else {
+                options.handlers = {"datasets.read": hangs}
+            }
+            const engine = new OperatorJobEngine(options)
+            const execution = engine.execute(job.id, request)
+            await started
+            const cancellation = engine.cancel(job.id)
+            const results = await Promise.race([
+                Promise.all([execution, cancellation]),
+                new Promise((_resolve, reject) => setTimeout(
+                    () => reject(new Error(`Cancellation waited for hanging ${phase}`)),
+                    500,
+                )),
+            ])
+            assert.equal(results[0].status, "cancelled")
+            assert.equal(results[1].status, "cancelled")
+            assert.equal(store.getJob(job.id).status, "cancelled")
+        }
+    })
+
     it("cancels a 15,000-Job tree iteratively and child-first", async () => {
         const {path, store, session} = fixture()
         createJob(store, session.id)
@@ -723,6 +975,7 @@ describe("Operator Job engine", () => {
             }
         })
         writeFileSync(path, `${JSON.stringify(registry)}\n`)
+        store.close()
         const restarted = new OperatorJobStore(path)
         let completionOrder = null
         const cancelJobTree = restarted.cancelJobTree.bind(restarted)
@@ -769,6 +1022,7 @@ describe("Operator Job engine", () => {
             "running",
         )
         restartFixture.store.transitionJob(restarting.id, "cancelling")
+        restartFixture.store.close()
         const recoveredStore = new OperatorJobStore(restartFixture.path)
         let retries = 0
         const recoveryEngine = new OperatorJobEngine({
@@ -836,6 +1090,7 @@ describe("Operator Job engine", () => {
             params: {datasetId: "dataset-1"},
             idempotencyKey: "reconcile-claim",
         })
+        store.close()
         const restarted = new OperatorJobStore(path)
         let calls = 0
         let releaseHandler
@@ -877,6 +1132,7 @@ describe("Operator Job engine", () => {
             return {label, job, step}
         })
 
+        store.close()
         const restarted = new OperatorJobStore(path)
         let readRetries = 0
         let deleteRetries = 0
@@ -952,6 +1208,7 @@ describe("Operator Job engine", () => {
             },
             idempotencyKey: "installation-mismatch",
         })
+        store.close()
         const restarted = new OperatorJobStore(path)
         const engine = new OperatorJobEngine({
             store: restarted,
@@ -959,9 +1216,15 @@ describe("Operator Job engine", () => {
                 installation: async () => ({
                     status: "installed",
                     installationId: "installation-1",
-                    runtimeId: "runtime-other",
+                    runtimeId: "runtime-1",
                     skillId: "skill-1",
                     versionId: "version-1",
+                    result: {
+                        installationId: "installation-1",
+                        runtimeId: "runtime-other",
+                        skillId: "skill-1",
+                        versionId: "version-1",
+                    },
                 }),
             },
         })

@@ -102,11 +102,35 @@ function rewriteRegistry(path, mutate) {
 function assertRegistryCorruptionRejected(setup, mutate, pattern = /invalid|unsupported|unknown/iu) {
     const {path, store} = fixture()
     const context = setup(store)
+    store.close()
     rewriteRegistry(path, (registry) => mutate(registry, context))
     assert.throws(() => new OperatorJobStore(path), pattern)
 }
 
 describe("Operator Job store", () => {
+    it("coordinates every live Store for one path without stale snapshot overwrite", () => {
+        const {path, store: first} = fixture()
+        const second = new OperatorJobStore(path)
+        const initialRevision = first.revision
+        const session = createSession(first)
+
+        assert.equal(first.coordinationKey, second.coordinationKey)
+        assert.deepEqual(second.getSession(session.id), session)
+        assert.equal(first.revision, second.revision)
+        assert.ok(first.revision > initialRevision)
+
+        const job = createJob(second, session.id)
+        assert.deepEqual(first.getJob(job.id), job)
+        first.close()
+        assert.throws(() => first.listJobs(), /closed/iu)
+        assert.equal(second.getJob(job.id).id, job.id)
+        second.close()
+
+        const restarted = new OperatorJobStore(path)
+        assert.equal(restarted.getJob(job.id).id, job.id)
+        restarted.close()
+    })
+
     it("persists immutable Steps before execution with unique per-Job idempotency", () => {
         const {path, store} = fixture()
         const session = createSession(store)
@@ -166,6 +190,7 @@ describe("Operator Job store", () => {
         assert.ok(succeeded.completedAt)
         assert.throws(() => store.transitionStep(step.id, "running"), /terminal/iu)
 
+        store.close()
         const restarted = new OperatorJobStore(path)
         assert.deepEqual(restarted.getStep(step.id), succeeded)
         assert.deepEqual(restarted.listSteps({jobId: job.id}), [succeeded])
@@ -372,6 +397,7 @@ describe("Operator Job store", () => {
             /immutable|unsupported/iu,
         )
 
+        store.close()
         const restarted = new OperatorJobStore(path)
         assert.equal(restarted.getSession(session.id).createdAt, session.createdAt)
         assert.equal(restarted.getJob(job.id).createdAt, job.createdAt)
@@ -382,7 +408,7 @@ describe("Operator Job store", () => {
         const {store} = fixture()
         const session = createSession(store)
         const transitions = new Map([
-            ["queued", ["running", "cancelling", "cancelled", "failed"]],
+            ["queued", ["running", "cancelled", "failed"]],
             ["running", [
                 "waiting_approval",
                 "paused",
@@ -393,8 +419,8 @@ describe("Operator Job store", () => {
             ]],
             ["waiting_approval", ["running", "paused", "cancelling", "failed"]],
             ["paused", ["running", "cancelling"]],
-            ["cancelling", ["cancelled", "failed", "needs_recovery"]],
-            ["needs_recovery", ["running", "cancelling", "cancelled", "failed"]],
+            ["cancelling", ["cancelled", "needs_recovery"]],
+            ["needs_recovery", ["running", "cancelled", "failed"]],
         ])
 
         for (const [from, targets] of transitions) {
@@ -406,6 +432,7 @@ describe("Operator Job store", () => {
         }
 
         const invalid = createJob(store, session.id)
+        assert.throws(() => store.transitionJob(invalid.id, "cancelling"), /transition/iu)
         assert.throws(() => store.transitionJob(invalid.id, "succeeded"), /transition/iu)
         assert.throws(() => store.transitionJob(invalid.id, "queued"), /transition/iu)
         store.transitionJob(invalid.id, "cancelled")
@@ -414,6 +441,15 @@ describe("Operator Job store", () => {
             () => store.appendEvent(invalid.id, {kind: "late_event"}),
             /terminal/iu,
         )
+
+        const recovery = createJob(store, session.id)
+        store.transitionJob(recovery.id, "running")
+        store.transitionJob(recovery.id, "needs_recovery")
+        assert.throws(() => store.transitionJob(recovery.id, "cancelling"), /transition/iu)
+        assert.throws(() => createJob(store, session.id, {
+            objective: "unsafe duration",
+            budget: {...budget(), maxDurationMs: Number.MAX_SAFE_INTEGER + 1},
+        }), /duration|budget|safe|integer/iu)
     })
 
     it("links parent and child Jobs and assigns immutable per-Job event sequences", () => {
@@ -452,6 +488,7 @@ describe("Operator Job store", () => {
             /parent.*session|same session/iu,
         )
 
+        store.close()
         const restarted = new OperatorJobStore(path)
         assert.equal(restarted.listEvents(parent.id).at(-1).kind, "recovery_required")
         assert.equal(
@@ -484,6 +521,7 @@ describe("Operator Job store", () => {
             occurredAt,
         }))
         persisted.jobs[0].eventSequence = 10_000
+        store.close()
         writeFileSync(path, `${JSON.stringify(persisted)}\n`, {mode: 0o600})
 
         const atLimit = new OperatorJobStore(path)
@@ -546,6 +584,7 @@ describe("Operator Job store", () => {
             /artifact.*256|artifact.*large/iu,
         )
 
+        store.close()
         const restarted = new OperatorJobStore(path)
         assert.deepEqual(restarted.readArtifactBody(inline.id), Buffer.from(inlineBody))
         assert.deepEqual(restarted.readArtifactBody(external.id), externalBody)
@@ -630,6 +669,7 @@ describe("Operator Job store", () => {
             ["message", "activity"],
         )
 
+        store.close()
         const restarted = new OperatorJobStore(path)
         assert.equal(restarted.getApproval(approval.id).status, "approved")
         assert.equal(restarted.getSession(session.id).transcriptSequence, 2)
@@ -673,6 +713,7 @@ describe("Operator Job store", () => {
             /terminal/iu,
         )
 
+        store.close()
         const restarted = new OperatorJobStore(path)
         assert.equal(restarted.getJob(running.id).status, "needs_recovery")
         assert.equal(restarted.getJob(cancelling.id).status, "needs_recovery")
@@ -684,6 +725,7 @@ describe("Operator Job store", () => {
             "recovery_required",
         )
 
+        restarted.close()
         const restartedAgain = new OperatorJobStore(path)
         assert.equal(restartedAgain.getJob(running.id).status, "needs_recovery")
         assert.equal(restartedAgain.listEvents(running.id).length, 1)
@@ -724,6 +766,7 @@ describe("Operator Job store", () => {
         symlinkSync(outside, artifact.path)
 
         assert.throws(() => store.readArtifactBody(artifact.id), /symbolic|regular|nofollow/iu)
+        store.close()
         let loadError = null
         try {
             new OperatorJobStore(path)
@@ -746,12 +789,14 @@ describe("Operator Job store", () => {
         })
         truncateSync(artifact.path, 64 * 1024 * 1024 + 1)
 
+        store.close()
         assert.throws(() => new OperatorJobStore(path), /artifact.*64|artifact.*byte limit/iu)
     })
 
     it("rejects unknown persisted fields and does not expose mutable state", () => {
         const {path, store} = fixture()
         assert.equal(store.state, undefined)
+        store.close()
         rewriteRegistry(path, (registry) => {
             registry.unexpected = true
         })
@@ -899,6 +944,7 @@ describe("Operator Job store", () => {
                     : [`deep-${String(index + 1).padStart(5, "0")}`],
             }
         })
+        store.close()
         writeFileSync(path, `${JSON.stringify(registry)}\n`)
 
         const restarted = new OperatorJobStore(path)
@@ -968,6 +1014,7 @@ describe("Operator Job store", () => {
         const eventSession = createSession(eventFixture.store)
         const eventJob = createJob(eventFixture.store, eventSession.id)
         eventFixture.store.appendEvent(eventJob.id, {kind: "observation", detail: "trusted"})
+        eventFixture.store.close()
         rewriteRegistry(eventFixture.path, (registry) => {
             registry.events[0].payload = null
             registry.events[0].unexpected = true
@@ -983,6 +1030,7 @@ describe("Operator Job store", () => {
             kind: "message",
             text: "trusted",
         })
+        transcriptFixture.store.close()
         rewriteRegistry(transcriptFixture.path, (registry) => {
             registry.sessions[0].transcript[0].unexpected = true
         })
@@ -1110,6 +1158,7 @@ describe("Operator Job store", () => {
             expiresAt: "2099-01-01T00:00:00.000Z",
         })
         store.transitionJob(job.id, "failed", {error: {code: "STOPPED"}})
+        store.close()
         rewriteRegistry(path, (registry) => {
             Object.assign(registry.approvals[0], {
                 status: "pending",
@@ -1143,10 +1192,12 @@ describe("Operator Job store", () => {
             return {...context, job}
         }
         const valid = createPending()
+        valid.store.close()
         assert.equal(new OperatorJobStore(valid.path).getJob(valid.job.id).status, "waiting_approval")
 
         for (const status of ["queued", "running", "paused", "needs_recovery", "cancelling"]) {
-            const {path} = createPending()
+            const {path, store} = createPending()
+            store.close()
             rewriteRegistry(path, (registry) => {
                 registry.jobs[0].status = status
                 if (status === "queued") registry.jobs[0].startedAt = null
@@ -1162,6 +1213,7 @@ describe("Operator Job store", () => {
     it("rejects a symlinked registry instead of following it", () => {
         const sourceFixture = fixture()
         const linkFixture = fixture()
+        linkFixture.store.close()
         rmSync(linkFixture.path, {force: true})
         symlinkSync(sourceFixture.path, linkFixture.path)
 
