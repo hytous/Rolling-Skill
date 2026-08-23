@@ -1,4 +1,7 @@
-const {operatorApprovalRequirement} = require("../control-plane/policy.cjs")
+const {
+    operatorApprovalRequirement,
+    operatorMethodBudgetMinimum,
+} = require("../control-plane/policy.cjs")
 
 const TERMINAL_JOB_STATUSES = new Set(["succeeded", "failed", "cancelled"])
 const TERMINAL_STEP_STATUSES = new Set(["succeeded", "failed", "cancelled"])
@@ -27,6 +30,7 @@ const RESERVATION_LIMITS = Object.freeze({
     tokens: "maxTokens",
     reportedCost: "maxReportedCost",
 })
+const COST_SCALE = 1_000_000
 
 function isPlainObject(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false
@@ -56,6 +60,10 @@ function cloneJson(value, label = "Value", seen = new Set()) {
     seen.add(value)
     let cloned
     if (Array.isArray(value)) {
+        const keys = Object.keys(value)
+        if (keys.length !== value.length || keys.some((key, index) => key !== String(index))) {
+            throw new Error(`${label} must be a dense array`)
+        }
         cloned = value.map((entry) => cloneJson(entry, label, seen))
     } else {
         requireObject(value, label)
@@ -196,16 +204,29 @@ function isDeleteMethod(method) {
     return /\.(?:delete|delete_case)$/u.test(method)
 }
 
+function safeProduct(left, right, label) {
+    const value = left * right
+    if (!Number.isSafeInteger(value)) throw new Error(`${label} is too large`)
+    return value
+}
+
+function costUnits(value) {
+    return Math.round(value * COST_SCALE)
+}
+
+const ACTIVE_STEPS_BY_STORE = new WeakMap()
+
 class OperatorJobEngine {
     #store
     #handlers
     #approvalDecider
     #reconcilers
     #runtimeTelemetry
+    #resolveEvaluationCaseCount
     #now
     #approvalTtlMs
     #jobQueues = new Map()
-    #activeSteps = new Map()
+    #activeSteps
 
     constructor({
         store,
@@ -213,6 +234,7 @@ class OperatorJobEngine {
         approvalDecider = null,
         reconcilers = {},
         runtimeTelemetry = [],
+        resolveEvaluationCaseCount = null,
         now = Date.now,
         approvalTtlMs = 15 * 60 * 1_000,
     } = {}) {
@@ -226,6 +248,9 @@ class OperatorJobEngine {
             throw new Error("Operator approval decider must be a function")
         }
         if (typeof runtimeTelemetry !== "function") normalizeTelemetry(runtimeTelemetry)
+        if (resolveEvaluationCaseCount !== null && typeof resolveEvaluationCaseCount !== "function") {
+            throw new Error("Operator evaluation case resolver must be a function")
+        }
         if (typeof now !== "function" || !Number.isSafeInteger(approvalTtlMs) || approvalTtlMs <= 0) {
             throw new Error("Operator engine clock or approval TTL is invalid")
         }
@@ -234,28 +259,80 @@ class OperatorJobEngine {
         this.#approvalDecider = approvalDecider
         this.#reconcilers = {...reconcilers}
         this.#runtimeTelemetry = runtimeTelemetry
+        this.#resolveEvaluationCaseCount = resolveEvaluationCaseCount
         this.#now = now
         this.#approvalTtlMs = approvalTtlMs
+        if (!ACTIVE_STEPS_BY_STORE.has(store)) ACTIVE_STEPS_BY_STORE.set(store, new Map())
+        this.#activeSteps = ACTIVE_STEPS_BY_STORE.get(store)
     }
 
     scheduleChild(parentJobId, input = {}) {
-        const parent = this.#store.getJob(parentJobId)
         const child = requireObject(input, "Child Operator Job")
-        return this.#store.createJob({
-            sessionId: parent.sessionId,
-            parentJobId: parent.id,
-            type: child.type,
-            objective: child.objective,
-            budget: child.budget,
+        return this.#enqueue(parentJobId, () => {
+            const parent = this.#store.getJob(parentJobId)
+            return this.#store.createJob({
+                sessionId: parent.sessionId,
+                parentJobId: parent.id,
+                type: child.type,
+                objective: child.objective,
+                budget: child.budget,
+            })
         })
     }
 
     execute(jobId, input = {}) {
-        const request = requestForExecution(input)
-        return this.#enqueue(jobId, () => this.#execute(jobId, request))
+        return this.#enqueue(jobId, () => this.#execute(jobId, requestForExecution(input)))
+    }
+
+    async #effectiveRequest(request) {
+        const minimum = {...operatorMethodBudgetMinimum(request.method)}
+        if (request.method === "evaluations.start") {
+            const params = request.params
+            let caseCount = 0
+            if (params.selectionMode === "selected") {
+                if (!Array.isArray(params.caseIds) || params.caseIds.length === 0) {
+                    throw Object.assign(new Error("Selected evaluation cases are required"), {
+                        code: "BUDGET_SELECTION_UNRESOLVED",
+                    })
+                }
+                caseCount = params.caseIds.length
+            } else if (params.selectionMode === "dataset") {
+                if (this.#resolveEvaluationCaseCount === null) {
+                    throw Object.assign(new Error("Dataset evaluation size must be resolved before execution"), {
+                        code: "BUDGET_SELECTION_UNRESOLVED",
+                    })
+                }
+                caseCount = await this.#resolveEvaluationCaseCount(cloneJson(params))
+                if (!Number.isSafeInteger(caseCount) || caseCount <= 0) {
+                    throw Object.assign(new Error("Dataset evaluation size is invalid"), {
+                        code: "BUDGET_SELECTION_UNRESOLVED",
+                    })
+                }
+            }
+            if (caseCount > 0) {
+                if (!Array.isArray(params.runtimeConfigurations) || params.runtimeConfigurations.length === 0) {
+                    throw Object.assign(new Error("Evaluation Runtime selection is required"), {
+                        code: "BUDGET_SELECTION_UNRESOLVED",
+                    })
+                }
+                const executions = safeProduct(
+                    caseCount,
+                    params.runtimeConfigurations.length,
+                    "Operator evaluation execution reservation",
+                )
+                minimum.targetExecutions = executions
+                if (isPlainObject(params.judgeConfiguration)) minimum.judgeExecutions = executions
+            }
+        }
+        const reservation = {...request.reservation}
+        for (const [field, amount] of Object.entries(minimum)) {
+            reservation[field] = Math.max(reservation[field] ?? 0, amount)
+        }
+        return {...request, reservation}
     }
 
     async #execute(jobId, request) {
+        request = await this.#effectiveRequest(request)
         let job = this.#store.getJob(jobId)
         const existing = this.#store.listSteps({jobId}).find((step) => (
             step.idempotencyKey === request.idempotencyKey
@@ -273,28 +350,7 @@ class OperatorJobEngine {
             idempotencyKey: request.idempotencyKey,
         })
         const telemetry = await this.#telemetry(request)
-        const budget = this.#budgetAssessment(
-            job,
-            request.reservation,
-            telemetry,
-            involvedRuntimeIds(request.params),
-        )
-        if (!budget.preflight.valid) {
-            const error = {
-                code: "BUDGET_TELEMETRY_UNSUPPORTED",
-                message: "Token or reported-cost budget requires telemetry from every involved Runtime",
-            }
-            this.#store.transitionStep(step.id, "failed", {error})
-            throw Object.assign(new Error(error.message), {code: error.code})
-        }
-        const policyDecision = budget.overages.length > 0
-            ? {
-                decision: "approval_required",
-                reason: "budget_expansion",
-                action: "budget.expand",
-                requestedScope: {budget: this.#requestedBudgetScope(job, request.reservation)},
-            }
-            : await this.#approvalDecision(request, job)
+        const policyDecision = await this.#preInvokeDecision(job, step, request, telemetry)
         if (policyDecision?.decision === "deny") {
             const error = {
                 code: policyDecision.code ?? "OPERATOR_POLICY_DENIED",
@@ -346,34 +402,14 @@ class OperatorJobEngine {
     }
 
     async #resumePreInvokeStep(step, request) {
+        request = await this.#effectiveRequest(request)
         let job = this.#store.getJob(step.jobId)
         if (job.status === "needs_recovery") job = this.#store.transitionJob(job.id, "running")
         if (job.status !== "running" && job.status !== "waiting_approval") {
             return {status: "needs_recovery", jobId: step.jobId, stepId: step.id}
         }
         const telemetry = await this.#telemetry(request)
-        const budget = this.#budgetAssessment(
-            job,
-            request.reservation,
-            telemetry,
-            involvedRuntimeIds(request.params),
-        )
-        if (!budget.preflight.valid) {
-            if (job.status === "waiting_approval") this.#store.transitionJob(job.id, "running")
-            const failed = this.#store.transitionStep(step.id, "failed", {error: {
-                code: "BUDGET_TELEMETRY_UNSUPPORTED",
-                message: "Token or reported-cost budget requires telemetry from every involved Runtime",
-            }})
-            return this.#failedResult(failed)
-        }
-        const decision = budget.overages.length > 0
-            ? {
-                decision: "approval_required",
-                reason: "budget_expansion",
-                action: "budget.expand",
-                requestedScope: {budget: this.#requestedBudgetScope(job, request.reservation)},
-            }
-            : await this.#approvalDecision(request, job)
+        const decision = await this.#preInvokeDecision(job, step, request, telemetry)
         if (decision?.decision === "approval_required") {
             return this.#createApproval(job, step, request, decision)
         }
@@ -405,13 +441,7 @@ class OperatorJobEngine {
             throw new Error("Resolved Operator approval status is invalid")
         }
         const request = requestForExecution(approval.proposedMutation)
-        const running = this.#store.transitionStep(step.id, "running")
-        const telemetry = await this.#telemetry(request)
-        const result = await this.#runStep(job, running, request, {
-            telemetry,
-            alreadyRunning: true,
-            allowBudgetExpansion: approval.risk === "budget_expansion",
-        })
+        const result = await this.#resumePreInvokeStep(step, request)
         this.#restoreJobAfterRecovery(step.jobId)
         return result
     }
@@ -423,7 +453,7 @@ class OperatorJobEngine {
         return unknown ? job : this.#store.transitionJob(job.id, "running")
     }
 
-    async #approvalDecision(request, job) {
+    async #customApprovalDecision(request, job) {
         if (this.#approvalDecider) {
             return this.#approvalDecider({
                 method: request.method,
@@ -431,7 +461,56 @@ class OperatorJobEngine {
                 job: cloneJson(job),
             })
         }
-        return operatorApprovalRequirement(request.method, request.params) ?? {decision: "allow"}
+        return {decision: "allow"}
+    }
+
+    #hasApprovedGate(step, decision) {
+        return this.#store.listApprovals(step.jobId).some((approval) => (
+            approval.stepId === step.id && approval.status === "approved" &&
+            approval.action === (decision.action ?? decision.requestedAction ?? step.method) &&
+            approval.risk === decision.reason
+        ))
+    }
+
+    async #preInvokeDecision(job, step, request, telemetry) {
+        const custom = requireObject(
+            await this.#customApprovalDecision(request, job),
+            "Operator approval decision",
+        )
+        if (custom.decision === "deny") return custom
+        const mandatory = operatorApprovalRequirement(request.method, request.params)
+        if (mandatory && !this.#hasApprovedGate(step, mandatory)) return mandatory
+        if (custom.decision === "approval_required" && !this.#hasApprovedGate(step, custom)) return custom
+        if (custom.decision !== "allow" && custom.decision !== "approval_required") {
+            throw new Error("Operator approval decision is invalid")
+        }
+        const budget = this.#budgetAssessment(
+            job,
+            request.reservation,
+            telemetry,
+            involvedRuntimeIds(request.params),
+            this.#budgetLimits(job, step.id),
+        )
+        if (!budget.preflight.valid) {
+            return {
+                decision: "deny",
+                code: "BUDGET_TELEMETRY_UNSUPPORTED",
+                message: "Token or reported-cost budget requires telemetry from every involved Runtime",
+            }
+        }
+        if (budget.overages.length > 0) {
+            return {
+                decision: "approval_required",
+                reason: "budget_expansion",
+                action: "budget.expand",
+                requestedScope: {budget: this.#requestedBudgetScope(
+                    job,
+                    request.reservation,
+                    this.#budgetLimits(job, step.id),
+                )},
+            }
+        }
+        return {decision: "allow"}
     }
 
     #createApproval(job, step, request, decision) {
@@ -439,6 +518,18 @@ class OperatorJobEngine {
         let currentStep = this.#store.getStep(step.id)
         if (currentJob.status === "needs_recovery") {
             currentJob = this.#store.transitionJob(currentJob.id, "running")
+        }
+        const existing = this.#store.listApprovals(currentJob.id).find((approval) => (
+            approval.stepId === currentStep.id && approval.status === "pending" &&
+            approval.action === (decision.action ?? request.method) && approval.risk === decision.reason
+        ))
+        if (existing) {
+            return {
+                status: "waiting_approval",
+                approvalId: existing.id,
+                jobId: currentJob.id,
+                stepId: currentStep.id,
+            }
         }
         if (currentStep.status === "pending") {
             currentStep = this.#store.transitionStep(currentStep.id, "waiting_approval")
@@ -496,13 +587,7 @@ class OperatorJobEngine {
             return this.#failedResult(failed)
         }
         const request = requestForExecution(resolved.proposedMutation)
-        this.#store.transitionStep(step.id, "running")
-        const telemetry = await this.#telemetry(request)
-        return this.#runStep(this.#store.getJob(resolved.jobId), this.#store.getStep(step.id), request, {
-            telemetry,
-            alreadyRunning: true,
-            allowBudgetExpansion: resolved.risk === "budget_expansion",
-        })
+        return this.#resumePreInvokeStep(step, request)
     }
 
     async expireApprovals(jobId = null) {
@@ -531,16 +616,24 @@ class OperatorJobEngine {
         return expired
     }
 
-    async #runStep(job, initialStep, request, {
-        telemetry = [],
-        alreadyRunning = false,
-        allowBudgetExpansion = false,
-    } = {}) {
+    async #runStep(job, initialStep, request, {telemetry = []} = {}) {
         let step = this.#store.getStep(initialStep.id)
         try {
-            this.#reserveBudget(job, step, request, telemetry, {allowBudgetExpansion})
-            if (!alreadyRunning && step.status !== "running") {
+            this.#reserveBudget(job, step, request, telemetry)
+            if (step.status === "running") {
+                return {status: "needs_recovery", jobId: job.id, stepId: step.id}
+            }
+            try {
                 step = this.#store.transitionStep(step.id, "running")
+            } catch (error) {
+                const current = this.#store.getStep(step.id)
+                if (current.status === "running" || TERMINAL_STEP_STATUSES.has(current.status)) {
+                    return current.status === "succeeded"
+                        ? this.#succeededResult(current, {cached: true})
+                        : {status: current.status === "running" ? "needs_recovery" : current.status,
+                            jobId: job.id, stepId: current.id}
+                }
+                throw error
             }
             const handler = this.#handlers[request.method]
             if (typeof handler !== "function") {
@@ -551,16 +644,38 @@ class OperatorJobEngine {
             const controller = new AbortController()
             this.#activeSteps.set(step.id, controller)
             let result
+            let timer = null
+            let durationExceeded = false
+            const timeoutError = Object.assign(new Error("Operator Job duration budget was exceeded"), {
+                code: "BUDGET_DURATION_EXCEEDED",
+            })
             try {
-                result = await handler({
+                const limits = this.#budgetLimits(job, step.id)
+                const remainingMs = limits.maxDurationMs - Math.max(0, this.#now() - Date.parse(job.createdAt))
+                if (remainingMs <= 0) throw timeoutError
+                const handlerPromise = Promise.resolve().then(() => handler({
                     method: request.method,
                     params: cloneJson(request.params),
                     idempotencyKey: request.idempotencyKey,
                     jobId: job.id,
                     stepId: step.id,
                     signal: controller.signal,
+                }))
+                const timeoutPromise = new Promise((_resolve, reject) => {
+                    timer = setTimeout(() => {
+                        durationExceeded = true
+                        controller.abort(timeoutError)
+                        reject(timeoutError)
+                    }, remainingMs)
                 })
+                try {
+                    result = await Promise.race([handlerPromise, timeoutPromise])
+                } catch (error) {
+                    if (durationExceeded) throw timeoutError
+                    throw error
+                }
             } finally {
+                if (timer !== null) clearTimeout(timer)
                 this.#activeSteps.delete(step.id)
             }
             const current = this.#store.getStep(step.id)
@@ -571,6 +686,9 @@ class OperatorJobEngine {
         } catch (error) {
             const current = this.#store.getStep(step.id)
             if (current.status === "cancelled") {
+                return {status: "cancelled", jobId: job.id, stepId: step.id}
+            }
+            if (this.#store.getJob(job.id).status === "cancelling") {
                 return {status: "cancelled", jobId: job.id, stepId: step.id}
             }
             if (!TERMINAL_STEP_STATUSES.has(current.status)) {
@@ -634,7 +752,10 @@ class OperatorJobEngine {
             if (event.kind !== "operator_budget_reserved") continue
             for (const field of RESERVATION_FIELDS) {
                 const amount = event.usage?.[field] ?? 0
-                if (!Number.isFinite(amount) || amount < 0) {
+                const valid = field === "reportedCost"
+                    ? Number.isFinite(amount) && amount >= 0
+                    : Number.isSafeInteger(amount) && amount >= 0
+                if (!valid) {
                     throw new Error("Persisted Operator budget reservation is invalid")
                 }
                 usage[field] += amount
@@ -643,26 +764,56 @@ class OperatorJobEngine {
         return usage
     }
 
-    #budgetAssessment(job, reservation, telemetry, runtimeIds = []) {
+    #budgetLimits(job, stepId = null) {
+        const limits = {...job.budget}
+        if (stepId === null) return limits
+        for (const approval of this.#store.listApprovals(job.id)) {
+            if (approval.stepId !== stepId || approval.status !== "approved" ||
+                approval.action !== "budget.expand" || approval.risk !== "budget_expansion") {
+                continue
+            }
+            const expansion = isPlainObject(approval.scope?.budget) ? approval.scope.budget : {}
+            for (const field of Object.keys(expansion)) {
+                if (!BUDGET_FIELDS.includes(field)) throw new Error("Operator budget expansion scope is invalid")
+            }
+            for (const field of BUDGET_FIELDS) {
+                const value = expansion[field]
+                if (value === undefined) continue
+                const valid = field === "maxReportedCost"
+                    ? Number.isFinite(value) && value >= 0
+                    : Number.isSafeInteger(value) && value >= 0
+                if (!valid || limits[field] === null || value < limits[field]) {
+                    throw new Error("Operator budget expansion scope is invalid")
+                }
+                limits[field] = value
+            }
+        }
+        return limits
+    }
+
+    #budgetAssessment(job, reservation, telemetry, runtimeIds = [], limits = job.budget) {
         const preflight = preflightOperatorBudget(
-            job.budget,
+            limits,
             telemetry,
             runtimeIds.length > 0 ? runtimeIds : null,
         )
         const usage = this.#budgetUsage(job.id)
         const overages = []
-        if (this.#now() - Date.parse(job.createdAt) > job.budget.maxDurationMs) {
+        if (this.#now() - Date.parse(job.createdAt) > limits.maxDurationMs) {
             overages.push("maxDurationMs")
         }
         for (const [usageField, budgetField] of Object.entries(RESERVATION_LIMITS)) {
-            const limit = job.budget[budgetField]
+            const limit = limits[budgetField]
             if (limit === null) continue
-            if (usage[usageField] + (reservation[usageField] ?? 0) > limit) overages.push(budgetField)
+            const exceeds = usageField === "reportedCost"
+                ? costUnits(usage[usageField]) + costUnits(reservation[usageField] ?? 0) > costUnits(limit)
+                : usage[usageField] + (reservation[usageField] ?? 0) > limit
+            if (exceeds) overages.push(budgetField)
         }
         return {preflight, usage, overages}
     }
 
-    #reserveBudget(job, step, request, telemetry, {allowBudgetExpansion = false} = {}) {
+    #reserveBudget(job, step, request, telemetry) {
         const {reservation} = request
         if (this.#store.listEvents(job.id).some((event) => (
             event.kind === "operator_budget_reserved" && event.stepId === step.id
@@ -672,13 +823,14 @@ class OperatorJobEngine {
             reservation,
             telemetry,
             involvedRuntimeIds(request.params),
+            this.#budgetLimits(job, step.id),
         )
         if (!assessment.preflight.valid) {
             throw Object.assign(new Error("Operator token or cost telemetry is unsupported"), {
                 code: "BUDGET_TELEMETRY_UNSUPPORTED",
             })
         }
-        if (assessment.overages.length > 0 && !allowBudgetExpansion) {
+        if (assessment.overages.length > 0) {
             throw Object.assign(new Error("Operator Job budget would be exceeded"), {
                 code: "BUDGET_EXCEEDED",
             })
@@ -692,14 +844,16 @@ class OperatorJobEngine {
         }
     }
 
-    #requestedBudgetScope(job, reservation) {
+    #requestedBudgetScope(job, reservation, limits = job.budget) {
         const requested = {}
         const usage = this.#budgetUsage(job.id)
         const elapsed = Math.max(0, this.#now() - Date.parse(job.createdAt))
-        if (elapsed > job.budget.maxDurationMs) requested.maxDurationMs = elapsed
+        if (elapsed > limits.maxDurationMs) requested.maxDurationMs = elapsed + job.budget.maxDurationMs
         for (const [usageField, budgetField] of Object.entries(RESERVATION_LIMITS)) {
-            const required = usage[usageField] + (reservation[usageField] ?? 0)
-            const limit = job.budget[budgetField]
+            const required = usageField === "reportedCost"
+                ? (costUnits(usage[usageField]) + costUnits(reservation[usageField] ?? 0)) / COST_SCALE
+                : usage[usageField] + (reservation[usageField] ?? 0)
+            const limit = limits[budgetField]
             if (limit !== null && required > limit) requested[budgetField] = required
         }
         return requested
@@ -715,52 +869,58 @@ class OperatorJobEngine {
         return cloneJson(event.request)
     }
 
-    async cancel(jobId) {
-        return this.#cancelTree(jobId)
+    cancel(jobId) {
+        const job = this.#store.beginCancellation(jobId)
+        if (TERMINAL_JOB_STATUSES.has(job.status)) return Promise.resolve(job)
+        this.#abortTree(jobId)
+        return this.#enqueue(jobId, () => this.#store.cancelJobTree(jobId).job)
     }
 
-    async #cancelTree(jobId) {
-        let job = this.#store.getJob(jobId)
-        if (TERMINAL_JOB_STATUSES.has(job.status)) return job
-        for (const childId of job.children) await this.#cancelTree(childId)
-        for (const step of this.#store.listSteps({jobId})) {
-            this.#activeSteps.get(step.id)?.abort()
+    #abortTree(jobId) {
+        const jobs = this.#store.listJobs()
+        const byId = new Map(jobs.map((job) => [job.id, job]))
+        const stepsByJob = new Map()
+        for (const step of this.#store.listSteps()) {
+            if (!stepsByJob.has(step.jobId)) stepsByJob.set(step.jobId, [])
+            stepsByJob.get(step.jobId).push(step)
         }
-        job = this.#store.getJob(jobId)
-        if (TERMINAL_JOB_STATUSES.has(job.status)) return job
-        this.#store.appendEvent(job.id, {kind: "operator_cancellation_requested"})
-        if (["running", "waiting_approval", "paused"].includes(job.status)) {
-            job = this.#store.transitionJob(job.id, "cancelling")
-        }
-        for (const step of this.#store.listSteps({jobId})) {
-            if (!TERMINAL_STEP_STATUSES.has(step.status)) {
-                this.#store.transitionStep(step.id, "cancelled", {
-                    error: {code: "OPERATOR_CANCELLED", message: "Operator Step was cancelled"},
-                })
+        const stack = [jobId]
+        while (stack.length > 0) {
+            const current = byId.get(stack.pop())
+            if (!current) continue
+            for (const step of stepsByJob.get(current.id) ?? []) {
+                this.#activeSteps.get(step.id)?.abort()
             }
+            stack.push(...current.children)
         }
-        if (job.status === "queued" || job.status === "needs_recovery") {
-            return this.#store.transitionJob(job.id, "cancelled", {
-                error: {code: "OPERATOR_CANCELLED", message: "Operator Job was cancelled"},
-            })
-        }
-        if (job.status === "cancelling") {
-            return this.#store.transitionJob(job.id, "cancelled", {
-                error: {code: "OPERATOR_CANCELLED", message: "Operator Job was cancelled"},
-            })
-        }
-        return this.#store.getJob(job.id)
     }
 
     completeJob(jobId, status, patch = {}) {
+        if (!TERMINAL_JOB_STATUSES.has(status)) {
+            return Promise.reject(new Error("Operator Job completion status is invalid"))
+        }
+        if (status === "cancelled") return this.cancel(jobId)
+        if (status === "failed") {
+            const current = this.#store.getJob(jobId)
+            if (TERMINAL_JOB_STATUSES.has(current.status)) {
+                if (current.status !== status) {
+                    return Promise.reject(new Error("Operator Job already completed with another status"))
+                }
+                return Promise.resolve(current)
+            }
+            this.#store.beginCancellation(jobId)
+            this.#abortTree(jobId)
+            return this.#enqueue(jobId, () => this.#store.cancelJobTree(jobId, {
+                rootStatus: "failed",
+                rootPatch: patch,
+            }).job)
+        }
         return this.#enqueue(jobId, async () => {
             let job = this.#store.getJob(jobId)
-            if (!TERMINAL_JOB_STATUSES.has(status)) throw new Error("Operator Job completion status is invalid")
             if (TERMINAL_JOB_STATUSES.has(job.status)) {
                 if (job.status !== status) throw new Error("Operator Job already completed with another status")
                 return job
             }
-            if (status === "cancelled") return this.#cancelTree(jobId)
             if (status === "succeeded") {
                 const children = job.children.map((childId) => this.#store.getJob(childId))
                 if (children.some((child) => child.status !== "succeeded")) {
@@ -776,9 +936,20 @@ class OperatorJobEngine {
         })
     }
 
-    async reconcile(jobId) {
+    reconcile(jobId) {
+        return this.#enqueue(jobId, () => this.#reconcile(jobId))
+    }
+
+    async #reconcile(jobId) {
         let job = this.#store.getJob(jobId)
         if (job.status !== "needs_recovery") return {status: job.status, jobId}
+        const recovery = this.#store.listEvents(jobId).findLast((event) => event.kind === "recovery_required")
+        if (recovery?.previousStatus === "cancelling") {
+            this.#store.beginCancellation(jobId)
+            this.#abortTree(jobId)
+            const cancelled = this.#store.cancelJobTree(jobId).job
+            return {status: cancelled.status, jobId: cancelled.id}
+        }
         const steps = this.#store.listSteps({jobId})
         for (let step of steps) {
             if (TERMINAL_STEP_STATUSES.has(step.status)) continue
@@ -848,7 +1019,12 @@ class OperatorJobEngine {
                 jobId: job.id,
                 stepId: step.id,
             })
-            if (["installed", "succeeded"].includes(outcome?.status)) {
+            const identityMatches = ["installationId", "runtimeId", "skillId", "versionId"].every((field) => {
+                if (!Object.hasOwn(execution.params, field)) return true
+                const observed = outcome?.[field] ?? outcome?.result?.[field]
+                return observed === execution.params[field]
+            })
+            if (["installed", "succeeded"].includes(outcome?.status) && identityMatches) {
                 this.#persistStepResult(step, outcome.result ?? {installationId})
                 return true
             }

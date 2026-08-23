@@ -333,6 +333,16 @@ function operatorApprovalRequirement(method, input = {}) {
     })
 }
 
+const OPERATOR_METHOD_BUDGET_MINIMUMS = Object.freeze({
+    "raw_cases.dispatch": Object.freeze({runtimeTurns: 1}),
+    "evaluations.start": Object.freeze({evaluations: 1}),
+})
+
+function operatorMethodBudgetMinimum(method) {
+    if (typeof method !== "string") return Object.freeze({})
+    return OPERATOR_METHOD_BUDGET_MINIMUMS[method] ?? Object.freeze({})
+}
+
 function deny(code, message) {
     return Object.freeze({decision: "deny", code, message})
 }
@@ -446,13 +456,16 @@ function trustedBudgetSnapshot(grant, budgetSnapshot) {
     return {denial: null, snapshot}
 }
 
-function reserveBudget(grant, snapshot, {budgetKey, usageKey}) {
+function reserveBudget(grant, snapshot, {budgetKey, usageKey, amount}) {
     const used = snapshot.usage[usageKey]
     const limit = grant?.budget?.[budgetKey]
     if (!Number.isSafeInteger(limit) || limit < 0) {
         return deny("INVALID_BUDGET_USAGE", "Budget usage is not valid")
     }
-    const requested = used + 1
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+        return deny("INVALID_BUDGET_USAGE", "Budget reservation is not valid")
+    }
+    const requested = used + amount
     const nextRevision = snapshot.revision + 1
     if (!Number.isSafeInteger(requested) || !Number.isSafeInteger(nextRevision)) {
         return deny(
@@ -476,7 +489,7 @@ function reserveBudget(grant, snapshot, {budgetKey, usageKey}) {
             sessionId: snapshot.sessionId,
             budgetKey,
             usageKey,
-            amount: 1,
+            amount,
             expectedUsed: used,
             expectedRevision: snapshot.revision,
             limit,
@@ -536,6 +549,7 @@ function decideControlPolicy({
         return reserveBudget(grant, budgetState, {
             budgetKey: "maxRuntimeTurns",
             usageKey: "runtimeTurns",
+            amount: operatorMethodBudgetMinimum(method).runtimeTurns,
         })
     }
 
@@ -547,6 +561,7 @@ function decideControlPolicy({
             return reserveBudget(grant, budgetState, {
                 budgetKey: "maxEvaluations",
                 usageKey: "evaluations",
+                amount: operatorMethodBudgetMinimum(method).evaluations,
             })
         }
         return deny(
@@ -576,4 +591,5 @@ module.exports = {
     decide: decideControlPolicy,
     decideControlPolicy,
     operatorApprovalRequirement,
+    operatorMethodBudgetMinimum,
 }

@@ -6,6 +6,7 @@ const {
     createControlPolicy,
     createResolvedScope,
     operatorApprovalRequirement,
+    operatorMethodBudgetMinimum,
 } = require("../src/control-plane/policy.cjs")
 
 function grant(overrides = {}) {
@@ -1005,6 +1006,13 @@ describe("control-plane policy", () => {
             }},
             action: "budget.expand",
         })
+    })
+
+    it("derives non-overridable execution minimums from the trusted method", () => {
+        assert.deepEqual(operatorMethodBudgetMinimum("raw_cases.dispatch"), {runtimeTurns: 1})
+        assert.deepEqual(operatorMethodBudgetMinimum("evaluations.start"), {evaluations: 1})
+        assert.deepEqual(operatorMethodBudgetMinimum("evaluations.cancel"), {})
+        assert.deepEqual(operatorMethodBudgetMinimum("skills.release"), {})
     })
 
 })

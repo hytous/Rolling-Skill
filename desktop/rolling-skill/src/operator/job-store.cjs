@@ -29,7 +29,7 @@ const DIRECTORY = constants.O_DIRECTORY ?? 0
 
 const TERMINAL_JOB_STATUSES = new Set(["succeeded", "failed", "cancelled"])
 const JOB_TRANSITIONS = new Map([
-    ["queued", new Set(["running", "cancelled", "failed"])],
+    ["queued", new Set(["running", "cancelling", "cancelled", "failed"])],
     ["running", new Set([
         "waiting_approval",
         "paused",
@@ -40,8 +40,8 @@ const JOB_TRANSITIONS = new Map([
     ])],
     ["waiting_approval", new Set(["running", "paused", "cancelling", "failed"])],
     ["paused", new Set(["running", "cancelling"])],
-    ["cancelling", new Set(["cancelled", "needs_recovery"])],
-    ["needs_recovery", new Set(["running", "cancelled", "failed"])],
+    ["cancelling", new Set(["cancelled", "failed", "needs_recovery"])],
+    ["needs_recovery", new Set(["running", "cancelling", "cancelled", "failed"])],
 ])
 const ALL_JOB_STATUSES = new Set([...JOB_TRANSITIONS.keys(), ...TERMINAL_JOB_STATUSES])
 const STEP_STATUSES = new Set([
@@ -101,6 +101,10 @@ function cloneJson(value, label = "Value", seen = new Set()) {
     seen.add(value)
     let cloned
     if (Array.isArray(value)) {
+        const keys = Object.keys(value)
+        if (keys.length !== value.length || keys.some((key, index) => key !== String(index))) {
+            throw new Error(`${label} must be a dense array`)
+        }
         cloned = value.map((entry) => cloneJson(entry, label, seen))
     } else {
         requireObject(value, label)
@@ -394,6 +398,18 @@ function canonicalStep(value) {
     if (["succeeded", "failed", "cancelled"].includes(status) !== (step.completedAt !== null)) {
         throw new Error("Operator Step completion fields are inconsistent")
     }
+    if (status === "succeeded" && (step.error !== null || step.outputArtifactIds.length === 0)) {
+        throw new Error("A succeeded Operator Step requires output artifacts and no error")
+    }
+    if (status !== "succeeded" && step.outputArtifactIds.length > 0) {
+        throw new Error(`A ${status} Operator Step cannot have output artifacts`)
+    }
+    if (["pending", "running", "waiting_approval"].includes(status) && step.error !== null) {
+        throw new Error(`A ${status} Operator Step cannot have an error`)
+    }
+    if (status === "failed" && step.error === null) {
+        throw new Error("A failed Operator Step requires an error")
+    }
     return step
 }
 
@@ -567,6 +583,36 @@ function terminalSnapshotFrom(job) {
     })
 }
 
+function closePendingApprovals(state, jobId, now, decisionScope, candidates = state.approvals) {
+    for (const approval of candidates) {
+        if (approval.jobId !== jobId || approval.status !== "pending") continue
+        approval.status = "rejected"
+        approval.decision = "reject"
+        approval.decisionScope = decisionScope
+        approval.decidedBy = "job-engine"
+        approval.resolvedAt = now
+    }
+}
+
+function cancelActiveStep(step, now) {
+    if (["succeeded", "failed", "cancelled"].includes(step.status)) return
+    step.status = "cancelled"
+    step.error = {code: "OPERATOR_CANCELLED", message: "Operator Step was cancelled"}
+    step.outputArtifactIds = []
+    step.updatedAt = now
+    step.completedAt = now
+}
+
+function finishJob(job, status, now, patch = {}) {
+    job.status = status
+    job.checkpoint = Object.hasOwn(patch, "checkpoint") ? patch.checkpoint : job.checkpoint
+    job.result = Object.hasOwn(patch, "result") ? patch.result : job.result
+    job.error = Object.hasOwn(patch, "error") ? patch.error : job.error
+    job.updatedAt = now
+    job.completedAt = now
+    job.terminalSnapshot = terminalSnapshotFrom(job)
+}
+
 function equalJson(left, right) {
     return JSON.stringify(left) === JSON.stringify(right)
 }
@@ -675,6 +721,11 @@ function canonicalState(value) {
     for (const event of state.events) {
         if (event.kind !== "operator_step_created") continue
         const creation = canonicalStepCreationPayload(event.payload)
+        const target = steps.get(creation.stepId)
+        if (!target) throw new Error("Operator Step creation event references an orphan Step")
+        if (target.jobId !== event.jobId) {
+            throw new Error("Operator Step creation event references a different Job")
+        }
         if (stepCreationEvents.has(creation.stepId)) {
             throw new Error("Operator Step has duplicate creation events")
         }
@@ -1064,7 +1115,9 @@ class OperatorJobStore {
                 const parent = state.jobs.find((candidate) => candidate.id === parentJobId)
                 if (!parent) throw new Error("Parent Operator Job not found")
                 if (parent.sessionId !== sessionId) throw new Error("Parent Job must use the same session")
-                if (TERMINAL_JOB_STATUSES.has(parent.status)) throw new Error("Cannot add a child to a terminal Operator Job")
+                if (TERMINAL_JOB_STATUSES.has(parent.status) || parent.status === "cancelling") {
+                    throw new Error("Cannot add a child to a cancelling or terminal Operator Job")
+                }
                 parent.children.push(job.id)
                 parent.updatedAt = now
             }
@@ -1129,7 +1182,7 @@ class OperatorJobStore {
         return this.#mutate((state) => {
             const job = state.jobs.find((candidate) => candidate.id === step.jobId)
             if (!job) throw new Error("Operator Step Job not found")
-            if (TERMINAL_JOB_STATUSES.has(job.status)) {
+            if (TERMINAL_JOB_STATUSES.has(job.status) || job.status === "cancelling") {
                 throw new Error("Cannot add a Step to a terminal Operator Job")
             }
             if (state.steps.some((candidate) => (
@@ -1220,6 +1273,7 @@ class OperatorJobStore {
                 if (step.startedAt === null) step.startedAt = now
                 step.error = null
             }
+            if (nextStatus === "succeeded") step.error = null
             if (Object.hasOwn(normalized, "outputArtifactIds")) {
                 step.outputArtifactIds = normalized.outputArtifactIds
             }
@@ -1250,21 +1304,17 @@ class OperatorJobStore {
                 throw new Error(`Illegal Operator Job transition: ${job.status} -> ${nextStatus}`)
             }
             const now = nowTimestamp()
-            const leavingApprovalState = job.status === "waiting_approval"
-            if (leavingApprovalState) {
-                for (const approval of state.approvals) {
-                    if (approval.jobId !== job.id || approval.status !== "pending") continue
-                    approval.status = "rejected"
-                    approval.decision = "reject"
-                    approval.decisionScope = TERMINAL_JOB_STATUSES.has(nextStatus)
-                        ? "job_terminal"
-                        : "job_transition"
-                    approval.decidedBy = "job-engine"
-                    approval.resolvedAt = now
-                }
-            }
+            if (job.status === "waiting_approval") closePendingApprovals(
+                state,
+                job.id,
+                now,
+                TERMINAL_JOB_STATUSES.has(nextStatus) ? "job_terminal" : "job_transition",
+            )
             if (job.startedAt === null && nextStatus === "running") job.startedAt = now
             Object.assign(job, normalized)
+            if ((nextStatus === "running" || nextStatus === "succeeded") && !Object.hasOwn(normalized, "error")) {
+                job.error = null
+            }
             job.status = nextStatus
             job.updatedAt = now
             if (TERMINAL_JOB_STATUSES.has(nextStatus)) {
@@ -1272,6 +1322,115 @@ class OperatorJobStore {
                 job.terminalSnapshot = terminalSnapshotFrom(job)
             }
             return job
+        })
+    }
+
+    beginCancellation(jobId) {
+        requiredText(jobId, "Operator Job id", 200)
+        return this.#mutate((state) => {
+            const job = state.jobs.find((candidate) => candidate.id === jobId)
+            if (!job) throw new Error("Operator Job not found")
+            if (TERMINAL_JOB_STATUSES.has(job.status) || job.status === "cancelling") return job
+            if (!JOB_TRANSITIONS.get(job.status)?.has("cancelling")) {
+                throw new Error(`Operator Job cannot begin cancellation while ${job.status}`)
+            }
+            const now = nowTimestamp()
+            closePendingApprovals(state, job.id, now, "job_cancelling")
+            job.status = "cancelling"
+            job.updatedAt = now
+            if (job.eventSequence < MAX_JOB_EVENTS) {
+                job.eventSequence += 1
+                state.events.push({
+                    id: randomUUID(),
+                    jobId: job.id,
+                    sequence: job.eventSequence,
+                    kind: "operator_cancellation_requested",
+                    payload: {},
+                    occurredAt: now,
+                })
+            }
+            return job
+        })
+    }
+
+    cancelJobTree(jobId, {rootStatus = "cancelled", rootPatch = {}} = {}) {
+        requiredText(jobId, "Operator Job id", 200)
+        if (rootStatus !== "cancelled" && rootStatus !== "failed") {
+            throw new Error("Operator cancellation terminal status is invalid")
+        }
+        const patch = boundedEnvelope(
+            requireObject(rootPatch, "Operator cancellation root patch"),
+            "Operator cancellation root patch",
+        )
+        for (const field of Object.keys(patch)) {
+            if (!["checkpoint", "result", "error"].includes(field)) {
+                throw new Error(`Operator Job ${field} is immutable or unsupported`)
+            }
+        }
+        if (rootStatus === "failed" && (patch.error ?? null) === null) {
+            throw new Error("A failed Operator Job requires an error")
+        }
+        return this.#mutate((state) => {
+            const jobs = new Map(state.jobs.map((job) => [job.id, job]))
+            const stepsByJob = new Map()
+            for (const step of state.steps) {
+                if (!stepsByJob.has(step.jobId)) stepsByJob.set(step.jobId, [])
+                stepsByJob.get(step.jobId).push(step)
+            }
+            const approvalsByJob = new Map()
+            for (const approval of state.approvals) {
+                if (!approvalsByJob.has(approval.jobId)) approvalsByJob.set(approval.jobId, [])
+                approvalsByJob.get(approval.jobId).push(approval)
+            }
+            const root = jobs.get(jobId)
+            if (!root) throw new Error("Operator Job not found")
+            if (TERMINAL_JOB_STATUSES.has(root.status)) return {job: root, completionOrder: []}
+            if (root.status !== "cancelling") throw new Error("Operator Job cancellation was not begun")
+            const visit = []
+            const stack = [root.id]
+            while (stack.length > 0) {
+                const currentId = stack.pop()
+                const current = jobs.get(currentId)
+                if (!current) throw new Error("Operator Job child reference is invalid")
+                visit.push(currentId)
+                for (let index = current.children.length - 1; index >= 0; index -= 1) {
+                    stack.push(current.children[index])
+                }
+            }
+            const now = nowTimestamp()
+            const completionOrder = []
+            for (let index = visit.length - 1; index >= 0; index -= 1) {
+                const current = jobs.get(visit[index])
+                if (TERMINAL_JOB_STATUSES.has(current.status)) continue
+                closePendingApprovals(
+                    state,
+                    current.id,
+                    now,
+                    "job_cancelling",
+                    approvalsByJob.get(current.id) ?? [],
+                )
+                for (const step of stepsByJob.get(current.id) ?? []) cancelActiveStep(step, now)
+                const isRoot = current.id === root.id
+                const terminalPatch = isRoot
+                    ? (rootStatus === "cancelled" && !Object.hasOwn(patch, "error")
+                        ? {...patch, error: {
+                            code: "OPERATOR_CANCELLED",
+                            message: "Operator Job was cancelled",
+                        }}
+                        : patch)
+                    : {error: {
+                        code: "OPERATOR_CANCELLED",
+                        message: "Operator Job was cancelled with its parent",
+                    }}
+                finishJob(
+                    current,
+                    isRoot ? rootStatus : "cancelled",
+                    now,
+                    terminalPatch,
+                )
+                completionOrder.push(current.id)
+            }
+            return {job: root, completionOrder}
         })
     }
 

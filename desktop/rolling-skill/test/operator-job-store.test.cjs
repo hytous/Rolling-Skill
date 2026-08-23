@@ -216,6 +216,107 @@ describe("Operator Job store", () => {
         }, /approval.*mutation|frozen.*Step/iu)
     })
 
+    it("requires exactly one same-Job creation event for every Step", () => {
+        assertRegistryCorruptionRejected((store) => {
+            const session = createSession(store)
+            const job = createJob(store, session.id)
+            const step = store.createStep(job.id, {
+                method: "datasets.read",
+                params: {datasetId: "dataset-1"},
+                idempotencyKey: "orphan-event",
+            })
+            return {job, step}
+        }, (registry) => {
+            const creation = registry.events[0]
+            registry.events.push({
+                ...creation,
+                id: "orphan-creation-event",
+                sequence: 2,
+                payload: {...creation.payload, stepId: "orphan-step"},
+            })
+            registry.jobs[0].eventSequence = 2
+        }, /orphan|creation.*Step|unknown.*Step/iu)
+
+        assertRegistryCorruptionRejected((store) => {
+            const session = createSession(store)
+            const first = createJob(store, session.id, {objective: "first"})
+            const second = createJob(store, session.id, {objective: "second"})
+            store.createStep(first.id, {
+                method: "datasets.read",
+                params: {datasetId: "dataset-1"},
+                idempotencyKey: "cross-first",
+            })
+            store.createStep(second.id, {
+                method: "datasets.read",
+                params: {datasetId: "dataset-2"},
+                idempotencyKey: "cross-second",
+            })
+            return {first, second}
+        }, (registry) => {
+            const [firstEvent, secondEvent] = registry.events
+            const firstJobId = firstEvent.jobId
+            firstEvent.jobId = secondEvent.jobId
+            secondEvent.jobId = firstJobId
+        }, /creation.*Job|cross.*Job|Step.*Job/iu)
+
+        assertRegistryCorruptionRejected((store) => {
+            const session = createSession(store)
+            const job = createJob(store, session.id)
+            store.createStep(job.id, {
+                method: "datasets.read",
+                params: {datasetId: "dataset-1"},
+                idempotencyKey: "duplicate-event",
+            })
+            return {job}
+        }, (registry) => {
+            registry.events.push({...registry.events[0], id: "duplicate-creation", sequence: 2})
+            registry.jobs[0].eventSequence = 2
+        }, /duplicate.*creation|creation.*duplicate/iu)
+    })
+
+    it("rejects sparse Step requests and inconsistent success/error/output combinations", () => {
+        const sparseFixture = fixture()
+        const sparseSession = createSession(sparseFixture.store)
+        const sparseJob = createJob(sparseFixture.store, sparseSession.id)
+        const sparse = []
+        sparse[1] = "case-2"
+        assert.throws(() => sparseFixture.store.createStep(sparseJob.id, {
+            method: "evaluations.start",
+            params: {caseIds: sparse},
+            idempotencyKey: "sparse-step",
+        }), /sparse|dense/iu)
+
+        const succeededSetup = (store) => {
+            const session = createSession(store)
+            const job = createJob(store, session.id)
+            store.transitionJob(job.id, "running")
+            const step = store.createStep(job.id, {
+                method: "datasets.read",
+                params: {datasetId: "dataset-1"},
+                idempotencyKey: "successful-step",
+            })
+            store.transitionStep(step.id, "running")
+            const artifact = store.createArtifact(job.id, {
+                kind: "operator-step-result",
+                name: "result.json",
+                mediaType: "application/json",
+                body: "{}",
+            })
+            store.transitionStep(step.id, "succeeded", {outputArtifactIds: [artifact.id]})
+            return {job, step, artifact}
+        }
+        assertRegistryCorruptionRejected(succeededSetup, (registry) => {
+            registry.steps[0].error = {code: "OPERATOR_INTERRUPTED"}
+        }, /succeeded.*error|Step.*error.*status/iu)
+        assertRegistryCorruptionRejected(succeededSetup, (registry) => {
+            registry.steps[0].outputArtifactIds = []
+        }, /succeeded.*artifact|Step.*output/iu)
+        assertRegistryCorruptionRejected(succeededSetup, (registry) => {
+            registry.steps[0].status = "running"
+            registry.steps[0].completedAt = null
+        }, /running.*artifact|Step.*output.*status/iu)
+    })
+
     it("creates a private atomic registry and preserves immutable session and Job identity", () => {
         const {path, store} = fixture()
         const requestedRuntime = runtime()
@@ -281,7 +382,7 @@ describe("Operator Job store", () => {
         const {store} = fixture()
         const session = createSession(store)
         const transitions = new Map([
-            ["queued", ["running", "cancelled", "failed"]],
+            ["queued", ["running", "cancelling", "cancelled", "failed"]],
             ["running", [
                 "waiting_approval",
                 "paused",
@@ -292,8 +393,8 @@ describe("Operator Job store", () => {
             ]],
             ["waiting_approval", ["running", "paused", "cancelling", "failed"]],
             ["paused", ["running", "cancelling"]],
-            ["cancelling", ["cancelled", "needs_recovery"]],
-            ["needs_recovery", ["running", "cancelled", "failed"]],
+            ["cancelling", ["cancelled", "failed", "needs_recovery"]],
+            ["needs_recovery", ["running", "cancelling", "cancelled", "failed"]],
         ])
 
         for (const [from, targets] of transitions) {
