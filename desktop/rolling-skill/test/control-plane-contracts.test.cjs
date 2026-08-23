@@ -12,6 +12,10 @@ const {
     parseControlOutput,
     publicControlError,
 } = require("../src/control-plane/contracts.cjs")
+const {
+    decodeSkillVersionCursor,
+    encodeSkillVersionCursor,
+} = require("../src/managed-skill-version-cursor.cjs")
 
 const rawCase = {
     question: "Which service caused the July cost increase?",
@@ -202,6 +206,31 @@ describe("control-plane contracts", () => {
         assert.throws(() => encodeCursor(-1), /sequence/u)
         assert.throws(() => encodeCursor(Number.MAX_SAFE_INTEGER + 1), /sequence/u)
         assert.throws(() => decodeCursor("not-a-sequence"), /cursor/u)
+    })
+
+    it("uses a revision-bound cursor only for managed Skill version pages", () => {
+        const revision = "01234567-89ab-4def-8123-456789abcdef"
+        const cursor = encodeSkillVersionCursor({revision, sequence: 42})
+
+        assert.deepEqual(decodeSkillVersionCursor(cursor), {revision, sequence: 42})
+        assert.deepEqual(parseControlInput("skill_versions.list", {
+            cursor,
+            limit: 100,
+            skillId: "skill-1",
+        }), {
+            cursor,
+            limit: 100,
+            skillId: "skill-1",
+        })
+        assert.throws(() => parseControlInput("skills.list", {cursor}), /cursor/u)
+        assert.throws(
+            () => parseControlInput("skill_versions.list", {cursor: encodeCursor(42)}),
+            /cursor/u,
+        )
+        assert.throws(
+            () => parseControlOutput("skill_versions.list", {versions: [], nextCursor: encodeCursor(1)}),
+            /cursor/u,
+        )
     })
 
     it("accepts representative input for every initial method", () => {

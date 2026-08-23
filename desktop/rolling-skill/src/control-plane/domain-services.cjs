@@ -217,20 +217,56 @@ function createDomainServices(dependencies = {}) {
         return runtime
     }
 
-    async function managedSkillOverview() {
-        const overview = typeof managedSkillManager?.overview === "function"
-            ? await managedSkillManager.overview()
+    async function managedSkillCatalog() {
+        const catalog = typeof managedSkillManager?.catalog === "function"
+            ? await managedSkillManager.catalog()
+            : typeof managedSkillManager?.overview === "function"
+                ? await managedSkillManager.overview()
             : {}
         return {
-            repositories: clone(arrayFromInventory(overview, ["repositories"]))
+            repositories: clone(arrayFromInventory(catalog, ["repositories"]))
                 .map(sanitizedRepository),
-            skills: clone(arrayFromInventory(overview, ["skills"])),
-            versions: clone(arrayFromInventory(overview, ["versions"])),
+            skills: clone(arrayFromInventory(catalog, ["skills"])),
         }
     }
 
     async function managedSkillInventory() {
-        return (await managedSkillOverview()).skills
+        return (await managedSkillCatalog()).skills
+    }
+
+    async function managedSkillVersionPage(input, skillIds) {
+        if (typeof managedSkillManager?.listVersionPage !== "function") {
+            throw new Error("Managed Skill version paging is unavailable")
+        }
+        let page
+        try {
+            page = await managedSkillManager.listVersionPage({
+                skillIds: [...skillIds],
+                skillId: input.skillId,
+                cursor: input.cursor,
+                limit: input.limit,
+            })
+        } catch (error) {
+            if (
+                error?.code === "MANAGED_SKILL_VERSION_CURSOR_INVALID" ||
+                error?.code === "MANAGED_SKILL_VERSION_CURSOR_STALE"
+            ) {
+                throw invalidArgument(
+                    "skill_versions.list",
+                    ["cursor"],
+                    "Managed Skill version cursor is invalid or stale",
+                )
+            }
+            throw error
+        }
+        const versions = arrayFromInventory(page, ["versions"])
+        if (versions.length > input.limit || versions.length > 100) {
+            throw new Error("Managed Skill version page exceeded its requested limit")
+        }
+        return {
+            versions: clone(versions),
+            nextCursor: page?.nextCursor ?? null,
+        }
     }
 
     async function rawCaseSkillInventory() {
@@ -415,6 +451,18 @@ function createDomainServices(dependencies = {}) {
     async function filterResolution(method, input, grant) {
         const key = FILTER_METHODS[method]
         const granted = new Set(Array.isArray(grant?.scopes?.[key]) ? grant.scopes[key] : [])
+        if (method === "skill_versions.list") {
+            const catalog = await managedSkillCatalog()
+            const skillIds = unique(catalog.skills
+                .map((entry) => entry?.id)
+                .filter((id) => granted.has(id)))
+            const versionPage = await managedSkillVersionPage(input, skillIds)
+            return scopeResolution({
+                method,
+                mode: "filter",
+                skillIds,
+            }, {method, versionPage})
+        }
         let inventoryIds = []
         let executionContext
         if (key === "runtimeIds") {
@@ -426,15 +474,15 @@ function createDomainServices(dependencies = {}) {
             inventoryIds = datasets.map((entry) => entry?.id)
             executionContext = {method, datasets}
         } else {
-            const overview = method === "skills.list" || method === "skill_versions.list"
-                ? await managedSkillOverview()
+            const catalog = method === "skills.list"
+                ? await managedSkillCatalog()
                 : null
-            const skills = overview?.skills ?? await rawCaseSkillInventory()
+            const skills = catalog?.skills ?? await rawCaseSkillInventory()
             inventoryIds = skills.map((entry) => entry?.id)
             executionContext = {
                 method,
                 skills,
-                overview,
+                catalog,
                 rawCases: method === "raw_cases.list"
                     ? await rawCaseInventory(input.skillName)
                     : null,
@@ -486,16 +534,25 @@ function createDomainServices(dependencies = {}) {
             const inventory = await rawCaseSkillInventory()
             const legacyOwner = identifier(rawCase.skill?.skillId) === null &&
                 identifier(rawCase.skill?.id) === null
+            const ownerCandidates = matchingSkillReferences(rawCase.skill, inventory)
+            if (ownerCandidates.length === 0) throw notFound("skill")
             const explicitTargetId = method === "raw_cases.update"
                 ? identifier(input.changes.skill?.id)
                 : null
-            const ambiguousOwners = legacyOwner && explicitTargetId !== null
-                ? matchingSkillReferences(rawCase.skill, inventory)
+            const ambiguousOwners = legacyOwner && ownerCandidates.length > 1
+                ? ownerCandidates
                 : []
-            const explicitRebind = ambiguousOwners.length > 1
+            const explicitRebind = ambiguousOwners.length > 1 && explicitTargetId !== null
+            if (ambiguousOwners.length > 1 && !explicitRebind) {
+                throw invalidArgument(
+                    method,
+                    ["id", "skill", "name"],
+                    "Stored legacy Skill owner is ambiguous",
+                )
+            }
             const skill = explicitRebind
                 ? null
-                : resolveSkillReferenceFrom(rawCase.skill, inventory, {grant, method})
+                : resolveSkillReferenceFrom(rawCase.skill, inventory, {method})
             const skillIds = explicitRebind
                 ? ambiguousOwners.map((candidate) => candidate?.id)
                 : [skill.id]
@@ -508,7 +565,6 @@ function createDomainServices(dependencies = {}) {
                     input.changes.skill,
                     inventory,
                     {
-                        grant,
                         method,
                         path: ["changes", "skill"],
                         toolSupplied: true,
@@ -748,12 +804,12 @@ function createDomainServices(dependencies = {}) {
         async "skills.list"(input, context) {
             const allowed = scopeIds(context, "skillIds")
             const execution = trustedExecution(context, "skills.list")
-            const overview = execution?.overview ?? await managedSkillOverview()
-            const skills = overview.skills.filter((entry) => allowed.has(entry.id))
+            const catalog = execution?.catalog ?? await managedSkillCatalog()
+            const skills = catalog.skills.filter((entry) => allowed.has(entry.id))
             const page = paginate(skills, input)
             const repositoryIds = new Set(page.items.map((entry) => entry.repositoryId))
             return {
-                repositories: overview.repositories
+                repositories: catalog.repositories
                     .filter((entry) => repositoryIds.has(entry?.id))
                     .map(managedRepositorySummary),
                 skills: page.items.map(managedSkillSummary),
@@ -764,14 +820,10 @@ function createDomainServices(dependencies = {}) {
         async "skill_versions.list"(input, context) {
             const allowed = scopeIds(context, "skillIds")
             const execution = trustedExecution(context, "skill_versions.list")
-            const overview = execution?.overview ?? await managedSkillOverview()
-            const versions = overview.versions.filter((entry) =>
-                allowed.has(entry?.skillId) &&
-                (input.skillId === null || entry?.skillId === input.skillId),
-            )
-            const page = paginate(versions, input)
+            const page = execution?.versionPage ??
+                await managedSkillVersionPage(input, allowed)
             return {
-                versions: page.items.map(managedVersionSummary),
+                versions: page.versions.map(managedVersionSummary),
                 nextCursor: page.nextCursor,
             }
         },

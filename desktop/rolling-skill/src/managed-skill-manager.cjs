@@ -192,10 +192,20 @@ class ManagedSkillManager {
 
     overview() {
         return {
-            repositories: this.store.listRepositories().map(publicRepository),
-            skills: this.store.listSkills(),
+            ...this.catalog(),
             versions: this.store.listVersions(),
         }
+    }
+
+    catalog() {
+        return {
+            repositories: this.store.listRepositories().map(publicRepository),
+            skills: this.store.listSkills(),
+        }
+    }
+
+    listVersionPage(input = {}) {
+        return this.store.listVersionPage(input)
     }
 
     importSource(input = {}) {

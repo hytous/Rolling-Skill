@@ -322,6 +322,13 @@ describe("managed Skill repository manager", () => {
 
         const detail = manager.readSkill(imported.skills[0].id)
         const overview = manager.overview()
+        const catalog = manager.catalog()
+        const versionPage = manager.listVersionPage({
+            skillIds: [imported.skills[0].id],
+            skillId: imported.skills[0].id,
+            cursor: null,
+            limit: 1,
+        })
 
         assert.match(detail.manifest, /name: billing/)
         assert.match(detail.snapshot.digest, /^sha256:/)
@@ -329,6 +336,13 @@ describe("managed Skill repository manager", () => {
         assert.equal(overview.repositories[0].managedPath, undefined)
         assert.doesNotMatch(JSON.stringify(overview), new RegExp(source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
         assert.deepEqual(overview.skills.map((entry) => entry.name), ["billing"])
+        assert.deepEqual(catalog, {
+            repositories: overview.repositories,
+            skills: overview.skills,
+        })
+        assert.equal(versionPage.versions.length, 1)
+        assert.equal(versionPage.versions[0].skillId, imported.skills[0].id)
+        assert.equal(versionPage.nextCursor, null)
     })
 
     it("rescans Finder edits so repaired and newly added Skills can be versioned", async () => {

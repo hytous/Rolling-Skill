@@ -62,6 +62,24 @@ function addCandidate(store, repository, skill, commitCharacter = "a") {
     })
 }
 
+function versionRecord(index, skillId = "skill-1") {
+    return {
+        id: `version-${index}`,
+        repositoryId: skillId === "skill-1" ? "repository-1" : "repository-2",
+        skillId,
+        skillRoot: ".",
+        commit: index.toString(16).padStart(40, "0"),
+        contentDigest: `sha256:${index.toString(16).padStart(64, "0")}`,
+        state: "candidate",
+        versionLabel: null,
+        createdBy: "optimization",
+        optimizationRoundId: null,
+        createdAt: "2026-08-23T00:00:00.000Z",
+        releasedAt: null,
+        deprecatedAt: null,
+    }
+}
+
 describe("managed Skill registry", () => {
     it("creates a private versioned registry and returns defensive copies", () => {
         const {path, store} = fixture()
@@ -239,6 +257,84 @@ describe("managed Skill registry", () => {
         assert.equal(deprecated.state, "released")
         assert.ok(deprecated.deprecatedAt)
         assert.equal(store.listVersions(skill.id).length, 1)
+    })
+
+    it("scans a 100,000-version catalog once across bounded authorized pages", () => {
+        const {store} = fixture()
+        const versions = Array.from({length: 100_000}, (_, index) =>
+            versionRecord(index, index % 2 === 0 ? "skill-1" : "skill-2"),
+        )
+        let versionReads = 0
+        store.state.versions = new Proxy(versions, {
+            get(target, property, receiver) {
+                if (typeof property === "string" && /^(?:0|[1-9]\d*)$/u.test(property)) {
+                    versionReads += 1
+                }
+                return Reflect.get(target, property, receiver)
+            },
+        })
+
+        const collected = []
+        let cursor = null
+        do {
+            const page = store.listVersionPage({
+                skillIds: ["skill-1"],
+                skillId: null,
+                cursor,
+                limit: 100,
+            })
+            assert.ok(page.versions.length <= 100)
+            assert.ok(page.versions.every((version) => version.skillId === "skill-1"))
+            collected.push(...page.versions.map((version) => version.id))
+            cursor = page.nextCursor
+        } while (cursor !== null)
+
+        assert.equal(collected.length, 50_000)
+        assert.equal(new Set(collected).size, 50_000)
+        assert.equal(collected[0], "version-0")
+        assert.equal(collected.at(-1), "version-99998")
+        assert.ok(versionReads <= 100_500, `expected a linear scan, observed ${versionReads}`)
+    })
+
+    it("rejects a version cursor after any successful catalog revision", () => {
+        const {root, store} = fixture()
+        const repository = addRepository(store, root)
+        const skill = addSkill(store, repository.id)
+        addCandidate(store, repository, skill, "a")
+        store.addVersion({
+            repositoryId: repository.id,
+            skillId: skill.id,
+            commit: "c".repeat(40),
+            contentDigest: `sha256:${"d".repeat(64)}`,
+            state: "candidate",
+            createdBy: "user",
+        })
+        const first = store.listVersionPage({
+            skillIds: [skill.id],
+            skillId: skill.id,
+            cursor: null,
+            limit: 1,
+        })
+        assert.ok(first.nextCursor)
+
+        store.addVersion({
+            repositoryId: repository.id,
+            skillId: skill.id,
+            commit: "e".repeat(40),
+            contentDigest: `sha256:${"f".repeat(64)}`,
+            state: "candidate",
+            createdBy: "user",
+        })
+
+        assert.throws(
+            () => store.listVersionPage({
+                skillIds: [skill.id],
+                skillId: skill.id,
+                cursor: first.nextCursor,
+                limit: 1,
+            }),
+            (error) => error.code === "MANAGED_SKILL_VERSION_CURSOR_STALE",
+        )
     })
 
     it("protects referenced repositories unless an explicit cascade is requested", () => {

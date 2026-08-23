@@ -1,4 +1,8 @@
 const {z} = require("zod")
+const {
+    MAX_SKILL_VERSION_CURSOR_LENGTH,
+    decodeSkillVersionCursor,
+} = require("../managed-skill-version-cursor.cjs")
 
 const DEFAULT_PAGE_LIMIT = 50
 const MAX_PAGE_SIZE = 100
@@ -72,6 +76,23 @@ const cursor = z.string()
 
 const page = z.object({
     cursor: cursor.nullable().default(null),
+    limit: z.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_LIMIT),
+})
+
+const skillVersionCursor = z.string()
+    .min(1)
+    .max(MAX_SKILL_VERSION_CURSOR_LENGTH)
+    .refine((value) => {
+        try {
+            decodeSkillVersionCursor(value)
+            return true
+        } catch {
+            return false
+        }
+    }, "Invalid managed Skill version cursor")
+
+const skillVersionPage = z.object({
+    cursor: skillVersionCursor.nullable().default(null),
     limit: z.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_LIMIT),
 })
 
@@ -202,7 +223,7 @@ const managedSkillPageResult = z.object({
 
 const managedSkillVersionPageResult = z.object({
     versions: z.array(managedSkillVersion).max(MAX_PAGE_SIZE),
-    nextCursor: cursor.nullable(),
+    nextCursor: skillVersionCursor.nullable(),
 }).strict()
 
 function freezeMethodDefinitions(definitions) {
@@ -300,7 +321,7 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
     },
     "skill_versions.list": {
         action: "skills.read",
-        input: page.extend({skillId: id.nullable().default(null)}).strict(),
+        input: skillVersionPage.extend({skillId: id.nullable().default(null)}).strict(),
         output: managedSkillVersionPageResult,
     },
     "skills.get": {

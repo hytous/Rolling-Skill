@@ -13,6 +13,10 @@ const {
     writeFileSync,
 } = require("node:fs")
 const {dirname, isAbsolute, posix, resolve} = require("node:path")
+const {
+    decodeSkillVersionCursor,
+    encodeSkillVersionCursor,
+} = require("./managed-skill-version-cursor.cjs")
 
 const MANAGED_SKILL_SCHEMA = "rolling-skill-managed-skills/v1"
 const SOURCE_KINDS = new Set(["zip", "folder", "local-git", "git-url"])
@@ -201,6 +205,7 @@ class ManagedSkillStore {
         this.path = resolve(requiredString(path, "Managed Skill registry path"))
         this.state = null
         this.transactionDepth = 0
+        this.catalogRevision = null
         this.load()
     }
 
@@ -208,6 +213,7 @@ class ManagedSkillStore {
         if (!existsSync(this.path)) {
             this.state = initialManagedSkillState()
             this.persist()
+            this.catalogRevision = randomUUID()
             return this.state
         }
         try {
@@ -217,6 +223,7 @@ class ManagedSkillStore {
             this.state = validateState(JSON.parse(readFileSync(this.path, "utf8")))
             chmodSync(dirname(this.path), 0o700)
             chmodSync(this.path, 0o600)
+            this.catalogRevision = randomUUID()
             return this.state
         } catch (error) {
             if (/Unsupported managed Skill registry/u.test(error.message)) throw error
@@ -261,6 +268,7 @@ class ManagedSkillStore {
         try {
             const result = operation()
             this.persist()
+            this.catalogRevision = randomUUID()
             return copy(result)
         } catch (error) {
             this.state = previous
@@ -416,6 +424,60 @@ class ManagedSkillStore {
         return copy(this.state.versions
             .filter((entry) => skillId === null || entry.skillId === skillId)
             .sort(versionOrder))
+    }
+
+    listVersionPage(input = {}) {
+        if (!Array.isArray(input.skillIds) || input.skillIds.length > 100_000) {
+            throw new Error("Authorized managed Skill ids are required")
+        }
+        const skillIds = new Set(input.skillIds.map((skillId) => requiredId(skillId, "Skill")))
+        const skillId = input.skillId === null || input.skillId === undefined
+            ? null
+            : requiredId(input.skillId, "Skill")
+        const limit = input.limit === undefined ? 50 : input.limit
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+            throw new Error("Managed Skill version page limit is invalid")
+        }
+        let sequence = 0
+        if (input.cursor !== null && input.cursor !== undefined) {
+            let decoded
+            try {
+                decoded = decodeSkillVersionCursor(input.cursor)
+            } catch (error) {
+                const invalid = new Error("Managed Skill version cursor is invalid", {cause: error})
+                invalid.code = "MANAGED_SKILL_VERSION_CURSOR_INVALID"
+                throw invalid
+            }
+            if (decoded.revision !== this.catalogRevision) {
+                const stale = new Error("Managed Skill version cursor is stale")
+                stale.code = "MANAGED_SKILL_VERSION_CURSOR_STALE"
+                throw stale
+            }
+            sequence = decoded.sequence
+            if (sequence > this.state.versions.length) {
+                const invalid = new Error("Managed Skill version cursor is outside the catalog")
+                invalid.code = "MANAGED_SKILL_VERSION_CURSOR_INVALID"
+                throw invalid
+            }
+        }
+
+        const matches = (version) => skillIds.has(version.skillId) &&
+            (skillId === null || version.skillId === skillId)
+        const versions = []
+        while (sequence < this.state.versions.length && versions.length < limit) {
+            const version = this.state.versions[sequence]
+            sequence += 1
+            if (matches(version)) versions.push(copy(version))
+        }
+        while (sequence < this.state.versions.length && !matches(this.state.versions[sequence])) {
+            sequence += 1
+        }
+        return {
+            versions,
+            nextCursor: sequence < this.state.versions.length
+                ? encodeSkillVersionCursor({revision: this.catalogRevision, sequence})
+                : null,
+        }
     }
 
     getVersion(versionId) {
