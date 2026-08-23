@@ -1,4 +1,5 @@
 const {METHOD_DEFINITIONS, controlDefinition} = require("./contracts.cjs")
+const {MAX_SCOPE_IDS, MAX_TRUSTED_SCOPE_IDS} = require("./capability-store.cjs")
 
 const PHASE_ONE_ACTIONS = new Set(
     Object.values(METHOD_DEFINITIONS).map(({action}) => action),
@@ -8,6 +9,7 @@ const SCOPE_DEFINITIONS = Object.freeze([
     Object.freeze({key: "skillIds", singular: "Skill", direct: "skillId"}),
     Object.freeze({key: "datasetIds", singular: "Dataset", direct: "datasetId"}),
     Object.freeze({key: "runtimeIds", singular: "Runtime", direct: "runtimeId"}),
+    Object.freeze({key: "repositoryIds", singular: "Repository", direct: "repositoryId"}),
 ])
 
 const ALLOW_WITHOUT_RESERVATION = Object.freeze({decision: "allow", reservation: null})
@@ -24,10 +26,16 @@ const SCOPE_REQUIREMENTS = Object.freeze({
     "datasets.list": Object.freeze({mode: "filter", keys: Object.freeze(["datasetIds"])}),
     "evaluations.get": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
     "evaluations.cancel": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
+    "skill_repositories.list": Object.freeze({mode: "filter", keys: Object.freeze(["repositoryIds"])}),
     "skills.list": Object.freeze({mode: "filter", keys: Object.freeze(["skillIds"])}),
     "skill_versions.list": Object.freeze({mode: "filter", keys: Object.freeze(["skillIds"])}),
 })
-const RESOLVED_SCOPE_KEYS = Object.freeze(["skillIds", "datasetIds", "runtimeIds"])
+const RESOLVED_SCOPE_KEYS = Object.freeze([
+    "skillIds",
+    "datasetIds",
+    "runtimeIds",
+    "repositoryIds",
+])
 const RESOLVED_SCOPE_SOURCE_KEYS = new Set(["method", "mode", "subject", ...RESOLVED_SCOPE_KEYS])
 const RESOLVED_SCOPE_SUBJECT_KEYS = new Set(["kind", "id"])
 const ACCESS_SCOPE_SUBJECTS = Object.freeze({
@@ -118,8 +126,8 @@ function policyIdentifier(value) {
         : null
 }
 
-function normalizedPolicyIds(value) {
-    if (!Array.isArray(value) || value.length > 256) return null
+function normalizedPolicyIds(value, maximum) {
+    if (!Array.isArray(value) || value.length > maximum) return null
     const ids = []
     const seen = new Set()
     for (const candidate of value) {
@@ -163,7 +171,12 @@ function createBudgetSnapshot({capabilityId, sessionId, usage, revision} = {}) {
     return snapshot
 }
 
-function createResolvedScope(source = {}) {
+function createResolvedScope(source = {}, {maxScopeIds = MAX_SCOPE_IDS} = {}) {
+    if (
+        !Number.isSafeInteger(maxScopeIds) ||
+        maxScopeIds < MAX_SCOPE_IDS ||
+        maxScopeIds > MAX_TRUSTED_SCOPE_IDS
+    ) throw new TypeError("Invalid resolved scope limit")
     const sourceSnapshot = snapshotPolicyRecord(source, RESOLVED_SCOPE_SOURCE_KEYS)
     const method = policyIdentifier(sourceSnapshot.get("method"))
     const mode = sourceSnapshot.get("mode")
@@ -201,7 +214,7 @@ function createResolvedScope(source = {}) {
     const provided = []
     for (const key of RESOLVED_SCOPE_KEYS) {
         if (sourceSnapshot.has(key)) {
-            const normalized = normalizedPolicyIds(sourceSnapshot.get(key))
+            const normalized = normalizedPolicyIds(sourceSnapshot.get(key), maxScopeIds)
             if (normalized === null) throw new TypeError("Invalid resolved scope source data")
             defineOwnData(ids, key, normalized)
             defineOwnData(provided, provided.length, key)
@@ -243,7 +256,11 @@ function canonicalObjectIds(input) {
             : []),
         request.judgeConfiguration?.runtimeId,
     ])
-    return {skillIds, datasetIds, runtimeIds}
+    const repositoryIds = uniqueStrings([
+        request.repositoryId,
+        ...(Array.isArray(request.repositoryIds) ? request.repositoryIds : []),
+    ])
+    return {skillIds, datasetIds, runtimeIds, repositoryIds}
 }
 
 function canonicalBudget(value) {

@@ -5,6 +5,7 @@ const {METHOD_DEFINITIONS} = require("./contracts.cjs")
 const MAX_CAPABILITY_LIFETIME_MS = 24 * 60 * 60 * 1_000
 const MAX_IDENTIFIER_LENGTH = 200
 const MAX_SCOPE_IDS = 256
+const MAX_TRUSTED_SCOPE_IDS = 4_096
 const TOKEN_BYTES = 32
 const CAPABILITY_ID_BYTES = 16
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u
@@ -20,10 +21,17 @@ const REQUEST_KEYS = new Set([
     "expiresInMs",
     "budget",
 ])
-const SCOPE_KEYS = Object.freeze(["skillIds", "datasetIds", "runtimeIds"])
+const SCOPE_KEYS = Object.freeze([
+    "skillIds",
+    "datasetIds",
+    "runtimeIds",
+    "repositoryIds",
+])
 const SCOPE_KEY_SET = new Set(SCOPE_KEYS)
 const BUDGET_KEYS = Object.freeze(["maxRuntimeTurns", "maxEvaluations"])
 const BUDGET_KEY_SET = new Set(BUDGET_KEYS)
+const trustedIssueByStore = new WeakMap()
+const scopeLimitByGrant = new WeakMap()
 
 class CapabilityError extends Error {
     constructor(code, message) {
@@ -153,8 +161,8 @@ function normalizeActions(actions) {
     return Object.freeze(normalized)
 }
 
-function normalizeScopeIds(value, key) {
-    const source = snapshotArray(value, key, MAX_SCOPE_IDS)
+function normalizeScopeIds(value, key, maximum) {
+    const source = snapshotArray(value, key, maximum)
     const normalized = []
     const seen = new Set()
     for (const id of source) {
@@ -167,7 +175,7 @@ function normalizeScopeIds(value, key) {
     return Object.freeze(normalized)
 }
 
-function normalizeScopes(scopes, present) {
+function normalizeScopes(scopes, present, maximum) {
     const snapshot = present ? snapshotRecord(scopes, "Capability scopes") : new Map()
     assertKnownKeys(snapshot, SCOPE_KEY_SET, "Unknown capability scope")
     const normalized = {}
@@ -175,7 +183,7 @@ function normalizeScopes(scopes, present) {
         defineOwnData(
             normalized,
             key,
-            normalizeScopeIds(snapshot.has(key) ? snapshot.get(key) : [], key),
+            normalizeScopeIds(snapshot.has(key) ? snapshot.get(key) : [], key, maximum),
         )
     }
     return Object.freeze(normalized)
@@ -237,6 +245,7 @@ class CapabilityStore {
         this.#randomBytes = randomBytes
         this.#recordObserver = recordObserver
         this.#timingSafeEqual = timingSafeEqual
+        trustedIssueByStore.set(this, (request, maximum) => this.#issue(request, maximum))
     }
 
     #now() {
@@ -267,12 +276,20 @@ class CapabilityStore {
     }
 
     issue(request) {
+        return this.#issue(request, MAX_SCOPE_IDS)
+    }
+
+    #issue(request, maximumScopeIds) {
         const snapshot = snapshotRecord(request, "Capability request")
         assertKnownKeys(snapshot, REQUEST_KEYS, "Unknown capability request field")
 
         const sessionId = normalizeIdentifier(snapshot.get("sessionId"), "sessionId")
         const actions = normalizeActions(snapshot.get("actions"))
-        const scopes = normalizeScopes(snapshot.get("scopes"), snapshot.has("scopes"))
+        const scopes = normalizeScopes(
+            snapshot.get("scopes"),
+            snapshot.has("scopes"),
+            maximumScopeIds,
+        )
         const budget = normalizeBudget(snapshot.get("budget"), snapshot.has("budget"))
         const expiresInMs = normalizeLifetime(snapshot.get("expiresInMs"))
         const issuedAt = this.#now()
@@ -298,6 +315,7 @@ class CapabilityStore {
             issuedAt,
             expiresAt: issuedAt + expiresInMs,
         })
+        scopeLimitByGrant.set(grant, maximumScopeIds)
         const record = {grant, tokenHash, revokedAt: null}
         if (this.#recordObserver !== null) {
             this.#recordObserver(Object.freeze({
@@ -373,10 +391,32 @@ class CapabilityStore {
     }
 }
 
+function createTrustedCapabilityIssuer(store, {maxScopeIds = MAX_TRUSTED_SCOPE_IDS} = {}) {
+    const issue = trustedIssueByStore.get(store)
+    if (typeof issue !== "function") throw new TypeError("A CapabilityStore is required")
+    if (
+        !Number.isSafeInteger(maxScopeIds) ||
+        maxScopeIds < MAX_SCOPE_IDS ||
+        maxScopeIds > MAX_TRUSTED_SCOPE_IDS
+    ) throw new TypeError("Trusted capability scope limit is invalid")
+    return Object.freeze({
+        issue(request) {
+            return issue(request, maxScopeIds)
+        },
+    })
+}
+
+function capabilityScopeLimit(grant) {
+    return scopeLimitByGrant.get(grant) ?? MAX_SCOPE_IDS
+}
+
 module.exports = {
     CAPABILITY_ACTIONS,
     CapabilityError,
     CapabilityStore,
+    capabilityScopeLimit,
+    createTrustedCapabilityIssuer,
     MAX_CAPABILITY_LIFETIME_MS,
     MAX_SCOPE_IDS,
+    MAX_TRUSTED_SCOPE_IDS,
 }

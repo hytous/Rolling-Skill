@@ -1,6 +1,8 @@
 const {contextBridge, ipcRenderer} = require("electron")
 
 const CONTROL_PAGE_LIMIT = 100
+const CONTROL_MAX_PAGES = 1_000
+const CONTROL_MAX_ITEMS = 100_000
 
 async function invokeControl(method, params = {}) {
     const response = await ipcRenderer.invoke("control:invoke", {method, params})
@@ -16,13 +18,25 @@ async function invokeControl(method, params = {}) {
 
 async function collectControlPages(method, params, key) {
     const items = []
+    const seenCursors = new Set()
     let cursor = null
-    do {
+    for (let pageNumber = 0; pageNumber < CONTROL_MAX_PAGES; pageNumber += 1) {
         const page = await invokeControl(method, {...params, cursor, limit: CONTROL_PAGE_LIMIT})
-        items.push(...(Array.isArray(page?.[key]) ? page[key] : []))
-        cursor = page?.nextCursor ?? null
-    } while (cursor !== null)
-    return items
+        const pageItems = Array.isArray(page?.[key]) ? page[key] : []
+        if (items.length + pageItems.length > CONTROL_MAX_ITEMS) {
+            throw new Error(`Control pagination exceeded ${CONTROL_MAX_ITEMS} items`)
+        }
+        items.push(...pageItems)
+        const nextCursor = page?.nextCursor ?? null
+        if (nextCursor === null) return items
+        const signature = JSON.stringify(nextCursor)
+        if (seenCursors.has(signature)) {
+            throw new Error("Control pagination repeated a cursor")
+        }
+        seenCursors.add(signature)
+        cursor = nextCursor
+    }
+    throw new Error(`Control pagination exceeded ${CONTROL_MAX_PAGES} pages`)
 }
 
 function controlRawCase(input = {}) {
@@ -49,19 +63,20 @@ function controlRawCaseChanges(input = {}) {
 }
 
 async function collectManagedSkillOverview() {
-    const repositories = new Map()
-    const skills = []
-    let cursor = null
-    do {
-        const page = await invokeControl("skills.list", {cursor, limit: CONTROL_PAGE_LIMIT})
-        for (const repository of page?.repositories ?? []) {
-            if (repository?.id) repositories.set(repository.id, repository)
-        }
-        skills.push(...(Array.isArray(page?.skills) ? page.skills : []))
-        cursor = page?.nextCursor ?? null
-    } while (cursor !== null)
-    const versions = await collectControlPages("skill_versions.list", {}, "versions")
-    return {repositories: [...repositories.values()], skills, versions}
+    const [repositories, skills, versions] = await Promise.all([
+        collectControlPages("skill_repositories.list", {}, "repositories"),
+        collectControlPages("skills.list", {}, "skills"),
+        collectControlPages("skill_versions.list", {}, "versions"),
+    ])
+    return {repositories, skills, versions}
+}
+
+async function readManagedSkill(skillId) {
+    const [detail, versions] = await Promise.all([
+        invokeControl("skills.get", {skillId}),
+        collectControlPages("skill_versions.list", {skillId}, "versions"),
+    ])
+    return {...detail.skill, versions}
 }
 
 function subscribe(channel, listener) {
@@ -132,8 +147,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     listManagedSkills: collectManagedSkillOverview,
     rescanManagedSkills: () => ipcRenderer.invoke("skill-repositories:rescan"),
     importManagedSkill: (input) => ipcRenderer.invoke("skill-repositories:import", input),
-    readManagedSkill: (skillId) => invokeControl("skills.get", {skillId})
-        .then((result) => result.skill),
+    readManagedSkill,
     createManagedSkillCandidate: (input) =>
         ipcRenderer.invoke("skill-versions:create-candidate", input),
     releaseManagedSkillVersion: (input) =>

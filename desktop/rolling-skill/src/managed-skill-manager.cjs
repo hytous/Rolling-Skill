@@ -331,7 +331,10 @@ class ManagedSkillManager {
         }
     }
 
-    readSkill(skillId) {
+    readSkill(skillId, {includeVersions = true} = {}) {
+        if (typeof includeVersions !== "boolean") {
+            throw new Error("includeVersions must be a boolean")
+        }
         const skill = this.store.getSkill(requiredText(skillId, "Skill id", 200))
         const repository = this.store.getRepository(skill.repositoryId)
         const repositoryRoot = realpathSync(repository.managedPath)
@@ -343,13 +346,14 @@ class ManagedSkillManager {
         if (!isContained(skillRoot, manifestPath)) {
             throw new Error("Registered Skill manifest escapes its Skill root")
         }
-        return {
+        const detail = {
             repository,
             skill,
             manifest: readFileSync(manifestPath, "utf8"),
             snapshot: snapshotManagedSkill(skillRoot, this.scanLimits),
-            versions: this.store.listVersions(skill.id),
         }
+        if (includeVersions) detail.versions = this.store.listVersions(skill.id)
+        return detail
     }
 
     createCandidate(input = {}) {

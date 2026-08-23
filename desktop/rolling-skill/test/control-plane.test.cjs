@@ -5,10 +5,12 @@ const {describe, it, mock} = require("node:test")
 const {
     CapabilityError,
     CapabilityStore,
+    createTrustedCapabilityIssuer,
 } = require("../src/control-plane/capability-store.cjs")
 const {publicControlError} = require("../src/control-plane/contracts.cjs")
 const {
     ControlPlane,
+    createServiceErrorDiagnosticChannel,
     IDEMPOTENCY_TTL_MS,
 } = require("../src/control-plane/control-plane.cjs")
 const {createDomainServices} = require("../src/control-plane/domain-services.cjs")
@@ -24,6 +26,7 @@ function createFixture({
     listRuntimes = null,
     observeHandler = null,
     resolveScope = null,
+    serviceErrorDiagnostics = null,
     runtimeScopeIds = ["runtime-1", "judge-1"],
     startEvaluation = null,
     updateIfCurrent = null,
@@ -146,6 +149,7 @@ function createFixture({
         policy: createControlPolicy(),
         auditSink,
         onAuditError,
+        serviceErrorDiagnostics,
         ...(clock ? {clock} : {}),
         ...(idempotencyLimit ? {idempotencyLimit} : {}),
     })
@@ -532,6 +536,85 @@ describe("ControlPlane", () => {
             details: null,
         })
         assert.equal(rawCaseStore.addMany.mock.callCount(), 1)
+    })
+
+    it("offers bounded service-only diagnostics to a branded in-process consumer", async () => {
+        const diagnostics = createServiceErrorDiagnosticChannel({maxMessageLength: 80})
+        const {control, issued} = createFixture({
+            serviceErrorDiagnostics: diagnostics,
+            addMany: () => {
+                throw new Error(`Skill is not installed: ${"x".repeat(200)}`)
+            },
+        })
+        const serviceError = await control.invoke(enqueueRequest(issued.token))
+            .catch((error) => error)
+
+        assert.equal(serviceError.code, "CONTROL_ERROR")
+        assert.deepEqual(diagnostics.consume(serviceError), {
+            message: `Skill is not installed: ${"x".repeat(56)}`,
+        })
+        assert.equal(diagnostics.consume(serviceError), null)
+
+        const authorizationError = await control.invoke({
+            ...enqueueRequest("z".repeat(43)),
+            token: "z".repeat(43),
+        }).catch((error) => error)
+        assert.equal(diagnostics.consume(authorizationError), null)
+
+        const scopeError = await control.invoke({
+            token: issued.token,
+            method: "datasets.get",
+            params: {datasetId: "dataset-outside", includeCases: false},
+            sessionId: "operator-1",
+        }).catch((error) => error)
+        assert.equal(diagnostics.consume(scopeError), null)
+    })
+
+    it("authorizes a 257-id resolved filter only for a branded private grant", async () => {
+        const base = createFixture()
+        const scopeIds = Array.from({length: 257}, (_, index) => `skill-${index}`)
+        const capabilities = new CapabilityStore()
+        const issuer = createTrustedCapabilityIssuer(capabilities, {maxScopeIds: 4_096})
+        const issued = issuer.issue({
+            sessionId: "renderer-1",
+            actions: ["raw_cases.read"],
+            scopes: {
+                skillIds: scopeIds,
+                datasetIds: [],
+                runtimeIds: [],
+                repositoryIds: [],
+            },
+            expiresInMs: 60_000,
+            budget: {maxRuntimeTurns: 0, maxEvaluations: 0},
+        })
+        const services = {...base.services}
+        Object.defineProperty(services, "resolveScope", {
+            enumerable: false,
+            value: () => ({
+                scope: Object.freeze({
+                    method: "raw_cases.list",
+                    mode: "filter",
+                    skillIds: Object.freeze(scopeIds),
+                }),
+                executionContext: Object.freeze({
+                    method: "raw_cases.list",
+                    rawCases: Object.freeze([]),
+                    skills: Object.freeze([]),
+                }),
+            }),
+        })
+        const control = new ControlPlane({
+            services,
+            capabilities,
+            policy: createControlPolicy(),
+        })
+
+        assert.deepEqual(await control.invoke({
+            token: issued.token,
+            sessionId: "renderer-1",
+            method: "raw_cases.list",
+            params: {},
+        }), {rawCases: [], nextCursor: null})
     })
 
     it("does not promote forged dependency error codes to public control errors", async () => {

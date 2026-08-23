@@ -320,6 +320,19 @@ describe("managed Skill repository manager", () => {
         write(join(source, "SKILL.md"), manifest("billing"))
         const imported = await manager.importSource({kind: "folder", location: source})
 
+        const listVersions = manager.store.listVersions
+        let listVersionCalls = 0
+        manager.store.listVersions = () => {
+            listVersionCalls += 1
+            throw new Error("Would materialize 100,000 versions")
+        }
+        const boundedDetail = manager.readSkill(imported.skills[0].id, {
+            includeVersions: false,
+        })
+        assert.equal(listVersionCalls, 0)
+        assert.equal(Object.hasOwn(boundedDetail, "versions"), false)
+        manager.store.listVersions = listVersions
+
         const detail = manager.readSkill(imported.skills[0].id)
         const overview = manager.overview()
         const catalog = manager.catalog()

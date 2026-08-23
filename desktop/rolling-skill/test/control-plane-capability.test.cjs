@@ -4,8 +4,10 @@ const {describe, it} = require("node:test")
 
 const {
     CapabilityStore,
+    createTrustedCapabilityIssuer,
     MAX_CAPABILITY_LIFETIME_MS,
     MAX_SCOPE_IDS,
+    MAX_TRUSTED_SCOPE_IDS,
 } = require("../src/control-plane/capability-store.cjs")
 
 const minute = 60_000
@@ -63,6 +65,7 @@ function issueOperator(store, overrides = {}) {
             skillIds: ["skill-1"],
             datasetIds: ["dataset-1"],
             runtimeIds: [],
+            repositoryIds: [],
         },
         expiresInMs: minute,
         budget: {maxRuntimeTurns: 4, maxEvaluations: 1},
@@ -201,6 +204,7 @@ describe("control-plane capability store", () => {
             skillIds: ["skill-1"],
             datasetIds: ["dataset-1"],
             runtimeIds: ["runtime-1"],
+            repositoryIds: [],
         })
         assert.deepEqual(grant.budget, {maxRuntimeTurns: 4, maxEvaluations: 1})
         assert.ok(Object.isFrozen(grant))
@@ -245,6 +249,71 @@ describe("control-plane capability store", () => {
             () => issueOperator(store, {budget: {maxRuntimeTurns: 1, maxEvaluations: 1.5}}),
             /maxEvaluations/u,
         )
+    })
+
+    it("keeps Operator scopes at 256 while a branded local issuer is explicitly bounded", () => {
+        const {store} = createFixture()
+        const rendererIssuer = createTrustedCapabilityIssuer(store, {
+            maxScopeIds: MAX_TRUSTED_SCOPE_IDS,
+        })
+        const rendererScopes = Array.from(
+            {length: MAX_SCOPE_IDS + 1},
+            (_, index) => `skill-${index}`,
+        )
+
+        assert.throws(
+            () => issueOperator(store, {
+                scopes: {
+                    skillIds: rendererScopes,
+                    datasetIds: [],
+                    runtimeIds: [],
+                    repositoryIds: [],
+                },
+            }),
+            /skillIds/u,
+        )
+        assert.doesNotThrow(() => rendererIssuer.issue({
+            sessionId: "renderer-1",
+            actions: ["raw_cases.read"],
+            scopes: {
+                skillIds: rendererScopes,
+                datasetIds: [],
+                runtimeIds: [],
+                repositoryIds: [],
+            },
+            expiresInMs: minute,
+            budget: {maxRuntimeTurns: 0, maxEvaluations: 0},
+        }))
+        assert.doesNotThrow(() => rendererIssuer.issue({
+            sessionId: "renderer-at-limit",
+            actions: ["raw_cases.read"],
+            scopes: {
+                skillIds: Array.from(
+                    {length: MAX_TRUSTED_SCOPE_IDS},
+                    (_, index) => `skill-limit-${index}`,
+                ),
+                datasetIds: [],
+                runtimeIds: [],
+                repositoryIds: [],
+            },
+            expiresInMs: minute,
+            budget: {maxRuntimeTurns: 0, maxEvaluations: 0},
+        }))
+        assert.throws(() => rendererIssuer.issue({
+            sessionId: "renderer-over-limit",
+            actions: ["raw_cases.read"],
+            scopes: {
+                skillIds: Array.from(
+                    {length: MAX_TRUSTED_SCOPE_IDS + 1},
+                    (_, index) => `skill-over-${index}`,
+                ),
+                datasetIds: [],
+                runtimeIds: [],
+                repositoryIds: [],
+            },
+            expiresInMs: minute,
+            budget: {maxRuntimeTurns: 0, maxEvaluations: 0},
+        }), /skillIds/u)
     })
 
     it("accepts no unknown scope, budget, or top-level fields", () => {
@@ -339,7 +408,12 @@ describe("control-plane capability store", () => {
                 expiresInMs: minute,
             })
             const firstGrant = store.authorize(withoutOptionalAuthority.token, "raw_cases.read")
-            assert.deepEqual(firstGrant.scopes, {skillIds: [], datasetIds: [], runtimeIds: []})
+            assert.deepEqual(firstGrant.scopes, {
+                skillIds: [],
+                datasetIds: [],
+                runtimeIds: [],
+                repositoryIds: [],
+            })
             assert.deepEqual(firstGrant.budget, {maxRuntimeTurns: 0, maxEvaluations: 0})
 
             const emptyOwnRecords = store.issue({
@@ -350,7 +424,12 @@ describe("control-plane capability store", () => {
                 budget: {},
             })
             const secondGrant = store.authorize(emptyOwnRecords.token, "raw_cases.read")
-            assert.deepEqual(secondGrant.scopes, {skillIds: [], datasetIds: [], runtimeIds: []})
+            assert.deepEqual(secondGrant.scopes, {
+                skillIds: [],
+                datasetIds: [],
+                runtimeIds: [],
+                repositoryIds: [],
+            })
             assert.deepEqual(secondGrant.budget, {maxRuntimeTurns: 0, maxEvaluations: 0})
         } finally {
             for (const key of Object.keys(poisoned)) delete Object.prototype[key]

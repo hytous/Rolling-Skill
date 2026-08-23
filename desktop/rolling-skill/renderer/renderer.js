@@ -2296,14 +2296,13 @@ function rawCaseSkillReference(name) {
     const candidates = [
         ...state.datasets.map((dataset) => dataset.skillReference),
         ...state.evaluationSkills,
-    ].filter(Boolean)
-    const match = candidates.find(
-        (skill) => String(skill.name ?? "").trim().toLocaleLowerCase("en-US") === normalized,
-    )
-    return {
-        name: String(name ?? "").trim(),
-        ...(match?.path ? {path: match.path} : {}),
-    }
+        ...state.rawCases.map((rawCase) => rawCase.skill),
+    ].filter((skill) =>
+        String(skill?.name ?? "").trim().toLocaleLowerCase("en-US") === normalized)
+    const ids = new Set(candidates.map((skill) => skill?.id).filter(Boolean))
+    const reference = {name: String(name ?? "").trim()}
+    if (ids.size === 1) reference.id = [...ids][0]
+    return reference
 }
 
 function suggestedRawCaseSkill() {

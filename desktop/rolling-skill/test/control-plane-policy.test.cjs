@@ -26,6 +26,7 @@ function grant(overrides = {}) {
             skillIds: Object.freeze(["skill-1"]),
             datasetIds: Object.freeze(["dataset-1"]),
             runtimeIds: Object.freeze(["runtime-1", "judge-1"]),
+            repositoryIds: Object.freeze(["repository-1"]),
         }),
         budget: Object.freeze({maxRuntimeTurns: 4, maxEvaluations: 1}),
         ...overrides,
@@ -296,6 +297,14 @@ describe("control-plane policy", () => {
         assert.deepEqual(decision, {decision: "allow", reservation: null})
     })
 
+    it("rejects an unbounded trusted resolved-scope limit", () => {
+        assert.throws(() => createResolvedScope({
+            method: "skills.list",
+            mode: "filter",
+            skillIds: [],
+        }, {maxScopeIds: 4_097}), /scope limit/iu)
+    })
+
     it("denies replaying an access resolution for another opaque subject", () => {
         const policy = createControlPolicy()
         const authority = grant()
@@ -498,6 +507,7 @@ describe("control-plane policy", () => {
             ["raw_cases.list", "raw_cases.read", "skillIds", ["skill-1"]],
             ["runtimes.list", "runtimes.read", "runtimeIds", ["runtime-1", "judge-1"]],
             ["datasets.list", "datasets.read", "datasetIds", ["dataset-1"]],
+            ["skill_repositories.list", "skills.read", "repositoryIds", ["repository-1"]],
             ["skills.list", "skills.read", "skillIds", ["skill-1"]],
             ["skill_versions.list", "skills.read", "skillIds", ["skill-1"]],
         ]
@@ -528,6 +538,7 @@ describe("control-plane policy", () => {
             ["raw_cases.list", "raw_cases.read", "skillIds", "skill-2", "Skill"],
             ["runtimes.list", "runtimes.read", "runtimeIds", "runtime-2", "Runtime"],
             ["datasets.list", "datasets.read", "datasetIds", "dataset-2", "Dataset"],
+            ["skill_repositories.list", "skills.read", "repositoryIds", "repository-2", "Repository"],
             ["skills.list", "skills.read", "skillIds", "skill-2", "Skill"],
             ["skill_versions.list", "skills.read", "skillIds", "skill-2", "Skill"],
         ]

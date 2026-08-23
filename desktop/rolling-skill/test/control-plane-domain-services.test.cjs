@@ -104,6 +104,7 @@ function serviceContext(scopeFilter = null) {
                 skillIds: ["skill-1"],
                 datasetIds: ["dataset-1"],
                 runtimeIds: ["runtime-1", "judge-1"],
+                repositoryIds: ["repository-1"],
             },
         },
         scopeFilter,
@@ -191,6 +192,13 @@ describe("control-plane domain services", () => {
         assert.deepEqual(
             await services["datasets.list"]({cursor: null, limit: 100}, serviceContext({datasetIds: []})),
             {datasets: [], nextCursor: null},
+        )
+        assert.deepEqual(
+            await services["skill_repositories.list"](
+                {cursor: null, limit: 100},
+                serviceContext({repositoryIds: []}),
+            ),
+            {repositories: [], nextCursor: null},
         )
         assert.deepEqual(
             await services["skills.list"]({cursor: null, limit: 100}, serviceContext({skillIds: []})),
@@ -340,8 +348,21 @@ describe("control-plane domain services", () => {
     it("pages managed Skill summaries with only their related sanitized metadata", async () => {
         const catalog = {
             repositories: [
-                {id: "repository-1", displayName: "Billing", managedPath: "/private/billing"},
+                {
+                    id: "repository-1",
+                    displayName: "Billing",
+                    managedPath: "/private/billing",
+                    defaultBranch: "main",
+                    source: {
+                        kind: "folder",
+                        location: "/private/source/billing",
+                        importedAt: "2026-08-20T00:00:00.000Z",
+                    },
+                    createdAt: "2026-08-20T00:00:00.000Z",
+                    updatedAt: "2026-08-21T00:00:00.000Z",
+                },
                 {id: "repository-2", displayName: "Support", managedPath: "/private/support"},
+                {id: "repository-empty", displayName: "Empty", managedPath: "/private/empty"},
                 {id: "repository-hidden", displayName: "Hidden", managedPath: "/private/hidden"},
             ],
             skills: [
@@ -349,8 +370,14 @@ describe("control-plane domain services", () => {
                     id: "skill-1",
                     repositoryId: "repository-1",
                     name: "billing",
+                    description: "Billing cost analysis",
+                    skillRoot: "skills/billing",
+                    manifestPath: "skills/billing/SKILL.md",
                     status: "invalid",
                     warnings: ["Private: /Users/alice/skills/billing/missing.md"],
+                    executableFiles: ["scripts/query.js"],
+                    createdAt: "2026-08-20T00:00:00.000Z",
+                    updatedAt: "2026-08-21T00:00:00.000Z",
                 },
                 {id: "skill-2", repositoryId: "repository-2", name: "support"},
                 {id: "skill-hidden", repositoryId: "repository-hidden", name: "hidden"},
@@ -370,8 +397,22 @@ describe("control-plane domain services", () => {
             scopes: {
                 ...serviceContext().grant.scopes,
                 skillIds: ["skill-1", "skill-2"],
+                repositoryIds: ["repository-1", "repository-empty"],
             },
         }
+        const repositoryResolution = await services.resolveScope(
+            "skill_repositories.list",
+            {cursor: null, limit: 100},
+            grant,
+        )
+        const repositories = await services["skill_repositories.list"](
+            {cursor: null, limit: 100},
+            {
+                ...serviceContext({repositoryIds: ["repository-1", "repository-empty"]}),
+                grant,
+                executionContext: repositoryResolution.executionContext,
+            },
+        )
         const resolution = await services.resolveScope(
             "skills.list",
             {cursor: null, limit: 1},
@@ -387,17 +428,39 @@ describe("control-plane domain services", () => {
         )
 
         assert.deepEqual(result, {
-            repositories: [{id: "repository-1", displayName: "Billing"}],
+            repositories: [{
+                id: "repository-1",
+                displayName: "Billing",
+                defaultBranch: "main",
+                source: {
+                    kind: "folder",
+                    importedAt: "2026-08-20T00:00:00.000Z",
+                },
+                createdAt: "2026-08-20T00:00:00.000Z",
+                updatedAt: "2026-08-21T00:00:00.000Z",
+            }],
             skills: [{
                 id: "skill-1",
                 repositoryId: "repository-1",
                 name: "billing",
+                description: "Billing cost analysis",
+                skillRoot: "skills/billing",
+                manifestPath: "skills/billing/SKILL.md",
                 status: "invalid",
+                warnings: ["Private: [absolute path omitted]"],
                 warningCount: 1,
+                executableFiles: ["scripts/query.js"],
+                createdAt: "2026-08-20T00:00:00.000Z",
+                updatedAt: "2026-08-21T00:00:00.000Z",
             }],
             nextCursor: encodeCursor(1),
         })
-        assert.equal(dependencies.managedSkillManager.catalog.mock.callCount(), 1)
+        assert.deepEqual(repositories.repositories.map((entry) => entry.id), [
+            "repository-1",
+            "repository-empty",
+        ])
+        assert.doesNotMatch(JSON.stringify(repositories), /private/u)
+        assert.equal(dependencies.managedSkillManager.catalog.mock.callCount(), 2)
         assert.equal(dependencies.managedSkillManager.readSkill.mock.callCount(), 0)
     })
 
@@ -632,25 +695,27 @@ describe("control-plane domain services", () => {
                     skills: [{id: "skill-1", repositoryId: "repository-1", name: "billing"}],
                     versions: [],
                 })),
-                readSkill: mock.fn(() => ({
-                    repository: {id: "repository-1", managedPath: "/Users/alice/private/repo"},
-                    skill: {
-                        id: "skill-1",
-                        repositoryId: "repository-1",
-                        name: "billing",
-                        warnings: [
-                            "Skill reference does not exist: references/missing.md",
-                            "Skill reference must be relative: /Users/alice/private/secret.md",
-                            "Could not read C:\\Users\\alice\\private\\secret.md",
-                        ],
-                    },
-                    manifest,
-                    snapshot,
-                    versions: Array.from({length: 1_000}, (_, index) => ({
-                        id: `version-${index}`,
-                        skillId: "skill-1",
-                    })),
-                })),
+                readSkill: mock.fn((_skillId, options) => {
+                    assert.deepEqual(options, {includeVersions: false})
+                    return {
+                        repository: {
+                            id: "repository-1",
+                            managedPath: "/Users/alice/private/repo",
+                        },
+                        skill: {
+                            id: "skill-1",
+                            repositoryId: "repository-1",
+                            name: "billing",
+                            warnings: [
+                                "Skill reference does not exist: references/missing.md",
+                                "Skill reference must be relative: /Users/alice/private/secret.md",
+                                "Could not read C:\\Users\\alice\\private\\secret.md",
+                            ],
+                        },
+                        manifest,
+                        snapshot,
+                    }
+                }),
             },
         })
         const services = createDomainServices(dependencies)
@@ -667,6 +732,10 @@ describe("control-plane domain services", () => {
         assert.equal(result.skill.manifest, manifest)
         assert.deepEqual(result.skill.snapshot, snapshot)
         assert.equal(Object.hasOwn(result.skill, "versions"), false)
+        assert.deepEqual(
+            dependencies.managedSkillManager.readSkill.mock.calls[0].arguments,
+            ["skill-1", {includeVersions: false}],
+        )
     })
 
     it("projects every public Raw Case Skill reference without legacy paths", async () => {

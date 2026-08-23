@@ -14,6 +14,7 @@ const FILTER_METHODS = Object.freeze({
     "raw_cases.list": "skillIds",
     "runtimes.list": "runtimeIds",
     "datasets.list": "datasetIds",
+    "skill_repositories.list": "repositoryIds",
     "skills.list": "skillIds",
     "skill_versions.list": "skillIds",
 })
@@ -158,14 +159,30 @@ function ownFields(value, keys) {
 function managedRepositorySummary(repository) {
     const summary = ownFields(repository, ["id", "displayName", "defaultBranch"])
     if (typeof repository?.source?.kind === "string") {
-        summary.source = {kind: repository.source.kind}
+        summary.source = ownFields(repository.source, ["kind", "importedAt"])
     }
-    return summary
+    return {...summary, ...ownFields(repository, ["createdAt", "updatedAt"])}
 }
 
 function managedSkillSummary(skill) {
+    const warnings = Array.isArray(skill?.warnings)
+        ? skill.warnings.slice(0, 1_000).map((warning) =>
+              sanitizedWarningMessage(warning).slice(0, 1_024))
+        : []
     return {
-        ...ownFields(skill, ["id", "repositoryId", "name", "status"]),
+        ...ownFields(skill, [
+            "id",
+            "repositoryId",
+            "name",
+            "description",
+            "skillRoot",
+            "manifestPath",
+            "status",
+            "executableFiles",
+            "createdAt",
+            "updatedAt",
+        ]),
+        warnings,
         warningCount: Array.isArray(skill?.warnings) ? skill.warnings.length : 0,
     }
 }
@@ -193,6 +210,7 @@ function createDomainServices(dependencies = {}) {
         evaluationStore,
         evaluationRunner,
         managedSkillManager,
+        listDatasets,
         listRawCaseSkills,
         listRuntimes,
         listModelsForRuntime,
@@ -344,6 +362,7 @@ function createDomainServices(dependencies = {}) {
     }
 
     async function datasetInventory() {
+        if (typeof listDatasets === "function") return clone(await listDatasets())
         if (typeof evaluationStore?.listDatasets !== "function") return []
         return clone(await evaluationStore.listDatasets())
     }
@@ -419,7 +438,9 @@ function createDomainServices(dependencies = {}) {
         if (typeof managedSkillManager?.readSkill !== "function") throw notFound("skill")
         let detail
         try {
-            detail = sanitizedSkillDetail(await managedSkillManager.readSkill(skillId))
+            detail = sanitizedSkillDetail(await managedSkillManager.readSkill(skillId, {
+                includeVersions: false,
+            }))
         } catch {
             throw notFound("skill")
         }
@@ -473,6 +494,10 @@ function createDomainServices(dependencies = {}) {
             const datasets = await datasetInventory()
             inventoryIds = datasets.map((entry) => entry?.id)
             executionContext = {method, datasets}
+        } else if (key === "repositoryIds") {
+            const catalog = await managedSkillCatalog()
+            inventoryIds = catalog.repositories.map((entry) => entry?.id)
+            executionContext = {method, catalog}
         } else {
             const catalog = method === "skills.list"
                 ? await managedSkillCatalog()
@@ -799,6 +824,18 @@ function createDomainServices(dependencies = {}) {
                 throw new Error("Evaluation cancellation unavailable")
             }
             return {run: clone(await evaluationRunner.cancel(input.runId))}
+        },
+
+        async "skill_repositories.list"(input, context) {
+            const allowed = scopeIds(context, "repositoryIds")
+            const execution = trustedExecution(context, "skill_repositories.list")
+            const catalog = execution?.catalog ?? await managedSkillCatalog()
+            const repositories = catalog.repositories.filter((entry) => allowed.has(entry.id))
+            const page = paginate(repositories, input)
+            return {
+                repositories: page.items.map(managedRepositorySummary),
+                nextCursor: page.nextCursor,
+            }
         },
 
         async "skills.list"(input, context) {

@@ -51,6 +51,16 @@ function mainFunctionContext(startName, endName, globals = {}) {
     return context
 }
 
+function rendererFunctionContext(startName, endName, globals = {}) {
+    const renderer = source("renderer/renderer.js")
+    const start = renderer.indexOf(`function ${startName}`)
+    const end = renderer.indexOf(`\nfunction ${endName}`, start + 1)
+    assert.ok(start >= 0 && end > start, `missing renderer helper slice: ${startName}`)
+    const context = {...globals}
+    vm.runInNewContext(renderer.slice(start, end), context)
+    return context
+}
+
 describe("desktop main/preload bridge", () => {
     it("registers the locally discovered DeepSeek Harness provider", () => {
         const main = source("src/main.cjs")
@@ -316,6 +326,7 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /skill-registry\.json/)
         assert.match(main, /applicationSupportDirectory:\s*app\.getPath\("userData"\)/)
         assert.match(main, /managedSkills:\s*managedSkillManager\.overview\(\)/)
+        assert.match(main, /"skill_repositories\.list"/)
         assert.match(main, /"skills\.list"/)
         assert.match(main, /skill-repositories:rescan/)
         assert.match(main, /skill-repositories:import/)
@@ -491,6 +502,7 @@ describe("desktop main/preload bridge", () => {
             "evaluations.get",
             "evaluations.start",
             "evaluations.cancel",
+            "skill_repositories.list",
             "skills.list",
             "skill_versions.list",
             "skills.get",
@@ -503,20 +515,23 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /RENDERER_FORBIDDEN_CONTROL_KEYS/)
         assert.match(main, /token[\s\S]{0,120}sessionId[\s\S]{0,120}action[\s\S]{0,120}path[\s\S]{0,120}commit[\s\S]{0,120}usage/)
 
-        const rotationStart = main.indexOf("async function ensureRendererCapability")
-        const rotationEnd = main.indexOf("\nfunction ", rotationStart + 1)
+        const rotationStart = main.indexOf("async function acquireRendererCapability")
+        const rotationEnd = main.indexOf("\nfunction isSafeControlRecord", rotationStart + 1)
         const rotation = main.slice(
             rotationStart,
             rotationEnd > rotationStart ? rotationEnd : main.length,
         )
         assert.match(rotation, /scopeSignature/)
         assert.match(rotation, /expiresAt/)
+        assert.match(main, /createTrustedCapabilityIssuer/)
+        assert.match(rotation, /rendererCapabilityIssuer\.issue/)
+        assert.match(rotation, /leases/)
         assert.ok(
-            rotation.indexOf("revokeRendererCapability()") <
-                rotation.indexOf("capabilityStore.issue"),
-            "scope rotation must revoke the prior session before issuing a new grant",
+            rotation.indexOf("rendererCapabilityIssuer.issue") <
+                rotation.indexOf("retireRendererCapability"),
+            "rotation must successfully issue a replacement before retiring the old grant",
         )
-        assert.match(main, /mainWindow\.on\("closed"[\s\S]{0,160}revokeRendererCapability\(\)/)
+        assert.match(main, /mainWindow\.on\("closed"[\s\S]{0,180}revokeRendererCapabilities\(\)/)
         assert.doesNotMatch(preload, /capabilit|token/i)
         assert.doesNotMatch(preload, /issueControl|listControl|revokeControl|controlInvoke/)
     })
@@ -570,13 +585,19 @@ describe("desktop main/preload bridge", () => {
         }), false)
     })
 
-    it("rotates the private capability only when scope or expiry changes", async () => {
+    it("leases in-flight grants and preserves the old grant when widened issuance fails", async () => {
         let now = 1_000
         let sequence = 0
-        let scopes = {skillIds: ["skill-1"], datasetIds: [], runtimeIds: []}
+        let failIssue = false
+        let scopes = {
+            skillIds: ["skill-1"],
+            datasetIds: [],
+            runtimeIds: [],
+            repositoryIds: [],
+        }
         const lifecycle = []
         const context = mainFunctionContext(
-            "revokeRendererCapability",
+            "revokeRendererCapabilityEntry",
             "isSafeControlRecord",
             {
                 Date: {now: () => now},
@@ -584,8 +605,9 @@ describe("desktop main/preload bridge", () => {
                 RENDERER_CAPABILITY_LIFETIME_MS: 3_600_000,
                 RENDERER_CAPABILITY_REFRESH_MS: 60_000,
                 RENDERER_CONTROL_ACTIONS: ["skills.read"],
-                capabilityStore: {
+                rendererCapabilityIssuer: {
                     issue(request) {
+                        if (failIssue) throw new Error("renderer scope is over the private limit")
                         sequence += 1
                         lifecycle.push(["issue", plain(request.scopes)])
                         return {
@@ -594,6 +616,8 @@ describe("desktop main/preload bridge", () => {
                             expiresAt: now + 3_600_000,
                         }
                     },
+                },
+                capabilityStore: {
                     revokeSession(sessionId) {
                         lifecycle.push(["revoke", sessionId])
                     },
@@ -602,26 +626,80 @@ describe("desktop main/preload bridge", () => {
                 currentRendererScopes: () => scopes,
                 randomUUID: () => `session-${sequence + 1}`,
                 rendererCapability: null,
+                rendererCapabilityEntries: new Set(),
+                rendererCapabilityEpoch: 0,
                 rendererCapabilityRotation: Promise.resolve(),
             },
         )
 
-        const first = await context.ensureRendererCapability()
-        const unchanged = await context.ensureRendererCapability()
+        const first = await context.acquireRendererCapability()
+        const unchanged = await context.acquireRendererCapability()
         assert.equal(unchanged.capabilityId, first.capabilityId)
         assert.deepEqual(lifecycle.map(([operation]) => operation), ["issue"])
 
-        scopes = {skillIds: ["skill-1", "skill-2"], datasetIds: [], runtimeIds: []}
-        const widened = await context.ensureRendererCapability()
+        scopes = {
+            skillIds: ["skill-1", "skill-2"],
+            datasetIds: [],
+            runtimeIds: [],
+            repositoryIds: [],
+        }
+        const widened = await context.acquireRendererCapability()
         assert.notEqual(widened.capabilityId, first.capabilityId)
-        assert.deepEqual(lifecycle.map(([operation]) => operation), ["issue", "revoke", "issue"])
+        assert.deepEqual(lifecycle.map(([operation]) => operation), ["issue", "issue"])
+        context.releaseRendererCapability(first)
+        assert.deepEqual(lifecycle.map(([operation]) => operation), ["issue", "issue"])
+        context.releaseRendererCapability(unchanged)
+        assert.deepEqual(lifecycle.map(([operation]) => operation), ["issue", "issue", "revoke"])
 
-        now += 3_600_000
-        await context.ensureRendererCapability()
-        assert.deepEqual(
-            lifecycle.map(([operation]) => operation),
-            ["issue", "revoke", "issue", "revoke", "issue"],
+        failIssue = true
+        scopes = {...scopes, skillIds: [...scopes.skillIds, "skill-3"]}
+        await assert.rejects(context.acquireRendererCapability(), /private limit/u)
+        assert.equal(context.rendererCapability.capabilityId, widened.capabilityId)
+        assert.equal(lifecycle.filter(([operation]) => operation === "revoke").length, 1)
+        context.releaseRendererCapability(widened)
+    })
+
+    it("does not issue a queued renderer grant after its window epoch is revoked", async () => {
+        let releaseRotation
+        let issues = 0
+        const context = mainFunctionContext(
+            "revokeRendererCapabilityEntry",
+            "isSafeControlRecord",
+            {
+                Date,
+                Number,
+                RENDERER_CAPABILITY_LIFETIME_MS: 3_600_000,
+                RENDERER_CAPABILITY_REFRESH_MS: 60_000,
+                RENDERER_CONTROL_ACTIONS: ["skills.read"],
+                capabilityStore: {revokeSession() {}},
+                controlInvocationsAccepted: true,
+                currentRendererScopes: () => ({
+                    skillIds: [],
+                    datasetIds: [],
+                    runtimeIds: [],
+                    repositoryIds: [],
+                }),
+                randomUUID: () => "queued-session",
+                rendererCapability: null,
+                rendererCapabilityEntries: new Set(),
+                rendererCapabilityEpoch: 0,
+                rendererCapabilityIssuer: {
+                    issue() {
+                        issues += 1
+                        return {id: "queued", token: "private", expiresAt: Date.now() + 3_600_000}
+                    },
+                },
+                rendererCapabilityRotation: new Promise((resolve) => {
+                    releaseRotation = resolve
+                }),
+            },
         )
+
+        const pending = context.acquireRendererCapability()
+        context.revokeRendererCapabilities()
+        releaseRotation()
+        await assert.rejects(pending, /window|epoch|unavailable/iu)
+        assert.equal(issues, 0)
     })
 
     it("builds Raw Case scope from trusted local catalogs and adds renderer-only name aliases", () => {
@@ -638,53 +716,197 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /assertRendererControlSender\(event\)[\s\S]*prepareRendererRawCaseSkillAliases/)
         assert.match(main, /prepareRendererRawCaseSkillAliases[\s\S]*ensureRendererCapability/)
         assert.match(main, /candidates\.length === 1[\s\S]*\.id/)
-        assert.match(main, /candidates\.length === 0[\s\S]*rendererRawCaseSkillAliases\.set/)
+        assert.match(main, /AsyncLocalStorage/)
+        assert.match(main, /candidates\.length === 0[\s\S]*aliases\.push/)
         assert.match(main, /candidates\.length > 1[\s\S]*return/)
+        assert.doesNotMatch(main, /rendererRawCaseSkillAliases\s*=\s*new Map/)
         assert.match(preload, /input\.skill\?\.id\s*\?\s*\{id:\s*input\.skill\.id\}/)
         assert.doesNotMatch(preload, /skill:\s*\{[^}]*path:/)
     })
 
-    it("maps trusted and previously unseen renderer Skill names to deterministic stable IDs", () => {
+    it("keeps source Skill identities distinct and stages unseen renderer aliases transactionally", () => {
         const context = mainFunctionContext(
-            "deterministicRawCaseSkillId",
+            "digestSkillIdentity",
             "listModelsForRuntimeFromControl",
             {
-                activeRuntimeSkillCache: [],
+                activeRuntimeSkillCache: null,
+                clientGeneration: 7,
                 createHash,
-                managedSkillManager: {catalog: () => ({skills: []})},
+                managedSkillManager: {catalog: () => ({
+                    repositories: [],
+                    skills: [{id: "managed-1", name: "shared"}],
+                })},
                 normalizedSkillName: (value) => String(value ?? "").trim().toLowerCase(),
-                rawCaseStore: {list: () => []},
-                rendererRawCaseSkillAliases: new Map(),
-                store: {listDatasets: () => []},
+                rawCaseStore: {list: () => [{skill: {name: "legacy"}}]},
+                rendererAliasContext: {getStore: () => null},
+                runtimeDescriptor: {runtimeId: "runtime-1", providerId: "codex"},
+                store: {listDatasets: () => [{
+                    skillReference: {
+                        name: "shared",
+                        path: "/workspace/dataset/SKILL.md",
+                        runtimeId: "runtime-1",
+                    },
+                }]},
+                workspaceRoot: "/workspace",
             },
         )
+        context.cachedRuntimeSkills({data: [{skills: [{
+            name: "shared",
+            path: "/workspace/runtime/SKILL.md",
+            enabled: true,
+        }]}]})
+        const shared = context.trustedRawCaseSkills().skills
+            .filter((skill) => skill.name === "shared")
+        assert.equal(shared.length, 3)
+        assert.equal(new Set(shared.map((skill) => skill.id)).size, 3)
+
         const input = {
             cases: [{question: "q", skill: {name: "Brand New Skill"}}],
         }
-        context.prepareRendererRawCaseSkillAliases("raw_cases.enqueue", input)
-        const stableId = input.cases[0].skill.id
-        assert.match(stableId, /^skill-name-[0-9a-f]{64}$/u)
+        const staged = context.prepareRendererRawCaseSkillAliases("raw_cases.enqueue", input)
+        const stableId = staged.params.cases[0].skill.id
+        assert.match(stableId, /^renderer-name-[0-9a-f]{64}$/u)
+        assert.deepEqual(plain(staged.aliases), [{id: stableId, name: "Brand New Skill"}])
         assert.equal(
             context.trustedRawCaseSkills().skills.some((skill) => skill.id === stableId),
+            false,
+        )
+        assert.equal(
+            context.trustedRawCaseSkills({stagedAliases: staged.aliases}).skills
+                .some((skill) => skill.id === stableId),
             true,
         )
+        const ambiguous = context.prepareRendererRawCaseSkillAliases(
+            "raw_cases.enqueue",
+            {cases: [{skill: {name: "shared"}}]},
+        )
+        assert.equal(ambiguous.params.cases[0].skill.id, undefined)
+    })
 
-        context.managedSkillManager = {
-            catalog: () => ({skills: [{id: "managed-1", name: "Managed"}]}),
-        }
-        const managed = {cases: [{skill: {name: "managed"}}]}
-        context.prepareRendererRawCaseSkillAliases("raw_cases.enqueue", managed)
-        assert.equal(managed.cases[0].skill.id, "managed-1")
+    it("keys the runtime Skill cache by runtime, workspace, and client generation", () => {
+        const context = mainFunctionContext(
+            "digestSkillIdentity",
+            "listModelsForRuntimeFromControl",
+            {
+                activeRuntimeSkillCache: null,
+                clientGeneration: 2,
+                createHash,
+                normalizedSkillName: (value) => String(value ?? "").trim().toLowerCase(),
+                runtimeDescriptor: {runtimeId: "runtime-1", providerId: "codex"},
+                workspaceRoot: "/workspace-one",
+            },
+        )
+        const response = {data: [{skills: [{
+            name: "billing",
+            path: "/skills/billing/SKILL.md",
+            enabled: true,
+        }]}]}
+        const first = context.cachedRuntimeSkills(response)
+        assert.match(first.data[0].skills[0].id, /^runtime-skill-[0-9a-f]{64}$/u)
+        assert.equal(context.currentRuntimeCachedSkills().length, 1)
 
-        context.managedSkillManager = {
-            catalog: () => ({skills: [
-                {id: "managed-a", name: "Duplicate"},
-                {id: "managed-b", name: "duplicate"},
-            ]}),
+        context.workspaceRoot = "/workspace-two"
+        assert.deepEqual(plain(context.currentRuntimeCachedSkills()), [])
+        const second = context.cachedRuntimeSkills(response)
+        assert.notEqual(second.data[0].skills[0].id, first.data[0].skills[0].id)
+        context.clientGeneration += 1
+        assert.deepEqual(plain(context.currentRuntimeCachedSkills()), [])
+
+        const main = source("src/main.cjs")
+        assert.match(main, /function invalidateRuntimeSkillCache/)
+        assert.match(main, /workspaceRoot\s*=\s*selectedWorkspace[\s\S]{0,100}invalidateRuntimeSkillCache\(\)/)
+        assert.match(main, /async function restartRuntimeNow[\s\S]{0,120}invalidateRuntimeSkillCache\(\)/)
+        assert.match(main, /onChanged:\s*\(job\)[\s\S]{0,160}invalidateRuntimeSkillCache\(\)/)
+    })
+
+    it("makes the renderer carry a unique trusted Skill id but refuse same-name guessing", () => {
+        const state = {
+            datasets: [{skillReference: {
+                id: "dataset-skill-1",
+                name: "shared",
+                path: "/private/dataset",
+            }}],
+            evaluationSkills: [{
+                id: "runtime-skill-1",
+                name: "runtime-only",
+                path: "/private/runtime",
+            }, {
+                id: "runtime-skill-2",
+                name: "shared",
+                path: "/private/other",
+            }],
+            rawCases: [],
         }
-        const ambiguous = {cases: [{skill: {name: "DUPLICATE"}}]}
-        context.prepareRendererRawCaseSkillAliases("raw_cases.enqueue", ambiguous)
-        assert.equal(ambiguous.cases[0].skill.id, undefined)
+        const context = rendererFunctionContext(
+            "rawCaseSkillReference",
+            "suggestedRawCaseSkill",
+            {state},
+        )
+
+        assert.deepEqual(plain(context.rawCaseSkillReference("runtime-only")), {
+            id: "runtime-skill-1",
+            name: "runtime-only",
+        })
+        assert.deepEqual(plain(context.rawCaseSkillReference("shared")), {name: "shared"})
+        assert.doesNotMatch(JSON.stringify(context.rawCaseSkillReference("runtime-only")), /private/u)
+    })
+
+    it("returns service diagnostics only through the private renderer bridge", async () => {
+        const messages = [
+            "Bind an enabled Skill to this dataset before continuing",
+            "The selected Skill is not installed and enabled in the active runtime and workspace",
+            "Formal evaluation requires a published Rubric",
+        ]
+        const safeErrors = messages.map(() =>
+            Object.assign(new Error("Control operation failed"), {code: "CONTROL_ERROR"}))
+        let invocation = 0
+        const trustedSender = {isDestroyed: () => false}
+        let released = 0
+        const context = mainFunctionContext(
+            "publicControlResponse",
+            "installControlIpc",
+            {
+                RENDERER_CONTROL_METHODS: new Set(["evaluations.start"]),
+                acquireRendererCapability: async () => ({
+                    token: "private-main-token",
+                    sessionId: "renderer-1",
+                }),
+                assert: undefined,
+                containsForbiddenControlKey: () => false,
+                controlInvocationsAccepted: true,
+                controlPlane: {invoke: async () => { throw safeErrors[invocation++] }},
+                isSafeControlRecord: (value) => Boolean(value) && typeof value === "object",
+                mainWindow: {
+                    isDestroyed: () => false,
+                    webContents: trustedSender,
+                },
+                prepareRendererRawCaseSkillAliases: (_method, params) => ({params, aliases: []}),
+                publicControlError: () => ({
+                    code: "CONTROL_ERROR",
+                    message: "Control operation failed",
+                    retryable: false,
+                    details: null,
+                }),
+                releaseRendererCapability: () => { released += 1 },
+                rendererAliasContext: {run: (_value, operation) => operation()},
+                rendererControlParams: (_method, params) => params,
+                rendererServiceErrorDiagnostics: {
+                    consume: (error) => {
+                        const index = safeErrors.indexOf(error)
+                        return index >= 0 ? {message: messages[index]} : null
+                    },
+                },
+            },
+        )
+        for (const message of messages) {
+            const response = await context.invokeRendererControl(
+                {sender: trustedSender},
+                {method: "evaluations.start", params: {}},
+            )
+            assert.equal(response.error.message, message)
+            assert.equal(response.error.code, "CONTROL_ERROR")
+        }
+        assert.equal(released, messages.length)
     })
 
     it("starts a credential-free socket and leaves a bounded diagnostic on start failure", () => {
@@ -724,10 +946,26 @@ describe("desktop main/preload bridge", () => {
                 case "evaluations.get": return {run: {id: "run-1", status: "running"}}
                 case "evaluations.start": return {run: {id: "run-2", status: "queued"}}
                 case "evaluations.cancel": return {run: {id: "run-1", status: "cancelled"}}
+                case "skill_repositories.list": return count === 0
+                    ? {
+                          repositories: [{id: "repository-1"}],
+                          nextCursor: "next-repository",
+                      }
+                    : {
+                          repositories: [{id: "repository-2"}, {id: "repository-empty"}],
+                          nextCursor: null,
+                      }
                 case "skills.list": return count === 0
                     ? {
                           repositories: [{id: "repository-1"}],
-                          skills: [{id: "skill-1", repositoryId: "repository-1"}],
+                          skills: [{
+                              id: "skill-1",
+                              repositoryId: "repository-1",
+                              skillRoot: "billing",
+                              description: "Billing Skill",
+                              warnings: [],
+                              updatedAt: "2026-08-21T00:00:00.000Z",
+                          }],
                           nextCursor: "next-skill",
                       }
                     : {
@@ -735,16 +973,34 @@ describe("desktop main/preload bridge", () => {
                           skills: [{id: "skill-2", repositoryId: "repository-2"}],
                           nextCursor: null,
                       }
-                case "skill_versions.list": return count === 0
-                    ? {
-                          versions: [{id: "version-1", skillId: "skill-1"}],
-                          nextCursor: "next-version",
-                      }
-                    : {
-                          versions: [{id: "version-2", skillId: "skill-2"}],
-                          nextCursor: null,
-                      }
-                case "skills.get": return {skill: {skill: {id: "skill-1"}}}
+                case "skill_versions.list": {
+                    if (envelope.params.skillId) {
+                        return count === 2
+                            ? {
+                                  versions: [{id: "version-detail-1", skillId: "skill-1"}],
+                                  nextCursor: "next-detail-version",
+                              }
+                            : {
+                                  versions: [{id: "version-detail-2", skillId: "skill-1"}],
+                                  nextCursor: null,
+                              }
+                    }
+                    return count === 0
+                        ? {
+                              versions: [{id: "version-1", skillId: "skill-1"}],
+                              nextCursor: "next-version",
+                          }
+                        : {
+                              versions: [{id: "version-2", skillId: "skill-2"}],
+                              nextCursor: null,
+                          }
+                }
+                case "skills.get": return {skill: {
+                    repository: {id: "repository-1"},
+                    skill: {id: "skill-1"},
+                    manifest: "---\nname: billing\n---\n",
+                    snapshot: {digest: "sha256:test"},
+                }}
                 default: throw new Error(`Unexpected method: ${envelope.method}`)
             }
         })
@@ -780,9 +1036,20 @@ describe("desktop main/preload bridge", () => {
             status: "cancelled",
         })
         assert.deepEqual(plain(await api.listManagedSkills()), {
-            repositories: [{id: "repository-1"}, {id: "repository-2"}],
+            repositories: [
+                {id: "repository-1"},
+                {id: "repository-2"},
+                {id: "repository-empty"},
+            ],
             skills: [
-                {id: "skill-1", repositoryId: "repository-1"},
+                {
+                    id: "skill-1",
+                    repositoryId: "repository-1",
+                    skillRoot: "billing",
+                    description: "Billing Skill",
+                    warnings: [],
+                    updatedAt: "2026-08-21T00:00:00.000Z",
+                },
                 {id: "skill-2", repositoryId: "repository-2"},
             ],
             versions: [
@@ -790,7 +1057,16 @@ describe("desktop main/preload bridge", () => {
                 {id: "version-2", skillId: "skill-2"},
             ],
         })
-        assert.deepEqual(plain(await api.readManagedSkill("skill-1")), {skill: {id: "skill-1"}})
+        assert.deepEqual(plain(await api.readManagedSkill("skill-1")), {
+            repository: {id: "repository-1"},
+            skill: {id: "skill-1"},
+            manifest: "---\nname: billing\n---\n",
+            snapshot: {digest: "sha256:test"},
+            versions: [
+                {id: "version-detail-1", skillId: "skill-1"},
+                {id: "version-detail-2", skillId: "skill-1"},
+            ],
+        })
 
         assert.ok(calls.length > 0)
         for (const call of calls) {
@@ -810,6 +1086,48 @@ describe("desktop main/preload bridge", () => {
         assert.equal(typeof api.createRubricSession, "function")
         assert.equal(typeof api.createCuration, "function")
         assert.equal(typeof api.startSkillInstallations, "function")
+    })
+
+    it("bounds preload pagination and fails fast on a repeated cursor", async () => {
+        let repeatedCalls = 0
+        const repeated = preloadBridge((_channel, envelope) => {
+            assert.equal(envelope.method, "datasets.list")
+            repeatedCalls += 1
+            return {datasets: [{id: `dataset-${repeatedCalls}`}], nextCursor: "same-cursor"}
+        })
+        await assert.rejects(repeated.api.listDatasets(), /pagination.*cursor/iu)
+        assert.equal(repeatedCalls, 2)
+
+        const oversized = preloadBridge((_channel, envelope) => {
+            assert.equal(envelope.method, "raw_cases.list")
+            return {
+                rawCases: Array.from({length: 100_001}, (_, index) => ({id: `raw-${index}`})),
+                nextCursor: null,
+            }
+        })
+        await assert.rejects(oversized.api.listRawCases(), /pagination.*item/iu)
+
+        const preload = source("src/preload.cjs")
+        assert.match(preload, /CONTROL_MAX_PAGES/)
+        assert.match(preload, /CONTROL_MAX_ITEMS/)
+    })
+
+    it("preserves bounded actionable evaluation errors in the preload API", async () => {
+        const {api} = preloadBridge(() => ({
+            __rollingSkillControl: true,
+            ok: false,
+            error: {
+                code: "CONTROL_ERROR",
+                message: "The selected Skill is not installed in the active runtime",
+                retryable: false,
+                details: null,
+            },
+        }))
+
+        await assert.rejects(
+            api.startEvaluationRun({datasetId: "dataset-1"}),
+            /selected Skill is not installed/u,
+        )
     })
 
     it("removes migrated legacy IPC handlers while retaining non-contract surfaces", () => {

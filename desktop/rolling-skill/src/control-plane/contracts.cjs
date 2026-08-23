@@ -189,15 +189,25 @@ const managedSkillRepository = z.object({
     defaultBranch: boundedText(MAX_IDENTIFIER_LENGTH, "Repository default branch").optional(),
     source: z.object({
         kind: boundedText(40, "Repository source kind"),
+        importedAt: boundedText(100, "Repository import time").optional(),
     }).strict().optional(),
+    createdAt: boundedText(100, "Repository creation time").optional(),
+    updatedAt: boundedText(100, "Repository update time").optional(),
 }).strict()
 
 const managedSkillSummary = z.object({
     id,
     repositoryId: id,
     name: boundedText(MAX_IDENTIFIER_LENGTH, "Skill name"),
+    description: z.string().max(1_024).nullable().optional(),
+    skillRoot: boundedText(MAX_SKILL_PATH_LENGTH, "Skill root").optional(),
+    manifestPath: boundedText(MAX_SKILL_PATH_LENGTH, "Skill manifest path").optional(),
     status: boundedText(40, "Skill status").optional(),
+    warnings: z.array(z.string().max(1_024)).max(1_000).optional(),
     warningCount: z.number().int().min(0).max(100_000),
+    executableFiles: z.array(z.string().max(MAX_SKILL_PATH_LENGTH)).max(1_000).optional(),
+    createdAt: boundedText(100, "Skill creation time").optional(),
+    updatedAt: boundedText(100, "Skill update time").optional(),
 }).strict()
 
 const managedSkillVersion = z.object({
@@ -218,6 +228,11 @@ const managedSkillVersion = z.object({
 const managedSkillPageResult = z.object({
     repositories: z.array(managedSkillRepository).max(MAX_PAGE_SIZE),
     skills: z.array(managedSkillSummary).max(MAX_PAGE_SIZE),
+    nextCursor: cursor.nullable(),
+}).strict()
+
+const managedSkillRepositoryPageResult = z.object({
+    repositories: z.array(managedSkillRepository).max(MAX_PAGE_SIZE),
     nextCursor: cursor.nullable(),
 }).strict()
 
@@ -313,6 +328,11 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
         action: "evaluations.execute",
         input: z.object({runId: id, idempotencyKey: id}).strict(),
         output: z.object({run: z.any()}).strict(),
+    },
+    "skill_repositories.list": {
+        action: "skills.read",
+        input: page.strict(),
+        output: managedSkillRepositoryPageResult,
     },
     "skills.list": {
         action: "skills.read",

@@ -20,6 +20,7 @@ const {homedir} = require("node:os")
 const {join} = require("node:path")
 const {pathToFileURL} = require("node:url")
 const {createHash, randomUUID} = require("node:crypto")
+const {AsyncLocalStorage} = require("node:async_hooks")
 
 const {CodexRuntimeProvider} = require("./codex-runtime-provider.cjs")
 const {CodeBuddyRuntimeProvider} = require("./codebuddy-runtime-provider.cjs")
@@ -56,9 +57,14 @@ const {findGitWorkspace} = require("./workspace.cjs")
 const {
     CapabilityStore,
     MAX_CAPABILITY_LIFETIME_MS,
+    MAX_TRUSTED_SCOPE_IDS,
+    createTrustedCapabilityIssuer,
 } = require("./control-plane/capability-store.cjs")
-const {ControlPlane} = require("./control-plane/control-plane.cjs")
-const {publicControlError} = require("./control-plane/contracts.cjs")
+const {
+    ControlPlane,
+    createServiceErrorDiagnosticChannel,
+} = require("./control-plane/control-plane.cjs")
+const {parseControlInput, publicControlError} = require("./control-plane/contracts.cjs")
 const {createDomainServices} = require("./control-plane/domain-services.cjs")
 const {createControlPolicy} = require("./control-plane/policy.cjs")
 const {ControlSocketServer} = require("./control-plane/socket-server.cjs")
@@ -91,6 +97,7 @@ const RENDERER_CONTROL_METHODS = new Set([
     "evaluations.get",
     "evaluations.start",
     "evaluations.cancel",
+    "skill_repositories.list",
     "skills.list",
     "skill_versions.list",
     "skills.get",
@@ -129,6 +136,8 @@ let managedSkillStartupError = null
 let skillInstallationStore = null
 let skillInstallationManager = null
 let capabilityStore = null
+let rendererCapabilityIssuer = null
+let rendererServiceErrorDiagnostics = null
 let controlPolicy = null
 let controlServices = null
 let controlPlane = null
@@ -137,7 +146,10 @@ let controlSocketStartPromise = null
 let controlShutdownPromise = null
 let rendererCapability = null
 let rendererCapabilityRotation = Promise.resolve()
-let activeRuntimeSkillCache = []
+let rendererCapabilityEpoch = 0
+const rendererCapabilityEntries = new Set()
+const rendererAliasContext = new AsyncLocalStorage()
+let activeRuntimeSkillCache = null
 let controlInvocationsAccepted = false
 let controlIpcInstalled = false
 let controlSocketStartupDiagnostic = null
@@ -156,7 +168,6 @@ const loadedThreads = new Set()
 const activeThreads = new Set()
 const runtimeNotificationRouter = new RuntimeNotificationRouter()
 const controlAuditEvents = []
-const rendererRawCaseSkillAliases = new Map()
 
 app.setName("Rolling Skill")
 
@@ -602,7 +613,7 @@ function discoverLocalRuntimes(options = {}) {
     })
     availableRuntimes = discovery.available
     runtimeDescriptor = discovery.selected
-    if (runtimeDescriptor?.runtimeId !== previousRuntimeId) activeRuntimeSkillCache = []
+    if (runtimeDescriptor?.runtimeId !== previousRuntimeId) invalidateRuntimeSkillCache()
     return discovery
 }
 
@@ -748,6 +759,7 @@ function enqueueRuntimeOperation(operation) {
 }
 
 async function restartRuntimeNow({rediscover = false} = {}) {
+    invalidateRuntimeSkillCache()
     clientGeneration += 1
     runtimeNotificationRouter.clear()
     if (client) await client.stop()
@@ -816,7 +828,7 @@ async function chooseRuntimeExecutable() {
         })
         availableRuntimes = discovery.available
         runtimeDescriptor = selected
-        activeRuntimeSkillCache = []
+        invalidateRuntimeSkillCache()
         return restartRuntimeNow()
     })
 }
@@ -825,7 +837,7 @@ async function useAutomaticRuntimeSelection() {
     return enqueueRuntimeOperation(async () => {
         writePreferences({runtimeSelection: null})
         runtimeDescriptor = null
-        activeRuntimeSkillCache = []
+        invalidateRuntimeSkillCache()
         return restartRuntimeNow({rediscover: true})
     })
 }
@@ -842,7 +854,7 @@ async function selectDiscoveredRuntime(runtimeId) {
                 executablePath: selected.executablePath,
             },
         })
-        activeRuntimeSkillCache = []
+        invalidateRuntimeSkillCache()
         runtimeDescriptor = selected
         return restartRuntimeNow()
     })
@@ -861,6 +873,7 @@ async function chooseWorkspace() {
             throw new Error("Stop active tasks before changing the workspace")
         }
         workspaceRoot = selectedWorkspace
+        invalidateRuntimeSkillCache()
         writePreferences({workspaceRoot})
         loadedThreads.clear()
         activeThreads.clear()
@@ -885,63 +898,138 @@ function revealLocalData() {
     return store.path
 }
 
-function deterministicRawCaseSkillId(name) {
-    return `skill-name-${createHash("sha256")
-        .update(normalizedSkillName(name), "utf8")
-        .digest("hex")}`
+function digestSkillIdentity(prefix, fields) {
+    const digest = createHash("sha256")
+    for (const field of fields) digest.update(`${String(field ?? "")}\0`, "utf8")
+    return `${prefix}-${digest.digest("hex")}`
 }
 
-function cachedRuntimeSkills(response) {
+function canonicalSkillPath(value) {
+    const path = typeof value === "string" ? value.trim() : ""
+    if (!path) return ""
+    const absolute = path.startsWith("/")
+    const segments = []
+    for (const segment of path.split("/")) {
+        if (!segment || segment === ".") continue
+        if (segment === "..") {
+            if (segments.length && segments.at(-1) !== "..") segments.pop()
+            else if (!absolute) segments.push(segment)
+        } else segments.push(segment)
+    }
+    return `${absolute ? "/" : ""}${segments.join("/")}` || (absolute ? "/" : "")
+}
+
+function datasetSkillIdentity(reference) {
+    const name = normalizedSkillName(reference?.name)
+    const path = canonicalSkillPath(reference?.path)
+    const runtimeId = String(reference?.runtimeId ?? "legacy-runtime")
+    if (!name) return null
+    return digestSkillIdentity("dataset-skill", [runtimeId, path, name])
+}
+
+function runtimeSkillIdentity(skill, descriptor = runtimeDescriptor, root = workspaceRoot) {
+    const name = normalizedSkillName(skill?.name)
+    if (!name || !descriptor?.runtimeId) return null
+    const path = canonicalSkillPath(skill?.path)
+    return path
+        ? digestSkillIdentity("runtime-skill", [
+              descriptor.runtimeId,
+              canonicalSkillPath(root),
+              path,
+          ])
+        : digestSkillIdentity("runtime-skill", [
+              descriptor.providerId,
+              descriptor.runtimeId,
+              canonicalSkillPath(root),
+              name,
+          ])
+}
+
+function legacyRawCaseSkillIdentity(name) {
+    return digestSkillIdentity("legacy-name", [normalizedSkillName(name)])
+}
+
+function rendererAliasSkillIdentity(name) {
+    return digestSkillIdentity("renderer-name", [normalizedSkillName(name)])
+}
+
+function runtimeSkillCacheKey(
+    descriptor = runtimeDescriptor,
+    root = workspaceRoot,
+    generation = clientGeneration,
+) {
+    return JSON.stringify([
+        descriptor?.runtimeId ?? null,
+        canonicalSkillPath(root),
+        generation,
+    ])
+}
+
+function invalidateRuntimeSkillCache() {
+    activeRuntimeSkillCache = null
+}
+
+function cachedRuntimeSkills(
+    response,
+    descriptor = runtimeDescriptor,
+    root = workspaceRoot,
+    generation = clientGeneration,
+) {
+    const data = (response?.data ?? []).map((entry) => ({
+        ...entry,
+        skills: (entry?.skills ?? []).map((skill) => {
+            const id = runtimeSkillIdentity(skill, descriptor, root)
+            return id ? {...skill, id} : {...skill}
+        }),
+    }))
+    const result = {...response, data}
     const skills = []
-    for (const entry of response?.data ?? []) {
-        for (const skill of entry?.skills ?? []) {
-            if (!skill?.enabled || !normalizedSkillName(skill.name)) continue
-            skills.push({
-                ...(typeof skill.id === "string" && skill.id ? {id: skill.id} : {}),
-                name: skill.name,
-            })
+    for (const entry of data) {
+        for (const skill of entry.skills) {
+            if (!skill?.enabled || !skill.id || !normalizedSkillName(skill.name)) continue
+            skills.push({id: skill.id, name: skill.name})
         }
     }
-    activeRuntimeSkillCache = skills
-    return response
+    activeRuntimeSkillCache = {
+        key: runtimeSkillCacheKey(descriptor, root, generation),
+        skills,
+    }
+    return result
 }
 
-function trustedRawCaseSkills() {
-    const managed = managedSkillManager.catalog().skills
-    const managedByName = new Map()
-    for (const skill of managed) {
-        const key = normalizedSkillName(skill.name)
-        const entries = managedByName.get(key) ?? []
-        entries.push(skill)
-        managedByName.set(key, entries)
-    }
+function currentRuntimeCachedSkills() {
+    return activeRuntimeSkillCache?.key === runtimeSkillCacheKey()
+        ? activeRuntimeSkillCache.skills
+        : []
+}
 
-    const otherSources = [
-        ...store.listDatasets().map((dataset) => dataset.skillReference),
-        ...activeRuntimeSkillCache,
-        ...rawCaseStore.list().map((rawCase) => rawCase.skill),
-        ...rendererRawCaseSkillAliases.values(),
+function listDatasetsForControl() {
+    return store.listDatasets().map((dataset) => {
+        const skillReference = dataset?.skillReference
+        const id = datasetSkillIdentity(skillReference)
+        return id ? {...dataset, skillReference: {...skillReference, id}} : dataset
+    })
+}
+
+function trustedRawCaseSkills({stagedAliases = rendererAliasContext.getStore()?.aliases ?? []} = {}) {
+    const managed = managedSkillManager.catalog().skills
+    const sources = [
+        ...managed.map((skill) => ({id: skill.id, name: skill.name})),
+        ...listDatasetsForControl().map((dataset) => dataset.skillReference),
+        ...currentRuntimeCachedSkills(),
+        ...rawCaseStore.list().map((rawCase) => ({
+            id: rawCase.skill?.id ?? legacyRawCaseSkillIdentity(rawCase.skill?.name),
+            name: rawCase.skill?.name,
+        })),
+        ...stagedAliases,
     ]
     const skills = new Map()
-    const add = (skill, managedSource = false) => {
-        const name = typeof skill?.name === "string" ? skill.name.trim() : ""
-        if (!name || name.length > 200) return
-        let id = typeof skill.id === "string" && skill.id
-            ? skill.id
-            : typeof skill.skillId === "string" && skill.skillId
-              ? skill.skillId
-              : null
-        if (!id) {
-            const managedMatches = managedByName.get(normalizedSkillName(name)) ?? []
-            if (!managedSource && managedMatches.length === 1) id = managedMatches[0].id
-            else if (!managedSource && managedMatches.length > 1) return
-            else id = deterministicRawCaseSkillId(name)
-        }
-        if (id.length > 200 || skills.has(id)) return
+    for (const source of sources) {
+        const id = typeof source?.id === "string" ? source.id : ""
+        const name = typeof source?.name === "string" ? source.name.trim() : ""
+        if (!id || id.length > 200 || !name || name.length > 200 || skills.has(id)) continue
         skills.set(id, {id, name})
     }
-    for (const skill of managed) add(skill, true)
-    for (const skill of otherSources) add(skill)
     return {skills: [...skills.values()]}
 }
 
@@ -954,7 +1042,8 @@ function rawCaseSkillCandidates(reference, inventory = trustedRawCaseSkills().sk
 }
 
 function prepareRendererRawCaseSkillAliases(method, input) {
-    if (method !== "raw_cases.enqueue" && method !== "raw_cases.update") return input
+    const staged = {params: input, aliases: []}
+    if (method !== "raw_cases.enqueue" && method !== "raw_cases.update") return staged
     const references = method === "raw_cases.enqueue"
         ? input.cases?.map((rawCase) => rawCase?.skill) ?? []
         : input.changes?.skill
@@ -963,21 +1052,21 @@ function prepareRendererRawCaseSkillAliases(method, input) {
     for (const reference of references) {
         if (!reference || reference.id) continue
         const candidates = rawCaseSkillCandidates(reference)
-        if (candidates.length > 1) return input
+        if (candidates.length > 1) return staged
         if (candidates.length === 1) {
             reference.id = candidates[0].id
             continue
         }
         if (candidates.length === 0) {
             const alias = {
-                id: deterministicRawCaseSkillId(reference.name),
+                id: rendererAliasSkillIdentity(reference.name),
                 name: String(reference.name ?? "").trim(),
             }
-            rendererRawCaseSkillAliases.set(alias.id, alias)
+            staged.aliases.push(alias)
             reference.id = alias.id
         }
     }
-    return input
+    return staged
 }
 
 async function listModelsForRuntimeFromControl(runtimeId) {
@@ -1018,23 +1107,45 @@ function controlScopeIds(values, key) {
 }
 
 function currentRendererScopes() {
+    const catalog = managedSkillManager.catalog()
     return {
         skillIds: controlScopeIds(trustedRawCaseSkills().skills, "id"),
-        datasetIds: controlScopeIds(store.listDatasets(), "id"),
+        datasetIds: controlScopeIds(listDatasetsForControl(), "id"),
         runtimeIds: controlScopeIds(availableRuntimes, "runtimeId"),
+        repositoryIds: controlScopeIds(catalog.repositories, "id"),
     }
 }
 
-function revokeRendererCapability() {
-    if (rendererCapability && capabilityStore) {
-        capabilityStore.revokeSession(rendererCapability.sessionId)
-    }
+function revokeRendererCapabilityEntry(entry) {
+    if (!entry || !rendererCapabilityEntries.delete(entry)) return
+    capabilityStore?.revokeSession(entry.sessionId)
+    if (rendererCapability === entry) rendererCapability = null
+}
+
+function retireRendererCapability(entry) {
+    if (!entry || entry.retired) return
+    entry.retired = true
+    if (entry.leases === 0) revokeRendererCapabilityEntry(entry)
+}
+
+function releaseRendererCapability(entry) {
+    if (!entry || entry.leases <= 0) return
+    entry.leases -= 1
+    if (entry.retired && entry.leases === 0) revokeRendererCapabilityEntry(entry)
+}
+
+function revokeRendererCapabilities() {
+    rendererCapabilityEpoch += 1
     rendererCapability = null
+    for (const entry of [...rendererCapabilityEntries]) revokeRendererCapabilityEntry(entry)
 }
 
-async function ensureRendererCapability() {
+async function acquireRendererCapability(expectedEpoch = rendererCapabilityEpoch) {
     const operation = rendererCapabilityRotation.then(() => {
-        if (!controlInvocationsAccepted || !capabilityStore) {
+        if (expectedEpoch !== rendererCapabilityEpoch) {
+            throw new Error("Renderer control window is no longer active")
+        }
+        if (!controlInvocationsAccepted || !capabilityStore || !rendererCapabilityIssuer) {
             throw new Error("Desktop control operations are unavailable")
         }
         const scopes = currentRendererScopes()
@@ -1043,11 +1154,13 @@ async function ensureRendererCapability() {
         if (
             rendererCapability?.scopeSignature === scopeSignature &&
             rendererCapability.expiresAt > now + RENDERER_CAPABILITY_REFRESH_MS
-        ) return rendererCapability
+        ) {
+            rendererCapability.leases += 1
+            return rendererCapability
+        }
 
-        revokeRendererCapability()
         const sessionId = `renderer-${randomUUID()}`
-        const issued = capabilityStore.issue({
+        const issued = rendererCapabilityIssuer.issue({
             sessionId,
             actions: RENDERER_CONTROL_ACTIONS,
             scopes,
@@ -1057,17 +1170,27 @@ async function ensureRendererCapability() {
                 maxEvaluations: Number.MAX_SAFE_INTEGER,
             },
         })
-        rendererCapability = {
+        const replacement = {
             capabilityId: issued.id,
             sessionId,
             token: issued.token,
             expiresAt: issued.expiresAt,
             scopeSignature,
+            leases: 1,
+            retired: false,
         }
-        return rendererCapability
+        const previous = rendererCapability
+        rendererCapabilityEntries.add(replacement)
+        rendererCapability = replacement
+        if (previous) retireRendererCapability(previous)
+        return replacement
     })
     rendererCapabilityRotation = operation.catch(() => {})
     return operation
+}
+
+function ensureRendererCapability() {
+    return acquireRendererCapability()
 }
 
 function isSafeControlRecord(value) {
@@ -1104,11 +1227,14 @@ function rendererControlParams(method, params) {
     if (RENDERER_CONTROL_MUTATIONS.has(method)) {
         input.idempotencyKey = `renderer-${randomUUID()}`
     }
-    return input
+    return parseControlInput(method, input)
 }
 
-function publicControlResponse(error) {
+function publicControlResponse(error, diagnostic = null) {
     const snapshot = publicControlError(error)
+    if (typeof diagnostic?.message === "string" && diagnostic.message) {
+        snapshot.message = diagnostic.message
+    }
     return {
         __rollingSkillControl: true,
         ok: false,
@@ -1146,18 +1272,27 @@ async function invokeRendererControl(event, envelope) {
         if (containsForbiddenControlKey(envelope)) {
             throw new Error("Renderer control input contains a forbidden field")
         }
-        const params = prepareRendererRawCaseSkillAliases(
+        const prepared = prepareRendererRawCaseSkillAliases(
             envelope.method,
             rendererControlParams(envelope.method, envelope.params),
         )
-        const capability = await ensureRendererCapability()
-        const value = await controlPlane.invoke({
-            token: capability.token,
-            sessionId: capability.sessionId,
-            method: envelope.method,
-            params,
+        return rendererAliasContext.run({aliases: prepared.aliases}, async () => {
+            const capability = await acquireRendererCapability()
+            try {
+                const value = await controlPlane.invoke({
+                    token: capability.token,
+                    sessionId: capability.sessionId,
+                    method: envelope.method,
+                    params: prepared.params,
+                })
+                return {__rollingSkillControl: true, ok: true, value}
+            } catch (error) {
+                const diagnostic = rendererServiceErrorDiagnostics?.consume(error) ?? null
+                return publicControlResponse(error, diagnostic)
+            } finally {
+                releaseRendererCapability(capability)
+            }
         })
-        return {__rollingSkillControl: true, ok: true, value}
     } catch (error) {
         return publicControlResponse(error)
     }
@@ -1179,12 +1314,17 @@ function removeControlIpc() {
 function initializeControlPlane() {
     if (controlPlane) return controlPlane
     capabilityStore = new CapabilityStore()
+    rendererCapabilityIssuer = createTrustedCapabilityIssuer(capabilityStore, {
+        maxScopeIds: MAX_TRUSTED_SCOPE_IDS,
+    })
+    rendererServiceErrorDiagnostics = createServiceErrorDiagnosticChannel()
     controlPolicy = createControlPolicy()
     controlServices = createDomainServices({
         rawCaseStore,
         evaluationStore: store,
         evaluationRunner,
         managedSkillManager,
+        listDatasets: listDatasetsForControl,
         listRawCaseSkills: trustedRawCaseSkills,
         workspaceRoot: () => workspaceRoot,
         listRuntimes: () => availableRuntimes,
@@ -1195,6 +1335,7 @@ function initializeControlPlane() {
         capabilities: capabilityStore,
         policy: controlPolicy,
         services: controlServices,
+        serviceErrorDiagnostics: rendererServiceErrorDiagnostics,
         auditSink: {
             record(event) {
                 if (controlAuditEvents.length === CONTROL_AUDIT_LIMIT) {
@@ -1232,7 +1373,7 @@ function stopControlPlane() {
     if (controlShutdownPromise) return controlShutdownPromise
     controlInvocationsAccepted = false
     removeControlIpc()
-    revokeRendererCapability()
+    revokeRendererCapabilities()
     controlShutdownPromise = (async () => {
         await controlSocketServer?.close()
     })()
@@ -1253,7 +1394,7 @@ function installNavigationPolicy(window) {
 }
 
 function createWindow() {
-    revokeRendererCapability()
+    revokeRendererCapabilities()
     mainWindow = new BrowserWindow({
         width: 1480,
         height: 940,
@@ -1294,7 +1435,7 @@ function createWindow() {
     const createdWindow = mainWindow
     mainWindow.on("closed", () => {
         if (mainWindow !== createdWindow) return
-        revokeRendererCapability()
+        revokeRendererCapabilities()
         mainWindow = null
     })
     void mainWindow.loadFile(RENDERER_FILE)
@@ -2263,7 +2404,10 @@ if (!hasLock) {
                 workspaceRoot,
             }),
             requestQuestion: requestSkillInstallationQuestion,
-            onChanged: (job) => send("skill-installations:changed", job),
+            onChanged: (job) => {
+                invalidateRuntimeSkillCache()
+                send("skill-installations:changed", job)
+            },
         })
         const evaluationPowerGuard = new EvaluationPowerGuard(powerSaveBlocker)
         evaluationRunner = new EvaluationRunner({

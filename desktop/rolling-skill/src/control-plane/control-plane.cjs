@@ -3,7 +3,7 @@ const {createHash} = require("node:crypto")
 const intrinsicPromiseResolve = Promise.resolve.bind(Promise)
 const intrinsicPromiseThen = Promise.prototype.then
 
-const {CapabilityError} = require("./capability-store.cjs")
+const {CapabilityError, capabilityScopeLimit} = require("./capability-store.cjs")
 const {
     CONTROL_METHODS,
     PUBLIC_CONTROL_ERROR_CODES,
@@ -19,6 +19,7 @@ const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1_000
 const DEFAULT_IDEMPOTENCY_LIMIT = 1_000
 const MAX_BUDGET_CAS_ATTEMPTS = 4
 const stateByControlPlane = new WeakMap()
+const serviceDiagnosticStates = new WeakMap()
 
 const SAFE_CONTROL_MESSAGES = Object.freeze({
     CONTROL_ERROR: "Control operation failed",
@@ -129,6 +130,40 @@ function immutableSnapshot(value) {
 
 function replayCopy(value) {
     return structuredClone(value)
+}
+
+function createServiceErrorDiagnosticChannel({maxMessageLength = 1_000} = {}) {
+    if (
+        !Number.isSafeInteger(maxMessageLength) ||
+        maxMessageLength < 1 ||
+        maxMessageLength > 4_096
+    ) throw new TypeError("Service diagnostic message limit is invalid")
+    const diagnostics = new WeakMap()
+    const channel = Object.freeze({
+        capture(publicError, serviceError) {
+            if (!publicError || (typeof publicError !== "object" && typeof publicError !== "function")) {
+                return
+            }
+            let message = ""
+            try {
+                message = typeof serviceError?.message === "string"
+                    ? serviceError.message
+                    : String(serviceError ?? "")
+            } catch {}
+            message = message.slice(0, maxMessageLength)
+            if (message) diagnostics.set(publicError, Object.freeze({message}))
+        },
+        consume(publicError) {
+            if (!publicError || (typeof publicError !== "object" && typeof publicError !== "function")) {
+                return null
+            }
+            const diagnostic = diagnostics.get(publicError) ?? null
+            diagnostics.delete(publicError)
+            return diagnostic
+        },
+    })
+    serviceDiagnosticStates.set(channel, true)
+    return channel
 }
 
 class IdempotencyCache {
@@ -529,6 +564,9 @@ class ControlPlane {
             }),
             auditSink: options.auditSink ?? null,
             onAuditError: typeof options.onAuditError === "function" ? options.onAuditError : null,
+            serviceErrorDiagnostics: serviceDiagnosticStates.has(options.serviceErrorDiagnostics)
+                ? options.serviceErrorDiagnostics
+                : null,
         })
         Object.freeze(this)
     }
@@ -550,6 +588,7 @@ class ControlPlane {
         let errorCode = null
         let idempotencyOwner = null
         let executionStarted = false
+        let serviceFailure = null
         try {
             envelope = snapshotControlRequest(request)
             bearerSecret = typeof envelope.token === "string" ? envelope.token : null
@@ -600,7 +639,11 @@ class ControlPlane {
                     resolution = source
                 }
             }
-            resolvedScope = resolution === null ? undefined : createResolvedScope(resolution)
+            resolvedScope = resolution === null
+                ? undefined
+                : createResolvedScope(resolution, {
+                      maxScopeIds: capabilityScopeLimit(grant),
+                  })
 
             let decision = null
             for (let attempt = 0; attempt < MAX_BUDGET_CAS_ATTEMPTS; attempt += 1) {
@@ -643,7 +686,13 @@ class ControlPlane {
                 executionContext,
             })
             executionStarted = true
-            const rawResult = await state.services[method](input, context)
+            let rawResult
+            try {
+                rawResult = await state.services[method](input, context)
+            } catch (error) {
+                serviceFailure = error
+                throw error
+            }
             const parsed = parseControlOutput(method, rawResult)
             const result = idempotencyOwner
                 ? state.idempotency.complete(idempotencyOwner, parsed)
@@ -653,6 +702,9 @@ class ControlPlane {
             return result
         } catch (error) {
             const safe = safeControlError(error, method)
+            if (serviceFailure !== null) {
+                state.serviceErrorDiagnostics?.capture(safe, serviceFailure)
+            }
             if (idempotencyOwner) {
                 if (executionStarted && safe.code !== "CONTROL_BUSY") {
                     state.idempotency.completeError(idempotencyOwner, safe)
@@ -693,6 +745,7 @@ function identifier(value) {
 
 module.exports = {
     ControlPlane,
+    createServiceErrorDiagnosticChannel,
     DEFAULT_IDEMPOTENCY_LIMIT,
     IDEMPOTENCY_TTL_MS,
 }

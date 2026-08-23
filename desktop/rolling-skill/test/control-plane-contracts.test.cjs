@@ -65,6 +65,7 @@ const validInputs = {
         idempotencyKey: "evaluation-1",
     },
     "evaluations.cancel": {runId: "run-1", idempotencyKey: "cancel-1"},
+    "skill_repositories.list": {},
     "skills.list": {},
     "skill_versions.list": {},
     "skills.get": {skillId: "skill-1"},
@@ -86,6 +87,7 @@ const validOutputs = {
     "evaluations.get": {run: {id: "run-1"}},
     "evaluations.start": {run: {id: "run-1"}},
     "evaluations.cancel": {run: {id: "run-1"}},
+    "skill_repositories.list": {repositories: [], nextCursor: null},
     "skills.list": {repositories: [], skills: [], nextCursor: null},
     "skill_versions.list": {versions: [], nextCursor: null},
     "skills.get": {skill: {id: "skill-1"}},
@@ -111,6 +113,7 @@ describe("control-plane contracts", () => {
                 "evaluations.get": "evaluations.read",
                 "evaluations.start": "evaluations.execute",
                 "evaluations.cancel": "evaluations.execute",
+                "skill_repositories.list": "skills.read",
                 "skills.list": "skills.read",
                 "skill_versions.list": "skills.read",
                 "skills.get": "skills.read",
@@ -150,6 +153,7 @@ describe("control-plane contracts", () => {
             "raw_cases.list",
             "datasets.list",
             "evaluations.list",
+            "skill_repositories.list",
             "skills.list",
             "skill_versions.list",
         ]) {
@@ -181,6 +185,10 @@ describe("control-plane contracts", () => {
         })
         assert.deepEqual(parseControlInput("skill_versions.list", {}), {
             skillId: null,
+            cursor: null,
+            limit: 50,
+        })
+        assert.deepEqual(parseControlInput("skill_repositories.list", {}), {
             cursor: null,
             limit: 50,
         })
@@ -470,9 +478,20 @@ describe("control-plane contracts", () => {
                 id: "skill-1",
                 repositoryId: "repository-1",
                 name: "billing",
+                description: "Billing cost analysis",
+                skillRoot: "skills/billing",
+                manifestPath: "skills/billing/SKILL.md",
                 status: "valid",
+                warnings: ["Reference at /Users/alice/private was omitted"],
                 warningCount: 0,
+                executableFiles: ["scripts/query.js"],
+                createdAt: "2026-08-20T00:00:00.000Z",
+                updatedAt: "2026-08-21T00:00:00.000Z",
             }],
+            nextCursor: null,
+        }
+        const repositoryOutput = {
+            repositories: output.repositories,
             nextCursor: null,
         }
         const versionOutput = {
@@ -493,6 +512,7 @@ describe("control-plane contracts", () => {
             nextCursor: null,
         }
 
+        assert.deepEqual(parseControlOutput("skill_repositories.list", repositoryOutput), repositoryOutput)
         assert.deepEqual(parseControlOutput("skills.list", output), output)
         assert.deepEqual(
             parseControlOutput("skill_versions.list", versionOutput),
@@ -544,10 +564,13 @@ describe("control-plane contracts", () => {
             ["raw_cases.list", "rawCases"],
             ["datasets.list", "datasets"],
             ["evaluations.list", "runs"],
+            ["skill_repositories.list", "repositories"],
             ["skills.list", "skills"],
             ["skill_versions.list", "versions"],
         ]) {
-            const item = method === "skills.list"
+            const item = method === "skill_repositories.list"
+                ? {id: "repository-1"}
+                : method === "skills.list"
                 ? {
                     id: "skill-1",
                     repositoryId: "repository-1",
