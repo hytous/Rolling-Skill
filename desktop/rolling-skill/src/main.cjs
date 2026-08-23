@@ -640,25 +640,40 @@ async function currentRuntimeSkillReference(value) {
     const name = requireIdentifier(value?.name, "Skill")
     const nameOnly = value?.evidencePrecision === "name-only" && !value?.path
     const path = nameOnly ? null : requireAbsolutePath(value?.path, "Skill")
+    const runtime = await ensureRuntime()
+    const descriptor = runtimeDescriptor
+    const root = workspaceRoot
+    const generation = clientGeneration
+    const snapshotIsCurrent = () =>
+        runtime === client &&
+        descriptor === runtimeDescriptor &&
+        root === workspaceRoot &&
+        generation === clientGeneration
+    if (!snapshotIsCurrent()) {
+        throw new Error("The runtime or workspace changed while verifying the Skill; try again")
+    }
     if (
         nameOnly &&
         (
-            value?.providerId !== runtimeDescriptor?.providerId ||
-            value?.runtimeId !== runtimeDescriptor?.runtimeId ||
-            value?.workspaceRoot !== workspaceRoot
+            value?.providerId !== descriptor?.providerId ||
+            value?.runtimeId !== descriptor?.runtimeId ||
+            value?.workspaceRoot !== root
         )
     ) {
         throw new Error(
             "The name-only Skill identity is stale for the active runtime and workspace",
         )
     }
-    const runtime = await ensureRuntime()
     if (typeof runtime.listSkills !== "function") {
         throw new Error("The active runtime cannot verify installed Skills")
     }
-    const response = cachedRuntimeSkills(await runtime.listSkills({forceReload: true}))
+    const runtimeResponse = await runtime.listSkills({forceReload: true})
+    if (!snapshotIsCurrent()) {
+        throw new Error("The runtime or workspace changed while verifying the Skill; try again")
+    }
+    const response = cachedRuntimeSkills(runtimeResponse, descriptor, root, generation)
     const requested = {name, path}
-    const allowNameOnly = runtimeDescriptor?.capabilities?.includes("skills-name-only")
+    const allowNameOnly = descriptor?.capabilities?.includes("skills-name-only")
     if (!runtimeReportsSkill(response, requested, {allowNameOnly})) {
         throw new Error(
             "The selected Skill is not installed and enabled in the active runtime and workspace",
@@ -680,14 +695,14 @@ async function currentRuntimeSkillReference(value) {
         path,
         scope: reported?.scope ?? null,
         description: reported?.description ?? reported?.interface?.shortDescription ?? null,
-        runtimeId: runtimeDescriptor?.runtimeId ?? null,
+        runtimeId: descriptor?.runtimeId ?? null,
         confirmedAt: new Date().toISOString(),
     }
     if (!nameOnly) return reference
     return {
         ...reference,
-        providerId: runtimeDescriptor?.providerId ?? null,
-        workspaceRoot,
+        providerId: descriptor?.providerId ?? null,
+        workspaceRoot: root,
         evidencePrecision: "name-only",
     }
 }

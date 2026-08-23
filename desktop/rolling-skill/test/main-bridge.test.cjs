@@ -932,14 +932,17 @@ describe("desktop main/preload bridge", () => {
             })
 
             const runtimeResponse = {data: [{skills: [runtimeSkill]}]}
+            const runtimeClient = {
+                listSkills: async () => runtimeResponse,
+            }
             const mainReference = mainFunctionContext(
                 "currentRuntimeSkillReference",
                 "unavailableRuntimeState",
                 {
                     cachedRuntimeSkills: (response) => response,
-                    ensureRuntime: async () => ({
-                        listSkills: async () => runtimeResponse,
-                    }),
+                    client: runtimeClient,
+                    clientGeneration: 1,
+                    ensureRuntime: async () => runtimeClient,
                     requireAbsolutePath(value) {
                         if (typeof value !== "string" || !value.startsWith("/")) {
                             throw new Error("Skill must be an absolute path")
@@ -1021,6 +1024,109 @@ describe("desktop main/preload bridge", () => {
             assert.equal(renderer.runtimeSkillForReference(dataset.skillReference), null)
         } finally {
             rmSync(directory, {recursive: true, force: true})
+        }
+    })
+
+    it("fails closed when the Runtime Skill verification snapshot changes in flight", async () => {
+        const scenarios = [
+            {
+                name: "runtime client",
+                mutate(context) {
+                    context.client = {ready: true}
+                },
+            },
+            {
+                name: "runtime descriptor",
+                mutate(context) {
+                    context.runtimeDescriptor = {
+                        runtimeId: "deepseek-harness:other",
+                        providerId: "deepseek-harness",
+                        capabilities: ["skills-name-only"],
+                    }
+                },
+            },
+            {
+                name: "workspace",
+                mutate(context) {
+                    context.workspaceRoot = "/workspace/other"
+                },
+            },
+            {
+                name: "client generation",
+                mutate(context) {
+                    context.clientGeneration += 1
+                },
+            },
+        ]
+
+        for (const scenario of scenarios) {
+            let releaseSkills
+            let signalListStarted
+            const listStarted = new Promise((resolve) => {
+                signalListStarted = resolve
+            })
+            const skillsResponse = {data: [{skills: [{
+                name: "deepseek-billing",
+                enabled: true,
+                evidencePrecision: "name-only",
+            }]}]}
+            const runtimeClient = {
+                ready: true,
+                async listSkills() {
+                    signalListStarted()
+                    return new Promise((resolve) => {
+                        releaseSkills = resolve
+                    })
+                },
+            }
+            let cacheWrites = 0
+            const descriptor = {
+                runtimeId: "deepseek-harness:local",
+                providerId: "deepseek-harness",
+                capabilities: ["skills-name-only"],
+            }
+            const context = mainFunctionContext(
+                "currentRuntimeSkillReference",
+                "unavailableRuntimeState",
+                {
+                    cachedRuntimeSkills: (response) => {
+                        cacheWrites += 1
+                        return response
+                    },
+                    client: runtimeClient,
+                    clientGeneration: 7,
+                    ensureRuntime: async () => runtimeClient,
+                    requireAbsolutePath(value) {
+                        if (typeof value !== "string" || !value.startsWith("/")) {
+                            throw new Error("Skill must be an absolute path")
+                        }
+                        return value
+                    },
+                    requireIdentifier: (value) => String(value ?? "").trim(),
+                    runtimeDescriptor: descriptor,
+                    runtimeReportsSkill,
+                    workspaceRoot: "/workspace/project",
+                },
+            )
+            const pending = context.currentRuntimeSkillReference({
+                name: "deepseek-billing",
+                path: null,
+                providerId: descriptor.providerId,
+                runtimeId: descriptor.runtimeId,
+                workspaceRoot: "/workspace/project",
+                evidencePrecision: "name-only",
+            })
+
+            await listStarted
+            scenario.mutate(context)
+            releaseSkills(skillsResponse)
+
+            await assert.rejects(
+                pending,
+                /runtime.*workspace.*changed|verification.*stale/iu,
+                scenario.name,
+            )
+            assert.equal(cacheWrites, 0, `${scenario.name} must not write the Skill cache`)
         }
     })
 
