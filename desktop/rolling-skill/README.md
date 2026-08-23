@@ -195,6 +195,48 @@ normalized Skill name are reported instead of appended again. A batch accepts at
 one question accepts at most 120,000 characters, and total batch question text is limited to
 1,000,000 characters.
 
+The `enqueue`, `list`, and two-tool `mcp` modes above are the offline Raw Case exception. They use
+the append-only event file and continue to work while Rolling Skill.app is closed. They do not have
+an Operator capability and cannot reach the authenticated control surface.
+
+### Authenticated Operator control gateway
+
+While Rolling Skill.app is running, it listens on an owner-only Unix-domain socket inside the
+App's Application Support control directory. This describes the location class only: the App does
+not print the live socket path, a capability token, or a session credential. Starting the listener
+also issues no external capability, so connecting to the socket by itself grants no authority.
+
+The authenticated `rolling-skill-tool control` and `rolling-skill-tool operator-mcp` modes require
+the App to remain running and require an explicitly granted Operator session. A trusted launcher
+passes the concrete socket path, bearer token, and session ID only in the child process environment:
+
+- `ROLLING_SKILL_CONTROL_SOCKET`
+- `ROLLING_SKILL_CONTROL_TOKEN`
+- `ROLLING_SKILL_CONTROL_SESSION`
+
+Do not put these credentials in command-line arguments, MCP arguments, repository configuration,
+files, logs, or copied shell output. The Tool validates all three environment values before opening
+an input file or connecting, redacts control failures, and never returns the token or session ID in
+Tool results. Capabilities are short-lived, session-bound, action-bound, and object-scoped; the
+socket is transport, not ambient authorization.
+
+`operator-mcp` initially publishes these typed Tools from the shared control contracts:
+
+- `rolling_skill_context_get`
+- `rolling_skill_raw_cases_list`, `rolling_skill_raw_cases_enqueue`,
+  `rolling_skill_raw_cases_update`, and `rolling_skill_raw_cases_dispatch`
+- `rolling_skill_runtimes_list` and `rolling_skill_runtimes_models`
+- `rolling_skill_datasets_list` and `rolling_skill_datasets_get`
+- `rolling_skill_evaluations_list`, `rolling_skill_evaluations_get`,
+  `rolling_skill_evaluations_start`, and `rolling_skill_evaluations_cancel`
+- `rolling_skill_skill_repositories_list`, `rolling_skill_skills_list`,
+  `rolling_skill_skill_versions_list`, and `rolling_skill_skills_get`
+
+Ordinary Chat sessions and formal target/Judge evaluation clients never receive this Operator
+capability, the `operator-mcp` server, or its credential environment. The desktop renderer uses a
+separate main-process-private capability for its existing UI actions; no token or session is exposed
+through preload, Renderer IPC arguments/results, or DevTools.
+
 ## Managed Skill repositories
 
 Use **Skill management** under the Rolling Skill logo to maintain editable, local-first Skill source

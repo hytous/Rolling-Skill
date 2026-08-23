@@ -203,6 +203,26 @@ let observationSequence = 0
 let threadObservation = null
 let deliveredTimelineNotifications = 0
 let blockedTimelineNotifications = 0
+const fakeControlInvocations = []
+const requiredSmokeControlMethods = new Set([
+    "runtimes.models",
+    "raw_cases.list",
+    "raw_cases.enqueue",
+    "datasets.list",
+    "datasets.get",
+    "evaluations.list",
+    "evaluations.get",
+    "skill_repositories.list",
+    "skills.list",
+    "skill_versions.list",
+    "skills.get",
+])
+
+function assertSmokeControlCoverage() {
+    const invoked = new Set(fakeControlInvocations.map((entry) => entry.method))
+    const missing = [...requiredSmokeControlMethods].filter((method) => !invoked.has(method))
+    if (missing.length) throw new Error(`Smoke UI bypassed fake controlInvoke: ${missing.join(", ")}`)
+}
 
 const summaryNotificationMethods = new Set([
     "thread/started",
@@ -562,6 +582,182 @@ const smokeEvaluationRun = {
     ],
 }
 
+function smokeControlRawCase(input = {}) {
+    return {
+        question: input.question,
+        skill: {
+            ...(input.skill?.id ? {id: input.skill.id} : {}),
+            name: input.skill?.name,
+        },
+        note: input.note ?? "",
+        source: {kind: input.source?.kind ?? "operator"},
+    }
+}
+
+function smokeControlRawCaseChanges(input = {}) {
+    return {
+        ...(Object.hasOwn(input, "question") ? {question: input.question} : {}),
+        ...(Object.hasOwn(input, "skill") ? {skill: {
+            ...(input.skill?.id ? {id: input.skill.id} : {}),
+            name: input.skill?.name,
+        }} : {}),
+        ...(Object.hasOwn(input, "note") ? {note: input.note} : {}),
+    }
+}
+
+function smokePublicRawCase(entry) {
+    return {
+        ...entry,
+        skill: {
+            ...(entry.skill?.id ? {id: entry.skill.id} : {}),
+            name: entry.skill?.name,
+        },
+    }
+}
+
+async function fakeControlInvoke(method, params = {}) {
+    fakeControlInvocations.push({method, params: JSON.parse(JSON.stringify(params))})
+    switch (method) {
+        case "runtimes.list":
+            return {runtimes: [{
+                runtimeId: currentRuntimeId,
+                providerId: "codex",
+                displayName: "Codex",
+                version: "smoke",
+            }]}
+        case "runtimes.models": {
+            const requestedRuntimeId = params.runtimeId ?? currentRuntimeId
+            const delay = modelDelayByRuntime.get(requestedRuntimeId) ?? 0
+            if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
+            const suffix = requestedRuntimeId.split(":").at(-1)
+            return {models: [{
+                id: requestedRuntimeId === "codex:renderer-smoke"
+                    ? "gpt-5.6-sol"
+                    : `model-${suffix}`,
+                model: requestedRuntimeId === "codex:renderer-smoke"
+                    ? "gpt-5.6-sol"
+                    : `model-${suffix}`,
+                displayName: requestedRuntimeId === "codex:renderer-smoke"
+                    ? "GPT-5.6-Sol"
+                    : `Model ${suffix}`,
+                isDefault: true,
+                reasoningEfforts: ["low", "medium", "high", "xhigh"],
+            }]}
+        }
+        case "raw_cases.list":
+            return {
+                rawCases: smokeRawCases
+                    .filter((entry) =>
+                        !params.skillName ||
+                        entry.skill.name.toLowerCase() === params.skillName.toLowerCase(),
+                    )
+                    .map(smokePublicRawCase),
+                nextCursor: null,
+            }
+        case "raw_cases.enqueue": {
+            const created = params.cases.map((entry, index) => ({
+                id: `raw-case-added-${Date.now()}-${index}`,
+                ...entry,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+            }))
+            smokeRawCases = [...created, ...smokeRawCases]
+            for (const listener of rawCasesChangedListeners) listener(smokeRawCases)
+            return {created: created.map(smokePublicRawCase), duplicates: [], rejected: []}
+        }
+        case "raw_cases.update":
+            smokeRawCases = smokeRawCases.map((entry) =>
+                entry.id === params.id
+                    ? {...entry, ...params.changes, updatedAt: new Date().toISOString()}
+                    : entry,
+            )
+            for (const listener of rawCasesChangedListeners) listener(smokeRawCases)
+            return {
+                rawCase: smokePublicRawCase(
+                    smokeRawCases.find((entry) => entry.id === params.id),
+                ),
+            }
+        case "datasets.list":
+            return {datasets: smokeDatasets, nextCursor: null}
+        case "datasets.get": {
+            const dataset = smokeDatasets.find((entry) => entry.id === params.datasetId)
+            return {
+                dataset,
+                ...(params.includeCases ? {
+                    cases: smokeEvaluationCases.filter(
+                        (entry) => entry.datasetId === params.datasetId,
+                    ),
+                } : {}),
+            }
+        }
+        case "evaluations.list":
+            return {
+                runs: !params.datasetId || params.datasetId === smokeEvaluationRun.datasetId
+                    ? [smokeEvaluationRun]
+                    : [],
+                nextCursor: null,
+            }
+        case "evaluations.get":
+            return {run: smokeEvaluationRun}
+        case "evaluations.start":
+            return {run: {...smokeEvaluationRun, id: "run-smoke-started", status: "queued"}}
+        case "evaluations.cancel":
+            return {run: {...smokeEvaluationRun, id: params.runId, status: "cancelled"}}
+        case "skill_repositories.list":
+            return {repositories: [smokeManagedRepository], nextCursor: null}
+        case "skills.list":
+            return {
+                repositories: [smokeManagedRepository],
+                skills: [smokeManagedSkill, smokeManagedSkillTwo],
+                nextCursor: null,
+            }
+        case "skill_versions.list":
+            return {
+                versions: params.skillId
+                    ? smokeManagedVersions.filter((version) => version.skillId === params.skillId)
+                    : smokeManagedVersions,
+                nextCursor: null,
+            }
+        case "skills.get": {
+            const skill = [smokeManagedSkill, smokeManagedSkillTwo]
+                .find((entry) => entry.id === params.skillId)
+            if (!skill) throw new Error("Unknown smoke managed Skill")
+            return {skill: {
+                repository: smokeManagedRepository,
+                skill,
+                manifest: `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n${skill === smokeManagedSkillTwo ? "Second managed Skill" : "Use the smoke workflow."}\n`,
+                snapshot: {
+                    digest: `sha256:${(skill === smokeManagedSkillTwo ? "b" : "a").repeat(64)}`,
+                },
+            }}
+        }
+        default:
+            throw new Error(`Unknown fake control method: ${method}`)
+    }
+}
+
+async function fakeControlPage(method, params, key) {
+    const page = await fakeControlInvoke(method, {...params, cursor: null, limit: 100})
+    return page[key] ?? []
+}
+
+async function fakeManagedSkillOverview() {
+    const [repositories, skills, versions] = await Promise.all([
+        fakeControlPage("skill_repositories.list", {}, "repositories"),
+        fakeControlPage("skills.list", {}, "skills"),
+        fakeControlPage("skill_versions.list", {}, "versions"),
+    ])
+    return {repositories, skills, versions}
+}
+
+async function fakeReadManagedSkill(skillId) {
+    const [detail, versions] = await Promise.all([
+        fakeControlInvoke("skills.get", {skillId}),
+        fakeControlPage("skill_versions.list", {skillId}, "versions"),
+    ])
+    return {...detail.skill, versions}
+}
+
 contextBridge.exposeInMainWorld("rollingSkill", {
     bootstrap: async () => ({
         runtime: {
@@ -604,28 +800,14 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         skillInstallations: {jobs: [], matrix: []},
         settings,
     }),
-    listModels: async () => {
-        const requestedRuntimeId = currentRuntimeId
-        const delay = modelDelayByRuntime.get(requestedRuntimeId) ?? 0
-        if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
-        const suffix = requestedRuntimeId.split(":").at(-1)
-        return {
-            data: [{
-                id: requestedRuntimeId === "codex:renderer-smoke" ? "gpt-5.6-sol" : `model-${suffix}`,
-                displayName: requestedRuntimeId === "codex:renderer-smoke" ? "GPT-5.6-Sol" : `Model ${suffix}`,
-                isDefault: true,
-                reasoningEfforts: ["low", "medium", "high", "xhigh"],
-            }],
-        }
-    },
-    listModelsForRuntime: async () => ({
-        data: [{
-            id: "gpt-5.6-sol",
-            model: "gpt-5.6-sol",
-            displayName: "GPT-5.6-Sol",
-            isDefault: true,
-            reasoningEfforts: ["low", "medium", "high", "xhigh"],
-        }],
+    listRuntimes: async () => (await fakeControlInvoke("runtimes.list")).runtimes,
+    listModels: async () => ({
+        data: (await fakeControlInvoke("runtimes.models")).models,
+        nextCursor: null,
+    }),
+    listModelsForRuntime: async (runtimeId) => ({
+        data: (await fakeControlInvoke("runtimes.models", {runtimeId})).models,
+        nextCursor: null,
     }),
     listThreads: async (archived = false) => ({
         data: archived ? [] : Object.values(threads).map(({turns: _turns, ...thread}) => thread),
@@ -692,27 +874,17 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         threads[threadId].turns.push(turn)
         return {turn}
     },
-    listRawCases: async (skillName = null) => smokeRawCases.filter(
-        (entry) => !skillName || entry.skill.name.toLowerCase() === skillName.toLowerCase(),
-    ),
-    addRawCases: async (cases_) => {
-        const created = cases_.map((entry, index) => ({
-            id: `raw-case-added-${Date.now()}-${index}`,
-            ...entry,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-        }))
-        smokeRawCases = [...created, ...smokeRawCases]
-        for (const listener of rawCasesChangedListeners) listener(smokeRawCases)
-        return {created, duplicates: [], rejected: []}
-    },
-    updateRawCase: async (id, changes) => {
-        smokeRawCases = smokeRawCases.map((entry) =>
-            entry.id === id ? {...entry, ...changes, updatedAt: new Date().toISOString()} : entry,
-        )
-        for (const listener of rawCasesChangedListeners) listener(smokeRawCases)
-        return smokeRawCases.find((entry) => entry.id === id)
-    },
+    listRawCases: async (skillName = null) =>
+        fakeControlPage("raw_cases.list", {skillName}, "rawCases"),
+    addRawCases: async (cases_) => fakeControlInvoke("raw_cases.enqueue", {
+        cases: cases_.map(smokeControlRawCase),
+    }),
+    updateRawCase: async (id, changes) => (
+        await fakeControlInvoke("raw_cases.update", {
+            id,
+            changes: smokeControlRawCaseChanges(changes),
+        })
+    ).rawCase,
     deleteRawCase: async (id) => {
         const removed = smokeRawCases.find((entry) => entry.id === id)
         smokeRawCases = smokeRawCases.filter((entry) => entry.id !== id)
@@ -728,7 +900,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         rawCasesChangedListeners.add(listener)
         return () => rawCasesChangedListeners.delete(listener)
     },
-    listManagedSkills: async () => smokeManagedOverview(),
+    listManagedSkills: fakeManagedSkillOverview,
     listSkillInstallations: async () => ({jobs: [], matrix: []}),
     startSkillInstallations: async () => [],
     cancelSkillInstallation: async () => null,
@@ -737,17 +909,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     respondSkillInstallationQuestion: async () => ({accepted: true}),
     rescanManagedSkills: async () => ({...smokeManagedOverview(), failures: []}),
     importManagedSkill: async () => ({cancelled: true}),
-    readManagedSkill: async (skillId) => {
-        const skill = [smokeManagedSkill, smokeManagedSkillTwo].find((entry) => entry.id === skillId)
-        if (!skill) throw new Error("Unknown smoke managed Skill")
-        return {
-            repository: smokeManagedRepository,
-            skill,
-            manifest: `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\n${skill === smokeManagedSkillTwo ? "Second managed Skill" : "Use the smoke workflow."}\n`,
-            snapshot: {digest: `sha256:${(skill === smokeManagedSkillTwo ? "b" : "a").repeat(64)}`},
-            versions: smokeManagedVersions.filter((version) => version.skillId === skill.id),
-        }
-    },
+    readManagedSkill: fakeReadManagedSkill,
     createManagedSkillCandidate: async ({skillId}) => {
         const candidate = {
             id: "managed-version-created-smoke",
@@ -794,7 +956,10 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     onSkillInstallationQuestion: noOpSubscription,
     onSkillInstallationQuestionResolved: noOpSubscription,
     onManagedSkillVersionReleased: noOpSubscription,
-    smokeLastRawCaseTurnText: () => lastRawCaseTurnText,
+    smokeLastRawCaseTurnText: () => {
+        assertSmokeControlCoverage()
+        return lastRawCaseTurnText
+    },
     listSkills: async () => ({
         data: [{
             cwd: "/tmp/rolling-skill-renderer-smoke",
@@ -807,7 +972,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
             }],
         }],
     }),
-    listDatasets: async () => smokeDatasets,
+    listDatasets: async () => fakeControlPage("datasets.list", {}, "datasets"),
     createDataset: async ({name, skillReference}) => {
         const dataset = {
             id: `dataset-smoke-${smokeDatasets.length + 1}`,
@@ -858,9 +1023,20 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         }
         return smokeRubricSession
     },
-    listCases: async () => smokeEvaluationCases,
-    listEvaluationRuns: async () => [smokeEvaluationRun],
-    getEvaluationRun: async () => smokeEvaluationRun,
+    listCases: async (datasetId) => (
+        await fakeControlInvoke("datasets.get", {datasetId, includeCases: true})
+    ).cases ?? [],
+    listEvaluationRuns: async (datasetId = null) =>
+        fakeControlPage("evaluations.list", {datasetId}, "runs"),
+    getEvaluationRun: async (runId) => (
+        await fakeControlInvoke("evaluations.get", {runId})
+    ).run,
+    startEvaluationRun: async (input) => (
+        await fakeControlInvoke("evaluations.start", input)
+    ).run,
+    cancelEvaluationRun: async (runId) => (
+        await fakeControlInvoke("evaluations.cancel", {runId})
+    ).run,
     createCuration: async (input) => {
         lastCurationInput = input
         if (failNextCuration) {
