@@ -18,6 +18,7 @@ const {dirname, isAbsolute, join} = require("node:path")
 const {afterEach, describe, it} = require("node:test")
 
 const {
+    MAX_ARTIFACT_BYTES,
     OPERATOR_JOB_STORE_SCHEMA,
     OperatorJobStore,
 } = require("../src/operator/job-store.cjs")
@@ -340,6 +341,42 @@ describe("Operator Job store", () => {
         assert.deepEqual(restarted.readArtifactBody(external.id), externalBody)
     })
 
+    it("rejects oversized artifact inputs before copying strings or typed bytes", () => {
+        const {store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        const inputs = [
+            "x".repeat(MAX_ARTIFACT_BYTES + 1),
+            Buffer.allocUnsafe(MAX_ARTIFACT_BYTES + 1),
+        ]
+        for (const body of inputs) {
+            const originalFrom = Buffer.from
+            let copied = false
+            let failure = null
+            Buffer.from = function (value, ...rest) {
+                if (value === body) {
+                    copied = true
+                    throw new Error("oversized body was copied")
+                }
+                return originalFrom.call(Buffer, value, ...rest)
+            }
+            try {
+                store.createArtifact(job.id, {
+                    kind: "trace",
+                    name: "oversized",
+                    mediaType: "application/octet-stream",
+                    body,
+                })
+            } catch (error) {
+                failure = error
+            } finally {
+                Buffer.from = originalFrom
+            }
+            assert.equal(copied, false)
+            assert.match(failure?.message ?? "", /artifact.*64|artifact.*byte limit/iu)
+        }
+    })
+
     it("persists approval decisions and an ordered independent session transcript", () => {
         const {path, store} = fixture()
         const session = createSession(store)
@@ -608,6 +645,106 @@ describe("Operator Job store", () => {
         }, /idempotency/iu)
     })
 
+    it("rejects self-referential and multi-Job parent cycles", () => {
+        assertRegistryCorruptionRejected((store) => {
+            const session = createSession(store)
+            return {job: createJob(store, session.id)}
+        }, (registry, {job}) => {
+            registry.jobs[0].parentJobId = job.id
+            registry.jobs[0].children = [job.id]
+        }, /parent.*cycle|Job.*cycle/iu)
+
+        assertRegistryCorruptionRejected((store) => {
+            const session = createSession(store)
+            return {
+                first: createJob(store, session.id, {objective: "first"}),
+                second: createJob(store, session.id, {objective: "second"}),
+            }
+        }, (registry, {first, second}) => {
+            const firstRecord = registry.jobs.find((job) => job.id === first.id)
+            const secondRecord = registry.jobs.find((job) => job.id === second.id)
+            firstRecord.parentJobId = second.id
+            firstRecord.children = [second.id]
+            secondRecord.parentJobId = first.id
+            secondRecord.children = [first.id]
+        }, /parent.*cycle|Job.*cycle/iu)
+    })
+
+    it("migrates the exact parent-commit v1 envelopes and external artifact path", () => {
+        const {path, store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        store.transitionJob(job.id, "running")
+        store.appendSessionTranscript(session.id, {
+            kind: "message",
+            role: "user",
+            text: "legacy transcript",
+        })
+        store.appendEvent(job.id, {
+            kind: "observation",
+            detail: "legacy event",
+        })
+        const artifact = store.createArtifact(job.id, {
+            kind: "trace",
+            name: "legacy artifact",
+            mediaType: "application/octet-stream",
+            body: Buffer.alloc(128 * 1024 + 1, 0x63),
+        })
+        rewriteRegistry(path, (registry) => {
+            registry.sessions[0].transcript = registry.sessions[0].transcript.map((entry) => ({
+                ...entry.payload,
+                id: entry.id,
+                sessionId: entry.sessionId,
+                sequence: entry.sequence,
+                kind: entry.kind,
+                recordedAt: entry.recordedAt,
+            }))
+            registry.events = registry.events.map((event) => ({
+                ...event.payload,
+                id: event.id,
+                jobId: event.jobId,
+                sequence: event.sequence,
+                kind: event.kind,
+                occurredAt: event.occurredAt,
+            }))
+            registry.artifacts[0].path = artifact.path
+        })
+
+        const migrated = new OperatorJobStore(path)
+        assert.equal(migrated.getSession(session.id).transcript[0].text, "legacy transcript")
+        assert.equal(migrated.listEvents(job.id)[0].detail, "legacy event")
+        assert.equal(migrated.getArtifact(artifact.id).path, artifact.path)
+        const persisted = JSON.parse(readFileSync(path, "utf8"))
+        assert.deepEqual(persisted.sessions[0].transcript[0].payload, {
+            role: "user",
+            text: "legacy transcript",
+        })
+        assert.deepEqual(persisted.events[0].payload, {detail: "legacy event"})
+        assert.equal(persisted.artifacts[0].path, `${artifact.id}-${artifact.sha256}.artifact`)
+    })
+
+    it("projects read state through the same public shapes as get and list", () => {
+        const {store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        store.transitionJob(job.id, "running")
+        store.appendSessionTranscript(session.id, {kind: "message", text: "public"})
+        store.appendEvent(job.id, {kind: "observation", detail: "public"})
+        const artifact = store.createArtifact(job.id, {
+            kind: "trace",
+            name: "public",
+            mediaType: "application/octet-stream",
+            body: Buffer.alloc(128 * 1024 + 1, 0x64),
+        })
+
+        const state = store.read()
+        assert.deepEqual(state.sessions[0], store.getSession(session.id))
+        assert.deepEqual(state.events, store.listEvents(job.id))
+        assert.deepEqual(state.artifacts[0], store.getArtifact(artifact.id))
+        assert.equal(state.events[0].detail, "public")
+        assert.equal(state.artifacts[0].path, artifact.path)
+    })
+
     it("atomically closes pending approvals when their Job becomes terminal", () => {
         const {store} = fixture()
         const session = createSession(store)
@@ -630,7 +767,7 @@ describe("Operator Job store", () => {
         assert.ok(closed.resolvedAt)
     })
 
-    it("refuses to resolve an expired approval or one whose Job is no longer waiting", () => {
+    it("refuses expired approval and prevents pending approval from leaving waiting state", () => {
         const expiredFixture = fixture()
         const expiredSession = createSession(expiredFixture.store)
         const expiredJob = createJob(expiredFixture.store, expiredSession.id)
@@ -663,14 +800,75 @@ describe("Operator Job store", () => {
             risk: "release",
             expiresAt: "2099-01-01T00:00:00.000Z",
         })
-        pausedFixture.store.transitionJob(pausedJob.id, "paused")
         assert.throws(
-            () => pausedFixture.store.resolveApproval(paused.id, {
-                decision: "approve",
-                scope: "action",
-            }),
-            /waiting_approval|Job status/iu,
+            () => pausedFixture.store.transitionJob(pausedJob.id, "paused"),
+            /pending.*waiting_approval|approval.*Job status/iu,
         )
+        assert.equal(pausedFixture.store.getApproval(paused.id).status, "pending")
+        assert.equal(pausedFixture.store.getJob(pausedJob.id).status, "waiting_approval")
+    })
+
+    it("rejects a persisted terminal Job with a forged pending approval", () => {
+        const {path, store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        store.transitionJob(job.id, "running")
+        store.transitionJob(job.id, "waiting_approval")
+        store.createApproval(job.id, {
+            action: "skills.release",
+            scope: {},
+            proposedMutation: {},
+            risk: "release",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+        })
+        store.transitionJob(job.id, "failed", {error: {code: "STOPPED"}})
+        rewriteRegistry(path, (registry) => {
+            Object.assign(registry.approvals[0], {
+                status: "pending",
+                decision: null,
+                decisionScope: null,
+                decidedBy: null,
+                resolvedAt: null,
+            })
+        })
+
+        assert.throws(
+            () => new OperatorJobStore(path),
+            /pending.*waiting_approval|approval.*Job status/iu,
+        )
+    })
+
+    it("accepts pending approval only while its Job is waiting_approval", () => {
+        const createPending = () => {
+            const context = fixture()
+            const session = createSession(context.store)
+            const job = createJob(context.store, session.id)
+            context.store.transitionJob(job.id, "running")
+            context.store.transitionJob(job.id, "waiting_approval")
+            context.store.createApproval(job.id, {
+                action: "skills.release",
+                scope: {},
+                proposedMutation: {},
+                risk: "release",
+                expiresAt: "2099-01-01T00:00:00.000Z",
+            })
+            return {...context, job}
+        }
+        const valid = createPending()
+        assert.equal(new OperatorJobStore(valid.path).getJob(valid.job.id).status, "waiting_approval")
+
+        for (const status of ["queued", "running", "paused", "needs_recovery", "cancelling"]) {
+            const {path} = createPending()
+            rewriteRegistry(path, (registry) => {
+                registry.jobs[0].status = status
+                if (status === "queued") registry.jobs[0].startedAt = null
+            })
+            assert.throws(
+                () => new OperatorJobStore(path),
+                /pending.*waiting_approval|approval.*Job status/iu,
+                status,
+            )
+        }
     })
 
     it("rejects a symlinked registry instead of following it", () => {

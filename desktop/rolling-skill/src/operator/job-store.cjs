@@ -14,7 +14,7 @@ const {
     unlinkSync,
     writeFileSync,
 } = require("node:fs")
-const {basename, dirname, join, resolve} = require("node:path")
+const {basename, dirname, isAbsolute, join, resolve} = require("node:path")
 
 const OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v1"
 const MAX_STORE_BYTES = 64 * 1024 * 1024
@@ -517,6 +517,77 @@ function equalJson(left, right) {
     return JSON.stringify(left) === JSON.stringify(right)
 }
 
+function hasExactKeys(value, expected) {
+    if (!isPlainObject(value)) return false
+    const actual = Object.keys(value).sort()
+    const canonical = [...expected].sort()
+    return actual.length === canonical.length && actual.every((key, index) => key === canonical[index])
+}
+
+function migrateLegacyEnvelope(value, baseFields, canonicalFields, label) {
+    requireObject(value, label)
+    if (hasExactKeys(value, canonicalFields) && isPlainObject(value.payload)) {
+        return {value: cloneJson(value, label), migrated: false}
+    }
+    for (const field of baseFields) {
+        if (!Object.hasOwn(value, field)) throw new Error(`${label} legacy envelope is incomplete`)
+    }
+    const payload = {}
+    for (const key of Object.keys(value)) {
+        if (!baseFields.includes(key)) payload[key] = cloneJson(value[key], `${label} legacy payload`)
+    }
+    const migrated = {payload}
+    for (const field of baseFields) migrated[field] = cloneJson(value[field], label)
+    return {value: migrated, migrated: true}
+}
+
+function migrateV1State(value, artifactDirectory) {
+    const stateFields = ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"]
+    exactKeys(value, stateFields, "Operator Job store")
+    if (value.schemaVersion !== OPERATOR_JOB_STORE_SCHEMA) return {state: value, migrated: false}
+    const state = cloneJson(value, "Operator Job store")
+    let migrated = false
+    if (!Array.isArray(state.sessions) || !Array.isArray(state.events) || !Array.isArray(state.artifacts)) {
+        return {state, migrated}
+    }
+    const transcriptBase = ["id", "sessionId", "sequence", "kind", "recordedAt"]
+    const transcriptCanonical = [...transcriptBase, "payload"]
+    for (const session of state.sessions) {
+        if (!isPlainObject(session) || !Array.isArray(session.transcript)) continue
+        session.transcript = session.transcript.map((entry) => {
+            const result = migrateLegacyEnvelope(
+                entry,
+                transcriptBase,
+                transcriptCanonical,
+                "Operator transcript entry",
+            )
+            migrated ||= result.migrated
+            return result.value
+        })
+    }
+    const eventBase = ["id", "jobId", "sequence", "kind", "occurredAt"]
+    const eventCanonical = [...eventBase, "payload"]
+    state.events = state.events.map((event) => {
+        const result = migrateLegacyEnvelope(event, eventBase, eventCanonical, "Operator event")
+        migrated ||= result.migrated
+        return result.value
+    })
+    for (const artifact of state.artifacts) {
+        if (!isPlainObject(artifact) || typeof artifact.path !== "string" || !isAbsolute(artifact.path)) continue
+        const expectedName = artifactFileName(
+            requiredText(artifact.id, "Legacy Operator artifact id", 200),
+            requiredText(artifact.sha256, "Legacy Operator artifact digest", 64),
+        )
+        const expectedPath = join(artifactDirectory, expectedName)
+        if (resolve(artifact.path) !== resolve(expectedPath)) {
+            throw new Error("Legacy Operator artifact path escapes its private directory")
+        }
+        artifact.path = expectedName
+        migrated = true
+    }
+    return {state, migrated}
+}
+
 function canonicalState(value) {
     exactKeys(value, ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"], "Operator Job store")
     if (value.schemaVersion !== OPERATOR_JOB_STORE_SCHEMA) throw new Error("Unsupported Operator Job store schema")
@@ -587,6 +658,16 @@ function canonicalState(value) {
             }
         }
     }
+    const jobVisitColors = new Map()
+    const visitJob = (jobId) => {
+        const color = jobVisitColors.get(jobId) ?? 0
+        if (color === 1) throw new Error("Operator Job parent graph contains a cycle")
+        if (color === 2) return
+        jobVisitColors.set(jobId, 1)
+        for (const childId of jobs.get(jobId).children) visitJob(childId)
+        jobVisitColors.set(jobId, 2)
+    }
+    for (const jobId of jobs.keys()) visitJob(jobId)
     for (const step of state.steps) {
         const job = jobs.get(step.jobId)
         if (!job || job.sessionId !== step.sessionId) throw new Error("Operator Step Job reference is invalid")
@@ -600,6 +681,9 @@ function canonicalState(value) {
         const job = jobs.get(approval.jobId)
         if (!job || job.sessionId !== approval.sessionId || !job.approvalIds.includes(approval.id)) {
             throw new Error("Operator approval Job reference is invalid")
+        }
+        if (approval.status === "pending" && job.status !== "waiting_approval") {
+            throw new Error("Pending Operator approval requires a waiting_approval Job status")
         }
         if (approval.stepId !== null) {
             const step = steps.get(approval.stepId)
@@ -769,11 +853,16 @@ class OperatorJobStore {
         }
         try {
             const encoded = readSecureFile(this.#path, dirname(this.#path), MAX_STORE_BYTES, "Operator Job store")
-            this.#state = canonicalState(JSON.parse(encoded.toString("utf8")))
+            const migration = migrateV1State(
+                JSON.parse(encoded.toString("utf8")),
+                this.#artifactDirectory,
+            )
+            this.#state = canonicalState(migration.state)
             if (pathEntryExists(this.#artifactDirectory)) secureDirectory(this.#artifactDirectory)
             for (const artifact of this.#state.artifacts) {
                 if (artifact.path !== null) this.#readExternalArtifact(artifact)
             }
+            if (migration.migrated) this.persist()
         } catch (error) {
             throw new Error(`Could not read Operator Job store: ${error.message}`)
         }
@@ -803,7 +892,15 @@ class OperatorJobStore {
     }
 
     read() {
-        return copy(this.#state)
+        return {
+            schemaVersion: this.#state.schemaVersion,
+            sessions: this.#state.sessions.map(publicSession),
+            jobs: copy(this.#state.jobs),
+            steps: copy(this.#state.steps),
+            approvals: copy(this.#state.approvals),
+            artifacts: this.#state.artifacts.map((artifact) => this.#publicArtifact(artifact)),
+            events: this.#state.events.map(publicEvent),
+        }
     }
 
     flush() {
@@ -1004,9 +1101,15 @@ class OperatorJobStore {
         let body
         let encoding
         if (typeof artifactInput.body === "string") {
+            if (Buffer.byteLength(artifactInput.body, "utf8") > MAX_ARTIFACT_BYTES) {
+                throw new Error("Operator artifact exceeds its 64 MiB byte limit")
+            }
             body = Buffer.from(artifactInput.body, "utf8")
             encoding = "utf8"
         } else if (Buffer.isBuffer(artifactInput.body) || artifactInput.body instanceof Uint8Array) {
+            if (artifactInput.body.byteLength > MAX_ARTIFACT_BYTES) {
+                throw new Error("Operator artifact exceeds its 64 MiB byte limit")
+            }
             body = Buffer.from(artifactInput.body)
             encoding = "base64"
         } else {
