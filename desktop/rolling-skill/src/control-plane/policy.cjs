@@ -266,8 +266,18 @@ function canonicalObjectIds(input) {
 function canonicalBudget(value) {
     const source = typeof value === "object" && value !== null ? value : {}
     const budget = {}
-    for (const key of ["maxRuntimeTurns", "maxEvaluations"]) {
+    for (const key of [
+        "maxDurationMs",
+        "maxRuntimeTurns",
+        "maxEvaluations",
+        "maxTargetExecutions",
+        "maxJudgeExecutions",
+        "maxTokens",
+    ]) {
         if (Number.isSafeInteger(source[key]) && source[key] >= 0) budget[key] = source[key]
+    }
+    if (Number.isFinite(source.maxReportedCost) && source.maxReportedCost >= 0) {
+        budget.maxReportedCost = source.maxReportedCost
     }
     return budget
 }
@@ -311,6 +321,15 @@ function approvalDecision(reason, input) {
         decision: "approval_required",
         reason,
         requestedScope: requestedScope(input, options),
+    })
+}
+
+function operatorApprovalRequirement(method, input = {}) {
+    const definition = policyMethodDefinition(method)
+    if (definition?.reason === null || definition === null) return null
+    return deepFreeze({
+        ...approvalDecision(definition.reason, input),
+        action: definition.action,
     })
 }
 
@@ -556,4 +575,5 @@ module.exports = {
     createResolvedScope,
     decide: decideControlPolicy,
     decideControlPolicy,
+    operatorApprovalRequirement,
 }

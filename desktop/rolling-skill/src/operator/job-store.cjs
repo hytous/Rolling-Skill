@@ -53,6 +53,12 @@ const STEP_STATUSES = new Set([
     "cancelled",
     "needs_recovery",
 ])
+const STEP_TRANSITIONS = new Map([
+    ["pending", new Set(["running", "waiting_approval", "failed", "cancelled", "needs_recovery"])],
+    ["running", new Set(["waiting_approval", "succeeded", "failed", "cancelled", "needs_recovery"])],
+    ["waiting_approval", new Set(["running", "failed", "cancelled"])],
+    ["needs_recovery", new Set(["running", "succeeded", "failed", "cancelled"])],
+])
 const BUDGET_FIELDS = [
     "maxDurationMs",
     "maxRuntimeTurns",
@@ -183,6 +189,16 @@ function nowTimestamp() {
 
 function sha256(body) {
     return createHash("sha256").update(body).digest("hex")
+}
+
+function stableJson(value) {
+    if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
+    if (value !== null && typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) => (
+            `${JSON.stringify(key)}:${stableJson(value[key])}`
+        )).join(",")}}`
+    }
+    return JSON.stringify(value)
 }
 
 function digest(value, label) {
@@ -379,6 +395,43 @@ function canonicalStep(value) {
         throw new Error("Operator Step completion fields are inconsistent")
     }
     return step
+}
+
+function canonicalStepRequest(value) {
+    const hasReservation = isPlainObject(value) && Object.hasOwn(value, "reservation")
+    exactKeys(
+        value,
+        hasReservation ? ["method", "params", "reservation"] : ["method", "params"],
+        "Operator Step frozen request",
+    )
+    const request = {
+        method: canonicalText(value.method, "Operator Step request method", 300),
+        params: boundedEnvelope(
+            requireObject(value.params, "Operator Step request params"),
+            "Operator Step request params",
+        ),
+    }
+    if (hasReservation) {
+        request.reservation = boundedEnvelope(
+            requireObject(value.reservation, "Operator Step request reservation"),
+            "Operator Step request reservation",
+        )
+    }
+    return boundedEnvelope(request, "Operator Step frozen request")
+}
+
+function canonicalStepCreationPayload(value) {
+    exactKeys(
+        value,
+        ["stepId", "idempotencyKey", "inputDigest", "request"],
+        "Operator Step creation event",
+    )
+    return {
+        stepId: canonicalText(value.stepId, "Operator Step event id", 200),
+        idempotencyKey: canonicalText(value.idempotencyKey, "Operator Step event idempotency key", 500),
+        inputDigest: digest(value.inputDigest, "Operator Step event input digest"),
+        request: canonicalStepRequest(value.request),
+    }
 }
 
 function canonicalApproval(value) {
@@ -618,6 +671,15 @@ function canonicalState(value) {
     if (new Set(stepIdempotencyKeys).size !== stepIdempotencyKeys.length) {
         throw new Error("Operator Step idempotency key must be unique within its Job")
     }
+    const stepCreationEvents = new Map()
+    for (const event of state.events) {
+        if (event.kind !== "operator_step_created") continue
+        const creation = canonicalStepCreationPayload(event.payload)
+        if (stepCreationEvents.has(creation.stepId)) {
+            throw new Error("Operator Step has duplicate creation events")
+        }
+        stepCreationEvents.set(creation.stepId, creation)
+    }
 
     for (const job of state.jobs) {
         if (!sessions.has(job.sessionId)) throw new Error("Operator Job session reference is unknown")
@@ -677,6 +739,12 @@ function canonicalState(value) {
     for (const step of state.steps) {
         const job = jobs.get(step.jobId)
         if (!job || job.sessionId !== step.sessionId) throw new Error("Operator Step Job reference is invalid")
+        const creation = stepCreationEvents.get(step.id)
+        if (!creation || creation.request.method !== step.method ||
+            creation.idempotencyKey !== step.idempotencyKey || creation.inputDigest !== step.inputDigest ||
+            sha256(stableJson(creation.request)) !== step.inputDigest) {
+            throw new Error("Operator Step creation event does not match its immutable identity")
+        }
         for (const artifactId of step.outputArtifactIds) {
             if (artifacts.get(artifactId)?.jobId !== step.jobId) {
                 throw new Error("Operator Step artifact reference is invalid")
@@ -695,6 +763,24 @@ function canonicalState(value) {
             const step = steps.get(approval.stepId)
             if (!step || step.jobId !== approval.jobId || step.sessionId !== approval.sessionId) {
                 throw new Error("Operator approval Step reference is invalid")
+            }
+            if (approval.status === "pending" && step.status !== "waiting_approval") {
+                throw new Error("Pending Operator approval requires a waiting_approval Step status")
+            }
+            const creation = stepCreationEvents.get(step.id)
+            exactKeys(
+                approval.proposedMutation,
+                ["method", "params", "idempotencyKey", "reservation"],
+                "Operator approval frozen Step mutation",
+            )
+            const mutationRequest = canonicalStepRequest({
+                method: approval.proposedMutation.method,
+                params: approval.proposedMutation.params,
+                reservation: approval.proposedMutation.reservation,
+            })
+            if (approval.proposedMutation.idempotencyKey !== step.idempotencyKey ||
+                stableJson(mutationRequest) !== stableJson(creation.request)) {
+                throw new Error("Operator approval mutation does not match its frozen Step request")
             }
         }
     }
@@ -998,6 +1084,151 @@ class OperatorJobStore {
             (sessionId === null || job.sessionId === sessionId) &&
             (parentJobId === undefined || job.parentJobId === parentJobId)
         )))
+    }
+
+    createStep(jobId, input = {}) {
+        const stepInput = requireObject(input, "Operator Step")
+        const method = requiredText(stepInput.method, "Operator Step method", 300)
+        const idempotencyKey = requiredText(
+            stepInput.idempotencyKey,
+            "Operator Step idempotency key",
+            500,
+        )
+        const request = {
+            method,
+            params: requireObject(stepInput.params ?? {}, "Operator Step params"),
+        }
+        if (Object.hasOwn(stepInput, "reservation")) {
+            request.reservation = requireObject(stepInput.reservation, "Operator Step reservation")
+        }
+        const frozenRequest = boundedEnvelope(request, "Operator Step request")
+        const inputDigest = sha256(stableJson(frozenRequest))
+        const now = nowTimestamp()
+        const step = {
+            id: randomUUID(),
+            jobId: requiredText(jobId, "Operator Step Job id", 200),
+            sessionId: "",
+            method,
+            idempotencyKey,
+            status: "pending",
+            inputDigest,
+            outputArtifactIds: [],
+            attempt: 0,
+            error: null,
+            createdAt: now,
+            updatedAt: now,
+            startedAt: null,
+            completedAt: null,
+        }
+        const eventPayload = boundedEnvelope({
+            stepId: step.id,
+            idempotencyKey,
+            inputDigest,
+            request: frozenRequest,
+        }, "Operator Step creation event")
+        return this.#mutate((state) => {
+            const job = state.jobs.find((candidate) => candidate.id === step.jobId)
+            if (!job) throw new Error("Operator Step Job not found")
+            if (TERMINAL_JOB_STATUSES.has(job.status)) {
+                throw new Error("Cannot add a Step to a terminal Operator Job")
+            }
+            if (state.steps.some((candidate) => (
+                candidate.jobId === step.jobId && candidate.idempotencyKey === idempotencyKey
+            ))) {
+                throw new Error("Operator Step idempotency key must be unique within its Job")
+            }
+            if (job.eventSequence >= MAX_JOB_EVENTS) {
+                throw new Error("Operator Job reached the 10,000 event limit")
+            }
+            step.sessionId = job.sessionId
+            canonicalStep(step)
+            state.steps.push(step)
+            job.eventSequence += 1
+            job.updatedAt = now
+            state.events.push({
+                id: randomUUID(),
+                jobId: job.id,
+                sequence: job.eventSequence,
+                kind: "operator_step_created",
+                payload: eventPayload,
+                occurredAt: now,
+            })
+            return step
+        })
+    }
+
+    getStep(stepId) {
+        const step = this.#state.steps.find((candidate) => candidate.id === stepId)
+        if (!step) throw new Error("Operator Step not found")
+        return copy(step)
+    }
+
+    listSteps({jobId = null} = {}) {
+        if (jobId !== null) requiredText(jobId, "Operator Step Job id", 200)
+        return copy(this.#state.steps.filter((step) => jobId === null || step.jobId === jobId))
+    }
+
+    transitionStep(stepId, nextStatus, patch = {}) {
+        requiredText(nextStatus, "Operator Step status", 100)
+        const patchInput = requireObject(patch, "Operator Step transition patch")
+        const allowed = new Set(["outputArtifactIds", "error"])
+        for (const field of Object.keys(patchInput)) {
+            if (!allowed.has(field)) throw new Error(`Operator Step ${field} is immutable or unsupported`)
+        }
+        const normalized = {}
+        if (Object.hasOwn(patchInput, "outputArtifactIds")) {
+            normalized.outputArtifactIds = uniqueTextArray(
+                patchInput.outputArtifactIds,
+                "Operator Step artifact references",
+            )
+        }
+        if (Object.hasOwn(patchInput, "error")) {
+            normalized.error = cloneJson(patchInput.error ?? null, "Operator Step error")
+        }
+        boundedEnvelope(normalized, "Operator Step transition")
+        return this.#mutate((state) => {
+            const step = state.steps.find((candidate) => candidate.id === stepId)
+            if (!step) throw new Error("Operator Step not found")
+            if (["succeeded", "failed", "cancelled"].includes(step.status)) {
+                throw new Error("A terminal Operator Step cannot transition")
+            }
+            if (!STEP_TRANSITIONS.get(step.status)?.has(nextStatus)) {
+                throw new Error(`Illegal Operator Step transition: ${step.status} -> ${nextStatus}`)
+            }
+            const job = state.jobs.find((candidate) => candidate.id === step.jobId)
+            if (!job || TERMINAL_JOB_STATUSES.has(job.status)) {
+                throw new Error("Operator Step Job must remain active")
+            }
+            if (Object.hasOwn(normalized, "outputArtifactIds") && nextStatus !== "succeeded") {
+                throw new Error("Operator Step artifacts can only be attached on success")
+            }
+            for (const artifactId of normalized.outputArtifactIds ?? []) {
+                const artifact = state.artifacts.find((candidate) => candidate.id === artifactId)
+                if (!artifact || artifact.jobId !== step.jobId) {
+                    throw new Error("Operator Step artifact reference is invalid")
+                }
+            }
+            if (Object.hasOwn(normalized, "error") && !["failed", "cancelled", "needs_recovery"].includes(nextStatus)) {
+                throw new Error("Operator Step error is unsupported for this transition")
+            }
+            if (nextStatus === "failed" && (normalized.error ?? step.error) === null) {
+                throw new Error("A failed Operator Step requires an error")
+            }
+            const now = nowTimestamp()
+            if (nextStatus === "running") {
+                step.attempt += 1
+                if (step.startedAt === null) step.startedAt = now
+                step.error = null
+            }
+            if (Object.hasOwn(normalized, "outputArtifactIds")) {
+                step.outputArtifactIds = normalized.outputArtifactIds
+            }
+            if (Object.hasOwn(normalized, "error")) step.error = normalized.error
+            step.status = nextStatus
+            step.updatedAt = now
+            if (["succeeded", "failed", "cancelled"].includes(nextStatus)) step.completedAt = now
+            return step
+        })
     }
 
     transitionJob(jobId, nextStatus, patch = {}) {

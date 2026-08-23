@@ -1,0 +1,907 @@
+const {operatorApprovalRequirement} = require("../control-plane/policy.cjs")
+
+const TERMINAL_JOB_STATUSES = new Set(["succeeded", "failed", "cancelled"])
+const TERMINAL_STEP_STATUSES = new Set(["succeeded", "failed", "cancelled"])
+const RESERVATION_FIELDS = Object.freeze([
+    "runtimeTurns",
+    "evaluations",
+    "targetExecutions",
+    "judgeExecutions",
+    "tokens",
+    "reportedCost",
+])
+const BUDGET_FIELDS = Object.freeze([
+    "maxDurationMs",
+    "maxRuntimeTurns",
+    "maxEvaluations",
+    "maxTargetExecutions",
+    "maxJudgeExecutions",
+    "maxTokens",
+    "maxReportedCost",
+])
+const RESERVATION_LIMITS = Object.freeze({
+    runtimeTurns: "maxRuntimeTurns",
+    evaluations: "maxEvaluations",
+    targetExecutions: "maxTargetExecutions",
+    judgeExecutions: "maxJudgeExecutions",
+    tokens: "maxTokens",
+    reportedCost: "maxReportedCost",
+})
+
+function isPlainObject(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false
+    const prototype = Object.getPrototypeOf(value)
+    return prototype === Object.prototype || prototype === null
+}
+
+function requireObject(value, label) {
+    if (!isPlainObject(value)) throw new Error(`${label} must be a plain object`)
+    return value
+}
+
+function requiredText(value, label, maximum = 4_096) {
+    const normalized = typeof value === "string" ? value.trim() : ""
+    if (!normalized || normalized.length > maximum) throw new Error(`${label} is required`)
+    return normalized
+}
+
+function cloneJson(value, label = "Value", seen = new Set()) {
+    if (value === null || typeof value === "string" || typeof value === "boolean") return value
+    if (typeof value === "number") {
+        if (!Number.isFinite(value)) throw new Error(`${label} is not finite JSON`)
+        return value
+    }
+    if (typeof value !== "object" || value === undefined) throw new Error(`${label} is not JSON`)
+    if (seen.has(value)) throw new Error(`${label} is cyclic`)
+    seen.add(value)
+    let cloned
+    if (Array.isArray(value)) {
+        cloned = value.map((entry) => cloneJson(entry, label, seen))
+    } else {
+        requireObject(value, label)
+        cloned = {}
+        for (const key of Object.keys(value)) cloned[key] = cloneJson(value[key], label, seen)
+    }
+    seen.delete(value)
+    return cloned
+}
+
+function stableJson(value) {
+    if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
+    if (value !== null && typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) => (
+            `${JSON.stringify(key)}:${stableJson(value[key])}`
+        )).join(",")}}`
+    }
+    return JSON.stringify(value)
+}
+
+function normalizeReservation(value = {}) {
+    const source = requireObject(value, "Operator budget reservation")
+    const reservation = {}
+    for (const field of Object.keys(source)) {
+        if (!RESERVATION_FIELDS.includes(field)) {
+            throw new Error(`Operator budget reservation ${field} is unsupported`)
+        }
+    }
+    for (const field of RESERVATION_FIELDS) {
+        if (!Object.hasOwn(source, field)) continue
+        const amount = source[field]
+        const valid = field === "reportedCost"
+            ? Number.isFinite(amount) && amount >= 0
+            : Number.isSafeInteger(amount) && amount >= 0
+        if (!valid) throw new Error(`Operator budget reservation ${field} is invalid`)
+        reservation[field] = amount
+    }
+    return reservation
+}
+
+function normalizeTelemetry(value) {
+    if (!Array.isArray(value)) throw new Error("Operator Runtime telemetry must be an array")
+    const normalized = value.map((entry) => {
+        const telemetry = requireObject(entry, "Operator Runtime telemetry entry")
+        return {
+            runtimeId: requiredText(telemetry.runtimeId, "Operator Runtime telemetry id", 300),
+            tokens: telemetry.tokens === true,
+            cost: telemetry.cost === true,
+        }
+    })
+    if (new Set(normalized.map((entry) => entry.runtimeId)).size !== normalized.length) {
+        throw new Error("Operator Runtime telemetry ids must be unique")
+    }
+    return normalized
+}
+
+function preflightOperatorBudget(budget, runtimeTelemetry = [], involvedRuntimeIds = null) {
+    const limits = requireObject(budget, "Operator Job budget")
+    const telemetry = normalizeTelemetry(runtimeTelemetry)
+    const involved = involvedRuntimeIds === null
+        ? telemetry.map((entry) => entry.runtimeId)
+        : [...new Set(involvedRuntimeIds.map((runtimeId) => (
+            requiredText(runtimeId, "Involved Operator Runtime id", 300)
+        )))]
+    const byRuntimeId = new Map(telemetry.map((entry) => [entry.runtimeId, entry]))
+    const tokenTelemetry = involved.length > 0 && involved.every((runtimeId) => byRuntimeId.get(runtimeId)?.tokens)
+    const costTelemetry = involved.length > 0 && involved.every((runtimeId) => byRuntimeId.get(runtimeId)?.cost)
+    const fields = {}
+    for (const field of BUDGET_FIELDS) {
+        const optionalTelemetry = field === "maxTokens" || field === "maxReportedCost"
+        const supported = !optionalTelemetry || (field === "maxTokens" ? tokenTelemetry : costTelemetry)
+        fields[field] = {
+            value: limits[field],
+            status: supported ? "supported" : "unsupported",
+        }
+    }
+    const selectedUnsupported = ["maxTokens", "maxReportedCost"].some((field) => (
+        limits[field] !== null && fields[field].status === "unsupported"
+    ))
+    return {valid: !selectedUnsupported, fields}
+}
+
+function involvedRuntimeIds(params) {
+    const source = requireObject(params, "Operator Step params")
+    const candidates = [
+        source.runtimeId,
+        ...(Array.isArray(source.runtimeIds) ? source.runtimeIds : []),
+        ...(Array.isArray(source.runtimeConfigurations)
+            ? source.runtimeConfigurations.map((entry) => entry?.runtimeId)
+            : []),
+        source.judgeConfiguration?.runtimeId,
+    ]
+    return [...new Set(candidates.filter((entry) => typeof entry === "string" && entry.trim()).map((entry) => entry.trim()))]
+}
+
+function errorRecord(error, fallbackCode = "OPERATOR_STEP_FAILED") {
+    const code = typeof error?.code === "string" && error.code.trim()
+        ? error.code.trim().slice(0, 200)
+        : fallbackCode
+    const message = typeof error?.message === "string" && error.message.trim()
+        ? error.message.trim().slice(0, 16_384)
+        : "Operator Step failed"
+    return {code, message}
+}
+
+function requestForExecution(input) {
+    const request = requireObject(input, "Operator Step execution")
+    return {
+        method: requiredText(request.method, "Operator Step method", 300),
+        params: cloneJson(requireObject(request.params ?? {}, "Operator Step params"), "Operator Step params"),
+        idempotencyKey: requiredText(request.idempotencyKey, "Operator Step idempotency key", 500),
+        reservation: normalizeReservation(request.reservation ?? {}),
+    }
+}
+
+function frozenStepRequest(request) {
+    return {
+        method: request.method,
+        params: cloneJson(request.params),
+        reservation: cloneJson(request.reservation),
+    }
+}
+
+function approvalMutation(request) {
+    return {
+        method: request.method,
+        params: cloneJson(request.params),
+        idempotencyKey: request.idempotencyKey,
+        reservation: cloneJson(request.reservation),
+    }
+}
+
+function isReadMethod(method) {
+    return /\.(?:get|list|read|inspect)$/u.test(method)
+}
+
+function isDeleteMethod(method) {
+    return /\.(?:delete|delete_case)$/u.test(method)
+}
+
+class OperatorJobEngine {
+    #store
+    #handlers
+    #approvalDecider
+    #reconcilers
+    #runtimeTelemetry
+    #now
+    #approvalTtlMs
+    #jobQueues = new Map()
+    #activeSteps = new Map()
+
+    constructor({
+        store,
+        handlers = {},
+        approvalDecider = null,
+        reconcilers = {},
+        runtimeTelemetry = [],
+        now = Date.now,
+        approvalTtlMs = 15 * 60 * 1_000,
+    } = {}) {
+        if (!store || typeof store.createStep !== "function") {
+            throw new Error("Operator Job store with Step support is required")
+        }
+        if (!isPlainObject(handlers) || !isPlainObject(reconcilers)) {
+            throw new Error("Operator handlers and reconcilers must be plain objects")
+        }
+        if (approvalDecider !== null && typeof approvalDecider !== "function") {
+            throw new Error("Operator approval decider must be a function")
+        }
+        if (typeof runtimeTelemetry !== "function") normalizeTelemetry(runtimeTelemetry)
+        if (typeof now !== "function" || !Number.isSafeInteger(approvalTtlMs) || approvalTtlMs <= 0) {
+            throw new Error("Operator engine clock or approval TTL is invalid")
+        }
+        this.#store = store
+        this.#handlers = {...handlers}
+        this.#approvalDecider = approvalDecider
+        this.#reconcilers = {...reconcilers}
+        this.#runtimeTelemetry = runtimeTelemetry
+        this.#now = now
+        this.#approvalTtlMs = approvalTtlMs
+    }
+
+    scheduleChild(parentJobId, input = {}) {
+        const parent = this.#store.getJob(parentJobId)
+        const child = requireObject(input, "Child Operator Job")
+        return this.#store.createJob({
+            sessionId: parent.sessionId,
+            parentJobId: parent.id,
+            type: child.type,
+            objective: child.objective,
+            budget: child.budget,
+        })
+    }
+
+    execute(jobId, input = {}) {
+        const request = requestForExecution(input)
+        return this.#enqueue(jobId, () => this.#execute(jobId, request))
+    }
+
+    async #execute(jobId, request) {
+        let job = this.#store.getJob(jobId)
+        const existing = this.#store.listSteps({jobId}).find((step) => (
+            step.idempotencyKey === request.idempotencyKey
+        ))
+        if (existing) return this.#existingResult(existing, request)
+        if (job.status === "queued") job = this.#store.transitionJob(job.id, "running")
+        if (job.status !== "running") {
+            throw new Error(`Operator Job cannot execute a new Step while ${job.status}`)
+        }
+
+        const step = this.#store.createStep(job.id, {
+            method: request.method,
+            params: request.params,
+            reservation: request.reservation,
+            idempotencyKey: request.idempotencyKey,
+        })
+        const telemetry = await this.#telemetry(request)
+        const budget = this.#budgetAssessment(
+            job,
+            request.reservation,
+            telemetry,
+            involvedRuntimeIds(request.params),
+        )
+        if (!budget.preflight.valid) {
+            const error = {
+                code: "BUDGET_TELEMETRY_UNSUPPORTED",
+                message: "Token or reported-cost budget requires telemetry from every involved Runtime",
+            }
+            this.#store.transitionStep(step.id, "failed", {error})
+            throw Object.assign(new Error(error.message), {code: error.code})
+        }
+        const policyDecision = budget.overages.length > 0
+            ? {
+                decision: "approval_required",
+                reason: "budget_expansion",
+                action: "budget.expand",
+                requestedScope: {budget: this.#requestedBudgetScope(job, request.reservation)},
+            }
+            : await this.#approvalDecision(request, job)
+        if (policyDecision?.decision === "deny") {
+            const error = {
+                code: policyDecision.code ?? "OPERATOR_POLICY_DENIED",
+                message: policyDecision.message ?? "Operator policy denied the Step",
+            }
+            this.#store.transitionStep(step.id, "failed", {error})
+            return this.#failedResult(this.#store.getStep(step.id))
+        }
+        if (policyDecision?.decision === "approval_required") {
+            return this.#createApproval(job, step, request, policyDecision)
+        }
+        return this.#runStep(job, step, request, {telemetry})
+    }
+
+    async #existingResult(step, request) {
+        const persisted = this.#stepRequest(step)
+        if (stableJson(persisted) !== stableJson(frozenStepRequest(request))) {
+            throw new Error("Operator Step idempotency conflict: the key was used for a different request")
+        }
+        const approvals = this.#store.listApprovals(step.jobId).filter((entry) => entry.stepId === step.id)
+        const resolvedApproval = approvals.find((entry) => entry.status !== "pending")
+        let job = this.#store.getJob(step.jobId)
+        if (resolvedApproval && job.status === "waiting_approval" && step.status !== "waiting_approval") {
+            job = this.#store.transitionJob(job.id, "running")
+            if (step.status === "running") job = this.#store.transitionJob(job.id, "needs_recovery")
+        }
+        if (step.status === "succeeded") {
+            return this.#succeededResult(step, {cached: true})
+        }
+        if (step.status === "failed") return this.#failedResult(step)
+        if (step.status === "cancelled") {
+            return {status: "cancelled", jobId: step.jobId, stepId: step.id}
+        }
+        if (step.status === "pending") return this.#resumePreInvokeStep(step, request)
+        if (step.status === "waiting_approval") {
+            const approval = approvals.find((entry) => entry.status === "pending")
+            if (approval) {
+                return {
+                    status: "waiting_approval",
+                    approvalId: approval.id,
+                    jobId: step.jobId,
+                    stepId: step.id,
+                }
+            }
+            if (resolvedApproval) return this.#resumeResolvedApproval(step, resolvedApproval)
+            return this.#resumePreInvokeStep(step, request)
+        }
+        return {status: "needs_recovery", jobId: step.jobId, stepId: step.id}
+    }
+
+    async #resumePreInvokeStep(step, request) {
+        let job = this.#store.getJob(step.jobId)
+        if (job.status === "needs_recovery") job = this.#store.transitionJob(job.id, "running")
+        if (job.status !== "running" && job.status !== "waiting_approval") {
+            return {status: "needs_recovery", jobId: step.jobId, stepId: step.id}
+        }
+        const telemetry = await this.#telemetry(request)
+        const budget = this.#budgetAssessment(
+            job,
+            request.reservation,
+            telemetry,
+            involvedRuntimeIds(request.params),
+        )
+        if (!budget.preflight.valid) {
+            if (job.status === "waiting_approval") this.#store.transitionJob(job.id, "running")
+            const failed = this.#store.transitionStep(step.id, "failed", {error: {
+                code: "BUDGET_TELEMETRY_UNSUPPORTED",
+                message: "Token or reported-cost budget requires telemetry from every involved Runtime",
+            }})
+            return this.#failedResult(failed)
+        }
+        const decision = budget.overages.length > 0
+            ? {
+                decision: "approval_required",
+                reason: "budget_expansion",
+                action: "budget.expand",
+                requestedScope: {budget: this.#requestedBudgetScope(job, request.reservation)},
+            }
+            : await this.#approvalDecision(request, job)
+        if (decision?.decision === "approval_required") {
+            return this.#createApproval(job, step, request, decision)
+        }
+        if (decision?.decision === "deny") {
+            if (job.status === "waiting_approval") this.#store.transitionJob(job.id, "running")
+            const failed = this.#store.transitionStep(step.id, "failed", {error: {
+                code: decision.code ?? "OPERATOR_POLICY_DENIED",
+                message: decision.message ?? "Operator policy denied the Step",
+            }})
+            return this.#failedResult(failed)
+        }
+        if (job.status === "waiting_approval") job = this.#store.transitionJob(job.id, "running")
+        return this.#runStep(job, step, request, {telemetry})
+    }
+
+    async #resumeResolvedApproval(step, approval) {
+        let job = this.#store.getJob(step.jobId)
+        if (job.status === "waiting_approval") {
+            job = this.#store.transitionJob(job.id, "running")
+        }
+        if (approval.status === "rejected") {
+            const failed = this.#store.transitionStep(step.id, "failed", {
+                error: {code: "APPROVAL_REJECTED", message: "Operator approval was rejected"},
+            })
+            this.#restoreJobAfterRecovery(step.jobId)
+            return this.#failedResult(failed)
+        }
+        if (approval.status !== "approved") {
+            throw new Error("Resolved Operator approval status is invalid")
+        }
+        const request = requestForExecution(approval.proposedMutation)
+        const running = this.#store.transitionStep(step.id, "running")
+        const telemetry = await this.#telemetry(request)
+        const result = await this.#runStep(job, running, request, {
+            telemetry,
+            alreadyRunning: true,
+            allowBudgetExpansion: approval.risk === "budget_expansion",
+        })
+        this.#restoreJobAfterRecovery(step.jobId)
+        return result
+    }
+
+    #restoreJobAfterRecovery(jobId) {
+        const job = this.#store.getJob(jobId)
+        if (job.status !== "needs_recovery") return job
+        const unknown = this.#store.listSteps({jobId}).some((step) => !TERMINAL_STEP_STATUSES.has(step.status))
+        return unknown ? job : this.#store.transitionJob(job.id, "running")
+    }
+
+    async #approvalDecision(request, job) {
+        if (this.#approvalDecider) {
+            return this.#approvalDecider({
+                method: request.method,
+                params: cloneJson(request.params),
+                job: cloneJson(job),
+            })
+        }
+        return operatorApprovalRequirement(request.method, request.params) ?? {decision: "allow"}
+    }
+
+    #createApproval(job, step, request, decision) {
+        let currentJob = this.#store.getJob(job.id)
+        let currentStep = this.#store.getStep(step.id)
+        if (currentJob.status === "needs_recovery") {
+            currentJob = this.#store.transitionJob(currentJob.id, "running")
+        }
+        if (currentStep.status === "pending") {
+            currentStep = this.#store.transitionStep(currentStep.id, "waiting_approval")
+        }
+        if (currentStep.status !== "waiting_approval") {
+            throw new Error("Operator Step cannot enter approval from its current status")
+        }
+        if (currentJob.status === "running") {
+            currentJob = this.#store.transitionJob(currentJob.id, "waiting_approval")
+        }
+        if (currentJob.status !== "waiting_approval") {
+            throw new Error("Operator Job cannot enter approval from its current status")
+        }
+        const approval = this.#store.createApproval(currentJob.id, {
+            stepId: step.id,
+            action: decision.action ?? request.method,
+            scope: cloneJson(decision.requestedScope ?? {}),
+            proposedMutation: approvalMutation(request),
+            risk: requiredText(decision.reason, "Operator approval risk", 16_384),
+            expiresAt: new Date(this.#now() + this.#approvalTtlMs).toISOString(),
+        })
+        return {
+            status: "waiting_approval",
+            approvalId: approval.id,
+            jobId: currentJob.id,
+            stepId: step.id,
+        }
+    }
+
+    resolveApproval(approvalId, input = {}) {
+        const approval = this.#store.getApproval(approvalId)
+        return this.#enqueue(approval.jobId, () => this.#resolveApproval(approvalId, input))
+    }
+
+    async #resolveApproval(approvalId, input = {}, errorOverride = null) {
+        const decision = requireObject(input, "Operator approval decision")
+        if (decision.decision !== "approve" && decision.decision !== "reject") {
+            throw new Error("Operator approval decision must be approve or reject")
+        }
+        const resolved = this.#store.resolveApproval(approvalId, {
+            decision: decision.decision,
+            scope: requiredText(decision.scope, "Operator approval decision scope", 300),
+            decidedBy: typeof decision.decidedBy === "string" ? decision.decidedBy : null,
+        })
+        const step = this.#store.getStep(resolved.stepId)
+        if (this.#store.getJob(resolved.jobId).status === "waiting_approval") {
+            this.#store.transitionJob(resolved.jobId, "running")
+        }
+        if (decision.decision === "reject") {
+            const error = errorOverride ?? {
+                code: "APPROVAL_REJECTED",
+                message: "Operator approval was rejected",
+            }
+            const failed = this.#store.transitionStep(step.id, "failed", {error})
+            return this.#failedResult(failed)
+        }
+        const request = requestForExecution(resolved.proposedMutation)
+        this.#store.transitionStep(step.id, "running")
+        const telemetry = await this.#telemetry(request)
+        return this.#runStep(this.#store.getJob(resolved.jobId), this.#store.getStep(step.id), request, {
+            telemetry,
+            alreadyRunning: true,
+            allowBudgetExpansion: resolved.risk === "budget_expansion",
+        })
+    }
+
+    async expireApprovals(jobId = null) {
+        const jobs = jobId === null ? this.#store.listJobs() : [this.#store.getJob(jobId)]
+        const expired = []
+        for (const job of jobs) {
+            const approvals = this.#store.listApprovals(job.id).filter((approval) => (
+                approval.status === "pending" && Date.parse(approval.expiresAt) <= this.#now()
+            ))
+            for (const approval of approvals) {
+                const result = await this.#enqueue(approval.jobId, () => this.#resolveApproval(
+                    approval.id,
+                    {
+                        decision: "reject",
+                        scope: "expired",
+                        decidedBy: "job-engine",
+                    },
+                    {
+                        code: "APPROVAL_EXPIRED",
+                        message: "Operator approval expired",
+                    },
+                ))
+                expired.push({approvalId: approval.id, jobId: approval.jobId, stepId: result.stepId})
+            }
+        }
+        return expired
+    }
+
+    async #runStep(job, initialStep, request, {
+        telemetry = [],
+        alreadyRunning = false,
+        allowBudgetExpansion = false,
+    } = {}) {
+        let step = this.#store.getStep(initialStep.id)
+        try {
+            this.#reserveBudget(job, step, request, telemetry, {allowBudgetExpansion})
+            if (!alreadyRunning && step.status !== "running") {
+                step = this.#store.transitionStep(step.id, "running")
+            }
+            const handler = this.#handlers[request.method]
+            if (typeof handler !== "function") {
+                throw Object.assign(new Error(`No Operator handler is registered for ${request.method}`), {
+                    code: "OPERATOR_HANDLER_MISSING",
+                })
+            }
+            const controller = new AbortController()
+            this.#activeSteps.set(step.id, controller)
+            let result
+            try {
+                result = await handler({
+                    method: request.method,
+                    params: cloneJson(request.params),
+                    idempotencyKey: request.idempotencyKey,
+                    jobId: job.id,
+                    stepId: step.id,
+                    signal: controller.signal,
+                })
+            } finally {
+                this.#activeSteps.delete(step.id)
+            }
+            const current = this.#store.getStep(step.id)
+            if (current.status === "cancelled") {
+                return {status: "cancelled", jobId: job.id, stepId: step.id}
+            }
+            return this.#persistStepResult(current, result ?? null)
+        } catch (error) {
+            const current = this.#store.getStep(step.id)
+            if (current.status === "cancelled") {
+                return {status: "cancelled", jobId: job.id, stepId: step.id}
+            }
+            if (!TERMINAL_STEP_STATUSES.has(current.status)) {
+                step = this.#store.transitionStep(current.id, "failed", {error: errorRecord(error)})
+            } else {
+                step = current
+            }
+            return this.#failedResult(step)
+        }
+    }
+
+    #persistStepResult(step, result) {
+        const artifact = this.#store.createArtifact(step.jobId, {
+            kind: "operator-step-result",
+            name: `step-${step.id}.json`,
+            mediaType: "application/json",
+            body: JSON.stringify(result),
+        })
+        const succeeded = this.#store.transitionStep(step.id, "succeeded", {
+            outputArtifactIds: [artifact.id],
+        })
+        return this.#succeededResult(succeeded, {result})
+    }
+
+    #succeededResult(step, {result = undefined, cached = false} = {}) {
+        const restored = result === undefined ? this.#readStepResult(step) : cloneJson(result)
+        return {
+            status: "succeeded",
+            jobId: step.jobId,
+            stepId: step.id,
+            result: restored,
+            cached,
+        }
+    }
+
+    #failedResult(step) {
+        return {
+            status: "failed",
+            jobId: step.jobId,
+            stepId: step.id,
+            error: cloneJson(step.error),
+        }
+    }
+
+    #readStepResult(step) {
+        if (step.outputArtifactIds.length !== 1) throw new Error("Operator Step result artifact is missing")
+        const body = this.#store.readArtifactBody(step.outputArtifactIds[0])
+        return JSON.parse(body.toString("utf8"))
+    }
+
+    async #telemetry(request) {
+        const value = typeof this.#runtimeTelemetry === "function"
+            ? await this.#runtimeTelemetry({method: request.method, params: cloneJson(request.params)})
+            : this.#runtimeTelemetry
+        return normalizeTelemetry(value)
+    }
+
+    #budgetUsage(jobId) {
+        const usage = Object.fromEntries(RESERVATION_FIELDS.map((field) => [field, 0]))
+        for (const event of this.#store.listEvents(jobId)) {
+            if (event.kind !== "operator_budget_reserved") continue
+            for (const field of RESERVATION_FIELDS) {
+                const amount = event.usage?.[field] ?? 0
+                if (!Number.isFinite(amount) || amount < 0) {
+                    throw new Error("Persisted Operator budget reservation is invalid")
+                }
+                usage[field] += amount
+            }
+        }
+        return usage
+    }
+
+    #budgetAssessment(job, reservation, telemetry, runtimeIds = []) {
+        const preflight = preflightOperatorBudget(
+            job.budget,
+            telemetry,
+            runtimeIds.length > 0 ? runtimeIds : null,
+        )
+        const usage = this.#budgetUsage(job.id)
+        const overages = []
+        if (this.#now() - Date.parse(job.createdAt) > job.budget.maxDurationMs) {
+            overages.push("maxDurationMs")
+        }
+        for (const [usageField, budgetField] of Object.entries(RESERVATION_LIMITS)) {
+            const limit = job.budget[budgetField]
+            if (limit === null) continue
+            if (usage[usageField] + (reservation[usageField] ?? 0) > limit) overages.push(budgetField)
+        }
+        return {preflight, usage, overages}
+    }
+
+    #reserveBudget(job, step, request, telemetry, {allowBudgetExpansion = false} = {}) {
+        const {reservation} = request
+        if (this.#store.listEvents(job.id).some((event) => (
+            event.kind === "operator_budget_reserved" && event.stepId === step.id
+        ))) return
+        const assessment = this.#budgetAssessment(
+            job,
+            reservation,
+            telemetry,
+            involvedRuntimeIds(request.params),
+        )
+        if (!assessment.preflight.valid) {
+            throw Object.assign(new Error("Operator token or cost telemetry is unsupported"), {
+                code: "BUDGET_TELEMETRY_UNSUPPORTED",
+            })
+        }
+        if (assessment.overages.length > 0 && !allowBudgetExpansion) {
+            throw Object.assign(new Error("Operator Job budget would be exceeded"), {
+                code: "BUDGET_EXCEEDED",
+            })
+        }
+        if (Object.keys(reservation).length > 0) {
+            this.#store.appendEvent(job.id, {
+                kind: "operator_budget_reserved",
+                stepId: step.id,
+                usage: cloneJson(reservation),
+            })
+        }
+    }
+
+    #requestedBudgetScope(job, reservation) {
+        const requested = {}
+        const usage = this.#budgetUsage(job.id)
+        const elapsed = Math.max(0, this.#now() - Date.parse(job.createdAt))
+        if (elapsed > job.budget.maxDurationMs) requested.maxDurationMs = elapsed
+        for (const [usageField, budgetField] of Object.entries(RESERVATION_LIMITS)) {
+            const required = usage[usageField] + (reservation[usageField] ?? 0)
+            const limit = job.budget[budgetField]
+            if (limit !== null && required > limit) requested[budgetField] = required
+        }
+        return requested
+    }
+
+    #stepRequest(step) {
+        const event = this.#store.listEvents(step.jobId).find((candidate) => (
+            candidate.kind === "operator_step_created" && candidate.stepId === step.id
+        ))
+        if (!event || !isPlainObject(event.request)) {
+            throw new Error("Operator Step frozen request is missing")
+        }
+        return cloneJson(event.request)
+    }
+
+    async cancel(jobId) {
+        return this.#cancelTree(jobId)
+    }
+
+    async #cancelTree(jobId) {
+        let job = this.#store.getJob(jobId)
+        if (TERMINAL_JOB_STATUSES.has(job.status)) return job
+        for (const childId of job.children) await this.#cancelTree(childId)
+        for (const step of this.#store.listSteps({jobId})) {
+            this.#activeSteps.get(step.id)?.abort()
+        }
+        job = this.#store.getJob(jobId)
+        if (TERMINAL_JOB_STATUSES.has(job.status)) return job
+        this.#store.appendEvent(job.id, {kind: "operator_cancellation_requested"})
+        if (["running", "waiting_approval", "paused"].includes(job.status)) {
+            job = this.#store.transitionJob(job.id, "cancelling")
+        }
+        for (const step of this.#store.listSteps({jobId})) {
+            if (!TERMINAL_STEP_STATUSES.has(step.status)) {
+                this.#store.transitionStep(step.id, "cancelled", {
+                    error: {code: "OPERATOR_CANCELLED", message: "Operator Step was cancelled"},
+                })
+            }
+        }
+        if (job.status === "queued" || job.status === "needs_recovery") {
+            return this.#store.transitionJob(job.id, "cancelled", {
+                error: {code: "OPERATOR_CANCELLED", message: "Operator Job was cancelled"},
+            })
+        }
+        if (job.status === "cancelling") {
+            return this.#store.transitionJob(job.id, "cancelled", {
+                error: {code: "OPERATOR_CANCELLED", message: "Operator Job was cancelled"},
+            })
+        }
+        return this.#store.getJob(job.id)
+    }
+
+    completeJob(jobId, status, patch = {}) {
+        return this.#enqueue(jobId, async () => {
+            let job = this.#store.getJob(jobId)
+            if (!TERMINAL_JOB_STATUSES.has(status)) throw new Error("Operator Job completion status is invalid")
+            if (TERMINAL_JOB_STATUSES.has(job.status)) {
+                if (job.status !== status) throw new Error("Operator Job already completed with another status")
+                return job
+            }
+            if (status === "cancelled") return this.#cancelTree(jobId)
+            if (status === "succeeded") {
+                const children = job.children.map((childId) => this.#store.getJob(childId))
+                if (children.some((child) => child.status !== "succeeded")) {
+                    throw new Error("Every child Operator Job must succeed before its parent")
+                }
+                const steps = this.#store.listSteps({jobId})
+                if (steps.some((step) => step.status !== "succeeded")) {
+                    throw new Error("Every Operator Step must succeed before its Job")
+                }
+            }
+            if (job.status === "queued") job = this.#store.transitionJob(job.id, "running")
+            return this.#store.transitionJob(job.id, status, patch)
+        })
+    }
+
+    async reconcile(jobId) {
+        let job = this.#store.getJob(jobId)
+        if (job.status !== "needs_recovery") return {status: job.status, jobId}
+        const steps = this.#store.listSteps({jobId})
+        for (let step of steps) {
+            if (TERMINAL_STEP_STATUSES.has(step.status)) continue
+            if (step.status === "waiting_approval") {
+                const approval = this.#store.listApprovals(jobId).find((entry) => (
+                    entry.stepId === step.id && entry.status !== "pending"
+                ))
+                if (approval) await this.#resumeResolvedApproval(step, approval)
+                continue
+            }
+            if (step.status === "running" || step.status === "pending") {
+                step = this.#store.transitionStep(step.id, "needs_recovery", {
+                    error: {code: "OPERATOR_INTERRUPTED", message: "Operator Step outcome is unknown after restart"},
+                })
+            }
+            await this.#reconcileStep(job, step)
+        }
+        const unknown = this.#store.listSteps({jobId}).some((step) => (
+            !TERMINAL_STEP_STATUSES.has(step.status) && step.status !== "waiting_approval"
+        ))
+        job = this.#store.getJob(jobId)
+        if (!unknown && job.status === "needs_recovery") {
+            job = this.#store.transitionJob(job.id, "running")
+        }
+        return {status: job.status, jobId: job.id}
+    }
+
+    async #reconcileStep(job, step) {
+        const priorArtifact = this.#store.read().artifacts.find((artifact) => (
+            artifact.jobId === job.id && artifact.kind === "operator-step-result" && artifact.name === `step-${step.id}.json`
+        ))
+        if (priorArtifact) {
+            this.#store.transitionStep(step.id, "succeeded", {outputArtifactIds: [priorArtifact.id]})
+            return true
+        }
+        const request = this.#stepRequest(step)
+        const execution = {
+            method: request.method,
+            params: request.params,
+            reservation: request.reservation ?? {},
+            idempotencyKey: step.idempotencyKey,
+        }
+        if (isDeleteMethod(step.method)) return false
+        if (isReadMethod(step.method)) {
+            const telemetry = await this.#telemetry(execution)
+            const result = await this.#runStep(job, step, execution, {telemetry})
+            return result.status === "succeeded" || result.status === "failed"
+        }
+        if (step.method === "evaluations.start") {
+            const runId = requiredText(execution.params.runId, "Evaluation recovery run id", 300)
+            const outcome = await this.#callReconciler("evaluation", {...execution.params, runId, jobId: job.id, stepId: step.id})
+            if (["succeeded", "completed"].includes(outcome?.status) && outcome.result?.runId === runId) {
+                this.#persistStepResult(step, outcome.result)
+                return true
+            }
+            return this.#finishReconcilerFailure(step, outcome)
+        }
+        if (step.method === "installations.start" || step.method === "skills.install") {
+            const installationId = requiredText(
+                execution.params.installationId,
+                "Installation recovery id",
+                300,
+            )
+            const outcome = await this.#callReconciler("installation", {
+                ...execution.params,
+                installationId,
+                jobId: job.id,
+                stepId: step.id,
+            })
+            if (["installed", "succeeded"].includes(outcome?.status)) {
+                this.#persistStepResult(step, outcome.result ?? {installationId})
+                return true
+            }
+            return this.#finishReconcilerFailure(step, outcome)
+        }
+        if (step.method === "skills.release") {
+            const versionId = requiredText(execution.params.versionId, "Release Candidate id", 300)
+            const versionLabel = requiredText(execution.params.versionLabel, "Release tag", 300)
+            const outcome = await this.#callReconciler("release", {
+                ...execution.params,
+                versionId,
+                versionLabel,
+                jobId: job.id,
+                stepId: step.id,
+            })
+            if (outcome?.status === "released" && outcome.candidateId === versionId && outcome.tag === versionLabel) {
+                this.#persistStepResult(step, outcome.result ?? {versionId, versionLabel})
+                return true
+            }
+            return this.#finishReconcilerFailure(step, outcome)
+        }
+        return false
+    }
+
+    async #callReconciler(kind, input) {
+        const reconciler = this.#reconcilers[kind]
+        if (typeof reconciler !== "function") return null
+        return reconciler(cloneJson(input))
+    }
+
+    #finishReconcilerFailure(step, outcome) {
+        if (outcome?.status !== "failed") return false
+        this.#store.transitionStep(step.id, "failed", {
+            error: cloneJson(outcome.error ?? {
+                code: "OPERATOR_RECONCILE_FAILED",
+                message: "Operator Step reconciliation failed",
+            }),
+        })
+        return true
+    }
+
+    #enqueue(jobId, operation) {
+        requiredText(jobId, "Operator Job id", 200)
+        const prior = this.#jobQueues.get(jobId) ?? Promise.resolve()
+        const queued = prior.then(operation, operation)
+        this.#jobQueues.set(jobId, queued)
+        return queued.finally(() => {
+            if (this.#jobQueues.get(jobId) === queued) this.#jobQueues.delete(jobId)
+        })
+    }
+}
+
+module.exports = {
+    OperatorJobEngine,
+    preflightOperatorBudget,
+}

@@ -107,6 +107,115 @@ function assertRegistryCorruptionRejected(setup, mutate, pattern = /invalid|unsu
 }
 
 describe("Operator Job store", () => {
+    it("persists immutable Steps before execution with unique per-Job idempotency", () => {
+        const {path, store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        const params = {datasetId: "dataset-1", nested: {page: 1}}
+
+        const step = store.createStep(job.id, {
+            id: "forged-step",
+            method: "datasets.read",
+            params,
+            idempotencyKey: "read-dataset-1",
+            status: "succeeded",
+            createdAt: "2000-01-01T00:00:00.000Z",
+        })
+        params.nested.page = 999
+
+        assert.notEqual(step.id, "forged-step")
+        assert.equal(step.status, "pending")
+        assert.equal(step.attempt, 0)
+        assert.equal(step.createdAt, step.updatedAt)
+        assert.equal(step.startedAt, null)
+        assert.equal(step.completedAt, null)
+        assert.match(step.inputDigest, /^[a-f0-9]{64}$/u)
+        assert.deepEqual(store.getStep(step.id), step)
+        assert.deepEqual(store.listSteps({jobId: job.id}), [step])
+        assert.deepEqual(
+            store.listEvents(job.id).find((event) => event.kind === "operator_step_created")?.request,
+            {method: "datasets.read", params: {datasetId: "dataset-1", nested: {page: 1}}},
+        )
+        assert.throws(() => store.createStep(job.id, {
+            method: "datasets.read",
+            params: {datasetId: "dataset-2"},
+            idempotencyKey: "read-dataset-1",
+        }), /idempotency/iu)
+
+        assert.throws(() => store.transitionStep(step.id, "succeeded"), /transition/iu)
+        const running = store.transitionStep(step.id, "running")
+        assert.equal(running.status, "running")
+        assert.equal(running.attempt, 1)
+        assert.ok(running.startedAt)
+        assert.throws(
+            () => store.transitionStep(step.id, "succeeded", {method: "skills.delete"}),
+            /immutable|unsupported/iu,
+        )
+
+        const artifact = store.createArtifact(job.id, {
+            kind: "step-result",
+            name: "read-dataset-1.json",
+            mediaType: "application/json",
+            body: JSON.stringify({ok: true}),
+        })
+        const succeeded = store.transitionStep(step.id, "succeeded", {
+            outputArtifactIds: [artifact.id],
+        })
+        assert.equal(succeeded.status, "succeeded")
+        assert.deepEqual(succeeded.outputArtifactIds, [artifact.id])
+        assert.ok(succeeded.completedAt)
+        assert.throws(() => store.transitionStep(step.id, "running"), /terminal/iu)
+
+        const restarted = new OperatorJobStore(path)
+        assert.deepEqual(restarted.getStep(step.id), succeeded)
+        assert.deepEqual(restarted.listSteps({jobId: job.id}), [succeeded])
+    })
+
+    it("rejects a corrupted Step creation event or approval mutation on reload", () => {
+        assertRegistryCorruptionRejected((store) => {
+            const session = createSession(store)
+            const job = createJob(store, session.id)
+            const step = store.createStep(job.id, {
+                method: "datasets.read",
+                params: {datasetId: "dataset-1"},
+                idempotencyKey: "read-dataset-1",
+            })
+            return {job, step}
+        }, (registry) => {
+            registry.events.find((event) => event.kind === "operator_step_created").payload.request.params.datasetId = "dataset-2"
+        }, /Step.*creation|input.*digest|immutable/iu)
+
+        assertRegistryCorruptionRejected((store) => {
+            const session = createSession(store)
+            const job = createJob(store, session.id)
+            store.transitionJob(job.id, "running")
+            const step = store.createStep(job.id, {
+                method: "skills.release",
+                params: {skillId: "skill-1", versionId: "candidate-1"},
+                reservation: {},
+                idempotencyKey: "release-1",
+            })
+            store.transitionStep(step.id, "waiting_approval")
+            store.transitionJob(job.id, "waiting_approval")
+            const approval = store.createApproval(job.id, {
+                stepId: step.id,
+                action: "skills.release",
+                scope: {skillIds: ["skill-1"]},
+                proposedMutation: {
+                    method: "skills.release",
+                    params: {skillId: "skill-1", versionId: "candidate-1"},
+                    reservation: {},
+                    idempotencyKey: "release-1",
+                },
+                risk: "release",
+                expiresAt: "2099-01-01T00:00:00.000Z",
+            })
+            return {approval}
+        }, (registry) => {
+            registry.approvals[0].proposedMutation.params.versionId = "candidate-forged"
+        }, /approval.*mutation|frozen.*Step/iu)
+    })
+
     it("creates a private atomic registry and preserves immutable session and Job identity", () => {
         const {path, store} = fixture()
         const requestedRuntime = runtime()

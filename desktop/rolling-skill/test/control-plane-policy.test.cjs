@@ -5,6 +5,7 @@ const {
     createBudgetSnapshot,
     createControlPolicy,
     createResolvedScope,
+    operatorApprovalRequirement,
 } = require("../src/control-plane/policy.cjs")
 
 function grant(overrides = {}) {
@@ -952,6 +953,57 @@ describe("control-plane policy", () => {
             requestedScope: {
                 budget: {maxRuntimeTurns: 8, maxEvaluations: 2},
             },
+        })
+    })
+
+    it("exposes canonical Operator approval requirements for every high-risk method", () => {
+        const cases = [
+            ["datasets.delete", "datasets.delete", "destructive_action"],
+            ["datasets.delete_case", "datasets.delete", "destructive_action"],
+            ["raw_cases.delete", "raw_cases.delete", "destructive_action"],
+            ["evaluations.delete", "evaluations.delete", "destructive_action"],
+            ["skills.delete", "skills.delete", "destructive_action"],
+            ["skills.release", "skills.release", "release"],
+            ["skills.install", "skills.install", "installation"],
+            ["installations.start", "installations.execute", "installation"],
+            ["rubrics.publish", "rubrics.publish", "rubric_publish"],
+        ]
+        for (const [method, action, reason] of cases) {
+            const decision = operatorApprovalRequirement(method, {
+                skillId: "skill-1",
+                datasetId: "dataset-1",
+                runtimeId: "runtime-1",
+            })
+            assert.equal(decision.decision, "approval_required")
+            assert.equal(decision.action, action)
+            assert.equal(decision.reason, reason)
+        }
+        assert.equal(operatorApprovalRequirement("datasets.read", {datasetId: "dataset-1"}), null)
+    })
+
+    it("canonicalizes every durable Operator budget field in expansion approval scope", () => {
+        assert.deepEqual(operatorApprovalRequirement("budget.expand", {budget: {
+            maxDurationMs: 90_000,
+            maxRuntimeTurns: 8,
+            maxEvaluations: 2,
+            maxTargetExecutions: 40,
+            maxJudgeExecutions: 10,
+            maxTokens: 100_000,
+            maxReportedCost: 12.5,
+            inherited: true,
+        }}), {
+            decision: "approval_required",
+            reason: "budget_expansion",
+            requestedScope: {budget: {
+                maxDurationMs: 90_000,
+                maxRuntimeTurns: 8,
+                maxEvaluations: 2,
+                maxTargetExecutions: 40,
+                maxJudgeExecutions: 10,
+                maxTokens: 100_000,
+                maxReportedCost: 12.5,
+            }},
+            action: "budget.expand",
         })
     })
 
