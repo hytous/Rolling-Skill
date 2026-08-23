@@ -16,7 +16,8 @@ const {
 } = require("node:fs")
 const {basename, dirname, isAbsolute, join, resolve} = require("node:path")
 
-const OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v1"
+const LEGACY_OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v1"
+const OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v2"
 const MAX_STORE_BYTES = 64 * 1024 * 1024
 const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 const MAX_ENVELOPE_BYTES = 256 * 1024
@@ -517,18 +518,8 @@ function equalJson(left, right) {
     return JSON.stringify(left) === JSON.stringify(right)
 }
 
-function hasExactKeys(value, expected) {
-    if (!isPlainObject(value)) return false
-    const actual = Object.keys(value).sort()
-    const canonical = [...expected].sort()
-    return actual.length === canonical.length && actual.every((key, index) => key === canonical[index])
-}
-
-function migrateLegacyEnvelope(value, baseFields, canonicalFields, label) {
+function migrateLegacyEnvelope(value, baseFields, label) {
     requireObject(value, label)
-    if (hasExactKeys(value, canonicalFields) && isPlainObject(value.payload)) {
-        return {value: cloneJson(value, label), migrated: false}
-    }
     for (const field of baseFields) {
         if (!Object.hasOwn(value, field)) throw new Error(`${label} legacy envelope is incomplete`)
     }
@@ -538,42 +529,45 @@ function migrateLegacyEnvelope(value, baseFields, canonicalFields, label) {
     }
     const migrated = {payload}
     for (const field of baseFields) migrated[field] = cloneJson(value[field], label)
-    return {value: migrated, migrated: true}
+    return migrated
 }
 
 function migrateV1State(value, artifactDirectory) {
     const stateFields = ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"]
     exactKeys(value, stateFields, "Operator Job store")
-    if (value.schemaVersion !== OPERATOR_JOB_STORE_SCHEMA) return {state: value, migrated: false}
+    if (value.schemaVersion !== LEGACY_OPERATOR_JOB_STORE_SCHEMA) {
+        return {state: value, migrated: false}
+    }
     const state = cloneJson(value, "Operator Job store")
-    let migrated = false
-    if (!Array.isArray(state.sessions) || !Array.isArray(state.events) || !Array.isArray(state.artifacts)) {
-        return {state, migrated}
+    if (
+        !Array.isArray(state.sessions) ||
+        !Array.isArray(state.events) ||
+        !Array.isArray(state.artifacts) ||
+        !Array.isArray(state.steps) ||
+        state.steps.length !== 0
+    ) {
+        throw new Error("Legacy Operator Job store does not match the v1 parent format")
     }
     const transcriptBase = ["id", "sessionId", "sequence", "kind", "recordedAt"]
-    const transcriptCanonical = [...transcriptBase, "payload"]
     for (const session of state.sessions) {
         if (!isPlainObject(session) || !Array.isArray(session.transcript)) continue
-        session.transcript = session.transcript.map((entry) => {
-            const result = migrateLegacyEnvelope(
-                entry,
-                transcriptBase,
-                transcriptCanonical,
-                "Operator transcript entry",
-            )
-            migrated ||= result.migrated
-            return result.value
-        })
+        session.transcript = session.transcript.map((entry) => migrateLegacyEnvelope(
+            entry,
+            transcriptBase,
+            "Operator transcript entry",
+        ))
     }
     const eventBase = ["id", "jobId", "sequence", "kind", "occurredAt"]
-    const eventCanonical = [...eventBase, "payload"]
-    state.events = state.events.map((event) => {
-        const result = migrateLegacyEnvelope(event, eventBase, eventCanonical, "Operator event")
-        migrated ||= result.migrated
-        return result.value
-    })
+    state.events = state.events.map((event) => migrateLegacyEnvelope(
+        event,
+        eventBase,
+        "Operator event",
+    ))
     for (const artifact of state.artifacts) {
-        if (!isPlainObject(artifact) || typeof artifact.path !== "string" || !isAbsolute(artifact.path)) continue
+        if (!isPlainObject(artifact) || artifact.path === null) continue
+        if (typeof artifact.path !== "string" || !isAbsolute(artifact.path)) {
+            throw new Error("Legacy Operator artifact path is not an absolute v1 path")
+        }
         const expectedName = artifactFileName(
             requiredText(artifact.id, "Legacy Operator artifact id", 200),
             requiredText(artifact.sha256, "Legacy Operator artifact digest", 64),
@@ -583,9 +577,9 @@ function migrateV1State(value, artifactDirectory) {
             throw new Error("Legacy Operator artifact path escapes its private directory")
         }
         artifact.path = expectedName
-        migrated = true
     }
-    return {state, migrated}
+    state.schemaVersion = OPERATOR_JOB_STORE_SCHEMA
+    return {state, migrated: true}
 }
 
 function canonicalState(value) {
@@ -659,15 +653,27 @@ function canonicalState(value) {
         }
     }
     const jobVisitColors = new Map()
-    const visitJob = (jobId) => {
-        const color = jobVisitColors.get(jobId) ?? 0
-        if (color === 1) throw new Error("Operator Job parent graph contains a cycle")
-        if (color === 2) return
-        jobVisitColors.set(jobId, 1)
-        for (const childId of jobs.get(jobId).children) visitJob(childId)
-        jobVisitColors.set(jobId, 2)
+    for (const rootJobId of jobs.keys()) {
+        if ((jobVisitColors.get(rootJobId) ?? 0) === 2) continue
+        jobVisitColors.set(rootJobId, 1)
+        const stack = [{jobId: rootJobId, childIndex: 0}]
+        while (stack.length > 0) {
+            const frame = stack.at(-1)
+            const children = jobs.get(frame.jobId).children
+            if (frame.childIndex >= children.length) {
+                jobVisitColors.set(frame.jobId, 2)
+                stack.pop()
+                continue
+            }
+            const childId = children[frame.childIndex]
+            frame.childIndex += 1
+            const childColor = jobVisitColors.get(childId) ?? 0
+            if (childColor === 1) throw new Error("Operator Job parent graph contains a cycle")
+            if (childColor === 2) continue
+            jobVisitColors.set(childId, 1)
+            stack.push({jobId: childId, childIndex: 0})
+        }
     }
-    for (const jobId of jobs.keys()) visitJob(jobId)
     for (const step of state.steps) {
         const job = jobs.get(step.jobId)
         if (!job || job.sessionId !== step.sessionId) throw new Error("Operator Step Job reference is invalid")
@@ -1013,19 +1019,24 @@ class OperatorJobStore {
                 throw new Error(`Illegal Operator Job transition: ${job.status} -> ${nextStatus}`)
             }
             const now = nowTimestamp()
+            const leavingApprovalState = job.status === "waiting_approval"
+            if (leavingApprovalState) {
+                for (const approval of state.approvals) {
+                    if (approval.jobId !== job.id || approval.status !== "pending") continue
+                    approval.status = "rejected"
+                    approval.decision = "reject"
+                    approval.decisionScope = TERMINAL_JOB_STATUSES.has(nextStatus)
+                        ? "job_terminal"
+                        : "job_transition"
+                    approval.decidedBy = "job-engine"
+                    approval.resolvedAt = now
+                }
+            }
             if (job.startedAt === null && nextStatus === "running") job.startedAt = now
             Object.assign(job, normalized)
             job.status = nextStatus
             job.updatedAt = now
             if (TERMINAL_JOB_STATUSES.has(nextStatus)) {
-                for (const approval of state.approvals) {
-                    if (approval.jobId !== job.id || approval.status !== "pending") continue
-                    approval.status = "rejected"
-                    approval.decision = "reject"
-                    approval.decisionScope = "job_terminal"
-                    approval.decidedBy = "job-engine"
-                    approval.resolvedAt = now
-                }
                 job.completedAt = now
                 job.terminalSnapshot = terminalSnapshotFrom(job)
             }
@@ -1241,7 +1252,9 @@ class OperatorJobStore {
             if (!job || job.status !== "waiting_approval") {
                 throw new Error("Operator approval Job status must remain waiting_approval")
             }
-            if (Date.parse(approval.expiresAt) <= Date.now()) throw new Error("Operator approval has expired")
+            if (decisionInput.decision === "approve" && Date.parse(approval.expiresAt) <= Date.now()) {
+                throw new Error("Operator approval has expired")
+            }
             approval.status = decisionInput.decision === "approve" ? "approved" : "rejected"
             approval.decision = decisionInput.decision
             approval.decisionScope = decisionScope
