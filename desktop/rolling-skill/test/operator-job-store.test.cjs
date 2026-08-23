@@ -1,15 +1,20 @@
 const assert = require("node:assert/strict")
+const {spawnSync} = require("node:child_process")
 const {createHash} = require("node:crypto")
 const {
+    chmodSync,
     mkdtempSync,
     readFileSync,
     readdirSync,
     rmSync,
     statSync,
+    symlinkSync,
+    truncateSync,
+    unlinkSync,
     writeFileSync,
 } = require("node:fs")
 const {tmpdir} = require("node:os")
-const {dirname, join} = require("node:path")
+const {dirname, isAbsolute, join} = require("node:path")
 const {afterEach, describe, it} = require("node:test")
 
 const {
@@ -85,6 +90,19 @@ function pathToStatus(store, jobId, status) {
         needs_recovery: ["running", "needs_recovery"],
     }
     for (const next of paths[status]) store.transitionJob(jobId, next)
+}
+
+function rewriteRegistry(path, mutate) {
+    const registry = JSON.parse(readFileSync(path, "utf8"))
+    mutate(registry)
+    writeFileSync(path, `${JSON.stringify(registry, null, 2)}\n`)
+}
+
+function assertRegistryCorruptionRejected(setup, mutate, pattern = /invalid|unsupported|unknown/iu) {
+    const {path, store} = fixture()
+    const context = setup(store)
+    rewriteRegistry(path, (registry) => mutate(registry, context))
+    assert.throws(() => new OperatorJobStore(path), pattern)
 }
 
 describe("Operator Job store", () => {
@@ -251,6 +269,7 @@ describe("Operator Job store", () => {
             jobId: job.id,
             sequence: index + 1,
             kind: "tick",
+            payload: {},
             occurredAt,
         }))
         persisted.jobs[0].eventSequence = 10_000
@@ -422,5 +441,284 @@ describe("Operator Job store", () => {
         assert.equal(restartedAgain.getJob(running.id).status, "needs_recovery")
         assert.equal(restartedAgain.listEvents(running.id).length, 1)
         assert.deepEqual(restartedAgain.getTerminalSnapshot(terminal.id), terminalSnapshot)
+    })
+
+    it("persists an external artifact as its derived relative name", () => {
+        const {path, store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        const artifact = store.createArtifact(job.id, {
+            kind: "trace",
+            name: "trace",
+            mediaType: "application/octet-stream",
+            body: Buffer.alloc(128 * 1024 + 1, 0x61),
+        })
+        const persisted = JSON.parse(readFileSync(path, "utf8")).artifacts[0]
+
+        assert.equal(isAbsolute(persisted.path), false)
+        assert.equal(persisted.path, `${artifact.id}-${artifact.sha256}.artifact`)
+    })
+
+    it("rejects symlinked external artifacts without changing their targets", () => {
+        const {root, path, store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        const body = Buffer.alloc(128 * 1024 + 1, 0x62)
+        const artifact = store.createArtifact(job.id, {
+            kind: "trace",
+            name: "trace",
+            mediaType: "application/octet-stream",
+            body,
+        })
+        const outside = join(root, "outside.bin")
+        writeFileSync(outside, body, {mode: 0o644})
+        chmodSync(outside, 0o644)
+        unlinkSync(artifact.path)
+        symlinkSync(outside, artifact.path)
+
+        assert.throws(() => store.readArtifactBody(artifact.id), /symbolic|regular|nofollow/iu)
+        let loadError = null
+        try {
+            new OperatorJobStore(path)
+        } catch (error) {
+            loadError = error
+        }
+        assert.equal(statSync(outside).mode & 0o777, 0o644)
+        assert.match(loadError?.message ?? "", /artifact|symbolic|regular|nofollow/iu)
+    })
+
+    it("rejects oversized external artifacts from metadata before reading their bodies", () => {
+        const {path, store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        const artifact = store.createArtifact(job.id, {
+            kind: "trace",
+            name: "trace",
+            mediaType: "application/octet-stream",
+            body: Buffer.alloc(128 * 1024 + 1),
+        })
+        truncateSync(artifact.path, 64 * 1024 * 1024 + 1)
+
+        assert.throws(() => new OperatorJobStore(path), /artifact.*64|artifact.*byte limit/iu)
+    })
+
+    it("rejects unknown persisted fields and does not expose mutable state", () => {
+        const {path, store} = fixture()
+        assert.equal(store.state, undefined)
+        rewriteRegistry(path, (registry) => {
+            registry.unexpected = true
+        })
+        assert.throws(() => new OperatorJobStore(path), /unknown|unexpected|schema/iu)
+    })
+
+    it("strictly validates Steps, timestamps, references, snapshots, inline bodies, and approvals", () => {
+        const basic = (store) => {
+            const session = createSession(store)
+            return {session, job: createJob(store, session.id)}
+        }
+        assertRegistryCorruptionRejected(basic, (registry) => {
+            registry.steps.push({})
+        }, /step/iu)
+        assertRegistryCorruptionRejected(basic, (registry) => {
+            registry.sessions[0].closedAt = "not-a-timestamp"
+        }, /closedAt|timestamp/iu)
+        assertRegistryCorruptionRejected((store) => {
+            const context = basic(store)
+            store.createArtifact(context.job.id, {
+                kind: "report",
+                name: "inline",
+                mediaType: "text/plain",
+                body: "trusted",
+            })
+            return context
+        }, (registry) => {
+            registry.jobs[0].artifactIds.push(registry.jobs[0].artifactIds[0])
+        }, /artifact.*reference|duplicate/iu)
+        assertRegistryCorruptionRejected((store) => {
+            const context = basic(store)
+            store.transitionJob(context.job.id, "running")
+            store.transitionJob(context.job.id, "succeeded", {result: {ok: true}})
+            return context
+        }, (registry) => {
+            registry.jobs[0].terminalSnapshot.result.ok = false
+        }, /terminal.*snapshot/iu)
+        assertRegistryCorruptionRejected((store) => {
+            const context = basic(store)
+            store.createArtifact(context.job.id, {
+                kind: "report",
+                name: "inline",
+                mediaType: "text/plain",
+                body: "trusted",
+            })
+            return context
+        }, (registry) => {
+            registry.artifacts[0].inline.body = "tampered"
+        }, /artifact.*integrity|artifact.*digest|inline/iu)
+        assertRegistryCorruptionRejected((store) => {
+            const context = basic(store)
+            store.transitionJob(context.job.id, "running")
+            store.transitionJob(context.job.id, "waiting_approval")
+            store.createApproval(context.job.id, {
+                action: "skills.release",
+                scope: {skillIds: ["skill-1"]},
+                proposedMutation: {method: "skills.release", params: {}},
+                risk: "release",
+                expiresAt: "2099-01-01T00:00:00.000Z",
+            })
+            return context
+        }, (registry) => {
+            registry.approvals[0].status = "approved"
+        }, /approval.*decision|approval.*status/iu)
+    })
+
+    it("rejects duplicate transcript identities and per-Job Step idempotency keys", () => {
+        assertRegistryCorruptionRejected((store) => {
+            const session = createSession(store)
+            store.appendSessionTranscript(session.id, {kind: "message", text: "first"})
+            store.appendSessionTranscript(session.id, {kind: "message", text: "second"})
+            return {session}
+        }, (registry) => {
+            registry.sessions[0].transcript[1].id = registry.sessions[0].transcript[0].id
+        }, /transcript.*duplicate|duplicate.*transcript/iu)
+
+        assertRegistryCorruptionRejected((store) => {
+            const session = createSession(store)
+            return {session, job: createJob(store, session.id)}
+        }, (registry, {session, job}) => {
+            const createdAt = registry.jobs[0].createdAt
+            const base = {
+                jobId: job.id,
+                sessionId: session.id,
+                method: "evaluations.start",
+                idempotencyKey: "same-action",
+                status: "pending",
+                inputDigest: "a".repeat(64),
+                outputArtifactIds: [],
+                attempt: 0,
+                error: null,
+                createdAt,
+                updatedAt: createdAt,
+                startedAt: null,
+                completedAt: null,
+            }
+            registry.steps.push(
+                {id: "step-1", ...base},
+                {id: "step-2", ...base},
+            )
+        }, /idempotency/iu)
+    })
+
+    it("atomically closes pending approvals when their Job becomes terminal", () => {
+        const {store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        store.transitionJob(job.id, "running")
+        store.transitionJob(job.id, "waiting_approval")
+        const approval = store.createApproval(job.id, {
+            action: "skills.release",
+            scope: {skillIds: ["skill-1"]},
+            proposedMutation: {method: "skills.release", params: {}},
+            risk: "release",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+        })
+
+        store.transitionJob(job.id, "failed", {error: {code: "STOPPED"}})
+        const closed = store.getApproval(approval.id)
+        assert.equal(closed.status, "rejected")
+        assert.equal(closed.decision, "reject")
+        assert.equal(closed.decisionScope, "job_terminal")
+        assert.ok(closed.resolvedAt)
+    })
+
+    it("refuses to resolve an expired approval or one whose Job is no longer waiting", () => {
+        const expiredFixture = fixture()
+        const expiredSession = createSession(expiredFixture.store)
+        const expiredJob = createJob(expiredFixture.store, expiredSession.id)
+        expiredFixture.store.transitionJob(expiredJob.id, "running")
+        expiredFixture.store.transitionJob(expiredJob.id, "waiting_approval")
+        const expired = expiredFixture.store.createApproval(expiredJob.id, {
+            action: "skills.release",
+            scope: {},
+            proposedMutation: {},
+            risk: "release",
+            expiresAt: "2000-01-01T00:00:00.000Z",
+        })
+        assert.throws(
+            () => expiredFixture.store.resolveApproval(expired.id, {
+                decision: "approve",
+                scope: "action",
+            }),
+            /expired/iu,
+        )
+
+        const pausedFixture = fixture()
+        const pausedSession = createSession(pausedFixture.store)
+        const pausedJob = createJob(pausedFixture.store, pausedSession.id)
+        pausedFixture.store.transitionJob(pausedJob.id, "running")
+        pausedFixture.store.transitionJob(pausedJob.id, "waiting_approval")
+        const paused = pausedFixture.store.createApproval(pausedJob.id, {
+            action: "skills.release",
+            scope: {},
+            proposedMutation: {},
+            risk: "release",
+            expiresAt: "2099-01-01T00:00:00.000Z",
+        })
+        pausedFixture.store.transitionJob(pausedJob.id, "paused")
+        assert.throws(
+            () => pausedFixture.store.resolveApproval(paused.id, {
+                decision: "approve",
+                scope: "action",
+            }),
+            /waiting_approval|Job status/iu,
+        )
+    })
+
+    it("rejects a symlinked registry instead of following it", () => {
+        const sourceFixture = fixture()
+        const linkFixture = fixture()
+        rmSync(linkFixture.path, {force: true})
+        symlinkSync(sourceFixture.path, linkFixture.path)
+
+        assert.throws(() => new OperatorJobStore(linkFixture.path), /symbolic|regular|nofollow/iu)
+    })
+
+    it("fsyncs the registry directory and cannot fail after the atomic rename", () => {
+        const root = mkdtempSync(join(tmpdir(), "rolling-skill-operator-atomic-"))
+        temporaryDirectories.push(root)
+        const path = join(root, "private", "operator-jobs.json")
+        const modulePath = join(__dirname, "..", "src", "operator", "job-store.cjs")
+        const script = `
+            const Module = require("node:module")
+            const fs = require("node:fs")
+            let directoryFsyncs = 0
+            const originalLoad = Module._load
+            Module._load = function (request) {
+                if (request !== "node:fs") return originalLoad.apply(this, arguments)
+                return {
+                    ...fs,
+                    chmodSync(path, mode) {
+                        if (require("node:path").resolve(path) === ${JSON.stringify(path)}) {
+                            throw new Error("post-rename chmod must not run")
+                        }
+                        return fs.chmodSync(path, mode)
+                    },
+                    fsyncSync(descriptor) {
+                        if (fs.fstatSync(descriptor).isDirectory()) {
+                            directoryFsyncs += 1
+                            throw new Error("directory fsync unavailable after rename")
+                        }
+                        return fs.fsyncSync(descriptor)
+                    },
+                }
+            }
+            const {OperatorJobStore} = require(${JSON.stringify(modulePath)})
+            new OperatorJobStore(${JSON.stringify(path)})
+            process.stdout.write(String(directoryFsyncs))
+        `
+        const result = spawnSync(process.execPath, ["-e", script], {encoding: "utf8"})
+
+        assert.equal(result.status, 0, result.stderr)
+        assert.ok(Number(result.stdout) >= 1, "the parent directory must be fsynced")
+        assert.equal(statSync(path).mode & 0o777, 0o600)
     })
 })
