@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 
-import {createReadStream} from "node:fs"
+import {
+    closeSync,
+    constants as fileConstants,
+    fstatSync,
+    lstatSync,
+    openSync,
+    readSync,
+} from "node:fs"
 import {readFile} from "node:fs/promises"
 import process from "node:process"
 import {McpServer} from "@modelcontextprotocol/server"
@@ -24,6 +31,7 @@ const {ControlSocketClient} = controlSocketClientModule
 
 const TOOL_VERSION = "0.1.0"
 const MAX_CONTROL_PARAMS_BYTES = 1_048_576
+const CONTROL_FILE_READ_CHUNK_BYTES = 64 * 1_024
 const CONTROL_ENVIRONMENT_KEYS = Object.freeze({
     socketPath: "ROLLING_SKILL_CONTROL_SOCKET",
     token: "ROLLING_SKILL_CONTROL_TOKEN",
@@ -84,7 +92,18 @@ async function readJsonInput(path) {
 
 async function readBoundedJsonInput(path) {
     if (!path) throw new Error("--params-json requires a file path or - for stdin")
-    const input = path === "-" ? process.stdin : createReadStream(path)
+    const source = path === "-"
+        ? await readBoundedStream(process.stdin)
+        : readBoundedRegularFile(path)
+    const parsed = JSON.parse(source.toString("utf8"))
+    if (
+        typeof parsed !== "object" || parsed === null || Array.isArray(parsed) ||
+        Object.getPrototypeOf(parsed) !== Object.prototype
+    ) throw new TypeError("Control params must be a plain object")
+    return parsed
+}
+
+async function readBoundedStream(input) {
     const chunks = []
     let bytes = 0
     for await (const chunk of input) {
@@ -95,12 +114,76 @@ async function readBoundedJsonInput(path) {
         }
         chunks.push(buffer)
     }
-    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"))
-    if (
-        typeof parsed !== "object" || parsed === null || Array.isArray(parsed) ||
-        Object.getPrototypeOf(parsed) !== Object.prototype
-    ) throw new TypeError("Control params must be a plain object")
-    return parsed
+    return Buffer.concat(chunks)
+}
+
+function sameFileIdentity(left, right) {
+    return left.dev === right.dev && left.ino === right.ino
+}
+
+function sameFileSnapshot(left, right) {
+    return sameFileIdentity(left, right) &&
+        left.size === right.size &&
+        left.mtimeMs === right.mtimeMs &&
+        left.ctimeMs === right.ctimeMs
+}
+
+function readBoundedRegularFile(path) {
+    const supportsNoFollow = Number.isInteger(fileConstants.O_NOFOLLOW) &&
+        fileConstants.O_NOFOLLOW > 0
+    const supportsNonBlock = Number.isInteger(fileConstants.O_NONBLOCK) &&
+        fileConstants.O_NONBLOCK > 0
+    let expectedIdentity = null
+    if (!supportsNoFollow || !supportsNonBlock) {
+        expectedIdentity = lstatSync(path)
+        if (!expectedIdentity.isFile() || expectedIdentity.isSymbolicLink()) {
+            throw new Error("Control params file is invalid")
+        }
+    }
+    let flags = fileConstants.O_RDONLY
+    if (supportsNoFollow) flags |= fileConstants.O_NOFOLLOW
+    if (supportsNonBlock) flags |= fileConstants.O_NONBLOCK
+
+    let descriptor = null
+    try {
+        descriptor = openSync(path, flags)
+        const initial = fstatSync(descriptor)
+        if (
+            !initial.isFile() ||
+            (expectedIdentity && !sameFileIdentity(expectedIdentity, initial))
+        ) throw new Error("Control params file is invalid")
+        if (initial.size > MAX_CONTROL_PARAMS_BYTES) {
+            throw new RangeError("Control params exceed the maximum input size")
+        }
+
+        const chunks = []
+        let bytes = 0
+        const buffer = Buffer.allocUnsafe(CONTROL_FILE_READ_CHUNK_BYTES)
+        while (true) {
+            const remainingWithOverflowByte = MAX_CONTROL_PARAMS_BYTES - bytes + 1
+            const bytesRead = readSync(
+                descriptor,
+                buffer,
+                0,
+                Math.min(buffer.length, remainingWithOverflowByte),
+                null,
+            )
+            if (bytesRead === 0) break
+            bytes += bytesRead
+            if (bytes > MAX_CONTROL_PARAMS_BYTES) {
+                throw new RangeError("Control params exceed the maximum input size")
+            }
+            chunks.push(Buffer.from(buffer.subarray(0, bytesRead)))
+        }
+
+        const final = fstatSync(descriptor)
+        if (!final.isFile() || !sameFileSnapshot(initial, final) || bytes !== initial.size) {
+            throw new Error("Control params file changed while being read")
+        }
+        return Buffer.concat(chunks, bytes)
+    } finally {
+        if (descriptor !== null) closeSync(descriptor)
+    }
 }
 
 function controlCredentials(environment = process.env) {
@@ -379,17 +462,64 @@ function usage() {
     ].join("\n")
 }
 
+function serveMcpUntilShutdown(factory, options = {}) {
+    const processObject = options.processObject ?? process
+    const input = options.input ?? processObject.stdin
+    const handle = serveStdio(factory, {onerror: options.onerror})
+    let closePromise = null
+    let resolveClosed
+    const closed = new Promise((resolve) => {
+        resolveClosed = resolve
+    })
+    const listeners = []
+    const listenOnce = (emitter, event, listener) => {
+        emitter.once(event, listener)
+        listeners.push([emitter, event, listener])
+    }
+    const removeListeners = () => {
+        for (const [emitter, event, listener] of listeners.splice(0)) {
+            emitter.removeListener(event, listener)
+        }
+    }
+    const close = () => {
+        if (closePromise) return closePromise
+        removeListeners()
+        closePromise = Promise.resolve()
+            .then(() => handle.close())
+            .catch(() => {})
+            .finally(resolveClosed)
+        return closePromise
+    }
+    const onInputClosed = () => {
+        void close()
+    }
+    const onSignal = () => {
+        processObject.exitCode = 0
+        void close()
+    }
+    listenOnce(input, "end", onInputClosed)
+    listenOnce(input, "close", onInputClosed)
+    listenOnce(processObject, "SIGINT", onSignal)
+    listenOnce(processObject, "SIGTERM", onSignal)
+    return {close, closed}
+}
+
 async function runCli(arguments_) {
     const {command, options} = parseArguments(arguments_)
     if (command === "mcp") {
-        serveStdio(() => createRawCaseMcpServer(), {
+        const lifecycle = serveMcpUntilShutdown(() => createRawCaseMcpServer(), {
             onerror: (error) => console.error(error?.stack || error?.message || String(error)),
         })
+        await lifecycle.closed
         return
     }
     if (command === "operator-mcp") {
         const credentials = controlCredentials()
-        serveStdio(() => createOperatorMcpServer(credentials), {onerror: () => {}})
+        const lifecycle = serveMcpUntilShutdown(
+            () => createOperatorMcpServer(credentials),
+            {onerror: () => {}},
+        )
+        await lifecycle.closed
         return
     }
     if (command === "help" || command === "--help" || command === "-h") {
@@ -398,9 +528,11 @@ async function runCli(arguments_) {
     }
     if (command === "control") {
         controlDefinition(options.method)
+        const credentials = controlCredentials()
         const result = await invokeControl(
             options.method,
             await readBoundedJsonInput(options["params-json"]),
+            credentials,
         )
         process.stdout.write(`${JSON.stringify(serializableResult(result))}\n`)
         return
@@ -455,4 +587,5 @@ export {
     invokeControl,
     parseArguments,
     runCli,
+    serveMcpUntilShutdown,
 }

@@ -3,9 +3,11 @@ const {execFileSync, spawn} = require("node:child_process")
 const {
     chmodSync,
     copyFileSync,
+    mkdirSync,
     mkdtempSync,
     readFileSync,
     rmSync,
+    symlinkSync,
     writeFileSync,
 } = require("node:fs")
 const {tmpdir} = require("node:os")
@@ -92,25 +94,98 @@ function runTool(arguments_, {environment, input} = {}) {
     })
 }
 
-function runToolAsync(arguments_, {environment, input, executablePath = toolPath} = {}) {
+function runToolAsync(arguments_, {
+    environment,
+    input,
+    executablePath = toolPath,
+    nodeArguments = [],
+    timeoutMs = 5_000,
+} = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [executablePath, ...arguments_], {
+        const child = spawn(process.execPath, [
+            ...nodeArguments,
+            executablePath,
+            ...arguments_,
+        ], {
             env: environment,
             stdio: ["pipe", "pipe", "pipe"],
         })
         const stdout = []
         const stderr = []
+        let timedOut = false
+        const timeout = setTimeout(() => {
+            timedOut = true
+            child.kill("SIGKILL")
+        }, timeoutMs)
         child.stdout.on("data", (chunk) => stdout.push(chunk))
         child.stderr.on("data", (chunk) => stderr.push(chunk))
-        child.once("error", reject)
-        child.once("close", (code, signal) => resolve({
-            code,
-            signal,
-            stdout: Buffer.concat(stdout).toString("utf8"),
-            stderr: Buffer.concat(stderr).toString("utf8"),
-        }))
+        child.once("error", (error) => {
+            clearTimeout(timeout)
+            reject(error)
+        })
+        child.once("close", (code, signal) => {
+            clearTimeout(timeout)
+            resolve({
+                code,
+                signal,
+                timedOut,
+                stdout: Buffer.concat(stdout).toString("utf8"),
+                stderr: Buffer.concat(stderr).toString("utf8"),
+            })
+        })
         child.stdin.end(input)
     })
+}
+
+function spawnMcpPeer(arguments_, environment) {
+    const child = spawn(process.execPath, [toolPath, ...arguments_], {
+        env: environment,
+        stdio: ["pipe", "pipe", "pipe"],
+    })
+    const pending = new Map()
+    const stderr = []
+    let buffer = ""
+    child.stderr.on("data", (chunk) => stderr.push(chunk))
+    child.stdout.on("data", (chunk) => {
+        buffer += chunk.toString("utf8")
+        let newline = buffer.indexOf("\n")
+        while (newline >= 0) {
+            const message = JSON.parse(buffer.slice(0, newline))
+            buffer = buffer.slice(newline + 1)
+            const waiter = pending.get(message.id)
+            if (waiter) {
+                pending.delete(message.id)
+                clearTimeout(waiter.timeout)
+                waiter.resolve(message)
+            }
+            newline = buffer.indexOf("\n")
+        }
+    })
+    child.once("close", () => {
+        for (const waiter of pending.values()) {
+            clearTimeout(waiter.timeout)
+            waiter.reject(new Error("MCP child closed before responding"))
+        }
+        pending.clear()
+    })
+    return {
+        child,
+        stderr,
+        notify(method, params = {}) {
+            child.stdin.write(`${JSON.stringify({jsonrpc: "2.0", method, params})}\n`)
+        },
+        request(id, method, params) {
+            const response = new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    pending.delete(id)
+                    reject(new Error(`MCP request timed out: ${method}`))
+                }, 2_000)
+                pending.set(id, {resolve, reject, timeout})
+            })
+            child.stdin.write(`${JSON.stringify({jsonrpc: "2.0", id, method, params})}\n`)
+            return response
+        },
+    }
 }
 
 describe("rolling-skill external Raw Case tool", () => {
@@ -183,6 +258,156 @@ describe("rolling-skill external Raw Case tool", () => {
         } finally {
             await server.close()
         }
+    })
+
+    it("validates all control credentials before opening a params file", async () => {
+        if (process.platform === "win32") return
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-control-fifo-"))
+        temporaryDirectories.push(directory)
+        const fifoPath = join(directory, "params.fifo")
+        execFileSync("mkfifo", [fifoPath])
+        const result = await runToolAsync([
+            "control",
+            "context.get",
+            "--params-json",
+            fifoPath,
+        ], {
+            environment: cleanEnvironment({
+                ROLLING_SKILL_CONTROL_SOCKET: "/tmp/unused-control.sock",
+                ROLLING_SKILL_CONTROL_TOKEN: "credential-first-token",
+            }),
+            timeoutMs: 500,
+        })
+
+        assert.equal(result.timedOut, false, "params FIFO was opened before credential validation")
+        assert.notEqual(result.code, 0)
+        assert.equal(JSON.parse(result.stderr).code, "CONTROL_ERROR")
+        assertNoSecrets(result.stdout + result.stderr, ["credential-first-token"])
+    })
+
+    it("rejects symlinks and non-regular params files without blocking", async () => {
+        if (process.platform === "win32") return
+        let invocations = 0
+        const server = await startControlFixture(async () => {
+            invocations += 1
+            return {workspaceRoot: "/workspace", runtimes: []}
+        })
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-control-files-"))
+        temporaryDirectories.push(directory)
+        const regularPath = join(directory, "regular.json")
+        const regularLinkPath = join(directory, "regular-link.json")
+        const fifoPath = join(directory, "params.fifo")
+        const fifoLinkPath = join(directory, "fifo-link")
+        const directoryPath = join(directory, "params-directory")
+        writeFileSync(regularPath, "{}")
+        symlinkSync(regularPath, regularLinkPath)
+        execFileSync("mkfifo", [fifoPath])
+        symlinkSync(fifoPath, fifoLinkPath)
+        mkdirSync(directoryPath)
+
+        try {
+            const candidates = [
+                ["symlink to regular file", regularLinkPath],
+                ["FIFO", fifoPath],
+                ["symlink to FIFO", fifoLinkPath],
+                ["directory", directoryPath],
+                ["device", "/dev/null"],
+            ]
+            const results = await Promise.all(candidates.map(async ([label, paramsPath]) => [
+                label,
+                await runToolAsync([
+                    "control",
+                    "context.get",
+                    "--params-json",
+                    paramsPath,
+                ], {
+                    environment: controlEnvironment(
+                        server.socketPath,
+                        "unsafe-file-token",
+                        "unsafe-file-session",
+                    ),
+                    timeoutMs: 750,
+                }),
+            ]))
+
+            for (const [label, result] of results) {
+                assert.equal(result.timedOut, false, `${label} blocked the control tool`)
+                assert.notEqual(result.code, 0, `${label} was accepted`)
+                assert.equal(JSON.parse(result.stderr).code, "CONTROL_ERROR")
+                assertNoSecrets(
+                    result.stdout + result.stderr,
+                    ["unsafe-file-token", "unsafe-file-session"],
+                )
+            }
+            assert.equal(invocations, 0)
+        } finally {
+            await server.close()
+        }
+    })
+
+    it("bounds oversized and concurrently growing regular params files", async () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-control-growth-"))
+        temporaryDirectories.push(directory)
+        const oversizedPath = join(directory, "oversized.json")
+        const growingPath = join(directory, "growing.json")
+        const growthHookPath = join(directory, "grow-after-first-read.cjs")
+        writeFileSync(oversizedPath, `{"padding":"${"x".repeat(1_048_576)}"}`)
+        writeFileSync(growingPath, `{"padding":"${"x".repeat(900_000)}"}`)
+        writeFileSync(growthHookPath, [
+            'const fs = require("node:fs")',
+            'const {syncBuiltinESMExports} = require("node:module")',
+            "const originalReadSync = fs.readSync",
+            "let grew = false",
+            "fs.readSync = function (...arguments_) {",
+            "    const bytesRead = Reflect.apply(originalReadSync, this, arguments_)",
+            "    const opened = fs.fstatSync(arguments_[0])",
+            "    const target = fs.statSync(process.env.ROLLING_SKILL_TEST_GROW_PATH)",
+            "    if (!grew && bytesRead > 0 && opened.dev === target.dev && opened.ino === target.ino) {",
+            "        grew = true",
+            '        fs.appendFileSync(process.env.ROLLING_SKILL_TEST_GROW_PATH, " ")',
+            "    }",
+            "    return bytesRead",
+            "}",
+            "syncBuiltinESMExports()",
+        ].join("\n"))
+        const environment = controlEnvironment(
+            "/tmp/rolling-skill-growth-unused.sock",
+            "growth-token",
+            "growth-session",
+        )
+
+        const oversized = await runToolAsync([
+            "control",
+            "context.get",
+            "--params-json",
+            oversizedPath,
+        ], {environment, timeoutMs: 750})
+        assert.equal(oversized.timedOut, false)
+        assert.notEqual(oversized.code, 0)
+        assert.equal(JSON.parse(oversized.stderr).code, "CONTROL_ERROR")
+
+        const initialGrowingBytes = readFileSync(growingPath).length
+        const growing = await runToolAsync([
+            "control",
+            "context.get",
+            "--params-json",
+            growingPath,
+        ], {
+            environment: {
+                ...environment,
+                ROLLING_SKILL_TEST_GROW_PATH: growingPath,
+            },
+            nodeArguments: ["--require", growthHookPath],
+            timeoutMs: 750,
+        })
+        assert.equal(growing.timedOut, false)
+        assert.notEqual(growing.code, 0)
+        assert.equal(JSON.parse(growing.stderr).code, "CONTROL_ERROR")
+        assert.equal(readFileSync(growingPath).length, initialGrowingBytes + 1)
+        assertNoSecrets(
+            oversized.stdout + oversized.stderr + growing.stdout + growing.stderr,
+            ["growth-token", "growth-session"],
+        )
     })
 
     it("publishes one sanitized structured CLI error and requires all three credentials", async () => {
@@ -471,6 +696,99 @@ describe("rolling-skill external Raw Case tool", () => {
         assertNoSecrets(Buffer.concat(stderr).toString("utf8"), [token, session, "hidden-queue"])
     })
 
+    it("closes the operator MCP handle and socket client promptly on stdin EOF", async () => {
+        const server = await startControlFixture(async () => ({
+            workspaceRoot: "/workspace",
+            runtimes: [],
+        }))
+        const [{Client}, {StdioClientTransport}] = await Promise.all([
+            import("@modelcontextprotocol/client"),
+            import("@modelcontextprotocol/client/stdio"),
+        ])
+        const transport = new StdioClientTransport({
+            command: process.execPath,
+            args: [toolPath, "operator-mcp"],
+            env: controlEnvironment(server.socketPath, "eof-token", "eof-session"),
+            stderr: "pipe",
+        })
+        const stderr = []
+        transport.stderr.on("data", (chunk) => stderr.push(chunk))
+        const client = new Client({name: "rolling-skill-eof-test", version: "1.0.0"})
+        try {
+            await client.connect(transport)
+            const result = await client.callTool({
+                name: "rolling_skill_context_get",
+                arguments: {},
+            })
+            assert.equal(result.structuredContent.workspaceRoot, "/workspace")
+            await waitFor(() => server.connectionCount === 1)
+
+            const startedAt = Date.now()
+            await client.close()
+            assert.ok(Date.now() - startedAt < 1_000, "operator MCP waited for forced termination")
+            await waitFor(() => server.connectionCount === 0)
+            assertNoSecrets(
+                Buffer.concat(stderr).toString("utf8"),
+                ["eof-token", "eof-session"],
+            )
+        } finally {
+            await client.close().catch(() => {})
+            await server.close()
+        }
+    })
+
+    it("closes the operator MCP handle cleanly on SIGTERM", async () => {
+        if (process.platform === "win32") return
+        const token = "signal-token"
+        const session = "signal-session"
+        const server = await startControlFixture(async () => ({
+            workspaceRoot: "/workspace",
+            runtimes: [],
+        }))
+        const peer = spawnMcpPeer(
+            ["operator-mcp"],
+            controlEnvironment(server.socketPath, token, session),
+        )
+        try {
+            const initialized = await peer.request(1, "initialize", {
+                protocolVersion: "2025-06-18",
+                capabilities: {},
+                clientInfo: {name: "rolling-skill-signal-test", version: "1.0.0"},
+            })
+            assert.ok(initialized.result)
+            peer.notify("notifications/initialized")
+            const called = await peer.request(2, "tools/call", {
+                name: "rolling_skill_context_get",
+                arguments: {},
+            })
+            assert.equal(called.result.structuredContent.workspaceRoot, "/workspace")
+            await waitFor(() => server.connectionCount === 1)
+
+            const exited = new Promise((resolve) => {
+                const timeout = setTimeout(() => {
+                    resolve({code: null, signal: null, timedOut: true})
+                }, 1_000)
+                peer.child.once("close", (code, signal) => {
+                    clearTimeout(timeout)
+                    resolve({code, signal, timedOut: false})
+                })
+            })
+            peer.child.kill("SIGTERM")
+            const outcome = await exited
+            if (outcome.timedOut) peer.child.kill("SIGKILL")
+            assert.equal(outcome.timedOut, false)
+            assert.equal(outcome.code, 0)
+            assert.equal(outcome.signal, null)
+            await waitFor(() => server.connectionCount === 0)
+            assertNoSecrets(Buffer.concat(peer.stderr).toString("utf8"), [token, session])
+        } finally {
+            if (peer.child.exitCode === null && peer.child.signalCode === null) {
+                peer.child.kill("SIGKILL")
+            }
+            await server.close()
+        }
+    })
+
     it("sanitizes control timeouts, disconnects, and an unavailable App", async () => {
         const timeoutSecrets = ["timeout-token", "timeout-session"]
         const timeoutServer = await startControlFixture(() => new Promise(() => {}))
@@ -639,6 +957,7 @@ describe("rolling-skill external Raw Case tool", () => {
             stderr: "pipe",
         })
         const client = new Client({name: "rolling-skill-tool-test", version: "1.0.0"})
+        let clientClosed = false
         try {
             await client.connect(transport)
             const tools = await client.listTools()
@@ -661,8 +980,13 @@ describe("rolling-skill external Raw Case tool", () => {
                 arguments: {skillName: "billing-cost-management"},
             })
             assert.equal(listed.structuredContent.rawCases.length, 2)
+
+            const startedAt = Date.now()
+            await client.close()
+            clientClosed = true
+            assert.ok(Date.now() - startedAt < 1_000, "offline MCP waited for forced termination")
         } finally {
-            await client.close().catch(() => {})
+            if (!clientClosed) await client.close().catch(() => {})
         }
     })
 })
