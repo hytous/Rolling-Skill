@@ -643,7 +643,31 @@ function normalizeSkillReference(value) {
     }
     const name = skillIdentity(value.name, "Skill name")
     const path = skillIdentity(value.path, "Skill path")
-    if (!name || !path || !path.startsWith("/")) {
+    const evidencePrecision = skillIdentity(value.evidencePrecision, "Skill evidence precision")
+    if (!name) {
+        throw new Error("A valid runtime Skill name is required")
+    }
+    if (evidencePrecision === "name-only") {
+        const providerId = skillIdentity(value.providerId, "Skill provider id")
+        const runtimeId = skillIdentity(value.runtimeId, "Skill runtime id")
+        const workspaceRoot = skillIdentity(value.workspaceRoot, "Skill workspace root")
+        if (path || !providerId || !runtimeId || !workspaceRoot?.startsWith("/")) {
+            throw new Error("A complete name-only Runtime Skill identity is required")
+        }
+        return {
+            schemaVersion: value.schemaVersion,
+            name,
+            path: null,
+            scope: skillIdentity(value.scope, "Skill scope"),
+            description: skillIdentity(value.description, "Skill description"),
+            runtimeId,
+            providerId,
+            workspaceRoot,
+            evidencePrecision,
+            confirmedAt: skillIdentity(value.confirmedAt, "Skill confirmation time"),
+        }
+    }
+    if (!path || !path.startsWith("/")) {
         throw new Error("A valid runtime Skill name and absolute path are required")
     }
     return {
@@ -655,6 +679,22 @@ function normalizeSkillReference(value) {
         runtimeId: skillIdentity(value.runtimeId, "Skill runtime id"),
         confirmedAt: skillIdentity(value.confirmedAt, "Skill confirmation time"),
     }
+}
+
+function sameSkillReferenceIdentity(left, right) {
+    if (!left || !right || left.name !== right.name) return false
+    const nameOnly =
+        left.evidencePrecision === "name-only" || right.evidencePrecision === "name-only"
+    if (nameOnly) {
+        return (
+            left.evidencePrecision === "name-only" &&
+            right.evidencePrecision === "name-only" &&
+            left.providerId === right.providerId &&
+            left.runtimeId === right.runtimeId &&
+            left.workspaceRoot === right.workspaceRoot
+        )
+    }
+    return left.path === right.path && left.runtimeId === right.runtimeId
 }
 
 class LocalEvaluationStore {
@@ -731,7 +771,7 @@ class LocalEvaluationStore {
         const skillReference = normalizeSkillReference(value)
         if (!skillReference) throw new Error("Dataset Skill binding is required")
         const current = dataset.skillReference
-        if (current?.name === skillReference.name && current.path === skillReference.path) {
+        if (sameSkillReferenceIdentity(current, skillReference)) {
             dataset.skillReference = skillReference
             this.persist()
             return copy(dataset)

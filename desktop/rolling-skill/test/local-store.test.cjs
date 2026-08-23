@@ -138,6 +138,61 @@ describe("local evaluation store", () => {
         assert.deepEqual(store.getDataset(created.id).skillReference, skillReference())
     })
 
+    it("persists a complete name-only Runtime Skill identity without weakening path validation", () => {
+        const {path, store} = fixture()
+        const nameOnlyReference = {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            name: "deepseek-billing",
+            path: null,
+            scope: "runtime",
+            description: "Discovered by the DeepSeek Harness provider",
+            runtimeId: "deepseek-harness:local",
+            providerId: "deepseek-harness",
+            workspaceRoot: "/workspace/project",
+            evidencePrecision: "name-only",
+            confirmedAt: "2026-08-23T00:00:00.000Z",
+        }
+
+        const created = store.createDataset({
+            name: "Name-only regression",
+            skillReference: nameOnlyReference,
+        })
+
+        assert.deepEqual(created.skillReference, nameOnlyReference)
+        assert.deepEqual(
+            new LocalEvaluationStore(path).getDataset(created.id).skillReference,
+            nameOnlyReference,
+        )
+        const persisted = JSON.parse(readFileSync(path, "utf8"))
+        persisted.datasets.find((dataset) => dataset.id === created.id).activeRubricVersionId =
+            "published-for-original-identity"
+        writeFileSync(path, `${JSON.stringify(persisted)}\n`)
+        const rebound = new LocalEvaluationStore(path).bindDatasetSkill(created.id, {
+            ...nameOnlyReference,
+            workspaceRoot: "/workspace/other",
+        })
+        assert.equal(rebound.activeRubricVersionId, null)
+        assert.throws(
+            () => store.createDataset({
+                name: "Missing path",
+                skillReference: {
+                    ...skillReference(),
+                    path: null,
+                },
+            }),
+            /absolute path/i,
+        )
+        for (const missing of ["providerId", "runtimeId", "workspaceRoot"]) {
+            assert.throws(
+                () => store.createDataset({
+                    name: `Missing ${missing}`,
+                    skillReference: {...nameOnlyReference, [missing]: null},
+                }),
+                /name-only.*identity|identity.*required/i,
+            )
+        }
+    })
+
     it("migrates a unique legacy Case Skill to its dataset without rewriting the Case", () => {
         const {path} = fixture()
         const reference = skillReference()

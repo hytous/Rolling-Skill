@@ -1,9 +1,13 @@
 const assert = require("node:assert/strict")
 const {createHash} = require("node:crypto")
-const {readFileSync} = require("node:fs")
+const {mkdtempSync, readFileSync, rmSync} = require("node:fs")
+const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {describe, it} = require("node:test")
 const vm = require("node:vm")
+
+const {runtimeReportsSkill} = require("../src/evaluation-skill-binding.cjs")
+const {LocalEvaluationStore} = require("../src/local-store.cjs")
 
 const root = join(__dirname, "..")
 const source = (path) => readFileSync(join(root, path), "utf8")
@@ -39,7 +43,11 @@ function preloadBridge(responder) {
 
 function mainFunctionContext(startName, endName, globals = {}) {
     const main = source("src/main.cjs")
-    const start = main.indexOf(`function ${startName}`)
+    const functionStart = main.indexOf(`function ${startName}`)
+    const asyncStart = main.indexOf(`async function ${startName}`)
+    const start = [functionStart, asyncStart]
+        .filter((candidate) => candidate >= 0)
+        .sort((left, right) => left - right)[0] ?? -1
     const functionEnd = main.indexOf(`\nfunction ${endName}`, start + 1)
     const asyncEnd = main.indexOf(`\nasync function ${endName}`, start + 1)
     const end = [functionEnd, asyncEnd]
@@ -783,6 +791,222 @@ describe("desktop main/preload bridge", () => {
         assert.equal(ambiguous.params.cases[0].skill.id, undefined)
     })
 
+    it("unifies Dataset bindings with the same actual Runtime Skill identity", () => {
+        let datasetReference = {
+            name: "Shared",
+            path: "/workspace/actual/./SKILL.md",
+            runtimeId: "runtime-1",
+        }
+        const context = mainFunctionContext(
+            "digestSkillIdentity",
+            "listModelsForRuntimeFromControl",
+            {
+                activeRuntimeSkillCache: null,
+                clientGeneration: 7,
+                createHash,
+                managedSkillManager: {catalog: () => ({repositories: [], skills: []})},
+                normalizedSkillName: (value) => String(value ?? "").trim().toLowerCase(),
+                rawCaseStore: {list: () => []},
+                rendererAliasContext: {getStore: () => null},
+                runtimeDescriptor: {runtimeId: "runtime-1", providerId: "codex"},
+                store: {listDatasets: () => [{skillReference: datasetReference}]},
+                workspaceRoot: "/workspace",
+            },
+        )
+
+        const samePath = context.cachedRuntimeSkills({data: [{skills: [{
+            name: "shared",
+            path: "/workspace/actual/SKILL.md",
+            enabled: true,
+        }]}]})
+        const stableId = samePath.data[0].skills[0].id
+        assert.match(stableId, /^local-skill-[0-9a-f]{64}$/u)
+        let candidates = context.trustedRawCaseSkills().skills
+            .filter((skill) => skill.name.toLowerCase() === "shared")
+        assert.deepEqual(plain(candidates), [{id: stableId, name: "Shared"}])
+        assert.equal(
+            context.prepareRendererRawCaseSkillAliases(
+                "raw_cases.enqueue",
+                {cases: [{skill: {name: "shared"}}]},
+            ).params.cases[0].skill.id,
+            stableId,
+        )
+
+        context.cachedRuntimeSkills({data: [{skills: [{
+            name: "shared",
+            path: "/workspace/other/SKILL.md",
+            enabled: true,
+        }]}]})
+        candidates = context.trustedRawCaseSkills().skills
+            .filter((skill) => skill.name.toLowerCase() === "shared")
+        assert.equal(candidates.length, 2)
+        assert.equal(new Set(candidates.map((skill) => skill.id)).size, 2)
+        assert.equal(
+            context.prepareRendererRawCaseSkillAliases(
+                "raw_cases.enqueue",
+                {cases: [{skill: {name: "shared"}}]},
+            ).params.cases[0].skill.id,
+            undefined,
+        )
+
+        datasetReference = {
+            name: "name-only",
+            runtimeId: "runtime-1",
+            providerId: "codex",
+            workspaceRoot: "/workspace",
+            evidencePrecision: "name-only",
+        }
+        const nameOnly = context.cachedRuntimeSkills({data: [{skills: [{
+            name: "name-only",
+            enabled: true,
+            evidencePrecision: "name-only",
+        }]}]})
+        const nameOnlyId = nameOnly.data[0].skills[0].id
+        candidates = context.trustedRawCaseSkills().skills
+            .filter((skill) => skill.name === "name-only")
+        assert.deepEqual(plain(candidates), [{id: nameOnlyId, name: "name-only"}])
+
+        const main = source("src/main.cjs")
+        assert.match(main, /app:bootstrap[\s\S]{0,500}datasets:\s*listDatasetsForControl\(\)/)
+    })
+
+    it("carries a name-only Runtime Skill through renderer selection and Dataset persistence", async () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-name-only-"))
+        try {
+            const runtimeSkill = {
+                id: "local-skill-renderer-id",
+                name: "deepseek-billing",
+                enabled: true,
+                evidencePrecision: "name-only",
+                scope: "runtime",
+                description: "Discovered without a filesystem path",
+            }
+            const state = {
+                evaluationSkills: [runtimeSkill],
+                runtime: {runtime: {
+                    runtimeId: "deepseek-harness:local",
+                    providerId: "deepseek-harness",
+                    capabilities: ["skills-name-only"],
+                }},
+                workspaceRoot: "/workspace/project",
+            }
+            const renderer = rendererFunctionContext(
+                "runtimeSkillByPath",
+                "renderDatasetSkillStatus",
+                {
+                    node(_tag, _className, text) {
+                        return {text, value: "", disabled: false}
+                    },
+                    state,
+                    t: (key) => key,
+                },
+            )
+            const select = {
+                children: [],
+                value: "",
+                replaceChildren() {
+                    this.children = []
+                },
+                append(child) {
+                    this.children.push(child)
+                },
+            }
+
+            renderer.populateSkillSelect(select, null, {allowEmpty: false})
+            assert.equal(select.children.length, 1)
+            assert.equal(select.value, select.children[0].value)
+            const selected = renderer.runtimeSkillBySelectionKey(select.value)
+            assert.equal(selected, runtimeSkill)
+            const rendererReference = renderer.skillReferenceFromRuntimeSkill(selected)
+            assert.deepEqual(plain(rendererReference), {
+                schemaVersion: "rolling-skill-skill-reference/v1",
+                name: "deepseek-billing",
+                path: null,
+                scope: "runtime",
+                description: "Discovered without a filesystem path",
+                runtimeId: "deepseek-harness:local",
+                providerId: "deepseek-harness",
+                workspaceRoot: "/workspace/project",
+                evidencePrecision: "name-only",
+                confirmedAt: rendererReference.confirmedAt,
+            })
+
+            const runtimeResponse = {data: [{skills: [runtimeSkill]}]}
+            const mainReference = mainFunctionContext(
+                "currentRuntimeSkillReference",
+                "unavailableRuntimeState",
+                {
+                    cachedRuntimeSkills: (response) => response,
+                    ensureRuntime: async () => ({
+                        listSkills: async () => runtimeResponse,
+                    }),
+                    requireAbsolutePath(value) {
+                        if (typeof value !== "string" || !value.startsWith("/")) {
+                            throw new Error("Skill must be an absolute path")
+                        }
+                        return value
+                    },
+                    requireIdentifier: (value) => String(value ?? "").trim(),
+                    runtimeDescriptor: state.runtime.runtime,
+                    runtimeReportsSkill,
+                    workspaceRoot: state.workspaceRoot,
+                },
+            )
+            const verifiedReference = await mainReference.currentRuntimeSkillReference(
+                rendererReference,
+            )
+            const store = new LocalEvaluationStore(join(directory, "evaluation-store.json"))
+            const dataset = store.createDataset({
+                name: "DeepSeek Dataset",
+                skillReference: verifiedReference,
+            })
+
+            const identity = mainFunctionContext(
+                "digestSkillIdentity",
+                "listModelsForRuntimeFromControl",
+                {
+                    activeRuntimeSkillCache: null,
+                    clientGeneration: 1,
+                    createHash,
+                    managedSkillManager: {catalog: () => ({repositories: [], skills: []})},
+                    normalizedSkillName: (value) => String(value ?? "").trim().toLowerCase(),
+                    rawCaseStore: {list: () => []},
+                    rendererAliasContext: {getStore: () => null},
+                    runtimeDescriptor: state.runtime.runtime,
+                    store,
+                    workspaceRoot: state.workspaceRoot,
+                },
+            )
+            const datasetId = identity.listDatasetsForControl()
+                .find((entry) => entry.id === dataset.id).skillReference.id
+            const runtimeId = identity.cachedRuntimeSkills(runtimeResponse).data[0].skills[0].id
+            assert.match(datasetId, /^local-skill-[0-9a-f]{64}$/u)
+            assert.equal(runtimeId, datasetId)
+            assert.equal(
+                identity.trustedRawCaseSkills().skills
+                    .filter((skill) => skill.name === runtimeSkill.name).length,
+                1,
+            )
+            assert.equal(renderer.runtimeSkillForReference(dataset.skillReference), runtimeSkill)
+            state.workspaceRoot = "/workspace/other"
+            assert.equal(renderer.runtimeSkillForReference(dataset.skillReference), null)
+            state.workspaceRoot = "/workspace/project"
+            state.runtime.runtime = {
+                ...state.runtime.runtime,
+                runtimeId: "deepseek-harness:other",
+            }
+            assert.equal(renderer.runtimeSkillForReference(dataset.skillReference), null)
+            state.runtime.runtime = {
+                ...state.runtime.runtime,
+                runtimeId: "deepseek-harness:local",
+                providerId: "other-provider",
+            }
+            assert.equal(renderer.runtimeSkillForReference(dataset.skillReference), null)
+        } finally {
+            rmSync(directory, {recursive: true, force: true})
+        }
+    })
+
     it("keys the runtime Skill cache by runtime, workspace, and client generation", () => {
         const context = mainFunctionContext(
             "digestSkillIdentity",
@@ -802,13 +1026,31 @@ describe("desktop main/preload bridge", () => {
             enabled: true,
         }]}]}
         const first = context.cachedRuntimeSkills(response)
-        assert.match(first.data[0].skills[0].id, /^runtime-skill-[0-9a-f]{64}$/u)
+        assert.match(first.data[0].skills[0].id, /^local-skill-[0-9a-f]{64}$/u)
         assert.equal(context.currentRuntimeCachedSkills().length, 1)
 
         context.workspaceRoot = "/workspace-two"
         assert.deepEqual(plain(context.currentRuntimeCachedSkills()), [])
         const second = context.cachedRuntimeSkills(response)
-        assert.notEqual(second.data[0].skills[0].id, first.data[0].skills[0].id)
+        assert.equal(second.data[0].skills[0].id, first.data[0].skills[0].id)
+        context.runtimeDescriptor = {runtimeId: "runtime-2", providerId: "codex"}
+        const switchedRuntime = context.cachedRuntimeSkills(response)
+        assert.notEqual(switchedRuntime.data[0].skills[0].id, first.data[0].skills[0].id)
+
+        context.runtimeDescriptor = {runtimeId: "runtime-1", providerId: "codex"}
+        context.workspaceRoot = "/workspace-one"
+        const nameOnlyResponse = {data: [{skills: [{
+            name: "billing",
+            enabled: true,
+            evidencePrecision: "name-only",
+        }]}]}
+        const firstNameOnly = context.cachedRuntimeSkills(nameOnlyResponse)
+        context.workspaceRoot = "/workspace-two"
+        const secondNameOnly = context.cachedRuntimeSkills(nameOnlyResponse)
+        assert.notEqual(
+            secondNameOnly.data[0].skills[0].id,
+            firstNameOnly.data[0].skills[0].id,
+        )
         context.clientGeneration += 1
         assert.deepEqual(plain(context.currentRuntimeCachedSkills()), [])
 
@@ -822,18 +1064,14 @@ describe("desktop main/preload bridge", () => {
     it("makes the renderer carry a unique trusted Skill id but refuse same-name guessing", () => {
         const state = {
             datasets: [{skillReference: {
-                id: "dataset-skill-1",
+                id: "local-skill-shared",
                 name: "shared",
                 path: "/private/dataset",
             }}],
             evaluationSkills: [{
-                id: "runtime-skill-1",
+                id: "local-skill-runtime-only",
                 name: "runtime-only",
                 path: "/private/runtime",
-            }, {
-                id: "runtime-skill-2",
-                name: "shared",
-                path: "/private/other",
             }],
             rawCases: [],
         }
@@ -844,8 +1082,26 @@ describe("desktop main/preload bridge", () => {
         )
 
         assert.deepEqual(plain(context.rawCaseSkillReference("runtime-only")), {
-            id: "runtime-skill-1",
+            id: "local-skill-runtime-only",
             name: "runtime-only",
+        })
+        assert.deepEqual(plain(context.rawCaseSkillReference("shared")), {
+            id: "local-skill-shared",
+            name: "shared",
+        })
+        state.evaluationSkills.push({
+            id: "local-skill-shared",
+            name: "shared",
+            path: "/private/dataset",
+        })
+        assert.deepEqual(plain(context.rawCaseSkillReference("shared")), {
+            id: "local-skill-shared",
+            name: "shared",
+        })
+        state.evaluationSkills.push({
+            id: "local-skill-other",
+            name: "shared",
+            path: "/private/other",
         })
         assert.deepEqual(plain(context.rawCaseSkillReference("shared")), {name: "shared"})
         assert.doesNotMatch(JSON.stringify(context.rawCaseSkillReference("runtime-only")), /private/u)

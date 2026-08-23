@@ -1648,6 +1648,22 @@ function runtimeSkillByPath(path) {
     return state.evaluationSkills.find((skill) => skill.path === path) ?? null
 }
 
+function runtimeSkillSelectionKey(skill) {
+    if (!skill) return null
+    if (skill.id) return `id:${skill.id}`
+    if (skill.path) return `path:${skill.path}`
+    if (skill.evidencePrecision === "name-only" && skill.name) {
+        return `name-only:${skill.name}`
+    }
+    return null
+}
+
+function runtimeSkillBySelectionKey(key) {
+    return state.evaluationSkills.find(
+        (skill) => runtimeSkillSelectionKey(skill) === key,
+    ) ?? null
+}
+
 function skillBaseLabel(skill) {
     return skill.interface?.displayName || skill.name
 }
@@ -1662,7 +1678,7 @@ function skillDisplayLabel(skill) {
     return `${base} · ${directory}`
 }
 
-function populateSkillSelect(select, selectedPath = null, {allowEmpty = true} = {}) {
+function populateSkillSelect(select, selectedKey = null, {allowEmpty = true} = {}) {
     select.replaceChildren()
     if (allowEmpty) {
         const empty = node("option", "", t("selectSkill"))
@@ -1670,21 +1686,24 @@ function populateSkillSelect(select, selectedPath = null, {allowEmpty = true} = 
         select.append(empty)
     }
     for (const skill of state.evaluationSkills) {
-        if (!skill.path) continue
+        const key = runtimeSkillSelectionKey(skill)
+        if (!key) continue
         const option = node("option", "", skillDisplayLabel(skill))
-        option.value = skill.path
+        option.value = key
         select.append(option)
     }
-    if (selectedPath && runtimeSkillByPath(selectedPath)) {
-        select.value = selectedPath
-    } else if (selectedPath) {
+    if (selectedKey && runtimeSkillBySelectionKey(selectedKey)) {
+        select.value = selectedKey
+    } else if (selectedKey) {
         const unavailable = node("option", "", t("unavailableSkill"))
-        unavailable.value = selectedPath
+        unavailable.value = selectedKey
         unavailable.disabled = true
         select.append(unavailable)
-        select.value = selectedPath
+        select.value = selectedKey
     } else {
-        select.value = allowEmpty ? "" : state.evaluationSkills[0]?.path ?? ""
+        select.value = allowEmpty
+            ? ""
+            : runtimeSkillSelectionKey(state.evaluationSkills[0]) ?? ""
     }
 }
 
@@ -1693,11 +1712,20 @@ function selectedDataset(datasetId) {
 }
 
 function runtimeSkillForReference(reference) {
-    if (!reference?.name || !reference?.path) return null
-    const skill = runtimeSkillByPath(reference.path)
-    if (skill?.enabled && skill.name === reference.name) return skill
+    if (!reference?.name) return null
+    if (reference.path) {
+        const skill = runtimeSkillByPath(reference.path)
+        if (skill?.enabled && skill.name === reference.name) return skill
+        return null
+    }
     const allowsNameOnly = state.runtime?.runtime?.capabilities?.includes("skills-name-only")
-    if (!allowsNameOnly) return null
+    if (
+        !allowsNameOnly ||
+        reference.evidencePrecision !== "name-only" ||
+        reference.providerId !== state.runtime?.runtime?.providerId ||
+        reference.runtimeId !== state.runtime?.runtime?.runtimeId ||
+        reference.workspaceRoot !== state.workspaceRoot
+    ) return null
     return state.evaluationSkills.find((entry) =>
         entry.enabled &&
         !entry.path &&
@@ -1708,14 +1736,21 @@ function runtimeSkillForReference(reference) {
 
 function skillReferenceFromRuntimeSkill(skill) {
     if (!skill) return null
-    return {
+    const reference = {
         schemaVersion: "rolling-skill-skill-reference/v1",
         name: skill.name,
-        path: skill.path,
+        path: skill.path ?? null,
         scope: skill.scope ?? null,
         description: skill.description ?? skill.interface?.shortDescription ?? null,
         runtimeId: state.runtime?.runtime?.runtimeId ?? null,
         confirmedAt: new Date().toISOString(),
+    }
+    if (skill.evidencePrecision !== "name-only" || skill.path) return reference
+    return {
+        ...reference,
+        providerId: state.runtime?.runtime?.providerId ?? null,
+        workspaceRoot: state.workspaceRoot || null,
+        evidencePrecision: "name-only",
     }
 }
 
@@ -5936,7 +5971,7 @@ async function createEvaluationDataset() {
     if (!name) return
     try {
         const skillReference = skillReferenceFromRuntimeSkill(
-            runtimeSkillByPath(elements.evaluationNewDatasetSkill.value),
+            runtimeSkillBySelectionKey(elements.evaluationNewDatasetSkill.value),
         )
         if (!skillReference) throw new Error(t("datasetSkillRequired"))
         const dataset = await window.rollingSkill.createDataset({name, skillReference})
@@ -6814,7 +6849,7 @@ async function createDataset() {
     elements.createDataset.disabled = true
     try {
         const skillReference = skillReferenceFromRuntimeSkill(
-            runtimeSkillByPath(elements.newDatasetSkill.value),
+            runtimeSkillBySelectionKey(elements.newDatasetSkill.value),
         )
         if (!skillReference) throw new Error(t("datasetSkillRequired"))
         const created = await window.rollingSkill.createDataset({name, skillReference})
@@ -6835,7 +6870,7 @@ function openDatasetSkillDialog(datasetId) {
     state.datasetSkillDialogDatasetId = datasetId
     populateSkillSelect(
         elements.datasetSkillSelect,
-        runtimeSkillForReference(dataset.skillReference)?.path ?? null,
+        runtimeSkillSelectionKey(runtimeSkillForReference(dataset.skillReference)),
         {allowEmpty: false},
     )
     elements.datasetSkillDialogCopy.textContent = formatMessage("changeDatasetSkillCopy", {
@@ -6847,7 +6882,7 @@ function openDatasetSkillDialog(datasetId) {
 async function bindDatasetSkill() {
     const datasetId = state.datasetSkillDialogDatasetId
     const skillReference = skillReferenceFromRuntimeSkill(
-        runtimeSkillByPath(elements.datasetSkillSelect.value),
+        runtimeSkillBySelectionKey(elements.datasetSkillSelect.value),
     )
     if (!datasetId || !skillReference) return
     elements.confirmDatasetSkill.disabled = true

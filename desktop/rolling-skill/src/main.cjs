@@ -638,7 +638,8 @@ async function skillEvidenceBindingForRuntime(descriptor, skillReference) {
 
 async function currentRuntimeSkillReference(value) {
     const name = requireIdentifier(value?.name, "Skill")
-    const path = requireAbsolutePath(value?.path, "Skill")
+    const nameOnly = value?.evidencePrecision === "name-only" && !value?.path
+    const path = nameOnly ? null : requireAbsolutePath(value?.path, "Skill")
     const runtime = await ensureRuntime()
     if (typeof runtime.listSkills !== "function") {
         throw new Error("The active runtime cannot verify installed Skills")
@@ -656,9 +657,12 @@ async function currentRuntimeSkillReference(value) {
         .find((skill) =>
             skill.enabled &&
             skill.name === name &&
-            (skill.path === path || (allowNameOnly && skill.evidencePrecision === "name-only")),
+            (
+                skill.path === path ||
+                (allowNameOnly && !path && skill.evidencePrecision === "name-only" && !skill.path)
+            ),
         )
-    return {
+    const reference = {
         schemaVersion: "rolling-skill-skill-reference/v1",
         name,
         path,
@@ -666,6 +670,13 @@ async function currentRuntimeSkillReference(value) {
         description: reported?.description ?? reported?.interface?.shortDescription ?? null,
         runtimeId: runtimeDescriptor?.runtimeId ?? null,
         confirmedAt: new Date().toISOString(),
+    }
+    if (!nameOnly) return reference
+    return {
+        ...reference,
+        providerId: runtimeDescriptor?.providerId ?? null,
+        workspaceRoot,
+        evidencePrecision: "name-only",
     }
 }
 
@@ -919,30 +930,50 @@ function canonicalSkillPath(value) {
     return `${absolute ? "/" : ""}${segments.join("/")}` || (absolute ? "/" : "")
 }
 
+function actualLocalSkillIdentity(input = {}) {
+    const {
+        name,
+        path,
+        runtimeId,
+        providerId,
+        workspaceRoot: identityWorkspaceRoot,
+        evidencePrecision,
+    } = input ?? {}
+    const normalizedName = normalizedSkillName(name)
+    const normalizedRuntimeId = String(runtimeId ?? "").trim()
+    if (!normalizedName || !normalizedRuntimeId) return null
+    const canonicalPath = canonicalSkillPath(path)
+    if (canonicalPath && evidencePrecision !== "name-only") {
+        return digestSkillIdentity("local-skill", [
+            normalizedRuntimeId,
+            canonicalPath,
+            normalizedName,
+        ])
+    }
+    const normalizedProviderId = String(providerId ?? "").trim()
+    const canonicalWorkspaceRoot = canonicalSkillPath(identityWorkspaceRoot)
+    if (!normalizedProviderId || !canonicalWorkspaceRoot) return null
+    return digestSkillIdentity("local-skill", [
+        normalizedProviderId,
+        normalizedRuntimeId,
+        canonicalWorkspaceRoot,
+        normalizedName,
+    ])
+}
+
 function datasetSkillIdentity(reference) {
-    const name = normalizedSkillName(reference?.name)
-    const path = canonicalSkillPath(reference?.path)
-    const runtimeId = String(reference?.runtimeId ?? "legacy-runtime")
-    if (!name) return null
-    return digestSkillIdentity("dataset-skill", [runtimeId, path, name])
+    return actualLocalSkillIdentity(reference)
 }
 
 function runtimeSkillIdentity(skill, descriptor = runtimeDescriptor, root = workspaceRoot) {
-    const name = normalizedSkillName(skill?.name)
-    if (!name || !descriptor?.runtimeId) return null
-    const path = canonicalSkillPath(skill?.path)
-    return path
-        ? digestSkillIdentity("runtime-skill", [
-              descriptor.runtimeId,
-              canonicalSkillPath(root),
-              path,
-          ])
-        : digestSkillIdentity("runtime-skill", [
-              descriptor.providerId,
-              descriptor.runtimeId,
-              canonicalSkillPath(root),
-              name,
-          ])
+    return actualLocalSkillIdentity({
+        name: skill?.name,
+        path: skill?.path,
+        runtimeId: descriptor?.runtimeId,
+        providerId: descriptor?.providerId,
+        workspaceRoot: root,
+        evidencePrecision: skill?.evidencePrecision,
+    })
 }
 
 function legacyRawCaseSkillIdentity(name) {
@@ -1542,7 +1573,7 @@ function installIpc() {
         return {
             runtime,
             workspaceRoot,
-            datasets: store.listDatasets(),
+            datasets: listDatasetsForControl(),
             curationSessions: store.listCurationSessions(),
             sourceCurationMarkers: sourceCurationMarkers(),
             curatorProfile: store.read().settings.curatorProfile,
