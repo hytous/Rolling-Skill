@@ -302,6 +302,7 @@ class CodexAppServerClient extends EventEmitter {
         if (!state || state.phase === "idle" || state.phase === "resuming" || state.phase === "terminal") {
             return
         }
+        if (state.phase === "starting" && message.method === "turn/started") return
         if (state.retiredTurnIds.has(turnId)) return
         if (state.turnId !== null && state.turnId !== turnId) return
         state.turnId = turnId

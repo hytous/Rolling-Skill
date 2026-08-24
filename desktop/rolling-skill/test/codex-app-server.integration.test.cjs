@@ -284,7 +284,7 @@ describe("Codex app-server request construction", () => {
         assert.equal(writes.find((message) => message.id === 68).result.success, true)
     })
 
-    it("accepts dynamic Tools after a trusted turn/started notification confirms the pending turn", async () => {
+    it("waits for the matching turn/start response even after turn/started arrives", async () => {
         const writes = []
         const toolRequests = []
         let resolveTurn
@@ -329,11 +329,29 @@ describe("Codex app-server request construction", () => {
             },
         })
         await new Promise((resolve) => setImmediate(resolve))
+        const earlyToolRequests = toolRequests.length
+        const earlySuccess = writes.find((message) => message.id === 69).result.success
+
         resolveTurn({turn: {id: "notified-turn", status: "inProgress"}})
         await starting
+        client.handleMessage({
+            id: 70,
+            method: "item/tool/call",
+            params: {
+                threadId: "operator-thread",
+                turnId: "notified-turn",
+                callId: "call-70",
+                namespace: "rolling_skill",
+                tool: "context_get",
+                arguments: {},
+            },
+        })
+        await new Promise((resolve) => setImmediate(resolve))
 
+        assert.equal(earlyToolRequests, 0)
+        assert.equal(earlySuccess, false)
         assert.deepEqual(toolRequests.map((request) => request.turnId), ["notified-turn"])
-        assert.equal(writes.find((message) => message.id === 69).result.success, true)
+        assert.equal(writes.find((message) => message.id === 70).result.success, true)
     })
 
     it("rejects missing and stale dynamic Tool call identities without invoking the callback", async () => {
@@ -599,6 +617,87 @@ describe("Codex app-server request construction", () => {
 
         resolveTurn({turn: {id: "new-turn", status: "inProgress"}})
         await starting
+    })
+
+    it("ignores a failed generation's late turn/started while the next start is pending", async () => {
+        const writes = []
+        const toolRequests = []
+        let rejectFirst
+        let resolveSecond
+        let turnStartRequests = 0
+        const dynamicTools = [{
+            type: "namespace",
+            name: "rolling_skill",
+            tools: [{type: "function", name: "context_get", inputSchema: {type: "object"}}],
+        }]
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            requestTool: async (request) => {
+                toolRequests.push(request)
+                return {}
+            },
+        })
+        client.request = async (method) => {
+            if (method === "thread/start") return {thread: {id: "operator-thread"}}
+            turnStartRequests += 1
+            return new Promise((resolve, reject) => {
+                if (turnStartRequests === 1) rejectFirst = reject
+                else resolveSecond = resolve
+            })
+        }
+        client.write = (message) => writes.push(message)
+        await client.startThread({dynamicTools})
+
+        const failed = client.startTurn("operator-thread", "old")
+        rejectFirst(new Error("old start failed"))
+        await assert.rejects(failed, {message: "old start failed"})
+        const next = client.startTurn("operator-thread", "new")
+        client.handleMessage({
+            method: "turn/started",
+            params: {threadId: "operator-thread", turn: {id: "old-turn", status: "inProgress"}},
+        })
+        client.handleMessage({
+            id: 79,
+            method: "item/tool/call",
+            params: {
+                threadId: "operator-thread",
+                turnId: "old-turn",
+                callId: "old-call",
+                namespace: "rolling_skill",
+                tool: "context_get",
+                arguments: {},
+            },
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+        const earlyToolRequests = toolRequests.length
+        const earlySuccess = writes.find((message) => message.id === 79).result.success
+
+        resolveSecond({turn: {id: "new-turn", status: "inProgress"}})
+        const nextResult = await next.then(
+            (value) => ({status: "fulfilled", value}),
+            (reason) => ({status: "rejected", reason}),
+        )
+        client.handleMessage({
+            id: 80,
+            method: "item/tool/call",
+            params: {
+                threadId: "operator-thread",
+                turnId: "new-turn",
+                callId: "new-call",
+                namespace: "rolling_skill",
+                tool: "context_get",
+                arguments: {},
+            },
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.equal(earlyToolRequests, 0)
+        assert.equal(earlySuccess, false)
+        assert.equal(nextResult.status, "fulfilled")
+        assert.deepEqual(toolRequests.map((request) => request.turnId), ["new-turn"])
+        assert.equal(writes.find((message) => message.id === 80).result.success, true)
     })
 
     it("routes command approval requests through the injected permission callback", async () => {
