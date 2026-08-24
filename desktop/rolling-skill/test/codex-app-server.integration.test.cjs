@@ -456,6 +456,66 @@ describe("Codex app-server request construction", () => {
         assert.equal(writes[0].result.success, false)
     })
 
+    it("bounds pre-response terminal notifications without losing a matching completion", async () => {
+        const writes = []
+        let callbackCalls = 0
+        let resolveTurn
+        const dynamicTools = [{
+            type: "namespace",
+            name: "rolling_skill",
+            tools: [{type: "function", name: "context_get", inputSchema: {type: "object"}}],
+        }]
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            requestTool: async () => {
+                callbackCalls += 1
+                return {}
+            },
+        })
+        client.request = async (method) => {
+            if (method === "thread/start") return {thread: {id: "operator-thread"}}
+            return new Promise((resolve) => {
+                resolveTurn = resolve
+            })
+        }
+        client.write = (message) => writes.push(message)
+        await client.startThread({dynamicTools})
+
+        const starting = client.startTurn("operator-thread", "work")
+        for (let index = 0; index < 1_000; index += 1) {
+            client.handleMessage({
+                method: "turn/completed",
+                params: {
+                    threadId: "operator-thread",
+                    turn: {id: `terminal-${index}`, status: "completed"},
+                },
+            })
+        }
+        const recorded = client.dynamicToolTurnStates.get("operator-thread")
+            ?.preResponseTerminalIds?.size ?? Number.POSITIVE_INFINITY
+        resolveTurn({turn: {id: "terminal-0", status: "inProgress"}})
+        await starting
+        client.handleMessage({
+            id: 76,
+            method: "item/tool/call",
+            params: {
+                threadId: "operator-thread",
+                turnId: "terminal-0",
+                callId: "late-call",
+                namespace: "rolling_skill",
+                tool: "context_get",
+                arguments: {},
+            },
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.ok(recorded <= 32)
+        assert.equal(callbackCalls, 0)
+        assert.equal(writes.find((message) => message.id === 76).result.success, false)
+    })
+
     it("rejects dynamic Tool calls throughout resume and remains idle after resume", async () => {
         const writes = []
         let callbackCalls = 0
@@ -619,7 +679,7 @@ describe("Codex app-server request construction", () => {
         await starting
     })
 
-    it("ignores a failed generation's late turn/started while the next start is pending", async () => {
+    it("ignores a failed generation's late notifications while the next start is pending", async () => {
         const writes = []
         const toolRequests = []
         let rejectFirst
@@ -657,6 +717,10 @@ describe("Codex app-server request construction", () => {
         client.handleMessage({
             method: "turn/started",
             params: {threadId: "operator-thread", turn: {id: "old-turn", status: "inProgress"}},
+        })
+        client.handleMessage({
+            method: "turn/completed",
+            params: {threadId: "operator-thread", turn: {id: "old-turn", status: "failed"}},
         })
         client.handleMessage({
             id: 79,

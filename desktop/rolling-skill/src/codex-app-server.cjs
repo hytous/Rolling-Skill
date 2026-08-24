@@ -17,7 +17,19 @@ const {
 
 const MAX_DYNAMIC_TOOL_ARGUMENT_BYTES = 1_048_576
 const MAX_DYNAMIC_TOOL_RESPONSE_BYTES = 256 * 1_024
+const MAX_PRE_RESPONSE_TERMINAL_IDS = 32
 const DYNAMIC_TOOL_NAMESPACE = "rolling_skill"
+const TERMINAL_TURN_NOTIFICATIONS = new Set([
+    "turn/canceled",
+    "turn/cancelled",
+    "turn/completed",
+    "turn/failed",
+    "turn/interrupted",
+])
+const DYNAMIC_TURN_NOTIFICATIONS = new Set([
+    "turn/started",
+    ...TERMINAL_TURN_NOTIFICATIONS,
+])
 const TERMINAL_TURN_STATUSES = new Set([
     "cancelled",
     "canceled",
@@ -243,7 +255,7 @@ class CodexAppServerClient extends EventEmitter {
         }
         if (this.tracker.settle(safeMessage)) return
         if (safeMessage?.method) {
-            if (safeMessage.method === "turn/started" || safeMessage.method === "turn/completed") {
+            if (DYNAMIC_TURN_NOTIFICATIONS.has(safeMessage.method)) {
                 this.updateDynamicTurnFromNotification(safeMessage)
             }
             this.emit("notification", safeMessage)
@@ -286,6 +298,8 @@ class CodexAppServerClient extends EventEmitter {
             generation: ++this.dynamicToolTurnGeneration,
             turnId: null,
             retiredTurnIds,
+            preResponseTerminalIds: new Set(),
+            preResponseTerminalOverflow: false,
         }
         this.dynamicToolTurnStates.set(threadId, state)
         return state
@@ -302,11 +316,20 @@ class CodexAppServerClient extends EventEmitter {
         if (!state || state.phase === "idle" || state.phase === "resuming" || state.phase === "terminal") {
             return
         }
-        if (state.phase === "starting" && message.method === "turn/started") return
         if (state.retiredTurnIds.has(turnId)) return
+        if (state.phase === "starting") {
+            if (TERMINAL_TURN_NOTIFICATIONS.has(message.method)) {
+                if (state.preResponseTerminalIds.size < MAX_PRE_RESPONSE_TERMINAL_IDS) {
+                    state.preResponseTerminalIds.add(turnId)
+                } else if (!state.preResponseTerminalIds.has(turnId)) {
+                    state.preResponseTerminalOverflow = true
+                }
+            }
+            return
+        }
         if (state.turnId !== null && state.turnId !== turnId) return
         state.turnId = turnId
-        state.phase = message.method === "turn/started" ? "active" : "terminal"
+        state.phase = TERMINAL_TURN_NOTIFICATIONS.has(message.method) ? "terminal" : "active"
     }
 
     dynamicToolResult(payload, success) {
@@ -659,16 +682,25 @@ class CodexAppServerClient extends EventEmitter {
                 current.phase = "terminal"
                 throw new Error("Codex turn/start returned a mismatched turn identity")
             }
+            const completedBeforeResponse = current.preResponseTerminalIds.has(turnId)
+            const terminalOverflow = current.preResponseTerminalOverflow
+            current.preResponseTerminalIds.clear()
+            current.preResponseTerminalOverflow = false
             current.turnId = turnId
             if (current.phase !== "terminal") {
-                current.phase = TERMINAL_TURN_STATUSES.has(response.turn.status)
+                current.phase = terminalOverflow || completedBeforeResponse ||
+                    TERMINAL_TURN_STATUSES.has(response.turn.status)
                     ? "terminal"
                     : "active"
             }
             return response
         } catch (error) {
             const current = this.dynamicToolTurnStates.get(threadId)
-            if (current?.generation === turnState.generation) current.phase = "terminal"
+            if (current?.generation === turnState.generation) {
+                current.phase = "terminal"
+                current.preResponseTerminalIds.clear()
+                current.preResponseTerminalOverflow = false
+            }
             throw error
         }
     }
