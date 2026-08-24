@@ -114,6 +114,10 @@ const APPROVAL_METHOD_DEFINITIONS = Object.freeze({
         action: "installations.execute",
         reason: "installation",
     }),
+    "installations.cancel": Object.freeze({
+        action: "installations.execute",
+        reason: "installation",
+    }),
     "rubrics.publish": Object.freeze({action: "rubrics.publish", reason: "rubric_publish"}),
     "budget.expand": Object.freeze({action: "budget.expand", reason: "budget_expansion"}),
     "budgets.expand": Object.freeze({action: "budget.expand", reason: "budget_expansion"}),

@@ -3,6 +3,7 @@ const {describe, it} = require("node:test")
 
 const {
     CONTROL_METHODS,
+    OPERATOR_CONTROL_METHODS,
     METHOD_DEFINITIONS,
     controlDefinition,
     createPublicControlError,
@@ -271,9 +272,10 @@ describe("control-plane contracts", () => {
         assert.ok(Object.isFrozen(METHOD_DEFINITIONS))
         for (const method of CONTROL_METHODS) {
             const definition = controlDefinition(method)
-            const {action, input, output} = definition
+            const {action, input, output, operatorExposed} = definition
 
             assert.ok(Object.isFrozen(definition), `${method} definition should be frozen`)
+            assert.equal(typeof operatorExposed, "boolean", `${method} exposure must be explicit`)
             assert.equal(Reflect.set(definition, "action", "context.read"), false)
             assert.equal(Reflect.set(definition, "input", null), false)
             assert.equal(Reflect.deleteProperty(definition, "output"), false)
@@ -281,7 +283,26 @@ describe("control-plane contracts", () => {
             assert.equal(controlDefinition(method).action, action)
             assert.equal(controlDefinition(method).input, input)
             assert.equal(controlDefinition(method).output, output)
+            assert.equal(controlDefinition(method).operatorExposed, operatorExposed)
         }
+    })
+
+    it("keeps human decisions, session lifecycle, and repository bodies out of Operator Tools", () => {
+        const uiOnly = [
+            "approvals.resolve",
+            "jobs.pause",
+            "jobs.resume",
+            "jobs.stop",
+            "skills.get",
+        ]
+        assert.deepEqual(
+            CONTROL_METHODS.filter((method) => !controlDefinition(method).operatorExposed).sort(),
+            uiOnly.sort(),
+        )
+        assert.deepEqual(
+            OPERATOR_CONTROL_METHODS,
+            CONTROL_METHODS.filter((method) => !uiOnly.includes(method)),
+        )
     })
 
     it("rejects unknown methods before attempting to parse input or output", () => {

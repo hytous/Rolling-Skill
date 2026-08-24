@@ -1008,6 +1008,14 @@ describe("desktop main/preload bridge", () => {
                 1,
             )
             assert.equal(renderer.runtimeSkillForReference(dataset.skillReference), runtimeSkill)
+            assert.equal(renderer.runtimeSkillForReference({
+                id: runtimeSkill.id,
+                name: runtimeSkill.name,
+            }), runtimeSkill)
+            assert.equal(renderer.runtimeSkillForReference({
+                id: "local-skill-stale",
+                name: runtimeSkill.name,
+            }), null)
             state.workspaceRoot = "/workspace/other"
             assert.equal(renderer.runtimeSkillForReference(dataset.skillReference), null)
             state.workspaceRoot = "/workspace/project"

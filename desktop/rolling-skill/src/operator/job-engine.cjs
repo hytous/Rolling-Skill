@@ -204,6 +204,12 @@ function requestForExecution(input) {
         }
         normalized.handlerContext = request.handlerContext
     }
+    if (Object.hasOwn(request, "trustedFacts")) {
+        normalized.trustedFacts = cloneJson(
+            requireObject(request.trustedFacts, "Pre-resolved Operator trusted facts"),
+            "Pre-resolved Operator trusted facts",
+        )
+    }
     return normalized
 }
 
@@ -360,6 +366,7 @@ class OperatorJobEngine {
     #reconcilers
     #runtimeTelemetry
     #resolveEvaluationCaseCount
+    #resolveTrustedFacts
     #externalAwaitTimeoutMs
     #now
     #approvalTtlMs
@@ -373,6 +380,7 @@ class OperatorJobEngine {
         reconcilers = {},
         runtimeTelemetry = [],
         resolveEvaluationCaseCount = null,
+        resolveTrustedFacts = null,
         externalAwaitTimeoutMs = 30_000,
         now = Date.now,
         approvalTtlMs = 15 * 60 * 1_000,
@@ -390,6 +398,9 @@ class OperatorJobEngine {
         if (resolveEvaluationCaseCount !== null && typeof resolveEvaluationCaseCount !== "function") {
             throw new Error("Operator evaluation case resolver must be a function")
         }
+        if (resolveTrustedFacts !== null && typeof resolveTrustedFacts !== "function") {
+            throw new Error("Operator trusted facts resolver must be a function")
+        }
         if (typeof now !== "function" || !Number.isSafeInteger(approvalTtlMs) || approvalTtlMs <= 0 ||
             !Number.isSafeInteger(externalAwaitTimeoutMs) || externalAwaitTimeoutMs <= 0) {
             throw new Error("Operator engine clock or approval TTL is invalid")
@@ -400,6 +411,7 @@ class OperatorJobEngine {
         this.#reconcilers = {...reconcilers}
         this.#runtimeTelemetry = runtimeTelemetry
         this.#resolveEvaluationCaseCount = resolveEvaluationCaseCount
+        this.#resolveTrustedFacts = resolveTrustedFacts
         this.#externalAwaitTimeoutMs = externalAwaitTimeoutMs
         this.#now = now
         this.#approvalTtlMs = approvalTtlMs
@@ -434,6 +446,26 @@ class OperatorJobEngine {
             ...(request.policyApproval ? {
                 controlPolicyApproval: cloneJson(request.policyApproval),
             } : {}),
+            ...(request.trustedFacts ? {
+                methodFacts: cloneJson(request.trustedFacts),
+            } : {}),
+        }
+        if (!request.trustedFacts && this.#resolveTrustedFacts !== null) {
+            const resolved = await this.#boundedAwait(
+                (hookSignal) => this.#resolveTrustedFacts({
+                    method: request.method,
+                    params: cloneJson(request.params),
+                    controlContext: request.handlerContext ?? null,
+                    signal: hookSignal,
+                }),
+                {signal, label: "Operator trusted facts resolution"},
+            )
+            if (resolved !== null && resolved !== undefined) {
+                trustedFacts.methodFacts = cloneJson(
+                    requireObject(resolved, "Operator method-specific trusted facts"),
+                    "Operator method-specific trusted facts",
+                )
+            }
         }
         if (request.method === "evaluations.start") {
             const params = request.params
@@ -851,15 +883,22 @@ class OperatorJobEngine {
                 const limits = this.#budgetLimits(job, step.id)
                 const remainingMs = limits.maxDurationMs - Math.max(0, this.#now() - Date.parse(job.createdAt))
                 if (remainingMs <= 0) throw timeoutError
+                const handlerTrustedFacts = cloneJson(request.trustedFacts ?? {})
+                const handlerControlContext = Object.hasOwn(handlerTrustedFacts, "methodFacts")
+                    ? Object.freeze({
+                          ...(request.handlerContext ?? {}),
+                          trustedFacts: handlerTrustedFacts,
+                      })
+                    : request.handlerContext ?? null
                 result = await this.#boundedAwait((hookSignal) => handler({
                     method: request.method,
                     params: cloneJson(request.params),
-                    trustedFacts: cloneJson(request.trustedFacts ?? {}),
+                    trustedFacts: handlerTrustedFacts,
                     idempotencyKey: request.idempotencyKey,
                     jobId: job.id,
                     stepId: step.id,
                     signal: hookSignal,
-                    controlContext: request.handlerContext ?? null,
+                    controlContext: handlerControlContext,
                 }), {
                     signal: controller.signal,
                     label: "Operator handler",

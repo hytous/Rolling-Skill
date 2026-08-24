@@ -1,4 +1,5 @@
 const {createHash, randomUUID} = require("node:crypto")
+const {isAbsolute, resolve} = require("node:path")
 
 const {
     OPERATOR_PROTOCOL,
@@ -11,6 +12,7 @@ const {
     redactOperatorSecrets,
 } = require("./operator-tool-transport.cjs")
 const {
+    OPERATOR_CONTROL_ACTIONS,
     controlDefinition,
     createPublicControlError,
 } = require("../control-plane/contracts.cjs")
@@ -21,6 +23,7 @@ const MAX_BOUNDARY_TEXT = 16 * 1_024
 const MAX_PENDING_BOUNDARIES = 1_000
 const MAX_ITEM_IDS = 10_000
 const MAX_CAPABILITY_LIFETIME_MS = 24 * 60 * 60 * 1_000
+const OPERATOR_CONTROL_ACTION_SET = new Set(OPERATOR_CONTROL_ACTIONS)
 
 function plainObject(value) {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return false
@@ -310,6 +313,7 @@ class OperatorSessionManager {
     #requestQuestion
     #supportsNativeResume
     #workspaceRoot
+    #resolveManagedSkillWorkspace
     #traceDirectory
     #controls = new Map()
     #resumeFlights = new Map()
@@ -333,6 +337,7 @@ class OperatorSessionManager {
         requestQuestion = null,
         supportsNativeResume = null,
         workspaceRoot = null,
+        resolveManagedSkillWorkspace = null,
         traceDirectory = null,
     } = {}) {
         if (!store || typeof store.createSession !== "function" || typeof store.createJob !== "function") {
@@ -364,6 +369,9 @@ class OperatorSessionManager {
         if (requestPermission !== null && typeof requestPermission !== "function") throw new TypeError("Operator permission callback is invalid")
         if (requestQuestion !== null && typeof requestQuestion !== "function") throw new TypeError("Operator question callback is invalid")
         if (supportsNativeResume !== null && typeof supportsNativeResume !== "function") throw new TypeError("Operator resume support resolver is invalid")
+        if (resolveManagedSkillWorkspace !== null && typeof resolveManagedSkillWorkspace !== "function") {
+            throw new TypeError("Managed Skill workspace resolver is invalid")
+        }
         this.#store = store
         this.#engine = engine
         this.#controlPlane = controlPlane
@@ -383,7 +391,52 @@ class OperatorSessionManager {
         this.#requestQuestion = requestQuestion
         this.#supportsNativeResume = supportsNativeResume
         this.#workspaceRoot = workspaceRoot
+        this.#resolveManagedSkillWorkspace = resolveManagedSkillWorkspace
         this.#traceDirectory = traceDirectory
+    }
+
+    async #managedWorkspace(value, scope, {persisted = false} = {}) {
+        if (value === undefined || value === null) {
+            return {binding: null, workspaceRoot: this.#workspaceRoot}
+        }
+        if (!plainObject(value)) throw new TypeError("Managed Skill binding is invalid")
+        const allowed = persisted
+            ? new Set(["repositoryId", "skillId", "workspaceDigest"])
+            : new Set(["repositoryId", "skillId"])
+        if (Object.keys(value).some((key) => !allowed.has(key)) ||
+            Object.keys(value).length !== allowed.size) {
+            throw new TypeError("Managed Skill binding is invalid")
+        }
+        const binding = {
+            repositoryId: requiredText(value.repositoryId, "Managed Skill repository id", 200),
+            skillId: requiredText(value.skillId, "Managed Skill id", 200),
+        }
+        if (!Array.isArray(scope?.repositoryIds) || !scope.repositoryIds.includes(binding.repositoryId) ||
+            !Array.isArray(scope?.skillIds) || !scope.skillIds.includes(binding.skillId)) {
+            throw new Error("Managed Skill binding is outside the frozen capability scope")
+        }
+        if (this.#resolveManagedSkillWorkspace === null) {
+            throw new Error("Managed Skill workspace resolution is unavailable")
+        }
+        const resolvedWorkspace = await this.#resolveManagedSkillWorkspace(Object.freeze({...binding}))
+        if (!plainObject(resolvedWorkspace) ||
+            resolvedWorkspace.repositoryId !== binding.repositoryId ||
+            resolvedWorkspace.skillId !== binding.skillId ||
+            typeof resolvedWorkspace.workspaceRoot !== "string" ||
+            !isAbsolute(resolvedWorkspace.workspaceRoot)) {
+            throw new Error("Managed Skill workspace resolution is invalid")
+        }
+        const workspaceRoot = resolve(resolvedWorkspace.workspaceRoot)
+        const workspaceDigest = `sha256:${createHash("sha256").update(workspaceRoot, "utf8").digest("hex")}`
+        if (persisted && value.workspaceDigest !== workspaceDigest) {
+            throw Object.assign(new Error("Managed Skill workspace changed since the session was created"), {
+                code: "RESOURCE_CHANGED",
+            })
+        }
+        return {
+            binding: Object.freeze({...binding, workspaceDigest}),
+            workspaceRoot,
+        }
     }
 
     async #runtimes() {
@@ -405,6 +458,9 @@ class OperatorSessionManager {
     }
 
     async #authority({actions, scopes, budget, expiresInMs}) {
+        if (!Array.isArray(actions) || actions.some((action) => !OPERATOR_CONTROL_ACTION_SET.has(action))) {
+            throw new Error("Operator action is not exposed to the Runtime Tool")
+        }
         const authoritySessionId = `operator-${randomUUID()}`
         const grant = await this.#capabilities.issue({
             sessionId: authoritySessionId,
@@ -591,6 +647,7 @@ class OperatorSessionManager {
                 } : {}),
                 assertRunnable: () => this.#controlIsLive(control, generation),
                 handlerContext: request.context,
+                ...(request.trustedFacts ? {trustedFacts: request.trustedFacts} : {}),
             })
             if (!this.#controlIsLive(control, generation)) {
                 throw createPublicControlError("CONTROL_BUSY")
@@ -650,6 +707,8 @@ class OperatorSessionManager {
         actions,
         budget,
         nativeResume,
+        managedSkillBinding = null,
+        workspaceRoot = this.#workspaceRoot,
     }) {
         const control = {
             sessionId: session.id,
@@ -665,6 +724,8 @@ class OperatorSessionManager {
             actions,
             budget,
             nativeResume,
+            managedSkillBinding,
+            workspaceRoot,
             client: null,
             runtimeThreadId: null,
             turnId: null,
@@ -726,7 +787,7 @@ class OperatorSessionManager {
 
     #clientOptions(control) {
         return {
-            ...(this.#workspaceRoot ? {workspaceRoot: this.#workspaceRoot} : {}),
+            ...(control.workspaceRoot ? {workspaceRoot: control.workspaceRoot} : {}),
             ...(this.#traceDirectory ? {traceDirectory: this.#traceDirectory} : {}),
             childEnvironment: {...control.childEnvironment},
             nonInteractive: false,
@@ -1119,6 +1180,20 @@ class OperatorSessionManager {
 
     async create(input = {}) {
         if (!plainObject(input)) throw new TypeError("Operator session request is invalid")
+        const allowedInputKeys = new Set([
+            "runtimeId",
+            "modelId",
+            "effort",
+            "objective",
+            "actions",
+            "scopes",
+            "budget",
+            "expiresInMs",
+            "managedSkillBinding",
+        ])
+        if (Object.keys(input).some((key) => !allowedInputKeys.has(key))) {
+            throw new TypeError("Operator session request contains an unsupported field")
+        }
         const runtime = await this.#runtimeById(input.runtimeId)
         const modelId = selectedModel(runtime, input.modelId)
         const effort = selectedEffort(runtime, input.effort)
@@ -1129,6 +1204,10 @@ class OperatorSessionManager {
             budget: input.budget,
             transport: {kind: "codex-dynamic", ready: true},
         })
+        const managedWorkspace = await this.#managedWorkspace(
+            input.managedSkillBinding,
+            context.scope,
+        )
         const expiresInMs = capabilityLifetime(input, context.budget)
         const authority = await this.#authority({
             actions: context.actions,
@@ -1173,6 +1252,8 @@ class OperatorSessionManager {
                 actions: context.actions,
                 budget: context.budget,
                 nativeResume: false,
+                managedSkillBinding: managedWorkspace.binding,
+                workspaceRoot: managedWorkspace.workspaceRoot,
             })
             control.client = this.#runtimeRegistry.createClient(runtime, this.#clientOptions(control))
             if (!control.client || typeof control.client.start !== "function" || typeof control.client.startThread !== "function" || typeof control.client.startTurn !== "function") {
@@ -1190,6 +1271,9 @@ class OperatorSessionManager {
                 transport: publicSelection(frozen.selection),
                 frozenTransport: frozen.selection,
                 nativeResume: control.nativeResume,
+                ...(managedWorkspace.binding === null
+                    ? {}
+                    : {managedSkillBinding: managedWorkspace.binding}),
             })
             this.#append(control, "operator_authority_issued", {
                 capabilityId: authority.grant.id,
@@ -1436,6 +1520,11 @@ class OperatorSessionManager {
             budget: configuration.budget,
             transport: configuration.transport,
         })
+        const managedWorkspace = await this.#managedWorkspace(
+            configuration.managedSkillBinding,
+            context.scope,
+            {persisted: configuration.managedSkillBinding !== undefined},
+        )
         const authority = await this.#authority({
             actions: context.actions,
             scopes: context.scope,
@@ -1475,6 +1564,8 @@ class OperatorSessionManager {
             actions: context.actions,
             budget: context.budget,
             nativeResume: configuration.nativeResume === true,
+            managedSkillBinding: managedWorkspace.binding,
+            workspaceRoot: managedWorkspace.workspaceRoot,
         })
         try {
             control.client = this.#runtimeRegistry.createClient(runtime, this.#clientOptions(control))

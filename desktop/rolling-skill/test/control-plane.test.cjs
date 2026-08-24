@@ -224,6 +224,33 @@ describe("ControlPlane", () => {
         lease.unregister()
     })
 
+    it("denies UI-only methods to an Operator lease even when its token grants the shared action", async () => {
+        const {control, issued} = createFixture()
+        const privateResult = await control.invoke({
+            token: issued.token,
+            sessionId: issued.sessionId,
+            method: "skills.get",
+            params: {skillId: "skill-1"},
+        })
+        assert.equal(privateResult.skill.manifest, "skill")
+        let executed = 0
+        control.registerOperatorExecutor({
+            sessionId: issued.sessionId,
+            capabilityId: issued.id,
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async () => { executed += 1 },
+        })
+
+        await assert.rejects(control.invoke({
+            token: issued.token,
+            sessionId: issued.sessionId,
+            method: "skills.get",
+            params: {skillId: "skill-1"},
+        }), (error) => error.code === "FORBIDDEN")
+        assert.equal(executed, 0)
+    })
+
     it("atomically replaces a lease and never lets old or foreign capabilities fall through to services", async () => {
         const {control, issued, capabilities, evaluationStore} = createFixture()
         const calls = []
@@ -479,6 +506,10 @@ describe("ControlPlane", () => {
             reason: "destructive_action",
             requestedScope: {datasetIds: ["dataset-1"]},
         })
+        assert.equal(routed[0].trustedFacts.method, "datasets.delete")
+        assert.equal(routed[0].trustedFacts.datasetId, "dataset-1")
+        assert.deepEqual(routed[0].trustedFacts.caseIds, ["case-1"])
+        assert.doesNotMatch(JSON.stringify(routed[0].trustedFacts), /private|path|trace|token/iu)
         assert.equal(evaluationStore.deleteDataset.mock.callCount(), 0)
     })
 

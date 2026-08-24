@@ -7,6 +7,10 @@ const {afterEach, describe, it} = require("node:test")
 
 const {OperatorJobStore} = require("../src/operator/job-store.cjs")
 const {OperatorJobEngine} = require("../src/operator/job-engine.cjs")
+const {CapabilityStore} = require("../src/control-plane/capability-store.cjs")
+const {ControlPlane} = require("../src/control-plane/control-plane.cjs")
+const {createDomainServices} = require("../src/control-plane/domain-services.cjs")
+const {createControlPolicy} = require("../src/control-plane/policy.cjs")
 const {
     OperatorSessionManager,
 } = require("../src/operator/operator-session-manager.cjs")
@@ -265,6 +269,7 @@ function fixture(options = {}) {
         requestPermission: options.requestPermission,
         requestQuestion: options.requestQuestion,
         supportsNativeResume: options.supportsNativeResume,
+        resolveManagedSkillWorkspace: options.resolveManagedSkillWorkspace,
     })
     return {
         store,
@@ -347,6 +352,148 @@ function makeWaitingApproval(store, parentJobId) {
 }
 
 describe("OperatorSessionManager", () => {
+    it("routes a real ControlPlane mutation through the Manager and durable Engine with frozen facts", async () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-operator-integration-"))
+        directories.push(directory)
+        const store = new OperatorJobStore(join(directory, "jobs.json"))
+        let revision = 1
+        let deleteCalls = 0
+        const services = createDomainServices({
+            evaluationStore: {
+                listDatasets: () => [{id: "dataset-1", name: "Billing", revision}],
+                getDataset: () => ({id: "dataset-1", name: "Billing", revision}),
+                listCases: () => [{id: "case-1", datasetId: "dataset-1", revision: 1}],
+                listEvaluationRunSummaries: () => [{id: "run-1", datasetId: "dataset-1", status: "completed"}],
+                deleteDataset: () => {
+                    deleteCalls += 1
+                    return {id: "dataset-1", name: "Billing", revision}
+                },
+            },
+        })
+        const capabilities = new CapabilityStore()
+        const controlPlane = new ControlPlane({
+            services,
+            capabilities,
+            policy: createControlPolicy(),
+        })
+        const engine = new OperatorJobEngine({
+            store,
+            handlers: {
+                "datasets.delete": ({params, controlContext}) => (
+                    services["datasets.delete"](params, controlContext)
+                ),
+            },
+        })
+        const clients = []
+        const manager = new OperatorSessionManager({
+            store,
+            engine,
+            controlPlane,
+            capabilities,
+            runtimeRegistry: {
+                discover: () => ({available: [runtime()], selected: runtime()}),
+                createClient(_descriptor, options) {
+                    const client = new FakeClient(options)
+                    clients.push(client)
+                    return client
+                },
+            },
+            controlSocketPath: "/private/operator-control.sock",
+            transportFactory(input) { return new FakeTransport(input) },
+            transportSupport: () => ({dynamicToolsReady: true}),
+        })
+        const created = await manager.create(createInput({
+            actions: ["datasets.delete"],
+        }))
+        const toolError = await clients[0].options.requestTool({
+            callId: "delete-approved-dataset",
+            method: "datasets.delete",
+            params: {datasetId: "dataset-1", idempotencyKey: "delete-approved-dataset"},
+        }).catch((error) => error)
+        assert.equal(toolError.code, "APPROVAL_REQUIRED")
+        const step = store.listSteps({jobId: created.parentJob.id})[0]
+        const creation = store.listEvents(created.parentJob.id).find((event) => (
+            event.kind === "operator_step_created" && event.stepId === step.id
+        ))
+        assert.equal(creation.trustedFacts.methodFacts.datasetRevision, 1)
+        assert.doesNotMatch(JSON.stringify(creation.trustedFacts), /private|path|trace|token/iu)
+
+        revision = 2
+        const result = await engine.resolveApproval(toolError.details.approvalId, {
+            decision: "approve",
+            scope: "action",
+            decidedBy: "user",
+        })
+        assert.equal(result.status, "failed")
+        assert.equal(result.error.code, "RESOURCE_CHANGED")
+        assert.equal(deleteCalls, 0)
+    })
+
+    it("binds a managed Skill workspace without persisting or accepting its path", async () => {
+        let workspaceRoot = "/private/managed/repository-1/skills/billing"
+        const first = fixture({
+            resolveManagedSkillWorkspace: async (binding) => ({...binding, workspaceRoot}),
+        })
+        const created = await first.manager.create(createInput({
+            managedSkillBinding: {repositoryId: "repository-1", skillId: "skill-1"},
+        }))
+
+        assert.equal(first.clients[0].options.workspaceRoot, workspaceRoot)
+        const configuration = first.store.getSession(created.session.id).transcript.findLast(
+            (entry) => entry.kind === "operator_session_configuration",
+        )
+        assert.equal(configuration.managedSkillBinding.repositoryId, "repository-1")
+        assert.equal(configuration.managedSkillBinding.skillId, "skill-1")
+        assert.equal(typeof configuration.managedSkillBinding.workspaceDigest, "string")
+        assert.doesNotMatch(JSON.stringify(configuration), /private\/managed/iu)
+
+        await assert.rejects(first.manager.create(createInput({
+            managedSkillBinding: {
+                repositoryId: "repository-1",
+                skillId: "skill-outside",
+                path: "/attacker/path",
+            },
+        })), /binding/iu)
+        await assert.rejects(first.manager.create(createInput({
+            workspaceRoot: "/attacker/path",
+        })), /unsupported field/iu)
+
+        completed(first.clients[0])
+        await nextTick()
+        workspaceRoot = "/private/managed/repository-1/skills/moved"
+        const resumedClients = []
+        const restarted = new OperatorSessionManager({
+            store: first.store,
+            engine: first.engine,
+            runtimeRegistry: {
+                discover: () => ({available: [runtime()], selected: runtime()}),
+                createClient(_descriptor, options) {
+                    const client = new FakeClient(options)
+                    resumedClients.push(client)
+                    return client
+                },
+            },
+            capabilities: first.capabilities,
+            controlPlane: new FakeControlPlane(first.grants, first.revoked),
+            controlSocketPath: "/private/operator-control.sock",
+            transportFactory(input) { return new FakeTransport(input) },
+            transportSupport: () => ({dynamicToolsReady: true}),
+            resolveManagedSkillWorkspace: async (binding) => ({...binding, workspaceRoot}),
+        })
+        await assert.rejects(restarted.resume(created.session.id), /workspace changed/iu)
+        assert.equal(resumedClients.length, 0)
+    })
+    it("rejects UI-only authority before issuing an Operator capability", async () => {
+        const context = fixture()
+
+        await assert.rejects(
+            context.manager.create(createInput({actions: ["approvals.resolve", "jobs.control"]})),
+            /Operator action|exposed/iu,
+        )
+        assert.equal(context.grants.length, 0)
+        assert.equal(context.clients.length, 0)
+    })
+
     it("freezes authority and transport, persists one parent Job, and starts an independent selected Runtime", async () => {
         const chatClient = {calls: []}
         const {manager, store, clients, grants, transports} = fixture()

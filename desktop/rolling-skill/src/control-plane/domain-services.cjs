@@ -8,7 +8,21 @@ const {
     normalizedSkillName,
     RawCaseConflictError,
 } = require("../raw-case-store.cjs")
+const {isTrustedHumanCapability} = require("./capability-store.cjs")
+const {createHash} = require("node:crypto")
 const {relative, resolve, sep} = require("node:path")
+
+const TRUSTED_MUTATION_METHODS = new Set([
+    "datasets.delete",
+    "datasets.delete_case",
+    "curation.save",
+    "curation.discard",
+    "rubrics.publish",
+    "skills.create_candidate",
+    "skills.release",
+    "installations.start",
+    "installations.cancel",
+])
 
 const FILTER_METHODS = Object.freeze({
     "context.get": "runtimeIds",
@@ -31,8 +45,26 @@ function notFound(resource) {
     return createPublicControlError("NOT_FOUND", {details: {resource}})
 }
 
+function resourceChanged(resource) {
+    return createPublicControlError("RESOURCE_CHANGED", {details: {resource}})
+}
+
 function clone(value) {
     return value === undefined ? undefined : structuredClone(value)
+}
+
+function stableJson(value) {
+    if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
+    if (value !== null && typeof value === "object") {
+        return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => (
+            `${JSON.stringify(key)}:${stableJson(value[key])}`
+        )).join(",")}}`
+    }
+    return JSON.stringify(value)
+}
+
+function snapshotDigest(value) {
+    return `sha256:${createHash("sha256").update(stableJson(value), "utf8").digest("hex")}`
 }
 
 function immutableSnapshot(value) {
@@ -211,8 +243,69 @@ function boundedError(value) {
     if (code === null) return null
     return {
         code,
-        message: String(value.message ?? "").slice(0, 4_096),
+        message: safeDiagnosticText(value.message),
     }
+}
+
+function safeDiagnosticText(value) {
+    return sanitizedWarningMessage(String(value ?? ""))
+        .replace(/\b(token|secret|password|socket)\s*[:=]\s*[^\s,;]+/giu, "$1=[redacted]")
+        .slice(0, 4_096)
+}
+
+function publicApprovalScope(scope) {
+    if (!scope || typeof scope !== "object") return undefined
+    const result = {}
+    for (const key of ["skillIds", "datasetIds", "runtimeIds", "repositoryIds"]) {
+        if (!Array.isArray(scope[key])) continue
+        result[key] = unique(scope[key].map(identifier).filter(Boolean)).slice(0, 4_096)
+    }
+    if (scope.budget && typeof scope.budget === "object") {
+        const budget = ownFields(scope.budget, [
+            "maxDurationMs",
+            "maxRuntimeTurns",
+            "maxEvaluations",
+            "maxTargetExecutions",
+            "maxJudgeExecutions",
+            "maxTokens",
+            "maxReportedCost",
+        ])
+        if (Object.keys(budget).length > 0) result.budget = budget
+    }
+    return result
+}
+
+function publicApprovalMutation(mutation) {
+    if (!mutation || typeof mutation !== "object") return undefined
+    const params = mutation.params && typeof mutation.params === "object" ? mutation.params : {}
+    const resourceIds = ownFields(params, [
+        "datasetId",
+        "caseId",
+        "repositoryId",
+        "skillId",
+        "versionId",
+        "sessionId",
+        "installationId",
+        "runId",
+    ])
+    if (Array.isArray(params.targets)) {
+        resourceIds.targetRuntimeIds = unique(params.targets
+            .map((target) => identifier(target?.runtimeId))
+            .filter(Boolean))
+            .slice(0, 4_096)
+    }
+    const result = {}
+    const method = identifier(mutation.method)
+    if (method !== null) result.method = method
+    if (Object.keys(resourceIds).length > 0) result.resourceIds = resourceIds
+    return result
+}
+
+function publicApprovalExecution(result, approval) {
+    const execution = ownFields(result, ["status", "jobId", "stepId", "approvalId"])
+    if (!Object.hasOwn(execution, "jobId")) execution.jobId = approval.jobId
+    if (result?.error) execution.error = boundedError(result.error)
+    return execution
 }
 
 function publicOperatorJob(job) {
@@ -237,9 +330,6 @@ function publicApproval(approval) {
             "sessionId",
             "stepId",
             "action",
-            "risk",
-            "scope",
-            "proposedMutation",
             "expiresAt",
             "status",
             "decision",
@@ -248,6 +338,15 @@ function publicApproval(approval) {
             "createdAt",
             "resolvedAt",
         ]),
+        ...(Object.hasOwn(approval ?? {}, "risk")
+            ? {risk: safeDiagnosticText(approval.risk)}
+            : {}),
+        ...(Object.hasOwn(approval ?? {}, "scope")
+            ? {scope: publicApprovalScope(approval.scope)}
+            : {}),
+        ...(Object.hasOwn(approval ?? {}, "proposedMutation")
+            ? {proposedMutation: publicApprovalMutation(approval.proposedMutation)}
+            : {}),
     }
 }
 
@@ -272,11 +371,23 @@ function publicCurationSession(session) {
 }
 
 function publicDataset(dataset) {
-    const result = clone(dataset)
-    if (result?.skillReference && typeof result.skillReference === "object") {
-        result.skillReference = publicSkillReference(result.skillReference)
+    return {
+        ...ownFields(dataset, [
+            "id",
+            "name",
+            "status",
+            "activeRubricVersionId",
+            "caseCount",
+            "goodcaseCount",
+            "badcaseCount",
+            "createdAt",
+        ]),
+        ...(Object.hasOwn(dataset ?? {}, "skillReference")
+            ? {skillReference: dataset.skillReference === null
+                ? null
+                : publicSkillReference(dataset.skillReference)}
+            : {}),
     }
-    return result
 }
 
 function publicCase(entry) {
@@ -685,6 +796,171 @@ function createDomainServices(dependencies = {}) {
         return clone(installation)
     }
 
+    async function candidateBase(skill) {
+        if (typeof managedSkillManager?.candidateBase === "function") {
+            const base = await managedSkillManager.candidateBase(skill.id)
+            if (base?.skillId !== skill.id || base?.repositoryId !== skill.repositoryId) {
+                throw new Error("Managed Skill Candidate base identity did not match")
+            }
+            return ownFields(base, [
+                "repositoryId",
+                "skillId",
+                "commit",
+                "contentDigest",
+                "dirty",
+            ])
+        }
+        const versions = typeof managedSkillStore?.listVersions === "function"
+            ? managedSkillStore.listVersions(skill.id)
+            : []
+        const latest = versions.at(-1) ?? null
+        return {
+            repositoryId: skill.repositoryId,
+            skillId: skill.id,
+            commit: latest?.commit ?? null,
+            contentDigest: latest?.contentDigest ?? null,
+            dirty: null,
+        }
+    }
+
+    async function mutationFactsFromExecution(method, input, execution) {
+        if (!TRUSTED_MUTATION_METHODS.has(method)) return null
+        if (!execution || execution.method !== method) {
+            throw new Error("Trusted mutation execution snapshot is missing")
+        }
+        if (method === "datasets.delete") {
+            const cases = execution.cases ?? await casesForDataset(input.datasetId)
+            const runs = execution.runs ?? await runInventory(input.datasetId)
+            return {
+                method,
+                datasetId: input.datasetId,
+                datasetRevision: execution.dataset?.revision ?? execution.dataset?.updatedAt ?? null,
+                caseIds: cases.map((entry) => entry.id).sort(),
+                runIds: runs.map((entry) => entry.id).sort(),
+                resourceDigest: snapshotDigest({dataset: execution.dataset, cases, runs}),
+            }
+        }
+        if (method === "datasets.delete_case") {
+            const runs = execution.runs ?? await runInventory(input.datasetId)
+            return {
+                method,
+                datasetId: input.datasetId,
+                caseId: input.caseId,
+                datasetRevision: execution.dataset?.revision ?? execution.dataset?.updatedAt ?? null,
+                caseRevision: execution.case?.revision ?? execution.case?.updatedAt ?? null,
+                runIds: runs.map((entry) => entry.id).sort(),
+                resourceDigest: snapshotDigest({
+                    dataset: execution.dataset,
+                    case: execution.case,
+                    runs,
+                }),
+            }
+        }
+        if (method === "curation.save" || method === "curation.discard") {
+            return {
+                method,
+                sessionId: input.sessionId,
+                datasetId: execution.session.datasetId,
+                sessionRevision: execution.session.revision ?? execution.session.updatedAt ?? null,
+                resourceDigest: snapshotDigest(execution.session),
+            }
+        }
+        if (method === "rubrics.publish") {
+            return {
+                method,
+                sessionId: input.sessionId,
+                datasetId: input.datasetId,
+                sessionRevision: execution.session.revision ?? execution.session.updatedAt ?? null,
+                resourceDigest: snapshotDigest(execution.session),
+            }
+        }
+        if (method === "skills.create_candidate") {
+            const base = execution.candidateBase ?? await candidateBase(execution.skill)
+            return {
+                method,
+                repositoryId: input.repositoryId,
+                skillId: input.skillId,
+                baseCommit: base.commit ?? null,
+                baseContentDigest: base.contentDigest ?? null,
+                dirty: base.dirty ?? null,
+                resourceDigest: snapshotDigest({skill: execution.skill, base}),
+            }
+        }
+        if (method === "skills.release") {
+            return {
+                method,
+                repositoryId: input.repositoryId,
+                skillId: input.skillId,
+                versionId: input.versionId,
+                candidateCommit: execution.version.commit,
+                candidateDigest: execution.version.contentDigest,
+                candidateState: execution.version.state,
+                versionLabel: input.versionLabel,
+                resourceDigest: snapshotDigest(execution.version),
+            }
+        }
+        if (method === "installations.start") {
+            const targets = execution.runtimes.map((runtime) => ({
+                runtimeId: runtime.runtimeId,
+                providerId: runtime.providerId,
+                descriptorDigest: snapshotDigest(runtime),
+            })).sort((left, right) => left.runtimeId.localeCompare(right.runtimeId))
+            return {
+                method,
+                repositoryId: input.repositoryId,
+                skillId: input.skillId,
+                versionId: input.versionId,
+                versionCommit: execution.version.commit,
+                versionDigest: execution.version.contentDigest,
+                targets,
+                resourceDigest: snapshotDigest({version: execution.version, targets}),
+            }
+        }
+        const installation = execution.installation
+        const source = installation.request?.source ?? {}
+        return {
+            method,
+            installationId: input.installationId,
+            repositoryId: source.repositoryId,
+            skillId: source.skillId,
+            versionId: source.versionId ?? null,
+            runtimeId: installation.runtime?.runtimeId,
+            observedState: installation.status,
+            resourceDigest: snapshotDigest(installation),
+        }
+    }
+
+    async function resolveTrustedFacts({method, params, controlContext}) {
+        if (!TRUSTED_MUTATION_METHODS.has(method)) return null
+        let execution = trustedExecution(controlContext, method)
+        if (execution === null) {
+            execution = (await resolveScope(method, params, controlContext?.grant)).executionContext
+        }
+        return immutableSnapshot(await mutationFactsFromExecution(method, params, execution))
+    }
+
+    async function assertMutationCurrent(method, input, context) {
+        const expected = context?.trustedFacts?.methodFacts
+        if (expected === undefined) return
+        if (!expected || expected.method !== method) throw resourceChanged("dataset")
+        const currentResolution = await resolveScope(method, input, context?.grant)
+        const current = await mutationFactsFromExecution(
+            method,
+            input,
+            currentResolution.executionContext,
+        )
+        if (stableJson(current) !== stableJson(expected)) {
+            const resource = method.startsWith("datasets.delete_case") ? "case"
+                : method.startsWith("datasets.") ? "dataset"
+                : method.startsWith("curation.") ? "curation_session"
+                : method.startsWith("rubrics.") ? "rubric_session"
+                : method === "skills.create_candidate" ? "skill"
+                : method.startsWith("skills.") ? "version"
+                : "installation"
+            throw resourceChanged(resource)
+        }
+    }
+
     async function requireSkillDetail(skillId) {
         const skill = await requireSkill(skillId)
         if (typeof managedSkillManager?.readSkill !== "function") throw notFound("skill")
@@ -809,6 +1085,9 @@ function createDomainServices(dependencies = {}) {
             } else if (method === "skills.release" || method === "installations.start") {
                 execution.version = requireManagedVersion(input.versionId, input)
             }
+            if (method === "skills.create_candidate") {
+                execution.candidateBase = await candidateBase(skill)
+            }
             if (method === "installations.start") {
                 const runtimes = await runtimeInventory()
                 execution.runtimes = input.targets.map((target) =>
@@ -861,14 +1140,24 @@ function createDomainServices(dependencies = {}) {
             }, {method, installation})
         }
         if (method === "datasets.delete") {
-            return scopeResolution(null, {method, dataset: await requireDataset(input.datasetId)})
+            return scopeResolution(null, {
+                method,
+                dataset: await requireDataset(input.datasetId),
+                cases: await casesForDataset(input.datasetId),
+                runs: await runInventory(input.datasetId),
+            })
         }
         if (method === "datasets.delete_case") {
             const dataset = await requireDataset(input.datasetId)
             const selectedCase = (await casesForDataset(dataset.id))
                 .find((entry) => entry.id === input.caseId)
             if (!selectedCase) throw notFound("case")
-            return scopeResolution(null, {method, dataset, case: selectedCase})
+            return scopeResolution(null, {
+                method,
+                dataset,
+                case: selectedCase,
+                runs: await runInventory(input.datasetId),
+            })
         }
         if (method === "evaluations.list" && input.datasetId === null) {
             const granted = new Set(Array.isArray(grant?.scopes?.datasetIds)
@@ -1004,6 +1293,20 @@ function createDomainServices(dependencies = {}) {
         const method = `jobs.${operation}`
         const execution = trustedExecution(context, method)
         const job = execution?.job ?? requireOperatorJob(input.jobId, context?.sessionId)
+        if (job.parentJobId !== null && job.parentJobId !== undefined) {
+            if (operation !== "stop") {
+                throw invalidArgument(
+                    method,
+                    ["jobId"],
+                    `Child Operator Jobs do not support ${operation}`,
+                )
+            }
+            if (typeof operatorJobEngine?.cancel !== "function") {
+                throw new Error("Operator child Job cancellation unavailable")
+            }
+            await operatorJobEngine.cancel(job.id)
+            return {job: publicOperatorJob(requireOperatorJob(job.id, context.sessionId))}
+        }
         if (typeof operatorSessionManager?.[operation] !== "function") {
             throw new Error("Operator session control unavailable")
         }
@@ -1132,13 +1435,13 @@ function createDomainServices(dependencies = {}) {
             const inventory = execution?.datasets ?? await datasetInventory()
             const datasets = inventory.filter((entry) => allowed.has(entry.id))
             const page = paginate(datasets, input)
-            return {datasets: page.items, nextCursor: page.nextCursor}
+            return {datasets: page.items.map(publicDataset), nextCursor: page.nextCursor}
         },
 
         async "datasets.get"(input, context) {
             const execution = trustedExecution(context, "datasets.get")
             const dataset = execution?.dataset ?? await requireDataset(input.datasetId)
-            const result = {dataset}
+            const result = {dataset: publicDataset(dataset)}
             if (input.includeCases) {
                 result.cases = execution?.cases ?? await casesForDataset(dataset.id)
             }
@@ -1179,10 +1482,12 @@ function createDomainServices(dependencies = {}) {
         async "datasets.delete"(input, context) {
             const execution = trustedExecution(context, "datasets.delete")
             if (execution === null) await requireDataset(input.datasetId)
+            await assertMutationCurrent("datasets.delete", input, context)
             if (typeof evaluationStore?.deleteDataset !== "function") {
                 throw new Error("Dataset store unavailable")
             }
-            return {dataset: publicDataset(await evaluationStore.deleteDataset(input.datasetId))}
+            const deleted = await evaluationStore.deleteDataset(input.datasetId)
+            return {dataset: publicDataset(deleted?.dataset ?? deleted)}
         },
 
         async "datasets.delete_case"(input, context) {
@@ -1193,6 +1498,7 @@ function createDomainServices(dependencies = {}) {
                     .find((entry) => entry.id === input.caseId)
                 if (!selectedCase) throw notFound("case")
             }
+            await assertMutationCurrent("datasets.delete_case", input, context)
             if (typeof evaluationStore?.deleteCase !== "function") {
                 throw new Error("Dataset Case store unavailable")
             }
@@ -1309,11 +1615,20 @@ function createDomainServices(dependencies = {}) {
                 typeof managedSkillManager?.createCandidate !== "function") {
                 throw new Error("Managed Skill Candidate creation unavailable")
             }
+            await assertMutationCurrent("skills.create_candidate", input, context)
             await managedSkillManager.repositoryPath(input.repositoryId)
+            const approvedFacts = context?.trustedFacts?.methodFacts
             const version = await managedSkillManager.createCandidate({
                 skillId: input.skillId,
                 message: input.message,
                 createdBy: "operator",
+                ...(approvedFacts?.method === "skills.create_candidate" ? {
+                    expectedBase: {
+                        commit: approvedFacts.baseCommit,
+                        contentDigest: approvedFacts.baseContentDigest,
+                        dirty: approvedFacts.dirty,
+                    },
+                } : {}),
             })
             if (version?.repositoryId !== input.repositoryId ||
                 version?.skillId !== input.skillId || version?.createdBy !== "operator") {
@@ -1335,9 +1650,19 @@ function createDomainServices(dependencies = {}) {
             if (typeof managedSkillManager?.releaseVersion !== "function") {
                 throw new Error("Managed Skill release unavailable")
             }
+            await assertMutationCurrent("skills.release", input, context)
+            const approvedFacts = context?.trustedFacts?.methodFacts
             const released = await managedSkillManager.releaseVersion({
                 versionId: version.id,
                 versionLabel: input.versionLabel,
+                ...(approvedFacts?.method === "skills.release" ? {
+                    expectedCandidate: {
+                        commit: approvedFacts.candidateCommit,
+                        contentDigest: approvedFacts.candidateDigest,
+                        state: approvedFacts.candidateState,
+                        versionLabel: approvedFacts.versionLabel,
+                    },
+                } : {}),
             })
             if (released?.id !== version.id || released.skillId !== input.skillId ||
                 released.repositoryId !== input.repositoryId) {
@@ -1388,6 +1713,11 @@ function createDomainServices(dependencies = {}) {
         },
 
         async "approvals.resolve"(input, context) {
+            if (!isTrustedHumanCapability(context?.grant)) {
+                throw createPublicControlError("FORBIDDEN", {
+                    details: {action: "approvals.resolve"},
+                })
+            }
             const execution = trustedExecution(context, "approvals.resolve")
             const approval = execution?.approval ??
                 requireOperatorApproval(input.approvalId, context?.sessionId)
@@ -1397,11 +1727,11 @@ function createDomainServices(dependencies = {}) {
             const result = await operatorJobEngine.resolveApproval(approval.id, {
                 decision: input.decision,
                 scope: "action",
-                decidedBy: `operator:${context.sessionId}`,
+                decidedBy: "user",
             })
             return {
                 approval: publicApproval(requireOperatorApproval(approval.id, context.sessionId)),
-                execution: clone(result),
+                execution: publicApprovalExecution(result, approval),
             }
         },
 
@@ -1432,6 +1762,7 @@ function createDomainServices(dependencies = {}) {
         async "curation.save"(input, context) {
             const execution = trustedExecution(context, "curation.save")
             const session = execution?.session ?? requireCurationSession(input.sessionId)
+            await assertMutationCurrent("curation.save", input, context)
             if (typeof curationManager?.archive !== "function") throw new Error("Curator unavailable")
             const entry = await curationManager.archive(session.id)
             return {
@@ -1443,6 +1774,7 @@ function createDomainServices(dependencies = {}) {
         async "curation.discard"(input, context) {
             const execution = trustedExecution(context, "curation.discard")
             const existing = execution?.session ?? requireCurationSession(input.sessionId)
+            await assertMutationCurrent("curation.discard", input, context)
             if (typeof curationManager?.discard !== "function") throw new Error("Curator unavailable")
             const session = await curationManager.discard(input.sessionId)
             return {session: publicCurationSession(assertCurationIdentity(session, {
@@ -1455,6 +1787,7 @@ function createDomainServices(dependencies = {}) {
             const execution = trustedExecution(context, "rubrics.publish")
             const session = execution?.session ?? requireRubricSession(input.sessionId)
             if (session.datasetId !== input.datasetId) throw notFound("rubric_session")
+            await assertMutationCurrent("rubrics.publish", input, context)
             if (typeof rubricManager?.publish !== "function") throw new Error("Rubric Agent unavailable")
             return {version: publicRubricVersion(await rubricManager.publish(session.id))}
         },
@@ -1467,6 +1800,7 @@ function createDomainServices(dependencies = {}) {
             if (skill.repositoryId !== version.repositoryId || skill.id !== version.skillId) {
                 throw notFound("version")
             }
+            await assertMutationCurrent("installations.start", input, context)
             if (typeof skillInstallationManager?.start !== "function") {
                 throw new Error("Skill installation unavailable")
             }
@@ -1509,6 +1843,7 @@ function createDomainServices(dependencies = {}) {
         async "installations.cancel"(input, context) {
             const execution = trustedExecution(context, "installations.cancel")
             const existing = execution?.installation ?? requireInstallation(input.installationId)
+            await assertMutationCurrent("installations.cancel", input, context)
             if (typeof skillInstallationManager?.cancel !== "function") {
                 throw new Error("Skill installation cancellation unavailable")
             }
@@ -1543,6 +1878,12 @@ function createDomainServices(dependencies = {}) {
         configurable: false,
         enumerable: false,
         value: resolveScope,
+        writable: false,
+    })
+    Object.defineProperty(handlers, "resolveTrustedFacts", {
+        configurable: false,
+        enumerable: false,
+        value: resolveTrustedFacts,
         writable: false,
     })
     return Object.freeze(handlers)

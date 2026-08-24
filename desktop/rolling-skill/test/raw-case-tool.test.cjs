@@ -18,6 +18,7 @@ const {RawCaseStore} = require("../src/raw-case-store.cjs")
 const {ControlSocketServer} = require("../src/control-plane/socket-server.cjs")
 const {
     CONTROL_METHODS,
+    OPERATOR_CONTROL_METHODS,
     createPublicControlError,
 } = require("../src/control-plane/contracts.cjs")
 
@@ -664,11 +665,20 @@ describe("rolling-skill external Raw Case tool", () => {
         try {
             await client.connect(transport)
             const listed = await client.listTools()
-            assert.equal(listed.tools.length, CONTROL_METHODS.length)
+            assert.equal(listed.tools.length, OPERATOR_CONTROL_METHODS.length)
             assert.deepEqual(
                 listed.tools.map((tool) => tool.name).sort(),
-                CONTROL_METHODS.map((method) => `rolling_skill_${method.replaceAll(".", "_")}`).sort(),
+                OPERATOR_CONTROL_METHODS.map((method) => `rolling_skill_${method.replaceAll(".", "_")}`).sort(),
             )
+            assert.equal(listed.tools.some((tool) => (
+                [
+                    "rolling_skill_approvals_resolve",
+                    "rolling_skill_jobs_pause",
+                    "rolling_skill_jobs_resume",
+                    "rolling_skill_jobs_stop",
+                    "rolling_skill_skills_get",
+                ].includes(tool.name)
+            )), false)
 
             const readTool = listed.tools.find((tool) => tool.name === "rolling_skill_raw_cases_list")
             assert.equal(readTool.inputSchema.type, "object")

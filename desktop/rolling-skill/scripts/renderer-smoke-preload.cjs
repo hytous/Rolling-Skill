@@ -275,6 +275,7 @@ const rubricActivityListeners = new Set()
 const modelDelayByRuntime = new Map()
 let currentRuntimeId = "codex:renderer-smoke"
 const smokeSkillReference = {
+    id: "local-skill-renderer-smoke",
     schemaVersion: "rolling-skill-skill-reference/v1",
     name: "billing-cost-management",
     path: "/tmp/rolling-skill-renderer-smoke/billing-cost-management/SKILL.md",
@@ -427,6 +428,30 @@ let smokeDatasets = [{
     skillReference: smokeSkillReference,
     activeRubricVersionId: smokeRubricVersion.id,
 }]
+function smokePublicDataset(dataset) {
+    return {
+        id: dataset.id,
+        ...(dataset.name === undefined ? {} : {name: dataset.name}),
+        ...(dataset.status === undefined ? {} : {status: dataset.status}),
+        ...(dataset.skillReference === undefined
+            ? {}
+            : {skillReference: dataset.skillReference === null
+                ? null
+                : {
+                    ...(dataset.skillReference.id === undefined
+                        ? {}
+                        : {id: dataset.skillReference.id}),
+                    name: dataset.skillReference.name,
+                }}),
+        ...(dataset.activeRubricVersionId === undefined
+            ? {}
+            : {activeRubricVersionId: dataset.activeRubricVersionId}),
+        ...(dataset.caseCount === undefined ? {} : {caseCount: dataset.caseCount}),
+        ...(dataset.goodcaseCount === undefined ? {} : {goodcaseCount: dataset.goodcaseCount}),
+        ...(dataset.badcaseCount === undefined ? {} : {badcaseCount: dataset.badcaseCount}),
+        ...(dataset.createdAt === undefined ? {} : {createdAt: dataset.createdAt}),
+    }
+}
 const smokeEvaluationRun = {
     id: "run-smoke",
     datasetId: "dataset-smoke",
@@ -728,11 +753,11 @@ async function fakeControlService(method, params) {
                 ),
             }
         case "datasets.list":
-            return {datasets: smokeDatasets, nextCursor: null}
+            return {datasets: smokeDatasets.map(smokePublicDataset), nextCursor: null}
         case "datasets.get": {
             const dataset = smokeDatasets.find((entry) => entry.id === params.datasetId)
             return {
-                dataset,
+                dataset: smokePublicDataset(dataset),
                 ...(params.includeCases ? {
                     cases: smokeEvaluationCases.filter(
                         (entry) => entry.datasetId === params.datasetId,
@@ -1108,6 +1133,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         data: [{
             cwd: "/tmp/rolling-skill-renderer-smoke",
             skills: [{
+                id: smokeSkillReference.id,
                 name: "billing-cost-management",
                 path: "/tmp/rolling-skill-renderer-smoke/billing-cost-management/SKILL.md",
                 scope: "user",

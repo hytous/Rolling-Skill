@@ -467,6 +467,52 @@ describe("Operator Job engine", () => {
         assert.equal(releaseCalls, 1)
     })
 
+    it("freezes method-specific trusted facts before Step creation and never re-resolves them after approval", async () => {
+        const {store, session} = fixture()
+        const job = createJob(store, session.id)
+        let resolverCalls = 0
+        let currentRevision = "revision-1"
+        let observedFacts = null
+        const engine = new OperatorJobEngine({
+            store,
+            resolveTrustedFacts: async ({method, params}) => {
+                resolverCalls += 1
+                return {method, datasetId: params.datasetId, revision: currentRevision}
+            },
+            handlers: {
+                "datasets.delete": async ({trustedFacts}) => {
+                    observedFacts = trustedFacts.methodFacts
+                    return {deleted: true}
+                },
+            },
+        })
+        const waiting = await engine.execute(job.id, {
+            method: "datasets.delete",
+            params: {datasetId: "dataset-1"},
+            idempotencyKey: "delete-frozen-facts",
+        })
+        assert.equal(waiting.status, "waiting_approval")
+        assert.equal(resolverCalls, 1)
+        const created = store.listEvents(job.id).find((event) => (
+            event.kind === "operator_step_created" && event.stepId === waiting.stepId
+        ))
+        assert.deepEqual(created.trustedFacts.methodFacts, {
+            method: "datasets.delete",
+            datasetId: "dataset-1",
+            revision: "revision-1",
+        })
+
+        currentRevision = "revision-2"
+        const result = await engine.resolveApproval(waiting.approvalId, {
+            decision: "approve",
+            scope: "action",
+            decidedBy: "user",
+        })
+        assert.equal(result.status, "succeeded")
+        assert.equal(resolverCalls, 1)
+        assert.deepEqual(observedFacts, created.trustedFacts.methodFacts)
+    })
+
     it("resumes an approval decision persisted immediately before a process interruption", async () => {
         const approvedFixture = fixture()
         const approvedJob = createJob(approvedFixture.store, approvedFixture.session.id)

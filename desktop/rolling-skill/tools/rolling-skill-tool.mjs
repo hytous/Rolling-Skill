@@ -20,6 +20,7 @@ import controlSocketClientModule from "../src/control-plane/socket-client.cjs"
 const {RawCaseStore} = rawCaseStoreModule
 const {
     CONTROL_METHODS,
+    OPERATOR_CONTROL_METHODS,
     PUBLIC_CONTROL_ERROR_CODES,
     controlDefinition,
     createPublicControlError,
@@ -420,7 +421,7 @@ function createOperatorMcpServer(credentials = controlCredentials()) {
         {name: "rolling-skill-operator", version: TOOL_VERSION},
         {capabilities: {tools: {}}},
     )
-    for (const method of CONTROL_METHODS) {
+    for (const method of OPERATOR_CONTROL_METHODS) {
         const definition = controlDefinition(method)
         server.registerTool(
             controlToolName(method),

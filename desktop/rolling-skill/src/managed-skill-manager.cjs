@@ -67,6 +67,26 @@ function publicRepository(repository) {
     return publicFields
 }
 
+async function candidateBaseSnapshot(manager, skill, repository) {
+    const scan = scanManagedSkillRepository(repository.managedPath, manager.scanLimits)
+    const currentSkill = scan.skills.find((entry) => entry.skillRoot === skill.skillRoot)
+    if (!currentSkill || currentSkill.status !== "valid") {
+        throw new Error("Selected Skill is not valid in the current Working tree")
+    }
+    const snapshot = snapshotManagedSkill(
+        join(repository.managedPath, currentSkill.skillRoot),
+        manager.scanLimits,
+    )
+    const status = await manager.git.status(repository.managedPath)
+    return {
+        repositoryId: repository.id,
+        skillId: skill.id,
+        commit: await manager.git.headOrNull(repository.managedPath),
+        contentDigest: snapshot.digest,
+        dirty: status.dirty === true,
+    }
+}
+
 function copyFolderWithoutGit(source, destination, limits = DEFAULT_SCAN_LIMITS) {
     const sourceRoot = realpathSync(source)
     if (!lstatSync(sourceRoot).isDirectory()) throw new Error("Skill folder source must be a directory")
@@ -356,10 +376,33 @@ class ManagedSkillManager {
         return detail
     }
 
+    candidateBase(skillId) {
+        return this.enqueue(async () => {
+            const skill = this.store.getSkill(requiredText(skillId, "Skill id", 200))
+            const repository = this.store.getRepository(skill.repositoryId)
+            return candidateBaseSnapshot(this, skill, repository)
+        })
+    }
+
     createCandidate(input = {}) {
         return this.enqueue(async () => {
             const skill = this.store.getSkill(requiredText(input.skillId, "Skill id", 200))
             const repository = this.store.getRepository(skill.repositoryId)
+            if (input.expectedBase !== undefined) {
+                const expected = input.expectedBase
+                if (!expected || typeof expected !== "object" || Array.isArray(expected) ||
+                    Object.keys(expected).sort().join(",") !== "commit,contentDigest,dirty") {
+                    throw new Error("Expected Candidate base is invalid")
+                }
+                const actual = await candidateBaseSnapshot(this, skill, repository)
+                if (actual.commit !== expected.commit ||
+                    actual.contentDigest !== expected.contentDigest ||
+                    actual.dirty !== expected.dirty) {
+                    throw Object.assign(new Error("Managed Skill Candidate base changed"), {
+                        code: "RESOURCE_CHANGED",
+                    })
+                }
+            }
             const scan = scanManagedSkillRepository(repository.managedPath, this.scanLimits)
             const existingByRoot = new Map(
                 this.store.listSkills(repository.id).map((entry) => [entry.skillRoot, entry]),
@@ -444,6 +487,19 @@ class ManagedSkillManager {
     releaseVersion(input = {}) {
         return this.enqueue(async () => {
             const version = this.store.getVersion(requiredText(input.versionId, "Version id", 200))
+            if (input.expectedCandidate !== undefined) {
+                const expected = input.expectedCandidate
+                if (!expected || typeof expected !== "object" || Array.isArray(expected) ||
+                    Object.keys(expected).sort().join(",") !== "commit,contentDigest,state,versionLabel" ||
+                    version.commit !== expected.commit ||
+                    version.contentDigest !== expected.contentDigest ||
+                    version.state !== expected.state ||
+                    input.versionLabel !== expected.versionLabel) {
+                    throw Object.assign(new Error("Managed Skill release Candidate changed"), {
+                        code: "RESOURCE_CHANGED",
+                    })
+                }
+            }
             if (version.state !== "candidate") throw new Error("Only Candidate versions can be released")
             const skill = this.store.getSkill(version.skillId)
             const repository = this.store.getRepository(version.repositoryId)

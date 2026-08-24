@@ -1713,6 +1713,10 @@ function selectedDataset(datasetId) {
 
 function runtimeSkillForReference(reference) {
     if (!reference?.name) return null
+    if (reference.id) {
+        const skill = state.evaluationSkills.find((entry) => entry.id === reference.id) ?? null
+        return skill?.enabled && skill.name === reference.name ? skill : null
+    }
     if (reference.path) {
         const skill = runtimeSkillByPath(reference.path)
         if (skill?.enabled && skill.name === reference.name) return skill

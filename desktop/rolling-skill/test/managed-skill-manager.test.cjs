@@ -195,9 +195,28 @@ describe("managed Skill repository manager", () => {
             manifest("billing", "Billing Skill", "Second"),
         )
 
+        const base = await manager.candidateBase(skill.id)
+        assert.deepEqual({
+            repositoryId: base.repositoryId,
+            skillId: base.skillId,
+            commit: base.commit,
+            dirty: base.dirty,
+        }, {
+            repositoryId: imported.repository.id,
+            skillId: skill.id,
+            commit: imported.versions[0].commit,
+            dirty: true,
+        })
+        assert.notEqual(base.contentDigest, imported.versions[0].contentDigest)
+
         const candidate = await manager.createCandidate({
             skillId: skill.id,
             message: "Clarify billing workflow",
+            expectedBase: {
+                commit: base.commit,
+                contentDigest: base.contentDigest,
+                dirty: base.dirty,
+            },
         })
 
         assert.notEqual(candidate.commit, imported.versions[0].commit)

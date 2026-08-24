@@ -5,7 +5,7 @@ const {StringDecoder} = require("node:string_decoder")
 const {z} = require("zod")
 
 const {
-    CONTROL_METHODS,
+    OPERATOR_CONTROL_METHODS,
     controlDefinition,
 } = require("../control-plane/contracts.cjs")
 
@@ -191,7 +191,7 @@ function codexDynamicTools() {
         type: "namespace",
         name: "rolling_skill",
         description: "Scoped Rolling Skill Operator control tools.",
-        tools: CONTROL_METHODS.map((method) => ({
+        tools: OPERATOR_CONTROL_METHODS.map((method) => ({
             type: "function",
             name: methodToolName(method),
             description: `Invoke the scoped Rolling Skill ${method} action.`,

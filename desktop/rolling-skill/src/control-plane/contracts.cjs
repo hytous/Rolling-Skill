@@ -114,6 +114,18 @@ const publicSkillReference = z.object({
     name: boundedText(MAX_IDENTIFIER_LENGTH, "Skill name"),
 }).strict()
 
+const publicDataset = z.object({
+    id,
+    name: boundedText(500, "Dataset name").optional(),
+    status: boundedText(80, "Dataset status").optional(),
+    skillReference: publicSkillReference.nullable().optional(),
+    activeRubricVersionId: id.nullable().optional(),
+    caseCount: z.number().int().min(0).optional(),
+    goodcaseCount: z.number().int().min(0).optional(),
+    badcaseCount: z.number().int().min(0).optional(),
+    createdAt: boundedText(100, "Dataset creation time").optional(),
+}).strict()
+
 const publicRawCaseRecord = z.object({
     skill: publicSkillReference,
 }).passthrough()
@@ -286,9 +298,36 @@ const publicApproval = z.object({
     sessionId: id,
     stepId: id.nullable().optional(),
     action: boundedText(MAX_IDENTIFIER_LENGTH, "Approval action").optional(),
-    risk: z.string().max(16_384).optional(),
-    scope: z.record(z.string(), z.any()).optional(),
-    proposedMutation: z.record(z.string(), z.any()).optional(),
+    risk: z.string().max(4_096).optional(),
+    scope: z.object({
+        skillIds: z.array(id).max(4_096).optional(),
+        datasetIds: z.array(id).max(4_096).optional(),
+        runtimeIds: z.array(id).max(4_096).optional(),
+        repositoryIds: z.array(id).max(4_096).optional(),
+        budget: z.object({
+            maxDurationMs: z.number().int().nonnegative().optional(),
+            maxRuntimeTurns: z.number().int().nonnegative().optional(),
+            maxEvaluations: z.number().int().nonnegative().optional(),
+            maxTargetExecutions: z.number().int().nonnegative().optional(),
+            maxJudgeExecutions: z.number().int().nonnegative().optional(),
+            maxTokens: z.number().int().nonnegative().nullable().optional(),
+            maxReportedCost: z.number().nonnegative().nullable().optional(),
+        }).strict().optional(),
+    }).strict().optional(),
+    proposedMutation: z.object({
+        method: boundedText(MAX_IDENTIFIER_LENGTH, "Approval method").optional(),
+        resourceIds: z.object({
+            datasetId: id.optional(),
+            caseId: id.optional(),
+            repositoryId: id.optional(),
+            skillId: id.optional(),
+            versionId: id.optional(),
+            sessionId: id.optional(),
+            installationId: id.optional(),
+            runId: id.optional(),
+            targetRuntimeIds: z.array(id).max(4_096).optional(),
+        }).strict().optional(),
+    }).strict().optional(),
     expiresAt: boundedText(100, "Approval expiry").optional(),
     status: z.enum(["pending", "approved", "rejected"]),
     decision: z.enum(["approve", "reject"]).nullable().optional(),
@@ -338,8 +377,19 @@ const publicSkillDiff = z.object({
     changed: z.boolean(),
 }).strict()
 
+const OPERATOR_UI_ONLY_METHODS = new Set([
+    "approvals.resolve",
+    "jobs.pause",
+    "jobs.resume",
+    "jobs.stop",
+    "skills.get",
+])
+
 function freezeMethodDefinitions(definitions) {
-    for (const definition of Object.values(definitions)) Object.freeze(definition)
+    for (const [method, definition] of Object.entries(definitions)) {
+        definition.operatorExposed = !OPERATOR_UI_ONLY_METHODS.has(method)
+        Object.freeze(definition)
+    }
     return Object.freeze(definitions)
 }
 
@@ -399,12 +449,15 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
     "datasets.list": {
         action: "datasets.read",
         input: page.strict(),
-        output: pageResult("datasets"),
+        output: z.object({
+            datasets: z.array(publicDataset).max(MAX_PAGE_SIZE),
+            nextCursor: cursor.nullable(),
+        }).strict(),
     },
     "datasets.get": {
         action: "datasets.read",
         input: z.object({datasetId: id, includeCases: z.boolean().default(false)}).strict(),
-        output: z.object({dataset: z.any(), cases: z.array(z.any()).optional()}).strict(),
+        output: z.object({dataset: publicDataset, cases: z.array(z.any()).optional()}).strict(),
     },
     "datasets.create": {
         action: "datasets.write",
@@ -414,12 +467,12 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
             skillId: id,
             idempotencyKey: id,
         }).strict(),
-        output: z.object({dataset: z.any()}).strict(),
+        output: z.object({dataset: publicDataset}).strict(),
     },
     "datasets.delete": {
         action: "datasets.delete",
         input: z.object({datasetId: id, idempotencyKey: id}).strict(),
-        output: z.object({dataset: z.any()}).strict(),
+        output: z.object({dataset: publicDataset}).strict(),
     },
     "datasets.delete_case": {
         action: "datasets.delete",
@@ -550,8 +603,10 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
                 jobId: id,
                 stepId: id.optional(),
                 approvalId: id.optional(),
-                result: z.any().optional(),
-                error: z.any().optional(),
+                error: z.object({
+                    code: boundedText(MAX_IDENTIFIER_LENGTH, "Approval execution error code"),
+                    message: z.string().max(4_096),
+                }).strict().optional(),
             }).strict(),
         }).strict(),
     },
@@ -630,6 +685,12 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
 })
 
 const CONTROL_METHODS = Object.freeze(Object.keys(METHOD_DEFINITIONS))
+const OPERATOR_CONTROL_METHODS = Object.freeze(
+    CONTROL_METHODS.filter((method) => METHOD_DEFINITIONS[method].operatorExposed),
+)
+const OPERATOR_CONTROL_ACTIONS = Object.freeze([
+    ...new Set(OPERATOR_CONTROL_METHODS.map((method) => METHOD_DEFINITIONS[method].action)),
+])
 const CONTROL_ACTIONS = Object.freeze([
     ...new Set(CONTROL_METHODS.map((method) => METHOD_DEFINITIONS[method].action)),
 ])
@@ -672,6 +733,18 @@ const notFoundErrorDetails = z.object({
 
 const idempotencyConflictDetails = z.object({
     method: z.enum(CONTROL_METHODS),
+}).strict()
+
+const resourceChangedDetails = z.object({
+    resource: z.enum([
+        "dataset",
+        "case",
+        "curation_session",
+        "rubric_session",
+        "skill",
+        "version",
+        "installation",
+    ]),
 }).strict()
 
 const approvalRequiredDetails = z.object({
@@ -728,6 +801,11 @@ const PUBLIC_CONTROL_ERROR_DEFINITIONS = Object.freeze({
         message: "Idempotency key conflicts with another request",
         retryable: false,
         details: idempotencyConflictDetails,
+    }),
+    RESOURCE_CHANGED: Object.freeze({
+        message: "Control resource changed after approval",
+        retryable: false,
+        details: resourceChangedDetails,
     }),
     CONTROL_BUSY: Object.freeze({
         message: "Control operation is busy",
@@ -869,6 +947,8 @@ module.exports = {
     DEFAULT_PAGE_LIMIT,
     MAX_PAGE_SIZE,
     METHOD_DEFINITIONS,
+    OPERATOR_CONTROL_ACTIONS,
+    OPERATOR_CONTROL_METHODS,
     PUBLIC_CONTROL_ERROR_CODES,
     controlDefinition,
     createPublicControlError,

@@ -532,6 +532,17 @@ function trustedResolution(services, method, input, grant) {
         : null
 }
 
+async function trustedFactsResolution(services, method, input, context) {
+    if (typeof services.resolveTrustedFacts !== "function") return null
+    const facts = await services.resolveTrustedFacts({method, params: input, controlContext: context})
+    if (facts === null || facts === undefined) return null
+    const snapshot = immutableSnapshot(facts)
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+        throw new Error("Control trusted facts must be a plain object")
+    }
+    return snapshot
+}
+
 function operatorExecutorInput(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new TypeError("Operator executor registration is invalid")
@@ -801,6 +812,9 @@ class ControlPlane {
             auditSessionId = boundedAuditId(grant.sessionId, bearerSecret)
             operatorRoute = operatorRouteForGrant(state, grant)
             if (operatorRoute !== null) assertOperatorRouteLive(state, operatorRoute)
+            if (operatorRoute !== null && definition.operatorExposed !== true) {
+                throw decisionError({decision: "deny", code: "OPERATOR_METHOD_NOT_EXPOSED"}, definition.action)
+            }
 
             const idempotency = state.idempotency.prepare(grant.id, method, input)
             if (idempotency.kind === "replay") {
@@ -892,12 +906,20 @@ class ControlPlane {
             if (operatorRoute !== null) {
                 assertOperatorRouteLive(state, operatorRoute)
                 operatorExecution = true
+                const trustedFacts = await trustedFactsResolution(
+                    state.services,
+                    method,
+                    input,
+                    context,
+                )
+                assertOperatorRouteLive(state, operatorRoute)
                 rawResult = await operatorRoute.execute(Object.freeze({
                     invocationId: randomUUID(),
                     method,
                     input,
                     policyDecision: decision,
                     context,
+                    ...(trustedFacts === null ? {} : {trustedFacts}),
                 }))
             } else {
                 try {

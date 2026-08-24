@@ -10,6 +10,10 @@ const {
     parseControlOutput,
 } = require("../src/control-plane/contracts.cjs")
 const {createDomainServices} = require("../src/control-plane/domain-services.cjs")
+const {
+    CapabilityStore,
+    createTrustedHumanCapabilityIssuer,
+} = require("../src/control-plane/capability-store.cjs")
 const {createControlPolicy, createResolvedScope} = require("../src/control-plane/policy.cjs")
 const {
     decodeSkillVersionCursor,
@@ -40,7 +44,8 @@ function fixture(overrides = {}) {
         {id: "run-1", datasetId: "dataset-1", status: "running"},
     ]
     const operatorJobs = [
-        {id: "job-1", sessionId: "operator-1", parentJobId: null, type: "operator", objective: "Improve billing", status: "running", children: [], artifactIds: ["artifact-1"], approvalIds: ["approval-1"]},
+        {id: "job-1", sessionId: "operator-1", parentJobId: null, type: "operator", objective: "Improve billing", status: "running", children: ["job-child"], artifactIds: ["artifact-1"], approvalIds: ["approval-1"]},
+        {id: "job-child", sessionId: "operator-1", parentJobId: "job-1", type: "evaluation", objective: "Evaluate", status: "running", children: [], artifactIds: [], approvalIds: []},
         {id: "job-other", sessionId: "operator-other", parentJobId: null, type: "operator", objective: "Private other session", status: "running", children: [], artifactIds: [], approvalIds: []},
     ]
     const approvals = [{
@@ -49,9 +54,9 @@ function fixture(overrides = {}) {
         sessionId: "operator-1",
         stepId: "step-1",
         action: "skills.release",
-        scope: {skillIds: ["skill-1"]},
-        proposedMutation: {method: "skills.release", params: {skillId: "skill-1"}},
-        risk: "release",
+        scope: {skillIds: ["skill-1"], path: "/private/repository", token: "approval-secret"},
+        proposedMutation: {method: "skills.release", params: {skillId: "skill-1", path: "/private/repository", trace: "full transcript"}},
+        risk: "release token=approval-secret /private/repository",
         status: "pending",
         decision: null,
     }]
@@ -163,11 +168,15 @@ function fixture(overrides = {}) {
         }),
     }
     const operatorJobEngine = {
+        cancel: mock.fn((jobId) => {
+            operatorJobs.find((entry) => entry.id === jobId).status = "cancelled"
+            return structuredClone(operatorJobs.find((entry) => entry.id === jobId))
+        }),
         resolveApproval: mock.fn((approvalId, input) => {
             const approval = approvals.find((entry) => entry.id === approvalId)
             approval.status = input.decision === "approve" ? "approved" : "rejected"
             approval.decision = input.decision
-            return {status: input.decision === "approve" ? "succeeded" : "failed", jobId: approval.jobId, stepId: approval.stepId}
+            return {status: input.decision === "approve" ? "succeeded" : "failed", jobId: approval.jobId, stepId: approval.stepId, result: {trace: "/private/result", token: "result-secret"}}
         }),
     }
     const createCurationSession = (input) => ({
@@ -271,6 +280,21 @@ function snapshotContext(resolution, scopeFilter) {
     }
 }
 
+function humanServiceContext() {
+    const capabilities = new CapabilityStore()
+    const issued = createTrustedHumanCapabilityIssuer(capabilities).issue({
+        sessionId: "operator-1",
+        actions: ["approvals.resolve"],
+        scopes: {},
+        expiresInMs: 60_000,
+        budget: {},
+    })
+    return {
+        ...serviceContext(),
+        grant: capabilities.authorize(issued.token, "approvals.resolve", "operator-1"),
+    }
+}
+
 describe("control-plane domain services", () => {
     it("returns exactly one enumerable handler for every control contract", () => {
         const services = createDomainServices(fixture().dependencies)
@@ -288,9 +312,9 @@ describe("control-plane domain services", () => {
             {status: null, cursor: null, limit: 100},
             serviceContext(),
         )
-        assert.deepEqual(listed.jobs.map((job) => job.id), ["job-1"])
+        assert.deepEqual(listed.jobs.map((job) => job.id), ["job-1", "job-child"])
         assert.equal(Object.hasOwn(listed.jobs[0], "terminalSnapshot"), false)
-        assert.deepEqual(listed.jobs[0].childJobIds, [])
+        assert.deepEqual(listed.jobs[0].childJobIds, ["job-child"])
         await assert.rejects(
             services["jobs.get"]({jobId: "job-other"}, serviceContext()),
             (error) => error.code === "NOT_FOUND",
@@ -312,7 +336,28 @@ describe("control-plane domain services", () => {
         }
     })
 
-    it("lists and resolves only durable approvals from the capability session", async () => {
+    it("controls the parent session separately from its child Jobs", async () => {
+        const {dependencies, operatorSessionManager, operatorJobEngine} = fixture()
+        const services = createDomainServices(dependencies)
+
+        for (const method of ["jobs.pause", "jobs.resume"]) {
+            await assert.rejects(services[method]({
+                jobId: "job-child",
+                idempotencyKey: `${method}-child`,
+            }, serviceContext()), (error) => error.code === "INVALID_ARGUMENT")
+        }
+        const stopped = await services["jobs.stop"]({
+            jobId: "job-child",
+            idempotencyKey: "stop-child",
+        }, serviceContext())
+
+        assert.equal(stopped.job.id, "job-child")
+        assert.equal(stopped.job.status, "cancelled")
+        assert.deepEqual(operatorJobEngine.cancel.mock.calls[0].arguments, ["job-child"])
+        assert.equal(operatorSessionManager.stop.mock.callCount(), 0)
+    })
+
+    it("lists approvals safely and only lets a trusted human authority resolve them", async () => {
         const {dependencies, operatorJobEngine} = fixture()
         const services = createDomainServices(dependencies)
 
@@ -321,18 +366,27 @@ describe("control-plane domain services", () => {
             serviceContext(),
         )
         assert.deepEqual(listed.approvals.map((approval) => approval.id), ["approval-1"])
-        const resolved = await services["approvals.resolve"]({
+        await assert.rejects(services["approvals.resolve"]({
             approvalId: "approval-1",
             decision: "approve",
             idempotencyKey: "approve-1",
-        }, serviceContext())
+        }, serviceContext()), (error) => error.code === "FORBIDDEN")
+
+        const resolved = await services["approvals.resolve"]({
+            approvalId: "approval-1",
+            decision: "approve",
+            idempotencyKey: "approve-human-1",
+        }, humanServiceContext())
 
         assert.deepEqual(operatorJobEngine.resolveApproval.mock.calls[0].arguments, [
             "approval-1",
-            {decision: "approve", scope: "action", decidedBy: "operator:operator-1"},
+            {decision: "approve", scope: "action", decidedBy: "user"},
         ])
         assert.equal(resolved.approval.status, "approved")
         assert.equal(resolved.execution.status, "succeeded")
+        for (const result of [listed, resolved]) {
+            assert.doesNotMatch(JSON.stringify(result), /approval-secret|result-secret|private\/repository|full transcript|private\/result/iu)
+        }
         assert.doesNotThrow(() => parseControlOutput("approvals.resolve", resolved))
     })
 
@@ -496,6 +550,211 @@ describe("control-plane domain services", () => {
             }, serviceContext()),
             /repository|identity/iu,
         )
+    })
+
+    it("projects every Dataset response without its internal Skill path", async () => {
+        const context = fixture()
+        const dataset = {
+            id: "dataset-1",
+            name: "Billing",
+            skillReference: {
+                id: "local-skill-1",
+                name: "billing",
+                path: "/private/managed/repository-1/billing",
+                traceReference: "/private/trace.jsonl",
+            },
+            activeRubricVersionId: "rubric-version-1",
+            caseCount: 2,
+            privateState: {repositoryPath: "/private/managed/repository-1"},
+        }
+        context.evaluationStore.listDatasets = mock.fn(() => [structuredClone(dataset)])
+        context.evaluationStore.getDataset = mock.fn(() => structuredClone(dataset))
+        const services = createDomainServices(context.dependencies)
+
+        const listed = await services["datasets.list"](
+            {cursor: null, limit: 100},
+            serviceContext({datasetIds: ["dataset-1"]}),
+        )
+        const got = await services["datasets.get"](
+            {datasetId: "dataset-1", includeCases: false},
+            serviceContext(),
+        )
+        for (const value of [listed.datasets[0], got.dataset]) {
+            assert.deepEqual(value.skillReference, {id: "local-skill-1", name: "billing"})
+            assert.equal(Object.hasOwn(value, "privateState"), false)
+            assert.doesNotMatch(JSON.stringify(value), /private|path|trace/iu)
+        }
+        assert.doesNotThrow(() => parseControlOutput("datasets.list", listed))
+        assert.doesNotThrow(() => parseControlOutput("datasets.get", got))
+    })
+
+    it("freezes destructive resource facts and rejects an approved Dataset mutation after drift", async () => {
+        const current = {revision: 1}
+        const value = fixture()
+        value.evaluationStore.getDataset = mock.fn(() => ({
+            id: "dataset-1",
+            name: "Billing",
+            revision: current.revision,
+            skillReference: {id: "skill-1", name: "billing", path: "/private/skill"},
+        }))
+        const services = createDomainServices(value.dependencies)
+        const input = {datasetId: "dataset-1", idempotencyKey: "delete-drift"}
+        const resolution = await services.resolveScope(
+            "datasets.delete",
+            input,
+            serviceContext().grant,
+        )
+        const controlContext = snapshotContext(resolution, null)
+        const methodFacts = await services.resolveTrustedFacts({
+            method: "datasets.delete",
+            params: input,
+            controlContext,
+        })
+        assert.deepEqual(methodFacts.caseIds, ["case-1"])
+        assert.deepEqual(methodFacts.runIds, ["run-1"])
+        assert.equal(methodFacts.datasetRevision, 1)
+        assert.doesNotMatch(JSON.stringify(methodFacts), /private|skillReference/iu)
+
+        current.revision = 2
+        await assert.rejects(services["datasets.delete"](input, {
+            ...controlContext,
+            trustedFacts: {methodFacts},
+        }), (error) => error.code === "RESOURCE_CHANGED")
+        assert.equal(value.evaluationStore.deleteDataset.mock.callCount(), 0)
+    })
+
+    it("fails closed on approved Case, curation, Rubric, Skill, and installation drift", async () => {
+        const cases = []
+
+        {
+            const value = fixture()
+            let revision = 1
+            value.evaluationStore.listCases = mock.fn(() => [{
+                id: "case-1", datasetId: "dataset-1", question: "case", revision,
+            }])
+            cases.push({
+                value,
+                method: "datasets.delete_case",
+                input: {datasetId: "dataset-1", caseId: "case-1", idempotencyKey: "case-drift"},
+                mutate: () => { revision = 2 },
+                mutation: value.evaluationStore.deleteCase,
+            })
+        }
+        for (const method of ["curation.save", "curation.discard"]) {
+            const value = fixture()
+            let revision = 1
+            value.evaluationStore.getCurationSession = mock.fn(() => ({
+                id: "curation-1", datasetId: "dataset-1", caseType: "badcase",
+                status: "needs_review", revision,
+            }))
+            cases.push({
+                value,
+                method,
+                input: {sessionId: "curation-1", idempotencyKey: `${method}-drift`},
+                mutate: () => { revision = 2 },
+                mutation: method === "curation.save"
+                    ? value.curationManager.archive
+                    : value.curationManager.discard,
+            })
+        }
+        {
+            const value = fixture()
+            let revision = 1
+            value.evaluationStore.getRubricSession = mock.fn(() => ({
+                id: "rubric-1", datasetId: "dataset-1", status: "needs_review", revision,
+                draft: {criteria: ["safe"]},
+            }))
+            cases.push({
+                value,
+                method: "rubrics.publish",
+                input: {datasetId: "dataset-1", sessionId: "rubric-1", idempotencyKey: "rubric-drift"},
+                mutate: () => { revision = 2 },
+                mutation: value.rubricManager.publish,
+            })
+        }
+        {
+            const value = fixture()
+            let commit = "a".repeat(40)
+            value.managedSkillManager.candidateBase = mock.fn(() => ({
+                repositoryId: "repository-1", skillId: "skill-1", commit,
+                contentDigest: `sha256:${commit}`, dirty: false,
+            }))
+            cases.push({
+                value,
+                method: "skills.create_candidate",
+                input: {repositoryId: "repository-1", skillId: "skill-1", message: "candidate", idempotencyKey: "candidate-drift"},
+                mutate: () => { commit = "c".repeat(40) },
+                mutation: value.managedSkillManager.createCandidate,
+            })
+        }
+        {
+            const value = fixture()
+            let state = "candidate"
+            value.managedSkillStore.getVersion = mock.fn((id) => ({
+                id, repositoryId: "repository-1", skillId: "skill-1",
+                commit: "b".repeat(40), contentDigest: "sha256:new", state,
+                createdBy: "operator",
+            }))
+            cases.push({
+                value,
+                method: "skills.release",
+                input: {repositoryId: "repository-1", skillId: "skill-1", versionId: "version-2", versionLabel: "v2", idempotencyKey: "release-drift"},
+                mutate: () => { state = "released" },
+                mutation: value.managedSkillManager.releaseVersion,
+            })
+        }
+        {
+            const value = fixture()
+            let runtimeVersion = "1"
+            value.dependencies.listRuntimes = mock.fn(() => [{
+                runtimeId: "runtime-1", providerId: "codex", version: runtimeVersion,
+                executablePath: "/private/bin/codex",
+            }])
+            cases.push({
+                value,
+                method: "installations.start",
+                input: {repositoryId: "repository-1", skillId: "skill-1", versionId: "version-1", targets: [{runtimeId: "runtime-1", modelId: null, effort: null}], idempotencyKey: "install-drift"},
+                mutate: () => { runtimeVersion = "2" },
+                mutation: value.skillInstallationManager.start,
+            })
+        }
+        {
+            const value = fixture()
+            let status = "running"
+            value.skillInstallationStore.getJob = mock.fn(() => ({
+                id: "installation-1", parentJobId: null, operation: "install", status,
+                runtime: {runtimeId: "runtime-1", providerId: "codex"},
+                request: {source: {repositoryId: "repository-1", skillId: "skill-1", versionId: "version-1"}},
+            }))
+            cases.push({
+                value,
+                method: "installations.cancel",
+                input: {installationId: "installation-1", idempotencyKey: "cancel-drift"},
+                mutate: () => { status = "succeeded" },
+                mutation: value.skillInstallationManager.cancel,
+            })
+        }
+
+        for (const entry of cases) {
+            const services = createDomainServices(entry.value.dependencies)
+            const resolution = await services.resolveScope(
+                entry.method,
+                entry.input,
+                serviceContext().grant,
+            )
+            const controlContext = snapshotContext(resolution, null)
+            const methodFacts = await services.resolveTrustedFacts({
+                method: entry.method,
+                params: entry.input,
+                controlContext,
+            })
+            entry.mutate()
+            await assert.rejects(services[entry.method](entry.input, {
+                ...controlContext,
+                trustedFacts: {methodFacts},
+            }), (error) => error.code === "RESOURCE_CHANGED", entry.method)
+            assert.equal(entry.mutation.mock.callCount(), 0, entry.method)
+        }
     })
 
     it("supports a managed Skill rooted at the repository without treating it as an escape", async () => {
@@ -776,7 +1035,7 @@ describe("control-plane domain services", () => {
         let datasetRead = 0
         datasetFixture.evaluationStore.listDatasets = mock.fn(() => [{
             id: "dataset-1",
-            marker: ++datasetRead === 1 ? "authorized" : "changed",
+            name: ++datasetRead === 1 ? "authorized" : "changed",
         }])
         const datasetServices = createDomainServices(datasetFixture.dependencies)
         const datasetResolution = await datasetServices.resolveScope(
@@ -848,7 +1107,7 @@ describe("control-plane domain services", () => {
         assert.equal(runtimeFixture.dependencies.listRuntimes.mock.callCount(), 1)
         assert.equal(runtimeResult.runtimes[0].marker, "authorized")
         assert.equal(datasetFixture.evaluationStore.listDatasets.mock.callCount(), 1)
-        assert.equal(datasetResult.datasets[0].marker, "authorized")
+        assert.equal(datasetResult.datasets[0].name, "authorized")
         assert.equal(skillFixture.managedSkillManager.catalog.mock.callCount(), 1)
         assert.equal(skillResult.skills[0].name, "authorized")
         assert.equal(rawFixture.rawCaseStore.list.mock.callCount(), 1)

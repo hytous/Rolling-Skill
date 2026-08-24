@@ -32,6 +32,7 @@ const BUDGET_KEYS = Object.freeze(["maxRuntimeTurns", "maxEvaluations"])
 const BUDGET_KEY_SET = new Set(BUDGET_KEYS)
 const trustedIssueByStore = new WeakMap()
 const scopeLimitByGrant = new WeakMap()
+const humanControlGrants = new WeakSet()
 
 class CapabilityError extends Error {
     constructor(code, message) {
@@ -245,7 +246,9 @@ class CapabilityStore {
         this.#randomBytes = randomBytes
         this.#recordObserver = recordObserver
         this.#timingSafeEqual = timingSafeEqual
-        trustedIssueByStore.set(this, (request, maximum) => this.#issue(request, maximum))
+        trustedIssueByStore.set(this, (request, maximum, humanControl = false) => (
+            this.#issue(request, maximum, humanControl)
+        ))
     }
 
     #now() {
@@ -279,7 +282,7 @@ class CapabilityStore {
         return this.#issue(request, MAX_SCOPE_IDS)
     }
 
-    #issue(request, maximumScopeIds) {
+    #issue(request, maximumScopeIds, humanControl = false) {
         const snapshot = snapshotRecord(request, "Capability request")
         assertKnownKeys(snapshot, REQUEST_KEYS, "Unknown capability request field")
 
@@ -316,6 +319,7 @@ class CapabilityStore {
             expiresAt: issuedAt + expiresInMs,
         })
         scopeLimitByGrant.set(grant, maximumScopeIds)
+        if (humanControl) humanControlGrants.add(grant)
         const record = {grant, tokenHash, revokedAt: null}
         if (this.#recordObserver !== null) {
             this.#recordObserver(Object.freeze({
@@ -406,6 +410,26 @@ function createTrustedCapabilityIssuer(store, {maxScopeIds = MAX_TRUSTED_SCOPE_I
     })
 }
 
+function createTrustedHumanCapabilityIssuer(store, options = {}) {
+    const issue = trustedIssueByStore.get(store)
+    if (typeof issue !== "function") throw new TypeError("A CapabilityStore is required")
+    const {maxScopeIds = MAX_TRUSTED_SCOPE_IDS} = options
+    if (
+        !Number.isSafeInteger(maxScopeIds) ||
+        maxScopeIds < MAX_SCOPE_IDS ||
+        maxScopeIds > MAX_TRUSTED_SCOPE_IDS
+    ) throw new TypeError("Trusted capability scope limit is invalid")
+    return Object.freeze({
+        issue(request) {
+            return issue(request, maxScopeIds, true)
+        },
+    })
+}
+
+function isTrustedHumanCapability(grant) {
+    return humanControlGrants.has(grant)
+}
+
 function capabilityScopeLimit(grant) {
     return scopeLimitByGrant.get(grant) ?? MAX_SCOPE_IDS
 }
@@ -416,6 +440,8 @@ module.exports = {
     CapabilityStore,
     capabilityScopeLimit,
     createTrustedCapabilityIssuer,
+    createTrustedHumanCapabilityIssuer,
+    isTrustedHumanCapability,
     MAX_CAPABILITY_LIFETIME_MS,
     MAX_SCOPE_IDS,
     MAX_TRUSTED_SCOPE_IDS,

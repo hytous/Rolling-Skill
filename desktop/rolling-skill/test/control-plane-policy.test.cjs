@@ -1007,6 +1007,9 @@ describe("control-plane policy", () => {
                 skillId: "skill-1",
                 runtimeId: "runtime-1",
             }],
+            ["installations.cancel", "installations.execute", "installation", {
+                installationId: "installation-1",
+            }],
             ["rubrics.publish", "rubrics.publish", "rubric_publish", {
                 datasetId: "dataset-1",
                 sessionId: "rubric-1",
@@ -1019,7 +1022,14 @@ describe("control-plane policy", () => {
                     subject: {kind: "skill", id: input.skillId},
                     skillIds: [input.skillId],
                     repositoryIds: ["repository-1"],
-                })
+                    })
+                : method === "installations.cancel"
+                    ? resolvedScope(method, {
+                        subject: {kind: "installation", id: input.installationId},
+                        skillIds: ["skill-1"],
+                        runtimeIds: ["runtime-1"],
+                        repositoryIds: ["repository-1"],
+                    })
                 : method === "rubrics.publish"
                     ? resolvedScope(method, {
                         subject: {kind: "rubric_session", id: "rubric-1"},
@@ -1071,6 +1081,7 @@ describe("control-plane policy", () => {
             ["skills.release", "skills.release", "release"],
             ["skills.install", "skills.install", "installation"],
             ["installations.start", "installations.execute", "installation"],
+            ["installations.cancel", "installations.execute", "installation"],
             ["rubrics.publish", "rubrics.publish", "rubric_publish"],
         ]
         for (const [method, action, reason] of cases) {

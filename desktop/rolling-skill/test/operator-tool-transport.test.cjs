@@ -4,7 +4,7 @@ const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {afterEach, describe, it} = require("node:test")
 
-const {CONTROL_METHODS} = require("../src/control-plane/contracts.cjs")
+const {OPERATOR_CONTROL_METHODS} = require("../src/control-plane/contracts.cjs")
 const {
     MAX_OPERATOR_STREAM_BUFFER_BYTES,
     OPERATOR_ENVIRONMENT_KEYS,
@@ -59,8 +59,12 @@ describe("Operator Tool transport", () => {
         assert.equal(dynamicTools[0].name, "rolling_skill")
         assert.deepEqual(
             dynamicTools[0].tools.map((tool) => tool.name).sort(),
-            CONTROL_METHODS.map((method) => method.replaceAll(".", "_")).sort(),
+            OPERATOR_CONTROL_METHODS.map((method) => method.replaceAll(".", "_")).sort(),
         )
+        assert.equal(dynamicTools[0].tools.some((tool) => (
+            ["approvals_resolve", "jobs_pause", "jobs_resume", "jobs_stop", "skills_get"]
+                .includes(tool.name)
+        )), false)
         assert.equal(dynamicTools[0].tools.every((tool) => (
             tool.type === "function" &&
             typeof tool.description === "string" &&
