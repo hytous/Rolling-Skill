@@ -1163,6 +1163,99 @@ describe("OperatorSessionManager", () => {
         assert.equal(stopAttempts, 2)
     })
 
+    it("does not interrupt an idle Runtime and treats an already-settled active turn as converged", async () => {
+        const idle = fixture()
+        const idleCreated = await idle.manager.create(createInput())
+        completed(idle.clients[0])
+        await nextTick()
+
+        await idle.manager.stop(idleCreated.session.id)
+        assert.equal(idle.clients[0].calls.some((call) => call.method === "interruptTurn"), false)
+
+        for (const failure of [
+            Object.assign(new Error("missing turn"), {code: "NOT_FOUND"}),
+            Object.assign(new Error("no active turn"), {code: "NO_ACTIVE_TURN"}),
+            new Error("turn already completed"),
+        ]) {
+            const active = fixture({
+                clientFactory(_descriptor, options) {
+                    const client = new FakeClient(options)
+                    client.interruptTurn = async (threadId, turnId) => {
+                        client.calls.push({method: "interruptTurn", threadId, turnId})
+                        throw failure
+                    }
+                    return client
+                },
+            })
+            const created = await active.manager.create(createInput())
+            const stopped = await active.manager.stop(created.session.id)
+
+            assert.equal(stopped.parentJob.status, "cancelled")
+            assert.equal(active.clients[0].calls.filter((call) => call.method === "interruptTurn").length, 1)
+        }
+    })
+
+    it("does not repeat successful active-turn, parent, or client teardown while retrying revoke", async () => {
+        let revokeAttempts = 0
+        const context = fixture({
+            revoke(id, {revoked}) {
+                revokeAttempts += 1
+                if (revokeAttempts === 1) throw new Error("revoke once")
+                revoked.push(id)
+                return true
+            },
+        })
+        const created = await context.manager.create(createInput())
+
+        await assert.rejects(context.manager.stop(created.session.id), /revoke once/iu)
+        await context.manager.stop(created.session.id)
+
+        assert.equal(revokeAttempts, 2)
+        assert.equal(context.engineCalls.filter((call) => call.method === "cancel").length, 1)
+        assert.equal(context.clients[0].calls.filter((call) => call.method === "interruptTurn").length, 1)
+        assert.equal(context.clients[0].calls.filter((call) => call.method === "stop").length, 1)
+    })
+
+    it("retains failed Runtime cleanup and forbids a replacement client until retry succeeds", async () => {
+        let clientCount = 0
+        let oldStopAttempts = 0
+        const context = fixture({
+            clientFactory(_descriptor, options) {
+                clientCount += 1
+                const client = new FakeClient(options)
+                if (clientCount === 1) {
+                    client.stop = async () => {
+                        oldStopAttempts += 1
+                        client.calls.push({method: "stop"})
+                        if (oldStopAttempts <= 2) throw new Error("old Runtime stop failed")
+                    }
+                }
+                return client
+            },
+        })
+        const created = await context.manager.create(createInput())
+
+        context.clients[0].emit("runtimeError", new Error("provider disconnected"))
+        await nextTick()
+        await nextTick()
+
+        assert.equal(context.manager.get(created.session.id).state, "cleanup_failed")
+        assert.equal(context.clients.length, 1)
+        assert.equal(context.controlPlane.routes.size, 0)
+
+        await assert.rejects(context.manager.resume(created.session.id), /old Runtime stop failed/iu)
+        assert.equal(context.clients.length, 1)
+        assert.equal(context.grants.length, 1)
+
+        const resumed = await context.manager.resume(created.session.id)
+        assert.equal(resumed.state, "idle")
+        assert.equal(context.clients.length, 2)
+        assert.equal(context.grants.length, 2)
+        assert.equal(oldStopAttempts, 3)
+        assert.equal(context.revoked.filter((id) => id === "capability-1").length, 1)
+        assert.equal(context.engineCalls.filter((call) => call.method === "interrupt").length, 1)
+    })
+
     it("retries a failed cold revoke and stopAll cancels every durable nonterminal session", async () => {
         const source = fixture()
         const first = await source.manager.create(createInput({objective: "first durable session"}))

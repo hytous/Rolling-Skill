@@ -177,6 +177,23 @@ function nativeResumeUnavailable(error) {
     ].includes(error?.code)
 }
 
+function turnInterruptionConverged(error) {
+    if (["NOT_FOUND", "NO_ACTIVE_TURN"].includes(error?.code)) return true
+    return typeof error?.message === "string" && /\balready (?:completed|complete|finished)\b/iu.test(error.message)
+}
+
+function activeTurnTarget(control) {
+    if (
+        control?.phase !== "active" ||
+        typeof control.runtimeThreadId !== "string" || control.runtimeThreadId.trim().length === 0 ||
+        typeof control.turnId !== "string" || control.turnId.trim().length === 0
+    ) return null
+    return Object.freeze({
+        runtimeThreadId: control.runtimeThreadId,
+        turnId: control.turnId,
+    })
+}
+
 function runtimeThreadId(response) {
     return requiredText(
         response?.thread?.id ?? response?.sessionId,
@@ -668,7 +685,9 @@ class OperatorSessionManager {
             executorLease: null,
             pendingInteractions: new Set(),
             failurePromise: null,
+            failureCleanup: null,
             clientStopped: false,
+            stopProgress: null,
         }
         control.itemIds = new Set(session.transcript
             .filter((entry) => typeof entry.itemId === "string")
@@ -719,10 +738,15 @@ class OperatorSessionManager {
     #attach(control) {
         const client = control.client
         control.notification = (message) => this.#notification(control, message)
-        control.runtimeError = (error) => this.#runtimeFailure(control, error)
+        control.runtimeError = (error) => {
+            void this.#runtimeFailure(control, error).catch(() => {})
+        }
         control.stateListener = (state) => {
             if (state?.status === "error" || state?.status === "stopped") {
-                this.#runtimeFailure(control, new Error("Operator Runtime stopped unexpectedly"))
+                void this.#runtimeFailure(
+                    control,
+                    new Error("Operator Runtime stopped unexpectedly"),
+                ).catch(() => {})
             }
         }
         client.on?.("notification", control.notification)
@@ -819,18 +843,98 @@ class OperatorSessionManager {
                 })
             }
         } catch (error) {
-            this.#runtimeFailure(control, error)
+            void this.#runtimeFailure(control, error).catch(() => {})
         }
     }
 
+    #retryRuntimeFailureCleanup(control) {
+        const cleanup = control.failureCleanup
+        if (!cleanup) return Promise.resolve()
+        if (cleanup.promise) return cleanup.promise
+        const required = []
+        if (!cleanup.interruptComplete) {
+            required.push(this.#requiredStopOperation(
+                `interrupt ${control.parentJobId}`,
+                () => (
+                    typeof this.#engine.interrupt === "function"
+                        ? this.#engine.interrupt(control.parentJobId, {
+                              code: "OPERATOR_RUNTIME_FAILED",
+                              message: "Operator Runtime failed",
+                          })
+                        : cleanup.outcomeUnknown
+                            ? this.#store.interruptJob(control.parentJobId, {
+                                  code: "OPERATOR_RUNTIME_FAILED",
+                                  message: "Operator Runtime failed",
+                              })
+                            : this.#store.getJob(control.parentJobId)
+                ),
+                () => { cleanup.interruptComplete = true },
+            ))
+        }
+        if (!cleanup.revokeComplete) {
+            required.push(this.#requiredStopOperation(
+                `revoke ${control.authority.grant.id}`,
+                () => this.#capabilities.revoke(control.authority.grant.id),
+                () => {
+                    cleanup.revokeComplete = true
+                    this.#revokedCapabilities.add(control.authority.grant.id)
+                },
+            ))
+        }
+        if (!cleanup.clientStopComplete) {
+            required.push(this.#requiredStopOperation(
+                "stop failed Runtime client",
+                () => {
+                    if (typeof control.client?.stop !== "function") {
+                        throw new Error("Operator Runtime client cannot be stopped")
+                    }
+                    return control.client.stop()
+                },
+                () => {
+                    cleanup.clientStopComplete = true
+                    control.clientStopped = true
+                },
+            ))
+        }
+        const operation = Promise.allSettled(required.map((entry) => entry.promise)).then((settled) => {
+            const failures = settled.flatMap((entry, index) => (
+                entry.status === "rejected"
+                    ? [Object.assign(
+                          new Error(`${required[index].label}: ${entry.reason?.message ?? "failed"}`),
+                          {cause: entry.reason},
+                      )]
+                    : []
+            ))
+            if (failures.length > 0) {
+                control.phase = control.stopped ? "stopping" : "cleanup_failed"
+                throw new AggregateError(
+                    failures,
+                    `Operator Runtime cleanup incomplete: ${failures.map((failure) => failure.message).join("; ")}`,
+                )
+            }
+            control.phase = "needs_recovery"
+            if (this.#controls.get(control.sessionId) === control) {
+                this.#controls.delete(control.sessionId)
+            }
+        })
+        let shared
+        shared = operation.finally(() => {
+            if (cleanup.promise === shared) cleanup.promise = null
+            if (control.failurePromise === shared) control.failurePromise = null
+        })
+        cleanup.promise = shared
+        control.failurePromise = shared
+        return shared
+    }
+
     #runtimeFailure(control, error) {
-        if (control.failurePromise || control.stopped) return control.failurePromise
+        if (control.failureCleanup) return this.#retryRuntimeFailureCleanup(control)
+        if (control.stopped) return Promise.resolve()
         const outcomeUnknown = this.#store.listSteps({jobId: control.parentJobId})
             .some((step) => step.status === "running")
-        control.stopped = true
         control.controlGeneration += 1
         control.generation += 1
-        control.phase = "failed"
+        control.phase = "needs_recovery"
         control.executorLease?.disable()
         control.executorLease?.unregister()
         this.#abortInteractions(control)
@@ -843,46 +947,14 @@ class OperatorSessionManager {
             }
         } catch {}
         this.#detach(control)
-        let interrupted
-        try {
-            interrupted = typeof this.#engine.interrupt === "function"
-                ? this.#engine.interrupt(control.parentJobId, {
-                      code: "OPERATOR_RUNTIME_FAILED",
-                      message: "Operator Runtime failed",
-                  })
-                : outcomeUnknown ? this.#store.interruptJob(control.parentJobId, {
-                      code: "OPERATOR_RUNTIME_FAILED",
-                      message: "Operator Runtime failed",
-                  }) : this.#store.getJob(control.parentJobId)
-        } catch (failure) {
-            interrupted = Promise.reject(failure)
+        control.failureCleanup = {
+            outcomeUnknown,
+            interruptComplete: false,
+            revokeComplete: this.#revokedCapabilities.has(control.authority.grant.id),
+            clientStopComplete: control.clientStopped,
+            promise: null,
         }
-        let revoked
-        try {
-            revoked = this.#capabilities.revoke(control.authority.grant.id)
-        } catch (failure) {
-            revoked = Promise.reject(failure)
-        }
-        let stopped
-        try {
-            stopped = control.client?.stop?.()
-        } catch (failure) {
-            stopped = Promise.reject(failure)
-        }
-        control.failurePromise = Promise.allSettled([
-            Promise.resolve(interrupted),
-            Promise.resolve(revoked).then(() => {
-                this.#revokedCapabilities.add(control.authority.grant.id)
-            }),
-            Promise.resolve(stopped).then(() => {
-                control.clientStopped = true
-            }),
-        ]).then(() => {
-            if (this.#controls.get(control.sessionId) === control) {
-                this.#controls.delete(control.sessionId)
-            }
-        })
-        return control.failurePromise
+        return this.#retryRuntimeFailureCleanup(control)
     }
 
     async #startTurn(control, input) {
@@ -929,6 +1001,7 @@ class OperatorSessionManager {
 
     async #requestTool(control, request) {
         if (control.stopped) throw new Error("Operator session is stopped")
+        if (control.failureCleanup) throw new Error("Operator Runtime is stopped; resume is required")
         if (control.paused) throw new Error("Operator session is paused; new Steps are disabled")
         if (control.phase !== "active") {
             throw new Error("Operator Tool call is outside an active Runtime turn")
@@ -1203,7 +1276,7 @@ class OperatorSessionManager {
                 })
             }
         } catch (error) {
-            this.#runtimeFailure(control, error)
+            void this.#runtimeFailure(control, error).catch(() => {})
         }
         finally {
             control.draining = false
@@ -1471,6 +1544,11 @@ class OperatorSessionManager {
         if (this.#blockedSessions.has(id)) throw new Error("Operator session is stopped")
         const control = this.#controls.get(id)
         if (!control) return this.#restore(id)
+        if (control.failureCleanup) {
+            await this.#retryRuntimeFailureCleanup(control)
+            if (this.#blockedSessions.has(id)) throw new Error("Operator session is stopped")
+            return this.#restore(id)
+        }
         if (control.stopped) throw new Error("Operator session is stopped")
         if (control.paused) {
             const parent = this.#store.getJob(control.parentJobId)
@@ -1522,9 +1600,16 @@ class OperatorSessionManager {
 
     async #performStop(id, session, parent, control) {
         const required = []
+        if (control?.failureCleanup) {
+            required.push(this.#requiredStopOperation(
+                "settle failed Runtime cleanup",
+                () => this.#retryRuntimeFailureCleanup(control),
+            ))
+        }
         const capabilityIds = new Set([latestCapabilityId(session)])
         if (control) capabilityIds.add(control.authority.grant.id)
         for (const capabilityId of capabilityIds) {
+            if (control?.failureCleanup && capabilityId === control.authority.grant.id) continue
             if (this.#revokedCapabilities.has(capabilityId)) continue
             required.push(this.#requiredStopOperation(
                 `revoke ${capabilityId}`,
@@ -1538,13 +1623,25 @@ class OperatorSessionManager {
                 () => this.#engine.cancel(parent.id),
             ))
         }
-        if (control?.runtimeThreadId && typeof control.client?.interruptTurn === "function") {
+        if (
+            control?.stopProgress?.turnTarget &&
+            !control.stopProgress.turnSettled &&
+            typeof control.client?.interruptTurn === "function"
+        ) {
+            const {runtimeThreadId, turnId} = control.stopProgress.turnTarget
             required.push(this.#requiredStopOperation(
                 "interrupt Runtime turn",
-                () => control.client.interruptTurn(control.runtimeThreadId, control.turnId),
+                async () => {
+                    try {
+                        await control.client.interruptTurn(runtimeThreadId, turnId)
+                    } catch (error) {
+                        if (!turnInterruptionConverged(error)) throw error
+                    }
+                },
+                () => { control.stopProgress.turnSettled = true },
             ))
         }
-        if (control && !control.clientStopped) {
+        if (control && !control.failureCleanup && !control.clientStopped) {
             required.push(this.#requiredStopOperation(
                 "stop Runtime client",
                 () => {
@@ -1626,6 +1723,12 @@ class OperatorSessionManager {
         const parent = this.#store.listJobs({sessionId: session.id, parentJobId: null})[0]
         if (!parent) throw new Error("Operator parent Job is missing")
         if (control) {
+            if (!control.stopProgress) {
+                control.stopProgress = {
+                    turnTarget: activeTurnTarget(control),
+                    turnSettled: false,
+                }
+            }
             control.stopped = true
             control.phase = "stopping"
             control.controlGeneration += 1
