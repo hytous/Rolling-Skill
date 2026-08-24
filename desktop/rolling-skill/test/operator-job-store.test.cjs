@@ -111,6 +111,39 @@ function assertRegistryCorruptionRejected(setup, mutate, pattern = /invalid|unsu
 }
 
 describe("Operator Job store", () => {
+    it("reads a bounded bootstrap summary without copying transcript, event, or artifact bodies", () => {
+        const {store} = fixture()
+        const first = createSession(store)
+        const firstJob = createJob(store, first.id)
+        for (let index = 0; index < 20; index += 1) {
+            store.appendSessionTranscript(first.id, {
+                kind: "message",
+                content: `large transcript entry ${index} ${"x".repeat(1_000)}`,
+            })
+            store.appendEvent(firstJob.id, {kind: "progress", index})
+        }
+        store.createArtifact(firstJob.id, {
+            kind: "operator-note",
+            name: "large.txt",
+            mediaType: "text/plain",
+            body: "sensitive artifact body",
+        })
+        const second = createSession(store, {capabilityId: "grant-2"})
+        const secondJob = createJob(store, second.id)
+
+        const summary = store.readSummary({limit: 1})
+
+        assert.deepEqual(summary.totals, {sessions: 2, jobs: 2, approvals: 0})
+        assert.equal(summary.sessions.length, 1)
+        assert.equal(summary.sessions[0].id, second.id)
+        assert.equal(Object.hasOwn(summary.sessions[0], "transcript"), false)
+        assert.deepEqual(summary.jobs.map((job) => job.id), [secondJob.id])
+        assert.deepEqual(summary.approvals, [])
+        assert.doesNotMatch(JSON.stringify(summary), /large transcript|sensitive artifact body/iu)
+        assert.throws(() => store.readSummary({limit: 0}), /summary.*limit/iu)
+        assert.throws(() => store.readSummary({limit: 1_001}), /summary.*limit/iu)
+    })
+
     it("coordinates every live Store for one path without stale snapshot overwrite", () => {
         const {path, store: first} = fixture()
         const second = new OperatorJobStore(path)

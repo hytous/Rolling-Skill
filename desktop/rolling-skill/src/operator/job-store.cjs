@@ -24,6 +24,7 @@ const MAX_ENVELOPE_BYTES = 256 * 1024
 const MAX_INLINE_ARTIFACT_BYTES = 128 * 1024
 const MAX_JOB_EVENTS = 10_000
 const MAX_SESSION_TRANSCRIPT_ENTRIES = 10_000
+const MAX_BOOTSTRAP_SUMMARY_ITEMS = 1_000
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0
 const DIRECTORY = constants.O_DIRECTORY ?? 0
 
@@ -1026,6 +1027,65 @@ function publicSession(session) {
     return copy({...session, transcript: session.transcript.map(publicTranscriptEntry)})
 }
 
+function publicSessionSummary(session) {
+    return copy({
+        id: session.id,
+        runtime: {
+            runtimeId: session.runtime.runtimeId,
+            providerId: session.runtime.providerId,
+            displayName: session.runtime.displayName,
+            version: session.runtime.version,
+        },
+        modelId: session.modelId,
+        effort: session.effort,
+        protocol: session.protocol,
+        transcriptSequence: session.transcriptSequence,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        closedAt: session.closedAt,
+    })
+}
+
+function publicJobSummary(job) {
+    return copy({
+        id: job.id,
+        sessionId: job.sessionId,
+        parentJobId: job.parentJobId,
+        type: job.type,
+        objective: job.objective,
+        budget: job.budget,
+        status: job.status,
+        children: job.children,
+        artifactIds: job.artifactIds,
+        approvalIds: job.approvalIds,
+        eventSequence: job.eventSequence,
+        error: job.error,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt,
+    })
+}
+
+function publicApprovalSummary(approval) {
+    return copy({
+        id: approval.id,
+        jobId: approval.jobId,
+        sessionId: approval.sessionId,
+        stepId: approval.stepId,
+        action: approval.action,
+        scope: approval.scope,
+        risk: approval.risk,
+        expiresAt: approval.expiresAt,
+        status: approval.status,
+        decision: approval.decision,
+        decisionScope: approval.decisionScope,
+        decidedBy: approval.decidedBy,
+        createdAt: approval.createdAt,
+        resolvedAt: approval.resolvedAt,
+    })
+}
+
 function publicEvent(event) {
     return copy({...event.payload, id: event.id, jobId: event.jobId, sequence: event.sequence, kind: event.kind, occurredAt: event.occurredAt})
 }
@@ -1183,6 +1243,39 @@ class OperatorJobStore {
             approvals: copy(this.#state.approvals),
             artifacts: this.#state.artifacts.map((artifact) => this.#publicArtifact(artifact)),
             events: this.#state.events.map(publicEvent),
+        }
+    }
+
+    readSummary({limit = 200} = {}) {
+        integer(limit, "Operator bootstrap summary limit", {
+            minimum: 1,
+            maximum: MAX_BOOTSTRAP_SUMMARY_ITEMS,
+        })
+        const recent = (values, project) => values
+            .slice(Math.max(0, values.length - limit))
+            .map(project)
+        const approvals = []
+        const selectedApprovalIds = new Set()
+        for (let index = this.#state.approvals.length - 1; index >= 0 && approvals.length < limit; index -= 1) {
+            const approval = this.#state.approvals[index]
+            if (approval.status !== "pending") continue
+            approvals.push(publicApprovalSummary(approval))
+            selectedApprovalIds.add(approval.id)
+        }
+        for (let index = this.#state.approvals.length - 1; index >= 0 && approvals.length < limit; index -= 1) {
+            const approval = this.#state.approvals[index]
+            if (selectedApprovalIds.has(approval.id)) continue
+            approvals.push(publicApprovalSummary(approval))
+        }
+        return {
+            sessions: recent(this.#state.sessions, publicSessionSummary),
+            jobs: recent(this.#state.jobs, publicJobSummary),
+            approvals,
+            totals: {
+                sessions: this.#state.sessions.length,
+                jobs: this.#state.jobs.length,
+                approvals: this.#state.approvals.length,
+            },
         }
     }
 

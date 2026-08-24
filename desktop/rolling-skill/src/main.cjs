@@ -1534,6 +1534,7 @@ function removeControlIpc() {
 
 const OPERATOR_SAFE_ARRAY_LIMIT = 10_000
 const OPERATOR_SAFE_TEXT_LIMIT = 32 * 1_024
+const OPERATOR_BOOTSTRAP_SUMMARY_LIMIT = 200
 const OPERATOR_PRIVATE_KEYS = /(?:token|socket|path|capabilityId|executablePath|inline|body)/iu
 const OPERATOR_PRIVATE_INPUT_KEYS = /(?:token|socket|capabilityId|executablePath)/iu
 
@@ -1558,7 +1559,7 @@ function operatorSafeValue(value, depth = 0) {
     return output
 }
 
-function publicOperatorSession(session = {}) {
+function publicOperatorSessionSummary(session = {}) {
     const runtime = session.runtime ?? {}
     return operatorSafeValue({
         id: session.id,
@@ -1571,11 +1572,20 @@ function publicOperatorSession(session = {}) {
         modelId: session.modelId ?? null,
         effort: session.effort ?? null,
         protocol: session.protocol,
-        transcript: Array.isArray(session.transcript) ? session.transcript : [],
+        transcriptSequence: Number.isSafeInteger(session.transcriptSequence)
+            ? session.transcriptSequence
+            : 0,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
         closedAt: session.closedAt ?? null,
     })
+}
+
+function publicOperatorSession(session = {}) {
+    return {
+        ...publicOperatorSessionSummary(session),
+        transcript: operatorSafeValue(Array.isArray(session.transcript) ? session.transcript : []),
+    }
 }
 
 function publicOperatorJob(job = {}) {
@@ -1646,10 +1656,12 @@ function publicOperatorManagerSnapshot(snapshot = {}) {
 }
 
 function operatorBootstrapSnapshot() {
-    if (!operatorJobStore) return {sessions: [], jobs: [], approvals: []}
-    const state = operatorJobStore.read()
+    if (typeof operatorJobStore?.readSummary !== "function") {
+        return {sessions: [], jobs: [], approvals: []}
+    }
+    const state = operatorJobStore.readSummary({limit: OPERATOR_BOOTSTRAP_SUMMARY_LIMIT})
     return {
-        sessions: state.sessions.map(publicOperatorSession),
+        sessions: state.sessions.map(publicOperatorSessionSummary),
         jobs: state.jobs.map(publicOperatorJob),
         approvals: state.approvals.map(publicOperatorApproval),
     }
@@ -1697,8 +1709,53 @@ function requireOperatorSessionManager() {
     return operatorSessionManager
 }
 
-function notifyOperatorChanged() {
-    send("operator:changed", operatorBootstrapSnapshot())
+function sendOperatorNotification(channel, payload) {
+    try {
+        send(channel, payload)
+    } catch {
+        // The durable mutation already committed; renderer delivery is best-effort.
+    }
+}
+
+function operatorChangeDelta(operation, result, args = []) {
+    const delta = {operation}
+    const candidate = result?.job ?? result
+    if (candidate?.runtime && typeof candidate?.protocol === "string") {
+        delta.session = publicOperatorSessionSummary(candidate)
+    } else if (
+        typeof candidate?.sessionId === "string" &&
+        typeof candidate?.type === "string" &&
+        Array.isArray(candidate?.children)
+    ) {
+        delta.job = publicOperatorJob(candidate)
+    } else if (
+        typeof candidate?.jobId === "string" &&
+        typeof candidate?.method === "string"
+    ) {
+        delta.step = operatorSafeValue({
+            id: candidate.id,
+            jobId: candidate.jobId,
+            sessionId: candidate.sessionId,
+            method: candidate.method,
+            status: candidate.status,
+            attempt: candidate.attempt,
+            updatedAt: candidate.updatedAt,
+            completedAt: candidate.completedAt ?? null,
+        })
+    } else {
+        const entityId = typeof candidate?.id === "string"
+            ? candidate.id
+            : typeof args[0] === "string" ? args[0] : null
+        if (entityId !== null) delta.entityId = entityId
+    }
+    return operatorSafeValue(delta)
+}
+
+function notifyOperatorChanged(result, args, operation) {
+    sendOperatorNotification(
+        "operator:changed",
+        operatorChangeDelta(operation, result, args),
+    )
 }
 
 function observeOperatorStore(store_) {
@@ -1710,7 +1767,11 @@ function observeOperatorStore(store_) {
             writable: false,
             value(...args) {
                 const result = operation(...args)
-                notify(result, args)
+                try {
+                    notify(result, args, method)
+                } catch {
+                    // Notification projection cannot roll back a committed Store mutation.
+                }
                 return result
             },
         })
@@ -1726,20 +1787,22 @@ function observeOperatorStore(store_) {
         "cancelJobTree",
     ]) wrap(method, notifyOperatorChanged)
     wrap("appendSessionTranscript", (entry) => {
-        send("operator:event", operatorSafeValue(entry))
+        sendOperatorNotification("operator:event", operatorSafeValue(entry))
     })
-    wrap("appendEvent", (event) => send("operator:event", operatorSafeValue(event)))
+    wrap("appendEvent", (event) => {
+        sendOperatorNotification("operator:event", operatorSafeValue(event))
+    })
     wrap("createApproval", (approval) => {
-        send("operator:approval", publicOperatorApproval(approval))
-        notifyOperatorChanged()
+        sendOperatorNotification("operator:approval", publicOperatorApproval(approval))
+        notifyOperatorChanged(approval, [], "createApproval")
     })
     wrap("resolveApproval", (approval) => {
-        send("operator:approval", publicOperatorApproval(approval))
-        notifyOperatorChanged()
+        sendOperatorNotification("operator:approval", publicOperatorApproval(approval))
+        notifyOperatorChanged(approval, [], "resolveApproval")
     })
     wrap("createArtifact", (artifact) => {
-        send("operator:artifact", publicOperatorArtifact(artifact))
-        notifyOperatorChanged()
+        sendOperatorNotification("operator:artifact", publicOperatorArtifact(artifact))
+        notifyOperatorChanged(artifact, [], "createArtifact")
     })
     return store_
 }
@@ -1811,13 +1874,24 @@ function initializeControlPlane() {
     return controlPlane
 }
 
+function canonicalOperatorJson(value) {
+    if (Array.isArray(value)) return `[${value.map(canonicalOperatorJson).join(",")}]`
+    if (value && typeof value === "object") {
+        return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort().map((key) => (
+            `${JSON.stringify(key)}:${canonicalOperatorJson(value[key])}`
+        )).join(",")}}`
+    }
+    return JSON.stringify(value)
+}
+
 function operatorEvaluationSelection(datasetId) {
     const dataset = store.getDataset(requireIdentifier(datasetId, "Dataset"))
-    const caseIds = store.listCases(dataset.id).map((entry) => entry.id).sort()
-    const revisionSource = JSON.stringify({
-        datasetId: dataset.id,
-        skillId: dataset.skillReference?.id ?? null,
-        activeRubricVersionId: dataset.activeRubricVersionId ?? null,
+    const cases = store.listCases(dataset.id)
+        .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+    const caseIds = cases.map((entry) => entry.id)
+    const revisionSource = canonicalOperatorJson({
+        dataset,
+        cases,
         caseIds,
     })
     return {
@@ -2819,7 +2893,8 @@ function installIpc() {
 async function startEvaluationFromControl(input = {}) {
     const datasetId = requireIdentifier(input.datasetId, "dataset")
     const dataset = store.getDataset(datasetId)
-    if (input.expectedDatasetRevision !== undefined) {
+    const assertFrozenDatasetRevision = () => {
+        if (input.expectedDatasetRevision === undefined) return
         const currentSelection = operatorEvaluationSelection(datasetId)
         if (currentSelection.datasetRevision !== input.expectedDatasetRevision) {
             throw Object.assign(
@@ -2828,6 +2903,7 @@ async function startEvaluationFromControl(input = {}) {
             )
         }
     }
+    assertFrozenDatasetRevision()
     const skillReference = dataset.skillReference
     await requireAvailableDatasetSkill(dataset)
     requirePublishedDatasetRubric(dataset)
@@ -2865,6 +2941,7 @@ async function startEvaluationFromControl(input = {}) {
         modelId: optionalIdentifier(requestedJudge.modelId, "Judge model"),
         effort: optionalEffort(requestedJudge.effort),
     }
+    assertFrozenDatasetRevision()
     const run = store.createEvaluationRun({
         datasetId,
         caseIds: (input.caseIds ?? []).map((caseId) =>

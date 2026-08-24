@@ -1853,6 +1853,290 @@ describe("desktop main/preload bridge", () => {
         }
     })
 
+    it("broadcasts bounded Operator deltas without reading the full durable registry", () => {
+        let fullReads = 0
+        const largeTranscript = Array.from({length: 10_000}, (_, index) => ({
+            id: `entry-${index}`,
+            kind: "message",
+            content: "x".repeat(100),
+        }))
+        const job = {
+            id: "job-1",
+            sessionId: "session-1",
+            parentJobId: null,
+            type: "operator",
+            objective: "Improve the Skill",
+            budget: {},
+            status: "running",
+            children: [],
+            artifactIds: [],
+            approvalIds: [],
+            createdAt: "2026-08-24T00:00:00.000Z",
+            updatedAt: "2026-08-24T00:00:00.000Z",
+        }
+        const store = {
+            read() {
+                fullReads += 1
+                return {
+                    sessions: [{id: "session-1", transcript: largeTranscript}],
+                    jobs: [job],
+                    approvals: [],
+                }
+            },
+        }
+        for (const method of [
+            "createSession",
+            "createJob",
+            "createStep",
+            "transitionStep",
+            "transitionJob",
+            "beginCancellation",
+            "interruptJob",
+            "cancelJobTree",
+            "appendSessionTranscript",
+            "appendEvent",
+            "createApproval",
+            "resolveApproval",
+            "createArtifact",
+        ]) store[method] = () => structuredClone(job)
+        const broadcasts = []
+        const context = mainFunctionContext("operatorSafeValue", "initializeControlPlane", {
+            OPERATOR_SAFE_ARRAY_LIMIT: 10_000,
+            OPERATOR_SAFE_TEXT_LIMIT: 32 * 1_024,
+            OPERATOR_PRIVATE_KEYS: /(?:token|socket|path|capabilityId|executablePath|inline|body)/iu,
+            OPERATOR_PRIVATE_INPUT_KEYS: /(?:token|socket|capabilityId|executablePath)/iu,
+            operatorJobStore: store,
+            send: (channel, payload) => broadcasts.push({channel, payload}),
+            structuredClone,
+        })
+
+        context.observeOperatorStore(store)
+        assert.deepEqual(store.createJob(), job)
+        assert.equal(fullReads, 0)
+        assert.equal(broadcasts.length, 1)
+        assert.equal(broadcasts[0].channel, "operator:changed")
+        assert.ok(Buffer.byteLength(JSON.stringify(broadcasts[0].payload)) < 64 * 1_024)
+        assert.doesNotMatch(JSON.stringify(broadcasts), /transcript|artifact body/iu)
+    })
+
+    it("keeps committed Operator mutations successful when renderer notification throws", () => {
+        const job = {
+            id: "job-1",
+            sessionId: "session-1",
+            parentJobId: null,
+            type: "operator",
+            objective: "Improve the Skill",
+            budget: {},
+            status: "running",
+            children: [],
+            artifactIds: [],
+            approvalIds: [],
+            createdAt: "2026-08-24T00:00:00.000Z",
+            updatedAt: "2026-08-24T00:00:00.000Z",
+        }
+        const store = {read: () => ({sessions: [], jobs: [], approvals: []})}
+        for (const method of [
+            "createSession",
+            "createJob",
+            "createStep",
+            "transitionStep",
+            "transitionJob",
+            "beginCancellation",
+            "interruptJob",
+            "cancelJobTree",
+            "appendSessionTranscript",
+            "appendEvent",
+            "createApproval",
+            "resolveApproval",
+            "createArtifact",
+        ]) store[method] = () => structuredClone(job)
+        const context = mainFunctionContext("operatorSafeValue", "initializeControlPlane", {
+            OPERATOR_SAFE_ARRAY_LIMIT: 10_000,
+            OPERATOR_SAFE_TEXT_LIMIT: 32 * 1_024,
+            OPERATOR_PRIVATE_KEYS: /(?:token|socket|path|capabilityId|executablePath|inline|body)/iu,
+            OPERATOR_PRIVATE_INPUT_KEYS: /(?:token|socket|capabilityId|executablePath)/iu,
+            operatorJobStore: store,
+            send: () => { throw new Error("renderer disappeared") },
+            structuredClone,
+        })
+
+        context.observeOperatorStore(store)
+        assert.deepEqual(store.createJob(), job)
+    })
+
+    it("keeps every Operator delta on its dedicated IPC family", () => {
+        const record = {
+            id: "record-1",
+            jobId: "job-1",
+            sessionId: "session-1",
+            status: "running",
+            kind: "progress",
+            sequence: 1,
+            recordedAt: "2026-08-24T00:00:00.000Z",
+            occurredAt: "2026-08-24T00:00:00.000Z",
+        }
+        const store = {read: () => ({sessions: [], jobs: [], approvals: []})}
+        for (const method of [
+            "createSession",
+            "createJob",
+            "createStep",
+            "transitionStep",
+            "transitionJob",
+            "beginCancellation",
+            "interruptJob",
+            "cancelJobTree",
+            "appendSessionTranscript",
+            "appendEvent",
+            "createApproval",
+            "resolveApproval",
+            "createArtifact",
+        ]) store[method] = () => structuredClone(record)
+        const channels = []
+        const context = mainFunctionContext("operatorSafeValue", "initializeControlPlane", {
+            OPERATOR_SAFE_ARRAY_LIMIT: 10_000,
+            OPERATOR_SAFE_TEXT_LIMIT: 32 * 1_024,
+            OPERATOR_PRIVATE_KEYS: /(?:token|socket|path|capabilityId|executablePath|inline|body)/iu,
+            OPERATOR_PRIVATE_INPUT_KEYS: /(?:token|socket|capabilityId|executablePath)/iu,
+            operatorJobStore: store,
+            send: (channel) => channels.push(channel),
+            structuredClone,
+        })
+
+        context.observeOperatorStore(store)
+        store.createJob()
+        store.appendEvent()
+        store.createApproval()
+        store.createArtifact()
+
+        assert.deepEqual([...new Set(channels)].sort(), [
+            "operator:approval",
+            "operator:artifact",
+            "operator:changed",
+            "operator:event",
+        ])
+        assert.equal(channels.some((channel) => (
+            channel === "runtime:notification" || channel === "runtime:state" ||
+            channel.startsWith("curation:") || channel.startsWith("rubric:")
+        )), false)
+    })
+
+    it("changes the frozen Dataset revision when Case content changes under the same id", () => {
+        const dataset = {
+            id: "dataset-1",
+            skillReference: {id: "skill-1"},
+            activeRubricVersionId: "rubric-1",
+        }
+        let cases = [{
+            id: "case-1",
+            datasetId: dataset.id,
+            caseType: "badcase",
+            question: "Why was July cost high?",
+            answer: "The storage tier changed.",
+            curated: {summary: "Storage cost regression"},
+        }]
+        const context = mainFunctionContext(
+            "canonicalOperatorJson",
+            "operatorRuntimeTelemetry",
+            {
+                createHash,
+                requireIdentifier: (value) => value,
+                store: {
+                    getDataset: () => structuredClone(dataset),
+                    listCases: () => structuredClone(cases),
+                },
+            },
+        )
+
+        const initial = context.operatorEvaluationSelection(dataset.id).datasetRevision
+        cases[0].question = "Why was August cost high?"
+        const changedQuestion = context.operatorEvaluationSelection(dataset.id).datasetRevision
+        cases[0].question = "Why was July cost high?"
+        cases[0].answer = "The database tier changed."
+        const changedAnswer = context.operatorEvaluationSelection(dataset.id).datasetRevision
+
+        assert.notEqual(changedQuestion, initial)
+        assert.notEqual(changedAnswer, initial)
+    })
+
+    it("rechecks the frozen Dataset revision after preflight before creating a run", async () => {
+        const dataset = {
+            id: "dataset-1",
+            skillReference: {id: "skill-1", name: "billing"},
+            activeRubricVersionId: "rubric-1",
+        }
+        const cases = [{
+            id: "case-1",
+            datasetId: dataset.id,
+            caseType: "badcase",
+            question: "Why was July cost high?",
+            answer: "The storage tier changed.",
+        }]
+        const selectionContext = mainFunctionContext(
+            "canonicalOperatorJson",
+            "operatorRuntimeTelemetry",
+            {
+                createHash,
+                requireIdentifier: (value) => value,
+                store: {
+                    getDataset: () => structuredClone(dataset),
+                    listCases: () => structuredClone(cases),
+                },
+            },
+        )
+        const frozenRevision = selectionContext
+            .operatorEvaluationSelection(dataset.id).datasetRevision
+        let createdRuns = 0
+        const context = mainFunctionContext(
+            "startEvaluationFromControl",
+            "requireIdentifier",
+            {
+                availableRuntimes: [{
+                    runtimeId: "runtime-1",
+                    providerId: "codex",
+                    displayName: "Codex",
+                }],
+                evaluationRunner: {run: async () => {}},
+                operatorEvaluationSelection: selectionContext.operatorEvaluationSelection,
+                optionalEffort: (value) => value ?? null,
+                optionalIdentifier: (value) => value ?? null,
+                requireAvailableDatasetSkill: async () => {
+                    cases[0].answer = "The database tier changed during preflight."
+                },
+                requireIdentifier: (value) => value,
+                requirePublishedDatasetRubric: () => {},
+                send: () => {},
+                skillEvidenceBindingForRuntime: async () => "verified",
+                snapshotSkillEvidence: () => ({
+                    digest: "sha256:skill",
+                    truncated: false,
+                    warnings: [],
+                }),
+                store: {
+                    createEvaluationRun() {
+                        createdRuns += 1
+                        return {id: "run-1", status: "queued"}
+                    },
+                    getDataset: () => structuredClone(dataset),
+                    updateEvaluationRun: () => {},
+                },
+            },
+        )
+
+        await assert.rejects(
+            () => context.startEvaluationFromControl({
+                datasetId: dataset.id,
+                caseIds: ["case-1"],
+                selectionMode: "selected",
+                activationMode: "explicit",
+                runtimeConfigurations: [{runtimeId: "runtime-1"}],
+                judgeConfiguration: {runtimeId: "runtime-1"},
+                expectedDatasetRevision: frozenRevision,
+            }),
+            (error) => error?.code === "RESOURCE_CHANGED",
+        )
+        assert.equal(createdRuns, 0)
+    })
+
     it("constructs and shuts down the Operator runtime in dependency order", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")
@@ -1911,7 +2195,7 @@ describe("desktop main/preload bridge", () => {
             "operator:approval",
             "operator:artifact",
         ]) {
-            assert.match(main, new RegExp(`send\\(\\"${channel}`))
+            assert.match(main, new RegExp(`sendOperatorNotification\\([\\s\\S]{0,40}\\"${channel}`))
             assert.match(preload, new RegExp(channel))
         }
         assert.match(main, /operator:\s*operatorBootstrapSnapshot\(\)/)
