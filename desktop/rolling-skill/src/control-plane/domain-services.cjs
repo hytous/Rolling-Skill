@@ -884,7 +884,7 @@ function createDomainServices(dependencies = {}) {
         return clone(version)
     }
 
-    function requireOperatorJob(jobId, sessionId) {
+    function requireOperatorJob(jobId, sessionId, grant = null) {
         if (typeof operatorJobStore?.getJob !== "function") throw new Error("Operator Job store unavailable")
         let job
         try {
@@ -892,7 +892,10 @@ function createDomainServices(dependencies = {}) {
         } catch {
             throw notFound("job")
         }
-        if (job?.id !== jobId || job.sessionId !== sessionId) throw notFound("job")
+        if (
+            job?.id !== jobId ||
+            (job.sessionId !== sessionId && !isTrustedHumanCapability(grant))
+        ) throw notFound("job")
         return clone(job)
     }
 
@@ -903,7 +906,7 @@ function createDomainServices(dependencies = {}) {
         )
     }
 
-    function requireOperatorApproval(approvalId, sessionId) {
+    function requireOperatorApproval(approvalId, sessionId, grant = null) {
         if (typeof operatorJobStore?.getApproval !== "function") {
             throw new Error("Operator approval store unavailable")
         }
@@ -913,10 +916,13 @@ function createDomainServices(dependencies = {}) {
         } catch {
             throw notFound("approval")
         }
-        if (approval?.id !== approvalId || approval.sessionId !== sessionId) {
+        if (
+            approval?.id !== approvalId ||
+            (approval.sessionId !== sessionId && !isTrustedHumanCapability(grant))
+        ) {
             throw notFound("approval")
         }
-        requireOperatorJob(approval.jobId, sessionId)
+        requireOperatorJob(approval.jobId, sessionId, grant)
         return clone(approval)
     }
 
@@ -1231,7 +1237,7 @@ function createDomainServices(dependencies = {}) {
         if (["jobs.get", "jobs.pause", "jobs.resume", "jobs.stop"].includes(method)) {
             return scopeResolution(null, {
                 method,
-                job: requireOperatorJob(input.jobId, grant?.sessionId),
+                job: requireOperatorJob(input.jobId, grant?.sessionId, grant),
             })
         }
         if (method === "jobs.list") {
@@ -1249,7 +1255,7 @@ function createDomainServices(dependencies = {}) {
         if (method === "approvals.resolve") {
             return scopeResolution(null, {
                 method,
-                approval: requireOperatorApproval(input.approvalId, grant?.sessionId),
+                approval: requireOperatorApproval(input.approvalId, grant?.sessionId, grant),
             })
         }
         if (["datasets.create", "skills.diff", "skills.create_candidate", "skills.release", "installations.start"].includes(method)) {
@@ -1481,13 +1487,21 @@ function createDomainServices(dependencies = {}) {
                 throw new Error("Operator child Job cancellation unavailable")
             }
             await operatorJobEngine.cancel(job.id)
-            return {job: publicOperatorJob(requireOperatorJob(job.id, context.sessionId))}
+            return {job: publicOperatorJob(requireOperatorJob(
+                job.id,
+                context.sessionId,
+                context.grant,
+            ))}
         }
         if (typeof operatorSessionManager?.[operation] !== "function") {
             throw new Error("Operator session control unavailable")
         }
         await operatorSessionManager[operation](job.sessionId)
-        return {job: publicOperatorJob(requireOperatorJob(job.id, context.sessionId))}
+        return {job: publicOperatorJob(requireOperatorJob(
+            job.id,
+            context.sessionId,
+            context.grant,
+        ))}
     }
 
     const handlers = {
@@ -1884,7 +1898,7 @@ function createDomainServices(dependencies = {}) {
         async "jobs.get"(input, context) {
             const execution = trustedExecution(context, "jobs.get")
             return {job: publicOperatorJob(
-                execution?.job ?? requireOperatorJob(input.jobId, context?.sessionId),
+                execution?.job ?? requireOperatorJob(input.jobId, context?.sessionId, context?.grant),
             )}
         },
 
@@ -1930,7 +1944,7 @@ function createDomainServices(dependencies = {}) {
             }
             const execution = trustedExecution(context, "approvals.resolve")
             const approval = execution?.approval ??
-                requireOperatorApproval(input.approvalId, context?.sessionId)
+                requireOperatorApproval(input.approvalId, context?.sessionId, context?.grant)
             if (typeof operatorJobEngine?.resolveApproval !== "function") {
                 throw new Error("Operator approval engine unavailable")
             }
@@ -1940,7 +1954,11 @@ function createDomainServices(dependencies = {}) {
                 decidedBy: "user",
             })
             return {
-                approval: publicApproval(requireOperatorApproval(approval.id, context.sessionId)),
+                approval: publicApproval(requireOperatorApproval(
+                    approval.id,
+                    context.sessionId,
+                    context.grant,
+                )),
                 execution: publicApprovalExecution(result, approval),
             }
         },

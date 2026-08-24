@@ -87,6 +87,21 @@ function subscribe(channel, listener) {
 
 contextBridge.exposeInMainWorld("rollingSkill", {
     bootstrap: () => ipcRenderer.invoke("app:bootstrap"),
+    bootstrapOperator: () => ipcRenderer.invoke("operator:bootstrap"),
+    createOperatorSession: (input) => ipcRenderer.invoke("operator:create", input),
+    getOperatorSession: (sessionId) => ipcRenderer.invoke("operator:get", {sessionId}),
+    sendOperatorMessage: (sessionId, text) =>
+        ipcRenderer.invoke("operator:send", {sessionId, text}),
+    pauseOperatorJob: (jobId) => invokeControl("jobs.pause", {jobId})
+        .then((result) => result.job),
+    resumeOperatorJob: (jobId) => invokeControl("jobs.resume", {jobId})
+        .then((result) => result.job),
+    stopOperatorJob: (jobId) => invokeControl("jobs.stop", {jobId})
+        .then((result) => result.job),
+    resolveOperatorApproval: (approvalId, decision) =>
+        invokeControl("approvals.resolve", {approvalId, decision}),
+    listOperatorArtifacts: (jobId, cursor = null, limit = CONTROL_PAGE_LIMIT) =>
+        ipcRenderer.invoke("operator:list-artifacts", {jobId, cursor, limit}),
     chooseWorkspace: () => ipcRenderer.invoke("workspace:choose"),
     restartRuntime: () => ipcRenderer.invoke("runtime:restart"),
     detectRuntimes: () => ipcRenderer.invoke("runtime:detect"),
@@ -244,6 +259,10 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     onRubricChanged: (listener) => subscribe("rubric:changed", listener),
     onRubricActivity: (listener) => subscribe("rubric:activity", listener),
     onEvaluationChanged: (listener) => subscribe("evaluation:changed", listener),
+    onOperatorChanged: (listener) => subscribe("operator:changed", listener),
+    onOperatorEvent: (listener) => subscribe("operator:event", listener),
+    onOperatorApproval: (listener) => subscribe("operator:approval", listener),
+    onOperatorArtifact: (listener) => subscribe("operator:artifact", listener),
     onWorkspaceChanged: (listener) => subscribe("workspace:changed", listener),
     onNewTask: (listener) => subscribe("app:new-task", listener),
 })

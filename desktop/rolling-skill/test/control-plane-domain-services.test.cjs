@@ -292,18 +292,19 @@ function snapshotContext(resolution, scopeFilter) {
     }
 }
 
-function humanServiceContext() {
+function humanServiceContext(sessionId = "operator-1", actions = ["approvals.resolve"]) {
     const capabilities = new CapabilityStore()
     const issued = createTrustedHumanCapabilityIssuer(capabilities).issue({
-        sessionId: "operator-1",
-        actions: ["approvals.resolve"],
+        sessionId,
+        actions,
         scopes: {},
         expiresInMs: 60_000,
         budget: {},
     })
     return {
         ...serviceContext(),
-        grant: capabilities.authorize(issued.token, "approvals.resolve", "operator-1"),
+        sessionId,
+        grant: capabilities.authorize(issued.token, actions[0], sessionId),
     }
 }
 
@@ -369,6 +370,24 @@ describe("control-plane domain services", () => {
         assert.equal(operatorSessionManager.stop.mock.callCount(), 0)
     })
 
+    it("lets a branded Renderer human control an explicitly selected Operator Job across sessions", async () => {
+        const {dependencies, operatorSessionManager} = fixture()
+        const services = createDomainServices(dependencies)
+        const context = humanServiceContext("renderer-private", ["jobs.control"])
+        const resolution = await services.resolveScope(
+            "jobs.pause",
+            {jobId: "job-1", idempotencyKey: "human-pause-1"},
+            context.grant,
+        )
+        const result = await services["jobs.pause"]({
+            jobId: "job-1",
+            idempotencyKey: "human-pause-1",
+        }, {...context, executionContext: resolution.executionContext})
+
+        assert.equal(result.job.id, "job-1")
+        assert.equal(operatorSessionManager.pause.mock.calls.at(-1).arguments[0], "operator-1")
+    })
+
     it("lists approvals safely and only lets a trusted human authority resolve them", async () => {
         const {dependencies, operatorJobEngine} = fixture()
         const services = createDomainServices(dependencies)
@@ -389,6 +408,17 @@ describe("control-plane domain services", () => {
             decision: "approve",
             idempotencyKey: "approve-human-1",
         }, humanServiceContext())
+
+        const rendererResolution = await services.resolveScope(
+            "approvals.resolve",
+            {
+                approvalId: "approval-1",
+                decision: "approve",
+                idempotencyKey: "approve-renderer-1",
+            },
+            humanServiceContext("renderer-private").grant,
+        )
+        assert.equal(rendererResolution.executionContext.approval.id, "approval-1")
 
         assert.deepEqual(operatorJobEngine.resolveApproval.mock.calls[0].arguments, [
             "approval-1",

@@ -64,16 +64,25 @@ const {
     CapabilityStore,
     MAX_CAPABILITY_LIFETIME_MS,
     MAX_TRUSTED_SCOPE_IDS,
+    createTrustedCapabilityIssuer,
     createTrustedHumanCapabilityIssuer,
 } = require("./control-plane/capability-store.cjs")
 const {
     ControlPlane,
     createServiceErrorDiagnosticChannel,
 } = require("./control-plane/control-plane.cjs")
-const {parseControlInput, publicControlError} = require("./control-plane/contracts.cjs")
+const {
+    CONTROL_METHODS,
+    controlDefinition,
+    parseControlInput,
+    publicControlError,
+} = require("./control-plane/contracts.cjs")
 const {createDomainServices} = require("./control-plane/domain-services.cjs")
 const {createControlPolicy} = require("./control-plane/policy.cjs")
 const {ControlSocketServer} = require("./control-plane/socket-server.cjs")
+const {OperatorJobStore} = require("./operator/job-store.cjs")
+const {OperatorJobEngine} = require("./operator/job-engine.cjs")
+const {OperatorSessionManager} = require("./operator/operator-session-manager.cjs")
 
 const RENDERER_FILE = join(__dirname, "..", "renderer", "index.html")
 const PRELOAD_FILE = join(__dirname, "preload.cjs")
@@ -169,6 +178,10 @@ let activeRuntimeSkillCache = null
 let controlInvocationsAccepted = false
 let controlIpcInstalled = false
 let controlSocketStartupDiagnostic = null
+let operatorJobStore = null
+let operatorJobEngine = null
+let operatorSessionManager = null
+let operatorCapabilityIssuer = null
 let workspaceRoot = null
 let rendererUrl = null
 let runtimeStart = null
@@ -1519,6 +1532,233 @@ function removeControlIpc() {
     controlIpcInstalled = false
 }
 
+const OPERATOR_SAFE_ARRAY_LIMIT = 10_000
+const OPERATOR_SAFE_TEXT_LIMIT = 32 * 1_024
+const OPERATOR_PRIVATE_KEYS = /(?:token|socket|path|capabilityId|executablePath|inline|body)/iu
+const OPERATOR_PRIVATE_INPUT_KEYS = /(?:token|socket|capabilityId|executablePath)/iu
+
+function operatorSafeValue(value, depth = 0) {
+    if (value === null || typeof value === "boolean") return value
+    if (typeof value === "number") return Number.isFinite(value) ? value : null
+    if (typeof value === "string") {
+        return value.length <= OPERATOR_SAFE_TEXT_LIMIT
+            ? value
+            : `${value.slice(0, OPERATOR_SAFE_TEXT_LIMIT - 1)}…`
+    }
+    if (depth >= 8 || !value || typeof value !== "object") return null
+    if (Array.isArray(value)) {
+        return value.slice(0, OPERATOR_SAFE_ARRAY_LIMIT)
+            .map((entry) => operatorSafeValue(entry, depth + 1))
+    }
+    const output = {}
+    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+        if (!Object.hasOwn(descriptor, "value") || OPERATOR_PRIVATE_KEYS.test(key)) continue
+        output[key] = operatorSafeValue(descriptor.value, depth + 1)
+    }
+    return output
+}
+
+function publicOperatorSession(session = {}) {
+    const runtime = session.runtime ?? {}
+    return operatorSafeValue({
+        id: session.id,
+        runtime: {
+            runtimeId: runtime.runtimeId,
+            providerId: runtime.providerId,
+            displayName: runtime.displayName,
+            version: runtime.version ?? null,
+        },
+        modelId: session.modelId ?? null,
+        effort: session.effort ?? null,
+        protocol: session.protocol,
+        transcript: Array.isArray(session.transcript) ? session.transcript : [],
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        closedAt: session.closedAt ?? null,
+    })
+}
+
+function publicOperatorJob(job = {}) {
+    return operatorSafeValue({
+        id: job.id,
+        sessionId: job.sessionId,
+        parentJobId: job.parentJobId ?? null,
+        type: job.type,
+        objective: job.objective,
+        budget: job.budget,
+        status: job.status,
+        childJobIds: Array.isArray(job.children) ? job.children : [],
+        artifactIds: Array.isArray(job.artifactIds) ? job.artifactIds : [],
+        approvalIds: Array.isArray(job.approvalIds) ? job.approvalIds : [],
+        checkpoint: job.checkpoint ?? null,
+        error: job.error ?? null,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+        startedAt: job.startedAt ?? null,
+        completedAt: job.completedAt ?? null,
+    })
+}
+
+function publicOperatorApproval(approval = {}) {
+    return operatorSafeValue({
+        id: approval.id,
+        jobId: approval.jobId,
+        sessionId: approval.sessionId,
+        stepId: approval.stepId ?? null,
+        action: approval.action,
+        scope: approval.scope,
+        proposedMutation: approval.proposedMutation,
+        risk: approval.risk,
+        expiresAt: approval.expiresAt,
+        status: approval.status,
+        decision: approval.decision ?? null,
+        decisionScope: approval.decisionScope ?? null,
+        decidedBy: approval.decidedBy ?? null,
+        createdAt: approval.createdAt,
+        resolvedAt: approval.resolvedAt ?? null,
+    })
+}
+
+function publicOperatorArtifact(artifact = {}) {
+    return operatorSafeValue({
+        id: artifact.id,
+        jobId: artifact.jobId,
+        kind: artifact.kind,
+        name: artifact.name,
+        mediaType: artifact.mediaType,
+        byteLength: artifact.byteLength,
+        sha256: artifact.sha256,
+        metadata: artifact.metadata ?? null,
+        createdAt: artifact.createdAt,
+    })
+}
+
+function publicOperatorManagerSnapshot(snapshot = {}) {
+    return {
+        session: publicOperatorSession(snapshot.session),
+        parentJob: publicOperatorJob(snapshot.parentJob),
+        runtimeThreadId: typeof snapshot.runtimeThreadId === "string"
+            ? snapshot.runtimeThreadId
+            : null,
+        transport: operatorSafeValue(snapshot.transport ?? null),
+        state: String(snapshot.state ?? "unknown").slice(0, 100),
+    }
+}
+
+function operatorBootstrapSnapshot() {
+    if (!operatorJobStore) return {sessions: [], jobs: [], approvals: []}
+    const state = operatorJobStore.read()
+    return {
+        sessions: state.sessions.map(publicOperatorSession),
+        jobs: state.jobs.map(publicOperatorJob),
+        approvals: state.approvals.map(publicOperatorApproval),
+    }
+}
+
+function operatorArtifactPage(input = {}) {
+    const jobId = requireIdentifier(input.jobId, "Operator Job")
+    const cursor = input.cursor === null || input.cursor === undefined ? 0 : Number(input.cursor)
+    const limit = input.limit === undefined ? 100 : Number(input.limit)
+    if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error("Operator artifact cursor is invalid")
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+        throw new Error("Operator artifact page limit is invalid")
+    }
+    const artifacts = operatorJobStore.listArtifacts(jobId).map(publicOperatorArtifact)
+    const end = Math.min(artifacts.length, cursor + limit)
+    return {
+        artifacts: artifacts.slice(cursor, end),
+        nextCursor: end < artifacts.length ? end : null,
+    }
+}
+
+function rendererOperatorInput(input, allowedKeys) {
+    if (!isSafeControlRecord(input) || Object.keys(input).some((key) => !allowedKeys.has(key))) {
+        throw new Error("Invalid Operator request")
+    }
+    const pending = [input]
+    let visited = 0
+    while (pending.length > 0) {
+        const value = pending.pop()
+        if (!value || typeof value !== "object") continue
+        visited += 1
+        if (visited > 10_000) throw new Error("Operator request is too large")
+        for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+            if (!Object.hasOwn(descriptor, "value") || OPERATOR_PRIVATE_INPUT_KEYS.test(key)) {
+                throw new Error("Operator request contains a private control field")
+            }
+            if (descriptor.value && typeof descriptor.value === "object") pending.push(descriptor.value)
+        }
+    }
+    return structuredClone(input)
+}
+
+function requireOperatorSessionManager() {
+    if (!operatorSessionManager) throw new Error("Operator session manager is unavailable")
+    return operatorSessionManager
+}
+
+function notifyOperatorChanged() {
+    send("operator:changed", operatorBootstrapSnapshot())
+}
+
+function observeOperatorStore(store_) {
+    const wrap = (method, notify) => {
+        const operation = store_[method].bind(store_)
+        Object.defineProperty(store_, method, {
+            configurable: false,
+            enumerable: false,
+            writable: false,
+            value(...args) {
+                const result = operation(...args)
+                notify(result, args)
+                return result
+            },
+        })
+    }
+    for (const method of [
+        "createSession",
+        "createJob",
+        "createStep",
+        "transitionStep",
+        "transitionJob",
+        "beginCancellation",
+        "interruptJob",
+        "cancelJobTree",
+    ]) wrap(method, notifyOperatorChanged)
+    wrap("appendSessionTranscript", (entry) => {
+        send("operator:event", operatorSafeValue(entry))
+    })
+    wrap("appendEvent", (event) => send("operator:event", operatorSafeValue(event)))
+    wrap("createApproval", (approval) => {
+        send("operator:approval", publicOperatorApproval(approval))
+        notifyOperatorChanged()
+    })
+    wrap("resolveApproval", (approval) => {
+        send("operator:approval", publicOperatorApproval(approval))
+        notifyOperatorChanged()
+    })
+    wrap("createArtifact", (artifact) => {
+        send("operator:artifact", publicOperatorArtifact(artifact))
+        notifyOperatorChanged()
+    })
+    return store_
+}
+
+const operatorSessionServiceFacade = Object.freeze({
+    pause(sessionId) {
+        if (!operatorSessionManager) throw new Error("Operator session manager unavailable")
+        return operatorSessionManager.pause(sessionId)
+    },
+    resume(sessionId) {
+        if (!operatorSessionManager) throw new Error("Operator session manager unavailable")
+        return operatorSessionManager.resume(sessionId)
+    },
+    stop(sessionId) {
+        if (!operatorSessionManager) throw new Error("Operator session manager unavailable")
+        return operatorSessionManager.stop(sessionId)
+    },
+})
+
 function initializeControlPlane() {
     if (controlPlane) return controlPlane
     capabilityStore = new CapabilityStore()
@@ -1532,6 +1772,14 @@ function initializeControlPlane() {
         evaluationStore: store,
         evaluationRunner,
         managedSkillManager,
+        managedSkillStore,
+        operatorJobStore,
+        operatorJobEngine,
+        operatorSessionManager: operatorSessionServiceFacade,
+        curationManager,
+        rubricManager,
+        skillInstallationStore,
+        skillInstallationManager,
         listDatasets: listDatasetsForControl,
         listRawCaseSkills: trustedRawCaseSkills,
         workspaceRoot: () => workspaceRoot,
@@ -1561,6 +1809,144 @@ function initializeControlPlane() {
     controlInvocationsAccepted = true
     installControlIpc()
     return controlPlane
+}
+
+function operatorEvaluationSelection(datasetId) {
+    const dataset = store.getDataset(requireIdentifier(datasetId, "Dataset"))
+    const caseIds = store.listCases(dataset.id).map((entry) => entry.id).sort()
+    const revisionSource = JSON.stringify({
+        datasetId: dataset.id,
+        skillId: dataset.skillReference?.id ?? null,
+        activeRubricVersionId: dataset.activeRubricVersionId ?? null,
+        caseIds,
+    })
+    return {
+        caseIds,
+        datasetRevision: `sha256:${createHash("sha256").update(revisionSource).digest("hex")}`,
+    }
+}
+
+function operatorRuntimeTelemetry() {
+    return availableRuntimes.map((runtime) => {
+        const capabilities = new Set(Array.isArray(runtime.capabilities) ? runtime.capabilities : [])
+        return {
+            runtimeId: runtime.runtimeId,
+            tokens: capabilities.has("token-usage"),
+            cost: capabilities.has("cost-usage"),
+        }
+    })
+}
+
+function operatorReconcilers() {
+    return {
+        evaluation(input) {
+            try {
+                const run = store.getEvaluationRun(input.runId)
+                return {
+                    status: ["completed", "failed", "cancelled"].includes(run.status)
+                        ? "completed"
+                        : run.status,
+                    result: {runId: run.id, status: run.status},
+                }
+            } catch {
+                return {status: "failed", error: {
+                    code: "EVALUATION_NOT_FOUND",
+                    message: "The frozen Evaluation run no longer exists",
+                }}
+            }
+        },
+        installation(input) {
+            try {
+                const job = skillInstallationStore.getJob(input.installationId)
+                return {
+                    status: job.status,
+                    installationId: job.id,
+                    runtimeId: job.runtime?.runtimeId,
+                    skillId: job.request?.source?.skillId,
+                    versionId: job.request?.source?.versionId,
+                    result: {installationId: job.id, status: job.status},
+                }
+            } catch {
+                return {status: "failed", error: {
+                    code: "INSTALLATION_NOT_FOUND",
+                    message: "The frozen Skill installation no longer exists",
+                }}
+            }
+        },
+        release(input) {
+            try {
+                const version = managedSkillStore.getVersion(input.versionId)
+                return {
+                    status: version.state === "released" || version.releasedAt
+                        ? "released"
+                        : version.state,
+                    candidateId: version.id,
+                    tag: version.versionLabel,
+                    result: {versionId: version.id, versionLabel: version.versionLabel},
+                }
+            } catch {
+                return {status: "failed", error: {
+                    code: "VERSION_NOT_FOUND",
+                    message: "The frozen managed Skill version no longer exists",
+                }}
+            }
+        },
+    }
+}
+
+function initializeOperatorRuntime() {
+    if (operatorSessionManager) return operatorSessionManager
+    operatorJobStore = observeOperatorStore(new OperatorJobStore(
+        join(app.getPath("userData"), "operator-jobs.json"),
+    ))
+    const handlers = Object.fromEntries(CONTROL_METHODS
+        .filter((method) => controlDefinition(method).operatorExposed === true)
+        .map((method) => [method, ({params, controlContext}) => {
+            if (!controlServices) throw new Error("Operator control services unavailable")
+            return controlServices[method](params, controlContext)
+        }]))
+    operatorJobEngine = new OperatorJobEngine({
+        store: operatorJobStore,
+        handlers,
+        reconcilers: operatorReconcilers(),
+        runtimeTelemetry: operatorRuntimeTelemetry,
+        resolveEvaluationCaseCount: ({datasetId}) => operatorEvaluationSelection(datasetId),
+        resolveTrustedFacts: (request) => {
+            if (!controlServices?.resolveTrustedFacts) return null
+            return controlServices.resolveTrustedFacts(request)
+        },
+    })
+    initializeControlPlane()
+    operatorCapabilityIssuer = createTrustedCapabilityIssuer(capabilityStore, {
+        maxScopeIds: MAX_TRUSTED_SCOPE_IDS,
+    })
+    operatorSessionManager = new OperatorSessionManager({
+        store: operatorJobStore,
+        engine: operatorJobEngine,
+        controlPlane,
+        runtimeRegistry,
+        capabilities: {
+            issue: (request) => operatorCapabilityIssuer.issue(request),
+            revoke: (capabilityId) => capabilityStore.revoke(capabilityId),
+        },
+        controlSocketPath: join(app.getPath("userData"), "control", "control.sock"),
+        operatorToolPath: app.isPackaged
+            ? join(process.resourcesPath, "rolling-skill-tool")
+            : join(__dirname, "..", "dist-tools", "rolling-skill-tool"),
+        transportSupport: (runtime) => ({
+            dynamicToolsReady: runtime?.providerId === "codex",
+            mcpServersReady: runtime?.providerId === "codebuddy",
+        }),
+        requestPermission: (request) => showRuntimePermissionDialog({
+            ...request,
+            workspaceRoot: request.workspaceRoot ?? workspaceRoot,
+        }),
+        requestQuestion: () => ({answers: []}),
+        workspaceRoot,
+        resolveManagedSkillWorkspace,
+        traceDirectory: join(app.getPath("userData"), "traces", "operator"),
+    })
+    return operatorSessionManager
 }
 
 function startControlSocket() {
@@ -1761,7 +2147,57 @@ function installIpc() {
             managedSkillStartupError,
             skillInstallations: skillInstallationManager.overview(),
             controlDiagnostic: controlSocketStartupDiagnostic,
+            operator: operatorBootstrapSnapshot(),
         }
+    })
+    ipcMain.handle("operator:bootstrap", (event) => {
+        assertRendererControlSender(event)
+        return operatorBootstrapSnapshot()
+    })
+    ipcMain.handle("operator:create", async (event, input = {}) => {
+        assertRendererControlSender(event)
+        const request = rendererOperatorInput(input, new Set([
+            "runtimeId",
+            "modelId",
+            "effort",
+            "objective",
+            "actions",
+            "scopes",
+            "budget",
+            "expiresInMs",
+            "managedSkillBinding",
+        ]))
+        return publicOperatorManagerSnapshot(
+            await requireOperatorSessionManager().create(request),
+        )
+    })
+    ipcMain.handle("operator:get", (event, input = {}) => {
+        assertRendererControlSender(event)
+        const request = rendererOperatorInput(input, new Set(["sessionId"]))
+        return publicOperatorManagerSnapshot(
+            requireOperatorSessionManager().get(
+                requireIdentifier(request.sessionId, "Operator session"),
+            ),
+        )
+    })
+    ipcMain.handle("operator:send", async (event, input = {}) => {
+        assertRendererControlSender(event)
+        const request = rendererOperatorInput(
+            input,
+            new Set(["sessionId", "text"]),
+        )
+        return operatorSafeValue(await requireOperatorSessionManager().sendMessage(
+            requireIdentifier(request.sessionId, "Operator session"),
+            String(request.text ?? ""),
+        ))
+    })
+    ipcMain.handle("operator:list-artifacts", (event, input = {}) => {
+        assertRendererControlSender(event)
+        const request = rendererOperatorInput(
+            input,
+            new Set(["jobId", "cursor", "limit"]),
+        )
+        return operatorArtifactPage(request)
     })
     ipcMain.handle("workspace:choose", chooseWorkspace)
     ipcMain.handle("runtime:restart", restartRuntime)
@@ -2383,6 +2819,15 @@ function installIpc() {
 async function startEvaluationFromControl(input = {}) {
     const datasetId = requireIdentifier(input.datasetId, "dataset")
     const dataset = store.getDataset(datasetId)
+    if (input.expectedDatasetRevision !== undefined) {
+        const currentSelection = operatorEvaluationSelection(datasetId)
+        if (currentSelection.datasetRevision !== input.expectedDatasetRevision) {
+            throw Object.assign(
+                new Error("The Dataset changed after the Operator Step was approved"),
+                {code: "RESOURCE_CHANGED"},
+            )
+        }
+    }
     const skillReference = dataset.skillReference
     await requireAvailableDatasetSkill(dataset)
     requirePublishedDatasetRubric(dataset)
@@ -2520,19 +2965,27 @@ function normalizeTurnInput(value) {
 
 async function shutdownApplication() {
     controlInvocationsAccepted = false
-    await stopControlPlane()
-    const results = await Promise.allSettled([
-        client?.stop?.() ?? Promise.resolve(),
-        evaluationRunner?.stopAll?.() ?? Promise.resolve(),
-        skillInstallationManager?.stopAll?.() ?? Promise.resolve(),
-    ])
-    for (const result of results) {
-        if (result.status === "rejected") {
-            console.error("Rolling Skill runtime shutdown failed", result.reason)
+    const failures = []
+    const stage = async (label, operation) => {
+        try {
+            await operation()
+        } catch (error) {
+            failures.push(error)
+            console.error(`Rolling Skill ${label} shutdown failed`, error)
         }
     }
-    activityStore?.flush()
-    rawCaseStore?.close()
+    await stage("Operator", () => operatorSessionManager?.stopAll?.())
+    await stage("Evaluation", () => evaluationRunner?.stopAll?.())
+    await stage("Skill installation", () => skillInstallationManager?.stopAll?.())
+    await stage("Chat Runtime", () => client?.stop?.())
+    await stage("control transport", () => stopControlPlane())
+    await stage("Operator store flush", () => operatorJobStore?.flush())
+    await stage("Operator store close", () => operatorJobStore?.close())
+    await stage("activity store flush", () => activityStore?.flush())
+    await stage("Raw Case store close", () => rawCaseStore?.close())
+    if (failures.length > 0) {
+        throw new AggregateError(failures, "Rolling Skill shutdown was incomplete")
+    }
 }
 
 const hasLock = app.requestSingleInstanceLock()
@@ -2629,7 +3082,7 @@ if (!hasLock) {
             onChanged: (update) => send("evaluation:changed", update),
         })
         discoverLocalRuntimes()
-        initializeControlPlane()
+        initializeOperatorRuntime()
         void startControlSocket()
         client = createClient()
         installIpc()

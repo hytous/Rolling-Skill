@@ -646,8 +646,10 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /activityStore\.mergeThreadResponse\(/)
         assert.match(main, /activityStore\?\.flush\(/)
         assert.match(main, /rollingSkillActivityHistory/)
-        assert.match(main, /Promise\.allSettled/)
-        assert.doesNotMatch(main, /Promise\.all\([\s\S]{0,200}\.then\(\(\) => activityStore\?\.flush/)
+        const shutdown = main.slice(main.indexOf("async function shutdownApplication"))
+        assert.match(shutdown, /await stage\("activity store flush"/)
+        assert.ok(shutdown.indexOf("client?.stop") < shutdown.indexOf("activityStore?.flush"))
+        assert.doesNotMatch(shutdown, /Promise\.all(?:Settled)?/)
     })
 
     it("routes high-frequency notifications only to the observed Chat thread", () => {
@@ -682,7 +684,7 @@ describe("desktop main/preload bridge", () => {
         assert.match(preload, /clearThreadObservation:[\s\S]{0,120}runtime:clear-observation/)
     })
 
-    it("constructs one shared control plane after domain dependencies and closes transport first", () => {
+    it("constructs one shared control plane after domain dependencies and closes it after runtimes", () => {
         const main = source("src/main.cjs")
 
         for (const constructor of [
@@ -700,7 +702,7 @@ describe("desktop main/preload bridge", () => {
         assert.equal([...main.matchAll(/createDomainServices\(/g)].length, 1)
 
         const runnerReady = main.indexOf("evaluationRunner = new EvaluationRunner")
-        const domainReady = main.indexOf("initializeControlPlane()", runnerReady)
+        const domainReady = main.indexOf("initializeOperatorRuntime()", runnerReady)
         const socketStart = main.indexOf("startControlSocket()", domainReady)
         assert.ok(runnerReady >= 0 && domainReady > runnerReady && socketStart > domainReady)
 
@@ -712,9 +714,8 @@ describe("desktop main/preload bridge", () => {
         )
         assert.match(shutdown, /controlInvocationsAccepted\s*=\s*false/)
         assert.ok(
-            shutdown.indexOf("await stopControlPlane()") <
-                shutdown.indexOf("client?.stop?.()"),
-            "control transport must close before runtime clients",
+            shutdown.indexOf("client?.stop") < shutdown.indexOf("stopControlPlane()"),
+            "the shared control transport must close after Operator, child and Chat runtimes",
         )
         assert.ok(
             shutdown.indexOf("client?.stop?.()") < shutdown.indexOf("rawCaseStore?.close()"),
@@ -1795,6 +1796,127 @@ describe("desktop main/preload bridge", () => {
             api.startEvaluationRun({datasetId: "dataset-1"}),
             /selected Skill is not installed/u,
         )
+    })
+
+    it("exposes a token-free Operator lifecycle bridge and routes human controls privately", async () => {
+        const {api, calls} = preloadBridge((channel, payload) => {
+            if (channel === "control:invoke") {
+                if (payload.method === "approvals.resolve") {
+                    return {approval: {id: "approval-1", status: "approved"}, execution: {
+                        status: "succeeded",
+                        jobId: "job-1",
+                    }}
+                }
+                return {job: {id: payload.params.jobId, status: payload.method.split(".").at(-1)}}
+            }
+            if (channel === "operator:bootstrap") return {sessions: [], jobs: [], approvals: []}
+            if (channel === "operator:create") return {session: {id: "session-1"}, parentJob: {id: "job-1"}}
+            if (channel === "operator:get") return {session: {id: payload.sessionId}, parentJob: {id: "job-1"}}
+            if (channel === "operator:send") return {queued: true}
+            if (channel === "operator:list-artifacts") {
+                return {artifacts: [{id: "artifact-1"}], nextCursor: null}
+            }
+            throw new Error(`Unexpected Operator channel: ${channel}`)
+        })
+
+        assert.deepEqual(plain(await api.bootstrapOperator()), {sessions: [], jobs: [], approvals: []})
+        assert.deepEqual(plain(await api.createOperatorSession({
+            runtimeId: "runtime-1",
+            objective: "Improve billing",
+            managedSkillBinding: {repositoryId: "repository-1", skillId: "skill-1"},
+        })), {session: {id: "session-1"}, parentJob: {id: "job-1"}})
+        assert.deepEqual(plain(await api.getOperatorSession("session-1")), {
+            session: {id: "session-1"},
+            parentJob: {id: "job-1"},
+        })
+        assert.deepEqual(plain(await api.sendOperatorMessage("session-1", "Continue")), {queued: true})
+        assert.equal((await api.pauseOperatorJob("job-1")).id, "job-1")
+        assert.equal((await api.resumeOperatorJob("job-1")).id, "job-1")
+        assert.equal((await api.stopOperatorJob("job-1")).id, "job-1")
+        assert.equal((await api.resolveOperatorApproval("approval-1", "approve")).approval.id, "approval-1")
+        assert.deepEqual(plain(await api.listOperatorArtifacts("job-1")), {
+            artifacts: [{id: "artifact-1"}],
+            nextCursor: null,
+        })
+
+        for (const name of [
+            "onOperatorChanged",
+            "onOperatorEvent",
+            "onOperatorApproval",
+            "onOperatorArtifact",
+        ]) assert.equal(typeof api[name], "function")
+        for (const call of calls) {
+            assert.doesNotMatch(JSON.stringify(call), /token|socket|executablePath/iu)
+            if (call.channel === "control:invoke") {
+                assert.deepEqual(Object.keys(call.payload).sort(), ["method", "params"])
+            }
+        }
+    })
+
+    it("constructs and shuts down the Operator runtime in dependency order", () => {
+        const main = source("src/main.cjs")
+        const preload = source("src/preload.cjs")
+
+        for (const constructor of ["OperatorJobStore", "OperatorJobEngine", "OperatorSessionManager"]) {
+            assert.equal([...main.matchAll(new RegExp(`new ${constructor}\\(`, "g"))].length, 1)
+        }
+        const initializationStart = main.indexOf("function initializeOperatorRuntime")
+        const initializationEnd = main.indexOf("\nfunction ", initializationStart + 1)
+        const initialization = main.slice(initializationStart, initializationEnd)
+        assert.ok(initializationStart >= 0)
+        assert.ok(initialization.indexOf("new OperatorJobStore") < initialization.indexOf("new OperatorJobEngine"))
+        assert.ok(initialization.indexOf("new OperatorJobEngine") < initialization.indexOf("initializeControlPlane()"))
+        assert.ok(initialization.indexOf("initializeControlPlane()") < initialization.indexOf("new OperatorSessionManager"))
+        assert.match(initialization, /resolveManagedSkillWorkspace/)
+        assert.match(initialization, /workspaceRoot/)
+        assert.match(initialization, /controlPlane/)
+
+        const readyStart = main.indexOf("app.whenReady().then")
+        const readyEnd = main.indexOf("app.on(\"activate\"", readyStart)
+        const ready = main.slice(readyStart, readyEnd)
+        assert.ok(ready.indexOf("new EvaluationRunner") < ready.indexOf("initializeOperatorRuntime()"))
+        assert.ok(ready.indexOf("new SkillInstallationManager") < ready.indexOf("initializeOperatorRuntime()"))
+
+        const shutdownStart = main.indexOf("async function shutdownApplication")
+        const shutdownEnd = main.indexOf("\nconst hasLock", shutdownStart)
+        const shutdown = main.slice(shutdownStart, shutdownEnd)
+        assert.ok(shutdown.indexOf("operatorSessionManager?.stopAll") < shutdown.indexOf("evaluationRunner?.stopAll"))
+        assert.ok(shutdown.indexOf("evaluationRunner?.stopAll") < shutdown.indexOf("skillInstallationManager?.stopAll"))
+        assert.ok(shutdown.indexOf("skillInstallationManager?.stopAll") < shutdown.indexOf("client?.stop"))
+        assert.ok(shutdown.indexOf("client?.stop") < shutdown.indexOf("stopControlPlane()"))
+        assert.ok(shutdown.indexOf("stopControlPlane()") < shutdown.indexOf("operatorJobStore?.close"))
+
+        for (const channel of [
+            "operator:bootstrap",
+            "operator:create",
+            "operator:get",
+            "operator:send",
+            "operator:list-artifacts",
+        ]) assert.match(main, new RegExp(channel))
+        for (const channel of [
+            "operator:bootstrap",
+            "operator:create",
+            "operator:get",
+            "operator:send",
+            "operator:list-artifacts",
+        ]) {
+            const start = main.indexOf(`ipcMain.handle("${channel}"`)
+            const end = main.indexOf("\n    ipcMain.handle", start + 1)
+            assert.ok(start >= 0, `${channel} must be registered`)
+            assert.match(main.slice(start, end > start ? end : main.length), /assertRendererControlSender\(event\)/)
+        }
+        for (const channel of [
+            "operator:changed",
+            "operator:event",
+            "operator:approval",
+            "operator:artifact",
+        ]) {
+            assert.match(main, new RegExp(`send\\(\\"${channel}`))
+            assert.match(preload, new RegExp(channel))
+        }
+        assert.match(main, /operator:\s*operatorBootstrapSnapshot\(\)/)
+        assert.doesNotMatch(initialization, /runtime:notification|captureNotification|activityStore/)
+        assert.doesNotMatch(preload, /ROLLING_SKILL_CONTROL_|capabilityToken|socketPath/)
     })
 
     it("removes migrated legacy IPC handlers while retaining non-contract surfaces", () => {
