@@ -852,7 +852,7 @@ class OperatorSessionManager {
         if (!cleanup) return Promise.resolve()
         if (cleanup.promise) return cleanup.promise
         const required = []
-        if (!cleanup.interruptComplete) {
+        if (!cleanup.jobInterruptComplete) {
             required.push(this.#requiredStopOperation(
                 `interrupt ${control.parentJobId}`,
                 () => (
@@ -868,7 +868,7 @@ class OperatorSessionManager {
                               })
                             : this.#store.getJob(control.parentJobId)
                 ),
-                () => { cleanup.interruptComplete = true },
+                () => { cleanup.jobInterruptComplete = true },
             ))
         }
         if (!cleanup.revokeComplete) {
@@ -881,22 +881,10 @@ class OperatorSessionManager {
                 },
             ))
         }
-        if (!cleanup.clientStopComplete) {
-            required.push(this.#requiredStopOperation(
-                "stop failed Runtime client",
-                () => {
-                    if (typeof control.client?.stop !== "function") {
-                        throw new Error("Operator Runtime client cannot be stopped")
-                    }
-                    return control.client.stop()
-                },
-                () => {
-                    cleanup.clientStopComplete = true
-                    control.clientStopped = true
-                },
-            ))
-        }
-        const operation = Promise.allSettled(required.map((entry) => entry.promise)).then((settled) => {
+        const turnInterruption = this.#turnInterruptionOperation(control, cleanup)
+        if (turnInterruption) required.push(turnInterruption)
+        const operation = (async () => {
+            const settled = await Promise.allSettled(required.map((entry) => entry.promise))
             const failures = settled.flatMap((entry, index) => (
                 entry.status === "rejected"
                     ? [Object.assign(
@@ -905,6 +893,28 @@ class OperatorSessionManager {
                       )]
                     : []
             ))
+            if (cleanup.turnSettled && !cleanup.clientStopComplete) {
+                const clientStop = this.#requiredStopOperation(
+                    "stop failed Runtime client",
+                    () => {
+                        if (typeof control.client?.stop !== "function") {
+                            throw new Error("Operator Runtime client cannot be stopped")
+                        }
+                        return control.client.stop()
+                    },
+                    () => {
+                        cleanup.clientStopComplete = true
+                        control.clientStopped = true
+                    },
+                )
+                const [clientResult] = await Promise.allSettled([clientStop.promise])
+                if (clientResult.status === "rejected") {
+                    failures.push(Object.assign(
+                        new Error(`${clientStop.label}: ${clientResult.reason?.message ?? "failed"}`),
+                        {cause: clientResult.reason},
+                    ))
+                }
+            }
             if (failures.length > 0) {
                 control.phase = control.stopped ? "stopping" : "cleanup_failed"
                 throw new AggregateError(
@@ -916,7 +926,7 @@ class OperatorSessionManager {
             if (this.#controls.get(control.sessionId) === control) {
                 this.#controls.delete(control.sessionId)
             }
-        })
+        })()
         let shared
         shared = operation.finally(() => {
             if (cleanup.promise === shared) cleanup.promise = null
@@ -930,6 +940,7 @@ class OperatorSessionManager {
     #runtimeFailure(control, error) {
         if (control.failureCleanup) return this.#retryRuntimeFailureCleanup(control)
         if (control.stopped) return Promise.resolve()
+        const turnTarget = activeTurnTarget(control)
         const outcomeUnknown = this.#store.listSteps({jobId: control.parentJobId})
             .some((step) => step.status === "running")
         control.controlGeneration += 1
@@ -949,9 +960,11 @@ class OperatorSessionManager {
         this.#detach(control)
         control.failureCleanup = {
             outcomeUnknown,
-            interruptComplete: false,
+            jobInterruptComplete: false,
             revokeComplete: this.#revokedCapabilities.has(control.authority.grant.id),
             clientStopComplete: control.clientStopped,
+            turnTarget,
+            turnSettled: turnTarget === null,
             promise: null,
         }
         return this.#retryRuntimeFailureCleanup(control)
@@ -1598,6 +1611,25 @@ class OperatorSessionManager {
         }
     }
 
+    #turnInterruptionOperation(control, progress) {
+        if (!progress?.turnTarget || progress.turnSettled) return null
+        const {runtimeThreadId, turnId} = progress.turnTarget
+        return this.#requiredStopOperation(
+            "interrupt Runtime turn",
+            async () => {
+                if (typeof control.client?.interruptTurn !== "function") {
+                    throw new Error("Operator Runtime turn cannot be interrupted")
+                }
+                try {
+                    await control.client.interruptTurn(runtimeThreadId, turnId)
+                } catch (error) {
+                    if (!turnInterruptionConverged(error)) throw error
+                }
+            },
+            () => { progress.turnSettled = true },
+        )
+    }
+
     async #performStop(id, session, parent, control) {
         const required = []
         if (control?.failureCleanup) {
@@ -1623,36 +1655,10 @@ class OperatorSessionManager {
                 () => this.#engine.cancel(parent.id),
             ))
         }
-        if (
-            control?.stopProgress?.turnTarget &&
-            !control.stopProgress.turnSettled &&
-            typeof control.client?.interruptTurn === "function"
-        ) {
-            const {runtimeThreadId, turnId} = control.stopProgress.turnTarget
-            required.push(this.#requiredStopOperation(
-                "interrupt Runtime turn",
-                async () => {
-                    try {
-                        await control.client.interruptTurn(runtimeThreadId, turnId)
-                    } catch (error) {
-                        if (!turnInterruptionConverged(error)) throw error
-                    }
-                },
-                () => { control.stopProgress.turnSettled = true },
-            ))
-        }
-        if (control && !control.failureCleanup && !control.clientStopped) {
-            required.push(this.#requiredStopOperation(
-                "stop Runtime client",
-                () => {
-                    if (typeof control.client?.stop !== "function") {
-                        throw new Error("Operator Runtime client cannot be stopped")
-                    }
-                    return control.client.stop()
-                },
-                () => { control.clientStopped = true },
-            ))
-        }
+        const turnInterruption = control?.failureCleanup
+            ? null
+            : this.#turnInterruptionOperation(control, control?.stopProgress)
+        if (turnInterruption) required.push(turnInterruption)
         const resumeFlight = this.#resumeFlights.get(id)
         if (resumeFlight) {
             required.push(this.#requiredStopOperation(
@@ -1670,6 +1676,30 @@ class OperatorSessionManager {
                   )]
                 : []
         ))
+        if (
+            control &&
+            !control.failureCleanup &&
+            control.stopProgress?.turnSettled &&
+            !control.clientStopped
+        ) {
+            const clientStop = this.#requiredStopOperation(
+                "stop Runtime client",
+                () => {
+                    if (typeof control.client?.stop !== "function") {
+                        throw new Error("Operator Runtime client cannot be stopped")
+                    }
+                    return control.client.stop()
+                },
+                () => { control.clientStopped = true },
+            )
+            const [clientResult] = await Promise.allSettled([clientStop.promise])
+            if (clientResult.status === "rejected") {
+                failures.push(Object.assign(
+                    new Error(`${clientStop.label}: ${clientResult.reason?.message ?? "failed"}`),
+                    {cause: clientResult.reason},
+                ))
+            }
+        }
         const refreshed = this.#store.getSession(id)
         const lateCapabilityId = latestCapabilityId(refreshed)
         if (
@@ -1724,9 +1754,10 @@ class OperatorSessionManager {
         if (!parent) throw new Error("Operator parent Job is missing")
         if (control) {
             if (!control.stopProgress) {
+                const turnTarget = activeTurnTarget(control)
                 control.stopProgress = {
-                    turnTarget: activeTurnTarget(control),
-                    turnSettled: false,
+                    turnTarget,
+                    turnSettled: turnTarget === null,
                 }
             }
             control.stopped = true

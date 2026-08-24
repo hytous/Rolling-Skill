@@ -1216,6 +1216,77 @@ describe("OperatorSessionManager", () => {
         assert.equal(context.clients[0].calls.filter((call) => call.method === "stop").length, 1)
     })
 
+    it("keeps an active Runtime client alive until a transient turn-interrupt failure is retried", async () => {
+        let interruptAttempts = 0
+        let stopCalls = 0
+        const context = fixture({
+            clientFactory(_descriptor, options) {
+                const client = new FakeClient(options)
+                client.interruptTurn = async (threadId, turnId) => {
+                    interruptAttempts += 1
+                    client.calls.push({method: "interruptTurn", threadId, turnId})
+                    if (interruptAttempts === 1) throw new Error("temporary interrupt failure")
+                }
+                client.stop = async () => {
+                    stopCalls += 1
+                    client.calls.push({method: "stop"})
+                }
+                return client
+            },
+        })
+        const created = await context.manager.create(createInput())
+
+        await assert.rejects(context.manager.stop(created.session.id), /temporary interrupt failure/iu)
+        assert.equal(interruptAttempts, 1)
+        assert.equal(stopCalls, 0)
+        assert.equal(context.engineCalls.filter((call) => call.method === "cancel").length, 1)
+
+        const stopped = await context.manager.stop(created.session.id)
+        assert.equal(stopped.parentJob.status, "cancelled")
+        assert.equal(interruptAttempts, 2)
+        assert.equal(stopCalls, 1)
+        assert.equal(context.engineCalls.filter((call) => call.method === "cancel").length, 1)
+    })
+
+    it("keeps a failed active Runtime alive until its turn interruption can converge", async () => {
+        let clientCount = 0
+        let oldInterruptAttempts = 0
+        let oldStopCalls = 0
+        const context = fixture({
+            clientFactory(_descriptor, options) {
+                clientCount += 1
+                const client = new FakeClient(options)
+                if (clientCount === 1) {
+                    client.interruptTurn = async (threadId, turnId) => {
+                        oldInterruptAttempts += 1
+                        client.calls.push({method: "interruptTurn", threadId, turnId})
+                        if (oldInterruptAttempts === 1) throw new Error("temporary failure interrupt")
+                    }
+                    client.stop = async () => {
+                        oldStopCalls += 1
+                        client.calls.push({method: "stop"})
+                    }
+                }
+                return client
+            },
+        })
+        const created = await context.manager.create(createInput())
+
+        context.clients[0].emit("runtimeError", new Error("provider failure"))
+        await nextTick()
+        await nextTick()
+
+        assert.equal(context.manager.get(created.session.id).state, "cleanup_failed")
+        assert.equal(oldInterruptAttempts, 1)
+        assert.equal(oldStopCalls, 0)
+
+        const resumed = await context.manager.resume(created.session.id)
+        assert.equal(resumed.state, "idle")
+        assert.equal(oldInterruptAttempts, 2)
+        assert.equal(oldStopCalls, 1)
+        assert.equal(context.clients.length, 2)
+    })
+
     it("retains failed Runtime cleanup and forbids a replacement client until retry succeeds", async () => {
         let clientCount = 0
         let oldStopAttempts = 0
