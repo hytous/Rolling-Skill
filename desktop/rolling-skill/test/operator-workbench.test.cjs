@@ -7,6 +7,7 @@ const {
     artifactDeepLinks,
     buildOperatorSessionRequest,
     createKeyedTranscriptPatcher,
+    createOperatorDomListenerScope,
     createOperatorInitializationGate,
     createOperatorMessageSender,
     createOperatorSurfaceGate,
@@ -925,6 +926,68 @@ describe("Operator workbench state", () => {
 })
 
 describe("Operator workbench coordination", () => {
+    it("atomically cleans failed initialization attempts and retries with one bounded listener set", async () => {
+        for (const failurePhase of ["bootstrap", "hydrate", "catchUp"]) {
+            const listeners = new Map()
+            const listenerCount = () => [...listeners.values()].reduce((total, entries) => total + entries.size, 0)
+            const emit = (kind, payload) => {
+                for (const listener of listeners.get(kind) ?? []) listener(payload)
+            }
+            const ingested = []
+            let attempt = 0
+            let releaseBootstrap
+            let bootstrapGate = new Promise((resolve) => { releaseBootstrap = resolve })
+            const lifecycle = createOperatorInitializationGate({
+                subscribe(kind, listener) {
+                    if (!listeners.has(kind)) listeners.set(kind, new Set())
+                    listeners.get(kind).add(listener)
+                    return () => {
+                        const entries = listeners.get(kind)
+                        entries?.delete(listener)
+                        if (!entries?.size) listeners.delete(kind)
+                    }
+                },
+                async bootstrap() {
+                    attempt += 1
+                    if (failurePhase === "bootstrap" && attempt === 1) throw new Error("bootstrap failed")
+                    return bootstrapGate
+                },
+                hydrate: async () => {
+                    if (failurePhase === "hydrate" && attempt === 1) throw new Error("hydrate failed")
+                },
+                ingest: async (kind, payload) => { ingested.push([kind, payload.index]) },
+                catchUp: async () => {
+                    if (failurePhase === "catchUp" && attempt === 1) throw new Error("catch-up failed")
+                },
+            })
+
+            if (failurePhase !== "bootstrap") releaseBootstrap(summary())
+            const first = lifecycle.initialize()
+            for (let index = 0; index < 300; index += 1) {
+                emit("event", {index})
+            }
+            await assert.rejects(first, new RegExp(`${failurePhase.replace("Up", "-up")} failed`, "iu"))
+            assert.equal(listenerCount(), 0)
+            ingested.length = 0
+
+            bootstrapGate = new Promise((resolve) => { releaseBootstrap = resolve })
+            const second = lifecycle.initialize()
+            assert.equal(listenerCount(), 4)
+            for (let index = 300; index < 600; index += 1) {
+                emit("event", {index})
+            }
+            releaseBootstrap(summary())
+            await second
+
+            assert.equal(attempt, 2)
+            assert.equal(listenerCount(), 4)
+            assert.equal(ingested.length, 256)
+            assert.equal(ingested[0][1], 344)
+            lifecycle.destroy()
+            assert.equal(listenerCount(), 0)
+        }
+    })
+
     it("subscribes before bootstrap, flushes the initialization window, and cleans up on destroy", async () => {
         let releaseBootstrap
         const bootstrapGate = new Promise((resolve) => { releaseBootstrap = resolve })
@@ -1055,6 +1118,66 @@ describe("Operator workbench coordination", () => {
         assert.equal(rootHidden, false)
         assert.equal(reads, 1)
         assert.equal(rebuilds, 2)
+    })
+
+    it("retries a failed show, singleflights concurrent shows, and ignores late recovery after hide", async () => {
+        let rootHidden = true
+        let reads = 0
+        let fail = true
+        let releaseRecovery
+        let recoveryGate = Promise.resolve()
+        const gate = createOperatorSurfaceGate({
+            initialVisible: false,
+            setStateVisible() {},
+            setRootHidden(hidden) { rootHidden = hidden },
+            recover() {
+                reads += 1
+                if (fail) throw new Error("temporary recovery failure")
+                return recoveryGate
+            },
+            render() {},
+        })
+
+        await assert.rejects(gate.setVisible(true), /temporary recovery failure/u)
+        assert.equal(rootHidden, true)
+        fail = false
+        recoveryGate = new Promise((resolve) => { releaseRecovery = resolve })
+        const firstRetry = gate.setVisible(true)
+        const concurrentRetry = gate.setVisible(true)
+        assert.equal(reads, 2)
+        releaseRecovery()
+        assert.equal(await firstRetry, true)
+        assert.equal(await concurrentRetry, true)
+        assert.equal(rootHidden, false)
+
+        await gate.setVisible(false)
+        recoveryGate = new Promise((resolve) => { releaseRecovery = resolve })
+        const lateShow = gate.setVisible(true)
+        await gate.setVisible(false)
+        releaseRecovery()
+        assert.equal(await lateShow, false)
+        assert.equal(rootHidden, true)
+        assert.equal(reads, 3)
+    })
+
+    it("removes every scoped DOM handler on destroy and a replacement fires only once", () => {
+        const target = new EventTarget()
+        const effects = {api: 0, state: 0, dom: 0}
+        const first = createOperatorDomListenerScope()
+        first.listen(target, "operator", () => {
+            effects.api += 1
+            effects.state += 1
+            effects.dom += 1
+        })
+        first.destroy()
+        target.dispatchEvent(new Event("operator"))
+        assert.deepEqual(effects, {api: 0, state: 0, dom: 0})
+
+        const replacement = createOperatorDomListenerScope()
+        replacement.listen(target, "operator", () => { effects.api += 1 })
+        target.dispatchEvent(new Event("operator"))
+        assert.deepEqual(effects, {api: 1, state: 0, dom: 0})
+        replacement.destroy()
     })
 })
 

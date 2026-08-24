@@ -739,6 +739,9 @@
     }
 
     function createOperatorInitializationGate(options = {}) {
+        const bufferLimit = Number.isSafeInteger(options.bufferLimit) && options.bufferLimit > 0
+            ? options.bufferLimit
+            : 256
         const kinds = ["changed", "event", "approval", "artifact"]
         const subscribe = options.subscribe ?? (() => () => {})
         const bootstrap = options.bootstrap ?? (async () => ({}))
@@ -757,6 +760,26 @@
         let initializePromise = null
         let liveTail = Promise.resolve()
 
+        function unsubscribeAll() {
+            for (const unsubscribe of unsubscribers.splice(0)) {
+                try {
+                    unsubscribe()
+                } catch (error) {
+                    if (!destroyed) onError(error)
+                }
+            }
+        }
+
+        function resetAttempt(expectedEpoch) {
+            if (!current(expectedEpoch)) return
+            ready = false
+            buffered.length = 0
+            epoch += 1
+            initializePromise = null
+            liveTail = Promise.resolve()
+            unsubscribeAll()
+        }
+
         function current(expectedEpoch) {
             return !destroyed && expectedEpoch === epoch
         }
@@ -773,42 +796,55 @@
             if (destroyed) return Promise.resolve()
             if (initializePromise) return initializePromise
             const expectedEpoch = epoch
-            for (const kind of kinds) {
-                const unsubscribe = subscribe(kind, (payload) => {
-                    if (!current(expectedEpoch)) return
-                    if (!ready) buffered.push({kind, payload})
-                    else queueLive(kind, payload, expectedEpoch)
-                })
-                if (typeof unsubscribe === "function") unsubscribers.push(unsubscribe)
+            try {
+                for (const kind of kinds) {
+                    const unsubscribe = subscribe(kind, (payload) => {
+                        if (!current(expectedEpoch)) return
+                        if (!ready) {
+                            if (buffered.length >= bufferLimit) buffered.shift()
+                            buffered.push({kind, payload})
+                        } else queueLive(kind, payload, expectedEpoch)
+                    })
+                    if (typeof unsubscribe === "function") unsubscribers.push(unsubscribe)
+                }
+            } catch (error) {
+                resetAttempt(expectedEpoch)
+                return Promise.reject(error)
             }
-            initializePromise = (async () => {
-                const page = initial ?? await bootstrap()
-                if (!current(expectedEpoch)) return
-                await applyBootstrap(page)
-                if (!current(expectedEpoch)) return
-                await hydrate(page)
-                if (!current(expectedEpoch)) return
+            const request = Promise.resolve().then(async () => {
+                try {
+                    const page = initial ?? await bootstrap()
+                    if (!current(expectedEpoch)) return
+                    await applyBootstrap(page)
+                    if (!current(expectedEpoch)) return
+                    await hydrate(page)
+                    if (!current(expectedEpoch)) return
 
-                const initializationWindow = buffered.splice(0)
-                for (const notification of initializationWindow) {
-                    await ingest(notification.kind, notification.payload)
-                    if (!current(expectedEpoch)) return
-                }
-                if (initializationWindow.length) {
-                    await catchUp()
-                    if (!current(expectedEpoch)) return
-                    await afterCatchUp()
-                    if (!current(expectedEpoch)) return
-                }
+                    const initializationWindow = buffered.splice(0)
+                    for (const notification of initializationWindow) {
+                        await ingest(notification.kind, notification.payload)
+                        if (!current(expectedEpoch)) return
+                    }
+                    if (initializationWindow.length) {
+                        await catchUp()
+                        if (!current(expectedEpoch)) return
+                        await afterCatchUp()
+                        if (!current(expectedEpoch)) return
+                    }
 
-                ready = true
-                for (const notification of buffered.splice(0)) {
-                    queueLive(notification.kind, notification.payload, expectedEpoch)
+                    ready = true
+                    for (const notification of buffered.splice(0)) {
+                        queueLive(notification.kind, notification.payload, expectedEpoch)
+                    }
+                    await liveTail
+                    if (current(expectedEpoch)) await onReady()
+                } catch (error) {
+                    resetAttempt(expectedEpoch)
+                    throw error
                 }
-                await liveTail
-                if (current(expectedEpoch)) await onReady()
-            })()
-            return initializePromise
+            })
+            initializePromise = request
+            return request
         }
 
         function destroy() {
@@ -817,7 +853,8 @@
             ready = false
             epoch += 1
             buffered.length = 0
-            for (const unsubscribe of unsubscribers.splice(0)) unsubscribe()
+            initializePromise = null
+            unsubscribeAll()
         }
 
         return {initialize, destroy}
@@ -898,6 +935,7 @@
         let catalogs = null
         let catalogKey = null
         let catalogsDirty = false
+        let recovery = null
 
         function setCatalogs(next) {
             if (destroyed) return false
@@ -913,28 +951,45 @@
             return true
         }
 
-        async function setVisible(nextVisible) {
-            if (destroyed) return false
+        function setVisible(nextVisible) {
+            if (destroyed) return Promise.resolve(false)
             const next = nextVisible === true
-            if (next === visible) return false
-            visible = next
+            if (!next) {
+                if (!visible && !shown) return Promise.resolve(false)
+                visible = false
+                shown = false
+                epoch += 1
+                setStateVisible(false)
+                setRootHidden(true)
+                return Promise.resolve(true)
+            }
+            if (visible && shown) return Promise.resolve(false)
+            if (visible && recovery?.epoch === epoch) return recovery.promise
+            if (!visible) {
+                visible = true
+                setStateVisible(true)
+            }
             shown = false
             const expectedEpoch = ++epoch
-            setStateVisible(next)
-            if (!next) {
-                setRootHidden(true)
-                return true
-            }
-            await recover()
-            if (destroyed || expectedEpoch !== epoch || !visible) return false
-            if (catalogsDirty) {
-                applyCatalogs(catalogs)
-                catalogsDirty = false
-            }
-            shown = true
-            setRootHidden(false)
-            render()
-            return true
+            const attempt = {epoch: expectedEpoch, promise: null}
+            recovery = attempt
+            attempt.promise = (async () => {
+                try {
+                    await recover()
+                    if (destroyed || expectedEpoch !== epoch || !visible) return false
+                    if (catalogsDirty) {
+                        applyCatalogs(catalogs)
+                        catalogsDirty = false
+                    }
+                    shown = true
+                    setRootHidden(false)
+                    render()
+                    return true
+                } finally {
+                    if (recovery === attempt) recovery = null
+                }
+            })()
+            return attempt.promise
         }
 
         return {
@@ -947,6 +1002,36 @@
                 epoch += 1
             },
         }
+    }
+
+    function createOperatorDomListenerScope() {
+        const registrations = []
+        let destroyed = false
+
+        function listen(target, type, listener, options) {
+            if (destroyed) return () => {}
+            const guarded = (event) => {
+                if (!destroyed) listener(event)
+            }
+            target.addEventListener(type, guarded, options)
+            const registration = {target, type, guarded, options}
+            registrations.push(registration)
+            return () => {
+                const index = registrations.indexOf(registration)
+                if (index >= 0) registrations.splice(index, 1)
+                target.removeEventListener(type, guarded, options)
+            }
+        }
+
+        function destroy() {
+            if (destroyed) return
+            destroyed = true
+            for (const {target, type, guarded, options} of registrations.splice(0)) {
+                target.removeEventListener(type, guarded, options)
+            }
+        }
+
+        return {listen, destroy}
     }
 
     const OPERATOR_ACTIONS = Object.freeze([
@@ -1130,6 +1215,7 @@
         let destroyed = false
         let creating = false
         let activeRenderedJobId = null
+        const domEvents = createOperatorDomListenerScope()
 
         const state = createOperatorWorkbenchState({
             readSummaryPage: (cursor, limit) => api.readOperatorSummaryPage(cursor, limit),
@@ -1483,7 +1569,9 @@
                             button.type = "button"
                             button.dataset.operatorEntityKind = link.kind
                             button.dataset.operatorEntityId = link.id
-                            button.addEventListener("click", () => onSelectEntity(link.kind, link.id, artifact.metadata ?? {}))
+                            domEvents.listen(button, "click", () => (
+                                onSelectEntity(link.kind, link.id, artifact.metadata ?? {})
+                            ))
                             actions.append(button)
                         }
                         card.append(actions)
@@ -1510,14 +1598,14 @@
                             const button = createElement(document_, "button", decision === "approve" ? "primary" : "", label)
                             button.type = "button"
                             button.dataset.operatorApprovalDecision = decision
-                            button.addEventListener("click", () => void resolveApproval(approval.id, decision))
+                            domEvents.listen(button, "click", () => void resolveApproval(approval.id, decision))
                             actions.append(button)
                         }
                         if (pending.length > 1) {
                             const approveJob = createElement(document_, "button", "", "Approve current Job")
                             approveJob.type = "button"
                             approveJob.dataset.operatorApproveJob = snapshot.job.id
-                            approveJob.addEventListener("click", () => void approveCurrentJob(snapshot.job.id))
+                            domEvents.listen(approveJob, "click", () => void approveCurrentJob(snapshot.job.id))
                             actions.append(approveJob)
                         }
                         card.append(actions)
@@ -1540,7 +1628,7 @@
                 const button = createElement(document_, "button", "operator-control-button", label)
                 button.type = "button"
                 button.dataset.operatorJobAction = action
-                button.addEventListener("click", () => void controlJob(snapshot.job.id, action))
+                domEvents.listen(button, "click", () => void controlJob(snapshot.job.id, action))
                 selectors.sessionActions.append(button)
             }
         }
@@ -1606,11 +1694,12 @@
                     patchActiveChrome({restoreView: true})
                 }
             } catch (error) {
-                onError(error)
+                if (!destroyed) onError(error)
             }
         }
 
         async function controlJob(jobId, action) {
+            if (destroyed) return
             const method = {
                 pause: "pauseOperatorJob",
                 resume: "resumeOperatorJob",
@@ -1619,30 +1708,34 @@
             if (!method || typeof api[method] !== "function") return
             try {
                 const job = await api[method](jobId)
+                if (destroyed) return
                 await state.ingest("changed", {
                     generation: state.generation,
                     revision: state.revision,
                     job,
                 })
             } catch (error) {
-                onError(error)
+                if (!destroyed) onError(error)
             }
         }
 
         async function resolveApproval(approvalId, decision) {
+            if (destroyed) return
             try {
                 const result = await api.resolveOperatorApproval(approvalId, decision)
+                if (destroyed) return
                 await state.ingest("approval", {
                     generation: state.generation,
                     revision: state.revision,
                     approval: result?.approval,
                 })
             } catch (error) {
-                onError(error)
+                if (!destroyed) onError(error)
             }
         }
 
         async function approveCurrentJob(jobId) {
+            if (destroyed) return
             const snapshot = state.getSnapshot(jobId)
             if (!snapshot) return
             for (const approval of snapshot.approvals.filter((entry) => entry.status === "pending")) {
@@ -1655,11 +1748,12 @@
             try {
                 await state.ingest(kind, envelope)
             } catch (error) {
-                onError(error)
+                if (!destroyed) onError(error)
             }
         }
 
         async function createSession(event) {
+            if (destroyed) return
             event.preventDefault()
             selectors.setupError.textContent = ""
             selectors.setupError.classList.add("hidden")
@@ -1685,20 +1779,24 @@
                     modelsByRuntime,
                 })
                 const result = await api.createOperatorSession(request)
+                if (destroyed) return
                 await state.ingest("changed", {
                     generation: state.generation,
                     revision: state.revision,
                     session: result.session,
                 })
+                if (destroyed) return
                 await state.ingest("changed", {
                     generation: state.generation,
                     revision: state.revision,
                     job: result.parentJob,
                 })
+                if (destroyed) return
                 selectors.setup.reset()
                 renderSetupCatalogs()
                 await activateSession(result.session.id)
             } catch (error) {
+                if (destroyed) return
                 selectors.setupError.textContent = error?.message ?? String(error)
                 selectors.setupError.classList.remove("hidden")
             }
@@ -1754,32 +1852,37 @@
             initializationGate.destroy()
             surfaceGate.destroy()
             messageSender.destroy()
+            domEvents.destroy()
             state.destroy()
         }
 
-        selectors.jobList.addEventListener("click", (event) => {
+        domEvents.listen(selectors.jobList, "click", (event) => {
             const button = event.target.closest("[data-operator-job-id]")
             const snapshot = button ? state.getSnapshot(button.dataset.operatorJobId) : null
             if (snapshot?.session?.id) void activateSession(snapshot.session.id)
         })
-        selectors.newJob.addEventListener("click", () => {
+        domEvents.listen(selectors.newJob, "click", () => {
+            if (destroyed) return
             saveActiveView()
             creating = true
             patchJobList()
             patchActiveChrome()
             selectors.setup.elements.objective.focus()
         })
-        selectors.runtime.addEventListener("change", () => {
+        domEvents.listen(selectors.runtime, "change", () => {
+            if (destroyed) return
             renderSetupCatalogs()
             void loadRuntimeModels(selectors.runtime.value, true)
         })
-        selectors.model.addEventListener("change", renderEfforts)
-        selectors.setup.addEventListener("submit", (event) => { void createSession(event) })
-        selectors.composer.addEventListener("submit", (event) => { void sendMessage(event) })
-        selectors.composerInput.addEventListener("input", () => {
+        domEvents.listen(selectors.model, "change", () => {
+            if (!destroyed) renderEfforts()
+        })
+        domEvents.listen(selectors.setup, "submit", (event) => { void createSession(event) })
+        domEvents.listen(selectors.composer, "submit", (event) => { void sendMessage(event) })
+        domEvents.listen(selectors.composerInput, "input", () => {
             if (state.activeJobId) state.setViewState(state.activeJobId, {draft: selectors.composerInput.value})
         })
-        selectors.transcript.addEventListener("scroll", () => {
+        domEvents.listen(selectors.transcript, "scroll", () => {
             if (state.activeJobId) state.setViewState(state.activeJobId, {scrollTop: selectors.transcript.scrollTop})
         }, {passive: true})
 
@@ -1804,6 +1907,7 @@
         artifactDeepLinks,
         buildOperatorSessionRequest,
         createKeyedTranscriptPatcher,
+        createOperatorDomListenerScope,
         createOperatorInitializationGate,
         createOperatorMessageSender,
         createOperatorSurfaceGate,
