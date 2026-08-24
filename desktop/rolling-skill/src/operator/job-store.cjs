@@ -1067,6 +1067,23 @@ function publicJobSummary(job) {
     })
 }
 
+function publicStepSummary(step) {
+    return copy({
+        id: step.id,
+        jobId: step.jobId,
+        sessionId: step.sessionId,
+        method: step.method,
+        status: step.status,
+        outputArtifactIds: step.outputArtifactIds,
+        attempt: step.attempt,
+        error: step.error,
+        createdAt: step.createdAt,
+        updatedAt: step.updatedAt,
+        startedAt: step.startedAt,
+        completedAt: step.completedAt,
+    })
+}
+
 function publicApprovalSummary(approval) {
     return copy({
         id: approval.id,
@@ -1088,6 +1105,77 @@ function publicApprovalSummary(approval) {
 
 function publicEvent(event) {
     return copy({...event.payload, id: event.id, jobId: event.jobId, sequence: event.sequence, kind: event.kind, occurredAt: event.occurredAt})
+}
+
+function encodeSummaryCursor(revision, offset) {
+    return Buffer.from(`v1:${revision}:${offset}`, "utf8").toString("base64url")
+}
+
+function decodeSummaryCursor(cursor) {
+    const encoded = canonicalText(cursor, "Operator summary cursor", 200)
+    if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) throw new Error("Operator summary cursor is invalid")
+    const decoded = Buffer.from(encoded, "base64url").toString("utf8")
+    const match = /^v1:(0|[1-9]\d*):(0|[1-9]\d*)$/u.exec(decoded)
+    if (!match || encodeSummaryCursor(Number(match[1]), Number(match[2])) !== encoded) {
+        throw new Error("Operator summary cursor is invalid")
+    }
+    const revision = Number(match[1])
+    const offset = Number(match[2])
+    if (!Number.isSafeInteger(revision) || !Number.isSafeInteger(offset)) {
+        throw new Error("Operator summary cursor is invalid")
+    }
+    return {revision, offset}
+}
+
+function operatorSummaryRecords(state) {
+    const records = []
+    const activeJobs = state.jobs.filter((job) => !TERMINAL_JOB_STATUSES.has(job.status))
+    const activeJobIds = new Set(activeJobs.map((job) => job.id))
+    const activeSessionIds = new Set(activeJobs.map((job) => job.sessionId))
+    const push = (kind, value) => records.push({kind, value})
+    const recentFirst = (values, timestamp) => values
+        .map((value, index) => ({value, index}))
+        .sort((left, right) => (
+            String(timestamp(right.value)).localeCompare(String(timestamp(left.value))) ||
+            right.index - left.index
+        ))
+        .map(({value}) => value)
+
+    for (const job of activeJobs) push("jobs", job)
+    for (const session of state.sessions) {
+        if (activeSessionIds.has(session.id)) push("sessions", session)
+    }
+    for (const approval of state.approvals) {
+        if (approval.status === "pending") push("approvals", approval)
+    }
+    for (const step of state.steps) {
+        if (activeJobIds.has(step.jobId)) push("steps", step)
+    }
+    for (const job of recentFirst(
+        state.jobs.filter((entry) => TERMINAL_JOB_STATUSES.has(entry.status)),
+        (entry) => entry.updatedAt,
+    )) {
+        push("jobs", job)
+    }
+    for (const session of recentFirst(
+        state.sessions.filter((entry) => !activeSessionIds.has(entry.id)),
+        (entry) => entry.updatedAt,
+    )) {
+        push("sessions", session)
+    }
+    for (const approval of recentFirst(
+        state.approvals.filter((entry) => entry.status !== "pending"),
+        (entry) => entry.resolvedAt ?? entry.createdAt,
+    )) {
+        push("approvals", approval)
+    }
+    for (const step of recentFirst(
+        state.steps.filter((entry) => !activeJobIds.has(entry.jobId)),
+        (entry) => entry.updatedAt,
+    )) {
+        push("steps", step)
+    }
+    return records
 }
 
 const PATH_BACKENDS = new Map()
@@ -1246,37 +1334,52 @@ class OperatorJobStore {
         }
     }
 
-    readSummary({limit = 200} = {}) {
+    readSummaryPage({cursor = null, limit = 200} = {}) {
         integer(limit, "Operator bootstrap summary limit", {
             minimum: 1,
             maximum: MAX_BOOTSTRAP_SUMMARY_ITEMS,
         })
-        const recent = (values, project) => values
-            .slice(Math.max(0, values.length - limit))
-            .map(project)
-        const approvals = []
-        const selectedApprovalIds = new Set()
-        for (let index = this.#state.approvals.length - 1; index >= 0 && approvals.length < limit; index -= 1) {
-            const approval = this.#state.approvals[index]
-            if (approval.status !== "pending") continue
-            approvals.push(publicApprovalSummary(approval))
-            selectedApprovalIds.add(approval.id)
+        const revision = this.revision
+        let offset = 0
+        if (cursor !== null) {
+            const decoded = decodeSummaryCursor(cursor)
+            if (decoded.revision !== revision) {
+                throw Object.assign(
+                    new Error("Operator summary changed while it was being read"),
+                    {code: "OPERATOR_SNAPSHOT_CHANGED"},
+                )
+            }
+            offset = decoded.offset
         }
-        for (let index = this.#state.approvals.length - 1; index >= 0 && approvals.length < limit; index -= 1) {
-            const approval = this.#state.approvals[index]
-            if (selectedApprovalIds.has(approval.id)) continue
-            approvals.push(publicApprovalSummary(approval))
+        const records = operatorSummaryRecords(this.#state)
+        if (offset > records.length) throw new Error("Operator summary cursor is invalid")
+        const output = {sessions: [], jobs: [], steps: [], approvals: []}
+        const projectors = {
+            sessions: publicSessionSummary,
+            jobs: publicJobSummary,
+            steps: publicStepSummary,
+            approvals: publicApprovalSummary,
+        }
+        const end = Math.min(records.length, offset + limit)
+        for (const record of records.slice(offset, end)) {
+            output[record.kind].push(projectors[record.kind](record.value))
         }
         return {
-            sessions: recent(this.#state.sessions, publicSessionSummary),
-            jobs: recent(this.#state.jobs, publicJobSummary),
-            approvals,
+            revision,
+            ...output,
             totals: {
                 sessions: this.#state.sessions.length,
                 jobs: this.#state.jobs.length,
+                steps: this.#state.steps.length,
                 approvals: this.#state.approvals.length,
             },
+            truncated: end < records.length,
+            nextCursor: end < records.length ? encodeSummaryCursor(revision, end) : null,
         }
+    }
+
+    readSummary(options = {}) {
+        return this.readSummaryPage(options)
     }
 
     flush() {

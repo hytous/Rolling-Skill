@@ -96,6 +96,25 @@ function pathToStatus(store, jobId, status) {
     for (const next of paths[status]) store.transitionJob(jobId, next)
 }
 
+function collectSummaryPages(store, {limit = 2} = {}) {
+    const combined = {
+        sessions: [],
+        jobs: [],
+        steps: [],
+        approvals: [],
+    }
+    let cursor = null
+    let revision = null
+    do {
+        const page = store.readSummaryPage({cursor, limit})
+        revision ??= page.revision
+        assert.equal(page.revision, revision)
+        for (const key of Object.keys(combined)) combined[key].push(...page[key])
+        cursor = page.nextCursor
+    } while (cursor !== null)
+    return {...combined, revision}
+}
+
 function rewriteRegistry(path, mutate) {
     const registry = JSON.parse(readFileSync(path, "utf8"))
     mutate(registry)
@@ -111,10 +130,11 @@ function assertRegistryCorruptionRejected(setup, mutate, pattern = /invalid|unsu
 }
 
 describe("Operator Job store", () => {
-    it("reads a bounded bootstrap summary without copying transcript, event, or artifact bodies", () => {
+    it("prioritizes active Jobs and exposes revision-bound bounded summary pages", () => {
         const {store} = fixture()
         const first = createSession(store)
         const firstJob = createJob(store, first.id)
+        store.transitionJob(firstJob.id, "running")
         for (let index = 0; index < 20; index += 1) {
             store.appendSessionTranscript(first.id, {
                 kind: "message",
@@ -130,18 +150,69 @@ describe("Operator Job store", () => {
         })
         const second = createSession(store, {capabilityId: "grant-2"})
         const secondJob = createJob(store, second.id)
+        store.transitionJob(secondJob.id, "running")
+        store.transitionJob(secondJob.id, "succeeded")
 
-        const summary = store.readSummary({limit: 1})
+        const summary = store.readSummaryPage({limit: 1})
 
-        assert.deepEqual(summary.totals, {sessions: 2, jobs: 2, approvals: 0})
-        assert.equal(summary.sessions.length, 1)
-        assert.equal(summary.sessions[0].id, second.id)
-        assert.equal(Object.hasOwn(summary.sessions[0], "transcript"), false)
-        assert.deepEqual(summary.jobs.map((job) => job.id), [secondJob.id])
+        assert.deepEqual(summary.totals, {sessions: 2, jobs: 2, steps: 0, approvals: 0})
+        assert.equal(summary.revision, store.revision)
+        assert.equal(summary.truncated, true)
+        assert.equal(typeof summary.nextCursor, "string")
+        assert.deepEqual(summary.jobs.map((job) => job.id), [firstJob.id])
+        assert.deepEqual(summary.sessions, [])
         assert.deepEqual(summary.approvals, [])
         assert.doesNotMatch(JSON.stringify(summary), /large transcript|sensitive artifact body/iu)
-        assert.throws(() => store.readSummary({limit: 0}), /summary.*limit/iu)
-        assert.throws(() => store.readSummary({limit: 1_001}), /summary.*limit/iu)
+
+        const all = collectSummaryPages(store, {limit: 1})
+        assert.deepEqual(new Set(all.jobs.map((job) => job.id)), new Set([firstJob.id, secondJob.id]))
+        assert.deepEqual(new Set(all.sessions.map((session) => session.id)), new Set([first.id, second.id]))
+        assert.equal(Object.hasOwn(all.sessions[0], "transcript"), false)
+        assert.doesNotMatch(JSON.stringify(all), /large transcript|sensitive artifact body/iu)
+        assert.throws(() => store.readSummaryPage({limit: 0}), /summary.*limit/iu)
+        assert.throws(() => store.readSummaryPage({limit: 1_001}), /summary.*limit/iu)
+    })
+
+    it("pages every active Job before recent terminal records and rejects a stale cursor", () => {
+        const {store} = fixture()
+        const session = createSession(store)
+        const activeJobs = ["early", "middle", "late"].map((objective) => {
+            const job = createJob(store, session.id, {objective})
+            store.transitionJob(job.id, "running")
+            return job
+        })
+        const terminal = createJob(store, session.id, {objective: "newest terminal"})
+        store.transitionJob(terminal.id, "running")
+        store.transitionJob(terminal.id, "succeeded")
+
+        const first = store.readSummaryPage({limit: 2})
+        const second = store.readSummaryPage({cursor: first.nextCursor, limit: 2})
+        assert.deepEqual(first.jobs.map((job) => job.id), activeJobs.slice(0, 2).map((job) => job.id))
+        assert.deepEqual(second.jobs.map((job) => job.id), [activeJobs[2].id])
+        assert.equal(second.sessions[0].id, session.id)
+        assert.equal(first.truncated, true)
+
+        const staleCursor = second.nextCursor
+        createJob(store, session.id, {objective: "revision changed"})
+        assert.throws(
+            () => store.readSummaryPage({cursor: staleCursor, limit: 2}),
+            (error) => error?.code === "OPERATOR_SNAPSHOT_CHANGED",
+        )
+    })
+
+    it("fills remaining summary capacity by terminal update time instead of insertion order", async () => {
+        const {store} = fixture()
+        const session = createSession(store)
+        const createdFirst = createJob(store, session.id, {objective: "finishes last"})
+        const createdSecond = createJob(store, session.id, {objective: "finishes first"})
+        store.transitionJob(createdSecond.id, "running")
+        store.transitionJob(createdSecond.id, "succeeded")
+        await new Promise((resolve_) => setTimeout(resolve_, 2))
+        store.transitionJob(createdFirst.id, "running")
+        store.transitionJob(createdFirst.id, "succeeded")
+
+        const page = store.readSummaryPage({limit: 1})
+        assert.deepEqual(page.jobs.map((job) => job.id), [createdFirst.id])
     })
 
     it("coordinates every live Store for one path without stale snapshot overwrite", () => {
@@ -557,6 +628,97 @@ describe("Operator Job store", () => {
         assert.equal(store.getApproval(approval.id).status, "rejected")
         assert.equal(store.listEvents(job.id).at(-1).kind, "recovery_required")
         assert.throws(() => store.transitionJob(interrupted.id, "cancelling"), /transition/iu)
+    })
+
+    it("reconstructs every Job, Step, and Approval changed by an atomic tree cancellation", () => {
+        const {store} = fixture()
+        const session = createSession(store)
+        const parent = createJob(store, session.id, {objective: "parent"})
+        store.transitionJob(parent.id, "running")
+        const parentStep = store.createStep(parent.id, {
+            method: "datasets.get",
+            params: {datasetId: "dataset-1"},
+            idempotencyKey: "parent-read",
+        })
+        store.transitionStep(parentStep.id, "running")
+        const child = createJob(store, session.id, {
+            parentJobId: parent.id,
+            type: "release",
+            objective: "child",
+        })
+        store.transitionJob(child.id, "running")
+        const childStep = store.createStep(child.id, {
+            method: "skills.release",
+            params: {skillId: "skill-1"},
+            reservation: {},
+            idempotencyKey: "child-release",
+        })
+        store.transitionStep(childStep.id, "waiting_approval")
+        store.transitionJob(child.id, "waiting_approval")
+        const approval = store.createApproval(child.id, {
+            stepId: childStep.id,
+            action: "skills.release",
+            scope: {skillIds: ["skill-1"]},
+            proposedMutation: {
+                method: "skills.release",
+                params: {skillId: "skill-1"},
+                reservation: {},
+                idempotencyKey: "child-release",
+            },
+            risk: "release",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        })
+
+        const beforeCancellationRevision = store.revision
+        store.beginCancellation(parent.id)
+        store.cancelJobTree(parent.id)
+        const recovered = collectSummaryPages(store, {limit: 1})
+        const jobs = new Map(recovered.jobs.map((job) => [job.id, job]))
+        const steps = new Map(recovered.steps.map((step) => [step.id, step]))
+        const approvals = new Map(recovered.approvals.map((entry) => [entry.id, entry]))
+
+        assert.equal(jobs.get(parent.id).status, "cancelled")
+        assert.equal(jobs.get(child.id).status, "cancelled")
+        assert.equal(steps.get(parentStep.id).status, "cancelled")
+        assert.equal(steps.get(childStep.id).status, "cancelled")
+        assert.equal(approvals.get(approval.id).status, "rejected")
+        assert.equal(recovered.revision, beforeCancellationRevision + 2)
+    })
+
+    it("reconstructs a closed Approval after its waiting Job leaves the approval state", () => {
+        const {store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        store.transitionJob(job.id, "running")
+        const step = store.createStep(job.id, {
+            method: "skills.release",
+            params: {skillId: "skill-1"},
+            reservation: {},
+            idempotencyKey: "pause-release",
+        })
+        store.transitionStep(step.id, "waiting_approval")
+        store.transitionJob(job.id, "waiting_approval")
+        const approval = store.createApproval(job.id, {
+            stepId: step.id,
+            action: "skills.release",
+            scope: {skillIds: ["skill-1"]},
+            proposedMutation: {
+                method: "skills.release",
+                params: {skillId: "skill-1"},
+                reservation: {},
+                idempotencyKey: "pause-release",
+            },
+            risk: "release",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        })
+
+        store.transitionJob(job.id, "paused")
+        const recovered = collectSummaryPages(store, {limit: 1})
+        const restored = recovered.approvals.find((entry) => entry.id === approval.id)
+        assert.equal(restored.status, "rejected")
+        assert.equal(restored.decision, "reject")
+        assert.equal(restored.decisionScope, "job_transition")
+        assert.equal(typeof restored.resolvedAt, "string")
     })
 
     it("links parent and child Jobs and assigns immutable per-Job event sequences", () => {

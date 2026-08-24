@@ -1809,7 +1809,26 @@ describe("desktop main/preload bridge", () => {
                 }
                 return {job: {id: payload.params.jobId, status: payload.method.split(".").at(-1)}}
             }
-            if (channel === "operator:bootstrap") return {sessions: [], jobs: [], approvals: []}
+            if (channel === "operator:bootstrap") return {
+                revision: 7,
+                sessions: [],
+                jobs: [],
+                steps: [],
+                approvals: [],
+                totals: {sessions: 0, jobs: 0, steps: 0, approvals: 0},
+                truncated: true,
+                nextCursor: "page-2",
+            }
+            if (channel === "operator:summary-page") return {
+                revision: 7,
+                sessions: [],
+                jobs: [{id: "job-2", status: "running"}],
+                steps: [],
+                approvals: [],
+                totals: {sessions: 0, jobs: 1, steps: 0, approvals: 0},
+                truncated: false,
+                nextCursor: null,
+            }
             if (channel === "operator:create") return {session: {id: "session-1"}, parentJob: {id: "job-1"}}
             if (channel === "operator:get") return {session: {id: payload.sessionId}, parentJob: {id: "job-1"}}
             if (channel === "operator:send") return {queued: true}
@@ -1819,7 +1838,17 @@ describe("desktop main/preload bridge", () => {
             throw new Error(`Unexpected Operator channel: ${channel}`)
         })
 
-        assert.deepEqual(plain(await api.bootstrapOperator()), {sessions: [], jobs: [], approvals: []})
+        assert.equal((await api.bootstrapOperator()).revision, 7)
+        assert.deepEqual(plain(await api.readOperatorSummaryPage("page-2", 50)), {
+            revision: 7,
+            sessions: [],
+            jobs: [{id: "job-2", status: "running"}],
+            steps: [],
+            approvals: [],
+            totals: {sessions: 0, jobs: 1, steps: 0, approvals: 0},
+            truncated: false,
+            nextCursor: null,
+        })
         assert.deepEqual(plain(await api.createOperatorSession({
             runtimeId: "runtime-1",
             objective: "Improve billing",
@@ -1964,6 +1993,92 @@ describe("desktop main/preload bridge", () => {
         assert.deepEqual(store.createJob(), job)
     })
 
+    it("signals a revision gap after one missed notification and serves bounded catch-up pages", () => {
+        let revision = 20
+        const jobs = [{
+            id: "job-1",
+            sessionId: "session-1",
+            parentJobId: null,
+            type: "operator",
+            objective: "Improve the Skill",
+            budget: {},
+            status: "running",
+            children: [],
+            artifactIds: [],
+            approvalIds: [],
+            createdAt: "2026-08-24T00:00:00.000Z",
+            updatedAt: "2026-08-24T00:00:00.000Z",
+        }]
+        const store = {
+            get revision() { return revision },
+            readSummaryPage({cursor, limit}) {
+                assert.equal(cursor, null)
+                assert.equal(limit, 50)
+                return {
+                    revision,
+                    sessions: [],
+                    jobs: structuredClone(jobs),
+                    steps: [],
+                    approvals: [],
+                    totals: {sessions: 0, jobs: jobs.length, steps: 0, approvals: 0},
+                    truncated: false,
+                    nextCursor: null,
+                }
+            },
+        }
+        for (const method of [
+            "createSession",
+            "createJob",
+            "createStep",
+            "transitionStep",
+            "transitionJob",
+            "beginCancellation",
+            "interruptJob",
+            "cancelJobTree",
+            "appendSessionTranscript",
+            "appendEvent",
+            "createApproval",
+            "resolveApproval",
+            "createArtifact",
+        ]) store[method] = () => {
+            revision += 1
+            jobs[0].updatedAt = `2026-08-24T00:00:${revision}.000Z`
+            return structuredClone(jobs[0])
+        }
+        const delivered = []
+        let dropNextChanged = true
+        const context = mainFunctionContext("operatorSafeValue", "initializeControlPlane", {
+            OPERATOR_SAFE_ARRAY_LIMIT: 10_000,
+            OPERATOR_SAFE_TEXT_LIMIT: 32 * 1_024,
+            OPERATOR_BOOTSTRAP_SUMMARY_LIMIT: 200,
+            OPERATOR_PRIVATE_KEYS: /(?:token|socket|path|capabilityId|executablePath|inline|body)/iu,
+            OPERATOR_PRIVATE_INPUT_KEYS: /(?:token|socket|capabilityId|executablePath)/iu,
+            operatorJobStore: store,
+            send: (channel, payload) => {
+                if (channel === "operator:changed" && dropNextChanged) {
+                    dropNextChanged = false
+                    throw new Error("missed IPC")
+                }
+                delivered.push({channel, payload})
+            },
+            structuredClone,
+        })
+
+        context.observeOperatorStore(store)
+        const startingRevision = store.revision
+        assert.doesNotThrow(() => store.transitionJob())
+        store.transitionStep()
+        const hint = delivered.find((entry) => entry.channel === "operator:changed")?.payload
+        assert.equal(hint.revision, startingRevision + 2)
+        assert.equal(hint.invalidate, true)
+        assert.ok(hint.revision > startingRevision + 1)
+
+        const caughtUp = context.operatorSummarySnapshotPage({cursor: null, limit: 50})
+        assert.equal(caughtUp.revision, hint.revision)
+        assert.deepEqual(caughtUp.jobs.map((job) => job.id), ["job-1"])
+        assert.equal(caughtUp.truncated, false)
+    })
+
     it("keeps every Operator delta on its dedicated IPC family", () => {
         const record = {
             id: "record-1",
@@ -1975,7 +2090,7 @@ describe("desktop main/preload bridge", () => {
             recordedAt: "2026-08-24T00:00:00.000Z",
             occurredAt: "2026-08-24T00:00:00.000Z",
         }
-        const store = {read: () => ({sessions: [], jobs: [], approvals: []})}
+        const store = {revision: 17, read: () => ({sessions: [], jobs: [], approvals: []})}
         for (const method of [
             "createSession",
             "createJob",
@@ -1991,14 +2106,14 @@ describe("desktop main/preload bridge", () => {
             "resolveApproval",
             "createArtifact",
         ]) store[method] = () => structuredClone(record)
-        const channels = []
+        const broadcasts = []
         const context = mainFunctionContext("operatorSafeValue", "initializeControlPlane", {
             OPERATOR_SAFE_ARRAY_LIMIT: 10_000,
             OPERATOR_SAFE_TEXT_LIMIT: 32 * 1_024,
             OPERATOR_PRIVATE_KEYS: /(?:token|socket|path|capabilityId|executablePath|inline|body)/iu,
             OPERATOR_PRIVATE_INPUT_KEYS: /(?:token|socket|capabilityId|executablePath)/iu,
             operatorJobStore: store,
-            send: (channel) => channels.push(channel),
+            send: (channel, payload) => broadcasts.push({channel, payload}),
             structuredClone,
         })
 
@@ -2008,6 +2123,7 @@ describe("desktop main/preload bridge", () => {
         store.createApproval()
         store.createArtifact()
 
+        const channels = broadcasts.map(({channel}) => channel)
         assert.deepEqual([...new Set(channels)].sort(), [
             "operator:approval",
             "operator:artifact",
@@ -2018,6 +2134,8 @@ describe("desktop main/preload bridge", () => {
             channel === "runtime:notification" || channel === "runtime:state" ||
             channel.startsWith("curation:") || channel.startsWith("rubric:")
         )), false)
+        assert.equal(broadcasts.every(({payload}) => payload.revision === 17), true)
+        assert.equal(broadcasts.every(({payload}) => payload.invalidate === true), true)
     })
 
     it("changes the frozen Dataset revision when Case content changes under the same id", () => {
@@ -2172,6 +2290,7 @@ describe("desktop main/preload bridge", () => {
 
         for (const channel of [
             "operator:bootstrap",
+            "operator:summary-page",
             "operator:create",
             "operator:get",
             "operator:send",
@@ -2179,6 +2298,7 @@ describe("desktop main/preload bridge", () => {
         ]) assert.match(main, new RegExp(channel))
         for (const channel of [
             "operator:bootstrap",
+            "operator:summary-page",
             "operator:create",
             "operator:get",
             "operator:send",

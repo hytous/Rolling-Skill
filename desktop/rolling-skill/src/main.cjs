@@ -1609,6 +1609,23 @@ function publicOperatorJob(job = {}) {
     })
 }
 
+function publicOperatorStep(step = {}) {
+    return operatorSafeValue({
+        id: step.id,
+        jobId: step.jobId,
+        sessionId: step.sessionId,
+        method: step.method,
+        status: step.status,
+        outputArtifactIds: Array.isArray(step.outputArtifactIds) ? step.outputArtifactIds : [],
+        attempt: step.attempt,
+        error: step.error ?? null,
+        createdAt: step.createdAt,
+        updatedAt: step.updatedAt,
+        startedAt: step.startedAt ?? null,
+        completedAt: step.completedAt ?? null,
+    })
+}
+
 function publicOperatorApproval(approval = {}) {
     return operatorSafeValue({
         id: approval.id,
@@ -1655,16 +1672,34 @@ function publicOperatorManagerSnapshot(snapshot = {}) {
     }
 }
 
-function operatorBootstrapSnapshot() {
-    if (typeof operatorJobStore?.readSummary !== "function") {
-        return {sessions: [], jobs: [], approvals: []}
+function operatorSummarySnapshotPage({cursor = null, limit = OPERATOR_BOOTSTRAP_SUMMARY_LIMIT} = {}) {
+    if (typeof operatorJobStore?.readSummaryPage !== "function") {
+        return {
+            revision: 0,
+            sessions: [],
+            jobs: [],
+            steps: [],
+            approvals: [],
+            totals: {sessions: 0, jobs: 0, steps: 0, approvals: 0},
+            truncated: false,
+            nextCursor: null,
+        }
     }
-    const state = operatorJobStore.readSummary({limit: OPERATOR_BOOTSTRAP_SUMMARY_LIMIT})
+    const state = operatorJobStore.readSummaryPage({cursor, limit})
     return {
+        revision: state.revision,
         sessions: state.sessions.map(publicOperatorSessionSummary),
         jobs: state.jobs.map(publicOperatorJob),
+        steps: state.steps.map(publicOperatorStep),
         approvals: state.approvals.map(publicOperatorApproval),
+        totals: operatorSafeValue(state.totals),
+        truncated: state.truncated === true,
+        nextCursor: state.nextCursor ?? null,
     }
+}
+
+function operatorBootstrapSnapshot() {
+    return operatorSummarySnapshotPage()
 }
 
 function operatorArtifactPage(input = {}) {
@@ -1718,7 +1753,10 @@ function sendOperatorNotification(channel, payload) {
 }
 
 function operatorChangeDelta(operation, result, args = []) {
-    const delta = {operation}
+    const revision = Number.isSafeInteger(operatorJobStore?.revision)
+        ? operatorJobStore.revision
+        : 0
+    const delta = {revision, invalidate: true, operation}
     const candidate = result?.job ?? result
     if (candidate?.runtime && typeof candidate?.protocol === "string") {
         delta.session = publicOperatorSessionSummary(candidate)
@@ -1749,6 +1787,13 @@ function operatorChangeDelta(operation, result, args = []) {
         if (entityId !== null) delta.entityId = entityId
     }
     return operatorSafeValue(delta)
+}
+
+function operatorNotificationEnvelope(key, value) {
+    const revision = Number.isSafeInteger(operatorJobStore?.revision)
+        ? operatorJobStore.revision
+        : 0
+    return operatorSafeValue({revision, invalidate: true, [key]: value})
 }
 
 function notifyOperatorChanged(result, args, operation) {
@@ -1787,21 +1832,36 @@ function observeOperatorStore(store_) {
         "cancelJobTree",
     ]) wrap(method, notifyOperatorChanged)
     wrap("appendSessionTranscript", (entry) => {
-        sendOperatorNotification("operator:event", operatorSafeValue(entry))
+        sendOperatorNotification(
+            "operator:event",
+            operatorNotificationEnvelope("event", entry),
+        )
     })
     wrap("appendEvent", (event) => {
-        sendOperatorNotification("operator:event", operatorSafeValue(event))
+        sendOperatorNotification(
+            "operator:event",
+            operatorNotificationEnvelope("event", event),
+        )
     })
     wrap("createApproval", (approval) => {
-        sendOperatorNotification("operator:approval", publicOperatorApproval(approval))
+        sendOperatorNotification(
+            "operator:approval",
+            operatorNotificationEnvelope("approval", publicOperatorApproval(approval)),
+        )
         notifyOperatorChanged(approval, [], "createApproval")
     })
     wrap("resolveApproval", (approval) => {
-        sendOperatorNotification("operator:approval", publicOperatorApproval(approval))
+        sendOperatorNotification(
+            "operator:approval",
+            operatorNotificationEnvelope("approval", publicOperatorApproval(approval)),
+        )
         notifyOperatorChanged(approval, [], "resolveApproval")
     })
     wrap("createArtifact", (artifact) => {
-        sendOperatorNotification("operator:artifact", publicOperatorArtifact(artifact))
+        sendOperatorNotification(
+            "operator:artifact",
+            operatorNotificationEnvelope("artifact", publicOperatorArtifact(artifact)),
+        )
         notifyOperatorChanged(artifact, [], "createArtifact")
     })
     return store_
@@ -2227,6 +2287,14 @@ function installIpc() {
     ipcMain.handle("operator:bootstrap", (event) => {
         assertRendererControlSender(event)
         return operatorBootstrapSnapshot()
+    })
+    ipcMain.handle("operator:summary-page", (event, input = {}) => {
+        assertRendererControlSender(event)
+        const request = rendererOperatorInput(input, new Set(["cursor", "limit"]))
+        return operatorSummarySnapshotPage({
+            cursor: request.cursor ?? null,
+            limit: request.limit ?? OPERATOR_BOOTSTRAP_SUMMARY_LIMIT,
+        })
     })
     ipcMain.handle("operator:create", async (event, input = {}) => {
         assertRendererControlSender(event)

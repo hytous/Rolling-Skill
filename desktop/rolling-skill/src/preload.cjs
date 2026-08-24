@@ -88,6 +88,8 @@ function subscribe(channel, listener) {
 contextBridge.exposeInMainWorld("rollingSkill", {
     bootstrap: () => ipcRenderer.invoke("app:bootstrap"),
     bootstrapOperator: () => ipcRenderer.invoke("operator:bootstrap"),
+    readOperatorSummaryPage: (cursor = null, limit = CONTROL_PAGE_LIMIT) =>
+        ipcRenderer.invoke("operator:summary-page", {cursor, limit}),
     createOperatorSession: (input) => ipcRenderer.invoke("operator:create", input),
     getOperatorSession: (sessionId) => ipcRenderer.invoke("operator:get", {sessionId}),
     sendOperatorMessage: (sessionId, text) =>
