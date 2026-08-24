@@ -452,31 +452,64 @@
                 return getSnapshot(jobId)
             }
             if (typeof readOperatorSession !== "function") return getSnapshot(jobId)
+            const recoveryGeneration = generation
+            const recoveryRevision = revision
+            const sessionId = initial.session?.id ?? initial.job?.sessionId
+            const sessionRevisionKey = sessionId ? `session:${sessionId}` : null
+            const jobRevisionKey = initial.job?.id ? `job:${initial.job.id}` : null
+            const sessionRevision = sessionRevisionKey ? entityRevisions.get(sessionRevisionKey) : undefined
+            const jobRevision = jobRevisionKey ? entityRevisions.get(jobRevisionKey) : undefined
+            const transcriptBaseline = new Map(initial.transcript)
+            const eventBaseline = new Map(initial.events)
+            const artifactBaseline = new Map(initial.artifacts)
             const request = (async () => {
-                const sessionId = initial.session?.id ?? initial.job?.sessionId
                 if (!sessionId) return getSnapshot(jobId)
                 const detail = await readOperatorSession(sessionId)
                 const current = snapshots.get(jobId)
-                if (!current || current !== initial) return getSnapshot(jobId)
+                if (!current || current !== initial || generation !== recoveryGeneration) {
+                    return getSnapshot(jobId)
+                }
 
-                updateSession(detail?.session)
-                updateJob(detail?.parentJob)
+                if (
+                    detail?.session &&
+                    entityRevisions.get(sessionRevisionKey) === sessionRevision
+                ) updateSession(detail.session)
+                if (
+                    detail?.parentJob &&
+                    entityRevisions.get(jobRevisionKey) === jobRevision
+                ) updateJob(detail.parentJob)
                 if (Array.isArray(detail?.session?.transcript)) {
                     const transcript = new Map()
                     for (const entry of detail.session.transcript) {
                         transcript.set(transcriptEntryKey(entry), entry)
                     }
+                    if (revision > recoveryRevision) {
+                        for (const [key, entry] of current.transcript) {
+                            if (!transcriptBaseline.has(key) || transcriptBaseline.get(key) !== entry) {
+                                transcript.set(key, entry)
+                            }
+                        }
+                    }
                     current.transcript = transcript
                     for (const [key, entry] of current.events) {
-                        if (transcript.has(transcriptEntryKey(entry))) current.events.delete(key)
+                        const changedDuringRecovery = !eventBaseline.has(key) || eventBaseline.get(key) !== entry
+                        if (!changedDuringRecovery && transcript.has(transcriptEntryKey(entry))) {
+                            current.events.delete(key)
+                        }
                     }
                 }
                 const artifacts = await readAllArtifactPages(current)
-                if (snapshots.get(jobId) !== current) return getSnapshot(jobId)
+                if (snapshots.get(jobId) !== current || generation !== recoveryGeneration) {
+                    return getSnapshot(jobId)
+                }
+                for (const [key, artifact] of current.artifacts) {
+                    if (!artifactBaseline.has(key) || artifactBaseline.get(key) !== artifact) {
+                        artifacts.set(key, artifact)
+                    }
+                }
                 current.artifacts = artifacts
                 current.needsDetailCatchUp = false
                 if (notifyReset && visible && activeJobId === jobId) {
-                    cancelActivePatch()
                     onActiveReset({jobId, reason})
                 }
                 return getSnapshot(jobId)
@@ -560,9 +593,18 @@
             const root = activeSessionId ? rootForSession(activeSessionId) : null
             activeJobId = root?.id ?? null
             if (activeJobId && visible) {
-                await recoverDetail(activeJobId, {reason: "activation", notifyReset: false})
-                const snapshot = snapshots.get(activeJobId)
-                if (snapshot) snapshot.unread = emptyUnread()
+                const jobId = activeJobId
+                await recoverDetail(jobId, {reason: "activation", notifyReset: false})
+                const snapshot = snapshots.get(jobId)
+                if (
+                    visible &&
+                    activeJobId === jobId &&
+                    snapshot &&
+                    (
+                        !snapshot.needsDetailCatchUp ||
+                        typeof readOperatorSession !== "function"
+                    )
+                ) snapshot.unread = emptyUnread()
             }
             return activeJobId ? getSnapshot(activeJobId) : null
         }
@@ -572,7 +614,15 @@
             const jobId = activeJobId
             await recoverDetail(jobId, {reason: "activation", notifyReset: false})
             const snapshot = snapshots.get(jobId)
-            if (snapshot && !snapshot.needsDetailCatchUp) snapshot.unread = emptyUnread()
+            if (
+                visible &&
+                activeJobId === jobId &&
+                snapshot &&
+                (
+                    !snapshot.needsDetailCatchUp ||
+                    typeof readOperatorSession !== "function"
+                )
+            ) snapshot.unread = emptyUnread()
             return getSnapshot(jobId)
         }
 

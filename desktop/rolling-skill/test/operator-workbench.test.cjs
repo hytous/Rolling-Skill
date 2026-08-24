@@ -605,6 +605,81 @@ describe("Operator workbench state", () => {
         assert.ok(resets.some(({reason}) => reason === "catch-up"))
     })
 
+    it("does not let deferred stale detail roll back a newer Job delta", async () => {
+        let releaseDetail
+        let detailStarted
+        const detailGate = new Promise((resolve) => { releaseDetail = resolve })
+        const started = new Promise((resolve) => { detailStarted = resolve })
+        const state = createOperatorWorkbenchState({
+            async readOperatorSession() {
+                detailStarted()
+                await detailGate
+                return {
+                    session: {id: "session-1", transcript: []},
+                    parentJob: {...summary().jobs[0], status: "running"},
+                }
+            },
+            async readArtifactPage() {
+                return {artifacts: [], nextCursor: null}
+            },
+        })
+        state.initialize(summary())
+        state.setVisible(true)
+
+        const activation = state.activateSession("session-1")
+        await started
+        await state.ingest("changed", {
+            generation: "generation-a-0123456789abcdef",
+            revision: 2,
+            job: {...summary().jobs[0], status: "paused"},
+        })
+        releaseDetail()
+        await activation
+
+        assert.equal(state.revision, 2)
+        assert.equal(state.getSnapshot("job-1").job.status, "paused")
+    })
+
+    it("merges artifacts that arrive while an older artifact page is deferred", async () => {
+        let releaseArtifacts
+        let artifactReadStarted
+        const artifactGate = new Promise((resolve) => { releaseArtifacts = resolve })
+        const started = new Promise((resolve) => { artifactReadStarted = resolve })
+        const state = createOperatorWorkbenchState({
+            async readOperatorSession() {
+                return {
+                    session: {id: "session-1", transcript: []},
+                    parentJob: {...summary().jobs[0], status: "running"},
+                }
+            },
+            async readArtifactPage() {
+                artifactReadStarted()
+                await artifactGate
+                return {artifacts: [], nextCursor: null}
+            },
+        })
+        state.initialize(summary())
+        state.setVisible(true)
+
+        const activation = state.activateSession("session-1")
+        await started
+        await state.ingest("artifact", {
+            generation: "generation-a-0123456789abcdef",
+            revision: 2,
+            artifact: {
+                id: "artifact-new",
+                jobId: "job-1",
+                kind: "report",
+                name: "new report",
+            },
+        })
+        releaseArtifacts()
+        await activation
+
+        assert.equal(state.revision, 2)
+        assert.deepEqual(state.getSnapshot("job-1").artifacts.map(({id}) => id), ["artifact-new"])
+    })
+
     it("retries a newer generation that arrives during an in-flight detail catch-up", async () => {
         let summaryReads = 0
         let detailReads = 0
