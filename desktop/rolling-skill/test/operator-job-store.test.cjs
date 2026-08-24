@@ -665,7 +665,7 @@ describe("Operator Job store", () => {
                 params: {versionId: "candidate-1", versionLabel: "v1.1.0"},
             },
             risk: "Publishes an immutable Released version.",
-            expiresAt: "2026-08-24T00:00:00.000Z",
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
         })
         const first = store.appendSessionTranscript(session.id, {
             kind: "message",
