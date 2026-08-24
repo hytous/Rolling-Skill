@@ -15,6 +15,8 @@ const {
     ControlPlane,
     createServiceErrorDiagnosticChannel,
     IDEMPOTENCY_TTL_MS,
+    MAX_OPERATOR_EXECUTOR_RECORDS,
+    OPERATOR_EXECUTOR_TOMBSTONE_TTL_MS,
 } = require("../src/control-plane/control-plane.cjs")
 const {createDomainServices} = require("../src/control-plane/domain-services.cjs")
 const {createControlPolicy} = require("../src/control-plane/policy.cjs")
@@ -312,6 +314,74 @@ describe("ControlPlane", () => {
             params: {},
         }), (error) => error.code === "CONTROL_BUSY")
         assert.equal(evaluationStore.listDatasets.mock.callCount(), 0)
+    })
+
+    it("registers an initially disabled Operator route without allowing service fallthrough", async () => {
+        const {control, issued, evaluationStore} = createFixture()
+        let routed = 0
+        const lease = control.registerOperatorExecutor({
+            sessionId: issued.sessionId,
+            capabilityId: issued.id,
+            enabled: false,
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async () => {
+                routed += 1
+                return {datasets: [], nextCursor: null}
+            },
+        })
+        const request = {
+            token: issued.token,
+            sessionId: issued.sessionId,
+            method: "datasets.list",
+            params: {},
+        }
+
+        await assert.rejects(control.invoke(request), (error) => error.code === "CONTROL_BUSY")
+        assert.equal(evaluationStore.listDatasets.mock.callCount(), 0)
+        assert.equal(routed, 0)
+        assert.equal(lease.enable(), true)
+        assert.deepEqual(await control.invoke(request), {datasets: [], nextCursor: null})
+        assert.equal(routed, 1)
+    })
+
+    it("replaces retired executors with closure-free bounded tombstones until their safe TTL", () => {
+        let now = 1_000
+        const {control} = createFixture({clock: () => now})
+        for (let index = 0; index < MAX_OPERATOR_EXECUTOR_RECORDS; index += 1) {
+            const lease = control.registerOperatorExecutor({
+                sessionId: `operator-tombstone-${index}`,
+                capabilityId: `capability-tombstone-${index}`,
+                budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+                assertLive: () => true,
+                execute: async () => ({datasets: [], nextCursor: null}),
+            })
+            assert.equal(lease.unregister(), true)
+        }
+        assert.deepEqual(control.operatorExecutorRegistryStats(), {
+            live: 0,
+            tombstones: MAX_OPERATOR_EXECUTOR_RECORDS,
+            retainedCallbacks: 0,
+            total: MAX_OPERATOR_EXECUTOR_RECORDS,
+        })
+        assert.throws(() => control.registerOperatorExecutor({
+            sessionId: "operator-over-capacity",
+            capabilityId: "capability-over-capacity",
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async () => ({datasets: [], nextCursor: null}),
+        }), /capacity/iu)
+
+        now += OPERATOR_EXECUTOR_TOMBSTONE_TTL_MS + 1
+        const afterTtl = control.registerOperatorExecutor({
+            sessionId: "operator-after-ttl",
+            capabilityId: "capability-after-ttl",
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async () => ({datasets: [], nextCursor: null}),
+        })
+        assert.equal(afterTtl.unregister(), true)
+        assert.equal(control.operatorExecutorRegistryStats().total, 1)
     })
 
     it("passes policy approval to the Operator executor so it creates one durable approval", async () => {

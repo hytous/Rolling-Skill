@@ -1204,6 +1204,44 @@ describe("Operator Job engine", () => {
         assert.equal(store.listSteps({jobId: job.id})[0].status, "needs_recovery")
     })
 
+    it("preserves a pending approval when interruption happens before handler execution", async () => {
+        const {store, session} = fixture()
+        const job = createJob(store, session.id)
+        store.transitionJob(job.id, "running")
+        const step = store.createStep(job.id, {
+            method: "evaluations.start",
+            params: {datasetId: "dataset-1"},
+            reservation: {evaluations: 1},
+            idempotencyKey: "approval-before-handler",
+        })
+        store.transitionStep(step.id, "waiting_approval")
+        store.transitionJob(job.id, "waiting_approval")
+        const approval = store.createApproval(job.id, {
+            stepId: step.id,
+            action: "evaluations.execute",
+            scope: {datasetIds: ["dataset-1"]},
+            proposedMutation: {
+                method: "evaluations.start",
+                params: {datasetId: "dataset-1"},
+                reservation: {evaluations: 1},
+                idempotencyKey: "approval-before-handler",
+            },
+            risk: "budget_expansion",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        })
+        const engine = new OperatorJobEngine({store})
+
+        const interrupted = await engine.interrupt(job.id, {
+            code: "OPERATOR_RUNTIME_FAILED",
+            message: "Operator Runtime failed",
+        })
+
+        assert.equal(interrupted.status, "waiting_approval")
+        assert.equal(store.getJob(job.id).status, "waiting_approval")
+        assert.equal(store.getStep(step.id).status, "waiting_approval")
+        assert.equal(store.getApproval(approval.id).status, "pending")
+    })
+
     it("checks cancellation before invoking the next hook and aborts a timed-out hook signal", async () => {
         const cancelledFixture = fixture()
         const cancelledJob = createJob(cancelledFixture.store, cancelledFixture.session.id)

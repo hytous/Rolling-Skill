@@ -127,7 +127,7 @@ class FakeControlPlane {
     registerOperatorExecutor(input) {
         const current = this.routes.get(input.sessionId) ?? null
         if (current && input.replace !== current.lease) throw new Error("replacement lease required")
-        const record = {...input, enabled: true, registered: true}
+        const record = {...input, enabled: input.enabled !== false, registered: true}
         const lease = {
             disable: () => {
                 if (this.routes.get(input.sessionId) !== record || !record.registered) return false
@@ -202,6 +202,7 @@ function fixture(options = {}) {
     const capabilities = {
         issue(request) {
             capabilitySequence += 1
+            if (options.issue) return options.issue(request, {capabilitySequence, grants})
             const grant = {
                 id: `capability-${capabilitySequence}`,
                 token: `private-token-${capabilitySequence}`,
@@ -212,6 +213,7 @@ function fixture(options = {}) {
             return grant
         },
         revoke(id) {
+            if (options.revoke) return options.revoke(id, {revoked})
             revoked.push(id)
             return true
         },
@@ -231,11 +233,15 @@ function fixture(options = {}) {
         },
         async cancel(jobId) {
             engineCalls.push({method: "cancel", jobId})
+            if (options.cancel) return options.cancel(jobId, {store, engineCalls})
             store.beginCancellation(jobId)
             return store.cancelJobTree(jobId).job
         },
         async interrupt(jobId, error) {
             engineCalls.push({method: "interrupt", jobId, error})
+            if (!store.listSteps({jobId}).some((step) => step.status === "running")) {
+                return store.getJob(jobId)
+            }
             return store.interruptJob(jobId, error)
         },
     }
@@ -315,6 +321,31 @@ function deferred() {
     return {promise, resolve, reject}
 }
 
+function makeWaitingApproval(store, parentJobId) {
+    const step = store.createStep(parentJobId, {
+        method: "evaluations.start",
+        params: {datasetId: "dataset-1"},
+        reservation: {evaluations: 1},
+        idempotencyKey: `waiting-${parentJobId}`,
+    })
+    store.transitionStep(step.id, "waiting_approval")
+    store.transitionJob(parentJobId, "waiting_approval")
+    const approval = store.createApproval(parentJobId, {
+        stepId: step.id,
+        action: "evaluations.execute",
+        scope: {datasetIds: ["dataset-1"]},
+        proposedMutation: {
+            method: "evaluations.start",
+            params: {datasetId: "dataset-1"},
+            reservation: {evaluations: 1},
+            idempotencyKey: `waiting-${parentJobId}`,
+        },
+        risk: "budget_expansion",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    })
+    return {step, approval}
+}
+
 describe("OperatorSessionManager", () => {
     it("freezes authority and transport, persists one parent Job, and starts an independent selected Runtime", async () => {
         const chatClient = {calls: []}
@@ -380,6 +411,29 @@ describe("OperatorSessionManager", () => {
         assert.deepEqual(revoked, ["capability-1"])
         assert.deepEqual(store.listSessions(), [])
         assert.deepEqual(store.listJobs(), [])
+    })
+
+    it("fails a newly persisted parent when Runtime startup fails without a concurrent stop", async () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-operator-startup-failure-"))
+        directories.push(directory)
+        const store = new OperatorJobStore(join(directory, "jobs.json"))
+        const context = fixture({
+            store,
+            engine: new OperatorJobEngine({store}),
+            clientFactory(_descriptor, options) {
+                const client = new FakeClient(options)
+                client.startThread = async () => {
+                    client.calls.push({method: "startThread"})
+                    throw new Error("Runtime thread startup failed")
+                }
+                return client
+            },
+        })
+
+        await assert.rejects(context.manager.create(createInput()), /startup failed/iu)
+        assert.equal(context.store.listJobs().length, 1)
+        assert.equal(context.store.listJobs()[0].status, "failed")
+        assert.deepEqual(context.revoked, ["capability-1"])
     })
 
     it("persists ordered compact notifications and routes tools, permissions, and questions", async () => {
@@ -651,7 +705,7 @@ describe("OperatorSessionManager", () => {
         assert.equal(resumed.runtimeThreadId, "replacement-thread")
     })
 
-    it("tears down an unexpected Runtime failure once and leaves the parent recoverable", async () => {
+    it("tears down an unexpected Runtime failure once and leaves a safe parent resumable", async () => {
         const {manager, clients, store, revoked, engineCalls, controlPlane} = fixture()
         const created = await manager.create(createInput())
         clients[0].emit("runtimeError", Object.assign(new Error("provider failed"), {code: "RUNTIME_EXIT"}))
@@ -659,7 +713,10 @@ describe("OperatorSessionManager", () => {
         await nextTick()
         await nextTick()
 
-        assert.equal(store.getJob(created.parentJob.id).status, "needs_recovery")
+        assert.equal(store.getJob(created.parentJob.id).status, "running")
+        assert.equal(store.getSession(created.session.id).transcript.some((entry) => (
+            entry.kind === "operator_session_needs_resume"
+        )), true)
         assert.deepEqual(revoked, ["capability-1"])
         assert.equal(engineCalls.filter((call) => call.method === "interrupt").length, 1)
         assert.equal(clients[0].calls.filter((call) => call.method === "stop").length, 1)
@@ -859,7 +916,10 @@ describe("OperatorSessionManager", () => {
 
         await assert.rejects(() => restarted.manager.resume(created.session.id), /timed out/iu)
         assert.equal(restarted.clients[0].calls.some((call) => call.method === "startThread"), false)
-        assert.equal(first.store.getJob(created.parentJob.id).status, "needs_recovery")
+        assert.equal(first.store.getJob(created.parentJob.id).status, "running")
+        assert.equal(first.store.getSession(created.session.id).transcript.some((entry) => (
+            entry.kind === "operator_session_needs_resume" && entry.reason === "resume_failure"
+        )), true)
         assert.deepEqual(restarted.revoked, ["capability-1"])
     })
 
@@ -931,5 +991,239 @@ describe("OperatorSessionManager", () => {
         await assert.rejects(late, (error) => error.code === "CONTROL_BUSY")
         assert.equal(store.listSteps({jobId: created.parentJob.id}).length, 1)
         assert.equal(calls, 1)
+    })
+
+    it("durably queues follow-up while a restored control does not yet own a Runtime thread", async () => {
+        const thread = deferred()
+        const turn = deferred()
+        const context = fixture({
+            clientFactory(_descriptor, options) {
+                const client = new FakeClient(options)
+                client.startThread = async (threadOptions) => {
+                    client.calls.push({method: "startThread", options: threadOptions})
+                    return thread.promise
+                }
+                client.startTurn = async (threadId, input, turnOptions) => {
+                    client.calls.push({method: "startTurn", threadId, input, options: turnOptions})
+                    return turn.promise
+                }
+                return client
+            },
+        })
+        const creating = context.manager.create(createInput())
+        await nextTick()
+        const session = context.store.listSessions()[0]
+        const parent = context.store.listJobs({sessionId: session.id, parentJobId: null})[0]
+        const child = context.store.createJob({
+            sessionId: session.id,
+            parentJobId: parent.id,
+            type: "evaluation",
+            objective: "Complete while Runtime restores",
+            budget: budget(),
+        })
+        context.store.transitionJob(child.id, "running")
+        context.store.transitionJob(child.id, "succeeded", {result: {ok: true}})
+
+        try {
+            assert.deepEqual(await context.manager.followUp(session.id, "Wait for restore ownership"), {
+                queued: true,
+            })
+            assert.deepEqual(await context.manager.notifyChildCompletion(session.id, child.id), {
+                queued: true,
+            })
+            assert.equal(context.clients[0].calls.filter((call) => call.method === "startTurn").length, 0)
+            assert.equal(context.store.getSession(session.id).transcript.some((entry) => (
+                entry.kind === "operator_boundary_enqueued" && entry.content === "Wait for restore ownership"
+            )), true)
+        } finally {
+            thread.resolve({thread: {id: context.clients[0].threadId}})
+            turn.resolve({turn: {id: "turn-restored", status: "inProgress"}})
+            await creating.catch(() => {})
+        }
+    })
+
+    it("keeps ACP and CLI socket calls disabled until startTurn ownership is confirmed", async () => {
+        const turn = deferred()
+        const context = fixture({
+            transportSelection: {kind: "acp-mcp", ready: true},
+            transportSupport: () => ({mcpServersReady: true}),
+            clientFactory(_descriptor, options) {
+                const client = new FakeClient(options)
+                client.startTurn = async (threadId, input, turnOptions) => {
+                    client.calls.push({method: "startTurn", threadId, input, options: turnOptions})
+                    return turn.promise
+                }
+                return client
+            },
+        })
+        const creating = context.manager.create(createInput())
+        await nextTick()
+        const grant = context.grants[0]
+        const request = {
+            token: grant.token,
+            sessionId: grant.sessionId,
+            method: "datasets.get",
+            params: {datasetId: "dataset-1", includeCases: false},
+        }
+
+        try {
+            context.clients[0].notify("turn/started", {
+                threadId: context.clients[0].threadId,
+                turn: {id: "forged-early-turn"},
+            })
+            await assert.rejects(context.controlPlane.invoke(request), (error) => error.code === "CONTROL_BUSY")
+        } finally {
+            turn.resolve({turn: {id: "turn-confirmed", status: "inProgress"}})
+            await creating
+        }
+        assert.deepEqual(await context.controlPlane.invoke(request), {ok: true})
+    })
+
+    it("preserves a waiting Step and pending Approval when the Runtime fails before handler execution", async () => {
+        const context = fixture()
+        const created = await context.manager.create(createInput())
+        const {step, approval} = makeWaitingApproval(context.store, created.parentJob.id)
+
+        context.clients[0].emit("runtimeError", new Error("provider disconnected"))
+        await nextTick()
+        await nextTick()
+
+        assert.equal(context.store.getJob(created.parentJob.id).status, "waiting_approval")
+        assert.equal(context.store.getStep(step.id).status, "waiting_approval")
+        assert.equal(context.store.getApproval(approval.id).status, "pending")
+        assert.equal(context.engineCalls.filter((call) => call.method === "interrupt").length, 1)
+        assert.equal(context.store.getSession(created.session.id).transcript.some((entry) => (
+            entry.kind === "operator_session_needs_resume"
+        )), true)
+    })
+
+    it("pauses a waiting-approval session without changing its durable Job or Approval", async () => {
+        const context = fixture()
+        const created = await context.manager.create(createInput())
+        const {step, approval} = makeWaitingApproval(context.store, created.parentJob.id)
+
+        const paused = await context.manager.pause(created.session.id)
+        assert.equal(paused.state, "paused")
+        assert.equal(context.store.getJob(created.parentJob.id).status, "waiting_approval")
+        assert.equal(context.store.getStep(step.id).status, "waiting_approval")
+        assert.equal(context.store.getApproval(approval.id).status, "pending")
+        await assert.rejects(context.controlPlane.invoke({
+            token: context.grants[0].token,
+            sessionId: context.grants[0].sessionId,
+            method: "datasets.get",
+            params: {datasetId: "dataset-1", includeCases: false},
+        }), (error) => error.code === "CONTROL_BUSY")
+
+        const cold = fixture({store: context.store})
+        assert.equal(cold.manager.get(created.session.id).state, "paused")
+
+        const resumed = await context.manager.resume(created.session.id)
+        assert.equal(resumed.parentJob.status, "waiting_approval")
+        assert.equal(context.store.getApproval(approval.id).status, "pending")
+    })
+
+    it("rejects an incomplete stop and retries revoke, cancellation, and client teardown", async () => {
+        let revokeAttempts = 0
+        let cancelAttempts = 0
+        let stopAttempts = 0
+        const context = fixture({
+            revoke(id, {revoked}) {
+                revokeAttempts += 1
+                if (revokeAttempts === 1) throw new Error("revoke failed")
+                revoked.push(id)
+                return true
+            },
+            cancel(jobId, {store}) {
+                cancelAttempts += 1
+                if (cancelAttempts === 1) throw new Error("cancel failed")
+                store.beginCancellation(jobId)
+                return store.cancelJobTree(jobId).job
+            },
+            clientFactory(_descriptor, options) {
+                const client = new FakeClient(options)
+                client.stop = async () => {
+                    stopAttempts += 1
+                    client.calls.push({method: "stop"})
+                    if (stopAttempts === 1) throw new Error("stop failed")
+                }
+                return client
+            },
+        })
+        const created = await context.manager.create(createInput())
+
+        await assert.rejects(context.manager.stop(created.session.id), /revoke failed|cancel failed|stop failed/iu)
+        assert.equal(revokeAttempts, 1)
+        assert.equal(cancelAttempts, 1)
+        assert.equal(stopAttempts, 1)
+
+        const stopped = await context.manager.stop(created.session.id)
+        assert.equal(stopped.parentJob.status, "cancelled")
+        assert.equal(revokeAttempts, 2)
+        assert.equal(cancelAttempts, 2)
+        assert.equal(stopAttempts, 2)
+    })
+
+    it("retries a failed cold revoke and stopAll cancels every durable nonterminal session", async () => {
+        const source = fixture()
+        const first = await source.manager.create(createInput({objective: "first durable session"}))
+        const second = await source.manager.create(createInput({objective: "second durable session"}))
+        let revokeAttempts = 0
+        const restarted = fixture({
+            store: source.store,
+            revoke(id, {revoked}) {
+                revokeAttempts += 1
+                if (revokeAttempts === 1) throw new Error("cold revoke failed")
+                revoked.push(id)
+                return true
+            },
+        })
+
+        await assert.rejects(restarted.manager.stop(first.session.id), /cold revoke failed/iu)
+        await restarted.manager.stop(first.session.id)
+        await restarted.manager.stopAll()
+
+        assert.equal(source.store.getJob(first.parentJob.id).status, "cancelled")
+        assert.equal(source.store.getJob(second.parentJob.id).status, "cancelled")
+        assert.equal(restarted.revoked.includes(source.store.getSession(second.session.id).capabilityId), true)
+    })
+
+    it("waits for an in-flight cold resume and revokes authority issued after stop began", async () => {
+        const source = fixture({supportsNativeResume: () => true})
+        const created = await source.manager.create(createInput())
+        completed(source.clients[0])
+        await nextTick()
+        const issuing = deferred()
+        let issueStarted
+        const entered = new Promise((resolve) => { issueStarted = resolve })
+        const restarted = fixture({
+            store: source.store,
+            supportsNativeResume: () => true,
+            issue(request, {grants}) {
+                issueStarted()
+                return issuing.promise.then(() => {
+                    const grant = {
+                        id: "capability-late",
+                        token: "private-token-late",
+                        sessionId: request.sessionId,
+                        ...request,
+                    }
+                    grants.push(grant)
+                    return grant
+                })
+            },
+        })
+        const resuming = restarted.manager.resume(created.session.id)
+        await entered
+        let stopSettled = false
+        const stopping = restarted.manager.stop(created.session.id).finally(() => {
+            stopSettled = true
+        })
+        await nextTick()
+
+        assert.equal(stopSettled, false)
+        issuing.resolve()
+        await assert.rejects(resuming, /stopped/iu)
+        await stopping
+        assert.deepEqual(new Set(restarted.revoked), new Set(["capability-1", "capability-late"]))
     })
 })

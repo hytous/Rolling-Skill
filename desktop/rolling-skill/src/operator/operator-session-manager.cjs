@@ -257,6 +257,15 @@ function latestCapabilityId(session) {
     ))?.capabilityId ?? session.capabilityId
 }
 
+function sessionIsPaused(session) {
+    const boundary = session.transcript.findLast((entry) => (
+        entry.kind === "operator_session_paused" ||
+        entry.kind === "operator_session_resumed" ||
+        entry.kind === "operator_session_stopped"
+    ))
+    return boundary?.kind === "operator_session_paused"
+}
+
 function safeCheckpoint(job, artifacts) {
     const summary = typeof job.checkpoint?.summary === "string"
         ? boundedText(job.checkpoint.summary, 8_000)
@@ -289,6 +298,7 @@ class OperatorSessionManager {
     #resumeFlights = new Map()
     #stopPromises = new Map()
     #blockedSessions = new Set()
+    #revokedCapabilities = new Set()
 
     constructor({
         store,
@@ -488,14 +498,41 @@ class OperatorSessionManager {
             !control.stopped &&
             !control.paused &&
             control.controlGeneration === generation &&
-            (control.phase === "starting" || control.phase === "active")
+            control.phase === "active"
         )
+    }
+
+    #controlIsOwned(control, generation = control.controlGeneration) {
+        return (
+            this.#controls.get(control.sessionId) === control &&
+            !control.stopped &&
+            control.controlGeneration === generation
+        )
+    }
+
+    #assertControlOwned(control, generation = control.controlGeneration) {
+        if (!this.#controlIsOwned(control, generation)) {
+            throw Object.assign(new Error("Operator session ownership changed"), {
+                code: "CONTROL_BUSY",
+            })
+        }
+    }
+
+    #syncExecutorLease(control) {
+        const shouldEnable = this.#controlIsLive(control)
+        const changed = shouldEnable
+            ? control.executorLease?.enable()
+            : control.executorLease?.disable()
+        if (shouldEnable && changed !== true) {
+            throw new Error("Operator executor lease is unavailable")
+        }
     }
 
     #registerExecutor(control, replace = undefined) {
         const registration = {
             sessionId: control.authority.authoritySessionId,
             capabilityId: control.authority.grant.id,
+            enabled: false,
             budgetSnapshot: () => this.#budgetSnapshot(control),
             assertLive: () => this.#controlIsLive(control),
             execute: (request) => this.#executeControl(control, request),
@@ -538,6 +575,9 @@ class OperatorSessionManager {
                 assertRunnable: () => this.#controlIsLive(control, generation),
                 handlerContext: request.context,
             })
+            if (!this.#controlIsLive(control, generation)) {
+                throw createPublicControlError("CONTROL_BUSY")
+            }
             this.#append(control, "tool_call_completed", {
                 callId,
                 method,
@@ -611,7 +651,7 @@ class OperatorSessionManager {
             client: null,
             runtimeThreadId: null,
             turnId: null,
-            phase: "idle",
+            phase: "restoring",
             paused: parentJob.status === "paused",
             stopped: false,
             generation: 0,
@@ -628,6 +668,7 @@ class OperatorSessionManager {
             executorLease: null,
             pendingInteractions: new Set(),
             failurePromise: null,
+            clientStopped: false,
         }
         control.itemIds = new Set(session.transcript
             .filter((entry) => typeof entry.itemId === "string")
@@ -709,9 +750,15 @@ class OperatorSessionManager {
         try {
             if (message.method === "turn/started") {
                 const turnId = params.turn?.id ?? params.turnId
-                if (typeof turnId === "string" && turnId.length > 0) control.turnId = turnId
-                control.phase = "active"
-                this.#append(control, "turn_started", {turnId: control.turnId})
+                if (
+                    control.phase === "active" &&
+                    typeof turnId === "string" &&
+                    turnId.length > 0 &&
+                    (control.turnId === null || control.turnId === turnId)
+                ) control.turnId = turnId
+                this.#append(control, "turn_started", {
+                    turnId: typeof turnId === "string" ? turnId : null,
+                })
                 return
             }
             if (message.method === "item/completed") {
@@ -735,13 +782,28 @@ class OperatorSessionManager {
             }
             if (message.method === "turn/completed") {
                 const turnId = params.turn?.id ?? params.turnId ?? control.turnId
-                if (control.turnId && turnId && control.turnId !== turnId) return
+                if (
+                    control.phase === "active" &&
+                    control.turnId &&
+                    turnId &&
+                    control.turnId !== turnId
+                ) return
                 if (typeof turnId === "string") {
                     if (control.completedTurnIds.size >= 100) {
                         control.completedTurnIds.delete(control.completedTurnIds.values().next().value)
                     }
                     control.completedTurnIds.add(turnId)
                 }
+                if (control.phase === "starting") {
+                    this.#append(control, "turn_completed", {
+                        turnId: turnId ?? null,
+                        status: typeof params.turn?.status === "string" ? params.turn.status : "completed",
+                    })
+                    return
+                }
+                if (control.phase !== "active") return
+                control.executorLease?.disable()
+                control.controlGeneration += 1
                 control.turnId = null
                 control.phase = "idle"
                 this.#append(control, "turn_completed", {
@@ -763,6 +825,8 @@ class OperatorSessionManager {
 
     #runtimeFailure(control, error) {
         if (control.failurePromise || control.stopped) return control.failurePromise
+        const outcomeUnknown = this.#store.listSteps({jobId: control.parentJobId})
+            .some((step) => step.status === "running")
         control.stopped = true
         control.controlGeneration += 1
         control.generation += 1
@@ -772,6 +836,11 @@ class OperatorSessionManager {
         this.#abortInteractions(control)
         try {
             this.#append(control, "runtime_error", {error: errorRecord(error)})
+            if (!outcomeUnknown) {
+                this.#append(control, "operator_session_needs_resume", {
+                    reason: "runtime_failure",
+                })
+            }
         } catch {}
         this.#detach(control)
         let interrupted
@@ -781,10 +850,10 @@ class OperatorSessionManager {
                       code: "OPERATOR_RUNTIME_FAILED",
                       message: "Operator Runtime failed",
                   })
-                : this.#store.interruptJob(control.parentJobId, {
+                : outcomeUnknown ? this.#store.interruptJob(control.parentJobId, {
                       code: "OPERATOR_RUNTIME_FAILED",
                       message: "Operator Runtime failed",
-                  })
+                  }) : this.#store.getJob(control.parentJobId)
         } catch (failure) {
             interrupted = Promise.reject(failure)
         }
@@ -802,8 +871,12 @@ class OperatorSessionManager {
         }
         control.failurePromise = Promise.allSettled([
             Promise.resolve(interrupted),
-            Promise.resolve(revoked),
-            Promise.resolve(stopped),
+            Promise.resolve(revoked).then(() => {
+                this.#revokedCapabilities.add(control.authority.grant.id)
+            }),
+            Promise.resolve(stopped).then(() => {
+                control.clientStopped = true
+            }),
         ]).then(() => {
             if (this.#controls.get(control.sessionId) === control) {
                 this.#controls.delete(control.sessionId)
@@ -815,24 +888,34 @@ class OperatorSessionManager {
     async #startTurn(control, input) {
         if (control.stopped) throw new Error("Operator session is stopped")
         if (control.paused) throw new Error("Operator session is paused")
-        if (control.phase !== "idle") throw new Error("Operator Runtime turn is already active")
+        if (control.phase !== "idle" && control.phase !== "restoring") {
+            throw new Error("Operator Runtime turn is already active")
+        }
+        const controlGeneration = control.controlGeneration
         const generation = ++control.generation
         control.phase = "starting"
+        control.executorLease?.disable()
         try {
             const response = await control.client.startTurn(
                 control.runtimeThreadId,
                 serializeOperatorInput(input),
                 this.#profile(control),
             )
-            if (control.generation !== generation || control.stopped) return response
-            const turnId = response?.turn?.id ?? null
-            if (typeof turnId === "string" && turnId.length > 0) control.turnId = turnId
+            this.#assertControlOwned(control, controlGeneration)
+            if (control.generation !== generation) {
+                throw Object.assign(new Error("Operator Runtime turn ownership changed"), {
+                    code: "CONTROL_BUSY",
+                })
+            }
+            const turnId = requiredText(response?.turn?.id, "Operator Runtime turn id", 500)
+            control.turnId = turnId
             if (!control.completedTurnIds.has(turnId)) control.phase = "active"
             else {
                 control.turnId = null
                 control.phase = "idle"
                 queueMicrotask(() => void this.#drainBoundary(control))
             }
+            this.#syncExecutorLease(control)
             return response
         } catch (error) {
             if (control.generation === generation && !control.stopped) {
@@ -847,7 +930,7 @@ class OperatorSessionManager {
     async #requestTool(control, request) {
         if (control.stopped) throw new Error("Operator session is stopped")
         if (control.paused) throw new Error("Operator session is paused; new Steps are disabled")
-        if (control.phase !== "active" && control.phase !== "starting") {
+        if (control.phase !== "active") {
             throw new Error("Operator Tool call is outside an active Runtime turn")
         }
         if (!plainObject(request) || !plainObject(request.params)) throw new TypeError("Operator Tool request is invalid")
@@ -1016,14 +1099,18 @@ class OperatorSessionManager {
                 capabilityId: authority.grant.id,
             })
             this.#append(control, "message", {role: "user", content: objective})
+            const restorationGeneration = control.controlGeneration
             await control.client.start()
+            this.#assertControlOwned(control, restorationGeneration)
             const thread = await control.client.startThread(this.#threadOptions(control))
+            this.#assertControlOwned(control, restorationGeneration)
             control.runtimeThreadId = runtimeThreadId(thread)
             this.#append(control, "runtime_thread_started", {runtimeThreadId: control.runtimeThreadId})
             parentJob = this.#store.transitionJob(parentJob.id, "running")
             await this.#startTurn(control, buildOperatorInitialInput(protocolContext, objective))
             return this.#snapshot(control)
         } catch (error) {
+            const stoppedByLifecycle = control?.stopped === true || this.#blockedSessions.has(session?.id)
             if (control) {
                 control.stopped = true
                 control.executorLease?.unregister()
@@ -1031,7 +1118,7 @@ class OperatorSessionManager {
                 await bestEffort(() => control.client?.stop?.())
                 this.#controls.delete(control.sessionId)
             }
-            if (parentJob) {
+            if (parentJob && !stoppedByLifecycle) {
                 try {
                     const current = this.#store.getJob(parentJob.id)
                     if (!TERMINAL_JOB_STATUSES.has(current.status)) {
@@ -1061,12 +1148,16 @@ class OperatorSessionManager {
             parentJob,
             runtimeThreadId: latestRuntimeThread(session),
             transport: configuration?.transport ?? null,
-            state: TERMINAL_JOB_STATUSES.has(parentJob.status) ? "stopped" : parentJob.status,
+            state: TERMINAL_JOB_STATUSES.has(parentJob.status)
+                ? "stopped"
+                : sessionIsPaused(session) ? "paused" : parentJob.status,
         }
     }
 
     async followUp(sessionId, text) {
-        const control = this.#control(sessionId)
+        const id = requiredText(sessionId, "Operator session id")
+        if (this.#blockedSessions.has(id)) throw new Error("Operator session is stopped")
+        const control = this.#control(id)
         if (!control) throw new Error("Operator session must be resumed before messaging")
         if (control.stopped) throw new Error("Operator session is stopped")
         const content = messageText(text)
@@ -1096,6 +1187,7 @@ class OperatorSessionManager {
         control.draining = true
         try {
             await this.#startTurn(control, boundary.input)
+            this.#assertControlOwned(control)
             this.#append(control, "operator_boundary_delivered", {
                 boundaryId: boundary.id,
                 boundaryKind: boundary.kind,
@@ -1122,7 +1214,9 @@ class OperatorSessionManager {
     }
 
     async notifyChildCompletion(sessionId, childJobId) {
-        const control = this.#control(sessionId)
+        const id = requiredText(sessionId, "Operator session id")
+        if (this.#blockedSessions.has(id)) throw new Error("Operator session is stopped")
+        const control = this.#control(id)
         if (!control) throw new Error("Operator session must be resumed before child notification")
         if (control.stopped) throw new Error("Operator session is stopped")
         const child = this.#store.getJob(requiredText(childJobId, "Child Operator Job id"))
@@ -1176,13 +1270,13 @@ class OperatorSessionManager {
             try {
                 if (parent.status === "running") {
                     this.#store.transitionJob(parent.id, "paused")
-                } else if (parent.status !== "paused") {
+                } else if (parent.status !== "paused" && parent.status !== "waiting_approval") {
                     throw new Error(`Operator session cannot pause while ${parent.status}`)
                 }
                 control.paused = true
                 this.#append(control, "operator_session_paused", {})
             } catch (error) {
-                control.executorLease?.enable()
+                if (!control.paused) this.#syncExecutorLease(control)
                 throw error
             }
         }
@@ -1228,6 +1322,7 @@ class OperatorSessionManager {
         if (!configuration || configuration.protocol !== OPERATOR_PROTOCOL) {
             throw new Error("Operator session has no supported durable configuration")
         }
+        const wasSessionPaused = sessionIsPaused(session)
         await this.#reconcile(session, parentJob)
         if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped")
         parentJob = this.#store.getJob(parentJob.id)
@@ -1255,6 +1350,11 @@ class OperatorSessionManager {
             kind: "operator_authority_issued",
             capabilityId: authority.grant.id,
         })
+        if (this.#blockedSessions.has(sessionId)) {
+            await this.#capabilities.revoke(authority.grant.id)
+            this.#revokedCapabilities.add(authority.grant.id)
+            throw new Error("Operator session is stopped")
+        }
         let frozen
         try {
             frozen = await this.#freezeTransport(
@@ -1288,24 +1388,29 @@ class OperatorSessionManager {
             this.#controls.set(session.id, control)
             this.#registerExecutor(control)
             this.#attach(control)
+            const restorationGeneration = control.controlGeneration
             await control.client.start()
-            if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped")
+            this.#assertControlOwned(control, restorationGeneration)
             const priorThreadId = latestRuntimeThread(session)
             if (control.nativeResume && priorThreadId && typeof control.client.resumeThread === "function") {
                 try {
                     const resumed = await control.client.resumeThread(priorThreadId, this.#threadOptions(control))
+                    this.#assertControlOwned(control, restorationGeneration)
                     control.runtimeThreadId = runtimeThreadId(resumed)
+                    control.phase = "idle"
                     this.#append(control, "runtime_thread_resumed", {
                         runtimeThreadId: control.runtimeThreadId,
                         capabilityId: authority.grant.id,
                     })
                 } catch (error) {
+                    this.#assertControlOwned(control, restorationGeneration)
                     if (!nativeResumeUnavailable(error)) throw error
                     control.nativeResume = false
                 }
             }
             if (!control.runtimeThreadId) {
                 const started = await control.client.startThread(this.#threadOptions(control))
+                this.#assertControlOwned(control, restorationGeneration)
                 control.runtimeThreadId = runtimeThreadId(started)
                 this.#append(control, "runtime_thread_started", {
                     runtimeThreadId: control.runtimeThreadId,
@@ -1327,6 +1432,7 @@ class OperatorSessionManager {
             if (control.phase === "idle" && control.boundaryQueue.length > 0) {
                 queueMicrotask(() => void this.#drainBoundary(control))
             }
+            if (wasSessionPaused) this.#append(control, "operator_session_resumed", {})
             return this.#snapshot(control)
         } catch (error) {
             control.stopped = true
@@ -1335,6 +1441,14 @@ class OperatorSessionManager {
             await bestEffort(() => control.client?.stop?.())
             this.#controls.delete(session.id)
             await bestEffort(() => this.#capabilities.revoke(authority.grant.id))
+            const outcomeUnknown = this.#store.listSteps({jobId: parentJob.id})
+                .some((step) => step.status === "running")
+            if (!outcomeUnknown) {
+                await bestEffort(() => Promise.resolve(this.#store.appendSessionTranscript(session.id, {
+                    kind: "operator_session_needs_resume",
+                    reason: "resume_failure",
+                })))
+            }
             if (!TERMINAL_JOB_STATUSES.has(this.#store.getJob(parentJob.id).status)) {
                 await bestEffort(() => Promise.resolve(
                     typeof this.#engine.interrupt === "function"
@@ -1360,13 +1474,13 @@ class OperatorSessionManager {
         if (control.stopped) throw new Error("Operator session is stopped")
         if (control.paused) {
             const parent = this.#store.getJob(control.parentJobId)
-            if (parent.status !== "paused") throw new Error("Operator pause state is inconsistent")
-            this.#store.transitionJob(parent.id, "running")
+            if (parent.status === "paused") this.#store.transitionJob(parent.id, "running")
+            else if (parent.status !== "waiting_approval") {
+                throw new Error("Operator pause state is inconsistent")
+            }
             control.paused = false
             control.controlGeneration += 1
-            if (control.executorLease?.enable() !== true) {
-                throw new Error("Operator executor lease is unavailable")
-            }
+            this.#syncExecutorLease(control)
             this.#append(control, "operator_session_resumed", {})
             void this.#drainBoundary(control)
         }
@@ -1377,15 +1491,129 @@ class OperatorSessionManager {
         const id = requiredText(sessionId, "Operator session id")
         const existing = this.#resumeFlights.get(id)
         if (existing) return existing
-        const flight = this.#resume(id)
-        this.#resumeFlights.set(id, flight)
-        return flight.finally(() => {
-            if (this.#resumeFlights.get(id) === flight) this.#resumeFlights.delete(id)
+        const operation = this.#resume(id)
+        let shared
+        shared = operation.finally(() => {
+            if (this.#resumeFlights.get(id) === shared) this.#resumeFlights.delete(id)
         })
+        this.#resumeFlights.set(id, shared)
+        return shared
     }
 
     restart(sessionId) {
         return this.resume(sessionId)
+    }
+
+    #requiredStopOperation(label, operation, onSuccess = null) {
+        let result
+        try {
+            result = operation()
+        } catch (error) {
+            result = Promise.reject(error)
+        }
+        return {
+            label,
+            promise: Promise.resolve(result).then((value) => {
+                onSuccess?.(value)
+                return value
+            }),
+        }
+    }
+
+    async #performStop(id, session, parent, control) {
+        const required = []
+        const capabilityIds = new Set([latestCapabilityId(session)])
+        if (control) capabilityIds.add(control.authority.grant.id)
+        for (const capabilityId of capabilityIds) {
+            if (this.#revokedCapabilities.has(capabilityId)) continue
+            required.push(this.#requiredStopOperation(
+                `revoke ${capabilityId}`,
+                () => this.#capabilities.revoke(capabilityId),
+                () => this.#revokedCapabilities.add(capabilityId),
+            ))
+        }
+        if (!TERMINAL_JOB_STATUSES.has(this.#store.getJob(parent.id).status)) {
+            required.push(this.#requiredStopOperation(
+                `cancel ${parent.id}`,
+                () => this.#engine.cancel(parent.id),
+            ))
+        }
+        if (control?.runtimeThreadId && typeof control.client?.interruptTurn === "function") {
+            required.push(this.#requiredStopOperation(
+                "interrupt Runtime turn",
+                () => control.client.interruptTurn(control.runtimeThreadId, control.turnId),
+            ))
+        }
+        if (control && !control.clientStopped) {
+            required.push(this.#requiredStopOperation(
+                "stop Runtime client",
+                () => {
+                    if (typeof control.client?.stop !== "function") {
+                        throw new Error("Operator Runtime client cannot be stopped")
+                    }
+                    return control.client.stop()
+                },
+                () => { control.clientStopped = true },
+            ))
+        }
+        const resumeFlight = this.#resumeFlights.get(id)
+        if (resumeFlight) {
+            required.push(this.#requiredStopOperation(
+                "settle in-flight resume",
+                () => Promise.resolve(resumeFlight).then(() => undefined, () => undefined),
+            ))
+        }
+
+        const settled = await Promise.allSettled(required.map((entry) => entry.promise))
+        const failures = settled.flatMap((entry, index) => (
+            entry.status === "rejected"
+                ? [Object.assign(
+                      new Error(`${required[index].label}: ${entry.reason?.message ?? "failed"}`),
+                      {cause: entry.reason},
+                  )]
+                : []
+        ))
+        const refreshed = this.#store.getSession(id)
+        const lateCapabilityId = latestCapabilityId(refreshed)
+        if (
+            !capabilityIds.has(lateCapabilityId) &&
+            !this.#revokedCapabilities.has(lateCapabilityId)
+        ) {
+            const late = this.#requiredStopOperation(
+                `revoke ${lateCapabilityId}`,
+                () => this.#capabilities.revoke(lateCapabilityId),
+                () => this.#revokedCapabilities.add(lateCapabilityId),
+            )
+            const lateResult = await Promise.allSettled([late.promise])
+            if (lateResult[0].status === "rejected") {
+                failures.push(Object.assign(
+                    new Error(`revoke ${lateCapabilityId}: ${lateResult[0].reason?.message ?? "failed"}`),
+                    {cause: lateResult[0].reason},
+                ))
+            }
+        }
+        if (failures.length > 0) {
+            throw new AggregateError(
+                failures,
+                `Operator stop incomplete: ${failures.map((failure) => failure.message).join("; ")}`,
+            )
+        }
+        const stoppedParent = this.#store.getJob(parent.id)
+        if (!TERMINAL_JOB_STATUSES.has(parent.status) && stoppedParent.status !== "cancelled") {
+            throw new Error("Operator parent Job was not cancelled")
+        }
+        if (control && !control.clientStopped) {
+            throw new Error("Operator Runtime client did not stop")
+        }
+        let snapshot
+        if (control) {
+            this.#append(control, "operator_session_stopped", {})
+            snapshot = this.#snapshot(control)
+            if (this.#controls.get(id) === control) this.#controls.delete(id)
+        } else {
+            snapshot = this.get(id)
+        }
+        return snapshot
     }
 
     stop(sessionId) {
@@ -1397,7 +1625,7 @@ class OperatorSessionManager {
         const session = this.#store.getSession(id)
         const parent = this.#store.listJobs({sessionId: session.id, parentJobId: null})[0]
         if (!parent) throw new Error("Operator parent Job is missing")
-        if (control && !control.stopped) {
+        if (control) {
             control.stopped = true
             control.phase = "stopping"
             control.controlGeneration += 1
@@ -1409,58 +1637,32 @@ class OperatorSessionManager {
             this.#abortInteractions(control)
             this.#detach(control)
         }
-        const capabilityIds = new Set([latestCapabilityId(session)])
-        if (control) capabilityIds.add(control.authority.grant.id)
-        const work = []
-        for (const capabilityId of capabilityIds) {
-            try {
-                work.push(Promise.resolve(this.#capabilities.revoke(capabilityId)))
-            } catch (error) {
-                work.push(Promise.reject(error))
-            }
-        }
-        try {
-            if (!TERMINAL_JOB_STATUSES.has(parent.status)) {
-                work.push(Promise.resolve(this.#engine.cancel(parent.id)))
-            }
-        } catch (error) {
-            work.push(Promise.reject(error))
-        }
-        if (control?.runtimeThreadId && typeof control.client?.interruptTurn === "function") {
-            try {
-                work.push(Promise.resolve(
-                    control.client.interruptTurn(control.runtimeThreadId, control.turnId),
-                ))
-            } catch (error) {
-                work.push(Promise.reject(error))
-            }
-        }
-        if (control?.client) {
-            try {
-                work.push(Promise.resolve(control.client.stop?.()))
-            } catch (error) {
-                work.push(Promise.reject(error))
-            }
-        }
-        const stopping = Promise.allSettled(work).then(() => {
-            if (control) {
-                try {
-                    this.#append(control, "operator_session_stopped", {})
-                } catch {}
-                return this.#snapshot(control)
-            }
-            return this.get(id)
+        const operation = this.#performStop(id, session, parent, control)
+        let shared
+        shared = operation.catch((error) => {
+            if (this.#stopPromises.get(id) === shared) this.#stopPromises.delete(id)
+            throw error
         })
-        this.#stopPromises.set(id, stopping)
-        return stopping
+        this.#stopPromises.set(id, shared)
+        return shared
     }
 
     async stopAll() {
         const sessionIds = new Set([
             ...this.#controls.keys(),
             ...this.#resumeFlights.keys(),
+            ...this.#stopPromises.keys(),
         ])
-        await Promise.allSettled([...sessionIds].map((sessionId) => this.stop(sessionId)))
+        for (const session of this.#store.listSessions()) {
+            const parent = this.#store.listJobs({sessionId: session.id, parentJobId: null})[0]
+            if (parent && !TERMINAL_JOB_STATUSES.has(parent.status)) sessionIds.add(session.id)
+        }
+        const operations = [...sessionIds].map((sessionId) => this.stop(sessionId))
+        const settled = await Promise.allSettled(operations)
+        const failures = settled.flatMap((entry) => (
+            entry.status === "rejected" ? [entry.reason] : []
+        ))
+        if (failures.length > 0) throw new AggregateError(failures, "Operator stopAll incomplete")
     }
 }
 

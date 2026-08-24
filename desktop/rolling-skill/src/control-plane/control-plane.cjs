@@ -18,6 +18,8 @@ const {createBudgetSnapshot, createResolvedScope} = require("./policy.cjs")
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1_000
 const DEFAULT_IDEMPOTENCY_LIMIT = 1_000
 const MAX_BUDGET_CAS_ATTEMPTS = 4
+const MAX_OPERATOR_EXECUTOR_RECORDS = 1_024
+const OPERATOR_EXECUTOR_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1_000
 const stateByControlPlane = new WeakMap()
 const serviceDiagnosticStates = new WeakMap()
 const operatorExecutorLeaseStates = new WeakMap()
@@ -545,6 +547,7 @@ function operatorExecutorInput(value) {
         "budgetSnapshot",
         "assertLive",
         "execute",
+        "enabled",
         "replace",
     ])
     const input = {}
@@ -562,17 +565,58 @@ function operatorExecutorInput(value) {
         identifier(input.capabilityId) === null ||
         typeof input.budgetSnapshot !== "function" ||
         typeof input.assertLive !== "function" ||
-        typeof input.execute !== "function"
+        typeof input.execute !== "function" ||
+        (input.enabled !== undefined && typeof input.enabled !== "boolean")
     ) throw new TypeError("Operator executor registration is invalid")
     return input
 }
 
+function sweepOperatorExecutors(state) {
+    if (state.operatorExecutors.size === 0) return
+    let now = null
+    try {
+        const candidate = state.clock()
+        if (Number.isFinite(candidate) && candidate >= 0) now = candidate
+    } catch {}
+    if (now === null) return
+    for (const [sessionId, record] of state.operatorExecutors) {
+        if (record.tombstone === true && record.expiresAt <= now) {
+            state.operatorExecutors.delete(sessionId)
+        }
+    }
+}
+
+function retireOperatorExecutor(state, record) {
+    record.enabled = false
+    record.registered = false
+    record.budgetSnapshot = null
+    record.assertLive = null
+    record.execute = null
+    if (state.operatorExecutors.get(record.sessionId) === record) {
+        let now = null
+        try {
+            const candidate = state.clock()
+            if (Number.isFinite(candidate) && candidate >= 0) now = candidate
+        } catch {}
+        state.operatorExecutors.set(record.sessionId, Object.freeze({
+            tombstone: true,
+            sessionId: record.sessionId,
+            capabilityId: record.capabilityId,
+            expiresAt: now === null
+                ? Number.MAX_SAFE_INTEGER
+                : Math.min(Number.MAX_SAFE_INTEGER, now + OPERATOR_EXECUTOR_TOMBSTONE_TTL_MS),
+        }))
+    }
+}
+
 function operatorRouteForGrant(state, grant) {
+    sweepOperatorExecutors(state)
     const route = state.operatorExecutors.get(grant.sessionId)
     if (route === undefined) return null
     if (route.capabilityId !== grant.id) {
         throw createPublicControlError("CAPABILITY_REVOKED")
     }
+    if (route.tombstone === true) throw createPublicControlError("CONTROL_BUSY")
     return route
 }
 
@@ -631,18 +675,22 @@ class ControlPlane {
     registerOperatorExecutor(registration = {}) {
         const state = stateByControlPlane.get(this)
         const input = operatorExecutorInput(registration)
+        sweepOperatorExecutors(state)
         const current = state.operatorExecutors.get(input.sessionId) ?? null
         const replacement = input.replace === undefined
             ? null
             : operatorExecutorLeaseStates.get(input.replace) ?? null
-        if (current !== null && current.registered && replacement !== current) {
+        if (current !== null && current.tombstone !== true && current.registered && replacement !== current) {
             throw new Error("Operator executor replacement lease is required")
         }
         if (
             (current === null && input.replace !== undefined) ||
-            (current !== null && !current.registered && input.replace !== undefined && replacement !== current)
+            (current !== null && input.replace !== undefined && replacement !== current)
         ) {
             throw new Error("Operator executor replacement lease is stale")
+        }
+        if (current === null && state.operatorExecutors.size >= MAX_OPERATOR_EXECUTOR_RECORDS) {
+            throw new Error("Operator executor registry capacity is exhausted")
         }
         const record = {
             sessionId: input.sessionId,
@@ -650,7 +698,7 @@ class ControlPlane {
             budgetSnapshot: input.budgetSnapshot,
             assertLive: input.assertLive,
             execute: input.execute,
-            enabled: true,
+            enabled: input.enabled !== false,
             registered: true,
         }
         const lease = Object.freeze({
@@ -672,18 +720,44 @@ class ControlPlane {
                 if (state.operatorExecutors.get(record.sessionId) !== record || !record.registered) {
                     return false
                 }
-                record.enabled = false
-                record.registered = false
+                retireOperatorExecutor(state, record)
                 return true
             },
         })
         operatorExecutorLeaseStates.set(lease, record)
         state.operatorExecutors.set(record.sessionId, record)
-        if (current !== null) {
+        if (current !== null && current.tombstone !== true) {
             current.enabled = false
             current.registered = false
+            current.budgetSnapshot = null
+            current.assertLive = null
+            current.execute = null
         }
         return lease
+    }
+
+    operatorExecutorRegistryStats() {
+        const state = stateByControlPlane.get(this)
+        sweepOperatorExecutors(state)
+        let live = 0
+        let tombstones = 0
+        let retainedCallbacks = 0
+        for (const record of state.operatorExecutors.values()) {
+            if (record.tombstone === true) {
+                tombstones += 1
+                continue
+            }
+            live += 1
+            for (const key of ["budgetSnapshot", "assertLive", "execute"]) {
+                if (typeof record[key] === "function") retainedCallbacks += 1
+            }
+        }
+        return Object.freeze({
+            live,
+            tombstones,
+            retainedCallbacks,
+            total: state.operatorExecutors.size,
+        })
     }
 
     async invoke(request = {}) {
@@ -892,4 +966,6 @@ module.exports = {
     createServiceErrorDiagnosticChannel,
     DEFAULT_IDEMPOTENCY_LIMIT,
     IDEMPOTENCY_TTL_MS,
+    MAX_OPERATOR_EXECUTOR_RECORDS,
+    OPERATOR_EXECUTOR_TOMBSTONE_TTL_MS,
 }

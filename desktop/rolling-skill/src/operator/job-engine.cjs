@@ -1140,8 +1140,12 @@ class OperatorJobEngine {
         for (const controller of this.#coordination.operations.get(jobId) ?? []) {
             controller.abort(interruption)
         }
-        for (const step of this.#store.listSteps({jobId})) {
+        const steps = this.#store.listSteps({jobId})
+        for (const step of steps) {
             this.#activeSteps.get(step.id)?.abort(interruption)
+        }
+        if (!steps.some((step) => step.status === "running")) {
+            return this.#store.getJob(jobId)
         }
         return this.#store.interruptJob(jobId, record)
     }
