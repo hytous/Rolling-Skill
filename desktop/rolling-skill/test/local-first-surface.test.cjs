@@ -31,6 +31,7 @@ describe("local-first desktop surface", () => {
         assert.match(operator, /readOperatorSummaryPage/)
         assert.match(operator, /resolveOperatorApproval/)
         assert.match(operator, /listModelsForRuntime/)
+        assert.doesNotMatch(operator, /renderAll\s*\(/)
         assert.doesNotMatch(operator, /gpt-[\w.-]+|claude-[\w.-]+|deepseek-[\w.-]+/iu)
         assert.match(styles, /\.operator-workbench\s*\{[^}]*grid-template-columns:/s)
         assert.match(styles, /\.operator-composer-wrap\s*\{[^}]*position:\s*sticky/s)

@@ -6,7 +6,9 @@ const {
     OPERATOR_DELTA_INTERVAL_MS,
     artifactDeepLinks,
     buildOperatorSessionRequest,
+    createKeyedTranscriptPatcher,
     createOperatorWorkbenchState,
+    transcriptEntryKey,
 } = require("../renderer/operator-workbench.js")
 
 function summary(overrides = {}) {
@@ -451,7 +453,7 @@ describe("Operator workbench state", () => {
         scheduled[0].callback()
         assert.equal(patches.length, 1)
         assert.equal(patches[0].jobId, "job-1")
-        assert.deepEqual(patches[0].kinds, ["event"])
+        assert.deepEqual(patches[0].entryKeys, ["entry:event-1", "entry:event-3"])
 
         state.setVisible(false)
         await state.ingest("event", {
@@ -532,6 +534,209 @@ describe("Operator workbench state", () => {
         assert.deepEqual(state.listSnapshots().map(({job}) => job.id).sort(), ["job-1", "job-2"])
     })
 
+    it("recovers missed active transcript and artifacts after a gap and invalidates prior artifact paging", async () => {
+        let detailVersion = 1
+        let artifactVersion = 1
+        let detailReads = 0
+        let artifactFirstPageReads = 0
+        const resets = []
+        const state = createOperatorWorkbenchState({
+            async readSummaryPage() {
+                return summary({
+                    revision: 4,
+                    jobs: [{...summary().jobs[0], status: "running"}],
+                })
+            },
+            async readOperatorSession() {
+                detailReads += 1
+                return {
+                    session: {
+                        id: "session-1",
+                        transcript: [{
+                            sessionId: "session-1",
+                            sequence: detailVersion,
+                            kind: "message",
+                            role: "assistant",
+                            content: `detail ${detailVersion}`,
+                        }],
+                    },
+                    parentJob: {...summary().jobs[0], status: "running"},
+                }
+            },
+            async readArtifactPage(jobId, cursor, limit) {
+                assert.equal(jobId, "job-1")
+                assert.equal(cursor, null)
+                assert.ok(limit <= 100)
+                artifactFirstPageReads += 1
+                return {
+                    artifacts: [{
+                        id: `artifact-${artifactVersion}`,
+                        jobId,
+                        kind: "operator-step-result",
+                        name: `artifact-${artifactVersion}.json`,
+                        metadata: {datasetId: `dataset-${artifactVersion}`},
+                    }],
+                    nextCursor: null,
+                }
+            },
+            onActiveReset: (reset) => resets.push(reset),
+        })
+        state.initialize(summary())
+        state.setVisible(true)
+        await state.activateSession("session-1")
+        assert.equal(detailReads, 1)
+        assert.equal(artifactFirstPageReads, 1)
+
+        detailVersion = 2
+        artifactVersion = 2
+        await state.ingest("changed", {
+            generation: "generation-a-0123456789abcdef",
+            revision: 4,
+            invalidate: true,
+            job: {...summary().jobs[0], status: "running"},
+        })
+
+        const recovered = state.getSnapshot("job-1")
+        assert.deepEqual(recovered.transcript.map(({content}) => content), ["detail 2"])
+        assert.deepEqual(recovered.artifacts.map(({id}) => id), ["artifact-2"])
+        assert.equal(recovered.needsDetailCatchUp, false)
+        assert.equal(detailReads, 2)
+        assert.equal(artifactFirstPageReads, 2)
+        assert.ok(resets.some(({reason}) => reason === "catch-up"))
+    })
+
+    it("retries a newer generation that arrives during an in-flight detail catch-up", async () => {
+        let summaryReads = 0
+        let detailReads = 0
+        let releaseDetail
+        let detailRecoveryStarted
+        const detailGate = new Promise((resolve) => { releaseDetail = resolve })
+        const started = new Promise((resolve) => { detailRecoveryStarted = resolve })
+        const state = createOperatorWorkbenchState({
+            async readSummaryPage() {
+                summaryReads += 1
+                return summary({
+                    generation: summaryReads === 1
+                        ? "generation-b-fedcba9876543210"
+                        : "generation-c-0011223344556677",
+                    revision: summaryReads === 1 ? 7 : 8,
+                })
+            },
+            async readOperatorSession() {
+                detailReads += 1
+                if (detailReads === 2) {
+                    detailRecoveryStarted()
+                    await detailGate
+                }
+                return {
+                    session: {id: "session-1", transcript: []},
+                    parentJob: {...summary().jobs[0], status: "running"},
+                }
+            },
+            async readArtifactPage() {
+                return {artifacts: [], nextCursor: null}
+            },
+        })
+        state.initialize(summary())
+        state.setVisible(true)
+        await state.activateSession("session-1")
+
+        const first = state.ingest("changed", {
+            generation: "generation-b-fedcba9876543210",
+            revision: 7,
+            invalidate: true,
+        })
+        await started
+        const second = state.ingest("changed", {
+            generation: "generation-c-0011223344556677",
+            revision: 8,
+            invalidate: true,
+        })
+        releaseDetail()
+        await Promise.all([first, second])
+
+        assert.equal(summaryReads, 2)
+        assert.equal(state.generation, "generation-c-0011223344556677")
+        assert.equal(state.revision, 8)
+        assert.equal(detailReads, 3)
+        assert.equal(state.getSnapshot("job-1").needsDetailCatchUp, false)
+    })
+
+    it("defers hidden Job detail recovery until activation and marks it unread", async () => {
+        const detailReads = []
+        const artifactReads = []
+        const state = createOperatorWorkbenchState({
+            async readSummaryPage() {
+                return summary({
+                    revision: 5,
+                    sessions: [{id: "session-1"}, {id: "session-2"}],
+                    jobs: [
+                        {...summary().jobs[0], status: "running"},
+                        {...summary().jobs[0], id: "job-2", sessionId: "session-2", status: "running"},
+                    ],
+                })
+            },
+            async readOperatorSession(sessionId) {
+                detailReads.push(sessionId)
+                const jobId = sessionId === "session-1" ? "job-1" : "job-2"
+                return {
+                    session: {
+                        id: sessionId,
+                        transcript: [{
+                            sessionId,
+                            sequence: 9,
+                            kind: "message",
+                            content: `caught up ${sessionId}`,
+                        }],
+                    },
+                    parentJob: {...summary().jobs[0], id: jobId, sessionId, status: "running"},
+                }
+            },
+            async readArtifactPage(jobId) {
+                artifactReads.push(jobId)
+                return {
+                    artifacts: [{id: `artifact-${jobId}`, jobId, kind: "report", name: "report"}],
+                    nextCursor: null,
+                }
+            },
+        })
+        state.initialize(summary({
+            sessions: [{id: "session-1"}, {id: "session-2"}],
+            jobs: [
+                summary().jobs[0],
+                {...summary().jobs[0], id: "job-2", sessionId: "session-2"},
+            ],
+        }))
+        state.setVisible(true)
+        await state.activateSession("session-1")
+        detailReads.length = 0
+        artifactReads.length = 0
+
+        await state.ingest("changed", {
+            generation: "generation-a-0123456789abcdef",
+            revision: 5,
+            invalidate: true,
+            job: {...summary().jobs[0], status: "running"},
+        })
+        assert.deepEqual(detailReads, ["session-1"])
+        assert.deepEqual(artifactReads, ["job-1"])
+        assert.equal(state.getSnapshot("job-2").needsDetailCatchUp, true)
+        assert.equal(state.getSnapshot("job-2").unread.events, 1)
+
+        await state.activateSession("session-2")
+        assert.deepEqual(detailReads, ["session-1", "session-2"])
+        assert.deepEqual(artifactReads, ["job-1", "job-2"])
+        assert.deepEqual(state.getSnapshot("job-2").transcript.map(({content}) => content), [
+            "caught up session-2",
+        ])
+        assert.equal(state.getSnapshot("job-2").needsDetailCatchUp, false)
+        assert.deepEqual(state.getSnapshot("job-2").unread, {
+            events: 0,
+            approvals: 0,
+            artifacts: 0,
+        })
+    })
+
     it("does not refresh summary pages for contiguous background Job notifications", async () => {
         let reads = 0
         const state = createOperatorWorkbenchState({
@@ -566,5 +771,96 @@ describe("Operator workbench state", () => {
 
         assert.deepEqual(state.getViewState("job-1"), {draft: "first", scrollTop: 144})
         assert.deepEqual(state.getViewState("job-2"), {draft: "second", scrollTop: 9})
+    })
+})
+
+describe("Operator keyed transcript patcher", () => {
+    function entry(id, sequence, content = id) {
+        return {id, sequence, kind: "message", role: "assistant", content}
+    }
+
+    function fixture() {
+        const children = []
+        const creates = []
+        const updates = []
+        const moves = []
+        const container = {
+            replaceChildren(...nodes) {
+                children.splice(0, children.length, ...nodes)
+            },
+            insertBefore(node, before) {
+                const current = children.indexOf(node)
+                if (current >= 0) children.splice(current, 1)
+                const index = before === null ? children.length : children.indexOf(before)
+                children.splice(index < 0 ? children.length : index, 0, node)
+                moves.push({node, before})
+            },
+            append(node) {
+                this.insertBefore(node, null)
+            },
+        }
+        const patcher = createKeyedTranscriptPatcher({
+            container,
+            createNode(key) {
+                const node = {key}
+                creates.push(node)
+                return node
+            },
+            updateNode(node, value) {
+                node.content = value.content
+                updates.push(node)
+            },
+        })
+        return {children, creates, updates, moves, patcher}
+    }
+
+    it("patches one dirty node in a large transcript without moving unchanged nodes", () => {
+        const context = fixture()
+        const transcript = Array.from({length: 5_000}, (_unused, index) => (
+            entry(`event-${index}`, index, `initial ${index}`)
+        ))
+        context.patcher.reset(transcript)
+        const identities = [...context.children]
+        context.creates.length = 0
+        context.updates.length = 0
+        context.moves.length = 0
+
+        context.patcher.patch([entry("event-2500", 2_500, "updated")])
+
+        assert.equal(context.creates.length, 0)
+        assert.equal(context.updates.length, 1)
+        assert.equal(context.moves.length, 0)
+        assert.deepEqual(context.children, identities)
+        assert.equal(context.children[2_500], identities[2_500])
+        assert.equal(context.children[2_500].content, "updated")
+    })
+
+    it("coalesces the same dirty key and inserts distinct keys in stable order", () => {
+        const context = fixture()
+        context.patcher.reset([entry("event-10", 10), entry("event-40", 40)])
+        const first = context.children[0]
+        const last = context.children[1]
+        context.creates.length = 0
+        context.updates.length = 0
+        context.moves.length = 0
+
+        context.patcher.patch([
+            entry("event-30", 30),
+            entry("event-20", 20, "old"),
+            entry("event-20", 20, "new"),
+        ])
+
+        assert.deepEqual(context.children.map(({key}) => key), [
+            "entry:event-10",
+            "entry:event-20",
+            "entry:event-30",
+            "entry:event-40",
+        ])
+        assert.equal(context.children[0], first)
+        assert.equal(context.children[3], last)
+        assert.equal(context.children[1].content, "new")
+        assert.equal(context.creates.length, 2)
+        assert.equal(context.updates.length, 2)
+        assert.equal(transcriptEntryKey(entry("event-20", 20)), "entry:event-20")
     })
 })

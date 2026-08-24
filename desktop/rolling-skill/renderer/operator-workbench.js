@@ -134,6 +134,10 @@
         return `${prefix}:${JSON.stringify(value ?? null)}`
     }
 
+    function transcriptEntryKey(entry) {
+        return recordId(entry, "entry")
+    }
+
     function copyMapValues(map) {
         return [...map.values()].map((value) => ({...value}))
     }
@@ -154,6 +158,7 @@
             transcript: preserved?.transcript ?? new Map(),
             unread: preserved?.unread ?? emptyUnread(),
             view: preserved?.view ?? {draft: "", scrollTop: 0},
+            needsDetailCatchUp: preserved?.needsDetailCatchUp ?? true,
         }
     }
 
@@ -162,7 +167,9 @@
         const cancel = options.cancel ?? ((handle) => clearTimeout(handle))
         const readSummaryPage = options.readSummaryPage ?? null
         const readOperatorSession = options.readOperatorSession ?? null
+        const readArtifactPage = options.readArtifactPage ?? null
         const onActivePatch = options.onActivePatch ?? (() => {})
+        const onActiveReset = options.onActiveReset ?? (() => {})
         const onListPatch = options.onListPatch ?? (() => {})
 
         let generation = null
@@ -176,7 +183,9 @@
         let entityRevisions = new Map()
         let catchUpPromise = null
         let patchTimer = null
-        const dirtyKinds = new Set()
+        const dirtyEntries = new Map()
+        const detailCatchUps = new Map()
+        const staleGenerations = new Set()
 
         function rootJob(jobId) {
             let current = jobs.get(jobId) ?? null
@@ -331,20 +340,30 @@
             return null
         }
 
-        function scheduleActivePatch(kind, snapshot) {
-            if (kind !== "event" || !visible || snapshot?.job?.id !== activeJobId) return
-            dirtyKinds.add(kind)
+        function cancelActivePatch() {
+            if (patchTimer !== null) cancel(patchTimer)
+            patchTimer = null
+            dirtyEntries.clear()
+        }
+
+        function scheduleActivePatch(entry, snapshot) {
+            if (!entry || !visible || snapshot?.job?.id !== activeJobId) return
+            dirtyEntries.set(transcriptEntryKey(entry), {...entry})
             if (patchTimer !== null) return
             const scheduledJobId = activeJobId
             patchTimer = schedule(() => {
                 patchTimer = null
                 if (!visible || activeJobId !== scheduledJobId) {
-                    dirtyKinds.clear()
+                    dirtyEntries.clear()
                     return
                 }
-                const kinds = [...dirtyKinds]
-                dirtyKinds.clear()
-                onActivePatch({jobId: scheduledJobId, kinds})
+                const entries = [...dirtyEntries.values()].sort(compareTranscriptEntries)
+                dirtyEntries.clear()
+                onActivePatch({
+                    jobId: scheduledJobId,
+                    entryKeys: entries.map(transcriptEntryKey),
+                    entries,
+                })
             }, OPERATOR_DELTA_INTERVAL_MS)
         }
 
@@ -394,6 +413,82 @@
             throw new Error("Operator summary catch-up failed")
         }
 
+        async function readAllArtifactPages(snapshot) {
+            if (typeof readArtifactPage !== "function") return snapshot.artifacts
+            const artifacts = new Map()
+            for (const job of [...snapshot.jobs.values()].slice(0, SUMMARY_PAGE_LIMIT)) {
+                const seenCursors = new Set()
+                let cursor = null
+                for (let pageIndex = 0; pageIndex < MAX_SUMMARY_PAGES; pageIndex += 1) {
+                    const page = await readArtifactPage(job.id, cursor, SUMMARY_PAGE_LIMIT)
+                    for (const artifact of page?.artifacts ?? []) {
+                        if (artifact?.id) artifacts.set(recordId(artifact, "artifact"), artifact)
+                    }
+                    const nextCursor = page?.nextCursor ?? null
+                    if (nextCursor === null) break
+                    const cursorKey = JSON.stringify(nextCursor)
+                    if (seenCursors.has(cursorKey)) {
+                        throw new Error("Operator artifact pagination repeated a cursor")
+                    }
+                    seenCursors.add(cursorKey)
+                    cursor = nextCursor
+                    if (pageIndex === MAX_SUMMARY_PAGES - 1) {
+                        throw new Error(`Operator artifacts exceeded ${MAX_SUMMARY_PAGES} pages`)
+                    }
+                }
+            }
+            return artifacts
+        }
+
+        async function recoverDetail(jobId, {reason = "activation", notifyReset = true} = {}) {
+            const initial = snapshots.get(jobId)
+            if (!initial || !initial.needsDetailCatchUp) return getSnapshot(jobId)
+            if (detailCatchUps.has(jobId)) {
+                await detailCatchUps.get(jobId)
+                const latest = snapshots.get(jobId)
+                if (latest?.needsDetailCatchUp && latest !== initial) {
+                    return recoverDetail(jobId, {reason, notifyReset})
+                }
+                return getSnapshot(jobId)
+            }
+            if (typeof readOperatorSession !== "function") return getSnapshot(jobId)
+            const request = (async () => {
+                const sessionId = initial.session?.id ?? initial.job?.sessionId
+                if (!sessionId) return getSnapshot(jobId)
+                const detail = await readOperatorSession(sessionId)
+                const current = snapshots.get(jobId)
+                if (!current || current !== initial) return getSnapshot(jobId)
+
+                updateSession(detail?.session)
+                updateJob(detail?.parentJob)
+                if (Array.isArray(detail?.session?.transcript)) {
+                    const transcript = new Map()
+                    for (const entry of detail.session.transcript) {
+                        transcript.set(transcriptEntryKey(entry), entry)
+                    }
+                    current.transcript = transcript
+                    for (const [key, entry] of current.events) {
+                        if (transcript.has(transcriptEntryKey(entry))) current.events.delete(key)
+                    }
+                }
+                const artifacts = await readAllArtifactPages(current)
+                if (snapshots.get(jobId) !== current) return getSnapshot(jobId)
+                current.artifacts = artifacts
+                current.needsDetailCatchUp = false
+                if (notifyReset && visible && activeJobId === jobId) {
+                    cancelActivePatch()
+                    onActiveReset({jobId, reason})
+                }
+                return getSnapshot(jobId)
+            })()
+            detailCatchUps.set(jobId, request)
+            try {
+                return await request
+            } finally {
+                if (detailCatchUps.get(jobId) === request) detailCatchUps.delete(jobId)
+            }
+        }
+
         async function catchUp() {
             if (catchUpPromise) return catchUpPromise
             catchUpPromise = (async () => {
@@ -402,6 +497,13 @@
                 replacePages(pages)
                 generation = typeof first.generation === "string" ? first.generation : null
                 revision = Number.isSafeInteger(first.revision) ? first.revision : 0
+                for (const snapshot of snapshots.values()) {
+                    snapshot.needsDetailCatchUp = true
+                    if (!visible || snapshot.job.id !== activeJobId) snapshot.unread.events += 1
+                }
+                if (visible && activeJobId) {
+                    await recoverDetail(activeJobId, {reason: "catch-up"})
+                }
                 if (visible) onListPatch({generation, revision, caughtUp: true})
             })()
             try {
@@ -418,12 +520,21 @@
             const incomingRevision = Number.isSafeInteger(envelope.revision)
                 ? envelope.revision
                 : revision
-            const needsCatchUp = Boolean(
-                generation && incomingGeneration && incomingGeneration !== generation,
-            ) || incomingRevision > revision + 1
-            if (needsCatchUp) await catchUp()
+            if (incomingGeneration !== generation && staleGenerations.has(incomingGeneration)) return
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                const needsCatchUp = Boolean(
+                    generation && incomingGeneration && incomingGeneration !== generation,
+                ) || incomingRevision > revision + 1
+                if (!needsCatchUp) break
+                await catchUp()
+            }
 
-            if (incomingGeneration !== generation) return
+            if (incomingGeneration !== generation) {
+                staleGenerations.add(incomingGeneration)
+                if (staleGenerations.size > 16) staleGenerations.delete(staleGenerations.values().next().value)
+                return
+            }
+            staleGenerations.delete(incomingGeneration)
             const revisionKey = entityRevisionKey(kind, envelope)
             if (revisionKey && incomingRevision < (entityRevisions.get(revisionKey) ?? -1)) return
 
@@ -434,40 +545,35 @@
             }
             if (snapshot && envelope.hydrate !== true && visible && snapshot.job.id === activeJobId) {
                 if (kind !== "event") onListPatch({jobId: snapshot.job.id, kind, inserted})
-                if (inserted) scheduleActivePatch(kind, snapshot)
+                if (kind === "event") scheduleActivePatch(envelope.event, snapshot)
             }
         }
 
         function setVisible(nextVisible) {
             visible = nextVisible === true
-            if (!visible && patchTimer !== null) {
-                cancel(patchTimer)
-                patchTimer = null
-                dirtyKinds.clear()
-            }
+            if (!visible) cancelActivePatch()
         }
 
         async function activateSession(sessionId) {
-            if (patchTimer !== null) {
-                cancel(patchTimer)
-                patchTimer = null
-                dirtyKinds.clear()
-            }
+            cancelActivePatch()
             activeSessionId = sessionId ?? null
             const root = activeSessionId ? rootForSession(activeSessionId) : null
             activeJobId = root?.id ?? null
-            if (activeJobId) snapshots.get(activeJobId).unread = emptyUnread()
-            if (activeSessionId && typeof readOperatorSession === "function") {
-                const detail = await readOperatorSession(activeSessionId)
-                const snapshot = updateSession(detail?.session)
-                updateJob(detail?.parentJob)
-                if (snapshot && Array.isArray(detail?.session?.transcript)) {
-                    for (const entry of detail.session.transcript) {
-                        snapshot.transcript.set(recordId(entry, "transcript"), entry)
-                    }
-                }
+            if (activeJobId && visible) {
+                await recoverDetail(activeJobId, {reason: "activation", notifyReset: false})
+                const snapshot = snapshots.get(activeJobId)
+                if (snapshot) snapshot.unread = emptyUnread()
             }
             return activeJobId ? getSnapshot(activeJobId) : null
+        }
+
+        async function ensureActiveCaughtUp() {
+            if (!visible || !activeJobId) return activeJobId ? getSnapshot(activeJobId) : null
+            const jobId = activeJobId
+            await recoverDetail(jobId, {reason: "activation", notifyReset: false})
+            const snapshot = snapshots.get(jobId)
+            if (snapshot && !snapshot.needsDetailCatchUp) snapshot.unread = emptyUnread()
+            return getSnapshot(jobId)
         }
 
         function getSnapshot(jobId) {
@@ -485,6 +591,7 @@
                 unread: {...snapshot.unread},
                 draft: snapshot.view.draft,
                 scrollTop: snapshot.view.scrollTop,
+                needsDetailCatchUp: snapshot.needsDetailCatchUp,
             }
         }
 
@@ -508,9 +615,7 @@
         }
 
         function destroy() {
-            if (patchTimer !== null) cancel(patchTimer)
-            patchTimer = null
-            dirtyKinds.clear()
+            cancelActivePatch()
         }
 
         return {
@@ -518,6 +623,7 @@
             ingest,
             catchUp,
             activateSession,
+            ensureActiveCaughtUp,
             setVisible,
             getSnapshot,
             listSnapshots,
@@ -579,6 +685,84 @@
         return Number.isSafeInteger(entry.sequence) ? entry.sequence : Number.MAX_SAFE_INTEGER
     }
 
+    function compareTranscriptEntries(left, right) {
+        return entrySequence(left) - entrySequence(right) ||
+            String(left.recordedAt ?? left.occurredAt ?? "").localeCompare(
+                String(right.recordedAt ?? right.occurredAt ?? ""),
+            ) ||
+            transcriptEntryKey(left).localeCompare(transcriptEntryKey(right))
+    }
+
+    function createKeyedTranscriptPatcher(options = {}) {
+        const {container, createNode, updateNode} = options
+        if (!container || typeof createNode !== "function" || typeof updateNode !== "function") {
+            throw new TypeError("Keyed transcript patcher options are required")
+        }
+        let orderedKeys = []
+        const nodes = new Map()
+        const entriesByKey = new Map()
+
+        function latestEntries(entries) {
+            const latest = new Map()
+            for (const entry of entries ?? []) latest.set(transcriptEntryKey(entry), entry)
+            return [...latest.values()].sort(compareTranscriptEntries)
+        }
+
+        function reset(entries) {
+            const nextEntries = latestEntries(entries)
+            const nextNodes = []
+            const retained = new Set()
+            entriesByKey.clear()
+            for (const entry of nextEntries) {
+                const key = transcriptEntryKey(entry)
+                let node = nodes.get(key)
+                if (!node) {
+                    node = createNode(key)
+                    nodes.set(key, node)
+                }
+                updateNode(node, entry)
+                nextNodes.push(node)
+                retained.add(key)
+                entriesByKey.set(key, entry)
+            }
+            for (const key of nodes.keys()) {
+                if (!retained.has(key)) nodes.delete(key)
+            }
+            orderedKeys = nextEntries.map(transcriptEntryKey)
+            container.replaceChildren(...nextNodes)
+        }
+
+        function patch(entries) {
+            for (const entry of latestEntries(entries)) {
+                const key = transcriptEntryKey(entry)
+                if (nodes.has(key)) {
+                    entriesByKey.set(key, entry)
+                    updateNode(nodes.get(key), entry)
+                    continue
+                }
+                let low = 0
+                let high = orderedKeys.length
+                while (low < high) {
+                    const middle = Math.floor((low + high) / 2)
+                    if (compareTranscriptEntries(entry, entriesByKey.get(orderedKeys[middle])) < 0) high = middle
+                    else low = middle + 1
+                }
+                const targetIndex = low
+                const node = createNode(key)
+                updateNode(node, entry)
+                const before = targetIndex < orderedKeys.length
+                    ? nodes.get(orderedKeys[targetIndex])
+                    : null
+                container.insertBefore(node, before)
+                nodes.set(key, node)
+                entriesByKey.set(key, entry)
+                orderedKeys.splice(targetIndex, 0, key)
+            }
+        }
+
+        return {reset, patch}
+    }
+
     function scopeText(scope = {}) {
         const parts = []
         for (const [key, values] of Object.entries(scope ?? {})) {
@@ -630,26 +814,53 @@
         const modelsByRuntime = new Map()
         const modelLoads = new Map()
         const jobNodes = new Map()
-        const transcriptNodes = new Map()
-        const artifactPagesLoadedJobIds = new Set()
         const unsubscribers = []
         let initialized = false
         let creating = false
         let activeRenderedJobId = null
-        let loadingArtifactsForJobId = null
+        let visibilityEpoch = 0
 
         const state = createOperatorWorkbenchState({
             readSummaryPage: (cursor, limit) => api.readOperatorSummaryPage(cursor, limit),
             readOperatorSession: (sessionId) => api.getOperatorSession(sessionId),
+            readArtifactPage: (jobId, cursor, limit) => api.listOperatorArtifacts(jobId, cursor, limit),
             onListPatch: () => {
                 if (!initialized || root.classList.contains("hidden")) return
                 patchJobList()
                 patchActiveChrome()
             },
-            onActivePatch: () => {
+            onActivePatch: ({jobId, entries}) => {
                 if (root.classList.contains("hidden")) return
-                const snapshot = state.getSnapshot(state.activeJobId)
-                if (snapshot) patchTranscript(snapshot)
+                if (jobId !== state.activeJobId || activeRenderedJobId !== jobId) return
+                transcriptPatcher.patch(entries)
+            },
+            onActiveReset: ({jobId}) => {
+                if (root.classList.contains("hidden") || jobId !== state.activeJobId) return
+                const snapshot = state.getSnapshot(jobId)
+                if (!snapshot) return
+                resetTranscript(snapshot)
+                patchActiveChrome()
+            },
+        })
+
+        const transcriptPatcher = createKeyedTranscriptPatcher({
+            container: selectors.transcript,
+            createNode(key) {
+                const card = createElement(document_, "article", "operator-entry")
+                card.dataset.operatorEntryKey = key
+                card.append(
+                    createElement(document_, "span", "operator-entry-label"),
+                    createElement(document_, "div", "operator-entry-copy"),
+                )
+                return card
+            },
+            updateNode(card, entry) {
+                const role = entryRole(entry)
+                card.className = `operator-entry ${role}`
+                card.querySelector(".operator-entry-label").textContent = role === "activity"
+                    ? String(entry.kind ?? "activity").replaceAll("_", " ")
+                    : role
+                card.querySelector(".operator-entry-copy").textContent = entryText(entry)
             },
         })
 
@@ -832,48 +1043,14 @@
         function combinedTranscript(snapshot) {
             const byKey = new Map()
             for (const entry of [...snapshot.transcript, ...snapshot.events]) {
-                byKey.set(recordId(entry, "entry"), entry)
+                byKey.set(transcriptEntryKey(entry), entry)
             }
-            return [...byKey.entries()].sort(([, left], [, right]) => (
-                entrySequence(left) - entrySequence(right) ||
-                String(left.recordedAt ?? left.occurredAt ?? "").localeCompare(
-                    String(right.recordedAt ?? right.occurredAt ?? ""),
-                )
-            ))
+            return [...byKey.values()].sort(compareTranscriptEntries)
         }
 
-        function patchTranscript(snapshot, {reset = false} = {}) {
-            if (reset || activeRenderedJobId !== snapshot.job.id) {
-                selectors.transcript.replaceChildren()
-                transcriptNodes.clear()
-                activeRenderedJobId = snapshot.job.id
-            }
-            const retained = new Set()
-            for (const [key, entry] of combinedTranscript(snapshot)) {
-                retained.add(key)
-                let card = transcriptNodes.get(key)
-                if (!card) {
-                    card = createElement(document_, "article", "operator-entry")
-                    card.dataset.operatorEntryKey = key
-                    card.append(
-                        createElement(document_, "span", "operator-entry-label"),
-                        createElement(document_, "div", "operator-entry-copy"),
-                    )
-                    transcriptNodes.set(key, card)
-                }
-                const role = entryRole(entry)
-                card.className = `operator-entry ${role}`
-                card.querySelector(".operator-entry-label").textContent = role === "activity"
-                    ? String(entry.kind ?? "activity").replaceAll("_", " ")
-                    : role
-                card.querySelector(".operator-entry-copy").textContent = entryText(entry)
-                selectors.transcript.append(card)
-            }
-            for (const [key, card] of transcriptNodes) {
-                if (retained.has(key)) continue
-                card.remove()
-                transcriptNodes.delete(key)
-            }
+        function resetTranscript(snapshot) {
+            activeRenderedJobId = snapshot.job.id
+            transcriptPatcher.reset(combinedTranscript(snapshot))
         }
 
         function sessionConfiguration(snapshot) {
@@ -1015,43 +1192,6 @@
             }
         }
 
-        async function loadArtifacts(snapshot) {
-            if (!snapshot || loadingArtifactsForJobId === snapshot.job.id) return
-            loadingArtifactsForJobId = snapshot.job.id
-            try {
-                for (const job of snapshot.jobs.slice(0, 100)) {
-                    if (artifactPagesLoadedJobIds.has(job.id)) continue
-                    let cursor = null
-                    const seen = new Set()
-                    for (let pageIndex = 0; pageIndex < 50; pageIndex += 1) {
-                        const page = await api.listOperatorArtifacts(job.id, cursor, SUMMARY_PAGE_LIMIT)
-                        for (const artifact of page?.artifacts ?? []) {
-                            await state.ingest("artifact", {
-                                generation: state.generation,
-                                revision: state.revision,
-                                artifact,
-                                hydrate: true,
-                            })
-                        }
-                        cursor = page?.nextCursor ?? null
-                        if (cursor === null) break
-                        const key = JSON.stringify(cursor)
-                        if (seen.has(key)) throw new Error("Operator artifact pagination repeated a cursor")
-                        seen.add(key)
-                    }
-                    artifactPagesLoadedJobIds.add(job.id)
-                }
-                if (
-                    state.activeJobId === snapshot.job.id &&
-                    !root.classList.contains("hidden")
-                ) patchActiveChrome()
-            } catch (error) {
-                onError(error)
-            } finally {
-                if (loadingArtifactsForJobId === snapshot.job.id) loadingArtifactsForJobId = null
-            }
-        }
-
         function saveActiveView() {
             if (!state.activeJobId || activeRenderedJobId !== state.activeJobId) return
             state.setViewState(state.activeJobId, {
@@ -1068,10 +1208,9 @@
                 if (!snapshot) return
                 if (!root.classList.contains("hidden")) {
                     patchJobList()
-                    patchTranscript(snapshot, {reset: true})
+                    resetTranscript(snapshot)
                     patchActiveChrome({restoreView: true})
                 }
-                void loadArtifacts(snapshot)
             } catch (error) {
                 onError(error)
             }
@@ -1224,20 +1363,33 @@
 
         function setVisible(nextVisible) {
             const next = nextVisible === true
+            const epoch = ++visibilityEpoch
             if (!next) saveActiveView()
-            root.classList.toggle("hidden", !next)
             state.setVisible(next)
-            if (!next) return
-            patchJobList()
-            const snapshot = state.getSnapshot(state.activeJobId)
-            if (snapshot) {
-                patchTranscript(snapshot, {reset: activeRenderedJobId !== snapshot.job.id})
-                patchActiveChrome({restoreView: true})
-                void loadArtifacts(snapshot)
-            } else {
-                creating = true
-                patchActiveChrome()
+            if (!next) {
+                root.classList.add("hidden")
+                return
             }
+            root.classList.add("hidden")
+            void (async () => {
+                try {
+                    await state.ensureActiveCaughtUp()
+                    if (epoch !== visibilityEpoch) return
+                    root.classList.remove("hidden")
+                    patchJobList()
+                    const snapshot = state.getSnapshot(state.activeJobId)
+                    if (snapshot) {
+                        resetTranscript(snapshot)
+                        patchActiveChrome({restoreView: true})
+                    } else {
+                        creating = true
+                        patchActiveChrome()
+                    }
+                } catch (error) {
+                    if (epoch === visibilityEpoch) root.classList.remove("hidden")
+                    onError(error)
+                }
+            })()
         }
 
         function destroy() {
@@ -1292,8 +1444,10 @@
         OPERATOR_DELTA_INTERVAL_MS,
         artifactDeepLinks,
         buildOperatorSessionRequest,
+        createKeyedTranscriptPatcher,
         createOperatorWorkbench,
         createOperatorWorkbenchState,
+        transcriptEntryKey,
     }
     if (typeof module !== "undefined" && module.exports) module.exports = exported
     if (globalObject) globalObject.RollingSkillOperatorWorkbench = exported
