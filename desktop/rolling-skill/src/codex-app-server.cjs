@@ -338,14 +338,11 @@ class CodexAppServerClient extends EventEmitter {
                 throw new Error("Operator dynamic Tool arguments are invalid")
             }
             const turnState = this.dynamicToolTurnStates.get(params.threadId)
-            if (!turnState || (turnState.phase !== "starting" && turnState.phase !== "active")) {
+            if (!turnState || turnState.phase !== "active") {
                 throw new Error("Operator dynamic Tool does not belong to the active turn")
             }
             if (turnState.retiredTurnIds.has(params.turnId)) {
                 throw new Error("Operator dynamic Tool does not belong to the active turn")
-            }
-            if (turnState.turnId === null && turnState.phase === "starting") {
-                turnState.turnId = params.turnId
             }
             if (turnState.turnId !== params.turnId) {
                 throw new Error("Operator dynamic Tool does not belong to the active turn")
@@ -639,6 +636,13 @@ class CodexAppServerClient extends EventEmitter {
                 : {}),
         }
         if (!this.dynamicToolThreads.has(threadId)) return this.request("turn/start", params)
+        const current = this.dynamicToolTurnStates.get(threadId)
+        if (current?.phase === "starting" || current?.phase === "active") {
+            throw new Error("Codex Operator turn is already in progress")
+        }
+        if (!current || (current.phase !== "idle" && current.phase !== "terminal")) {
+            throw new Error("Codex Operator thread is not ready")
+        }
         const turnState = this.beginDynamicTurnPhase(threadId, "starting")
         try {
             const response = await this.request("turn/start", params)
