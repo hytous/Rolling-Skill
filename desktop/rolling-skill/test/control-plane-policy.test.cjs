@@ -20,9 +20,21 @@ function grant(overrides = {}) {
             "runtimes.read",
             "runtime.execute",
             "datasets.read",
+            "datasets.write",
+            "datasets.delete",
             "evaluations.read",
             "evaluations.execute",
             "skills.read",
+            "skills.write",
+            "skills.release",
+            "jobs.read",
+            "jobs.control",
+            "approvals.read",
+            "approvals.resolve",
+            "curation.write",
+            "rubrics.publish",
+            "installations.read",
+            "installations.execute",
         ]),
         scopes: Object.freeze({
             skillIds: Object.freeze(["skill-1"]),
@@ -73,6 +85,74 @@ describe("control-plane policy", () => {
             },
             resolvedScope: resolvedScope("raw_cases.enqueue", {skillIds: ["skill-1"]}),
         }), {decision: "allow", reservation: null})
+    })
+
+    it("requires the selected managed Skill and its repository for editing actions", () => {
+        const policy = createControlPolicy()
+        const request = {
+            grant: grant(),
+            method: "skills.create_candidate",
+            action: "skills.write",
+            input: {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                message: "Improve guidance",
+                idempotencyKey: "candidate-1",
+            },
+        }
+
+        assert.deepEqual(policy.decide(request), {
+            decision: "deny",
+            code: "OBJECT_SCOPE_UNRESOLVED",
+            message: "Object scope could not be resolved for this control method",
+        })
+        assert.deepEqual(policy.decide({
+            ...request,
+            resolvedScope: resolvedScope("skills.create_candidate", {
+                subject: {kind: "skill", id: "skill-1"},
+                skillIds: ["skill-1"],
+                repositoryIds: ["repository-1"],
+            }),
+        }), {decision: "allow", reservation: null})
+        assert.deepEqual(policy.decide({
+            ...request,
+            resolvedScope: resolvedScope("skills.create_candidate", {
+                subject: {kind: "skill", id: "skill-1"},
+                skillIds: ["skill-1"],
+                repositoryIds: ["repository-2"],
+            }),
+        }), {
+            decision: "deny",
+            code: "OBJECT_OUT_OF_SCOPE",
+            message: "Repository is outside this Operator session",
+        })
+    })
+
+    it("checks every Runtime target on installation requests", () => {
+        const policy = createControlPolicy()
+        const decision = policy.decide({
+            grant: grant(),
+            method: "installations.start",
+            action: "installations.execute",
+            input: {
+                skillId: "skill-1",
+                repositoryId: "repository-1",
+                versionId: "version-1",
+                targets: [{runtimeId: "runtime-2"}],
+                idempotencyKey: "install-1",
+            },
+            resolvedScope: resolvedScope("installations.start", {
+                subject: {kind: "skill", id: "skill-1"},
+                skillIds: ["skill-1"],
+                repositoryIds: ["repository-1"],
+            }),
+        })
+
+        assert.deepEqual(decision, {
+            decision: "deny",
+            code: "OBJECT_OUT_OF_SCOPE",
+            message: "Runtime is outside this Operator session",
+        })
     })
 
     it("denies an action missing from the capability before considering execution", () => {
@@ -914,20 +994,44 @@ describe("control-plane policy", () => {
         const policy = createControlPolicy()
         const cases = [
             ["datasets.delete", "datasets.delete", "destructive_action", {datasetId: "dataset-1"}],
-            ["skills.release", "skills.release", "release", {skillId: "skill-1"}],
+            ["datasets.delete_case", "datasets.delete", "destructive_action", {
+                datasetId: "dataset-1",
+                caseId: "case-1",
+            }],
+            ["skills.release", "skills.release", "release", {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+            }],
             ["installations.start", "installations.execute", "installation", {
+                repositoryId: "repository-1",
                 skillId: "skill-1",
                 runtimeId: "runtime-1",
             }],
-            ["rubrics.publish", "rubrics.publish", "rubric_publish", {datasetId: "dataset-1"}],
+            ["rubrics.publish", "rubrics.publish", "rubric_publish", {
+                datasetId: "dataset-1",
+                sessionId: "rubric-1",
+            }],
         ]
 
         for (const [method, action, reason, input] of cases) {
+            const scopes = method === "skills.release" || method === "installations.start"
+                ? resolvedScope(method, {
+                    subject: {kind: "skill", id: input.skillId},
+                    skillIds: [input.skillId],
+                    repositoryIds: ["repository-1"],
+                })
+                : method === "rubrics.publish"
+                    ? resolvedScope(method, {
+                        subject: {kind: "rubric_session", id: "rubric-1"},
+                        datasetIds: [input.datasetId],
+                    })
+                    : undefined
             const decision = policy.decide({
                 grant: grant({actions: Object.freeze([])}),
                 method,
                 action,
                 input: {...input, path: "/untrusted/path", commit: "untrusted-commit"},
+                resolvedScope: scopes,
             })
             assert.equal(decision.decision, "approval_required")
             assert.equal(decision.reason, reason)

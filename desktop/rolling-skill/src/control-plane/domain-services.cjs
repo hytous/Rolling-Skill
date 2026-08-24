@@ -8,6 +8,7 @@ const {
     normalizedSkillName,
     RawCaseConflictError,
 } = require("../raw-case-store.cjs")
+const {relative, resolve, sep} = require("node:path")
 
 const FILTER_METHODS = Object.freeze({
     "context.get": "runtimeIds",
@@ -204,12 +205,154 @@ function managedVersionSummary(version) {
     ])
 }
 
+function boundedError(value) {
+    if (!value || typeof value !== "object") return null
+    const code = identifier(value.code)
+    if (code === null) return null
+    return {
+        code,
+        message: String(value.message ?? "").slice(0, 4_096),
+    }
+}
+
+function publicOperatorJob(job) {
+    return {
+        id: job.id,
+        sessionId: job.sessionId,
+        parentJobId: job.parentJobId ?? null,
+        ...ownFields(job, ["type", "objective", "status"]),
+        childJobIds: clone(Array.isArray(job.children) ? job.children : []),
+        artifactIds: clone(Array.isArray(job.artifactIds) ? job.artifactIds : []),
+        approvalIds: clone(Array.isArray(job.approvalIds) ? job.approvalIds : []),
+        ...ownFields(job, ["createdAt", "updatedAt", "startedAt", "completedAt"]),
+        ...(Object.hasOwn(job, "error") ? {error: boundedError(job.error)} : {}),
+    }
+}
+
+function publicApproval(approval) {
+    return {
+        ...ownFields(approval, [
+            "id",
+            "jobId",
+            "sessionId",
+            "stepId",
+            "action",
+            "risk",
+            "scope",
+            "proposedMutation",
+            "expiresAt",
+            "status",
+            "decision",
+            "decisionScope",
+            "decidedBy",
+            "createdAt",
+            "resolvedAt",
+        ]),
+    }
+}
+
+function publicCurationSession(session) {
+    const error = session?.error
+    return {
+        ...ownFields(session, [
+            "id",
+            "datasetId",
+            "caseType",
+            "status",
+            "caseId",
+            "createdAt",
+            "updatedAt",
+        ]),
+        ...(Object.hasOwn(session ?? {}, "error")
+            ? {error: error === null
+                ? null
+                : String(typeof error === "object" ? error?.message ?? "" : error).slice(0, 4_096)}
+            : {}),
+    }
+}
+
+function publicDataset(dataset) {
+    const result = clone(dataset)
+    if (result?.skillReference && typeof result.skillReference === "object") {
+        result.skillReference = publicSkillReference(result.skillReference)
+    }
+    return result
+}
+
+function publicCase(entry) {
+    return ownFields(entry, ["id", "datasetId", "caseType", "question", "createdAt", "updatedAt"])
+}
+
+function publicRubricVersion(version) {
+    return ownFields(version, ["id", "datasetId", "version", "createdAt", "publishedAt"])
+}
+
+const PUBLIC_REASONING_EFFORTS = new Set([
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+])
+
+function publicInstallation(job) {
+    const source = job?.request?.source ?? {}
+    return {
+        id: job.id,
+        parentJobId: job.parentJobId ?? null,
+        ...ownFields(job, ["operation", "status"]),
+        repositoryId: source.repositoryId,
+        skillId: source.skillId,
+        ...ownFields(source, ["versionId"]),
+        runtimeId: job?.runtime?.runtimeId,
+        ...ownFields(job.runtime, ["providerId"]),
+        modelId: job.modelId ?? null,
+        effort: PUBLIC_REASONING_EFFORTS.has(job.effort) ? job.effort : null,
+        ...(Object.hasOwn(job, "error") ? {error: boundedError(job.error)} : {}),
+        ...ownFields(job, ["createdAt", "updatedAt", "completedAt"]),
+    }
+}
+
+function assertCurationIdentity(session, {sessionId = null, datasetId}) {
+    if (
+        identifier(session?.id) === null ||
+        (sessionId !== null && session.id !== sessionId) ||
+        session?.datasetId !== datasetId
+    ) throw new Error("Curation session identity did not match its Dataset")
+    return session
+}
+
+function assertInstallationIdentity(job, expected, {inspection = false} = {}) {
+    const source = job?.request?.source ?? {}
+    const expectedSource = expected?.request?.source ?? {}
+    if (
+        identifier(job?.id) === null ||
+        (inspection ? job?.parentJobId !== expected?.id : job?.id !== expected?.id) ||
+        job?.operation !== (inspection ? "inspect" : expected?.operation) ||
+        job?.runtime?.runtimeId !== expected?.runtime?.runtimeId ||
+        source.repositoryId !== expectedSource.repositoryId ||
+        source.skillId !== expectedSource.skillId ||
+        source.versionId !== expectedSource.versionId
+    ) throw new Error("Skill installation identity did not match its resolved request")
+    return job
+}
+
 function createDomainServices(dependencies = {}) {
     const {
         rawCaseStore,
         evaluationStore,
         evaluationRunner,
         managedSkillManager,
+        managedSkillStore,
+        operatorJobStore,
+        operatorJobEngine,
+        operatorSessionManager,
+        curationManager,
+        rubricManager,
+        skillInstallationStore,
+        skillInstallationManager,
         listDatasets,
         listRawCaseSkills,
         listRuntimes,
@@ -433,6 +576,115 @@ function createDomainServices(dependencies = {}) {
         return skill
     }
 
+    async function requireManagedSkillSelection(skillId, repositoryId) {
+        const skill = await requireSkill(skillId)
+        if (skill.repositoryId !== repositoryId) throw notFound("skill")
+        return skill
+    }
+
+    function requireManagedVersion(versionId, {skillId, repositoryId}) {
+        if (typeof managedSkillStore?.getVersion !== "function") {
+            throw new Error("Managed Skill version store unavailable")
+        }
+        let version
+        try {
+            version = managedSkillStore.getVersion(versionId)
+        } catch {
+            throw notFound("version")
+        }
+        if (version?.id !== versionId || version.skillId !== skillId ||
+            version.repositoryId !== repositoryId) throw notFound("version")
+        return clone(version)
+    }
+
+    function requireOperatorJob(jobId, sessionId) {
+        if (typeof operatorJobStore?.getJob !== "function") throw new Error("Operator Job store unavailable")
+        let job
+        try {
+            job = operatorJobStore.getJob(jobId)
+        } catch {
+            throw notFound("job")
+        }
+        if (job?.id !== jobId || job.sessionId !== sessionId) throw notFound("job")
+        return clone(job)
+    }
+
+    function operatorJobs(sessionId) {
+        if (typeof operatorJobStore?.listJobs !== "function") return []
+        return clone(operatorJobStore.listJobs({sessionId})).filter(
+            (job) => job?.sessionId === sessionId,
+        )
+    }
+
+    function requireOperatorApproval(approvalId, sessionId) {
+        if (typeof operatorJobStore?.getApproval !== "function") {
+            throw new Error("Operator approval store unavailable")
+        }
+        let approval
+        try {
+            approval = operatorJobStore.getApproval(approvalId)
+        } catch {
+            throw notFound("approval")
+        }
+        if (approval?.id !== approvalId || approval.sessionId !== sessionId) {
+            throw notFound("approval")
+        }
+        requireOperatorJob(approval.jobId, sessionId)
+        return clone(approval)
+    }
+
+    function approvalsForSession(sessionId, jobId = null) {
+        const jobs = jobId === null
+            ? operatorJobs(sessionId)
+            : [requireOperatorJob(jobId, sessionId)]
+        if (typeof operatorJobStore?.listApprovals !== "function") return []
+        return jobs.flatMap((job) => clone(operatorJobStore.listApprovals(job.id)))
+            .filter((approval) => approval?.jobId === jobId || jobId === null)
+            .filter((approval) => approval?.sessionId === sessionId)
+    }
+
+    function requireCurationSession(sessionId) {
+        if (typeof evaluationStore?.getCurationSession !== "function") {
+            throw new Error("Curation store unavailable")
+        }
+        let session
+        try {
+            session = evaluationStore.getCurationSession(sessionId)
+        } catch {
+            throw notFound("curation_session")
+        }
+        if (!session || session.id !== sessionId) throw notFound("curation_session")
+        return clone(session)
+    }
+
+    function requireRubricSession(sessionId) {
+        if (typeof evaluationStore?.getRubricSession !== "function") {
+            throw new Error("Rubric store unavailable")
+        }
+        let session
+        try {
+            session = evaluationStore.getRubricSession(sessionId)
+        } catch {
+            throw notFound("rubric_session")
+        }
+        if (!session || session.id !== sessionId) throw notFound("rubric_session")
+        return clone(session)
+    }
+
+    function requireInstallation(installationId) {
+        if (typeof skillInstallationStore?.getJob !== "function") {
+            throw new Error("Skill installation store unavailable")
+        }
+        let installation
+        try {
+            installation = skillInstallationStore.getJob(installationId)
+        } catch {
+            throw notFound("installation")
+        }
+        if (!installation || installation.id !== installationId) throw notFound("installation")
+        return clone(installation)
+    }
+
     async function requireSkillDetail(skillId) {
         const skill = await requireSkill(skillId)
         if (typeof managedSkillManager?.readSkill !== "function") throw notFound("skill")
@@ -523,6 +775,100 @@ function createDomainServices(dependencies = {}) {
     async function resolveScope(method, input, grant) {
         if (Object.hasOwn(FILTER_METHODS, method)) {
             return filterResolution(method, input, grant)
+        }
+        if (["jobs.get", "jobs.pause", "jobs.resume", "jobs.stop"].includes(method)) {
+            return scopeResolution(null, {
+                method,
+                job: requireOperatorJob(input.jobId, grant?.sessionId),
+            })
+        }
+        if (method === "jobs.list") {
+            return scopeResolution(null, {
+                method,
+                jobs: operatorJobs(grant?.sessionId),
+            })
+        }
+        if (method === "approvals.list") {
+            return scopeResolution(null, {
+                method,
+                approvals: approvalsForSession(grant?.sessionId, input.jobId),
+            })
+        }
+        if (method === "approvals.resolve") {
+            return scopeResolution(null, {
+                method,
+                approval: requireOperatorApproval(input.approvalId, grant?.sessionId),
+            })
+        }
+        if (["datasets.create", "skills.diff", "skills.create_candidate", "skills.release", "installations.start"].includes(method)) {
+            const skill = await requireManagedSkillSelection(input.skillId, input.repositoryId)
+            const execution = {method, skill}
+            if (method === "skills.diff") {
+                execution.baseVersion = requireManagedVersion(input.baseVersionId, input)
+                execution.candidateVersion = requireManagedVersion(input.candidateVersionId, input)
+            } else if (method === "skills.release" || method === "installations.start") {
+                execution.version = requireManagedVersion(input.versionId, input)
+            }
+            if (method === "installations.start") {
+                const runtimes = await runtimeInventory()
+                execution.runtimes = input.targets.map((target) =>
+                    requireRuntimeFrom(runtimes, target.runtimeId))
+            }
+            return scopeResolution({
+                method,
+                mode: "access",
+                subject: {kind: "skill", id: skill.id},
+                skillIds: [skill.id],
+                repositoryIds: [skill.repositoryId],
+            }, execution)
+        }
+        if (method === "curation.start") {
+            return scopeResolution(null, {method, dataset: await requireDataset(input.datasetId)})
+        }
+        if (["curation.message", "curation.save", "curation.discard"].includes(method)) {
+            const session = requireCurationSession(input.sessionId)
+            await requireDataset(session.datasetId)
+            return scopeResolution({
+                method,
+                mode: "access",
+                subject: {kind: "curation_session", id: session.id},
+                datasetIds: [session.datasetId],
+            }, {method, session})
+        }
+        if (method === "rubrics.publish") {
+            const session = requireRubricSession(input.sessionId)
+            if (session.datasetId !== input.datasetId) throw notFound("rubric_session")
+            await requireDataset(session.datasetId)
+            return scopeResolution({
+                method,
+                mode: "access",
+                subject: {kind: "rubric_session", id: session.id},
+                datasetIds: [session.datasetId],
+            }, {method, session})
+        }
+        if (["installations.get", "installations.cancel", "installations.inspect"].includes(method)) {
+            const installation = requireInstallation(input.installationId)
+            const source = installation.request?.source ?? {}
+            await requireManagedSkillSelection(source.skillId, source.repositoryId)
+            await requireRuntime(installation.runtime?.runtimeId)
+            return scopeResolution({
+                method,
+                mode: "access",
+                subject: {kind: "installation", id: installation.id},
+                skillIds: [source.skillId],
+                repositoryIds: [source.repositoryId],
+                runtimeIds: [installation.runtime.runtimeId],
+            }, {method, installation})
+        }
+        if (method === "datasets.delete") {
+            return scopeResolution(null, {method, dataset: await requireDataset(input.datasetId)})
+        }
+        if (method === "datasets.delete_case") {
+            const dataset = await requireDataset(input.datasetId)
+            const selectedCase = (await casesForDataset(dataset.id))
+                .find((entry) => entry.id === input.caseId)
+            if (!selectedCase) throw notFound("case")
+            return scopeResolution(null, {method, dataset, case: selectedCase})
         }
         if (method === "evaluations.list" && input.datasetId === null) {
             const granted = new Set(Array.isArray(grant?.scopes?.datasetIds)
@@ -652,6 +998,17 @@ function createDomainServices(dependencies = {}) {
             })
         }
         return scopeResolution(null)
+    }
+
+    async function controlOperatorJob(operation, input, context) {
+        const method = `jobs.${operation}`
+        const execution = trustedExecution(context, method)
+        const job = execution?.job ?? requireOperatorJob(input.jobId, context?.sessionId)
+        if (typeof operatorSessionManager?.[operation] !== "function") {
+            throw new Error("Operator session control unavailable")
+        }
+        await operatorSessionManager[operation](job.sessionId)
+        return {job: publicOperatorJob(requireOperatorJob(job.id, context.sessionId))}
     }
 
     const handlers = {
@@ -788,6 +1145,60 @@ function createDomainServices(dependencies = {}) {
             return result
         },
 
+        async "datasets.create"(input, context) {
+            const execution = trustedExecution(context, "datasets.create")
+            const skill = execution?.skill ??
+                await requireManagedSkillSelection(input.skillId, input.repositoryId)
+            if (typeof managedSkillManager?.repositoryPath !== "function") {
+                throw new Error("Managed Skill repository resolution unavailable")
+            }
+            const repositoryRoot = resolve(await managedSkillManager.repositoryPath(input.repositoryId))
+            const skillPath = resolve(repositoryRoot, String(skill.skillRoot ?? ""))
+            const relativePath = relative(repositoryRoot, skillPath)
+            if (relativePath === ".." || relativePath.startsWith(`..${sep}`)) {
+                throw new Error("Managed Skill root is outside its repository")
+            }
+            if (typeof evaluationStore?.createDataset !== "function") {
+                throw new Error("Dataset store unavailable")
+            }
+            const dataset = await evaluationStore.createDataset({
+                name: input.name,
+                skillReference: {
+                    schemaVersion: "rolling-skill-skill-reference/v1",
+                    name: skill.name,
+                    path: skillPath,
+                    scope: null,
+                    description: skill.description ?? null,
+                    runtimeId: null,
+                    confirmedAt: new Date().toISOString(),
+                },
+            })
+            return {dataset: publicDataset(dataset)}
+        },
+
+        async "datasets.delete"(input, context) {
+            const execution = trustedExecution(context, "datasets.delete")
+            if (execution === null) await requireDataset(input.datasetId)
+            if (typeof evaluationStore?.deleteDataset !== "function") {
+                throw new Error("Dataset store unavailable")
+            }
+            return {dataset: publicDataset(await evaluationStore.deleteDataset(input.datasetId))}
+        },
+
+        async "datasets.delete_case"(input, context) {
+            const execution = trustedExecution(context, "datasets.delete_case")
+            if (execution === null) {
+                const dataset = await requireDataset(input.datasetId)
+                const selectedCase = (await casesForDataset(dataset.id))
+                    .find((entry) => entry.id === input.caseId)
+                if (!selectedCase) throw notFound("case")
+            }
+            if (typeof evaluationStore?.deleteCase !== "function") {
+                throw new Error("Dataset Case store unavailable")
+            }
+            return {case: publicCase(await evaluationStore.deleteCase(input.datasetId, input.caseId))}
+        },
+
         async "evaluations.list"(input, context) {
             const execution = trustedExecution(context, "evaluations.list")
             let runs = execution?.runs ?? await runInventory(input.datasetId)
@@ -869,6 +1280,259 @@ function createDomainServices(dependencies = {}) {
             const execution = trustedExecution(context, "skills.get")
             const detail = execution?.detail ?? (await requireSkillDetail(input.skillId)).detail
             return {skill: detail}
+        },
+
+        async "skills.diff"(input, context) {
+            const execution = trustedExecution(context, "skills.diff")
+            if (execution === null) {
+                await requireManagedSkillSelection(input.skillId, input.repositoryId)
+            }
+            const baseVersion = execution?.baseVersion ??
+                requireManagedVersion(input.baseVersionId, input)
+            const candidateVersion = execution?.candidateVersion ??
+                requireManagedVersion(input.candidateVersionId, input)
+            return {diff: {
+                skillId: input.skillId,
+                repositoryId: input.repositoryId,
+                baseVersionId: baseVersion.id,
+                candidateVersionId: candidateVersion.id,
+                changed: baseVersion.contentDigest !== candidateVersion.contentDigest,
+            }}
+        },
+
+        async "skills.create_candidate"(input, context) {
+            const execution = trustedExecution(context, "skills.create_candidate")
+            if (execution === null) {
+                await requireManagedSkillSelection(input.skillId, input.repositoryId)
+            }
+            if (typeof managedSkillManager?.repositoryPath !== "function" ||
+                typeof managedSkillManager?.createCandidate !== "function") {
+                throw new Error("Managed Skill Candidate creation unavailable")
+            }
+            await managedSkillManager.repositoryPath(input.repositoryId)
+            const version = await managedSkillManager.createCandidate({
+                skillId: input.skillId,
+                message: input.message,
+                createdBy: "operator",
+            })
+            if (version?.repositoryId !== input.repositoryId ||
+                version?.skillId !== input.skillId || version?.createdBy !== "operator") {
+                throw new Error("Managed Skill Candidate identity did not match its repository")
+            }
+            const persisted = requireManagedVersion(version.id, input)
+            if (persisted.commit !== version.commit || persisted.createdBy !== "operator") {
+                throw new Error("Managed Skill Candidate commit was not persisted by its repository")
+            }
+            return {version: managedVersionSummary(version)}
+        },
+
+        async "skills.release"(input, context) {
+            const execution = trustedExecution(context, "skills.release")
+            const version = execution?.version ?? requireManagedVersion(input.versionId, input)
+            if (version.skillId !== input.skillId || version.repositoryId !== input.repositoryId) {
+                throw notFound("version")
+            }
+            if (typeof managedSkillManager?.releaseVersion !== "function") {
+                throw new Error("Managed Skill release unavailable")
+            }
+            const released = await managedSkillManager.releaseVersion({
+                versionId: version.id,
+                versionLabel: input.versionLabel,
+            })
+            if (released?.id !== version.id || released.skillId !== input.skillId ||
+                released.repositoryId !== input.repositoryId) {
+                throw new Error("Managed Skill release identity did not match its repository")
+            }
+            return {version: managedVersionSummary(released)}
+        },
+
+        async "jobs.get"(input, context) {
+            const execution = trustedExecution(context, "jobs.get")
+            return {job: publicOperatorJob(
+                execution?.job ?? requireOperatorJob(input.jobId, context?.sessionId),
+            )}
+        },
+
+        async "jobs.list"(input, context) {
+            const execution = trustedExecution(context, "jobs.list")
+            let jobs = execution?.jobs ?? operatorJobs(context?.sessionId)
+            if (input.status !== null) jobs = jobs.filter((job) => job.status === input.status)
+            const page = paginate(jobs, input)
+            return {jobs: page.items.map(publicOperatorJob), nextCursor: page.nextCursor}
+        },
+
+        async "jobs.pause"(input, context) {
+            return controlOperatorJob("pause", input, context)
+        },
+
+        async "jobs.resume"(input, context) {
+            return controlOperatorJob("resume", input, context)
+        },
+
+        async "jobs.stop"(input, context) {
+            return controlOperatorJob("stop", input, context)
+        },
+
+        async "approvals.list"(input, context) {
+            const execution = trustedExecution(context, "approvals.list")
+            let approvals = execution?.approvals ??
+                approvalsForSession(context?.sessionId, input.jobId)
+            if (input.status !== null) {
+                approvals = approvals.filter((approval) => approval.status === input.status)
+            }
+            const page = paginate(approvals, input)
+            return {
+                approvals: page.items.map(publicApproval),
+                nextCursor: page.nextCursor,
+            }
+        },
+
+        async "approvals.resolve"(input, context) {
+            const execution = trustedExecution(context, "approvals.resolve")
+            const approval = execution?.approval ??
+                requireOperatorApproval(input.approvalId, context?.sessionId)
+            if (typeof operatorJobEngine?.resolveApproval !== "function") {
+                throw new Error("Operator approval engine unavailable")
+            }
+            const result = await operatorJobEngine.resolveApproval(approval.id, {
+                decision: input.decision,
+                scope: "action",
+                decidedBy: `operator:${context.sessionId}`,
+            })
+            return {
+                approval: publicApproval(requireOperatorApproval(approval.id, context.sessionId)),
+                execution: clone(result),
+            }
+        },
+
+        async "curation.start"(input, context) {
+            const execution = trustedExecution(context, "curation.start")
+            if (execution === null) await requireDataset(input.datasetId)
+            if (typeof curationManager?.createSession !== "function") {
+                throw new Error("Curator unavailable")
+            }
+            const {idempotencyKey: _idempotencyKey, ...request} = input
+            const session = await curationManager.createSession(request)
+            return {session: publicCurationSession(assertCurationIdentity(session, {
+                datasetId: input.datasetId,
+            }))}
+        },
+
+        async "curation.message"(input, context) {
+            const execution = trustedExecution(context, "curation.message")
+            const existing = execution?.session ?? requireCurationSession(input.sessionId)
+            if (typeof curationManager?.sendMessage !== "function") throw new Error("Curator unavailable")
+            const session = await curationManager.sendMessage(input.sessionId, input.message)
+            return {session: publicCurationSession(assertCurationIdentity(session, {
+                sessionId: existing.id,
+                datasetId: existing.datasetId,
+            }))}
+        },
+
+        async "curation.save"(input, context) {
+            const execution = trustedExecution(context, "curation.save")
+            const session = execution?.session ?? requireCurationSession(input.sessionId)
+            if (typeof curationManager?.archive !== "function") throw new Error("Curator unavailable")
+            const entry = await curationManager.archive(session.id)
+            return {
+                session: publicCurationSession({...session, status: "archived", caseId: entry.id}),
+                case: publicCase(entry),
+            }
+        },
+
+        async "curation.discard"(input, context) {
+            const execution = trustedExecution(context, "curation.discard")
+            const existing = execution?.session ?? requireCurationSession(input.sessionId)
+            if (typeof curationManager?.discard !== "function") throw new Error("Curator unavailable")
+            const session = await curationManager.discard(input.sessionId)
+            return {session: publicCurationSession(assertCurationIdentity(session, {
+                sessionId: existing.id,
+                datasetId: existing.datasetId,
+            }))}
+        },
+
+        async "rubrics.publish"(input, context) {
+            const execution = trustedExecution(context, "rubrics.publish")
+            const session = execution?.session ?? requireRubricSession(input.sessionId)
+            if (session.datasetId !== input.datasetId) throw notFound("rubric_session")
+            if (typeof rubricManager?.publish !== "function") throw new Error("Rubric Agent unavailable")
+            return {version: publicRubricVersion(await rubricManager.publish(session.id))}
+        },
+
+        async "installations.start"(input, context) {
+            const execution = trustedExecution(context, "installations.start")
+            const skill = execution?.skill ??
+                await requireManagedSkillSelection(input.skillId, input.repositoryId)
+            const version = execution?.version ?? requireManagedVersion(input.versionId, input)
+            if (skill.repositoryId !== version.repositoryId || skill.id !== version.skillId) {
+                throw notFound("version")
+            }
+            if (typeof skillInstallationManager?.start !== "function") {
+                throw new Error("Skill installation unavailable")
+            }
+            const installations = await skillInstallationManager.start({
+                skillId: skill.id,
+                versionId: version.id,
+                targets: clone(input.targets),
+            })
+            const jobs = clone(installations)
+            const targetRuntimeIds = new Set(input.targets.map((target) => target.runtimeId))
+            const returnedRuntimeIds = new Set()
+            if (!Array.isArray(jobs) || jobs.length !== input.targets.length) {
+                throw new Error("Skill installation target identity did not match its request")
+            }
+            for (const job of jobs) {
+                const source = job?.request?.source ?? {}
+                const runtimeId = job?.runtime?.runtimeId
+                if (
+                    job?.operation !== "install" ||
+                    source.repositoryId !== input.repositoryId ||
+                    source.skillId !== input.skillId ||
+                    source.versionId !== input.versionId ||
+                    !targetRuntimeIds.has(runtimeId) ||
+                    returnedRuntimeIds.has(runtimeId)
+                ) {
+                    throw new Error("Skill installation target identity did not match its request")
+                }
+                returnedRuntimeIds.add(runtimeId)
+            }
+            return {installations: jobs.map(publicInstallation)}
+        },
+
+        async "installations.get"(input, context) {
+            const execution = trustedExecution(context, "installations.get")
+            return {installation: publicInstallation(
+                execution?.installation ?? requireInstallation(input.installationId),
+            )}
+        },
+
+        async "installations.cancel"(input, context) {
+            const execution = trustedExecution(context, "installations.cancel")
+            const existing = execution?.installation ?? requireInstallation(input.installationId)
+            if (typeof skillInstallationManager?.cancel !== "function") {
+                throw new Error("Skill installation cancellation unavailable")
+            }
+            return {installation: publicInstallation(
+                assertInstallationIdentity(
+                    await skillInstallationManager.cancel(input.installationId),
+                    existing,
+                ),
+            )}
+        },
+
+        async "installations.inspect"(input, context) {
+            const execution = trustedExecution(context, "installations.inspect")
+            const existing = execution?.installation ?? requireInstallation(input.installationId)
+            if (typeof skillInstallationManager?.inspect !== "function") {
+                throw new Error("Skill installation inspection unavailable")
+            }
+            return {installation: publicInstallation(
+                assertInstallationIdentity(
+                    await skillInstallationManager.inspect(input.installationId),
+                    existing,
+                    {inspection: true},
+                ),
+            )}
         },
     }
 

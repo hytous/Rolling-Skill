@@ -445,6 +445,43 @@ describe("ControlPlane", () => {
         assert.equal(startEvaluation.mock.callCount(), 0)
     })
 
+    it("routes mandatory destructive approval through the Operator executor without touching the domain", async () => {
+        const {control, capabilities, issued, evaluationStore} = createFixture()
+        evaluationStore.deleteDataset = mock.fn(() => ({id: "dataset-1", name: "Billing"}))
+        const destructive = capabilities.issue({
+            sessionId: "operator-destructive",
+            actions: ["datasets.delete"],
+            scopes: {datasetIds: ["dataset-1"]},
+            expiresInMs: 60_000,
+            budget: issued.budget,
+        })
+        const routed = []
+        control.registerOperatorExecutor({
+            sessionId: destructive.sessionId,
+            capabilityId: destructive.id,
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async (request) => {
+                routed.push(request)
+                return {dataset: {id: "dataset-1", name: "Billing"}}
+            },
+        })
+
+        assert.deepEqual(await control.invoke({
+            token: destructive.token,
+            sessionId: destructive.sessionId,
+            method: "datasets.delete",
+            params: {datasetId: "dataset-1", idempotencyKey: "delete-1"},
+        }), {dataset: {id: "dataset-1", name: "Billing"}})
+        assert.equal(routed.length, 1)
+        assert.deepEqual(routed[0].policyDecision, {
+            decision: "approval_required",
+            reason: "destructive_action",
+            requestedScope: {datasetIds: ["dataset-1"]},
+        })
+        assert.equal(evaluationStore.deleteDataset.mock.callCount(), 0)
+    })
+
     it("rejects an Operator scope policy denial before its executor can create a Step", async () => {
         const {control, capabilities, issued} = createFixture()
         const denied = capabilities.issue({

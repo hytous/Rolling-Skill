@@ -4,7 +4,11 @@ const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {describe, it, mock} = require("node:test")
 
-const {CONTROL_METHODS, encodeCursor} = require("../src/control-plane/contracts.cjs")
+const {
+    CONTROL_METHODS,
+    encodeCursor,
+    parseControlOutput,
+} = require("../src/control-plane/contracts.cjs")
 const {createDomainServices} = require("../src/control-plane/domain-services.cjs")
 const {createControlPolicy, createResolvedScope} = require("../src/control-plane/policy.cjs")
 const {
@@ -35,6 +39,53 @@ function fixture(overrides = {}) {
         {id: "run-2", datasetId: "dataset-2", status: "completed"},
         {id: "run-1", datasetId: "dataset-1", status: "running"},
     ]
+    const operatorJobs = [
+        {id: "job-1", sessionId: "operator-1", parentJobId: null, type: "operator", objective: "Improve billing", status: "running", children: [], artifactIds: ["artifact-1"], approvalIds: ["approval-1"]},
+        {id: "job-other", sessionId: "operator-other", parentJobId: null, type: "operator", objective: "Private other session", status: "running", children: [], artifactIds: [], approvalIds: []},
+    ]
+    const approvals = [{
+        id: "approval-1",
+        jobId: "job-1",
+        sessionId: "operator-1",
+        stepId: "step-1",
+        action: "skills.release",
+        scope: {skillIds: ["skill-1"]},
+        proposedMutation: {method: "skills.release", params: {skillId: "skill-1"}},
+        risk: "release",
+        status: "pending",
+        decision: null,
+    }]
+    const curationSessions = [{
+        id: "curation-1",
+        datasetId: "dataset-1",
+        caseType: "badcase",
+        status: "needs_review",
+        episode: {source: {traceReference: "/private/trace.jsonl"}},
+        conversation: [{role: "assistant", text: "private full transcript"}],
+        draft: {referenceAnswer: "private draft"},
+    }]
+    const rubricSessions = [{id: "rubric-1", datasetId: "dataset-1", status: "needs_review"}]
+    const managedVersions = [
+        {id: "version-1", repositoryId: "repository-1", skillId: "skill-1", commit: "a".repeat(40), contentDigest: "sha256:old", state: "released", versionLabel: "v1.0.0", createdBy: "user"},
+        {id: "version-2", repositoryId: "repository-1", skillId: "skill-1", commit: "b".repeat(40), contentDigest: "sha256:new", state: "candidate", versionLabel: null, createdBy: "operator"},
+    ]
+    const installationJobs = [{
+        id: "installation-1",
+        parentJobId: null,
+        operation: "install",
+        status: "running",
+        runtime: {runtimeId: "runtime-1", providerId: "codex", displayName: "Codex", executablePath: "/private/bin/codex"},
+        request: {
+            repositoryPath: "/private/managed/repository-1",
+            skillName: "billing",
+            versionLabel: "v1.0.0",
+            source: {repositoryId: "repository-1", skillId: "skill-1", versionId: "version-1", commit: "a".repeat(40), expectedDigest: "sha256:old"},
+        },
+        modelId: null,
+        effort: null,
+        rawResult: "private installer transcript",
+        traceReference: "/private/install-trace.jsonl",
+    }]
     const runtimes = [
         {runtimeId: "runtime-1", providerId: "codex", executablePath: "/trusted/codex"},
         {runtimeId: "judge-1", providerId: "codebuddy", executablePath: "/trusted/codebuddy"},
@@ -59,6 +110,11 @@ function fixture(overrides = {}) {
             if (!run) throw new Error("Unknown evaluation run")
             return structuredClone(run)
         }),
+        createDataset: mock.fn((input) => ({id: "dataset-created", ...structuredClone(input)})),
+        deleteDataset: mock.fn((datasetId) => structuredClone(datasets.find((entry) => entry.id === datasetId))),
+        deleteCase: mock.fn((datasetId, caseId) => structuredClone(cases.find((entry) => entry.datasetId === datasetId && entry.id === caseId))),
+        getCurationSession: mock.fn((id) => structuredClone(curationSessions.find((entry) => entry.id === id))),
+        getRubricSession: mock.fn((id) => structuredClone(rubricSessions.find((entry) => entry.id === id))),
     }
     const managedSkillManager = {
         overview: mock.fn(() => ({repositories: [], skills: structuredClone(skills), versions: []})),
@@ -71,9 +127,84 @@ function fixture(overrides = {}) {
             snapshot: {digest: "sha256:test"},
             versions: [],
         })),
+        repositoryPath: mock.fn(() => "/private/managed/repository-1"),
+        createCandidate: mock.fn((input) => ({...structuredClone(managedVersions[1]), createdBy: input.createdBy})),
+        releaseVersion: mock.fn((input) => ({...structuredClone(managedVersions[1]), state: "released", versionLabel: input.versionLabel, releasedAt: "2026-08-24T00:00:00.000Z"})),
     }
     const evaluationRunner = {
         cancel: mock.fn((runId) => ({...runs.find((entry) => entry.id === runId), status: "cancelled"})),
+    }
+    const operatorJobStore = {
+        getJob: mock.fn((id) => {
+            const job = operatorJobs.find((entry) => entry.id === id)
+            if (!job) throw new Error("Operator Job not found")
+            return structuredClone(job)
+        }),
+        listJobs: mock.fn(({sessionId} = {}) => structuredClone(operatorJobs.filter((entry) => sessionId === undefined || entry.sessionId === sessionId))),
+        getApproval: mock.fn((id) => {
+            const approval = approvals.find((entry) => entry.id === id)
+            if (!approval) throw new Error("Operator approval not found")
+            return structuredClone(approval)
+        }),
+        listApprovals: mock.fn((jobId) => structuredClone(approvals.filter((entry) => entry.jobId === jobId))),
+    }
+    const operatorSessionManager = {
+        pause: mock.fn((sessionId) => {
+            operatorJobs.find((entry) => entry.sessionId === sessionId).status = "paused"
+            return {session: {id: sessionId, transcript: ["private"]}}
+        }),
+        resume: mock.fn((sessionId) => {
+            operatorJobs.find((entry) => entry.sessionId === sessionId).status = "running"
+            return {session: {id: sessionId, transcript: ["private"]}}
+        }),
+        stop: mock.fn((sessionId) => {
+            operatorJobs.find((entry) => entry.sessionId === sessionId).status = "cancelled"
+            return {session: {id: sessionId, transcript: ["private"]}}
+        }),
+    }
+    const operatorJobEngine = {
+        resolveApproval: mock.fn((approvalId, input) => {
+            const approval = approvals.find((entry) => entry.id === approvalId)
+            approval.status = input.decision === "approve" ? "approved" : "rejected"
+            approval.decision = input.decision
+            return {status: input.decision === "approve" ? "succeeded" : "failed", jobId: approval.jobId, stepId: approval.stepId}
+        }),
+    }
+    const createCurationSession = (input) => ({
+        id: "curation-created",
+        status: "queued",
+        episode: {private: true},
+        conversation: [],
+        ...structuredClone(input),
+    })
+    const curationManager = {
+        createSession: mock.fn(createCurationSession),
+        createSessionFromEvidence: mock.fn(createCurationSession),
+        sendMessage: mock.fn((id) => ({...structuredClone(curationSessions.find((entry) => entry.id === id)), status: "running"})),
+        archive: mock.fn(() => ({id: "case-created", datasetId: "dataset-1", question: "saved"})),
+        discard: mock.fn((id) => ({...structuredClone(curationSessions.find((entry) => entry.id === id)), status: "cancelled"})),
+    }
+    const rubricManager = {
+        publish: mock.fn(() => ({id: "rubric-version-1", datasetId: "dataset-1", rubric: {criteria: []}})),
+    }
+    const managedSkillStore = {
+        getVersion: mock.fn((id) => {
+            const version = managedVersions.find((entry) => entry.id === id)
+            if (!version) throw new Error("Unknown managed Skill version")
+            return structuredClone(version)
+        }),
+    }
+    const skillInstallationStore = {
+        getJob: mock.fn((id) => {
+            const job = installationJobs.find((entry) => entry.id === id)
+            if (!job) throw new Error("Unknown Skill installation job")
+            return structuredClone(job)
+        }),
+    }
+    const skillInstallationManager = {
+        start: mock.fn(() => structuredClone(installationJobs)),
+        cancel: mock.fn((id) => ({...structuredClone(installationJobs.find((entry) => entry.id === id)), status: "cancelled"})),
+        inspect: mock.fn((id) => ({...structuredClone(installationJobs.find((entry) => entry.id === id)), id: "inspection-1", parentJobId: id, operation: "inspect", status: "queued"})),
     }
     const dependencies = {
         workspaceRoot: "/trusted/workspace",
@@ -81,6 +212,14 @@ function fixture(overrides = {}) {
         evaluationStore,
         evaluationRunner,
         managedSkillManager,
+        managedSkillStore,
+        operatorJobStore,
+        operatorJobEngine,
+        operatorSessionManager,
+        curationManager,
+        rubricManager,
+        skillInstallationStore,
+        skillInstallationManager,
         listRuntimes: mock.fn(() => structuredClone(runtimes)),
         listModelsForRuntime: mock.fn((runtimeId) => [{id: `${runtimeId}-model`}]),
         dispatchRawCase: mock.fn(({runtime}) => ({
@@ -90,7 +229,21 @@ function fixture(overrides = {}) {
         startEvaluation: mock.fn((input) => ({id: "run-new", ...structuredClone(input), status: "queued"})),
         ...overrides,
     }
-    return {dependencies, rawCaseStore, evaluationStore, evaluationRunner, managedSkillManager}
+    return {
+        dependencies,
+        rawCaseStore,
+        evaluationStore,
+        evaluationRunner,
+        managedSkillManager,
+        operatorJobStore,
+        operatorJobEngine,
+        operatorSessionManager,
+        curationManager,
+        rubricManager,
+        managedSkillStore,
+        skillInstallationStore,
+        skillInstallationManager,
+    }
 }
 
 function serviceContext(scopeFilter = null) {
@@ -125,6 +278,376 @@ describe("control-plane domain services", () => {
         assert.deepEqual(Object.keys(services).sort(), [...CONTROL_METHODS].sort())
         assert.equal(typeof services.resolveScope, "function")
         assert.equal(Object.prototype.propertyIsEnumerable.call(services, "resolveScope"), false)
+    })
+
+    it("lists and controls only Jobs owned by the capability session", async () => {
+        const {dependencies, operatorSessionManager} = fixture()
+        const services = createDomainServices(dependencies)
+
+        const listed = await services["jobs.list"](
+            {status: null, cursor: null, limit: 100},
+            serviceContext(),
+        )
+        assert.deepEqual(listed.jobs.map((job) => job.id), ["job-1"])
+        assert.equal(Object.hasOwn(listed.jobs[0], "terminalSnapshot"), false)
+        assert.deepEqual(listed.jobs[0].childJobIds, [])
+        await assert.rejects(
+            services["jobs.get"]({jobId: "job-other"}, serviceContext()),
+            (error) => error.code === "NOT_FOUND",
+        )
+
+        for (const [method, managerMethod, status] of [
+            ["jobs.pause", "pause", "paused"],
+            ["jobs.resume", "resume", "running"],
+            ["jobs.stop", "stop", "cancelled"],
+        ]) {
+            const result = await services[method]({
+                jobId: "job-1",
+                idempotencyKey: `${method}-1`,
+            }, serviceContext())
+            assert.equal(result.job.status, status)
+            assert.equal(operatorSessionManager[managerMethod].mock.calls.at(-1).arguments[0], "operator-1")
+            assert.doesNotMatch(JSON.stringify(result), /private/u)
+            assert.doesNotThrow(() => parseControlOutput(method, result))
+        }
+    })
+
+    it("lists and resolves only durable approvals from the capability session", async () => {
+        const {dependencies, operatorJobEngine} = fixture()
+        const services = createDomainServices(dependencies)
+
+        const listed = await services["approvals.list"](
+            {jobId: null, status: null, cursor: null, limit: 100},
+            serviceContext(),
+        )
+        assert.deepEqual(listed.approvals.map((approval) => approval.id), ["approval-1"])
+        const resolved = await services["approvals.resolve"]({
+            approvalId: "approval-1",
+            decision: "approve",
+            idempotencyKey: "approve-1",
+        }, serviceContext())
+
+        assert.deepEqual(operatorJobEngine.resolveApproval.mock.calls[0].arguments, [
+            "approval-1",
+            {decision: "approve", scope: "action", decidedBy: "operator:operator-1"},
+        ])
+        assert.equal(resolved.approval.status, "approved")
+        assert.equal(resolved.execution.status, "succeeded")
+        assert.doesNotThrow(() => parseControlOutput("approvals.resolve", resolved))
+    })
+
+    it("adapts Curator actions through safe summaries without returning Trace or transcript payloads", async () => {
+        const {dependencies, curationManager} = fixture()
+        const services = createDomainServices(dependencies)
+        const started = await services["curation.start"]({
+            datasetId: "dataset-1",
+            caseType: "badcase",
+            sourceThreadId: "thread-1",
+            startItemId: "item-1",
+            startTurnId: null,
+            startMessageOrdinal: null,
+            endItemId: "item-2",
+            endTurnId: null,
+            endMessageOrdinal: null,
+            endMessagePosition: null,
+            issueDescription: "failure",
+            modelId: null,
+            effort: null,
+            idempotencyKey: "curation-start-1",
+        }, serviceContext())
+        const messaged = await services["curation.message"]({
+            sessionId: "curation-1",
+            message: "keep the failure",
+            idempotencyKey: "curation-message-1",
+        }, serviceContext())
+        const saved = await services["curation.save"]({
+            sessionId: "curation-1",
+            idempotencyKey: "curation-save-1",
+        }, serviceContext())
+        const discarded = await services["curation.discard"]({
+            sessionId: "curation-1",
+            idempotencyKey: "curation-discard-1",
+        }, serviceContext())
+
+        assert.equal(curationManager.createSession.mock.callCount(), 1)
+        assert.equal(curationManager.createSessionFromEvidence.mock.callCount(), 0)
+        for (const [method, result] of [
+            ["curation.start", started],
+            ["curation.message", messaged],
+            ["curation.save", saved],
+            ["curation.discard", discarded],
+        ]) {
+            assert.doesNotMatch(JSON.stringify(result), /trace|transcript|conversation|private draft/iu)
+            assert.doesNotThrow(() => parseControlOutput(method, result))
+        }
+        assert.equal(saved.case.id, "case-created")
+    })
+
+    it("fails closed when Curator results escape the resolved Dataset identity", async () => {
+        const context = fixture()
+        context.curationManager.sendMessage = mock.fn(() => ({
+            id: "curation-other",
+            datasetId: "dataset-2",
+            status: "running",
+        }))
+        const services = createDomainServices(context.dependencies)
+
+        await assert.rejects(services["curation.message"]({
+            sessionId: "curation-1",
+            message: "keep the failure",
+            idempotencyKey: "curation-forged",
+        }, serviceContext()), /curation.*identity|dataset/iu)
+    })
+
+    it("bounds Curator errors without returning manager details or paths", async () => {
+        const context = fixture()
+        context.curationManager.sendMessage = mock.fn(() => ({
+            id: "curation-1",
+            datasetId: "dataset-1",
+            status: "failed",
+            error: {
+                code: "CURATION_FAILED",
+                message: "failed safely",
+                details: {tracePath: "/private/curation-trace.jsonl"},
+            },
+        }))
+        const services = createDomainServices(context.dependencies)
+
+        const result = await services["curation.message"]({
+            sessionId: "curation-1",
+            message: "keep the failure",
+            idempotencyKey: "curation-failed",
+        }, serviceContext())
+        assert.equal(result.session.error, "failed safely")
+        assert.doesNotMatch(JSON.stringify(result), /tracePath|private/iu)
+        assert.doesNotThrow(() => parseControlOutput("curation.message", result))
+    })
+
+    it("uses trusted managed repository identity for Dataset and Skill mutations", async () => {
+        const {dependencies, evaluationStore, managedSkillManager, managedSkillStore} = fixture()
+        const services = createDomainServices(dependencies)
+        const datasetInput = {
+            name: "Operator Dataset",
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            idempotencyKey: "dataset-create-1",
+        }
+        const datasetResolution = await services.resolveScope(
+            "datasets.create",
+            datasetInput,
+            serviceContext().grant,
+        )
+        assert.deepEqual(datasetResolution.scope, {
+            method: "datasets.create",
+            mode: "access",
+            subject: {kind: "skill", id: "skill-1"},
+            skillIds: ["skill-1"],
+            repositoryIds: ["repository-1"],
+        })
+        await services["datasets.create"](datasetInput, snapshotContext(datasetResolution, null))
+        const storedReference = evaluationStore.createDataset.mock.calls[0].arguments[0].skillReference
+        assert.equal(storedReference.path, "/private/managed/repository-1/billing")
+        assert.equal(storedReference.name, "billing")
+
+        const diff = await services["skills.diff"]({
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            baseVersionId: "version-1",
+            candidateVersionId: "version-2",
+        }, serviceContext())
+        assert.deepEqual(diff.diff, {
+            skillId: "skill-1",
+            repositoryId: "repository-1",
+            baseVersionId: "version-1",
+            candidateVersionId: "version-2",
+            changed: true,
+        })
+        assert.equal(managedSkillStore.getVersion.mock.callCount(), 2)
+
+        const candidate = await services["skills.create_candidate"]({
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            message: "Improve billing",
+            idempotencyKey: "candidate-1",
+        }, serviceContext())
+        assert.deepEqual(managedSkillManager.createCandidate.mock.calls[0].arguments[0], {
+            skillId: "skill-1",
+            message: "Improve billing",
+            createdBy: "operator",
+        })
+        assert.equal(candidate.version.repositoryId, "repository-1")
+        assert.equal(candidate.version.createdBy, "operator")
+
+        managedSkillManager.createCandidate = mock.fn(() => ({
+            id: "forged-version",
+            repositoryId: "repository-other",
+            skillId: "skill-1",
+            commit: "c".repeat(40),
+            state: "candidate",
+            createdBy: "operator",
+        }))
+        const forged = createDomainServices({...dependencies, managedSkillManager})
+        await assert.rejects(
+            forged["skills.create_candidate"]({
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                message: "Forged",
+                idempotencyKey: "candidate-forged",
+            }, serviceContext()),
+            /repository|identity/iu,
+        )
+    })
+
+    it("supports a managed Skill rooted at the repository without treating it as an escape", async () => {
+        const context = fixture()
+        context.dependencies.managedSkillManager = {
+            ...context.managedSkillManager,
+            catalog: mock.fn(() => ({
+                repositories: [],
+                skills: [{id: "skill-1", repositoryId: "repository-1", name: "billing", skillRoot: "."}],
+            })),
+        }
+        const services = createDomainServices(context.dependencies)
+
+        const created = await services["datasets.create"]({
+            name: "Repository root Skill",
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            idempotencyKey: "dataset-root-skill",
+        }, serviceContext())
+
+        assert.equal(created.dataset.id, "dataset-created")
+        assert.equal(
+            context.evaluationStore.createDataset.mock.calls[0].arguments[0].skillReference.path,
+            "/private/managed/repository-1",
+        )
+    })
+
+    it("projects installation Jobs without executable, repository path, Trace, or raw transcript", async () => {
+        const {dependencies, skillInstallationManager} = fixture()
+        const services = createDomainServices(dependencies)
+        const started = await services["installations.start"]({
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            versionId: "version-1",
+            targets: [{runtimeId: "runtime-1", modelId: null, effort: null, permissionMode: null}],
+            idempotencyKey: "installation-start-1",
+        }, serviceContext())
+        const got = await services["installations.get"](
+            {installationId: "installation-1"},
+            serviceContext(),
+        )
+        const cancelled = await services["installations.cancel"]({
+            installationId: "installation-1",
+            idempotencyKey: "installation-cancel-1",
+        }, serviceContext())
+        const inspected = await services["installations.inspect"]({
+            installationId: "installation-1",
+            idempotencyKey: "installation-inspect-1",
+        }, serviceContext())
+
+        assert.deepEqual(skillInstallationManager.start.mock.calls[0].arguments[0], {
+            skillId: "skill-1",
+            versionId: "version-1",
+            targets: [{runtimeId: "runtime-1", modelId: null, effort: null, permissionMode: null}],
+        })
+        for (const [method, result] of [
+            ["installations.start", started],
+            ["installations.get", got],
+            ["installations.cancel", cancelled],
+            ["installations.inspect", inspected],
+        ]) {
+            assert.doesNotMatch(JSON.stringify(result), /private|executablePath|repositoryPath|rawResult|traceReference/iu)
+            assert.doesNotThrow(() => parseControlOutput(method, result))
+        }
+    })
+
+    it("fails closed when an installation manager returns a Job for another scoped target", async () => {
+        const context = fixture()
+        context.skillInstallationManager.start = mock.fn(() => [{
+            id: "forged-installation",
+            operation: "install",
+            status: "queued",
+            runtime: {runtimeId: "runtime-other", providerId: "codex"},
+            request: {source: {
+                repositoryId: "repository-other",
+                skillId: "skill-other",
+                versionId: "version-other",
+            }},
+        }])
+        const services = createDomainServices(context.dependencies)
+
+        await assert.rejects(services["installations.start"]({
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            versionId: "version-1",
+            targets: [{runtimeId: "runtime-1", modelId: null, effort: null, permissionMode: null}],
+            idempotencyKey: "installation-forged",
+        }, serviceContext()), /installation.*identity|target/iu)
+    })
+
+    it("fails closed when installation follow-up results change the resolved identity", async () => {
+        const context = fixture()
+        context.skillInstallationManager.cancel = mock.fn(() => ({
+            id: "installation-other",
+            parentJobId: null,
+            operation: "install",
+            status: "cancelled",
+            runtime: {runtimeId: "runtime-other", providerId: "codex"},
+            request: {source: {
+                repositoryId: "repository-other",
+                skillId: "skill-other",
+                versionId: "version-other",
+            }},
+        }))
+        const services = createDomainServices(context.dependencies)
+
+        await assert.rejects(services["installations.cancel"]({
+            installationId: "installation-1",
+            idempotencyKey: "installation-cancel-forged",
+        }, serviceContext()), /installation.*identity/iu)
+    })
+
+    it("adapts destructive Dataset, Rubric publish, and release mutations through their real managers", async () => {
+        const {dependencies, evaluationStore, managedSkillManager, rubricManager} = fixture()
+        const services = createDomainServices(dependencies)
+
+        const deletedDataset = await services["datasets.delete"]({
+            datasetId: "dataset-1",
+            idempotencyKey: "delete-dataset-1",
+        }, serviceContext())
+        const deletedCase = await services["datasets.delete_case"]({
+            datasetId: "dataset-1",
+            caseId: "case-1",
+            idempotencyKey: "delete-case-1",
+        }, serviceContext())
+        const released = await services["skills.release"]({
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            versionId: "version-2",
+            versionLabel: "v1.1.0",
+            idempotencyKey: "release-1",
+        }, serviceContext())
+        const published = await services["rubrics.publish"]({
+            datasetId: "dataset-1",
+            sessionId: "rubric-1",
+            idempotencyKey: "publish-rubric-1",
+        }, serviceContext())
+
+        assert.equal(evaluationStore.deleteDataset.mock.callCount(), 1)
+        assert.deepEqual(evaluationStore.deleteCase.mock.calls[0].arguments, ["dataset-1", "case-1"])
+        assert.deepEqual(managedSkillManager.releaseVersion.mock.calls[0].arguments[0], {
+            versionId: "version-2",
+            versionLabel: "v1.1.0",
+        })
+        assert.deepEqual(rubricManager.publish.mock.calls[0].arguments, ["rubric-1"])
+        for (const [method, result] of [
+            ["datasets.delete", deletedDataset],
+            ["datasets.delete_case", deletedCase],
+            ["skills.release", released],
+            ["rubrics.publish", published],
+        ]) assert.doesNotThrow(() => parseControlOutput(method, result))
+        assert.equal(Object.hasOwn(published.version, "rubric"), false)
     })
 
     it("preserves Raw Case question text byte-for-byte and resolves its Skill from inventory", async () => {

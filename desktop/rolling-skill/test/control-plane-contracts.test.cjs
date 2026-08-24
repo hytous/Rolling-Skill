@@ -53,6 +53,18 @@ const validInputs = {
     "runtimes.models": {runtimeId: "codex:local"},
     "datasets.list": {},
     "datasets.get": {datasetId: "dataset-1"},
+    "datasets.create": {
+        name: "Billing",
+        repositoryId: "repository-1",
+        skillId: "skill-1",
+        idempotencyKey: "dataset-create-1",
+    },
+    "datasets.delete": {datasetId: "dataset-1", idempotencyKey: "dataset-delete-1"},
+    "datasets.delete_case": {
+        datasetId: "dataset-1",
+        caseId: "case-1",
+        idempotencyKey: "case-delete-1",
+    },
     "evaluations.list": {datasetId: "dataset-1"},
     "evaluations.get": {runId: "run-1"},
     "evaluations.start": {
@@ -69,6 +81,73 @@ const validInputs = {
     "skills.list": {},
     "skill_versions.list": {},
     "skills.get": {skillId: "skill-1"},
+    "skills.diff": {
+        repositoryId: "repository-1",
+        skillId: "skill-1",
+        baseVersionId: "version-1",
+        candidateVersionId: "version-2",
+    },
+    "skills.create_candidate": {
+        repositoryId: "repository-1",
+        skillId: "skill-1",
+        message: "Improve billing guidance",
+        idempotencyKey: "candidate-1",
+    },
+    "skills.release": {
+        repositoryId: "repository-1",
+        skillId: "skill-1",
+        versionId: "version-2",
+        versionLabel: "v1.1.0",
+        idempotencyKey: "release-1",
+    },
+    "jobs.get": {jobId: "job-1"},
+    "jobs.list": {},
+    "jobs.pause": {jobId: "job-1", idempotencyKey: "pause-1"},
+    "jobs.resume": {jobId: "job-1", idempotencyKey: "resume-1"},
+    "jobs.stop": {jobId: "job-1", idempotencyKey: "stop-1"},
+    "approvals.list": {},
+    "approvals.resolve": {
+        approvalId: "approval-1",
+        decision: "approve",
+        idempotencyKey: "approval-resolve-1",
+    },
+    "curation.start": {
+        datasetId: "dataset-1",
+        caseType: "badcase",
+        sourceThreadId: "thread-1",
+        startItemId: "item-1",
+        endItemId: "item-2",
+        issueDescription: "The answer skipped the owner breakdown.",
+        idempotencyKey: "curation-start-1",
+    },
+    "curation.message": {
+        sessionId: "curation-1",
+        message: "Preserve the original failure mode.",
+        idempotencyKey: "curation-message-1",
+    },
+    "curation.save": {sessionId: "curation-1", idempotencyKey: "curation-save-1"},
+    "curation.discard": {sessionId: "curation-1", idempotencyKey: "curation-discard-1"},
+    "rubrics.publish": {
+        datasetId: "dataset-1",
+        sessionId: "rubric-1",
+        idempotencyKey: "rubric-publish-1",
+    },
+    "installations.start": {
+        repositoryId: "repository-1",
+        skillId: "skill-1",
+        versionId: "version-1",
+        targets: [{runtimeId: "codex:local", modelId: "gpt-5.6-sol", effort: "high"}],
+        idempotencyKey: "install-start-1",
+    },
+    "installations.get": {installationId: "installation-1"},
+    "installations.cancel": {
+        installationId: "installation-1",
+        idempotencyKey: "install-cancel-1",
+    },
+    "installations.inspect": {
+        installationId: "installation-1",
+        idempotencyKey: "install-inspect-1",
+    },
 }
 
 const validOutputs = {
@@ -83,6 +162,9 @@ const validOutputs = {
     "runtimes.models": {models: []},
     "datasets.list": {datasets: [], nextCursor: null},
     "datasets.get": {dataset: {id: "dataset-1"}, cases: []},
+    "datasets.create": {dataset: {id: "dataset-1"}},
+    "datasets.delete": {dataset: {id: "dataset-1"}},
+    "datasets.delete_case": {case: {id: "case-1", datasetId: "dataset-1"}},
     "evaluations.list": {runs: [], nextCursor: null},
     "evaluations.get": {run: {id: "run-1"}},
     "evaluations.start": {run: {id: "run-1"}},
@@ -91,6 +173,47 @@ const validOutputs = {
     "skills.list": {repositories: [], skills: [], nextCursor: null},
     "skill_versions.list": {versions: [], nextCursor: null},
     "skills.get": {skill: {id: "skill-1"}},
+    "skills.diff": {
+        diff: {
+            skillId: "skill-1",
+            repositoryId: "repository-1",
+            baseVersionId: "version-1",
+            candidateVersionId: "version-2",
+            changed: true,
+        },
+    },
+    "skills.create_candidate": {version: {id: "version-2", repositoryId: "repository-1", skillId: "skill-1"}},
+    "skills.release": {version: {id: "version-2", repositoryId: "repository-1", skillId: "skill-1"}},
+    "jobs.get": {job: {id: "job-1", sessionId: "operator-1", status: "running"}},
+    "jobs.list": {jobs: [], nextCursor: null},
+    "jobs.pause": {job: {id: "job-1", sessionId: "operator-1", status: "paused"}},
+    "jobs.resume": {job: {id: "job-1", sessionId: "operator-1", status: "running"}},
+    "jobs.stop": {job: {id: "job-1", sessionId: "operator-1", status: "cancelled"}},
+    "approvals.list": {approvals: [], nextCursor: null},
+    "approvals.resolve": {
+        approval: {id: "approval-1", jobId: "job-1", sessionId: "operator-1", status: "approved"},
+        execution: {status: "succeeded", jobId: "job-1", stepId: "step-1"},
+    },
+    "curation.start": {session: {id: "curation-1", datasetId: "dataset-1", status: "queued"}},
+    "curation.message": {session: {id: "curation-1", datasetId: "dataset-1", status: "running"}},
+    "curation.save": {
+        session: {id: "curation-1", datasetId: "dataset-1", status: "archived"},
+        case: {id: "case-1", datasetId: "dataset-1"},
+    },
+    "curation.discard": {session: {id: "curation-1", datasetId: "dataset-1", status: "cancelled"}},
+    "rubrics.publish": {version: {id: "rubric-version-1", datasetId: "dataset-1"}},
+    "installations.start": {
+        installations: [{id: "installation-1", status: "queued", repositoryId: "repository-1", skillId: "skill-1", runtimeId: "codex:local"}],
+    },
+    "installations.get": {
+        installation: {id: "installation-1", status: "running", repositoryId: "repository-1", skillId: "skill-1", runtimeId: "codex:local"},
+    },
+    "installations.cancel": {
+        installation: {id: "installation-1", status: "cancelled", repositoryId: "repository-1", skillId: "skill-1", runtimeId: "codex:local"},
+    },
+    "installations.inspect": {
+        installation: {id: "inspection-1", status: "queued", repositoryId: "repository-1", skillId: "skill-1", runtimeId: "codex:local"},
+    },
 }
 
 describe("control-plane contracts", () => {
@@ -109,6 +232,9 @@ describe("control-plane contracts", () => {
                 "runtimes.models": "runtimes.read",
                 "datasets.list": "datasets.read",
                 "datasets.get": "datasets.read",
+                "datasets.create": "datasets.write",
+                "datasets.delete": "datasets.delete",
+                "datasets.delete_case": "datasets.delete",
                 "evaluations.list": "evaluations.read",
                 "evaluations.get": "evaluations.read",
                 "evaluations.start": "evaluations.execute",
@@ -117,6 +243,25 @@ describe("control-plane contracts", () => {
                 "skills.list": "skills.read",
                 "skill_versions.list": "skills.read",
                 "skills.get": "skills.read",
+                "skills.diff": "skills.read",
+                "skills.create_candidate": "skills.write",
+                "skills.release": "skills.release",
+                "jobs.get": "jobs.read",
+                "jobs.list": "jobs.read",
+                "jobs.pause": "jobs.control",
+                "jobs.resume": "jobs.control",
+                "jobs.stop": "jobs.control",
+                "approvals.list": "approvals.read",
+                "approvals.resolve": "approvals.resolve",
+                "curation.start": "curation.write",
+                "curation.message": "curation.write",
+                "curation.save": "curation.write",
+                "curation.discard": "curation.write",
+                "rubrics.publish": "rubrics.publish",
+                "installations.start": "installations.execute",
+                "installations.get": "installations.read",
+                "installations.cancel": "installations.execute",
+                "installations.inspect": "installations.execute",
             },
         )
         assert.deepEqual(Object.keys(METHOD_DEFINITIONS), CONTROL_METHODS)
@@ -246,6 +391,35 @@ describe("control-plane contracts", () => {
             assert.doesNotThrow(
                 () => parseControlInput(method, validInputs[method]),
                 `${method} should accept its representative input`,
+            )
+        }
+    })
+
+    it("requires an idempotency key on every expanded mutation", () => {
+        for (const method of [
+            "datasets.create",
+            "datasets.delete",
+            "datasets.delete_case",
+            "skills.create_candidate",
+            "skills.release",
+            "jobs.pause",
+            "jobs.resume",
+            "jobs.stop",
+            "approvals.resolve",
+            "curation.start",
+            "curation.message",
+            "curation.save",
+            "curation.discard",
+            "rubrics.publish",
+            "installations.start",
+            "installations.cancel",
+            "installations.inspect",
+        ]) {
+            const {idempotencyKey: _idempotencyKey, ...withoutKey} = validInputs[method]
+            assert.throws(
+                () => parseControlInput(method, withoutKey),
+                /idempotencyKey|invalid control input/iu,
+                `${method} must require idempotencyKey`,
             )
         }
     })

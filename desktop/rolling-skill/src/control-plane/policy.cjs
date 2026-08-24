@@ -24,11 +24,47 @@ const SCOPE_REQUIREMENTS = Object.freeze({
     "raw_cases.dispatch": Object.freeze({mode: "access", keys: Object.freeze(["skillIds"])}),
     "runtimes.list": Object.freeze({mode: "filter", keys: Object.freeze(["runtimeIds"])}),
     "datasets.list": Object.freeze({mode: "filter", keys: Object.freeze(["datasetIds"])}),
+    "datasets.create": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "repositoryIds"]),
+    }),
     "evaluations.get": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
     "evaluations.cancel": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
     "skill_repositories.list": Object.freeze({mode: "filter", keys: Object.freeze(["repositoryIds"])}),
     "skills.list": Object.freeze({mode: "filter", keys: Object.freeze(["skillIds"])}),
     "skill_versions.list": Object.freeze({mode: "filter", keys: Object.freeze(["skillIds"])}),
+    "skills.diff": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "repositoryIds"]),
+    }),
+    "skills.create_candidate": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "repositoryIds"]),
+    }),
+    "skills.release": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "repositoryIds"]),
+    }),
+    "curation.message": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
+    "curation.save": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
+    "curation.discard": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
+    "rubrics.publish": Object.freeze({mode: "access", keys: Object.freeze(["datasetIds"])}),
+    "installations.start": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "repositoryIds"]),
+    }),
+    "installations.get": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "runtimeIds", "repositoryIds"]),
+    }),
+    "installations.cancel": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "runtimeIds", "repositoryIds"]),
+    }),
+    "installations.inspect": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "runtimeIds", "repositoryIds"]),
+    }),
 })
 const RESOLVED_SCOPE_KEYS = Object.freeze([
     "skillIds",
@@ -43,6 +79,18 @@ const ACCESS_SCOPE_SUBJECTS = Object.freeze({
     "raw_cases.dispatch": Object.freeze({kind: "raw_case", inputKey: "id"}),
     "evaluations.get": Object.freeze({kind: "evaluation_run", inputKey: "runId"}),
     "evaluations.cancel": Object.freeze({kind: "evaluation_run", inputKey: "runId"}),
+    "datasets.create": Object.freeze({kind: "skill", inputKey: "skillId"}),
+    "skills.diff": Object.freeze({kind: "skill", inputKey: "skillId"}),
+    "skills.create_candidate": Object.freeze({kind: "skill", inputKey: "skillId"}),
+    "skills.release": Object.freeze({kind: "skill", inputKey: "skillId"}),
+    "curation.message": Object.freeze({kind: "curation_session", inputKey: "sessionId"}),
+    "curation.save": Object.freeze({kind: "curation_session", inputKey: "sessionId"}),
+    "curation.discard": Object.freeze({kind: "curation_session", inputKey: "sessionId"}),
+    "rubrics.publish": Object.freeze({kind: "rubric_session", inputKey: "sessionId"}),
+    "installations.start": Object.freeze({kind: "skill", inputKey: "skillId"}),
+    "installations.get": Object.freeze({kind: "installation", inputKey: "installationId"}),
+    "installations.cancel": Object.freeze({kind: "installation", inputKey: "installationId"}),
+    "installations.inspect": Object.freeze({kind: "installation", inputKey: "installationId"}),
 })
 
 const APPROVAL_METHOD_DEFINITIONS = Object.freeze({
@@ -251,6 +299,9 @@ function canonicalObjectIds(input) {
         request.runtimeId,
         ...(Array.isArray(request.runtimeIds) ? request.runtimeIds : []),
         request.runtime?.runtimeId,
+        ...(Array.isArray(request.targets)
+            ? request.targets.map((target) => target?.runtimeId)
+            : []),
         ...(Array.isArray(request.runtimeConfigurations)
             ? request.runtimeConfigurations.map((runtime) => runtime?.runtimeId)
             : []),
@@ -513,6 +564,9 @@ function decideControlPolicy({
     if (action !== undefined && action !== canonicalAction) {
         return deny("METHOD_ACTION_MISMATCH", "Action does not match the control method")
     }
+    const scopeState = checkObjectScope(grant, method, input, resolvedScope)
+    if (scopeState.denial !== null) return scopeState.denial
+
     if (definition.reason !== null) return approvalDecision(definition.reason, input)
 
     if (!Array.isArray(grant?.actions) || !grant.actions.includes(canonicalAction)) {
@@ -521,9 +575,6 @@ function decideControlPolicy({
             "Action is not granted for this Operator session",
         )
     }
-
-    const scopeState = checkObjectScope(grant, method, input, resolvedScope)
-    if (scopeState.denial !== null) return scopeState.denial
 
     if (!PHASE_ONE_ACTIONS.has(canonicalAction)) {
         return deny(

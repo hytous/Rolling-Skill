@@ -15,6 +15,9 @@ const MAX_SKILL_PATH_LENGTH = 4_000
 const MAX_EVALUATION_CASES = 1_000
 const MAX_EVALUATION_RUNTIMES = 50
 const MAX_PUBLIC_DETAIL_ITEMS = 50
+const MAX_CONTROL_MESSAGE_LENGTH = 120_000
+const MAX_CANDIDATE_MESSAGE_LENGTH = 2_000
+const MAX_INSTALLATION_TARGETS = 20
 
 const reasoningEffort = z.enum([
     "minimal",
@@ -139,6 +142,10 @@ const runtimeProfile = z.object({
     effort: reasoningEffort.nullable().default(null),
 }).strict()
 
+const installationTarget = runtimeProfile.extend({
+    permissionMode: boundedText(100, "Installation permission").nullable().default(null),
+}).strict()
+
 const evaluationStart = z.object({
     datasetId: id,
     caseIds: z.array(id).max(MAX_EVALUATION_CASES).default([]),
@@ -241,6 +248,96 @@ const managedSkillVersionPageResult = z.object({
     nextCursor: skillVersionCursor.nullable(),
 }).strict()
 
+const operatorJobStatus = z.enum([
+    "queued",
+    "running",
+    "waiting_approval",
+    "paused",
+    "cancelling",
+    "needs_recovery",
+    "succeeded",
+    "failed",
+    "cancelled",
+])
+
+const publicOperatorJob = z.object({
+    id,
+    sessionId: id,
+    parentJobId: id.nullable().optional(),
+    type: boundedText(MAX_IDENTIFIER_LENGTH, "Operator Job type").optional(),
+    objective: z.string().max(32_768).optional(),
+    status: operatorJobStatus,
+    childJobIds: z.array(id).max(10_000).optional(),
+    artifactIds: z.array(id).max(10_000).optional(),
+    approvalIds: z.array(id).max(10_000).optional(),
+    createdAt: boundedText(100, "Operator Job creation time").optional(),
+    updatedAt: boundedText(100, "Operator Job update time").optional(),
+    startedAt: z.string().max(100).nullable().optional(),
+    completedAt: z.string().max(100).nullable().optional(),
+    error: z.object({
+        code: boundedText(MAX_IDENTIFIER_LENGTH, "Operator Job error code"),
+        message: z.string().max(4_096),
+    }).strict().nullable().optional(),
+}).strict()
+
+const publicApproval = z.object({
+    id,
+    jobId: id,
+    sessionId: id,
+    stepId: id.nullable().optional(),
+    action: boundedText(MAX_IDENTIFIER_LENGTH, "Approval action").optional(),
+    risk: z.string().max(16_384).optional(),
+    scope: z.record(z.string(), z.any()).optional(),
+    proposedMutation: z.record(z.string(), z.any()).optional(),
+    expiresAt: boundedText(100, "Approval expiry").optional(),
+    status: z.enum(["pending", "approved", "rejected"]),
+    decision: z.enum(["approve", "reject"]).nullable().optional(),
+    decisionScope: z.string().max(300).nullable().optional(),
+    decidedBy: z.string().max(300).nullable().optional(),
+    createdAt: boundedText(100, "Approval creation time").optional(),
+    resolvedAt: z.string().max(100).nullable().optional(),
+}).strict()
+
+const publicCurationSession = z.object({
+    id,
+    datasetId: id,
+    caseType: z.enum(["goodcase", "badcase"]).optional(),
+    status: boundedText(80, "Curation status"),
+    caseId: id.nullable().optional(),
+    error: z.string().max(4_096).nullable().optional(),
+    createdAt: boundedText(100, "Curation creation time").optional(),
+    updatedAt: boundedText(100, "Curation update time").optional(),
+}).strict()
+
+const publicInstallation = z.object({
+    id,
+    parentJobId: id.nullable().optional(),
+    operation: z.enum(["install", "inspect"]).optional(),
+    status: boundedText(80, "Installation status"),
+    repositoryId: id,
+    skillId: id,
+    versionId: id.optional(),
+    runtimeId: id,
+    providerId: id.optional(),
+    modelId: id.nullable().optional(),
+    effort: reasoningEffort.nullable().optional(),
+    error: z.object({
+        code: boundedText(MAX_IDENTIFIER_LENGTH, "Installation error code"),
+        message: z.string().max(4_096),
+    }).strict().nullable().optional(),
+    createdAt: boundedText(100, "Installation creation time").optional(),
+    updatedAt: boundedText(100, "Installation update time").optional(),
+    completedAt: z.string().max(100).nullable().optional(),
+}).strict()
+
+const publicSkillDiff = z.object({
+    skillId: id,
+    repositoryId: id,
+    baseVersionId: id,
+    candidateVersionId: id,
+    changed: z.boolean(),
+}).strict()
+
 function freezeMethodDefinitions(definitions) {
     for (const definition of Object.values(definitions)) Object.freeze(definition)
     return Object.freeze(definitions)
@@ -309,6 +406,26 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
         input: z.object({datasetId: id, includeCases: z.boolean().default(false)}).strict(),
         output: z.object({dataset: z.any(), cases: z.array(z.any()).optional()}).strict(),
     },
+    "datasets.create": {
+        action: "datasets.write",
+        input: z.object({
+            name: boundedText(500, "Dataset name"),
+            repositoryId: id,
+            skillId: id,
+            idempotencyKey: id,
+        }).strict(),
+        output: z.object({dataset: z.any()}).strict(),
+    },
+    "datasets.delete": {
+        action: "datasets.delete",
+        input: z.object({datasetId: id, idempotencyKey: id}).strict(),
+        output: z.object({dataset: z.any()}).strict(),
+    },
+    "datasets.delete_case": {
+        action: "datasets.delete",
+        input: z.object({datasetId: id, caseId: id, idempotencyKey: id}).strict(),
+        output: z.object({case: z.any()}).strict(),
+    },
     "evaluations.list": {
         action: "evaluations.read",
         input: page.extend({datasetId: id.nullable().default(null)}).strict(),
@@ -349,6 +466,167 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
         input: z.object({skillId: id}).strict(),
         output: z.object({skill: z.any()}).strict(),
     },
+    "skills.diff": {
+        action: "skills.read",
+        input: z.object({
+            repositoryId: id,
+            skillId: id,
+            baseVersionId: id,
+            candidateVersionId: id,
+        }).strict(),
+        output: z.object({diff: publicSkillDiff}).strict(),
+    },
+    "skills.create_candidate": {
+        action: "skills.write",
+        input: z.object({
+            repositoryId: id,
+            skillId: id,
+            message: boundedText(MAX_CANDIDATE_MESSAGE_LENGTH, "Candidate commit message"),
+            idempotencyKey: id,
+        }).strict(),
+        output: z.object({version: managedSkillVersion}).strict(),
+    },
+    "skills.release": {
+        action: "skills.release",
+        input: z.object({
+            repositoryId: id,
+            skillId: id,
+            versionId: id,
+            versionLabel: boundedText(64, "Version label"),
+            idempotencyKey: id,
+        }).strict(),
+        output: z.object({version: managedSkillVersion}).strict(),
+    },
+    "jobs.get": {
+        action: "jobs.read",
+        input: z.object({jobId: id}).strict(),
+        output: z.object({job: publicOperatorJob}).strict(),
+    },
+    "jobs.list": {
+        action: "jobs.read",
+        input: page.extend({status: operatorJobStatus.nullable().default(null)}).strict(),
+        output: z.object({
+            jobs: z.array(publicOperatorJob).max(MAX_PAGE_SIZE),
+            nextCursor: cursor.nullable(),
+        }).strict(),
+    },
+    "jobs.pause": {
+        action: "jobs.control",
+        input: z.object({jobId: id, idempotencyKey: id}).strict(),
+        output: z.object({job: publicOperatorJob}).strict(),
+    },
+    "jobs.resume": {
+        action: "jobs.control",
+        input: z.object({jobId: id, idempotencyKey: id}).strict(),
+        output: z.object({job: publicOperatorJob}).strict(),
+    },
+    "jobs.stop": {
+        action: "jobs.control",
+        input: z.object({jobId: id, idempotencyKey: id}).strict(),
+        output: z.object({job: publicOperatorJob}).strict(),
+    },
+    "approvals.list": {
+        action: "approvals.read",
+        input: page.extend({
+            jobId: id.nullable().default(null),
+            status: z.enum(["pending", "approved", "rejected"]).nullable().default(null),
+        }).strict(),
+        output: z.object({
+            approvals: z.array(publicApproval).max(MAX_PAGE_SIZE),
+            nextCursor: cursor.nullable(),
+        }).strict(),
+    },
+    "approvals.resolve": {
+        action: "approvals.resolve",
+        input: z.object({
+            approvalId: id,
+            decision: z.enum(["approve", "reject"]),
+            idempotencyKey: id,
+        }).strict(),
+        output: z.object({
+            approval: publicApproval,
+            execution: z.object({
+                status: boundedText(80, "Approval execution status"),
+                jobId: id,
+                stepId: id.optional(),
+                approvalId: id.optional(),
+                result: z.any().optional(),
+                error: z.any().optional(),
+            }).strict(),
+        }).strict(),
+    },
+    "curation.start": {
+        action: "curation.write",
+        input: z.object({
+            datasetId: id,
+            caseType: z.enum(["goodcase", "badcase"]),
+            sourceThreadId: id,
+            startItemId: id.nullable().default(null),
+            startTurnId: id.nullable().default(null),
+            startMessageOrdinal: z.number().int().min(0).nullable().default(null),
+            endItemId: id.nullable().default(null),
+            endTurnId: id.nullable().default(null),
+            endMessageOrdinal: z.number().int().min(0).nullable().default(null),
+            endMessagePosition: z.enum(["before", "at", "after"]).nullable().default(null),
+            issueDescription: z.string().max(MAX_CONTROL_MESSAGE_LENGTH).default(""),
+            modelId: id.nullable().default(null),
+            effort: reasoningEffort.nullable().default(null),
+            idempotencyKey: id,
+        }).strict(),
+        output: z.object({session: publicCurationSession}).strict(),
+    },
+    "curation.message": {
+        action: "curation.write",
+        input: z.object({
+            sessionId: id,
+            message: boundedText(MAX_CONTROL_MESSAGE_LENGTH, "Curation message"),
+            idempotencyKey: id,
+        }).strict(),
+        output: z.object({session: publicCurationSession}).strict(),
+    },
+    "curation.save": {
+        action: "curation.write",
+        input: z.object({sessionId: id, idempotencyKey: id}).strict(),
+        output: z.object({session: publicCurationSession, case: z.any()}).strict(),
+    },
+    "curation.discard": {
+        action: "curation.write",
+        input: z.object({sessionId: id, idempotencyKey: id}).strict(),
+        output: z.object({session: publicCurationSession}).strict(),
+    },
+    "rubrics.publish": {
+        action: "rubrics.publish",
+        input: z.object({datasetId: id, sessionId: id, idempotencyKey: id}).strict(),
+        output: z.object({version: z.any()}).strict(),
+    },
+    "installations.start": {
+        action: "installations.execute",
+        input: z.object({
+            repositoryId: id,
+            skillId: id,
+            versionId: id,
+            targets: z.array(installationTarget).min(1).max(MAX_INSTALLATION_TARGETS),
+            idempotencyKey: id,
+        }).strict(),
+        output: z.object({
+            installations: z.array(publicInstallation).min(1).max(MAX_INSTALLATION_TARGETS),
+        }).strict(),
+    },
+    "installations.get": {
+        action: "installations.read",
+        input: z.object({installationId: id}).strict(),
+        output: z.object({installation: publicInstallation}).strict(),
+    },
+    "installations.cancel": {
+        action: "installations.execute",
+        input: z.object({installationId: id, idempotencyKey: id}).strict(),
+        output: z.object({installation: publicInstallation}).strict(),
+    },
+    "installations.inspect": {
+        action: "installations.execute",
+        input: z.object({installationId: id, idempotencyKey: id}).strict(),
+        output: z.object({installation: publicInstallation}).strict(),
+    },
 })
 
 const CONTROL_METHODS = Object.freeze(Object.keys(METHOD_DEFINITIONS))
@@ -383,6 +661,12 @@ const notFoundErrorDetails = z.object({
         "skill",
         "runtime",
         "model",
+        "job",
+        "approval",
+        "curation_session",
+        "rubric_session",
+        "installation",
+        "version",
     ]),
 }).strict()
 
