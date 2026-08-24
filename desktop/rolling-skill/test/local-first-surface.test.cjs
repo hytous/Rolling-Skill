@@ -10,6 +10,34 @@ function source(path) {
 }
 
 describe("local-first desktop surface", () => {
+    it("provides a dedicated three-column Operator self-operation surface", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const operator = source("renderer/operator-workbench.js")
+        const styles = source("renderer/styles.css")
+
+        assert.match(html, /data-surface="operator"/)
+        assert.match(html, /id="operator-workbench"/)
+        assert.match(html, /id="operator-job-list"/)
+        assert.match(html, /id="operator-transcript"/)
+        assert.match(html, /id="operator-status-panel"/)
+        assert.match(html, /id="operator-composer"/)
+        assert.match(html, /id="operator-setup-form"/)
+        assert.match(html, /id="operator-approval-queue"/)
+        assert.match(html, /operator-workbench\.js/)
+        assert.match(renderer, /createOperatorWorkbench/)
+        assert.match(renderer, /surface === "operator"/)
+        assert.match(renderer, /typeof window\.rollingSkill\.bootstrapOperator === "function"/)
+        assert.match(operator, /readOperatorSummaryPage/)
+        assert.match(operator, /resolveOperatorApproval/)
+        assert.match(operator, /listModelsForRuntime/)
+        assert.doesNotMatch(operator, /gpt-[\w.-]+|claude-[\w.-]+|deepseek-[\w.-]+/iu)
+        assert.match(styles, /\.operator-workbench\s*\{[^}]*grid-template-columns:/s)
+        assert.match(styles, /\.operator-composer-wrap\s*\{[^}]*position:\s*sticky/s)
+        assert.match(styles, /@media \(max-width: 1120px\)[\s\S]*?\.operator-workbench\s*\{[^}]*grid-template-columns:/)
+        assert.match(styles, /@media \(max-height: 640px\)[\s\S]*?\.operator-composer-wrap\s*\{[^}]*bottom:\s*0/)
+    })
+
     it("ships a reversible two-color mechanical S keycap app icon and keeps both originals", () => {
         const previousAppIcon = source("assets/icon.svg")
         const previousKeycapIcon = source("assets/icon-spin-keycap.svg")
@@ -379,7 +407,7 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /importManagedSkill/)
         assert.match(renderer, /createManagedSkillCandidate/)
         assert.match(renderer, /releaseManagedSkillVersion/)
-        assert.match(renderer, /surface !== "chat" && surface !== "evaluation" && surface !== "skills"/)
+        assert.match(renderer, /\["chat", "evaluation", "skills", "operator"\]\.includes\(surface\)/)
         assert.match(renderer, /initial\.managedSkills/)
         assert.match(renderer, /onManagedSkillsChanged/)
         assert.match(renderer, /onSkillInstallationsChanged/)

@@ -6,6 +6,7 @@ const {afterEach, describe, it} = require("node:test")
 
 const {
     OperatorJobEngine,
+    operatorArtifactMetadata,
     preflightOperatorBudget,
 } = require("../src/operator/job-engine.cjs")
 const {OperatorJobStore} = require("../src/operator/job-store.cjs")
@@ -69,6 +70,144 @@ function createUncertainStep(store, job, request) {
 }
 
 describe("Operator Job engine", () => {
+    it("projects only method-specific stable entity IDs into public artifact metadata", () => {
+        assert.deepEqual(operatorArtifactMetadata("datasets.get", {
+            dataset: {
+                id: "dataset-1",
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                path: "/private/dataset.json",
+            },
+            metadata: {
+                caseId: "forged-case",
+                response: "secret response",
+            },
+            trace: {runtimeExecutable: "/usr/local/bin/runtime"},
+        }, {}), {
+            datasetId: "dataset-1",
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+        })
+        assert.deepEqual(operatorArtifactMetadata("curation.save", {
+            session: {datasetId: "dataset-2"},
+            case: {id: "case-2", datasetId: "dataset-2", evidence: "secret"},
+        }, {methodFacts: {
+            method: "curation.save",
+            datasetId: "dataset-2",
+            resourceDigest: "do-not-project",
+        }}), {
+            datasetId: "dataset-2",
+            caseId: "case-2",
+        })
+        assert.deepEqual(operatorArtifactMetadata("evaluations.start", {
+            run: {id: "evaluation-1", datasetId: "dataset-3", judge: {body: "secret"}},
+        }, {evaluationSelection: {
+            datasetId: "dataset-3",
+            caseIds: ["case-secret"],
+            datasetRevision: "revision-secret",
+        }}), {
+            datasetId: "dataset-3",
+            evaluationId: "evaluation-1",
+        })
+        assert.deepEqual(operatorArtifactMetadata("skills.create_candidate", {
+            version: {
+                id: "candidate-1",
+                repositoryId: "repository-2",
+                skillId: "skill-2",
+                contentDigest: "do-not-project",
+            },
+        }, {methodFacts: {
+            method: "skills.create_candidate",
+            repositoryId: "repository-2",
+            skillId: "skill-2",
+            baseCommit: "do-not-project",
+        }}), {
+            repositoryId: "repository-2",
+            skillId: "skill-2",
+            candidateId: "candidate-1",
+        })
+        assert.deepEqual(operatorArtifactMetadata("installations.get", {
+            installation: {
+                id: "installation-1",
+                request: {source: {repositoryId: "repository-3", skillId: "skill-3"}},
+                runtime: {executablePath: "/private/runtime"},
+            },
+        }, {methodFacts: {
+            method: "installations.get",
+            installationId: "installation-1",
+            repositoryId: "repository-3",
+            skillId: "skill-3",
+            resourceDigest: "do-not-project",
+        }}), {
+            installationId: "installation-1",
+            repositoryId: "repository-3",
+            skillId: "skill-3",
+        })
+        assert.deepEqual(operatorArtifactMetadata("installations.start", {
+            installations: [
+                {id: "installation-2"},
+                {id: "installation-3", runtime: {executablePath: "/private/runtime"}},
+            ],
+            metadata: {installationIds: ["forged-installation"]},
+        }, {methodFacts: {
+            method: "installations.start",
+            repositoryId: "repository-3",
+            skillId: "skill-3",
+        }}), {
+            installationIds: ["installation-2", "installation-3"],
+            repositoryId: "repository-3",
+            skillId: "skill-3",
+        })
+        assert.equal(operatorArtifactMetadata("unknown.method", {
+            dataset: {id: "forged-dataset"},
+            metadata: {datasetId: "forged-dataset"},
+        }, {methodFacts: {datasetId: "forged-dataset"}}), null)
+        assert.equal(operatorArtifactMetadata("datasets.get", {
+            dataset: {id: "/private/dataset.json"},
+        }, {}), null)
+    })
+
+    it("persists the allowlisted IDs and keeps legacy artifacts without metadata safe", async () => {
+        const {store, session} = fixture()
+        const job = createJob(store, session.id)
+        const engine = new OperatorJobEngine({
+            store,
+            handlers: {
+                "datasets.get": async () => ({
+                    dataset: {
+                        id: "dataset-1",
+                        repositoryId: "repository-1",
+                        skillId: "skill-1",
+                    },
+                    metadata: {caseId: "forged-case"},
+                    path: "/private/dataset.json",
+                    response: {body: "secret"},
+                }),
+            },
+        })
+        const execution = await engine.execute(job.id, {
+            method: "datasets.get",
+            params: {datasetId: "dataset-1"},
+            idempotencyKey: "artifact-metadata-dataset-1",
+        })
+        assert.equal(execution.status, "succeeded")
+        const [artifact] = store.listArtifacts(job.id)
+        assert.deepEqual(artifact.metadata, {
+            datasetId: "dataset-1",
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+        })
+        assert.doesNotMatch(JSON.stringify(artifact.metadata), /private|forged|response|body/iu)
+
+        const legacy = store.createArtifact(job.id, {
+            kind: "operator-report",
+            name: "legacy.json",
+            mediaType: "application/json",
+            body: JSON.stringify({datasetId: "body-only-id"}),
+        })
+        assert.equal(legacy.metadata, null)
+    })
+
     it("schedules child Jobs and executes one persisted Step exactly once before and after restart", async () => {
         const {path, store, session} = fixture()
         const parent = createJob(store, session.id)

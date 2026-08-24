@@ -169,7 +169,7 @@ button:not(:disabled) {
     border: 1px solid var(--border);
     border-radius: 9px;
     background: color-mix(in srgb, var(--surface) 54%, transparent);
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 3px;
 }
 
@@ -545,7 +545,9 @@ kbd {
 .workbench.evaluation-mode > .conversation-scroll,
 .workbench.evaluation-mode > .composer-wrap,
 .workbench.skills-mode > .conversation-scroll,
-.workbench.skills-mode > .composer-wrap {
+.workbench.skills-mode > .composer-wrap,
+.workbench.operator-mode > .conversation-scroll,
+.workbench.operator-mode > .composer-wrap {
     display: none;
 }
 
@@ -582,6 +584,467 @@ kbd {
 
 .workbench.skills-mode:has(> .error-banner:not(.hidden)) > .skill-management-workbench {
     grid-row: 3 / -1;
+}
+
+.operator-workbench {
+    display: grid;
+    overflow: hidden;
+    min-width: 0;
+    min-height: 0;
+    background: var(--surface);
+    grid-row: 2 / -1;
+    grid-template-columns: minmax(190px, 0.68fr) minmax(360px, 1.75fr) minmax(245px, 0.86fr);
+}
+
+.workbench.operator-mode:has(> .error-banner:not(.hidden)) > .operator-workbench {
+    grid-row: 3 / -1;
+}
+
+.operator-job-panel,
+.operator-session-panel,
+.operator-status-panel {
+    min-width: 0;
+    min-height: 0;
+}
+
+.operator-job-panel,
+.operator-status-panel {
+    background: color-mix(in srgb, var(--surface-raised) 42%, var(--surface));
+}
+
+.operator-job-panel {
+    display: grid;
+    overflow: hidden;
+    border-right: 1px solid var(--border);
+    grid-template-rows: auto minmax(0, 1fr);
+}
+
+.operator-panel-header,
+.operator-session-header {
+    display: flex;
+    min-height: 64px;
+    padding: 13px 14px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+}
+
+.operator-panel-header > div,
+.operator-session-header > div:first-child {
+    display: grid;
+    gap: 3px;
+}
+
+.operator-panel-header strong {
+    font-size: 15px;
+}
+
+.operator-panel-header button {
+    padding: 6px 9px;
+    border-radius: 7px;
+    font-size: 11px;
+}
+
+.operator-job-list {
+    overflow-y: auto;
+    padding: 8px;
+}
+
+.operator-job-item {
+    position: relative;
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    margin-bottom: 5px;
+    padding: 10px 28px 10px 10px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    gap: 5px;
+    text-align: left;
+}
+
+.operator-job-item:hover {
+    background: var(--surface-hover);
+}
+
+.operator-job-item.active {
+    border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+    background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+}
+
+.operator-job-title {
+    overflow: hidden;
+    font-size: 12.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.operator-job-meta {
+    color: var(--muted);
+    font-size: 10.5px;
+    text-transform: capitalize;
+}
+
+.operator-job-unread {
+    position: absolute;
+    top: 50%;
+    right: 9px;
+    display: grid;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    place-items: center;
+    font-size: 10px;
+    font-weight: 700;
+    transform: translateY(-50%);
+}
+
+.operator-session-panel {
+    position: relative;
+    display: grid;
+    overflow: hidden;
+    background:
+        radial-gradient(circle at 90% 0, color-mix(in srgb, var(--accent) 7%, transparent), transparent 28%),
+        var(--surface);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.operator-session-header h1,
+.operator-setup-form h1 {
+    margin: 2px 0 0;
+    font-size: 17px;
+    letter-spacing: -0.02em;
+}
+
+.operator-state-pill {
+    width: max-content;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 10%, var(--surface-raised));
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 650;
+    text-transform: capitalize;
+}
+
+.operator-session-actions,
+.operator-inline-actions,
+.operator-approval-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.operator-control-button,
+.operator-approval-actions button,
+.operator-link {
+    padding: 5px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 7px;
+    background: var(--surface);
+    font-size: 10.5px;
+}
+
+.operator-transcript {
+    overflow-y: auto;
+    min-height: 0;
+    padding: 18px clamp(16px, 4vw, 52px) 24px;
+    overscroll-behavior: contain;
+}
+
+.operator-entry {
+    display: grid;
+    max-width: 88%;
+    margin: 0 0 14px;
+    gap: 5px;
+}
+
+.operator-entry.user {
+    margin-left: auto;
+}
+
+.operator-entry-label {
+    color: var(--faint);
+    font-size: 9.5px;
+    font-weight: 650;
+    letter-spacing: 0.045em;
+    text-transform: uppercase;
+}
+
+.operator-entry.user .operator-entry-label {
+    text-align: right;
+}
+
+.operator-entry-copy {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-raised);
+    line-height: 1.52;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.operator-entry.user .operator-entry-copy {
+    border-color: color-mix(in srgb, var(--accent) 20%, var(--border));
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface-raised));
+}
+
+.operator-entry.activity {
+    max-width: 100%;
+}
+
+.operator-entry.activity .operator-entry-copy {
+    padding: 8px 10px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.operator-composer-wrap {
+    position: sticky;
+    z-index: 4;
+    bottom: 0;
+    padding: 10px clamp(14px, 3vw, 36px) 14px;
+    border-top: 1px solid var(--border);
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    backdrop-filter: blur(10px);
+}
+
+.operator-composer {
+    display: grid;
+    padding: 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 11px;
+    background: var(--surface);
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 8px;
+}
+
+.operator-composer textarea {
+    min-height: 38px;
+    max-height: 130px;
+    padding: 8px;
+    resize: vertical;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--text);
+}
+
+.operator-composer button {
+    min-width: 58px;
+    height: 34px;
+    border-radius: 8px;
+}
+
+.operator-status-panel {
+    overflow-y: auto;
+    padding: 12px;
+    border-left: 1px solid var(--border);
+}
+
+.operator-status-panel > section {
+    padding: 10px 2px 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.operator-status-panel h2 {
+    margin: 0 0 7px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.operator-compact-copy {
+    margin: 0;
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.operator-side-list {
+    display: grid;
+    gap: 7px;
+}
+
+.operator-side-card,
+.operator-approval-card {
+    display: grid;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    gap: 5px;
+    overflow-wrap: anywhere;
+}
+
+.operator-side-card small,
+.operator-approval-status {
+    color: var(--muted);
+    font-size: 9.5px;
+}
+
+.operator-link {
+    color: var(--accent);
+}
+
+.operator-approval-card {
+    border-color: color-mix(in srgb, var(--warning) 26%, var(--border));
+    box-shadow: inset 3px 0 color-mix(in srgb, var(--warning) 55%, transparent);
+}
+
+.operator-approval-action {
+    font-size: 11px;
+}
+
+.operator-approval-scope {
+    margin: 0;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.4;
+}
+
+.operator-empty {
+    padding: 14px 8px;
+    color: var(--faint);
+    font-size: 11px;
+    text-align: center;
+}
+
+.operator-setup-form {
+    overflow-y: auto;
+    min-height: 0;
+    padding: 20px clamp(18px, 4vw, 44px);
+    grid-row: 1 / 3;
+}
+
+.operator-setup-form header {
+    margin-bottom: 16px;
+}
+
+.operator-setup-form header p {
+    margin: 5px 0 0;
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.operator-field,
+.operator-budget-grid label {
+    display: grid;
+    gap: 5px;
+    color: var(--muted);
+    font-size: 10.5px;
+}
+
+.operator-field textarea,
+.operator-field select,
+.operator-budget-grid input {
+    width: 100%;
+    padding: 8px 9px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    outline: 0;
+    background: var(--surface);
+    color: var(--text);
+}
+
+.operator-objective-field {
+    margin-bottom: 12px;
+}
+
+.operator-setup-row {
+    display: grid;
+    margin-bottom: 12px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 9px;
+}
+
+.operator-setup-row.two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.operator-fieldset {
+    min-width: 0;
+    margin: 0 0 12px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+}
+
+.operator-fieldset legend,
+.operator-setup-details summary {
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 620;
+}
+
+.operator-check-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 10px;
+}
+
+.operator-check-grid.permission-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.operator-check {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 9.5px;
+}
+
+.operator-check span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.operator-setup-details {
+    margin-bottom: 12px;
+    padding: 9px 10px 1px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--surface-raised) 52%, transparent);
+}
+
+.operator-setup-details[open] > summary {
+    margin-bottom: 10px;
+}
+
+.operator-budget-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.operator-error {
+    margin: 8px 0;
+    color: var(--warning);
+    font-size: 11px;
+}
+
+.operator-setup-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.operator-setup-actions button {
+    padding: 8px 13px;
+    border-radius: 8px;
 }
 
 .skill-management-header {
@@ -4939,6 +5402,49 @@ kbd {
         bottom: 0;
         width: min(360px, calc(100vw - 80px));
         box-shadow: -20px 0 60px rgba(0, 0, 0, 0.24);
+    }
+
+    .operator-workbench {
+        grid-template-columns: minmax(150px, 0.55fr) minmax(300px, 1.5fr) minmax(190px, 0.75fr);
+    }
+
+    .operator-transcript {
+        padding-right: 18px;
+        padding-left: 18px;
+    }
+
+    .operator-setup-row,
+    .operator-setup-row.two {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .operator-check-grid.permission-grid,
+    .operator-budget-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-height: 640px) {
+    .operator-panel-header,
+    .operator-session-header {
+        min-height: 50px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+    }
+
+    .operator-transcript {
+        padding-top: 10px;
+        padding-bottom: 12px;
+    }
+
+    .operator-composer-wrap {
+        bottom: 0;
+        padding: 6px 12px 8px;
+    }
+
+    .operator-status-panel > section {
+        padding-top: 7px;
+        padding-bottom: 8px;
     }
 }
 

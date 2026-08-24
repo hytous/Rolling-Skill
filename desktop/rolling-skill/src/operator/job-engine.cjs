@@ -33,10 +33,173 @@ const RESERVATION_LIMITS = Object.freeze({
 const COST_SCALE = 1_000_000
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 
+const OPERATOR_ARTIFACT_ID_PROJECTIONS = Object.freeze({
+    "datasets.read": {
+        datasetId: [["result", "dataset", "id"]],
+        repositoryId: [["result", "dataset", "repositoryId"]],
+        skillId: [["result", "dataset", "skillId"]],
+    },
+    "datasets.get": {
+        datasetId: [["result", "dataset", "id"]],
+        repositoryId: [["result", "dataset", "repositoryId"]],
+        skillId: [["result", "dataset", "skillId"]],
+    },
+    "datasets.create": {
+        datasetId: [["result", "dataset", "id"]],
+        repositoryId: [["result", "dataset", "repositoryId"]],
+        skillId: [["result", "dataset", "skillId"]],
+    },
+    "datasets.delete": {
+        datasetId: [["result", "dataset", "id"], ["facts", "datasetId"]],
+        repositoryId: [["result", "dataset", "repositoryId"]],
+        skillId: [["result", "dataset", "skillId"]],
+    },
+    "datasets.delete_case": {
+        datasetId: [["result", "case", "datasetId"], ["facts", "datasetId"]],
+        caseId: [["result", "case", "id"], ["facts", "caseId"]],
+    },
+    "evaluations.get": {
+        datasetId: [["result", "run", "datasetId"]],
+        evaluationId: [["result", "run", "id"], ["result", "runId"]],
+    },
+    "evaluations.start": {
+        datasetId: [["result", "run", "datasetId"], ["selection", "datasetId"]],
+        evaluationId: [["result", "run", "id"], ["result", "runId"]],
+    },
+    "evaluations.cancel": {
+        datasetId: [["result", "run", "datasetId"]],
+        evaluationId: [["result", "run", "id"], ["result", "runId"]],
+    },
+    "curation.start": {
+        datasetId: [["result", "session", "datasetId"]],
+    },
+    "curation.message": {
+        datasetId: [["result", "session", "datasetId"]],
+    },
+    "curation.save": {
+        datasetId: [["result", "case", "datasetId"], ["result", "session", "datasetId"], ["facts", "datasetId"]],
+        caseId: [["result", "case", "id"]],
+    },
+    "curation.discard": {
+        datasetId: [["result", "session", "datasetId"], ["facts", "datasetId"]],
+    },
+    "rubrics.publish": {
+        datasetId: [["facts", "datasetId"]],
+    },
+    "skills.get": {
+        repositoryId: [["result", "skill", "repositoryId"]],
+        skillId: [["result", "skill", "id"]],
+    },
+    "skills.diff": {
+        repositoryId: [["result", "diff", "repositoryId"]],
+        skillId: [["result", "diff", "skillId"]],
+        candidateId: [["result", "diff", "candidateVersionId"]],
+    },
+    "skills.create_candidate": {
+        repositoryId: [["result", "version", "repositoryId"], ["facts", "repositoryId"]],
+        skillId: [["result", "version", "skillId"], ["facts", "skillId"]],
+        candidateId: [["result", "version", "id"], ["result", "versionId"]],
+    },
+    "skills.release": {
+        repositoryId: [["result", "version", "repositoryId"], ["facts", "repositoryId"]],
+        skillId: [["result", "version", "skillId"], ["facts", "skillId"]],
+        candidateId: [["result", "version", "id"], ["result", "versionId"], ["facts", "versionId"]],
+    },
+    "installations.start": {
+        installationId: [["singleInstallation", "id"], ["result", "installationId"]],
+        repositoryId: [["singleInstallation", "request", "source", "repositoryId"], ["facts", "repositoryId"]],
+        skillId: [["singleInstallation", "request", "source", "skillId"], ["facts", "skillId"]],
+    },
+    "skills.install": {
+        installationId: [["result", "installationId"]],
+        repositoryId: [["facts", "repositoryId"]],
+        skillId: [["facts", "skillId"]],
+    },
+    "installations.get": {
+        installationId: [["result", "installation", "id"], ["facts", "installationId"]],
+        repositoryId: [["result", "installation", "request", "source", "repositoryId"], ["facts", "repositoryId"]],
+        skillId: [["result", "installation", "request", "source", "skillId"], ["facts", "skillId"]],
+    },
+    "installations.cancel": {
+        installationId: [["result", "installation", "id"], ["facts", "installationId"]],
+        repositoryId: [["result", "installation", "request", "source", "repositoryId"], ["facts", "repositoryId"]],
+        skillId: [["result", "installation", "request", "source", "skillId"], ["facts", "skillId"]],
+    },
+    "installations.inspect": {
+        installationId: [["result", "installation", "id"], ["facts", "installationId"]],
+        repositoryId: [["result", "installation", "request", "source", "repositoryId"], ["facts", "repositoryId"]],
+        skillId: [["result", "installation", "request", "source", "skillId"], ["facts", "skillId"]],
+    },
+})
+
 function isPlainObject(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false
     const prototype = Object.getPrototypeOf(value)
     return prototype === Object.prototype || prototype === null
+}
+
+function ownDataProperty(value, key) {
+    if ((typeof value !== "object" || value === null) || !Object.hasOwn(value, key)) return undefined
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined
+}
+
+function valueAtPath(source, path) {
+    let value = source
+    for (const key of path) {
+        value = ownDataProperty(value, key)
+        if (value === undefined) return undefined
+    }
+    return value
+}
+
+function stableArtifactId(value) {
+    if (typeof value !== "string") return null
+    const normalized = value.trim()
+    if (
+        !normalized ||
+        normalized.length > 300 ||
+        /[\u0000-\u001f\u007f\\/]/u.test(normalized)
+    ) return null
+    return normalized
+}
+
+function operatorArtifactMetadata(method, result, trustedFacts = {}) {
+    const projections = OPERATOR_ARTIFACT_ID_PROJECTIONS[method]
+    if (!projections) return null
+    const methodFacts = isPlainObject(trustedFacts?.methodFacts) &&
+        trustedFacts.methodFacts.method === method
+        ? trustedFacts.methodFacts
+        : null
+    const evaluationSelection = method === "evaluations.start" &&
+        isPlainObject(trustedFacts?.evaluationSelection)
+        ? trustedFacts.evaluationSelection
+        : null
+    const installations = isPlainObject(result) ? ownDataProperty(result, "installations") : null
+    const source = {
+        result: isPlainObject(result) ? result : null,
+        facts: methodFacts,
+        selection: evaluationSelection,
+        singleInstallation: Array.isArray(installations) && installations.length === 1
+            ? installations[0]
+            : null,
+    }
+    const metadata = {}
+    if (method === "installations.start" && Array.isArray(installations)) {
+        const installationIds = [...new Set(installations.slice(0, 100).map((installation) => (
+            stableArtifactId(ownDataProperty(installation, "id"))
+        )).filter((id) => id !== null))]
+        if (installationIds.length > 1) metadata.installationIds = installationIds
+    }
+    for (const [key, paths] of Object.entries(projections)) {
+        for (const path of paths) {
+            const id = stableArtifactId(valueAtPath(source, path))
+            if (id === null) continue
+            metadata[key] = id
+            break
+        }
+    }
+    return Object.keys(metadata).length > 0 ? metadata : null
 }
 
 function requireObject(value, label) {
@@ -913,7 +1076,10 @@ class OperatorJobEngine {
             if (current.status === "cancelled") {
                 return {status: "cancelled", jobId: job.id, stepId: step.id}
             }
-            return this.#persistStepResult(current, result ?? null)
+            return this.#persistStepResult(current, result ?? null, {
+                method: request.method,
+                trustedFacts: request.trustedFacts,
+            })
         } catch (error) {
             const current = this.#store.getStep(step.id)
             if (
@@ -937,12 +1103,14 @@ class OperatorJobEngine {
         }
     }
 
-    #persistStepResult(step, result) {
+    #persistStepResult(step, result, {method = step.method, trustedFacts = {}} = {}) {
+        const metadata = operatorArtifactMetadata(method, result, trustedFacts)
         const artifact = this.#store.createArtifact(step.jobId, {
             kind: "operator-step-result",
             name: `step-${step.id}.json`,
             mediaType: "application/json",
             body: JSON.stringify(result),
+            ...(metadata === null ? {} : {metadata}),
         })
         const succeeded = this.#store.transitionStep(step.id, "succeeded", {
             outputArtifactIds: [artifact.id],
@@ -1435,5 +1603,6 @@ class OperatorJobEngine {
 
 module.exports = {
     OperatorJobEngine,
+    operatorArtifactMetadata,
     preflightOperatorBudget,
 }

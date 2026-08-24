@@ -274,6 +274,7 @@ const translations = {
         chat: "Chat",
         skillEvaluation: "Skill evaluation",
         skillManagement: "Skill management",
+        operator: "Self-operation",
         skillRepositoryWorkbench: "SKILL REPOSITORY WORKBENCH",
         managedSkillRepositories: "Managed Skill repositories",
         managedSkillHelp: "Import editable repositories, review working changes, and release immutable Skill versions.",
@@ -772,6 +773,7 @@ const translations = {
         chat: "对话",
         skillEvaluation: "Skill 评测",
         skillManagement: "Skill 管理",
+        operator: "自操作",
         skillRepositoryWorkbench: "SKILL 仓库工作台",
         managedSkillRepositories: "受管 Skill 仓库",
         managedSkillHelp: "导入可编辑仓库、检查工作区变化，并发布不可变的 Skill 版本。",
@@ -1165,6 +1167,7 @@ const elements = {
     cancelRawCaseEdit: document.querySelector("#cancel-raw-case-edit"),
     rawCaseList: document.querySelector("#raw-case-list"),
     skillManagementWorkbench: document.querySelector("#skill-management-workbench"),
+    operatorWorkbench: document.querySelector("#operator-workbench"),
     managedRepositoryCount: document.querySelector("#managed-repository-count"),
     managedRepositoryList: document.querySelector("#managed-repository-list"),
     managedSkillDetail: document.querySelector("#managed-skill-detail"),
@@ -1340,6 +1343,8 @@ const elements = {
     confirmDatasetSkill: document.querySelector("#confirm-dataset-skill"),
     toast: document.querySelector("#toast"),
 }
+
+let operatorWorkbench = null
 
 function node(tag, className, text) {
     const element = document.createElement(tag)
@@ -3067,6 +3072,8 @@ function renderTitle() {
         ? t("skillEvaluation")
         : state.surface === "skills"
         ? t("skillManagement")
+        : state.surface === "operator"
+        ? t("operator")
         : state.newTaskMode
         ? t("newTask")
         : titleForThread(state.activeThread || state.threads.find((item) => item.id === state.activeThreadId))
@@ -3790,6 +3797,7 @@ function renderAll(options) {
     renderRuntimeOptions()
     renderEvaluationWorkbench()
     renderSkillManagementWorkbench()
+    renderOperatorWorkbench()
     renderRubricDrawer()
 }
 
@@ -6327,8 +6335,67 @@ async function updateRubricEffort(sessionId, effort) {
     }
 }
 
+function operatorCatalogSnapshot() {
+    return {
+        runtimes: state.runtime?.availableRuntimes ?? [],
+        activeRuntimeId: state.runtime?.runtime?.runtimeId ?? null,
+        skills: state.managedSkills.skills ?? [],
+        datasets: state.datasets ?? [],
+    }
+}
+
+function renderOperatorWorkbench() {
+    const visible = state.surface === "operator"
+    elements.workbench.classList.toggle("operator-mode", visible)
+    for (const button of elements.surfaceSwitch.querySelectorAll("[data-surface]")) {
+        button.classList.toggle("active", button.dataset.surface === state.surface)
+    }
+    operatorWorkbench?.setCatalogs(operatorCatalogSnapshot())
+    operatorWorkbench?.setVisible(visible)
+}
+
+async function selectOperatorEntity(kind, id, metadata = {}) {
+    if (!id) return
+    if (kind === "dataset" || kind === "case" || kind === "evaluation") {
+        setSurface("evaluation")
+        if (kind === "evaluation") {
+            state.evaluationView = "runs"
+            if (!state.evaluationRuns.some((run) => run.id === id)) {
+                await loadEvaluationWorkbench(false)
+            }
+            await selectEvaluationRun(id)
+            return
+        }
+        state.evaluationView = "cases"
+        const datasetId = kind === "dataset" ? id : metadata.datasetId
+        if (datasetId && datasetId !== state.evaluationDatasetId) {
+            await selectEvaluationDataset(datasetId)
+        }
+        if (kind === "case") {
+            state.evaluationCaseId = id
+            renderEvaluationWorkbench()
+        }
+        return
+    }
+    if (kind === "candidate" || kind === "installation") {
+        setSurface("skills")
+        if (!state.managedSkills.skills.length) await loadManagedSkills(false)
+        const version = kind === "candidate"
+            ? state.managedSkills.versions.find((entry) => entry.id === id)
+            : null
+        const skillId = metadata.skillId ?? version?.skillId ?? null
+        if (skillId) await selectManagedSkill(skillId)
+        if (kind === "installation") {
+            state.managedSkillSideView = "installations"
+            if (skillId) await loadManagedSkillInstallations(skillId)
+            state.activeSkillInstallationJobId = id
+            renderManagedSkillInstallations()
+        }
+    }
+}
+
 function setSurface(surface) {
-    if (surface !== "chat" && surface !== "evaluation" && surface !== "skills") return
+    if (!["chat", "evaluation", "skills", "operator"].includes(surface)) return
     state.surface = surface
     if (surface === "evaluation") {
         suspendThreadObservation()
@@ -6341,6 +6408,11 @@ function setSurface(surface) {
         setCurationOpen(false)
         setRubricOpen(false)
         void loadManagedSkills(true)
+    } else if (surface === "operator") {
+        suspendThreadObservation()
+        setTraceOpen(false)
+        setCurationOpen(false)
+        setRubricOpen(false)
     } else {
         setRubricOpen(false)
         void resumeThreadObservation()
@@ -8128,6 +8200,7 @@ window.rollingSkill.onRuntimeState((runtime) => {
         clearRuntimeTaskState()
     }
     state.runtime = runtime
+    operatorWorkbench?.setCatalogs(operatorCatalogSnapshot())
     if (runtimeChanged) restoreActiveThreadView()
     state.runtimeErrorDismissed = false
     if (externalRuntimeChange) renderAll()
@@ -8161,6 +8234,7 @@ window.rollingSkill.onRawCasesChanged((rawCases) => {
 window.rollingSkill.onManagedSkillsChanged((overview) => {
     state.managedSkills = normalizedManagedSkills(overview)
     reconcileManagedSkillSelection()
+    operatorWorkbench?.setCatalogs(operatorCatalogSnapshot())
     if (state.surface === "skills") {
         renderSkillManagementWorkbench()
         if (state.activeManagedSkillId) void readActiveManagedSkill()
@@ -8292,6 +8366,17 @@ async function bootstrap() {
         state.selectedTaskEffort = state.settings.taskProfile?.effort ?? null
         state.selectedTaskPermissionMode = defaultPermissionMode()
         state.activeCurationId = state.curationSessions[0]?.id ?? null
+        if (typeof window.rollingSkill.bootstrapOperator === "function") {
+            operatorWorkbench = globalThis.RollingSkillOperatorWorkbench.createOperatorWorkbench({
+                api: window.rollingSkill,
+                root: elements.operatorWorkbench,
+                language: () => state.settings.language,
+                onError: showError,
+                onSelectEntity: selectOperatorEntity,
+            })
+            operatorWorkbench.setCatalogs(operatorCatalogSnapshot())
+            await operatorWorkbench.initialize(initial.operator ?? null)
+        }
         if (!elements.rawCaseSkill.value) elements.rawCaseSkill.value = suggestedRawCaseSkill()
         restoreActiveThreadView()
         renderAll()
@@ -8333,5 +8418,8 @@ setInterval(() => {
         for (const activity of state.rubricActivities.values()) patchRubricActivityCard(activity)
     }
 }, 1_000)
-window.addEventListener("beforeunload", snapshotActiveThreadView)
+window.addEventListener("beforeunload", () => {
+    snapshotActiveThreadView()
+    operatorWorkbench?.destroy()
+})
 void bootstrap()
