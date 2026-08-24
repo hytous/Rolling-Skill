@@ -686,6 +686,7 @@ class OperatorSessionManager {
             pendingInteractions: new Set(),
             failurePromise: null,
             failureCleanup: null,
+            runtimeExited: false,
             clientStopped: false,
             stopProgress: null,
         }
@@ -739,13 +740,14 @@ class OperatorSessionManager {
         const client = control.client
         control.notification = (message) => this.#notification(control, message)
         control.runtimeError = (error) => {
-            void this.#runtimeFailure(control, error).catch(() => {})
+            void this.#runtimeFailure(control, error, {runtimeExited: true}).catch(() => {})
         }
         control.stateListener = (state) => {
             if (state?.status === "error" || state?.status === "stopped") {
                 void this.#runtimeFailure(
                     control,
                     new Error("Operator Runtime stopped unexpectedly"),
+                    {runtimeExited: true},
                 ).catch(() => {})
             }
         }
@@ -937,12 +939,20 @@ class OperatorSessionManager {
         return shared
     }
 
-    #runtimeFailure(control, error) {
-        if (control.failureCleanup) return this.#retryRuntimeFailureCleanup(control)
+    #runtimeFailure(control, error, {runtimeExited = false} = {}) {
+        if (control.failureCleanup) {
+            if (runtimeExited) {
+                control.runtimeExited = true
+                control.failureCleanup.turnTarget = null
+                control.failureCleanup.turnSettled = true
+            }
+            return this.#retryRuntimeFailureCleanup(control)
+        }
         if (control.stopped) return Promise.resolve()
-        const turnTarget = activeTurnTarget(control)
+        const turnTarget = runtimeExited ? null : activeTurnTarget(control)
         const outcomeUnknown = this.#store.listSteps({jobId: control.parentJobId})
             .some((step) => step.status === "running")
+        control.runtimeExited = runtimeExited
         control.controlGeneration += 1
         control.generation += 1
         control.phase = "needs_recovery"
@@ -964,7 +974,7 @@ class OperatorSessionManager {
             revokeComplete: this.#revokedCapabilities.has(control.authority.grant.id),
             clientStopComplete: control.clientStopped,
             turnTarget,
-            turnSettled: turnTarget === null,
+            turnSettled: runtimeExited || turnTarget === null,
             promise: null,
         }
         return this.#retryRuntimeFailureCleanup(control)

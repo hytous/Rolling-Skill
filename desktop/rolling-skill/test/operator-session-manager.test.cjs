@@ -719,6 +719,7 @@ describe("OperatorSessionManager", () => {
         )), true)
         assert.deepEqual(revoked, ["capability-1"])
         assert.equal(engineCalls.filter((call) => call.method === "interrupt").length, 1)
+        assert.equal(clients[0].calls.filter((call) => call.method === "interruptTurn").length, 0)
         assert.equal(clients[0].calls.filter((call) => call.method === "stop").length, 1)
         assert.equal(controlPlane.routes.size, 0)
         await assert.rejects(() => clients[0].options.requestTool({
@@ -726,6 +727,69 @@ describe("OperatorSessionManager", () => {
             method: "datasets.get",
             params: {datasetId: "dataset-1", includeCases: false},
         }), /stopped|revoked/iu)
+    })
+
+    it("treats trusted fatal Runtime state callbacks as exited across typed and CLI transports", async () => {
+        const providers = [
+            {
+                providerId: "codex",
+                selection: {kind: "codex-dynamic", ready: true},
+                support: {dynamicToolsReady: true},
+            },
+            {
+                providerId: "codebuddy",
+                selection: {kind: "acp-mcp", ready: true},
+                support: {mcpServersReady: true},
+            },
+            {
+                providerId: "deepseek-harness",
+                selection: {kind: "cli", ready: true, executablePath: "/app/rolling-skill-tool"},
+                support: {},
+            },
+        ]
+        for (const provider of providers) {
+            let clientCount = 0
+            let oldInterruptCalls = 0
+            let oldStopCalls = 0
+            const context = fixture({
+                runtimes: [runtime({providerId: provider.providerId})],
+                transportSelection: provider.selection,
+                transportSupport: () => provider.support,
+                clientFactory(_descriptor, options) {
+                    clientCount += 1
+                    const client = new FakeClient(options)
+                    if (clientCount === 1) {
+                        client.interruptTurn = async () => {
+                            oldInterruptCalls += 1
+                            throw new Error("dead process cannot accept interrupt")
+                        }
+                        client.stop = async () => {
+                            oldStopCalls += 1
+                            client.calls.push({method: "stop"})
+                        }
+                    }
+                    return client
+                },
+            })
+            const created = await context.manager.create(createInput())
+
+            context.clients[0].emit("state", {
+                status: "stopped",
+                reason: "process_exit",
+                exitCode: 17,
+            })
+            await nextTick()
+            await nextTick()
+
+            assert.equal(oldInterruptCalls, 0, provider.providerId)
+            assert.equal(oldStopCalls, 1, provider.providerId)
+            assert.equal(context.revoked.includes("capability-1"), true, provider.providerId)
+            assert.equal(context.engineCalls.filter((call) => call.method === "interrupt").length, 1)
+
+            const resumed = await context.manager.resume(created.session.id)
+            assert.equal(resumed.state, "idle", provider.providerId)
+            assert.equal(context.clients.length, 2, provider.providerId)
+        }
     })
 
     it("singleflights concurrent cold resume so the loser creates no client, grant, or lease", async () => {
@@ -1248,7 +1312,7 @@ describe("OperatorSessionManager", () => {
         assert.equal(context.engineCalls.filter((call) => call.method === "cancel").length, 1)
     })
 
-    it("keeps a failed active Runtime alive until its turn interruption can converge", async () => {
+    it("keeps an active Runtime alive after an internal notification failure until interruption converges", async () => {
         let clientCount = 0
         let oldInterruptAttempts = 0
         let oldStopCalls = 0
@@ -1272,7 +1336,10 @@ describe("OperatorSessionManager", () => {
         })
         const created = await context.manager.create(createInput())
 
-        context.clients[0].emit("runtimeError", new Error("provider failure"))
+        context.clients[0].notify("item/completed", {
+            threadId: context.clients[0].threadId,
+            item: {id: "", type: "runtimeActivity"},
+        })
         await nextTick()
         await nextTick()
 
