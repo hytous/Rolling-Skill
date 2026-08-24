@@ -173,13 +173,38 @@ function errorRecord(error, fallbackCode = "OPERATOR_STEP_FAILED") {
 function requestForExecution(input) {
     const request = requireObject(input, "Operator Step execution")
     const requestedReservation = normalizeReservation(request.reservation ?? {})
-    return {
+    const normalized = {
         method: requiredText(request.method, "Operator Step method", 300),
         params: cloneJson(requireObject(request.params ?? {}, "Operator Step params"), "Operator Step params"),
         idempotencyKey: requiredText(request.idempotencyKey, "Operator Step idempotency key", 500),
         reservation: cloneJson(requestedReservation),
         requestedReservation,
     }
+    if (Object.hasOwn(request, "policyApproval") && request.policyApproval !== null) {
+        const approval = requireObject(request.policyApproval, "Operator control approval gate")
+        normalized.policyApproval = {
+            decision: "approval_required",
+            reason: requiredText(approval.reason, "Operator control approval reason", 300),
+            action: requiredText(approval.action, "Operator control approval action", 300),
+            requestedScope: cloneJson(
+                requireObject(approval.requestedScope ?? {}, "Operator control approval scope"),
+                "Operator control approval scope",
+            ),
+        }
+    }
+    if (Object.hasOwn(request, "assertRunnable")) {
+        if (typeof request.assertRunnable !== "function") {
+            throw new Error("Operator execution guard must be a function")
+        }
+        normalized.assertRunnable = request.assertRunnable
+    }
+    if (Object.hasOwn(request, "handlerContext")) {
+        if (!isPlainObject(request.handlerContext) || !Object.isFrozen(request.handlerContext)) {
+            throw new Error("Operator handler context must be an immutable plain object")
+        }
+        normalized.handlerContext = request.handlerContext
+    }
+    return normalized
 }
 
 function frozenStepRequest(request) {
@@ -187,6 +212,7 @@ function frozenStepRequest(request) {
         method: request.method,
         params: cloneJson(request.params),
         reservation: cloneJson(request.reservation),
+        policyApproval: request.policyApproval ? cloneJson(request.policyApproval) : null,
     }
 }
 
@@ -404,7 +430,11 @@ class OperatorJobEngine {
 
     async #effectiveRequest(request, signal) {
         const minimum = {...operatorMethodBudgetMinimum(request.method)}
-        const trustedFacts = {}
+        const trustedFacts = {
+            ...(request.policyApproval ? {
+                controlPolicyApproval: cloneJson(request.policyApproval),
+            } : {}),
+        }
         if (request.method === "evaluations.start") {
             const params = request.params
             let caseCount = 0
@@ -460,6 +490,11 @@ class OperatorJobEngine {
     }
 
     async #execute(jobId, request, signal) {
+        if (request.assertRunnable && request.assertRunnable() !== true) {
+            throw Object.assign(new Error("Operator session is not accepting new Steps"), {
+                code: "CONTROL_BUSY",
+            })
+        }
         let job = this.#store.getJob(jobId)
         const existing = this.#store.listSteps({jobId}).find((step) => (
             step.idempotencyKey === request.idempotencyKey
@@ -471,6 +506,11 @@ class OperatorJobEngine {
         }
 
         request = await this.#effectiveRequest(request, signal)
+        if (request.assertRunnable && request.assertRunnable() !== true) {
+            throw Object.assign(new Error("Operator session is not accepting new Steps"), {
+                code: "CONTROL_BUSY",
+            })
+        }
         const step = this.#store.createStep(job.id, {
             method: request.method,
             params: request.params,
@@ -503,6 +543,7 @@ class OperatorJobEngine {
             method: creation.request.method,
             params: creation.requestedParams ?? creation.request.params,
             reservation: requestedReservation,
+            policyApproval: creation.trustedFacts?.controlPolicyApproval ?? null,
         }) !== stableJson(frozenStepRequest(request))) {
             throw new Error("Operator Step idempotency conflict: the key was used for a different request")
         }
@@ -521,6 +562,8 @@ class OperatorJobEngine {
             return {status: "cancelled", jobId: step.jobId, stepId: step.id}
         }
         const frozenRequest = this.#executionFromStep(step)
+        if (request.handlerContext) frozenRequest.handlerContext = request.handlerContext
+        if (request.assertRunnable) frozenRequest.assertRunnable = request.assertRunnable
         if (step.status === "pending") return this.#resumePreInvokeStep(step, frozenRequest, signal)
         if (step.status === "waiting_approval") {
             const rejectedApproval = approvals.findLast((entry) => entry.status === "rejected")
@@ -624,6 +667,8 @@ class OperatorJobEngine {
         if (custom.decision === "deny") return custom
         const mandatory = operatorApprovalRequirement(request.method, request.params)
         if (mandatory && !this.#hasApprovedGate(step, mandatory)) return mandatory
+        const controlGate = request.trustedFacts?.controlPolicyApproval ?? null
+        if (controlGate && !this.#hasApprovedGate(step, controlGate)) return controlGate
         if (custom.decision === "approval_required" && !this.#hasApprovedGate(step, custom)) return custom
         if (custom.decision !== "allow" && custom.decision !== "approval_required") {
             throw new Error("Operator approval decision is invalid")
@@ -814,6 +859,7 @@ class OperatorJobEngine {
                     jobId: job.id,
                     stepId: step.id,
                     signal: hookSignal,
+                    controlContext: request.handlerContext ?? null,
                 }), {
                     signal: controller.signal,
                     label: "Operator handler",
@@ -831,6 +877,12 @@ class OperatorJobEngine {
             return this.#persistStepResult(current, result ?? null)
         } catch (error) {
             const current = this.#store.getStep(step.id)
+            if (
+                current.status === "needs_recovery" ||
+                this.#store.getJob(job.id).status === "needs_recovery"
+            ) {
+                return {status: "needs_recovery", jobId: job.id, stepId: current.id}
+            }
             if (current.status === "cancelled") {
                 return {status: "cancelled", jobId: job.id, stepId: step.id}
             }
@@ -1067,6 +1119,7 @@ class OperatorJobEngine {
                 creation.requestedReservation ?? creation.request.reservation ?? {},
             ),
             trustedFacts,
+            policyApproval: trustedFacts.controlPolicyApproval ?? null,
             idempotencyKey: step.idempotencyKey,
         }
     }
@@ -1076,6 +1129,21 @@ class OperatorJobEngine {
         if (TERMINAL_JOB_STATUSES.has(job.status)) return job
         this.#abortTree(jobId)
         return this.#store.cancelJobTree(jobId).job
+    }
+
+    interrupt(jobId, error = {}) {
+        requiredText(jobId, "Operator Job id", 200)
+        const record = errorRecord(error, "OPERATOR_RUNTIME_FAILED")
+        const interruption = Object.assign(new Error(record.message), {
+            code: record.code,
+        })
+        for (const controller of this.#coordination.operations.get(jobId) ?? []) {
+            controller.abort(interruption)
+        }
+        for (const step of this.#store.listSteps({jobId})) {
+            this.#activeSteps.get(step.id)?.abort(interruption)
+        }
+        return this.#store.interruptJob(jobId, record)
     }
 
     #abortTree(jobId) {
@@ -1306,6 +1374,10 @@ class OperatorJobEngine {
             try {
                 job = this.#store.getJob(jobId)
             } catch {}
+            if (job?.status === "needs_recovery") {
+                const step = this.#store.listSteps({jobId}).at(-1)
+                return {status: "needs_recovery", jobId, ...(step ? {stepId: step.id} : {})}
+            }
             if (controller.signal.aborted || job?.status === "cancelling" || job?.status === "cancelled") {
                 const step = this.#store.listSteps({jobId}).at(-1)
                 return {status: "cancelled", jobId, ...(step ? {stepId: step.id} : {})}

@@ -1,4 +1,4 @@
-const {createHash} = require("node:crypto")
+const {createHash, randomUUID} = require("node:crypto")
 
 const intrinsicPromiseResolve = Promise.resolve.bind(Promise)
 const intrinsicPromiseThen = Promise.prototype.then
@@ -20,6 +20,7 @@ const DEFAULT_IDEMPOTENCY_LIMIT = 1_000
 const MAX_BUDGET_CAS_ATTEMPTS = 4
 const stateByControlPlane = new WeakMap()
 const serviceDiagnosticStates = new WeakMap()
+const operatorExecutorLeaseStates = new WeakMap()
 
 const SAFE_CONTROL_MESSAGES = Object.freeze({
     CONTROL_ERROR: "Control operation failed",
@@ -529,6 +530,61 @@ function trustedResolution(services, method, input, grant) {
         : null
 }
 
+function operatorExecutorInput(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new TypeError("Operator executor registration is invalid")
+    }
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null) {
+        throw new TypeError("Operator executor registration is invalid")
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    const allowed = new Set([
+        "sessionId",
+        "capabilityId",
+        "budgetSnapshot",
+        "assertLive",
+        "execute",
+        "replace",
+    ])
+    const input = {}
+    for (const key of Reflect.ownKeys(descriptors)) {
+        const descriptor = descriptors[key]
+        if (
+            typeof key !== "string" ||
+            !allowed.has(key) ||
+            !Object.hasOwn(descriptor, "value")
+        ) throw new TypeError("Operator executor registration is invalid")
+        input[key] = descriptor.value
+    }
+    if (
+        identifier(input.sessionId) === null ||
+        identifier(input.capabilityId) === null ||
+        typeof input.budgetSnapshot !== "function" ||
+        typeof input.assertLive !== "function" ||
+        typeof input.execute !== "function"
+    ) throw new TypeError("Operator executor registration is invalid")
+    return input
+}
+
+function operatorRouteForGrant(state, grant) {
+    const route = state.operatorExecutors.get(grant.sessionId)
+    if (route === undefined) return null
+    if (route.capabilityId !== grant.id) {
+        throw createPublicControlError("CAPABILITY_REVOKED")
+    }
+    return route
+}
+
+function assertOperatorRouteLive(state, route) {
+    if (
+        state.operatorExecutors.get(route.sessionId) !== route ||
+        !route.registered ||
+        !route.enabled
+    ) throw createPublicControlError("CONTROL_BUSY")
+    if (route.assertLive() !== true) throw createPublicControlError("CONTROL_BUSY")
+}
+
 function validateConstructor({services, capabilities, policy}) {
     if (!services || typeof services !== "object") throw new TypeError("Control services are required")
     for (const method of CONTROL_METHODS) {
@@ -567,8 +623,67 @@ class ControlPlane {
             serviceErrorDiagnostics: serviceDiagnosticStates.has(options.serviceErrorDiagnostics)
                 ? options.serviceErrorDiagnostics
                 : null,
+            operatorExecutors: new Map(),
         })
         Object.freeze(this)
+    }
+
+    registerOperatorExecutor(registration = {}) {
+        const state = stateByControlPlane.get(this)
+        const input = operatorExecutorInput(registration)
+        const current = state.operatorExecutors.get(input.sessionId) ?? null
+        const replacement = input.replace === undefined
+            ? null
+            : operatorExecutorLeaseStates.get(input.replace) ?? null
+        if (current !== null && current.registered && replacement !== current) {
+            throw new Error("Operator executor replacement lease is required")
+        }
+        if (
+            (current === null && input.replace !== undefined) ||
+            (current !== null && !current.registered && input.replace !== undefined && replacement !== current)
+        ) {
+            throw new Error("Operator executor replacement lease is stale")
+        }
+        const record = {
+            sessionId: input.sessionId,
+            capabilityId: input.capabilityId,
+            budgetSnapshot: input.budgetSnapshot,
+            assertLive: input.assertLive,
+            execute: input.execute,
+            enabled: true,
+            registered: true,
+        }
+        const lease = Object.freeze({
+            disable() {
+                if (state.operatorExecutors.get(record.sessionId) !== record || !record.registered) {
+                    return false
+                }
+                record.enabled = false
+                return true
+            },
+            enable() {
+                if (state.operatorExecutors.get(record.sessionId) !== record || !record.registered) {
+                    return false
+                }
+                record.enabled = true
+                return true
+            },
+            unregister() {
+                if (state.operatorExecutors.get(record.sessionId) !== record || !record.registered) {
+                    return false
+                }
+                record.enabled = false
+                record.registered = false
+                return true
+            },
+        })
+        operatorExecutorLeaseStates.set(lease, record)
+        state.operatorExecutors.set(record.sessionId, record)
+        if (current !== null) {
+            current.enabled = false
+            current.registered = false
+        }
+        return lease
     }
 
     async invoke(request = {}) {
@@ -589,6 +704,8 @@ class ControlPlane {
         let idempotencyOwner = null
         let executionStarted = false
         let serviceFailure = null
+        let operatorRoute = null
+        let operatorExecution = false
         try {
             envelope = snapshotControlRequest(request)
             bearerSecret = typeof envelope.token === "string" ? envelope.token : null
@@ -608,6 +725,8 @@ class ControlPlane {
             }
             auditCapabilityId = boundedAuditId(grant.id, bearerSecret)
             auditSessionId = boundedAuditId(grant.sessionId, bearerSecret)
+            operatorRoute = operatorRouteForGrant(state, grant)
+            if (operatorRoute !== null) assertOperatorRouteLive(state, operatorRoute)
 
             const idempotency = state.idempotency.prepare(grant.id, method, input)
             if (idempotency.kind === "replay") {
@@ -652,7 +771,9 @@ class ControlPlane {
                     definition.action === "runtime.execute" ||
                     definition.action === "evaluations.execute"
                 ) {
-                    const budget = state.budgetLedger.read(grant)
+                    const budget = operatorRoute === null
+                        ? state.budgetLedger.read(grant)
+                        : operatorRoute.budgetSnapshot()
                     budgetSnapshot = createBudgetSnapshot({
                         capabilityId: grant.id,
                         sessionId: grant.sessionId,
@@ -671,7 +792,14 @@ class ControlPlane {
                 if (!decision || typeof decision.then === "function") {
                     throw new Error("Control policy must return a synchronous decision")
                 }
-                if (decision.decision !== "allow") throw decisionError(decision, definition.action)
+                if (decision.decision !== "allow") {
+                    if (
+                        decision.decision === "approval_required" &&
+                        operatorRoute !== null
+                    ) break
+                    throw decisionError(decision, definition.action)
+                }
+                if (operatorRoute !== null) break
                 if (decision.reservation === null) break
                 if (state.budgetLedger.commit(decision.reservation, grant)) break
                 decision = null
@@ -687,11 +815,23 @@ class ControlPlane {
             })
             executionStarted = true
             let rawResult
-            try {
-                rawResult = await state.services[method](input, context)
-            } catch (error) {
-                serviceFailure = error
-                throw error
+            if (operatorRoute !== null) {
+                assertOperatorRouteLive(state, operatorRoute)
+                operatorExecution = true
+                rawResult = await operatorRoute.execute(Object.freeze({
+                    invocationId: randomUUID(),
+                    method,
+                    input,
+                    policyDecision: decision,
+                    context,
+                }))
+            } else {
+                try {
+                    rawResult = await state.services[method](input, context)
+                } catch (error) {
+                    serviceFailure = error
+                    throw error
+                }
             }
             const parsed = parseControlOutput(method, rawResult)
             const result = idempotencyOwner
@@ -706,7 +846,11 @@ class ControlPlane {
                 state.serviceErrorDiagnostics?.capture(safe, serviceFailure)
             }
             if (idempotencyOwner) {
-                if (executionStarted && safe.code !== "CONTROL_BUSY") {
+                if (
+                    executionStarted &&
+                    safe.code !== "CONTROL_BUSY" &&
+                    !(operatorExecution && safe.code === "APPROVAL_REQUIRED")
+                ) {
                     state.idempotency.completeError(idempotencyOwner, safe)
                 }
                 else state.idempotency.fail(idempotencyOwner, safe)

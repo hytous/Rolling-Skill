@@ -476,6 +476,56 @@ describe("Operator Job store", () => {
         }), /duration|budget|safe|integer/iu)
     })
 
+    it("atomically marks a failed Runtime Job and its active Steps for recovery without widening transitions", () => {
+        const {store} = fixture()
+        const session = createSession(store)
+        const job = createJob(store, session.id)
+        store.transitionJob(job.id, "running")
+        const running = store.createStep(job.id, {
+            method: "datasets.get",
+            params: {datasetId: "dataset-1"},
+            idempotencyKey: "runtime-failure-running",
+        })
+        store.transitionStep(running.id, "running")
+        const waiting = store.createStep(job.id, {
+            method: "skills.release",
+            params: {skillId: "skill-1"},
+            reservation: {},
+            idempotencyKey: "runtime-failure-waiting",
+        })
+        store.transitionStep(waiting.id, "waiting_approval")
+        store.transitionJob(job.id, "waiting_approval")
+        const approval = store.createApproval(job.id, {
+            stepId: waiting.id,
+            action: "skills.release",
+            scope: {skillIds: ["skill-1"]},
+            proposedMutation: {
+                method: "skills.release",
+                params: {skillId: "skill-1"},
+                reservation: {},
+                idempotencyKey: "runtime-failure-waiting",
+            },
+            risk: "release",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        })
+
+        const interrupted = store.interruptJob(job.id, {
+            code: "OPERATOR_RUNTIME_FAILED",
+            message: "Operator Runtime failed",
+        })
+
+        assert.equal(interrupted.status, "needs_recovery")
+        assert.deepEqual(interrupted.error, {
+            code: "OPERATOR_RUNTIME_FAILED",
+            message: "Operator Runtime failed",
+        })
+        assert.equal(store.getStep(running.id).status, "needs_recovery")
+        assert.equal(store.getStep(waiting.id).status, "needs_recovery")
+        assert.equal(store.getApproval(approval.id).status, "rejected")
+        assert.equal(store.listEvents(job.id).at(-1).kind, "recovery_required")
+        assert.throws(() => store.transitionJob(interrupted.id, "cancelling"), /transition/iu)
+    })
+
     it("links parent and child Jobs and assigns immutable per-Job event sequences", () => {
         const {path, store} = fixture()
         const session = createSession(store)

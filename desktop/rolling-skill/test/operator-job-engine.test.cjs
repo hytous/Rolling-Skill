@@ -517,6 +517,81 @@ describe("Operator Job engine", () => {
         assert.equal(rejectedStore.getJob(rejectedJob.id).status, "running")
     })
 
+    it("persists and enforces a mandatory ControlPlane approval gate before handler execution", async () => {
+        const {store, session} = fixture()
+        const job = createJob(store, session.id)
+        let calls = 0
+        const engine = new OperatorJobEngine({
+            store,
+            handlers: {
+                "datasets.read": async () => {
+                    calls += 1
+                    return {dataset: {id: "dataset-1"}}
+                },
+            },
+        })
+        const request = {
+            method: "datasets.read",
+            params: {datasetId: "dataset-1"},
+            idempotencyKey: "control-policy-gate",
+            policyApproval: {
+                decision: "approval_required",
+                action: "datasets.delete",
+                reason: "destructive_action",
+                requestedScope: {datasetIds: ["dataset-1"]},
+            },
+        }
+
+        const waiting = await engine.execute(job.id, request)
+        assert.equal(waiting.status, "waiting_approval")
+        assert.equal(calls, 0)
+        const approval = store.getApproval(waiting.approvalId)
+        assert.equal(approval.action, "datasets.delete")
+        assert.equal(approval.risk, "destructive_action")
+        assert.deepEqual(approval.scope, {datasetIds: ["dataset-1"]})
+
+        const resolved = await engine.resolveApproval(waiting.approvalId, {
+            decision: "approve",
+            scope: "once",
+            decidedBy: "reviewer",
+        })
+        assert.equal(resolved.status, "succeeded")
+        assert.equal(calls, 1)
+    })
+
+    it("passes the authorized ControlPlane context only to the live handler and never persists it", async () => {
+        const {path, store, session} = fixture()
+        const job = createJob(store, session.id)
+        const handlerContext = Object.freeze({
+            capabilityId: "capability-1",
+            sessionId: "authority-session-1",
+            grant: Object.freeze({id: "capability-1"}),
+            scopeFilter: Object.freeze({datasetIds: Object.freeze(["dataset-1"])}),
+            executionContext: Object.freeze({privatePath: "/private/runtime/provider"}),
+        })
+        let observed = null
+        const engine = new OperatorJobEngine({
+            store,
+            handlers: {
+                "datasets.read": async ({controlContext}) => {
+                    observed = controlContext
+                    return {dataset: {id: "dataset-1"}}
+                },
+            },
+        })
+
+        const result = await engine.execute(job.id, {
+            method: "datasets.read",
+            params: {datasetId: "dataset-1"},
+            idempotencyKey: "ephemeral-control-context",
+            handlerContext,
+        })
+
+        assert.equal(result.status, "succeeded")
+        assert.equal(observed, handlerContext)
+        assert.equal(readFileSync(path, "utf8").includes("/private/runtime/provider"), false)
+    })
+
     it("restarts pre-invoke pending and partially-created approval Steps deterministically", async () => {
         for (const phase of ["pending", "step_waiting", "job_waiting"]) {
             const {path, store, session} = fixture()
@@ -1094,6 +1169,39 @@ describe("Operator Job engine", () => {
             assert.equal(store.getJob(job.id).status, "cancelled")
             assert.equal(hookSignalAborted, true, phase)
         }
+    })
+
+    it("interrupts a hanging Runtime Step into durable recovery without waiting for its handler", async () => {
+        const {store, session} = fixture()
+        const job = createJob(store, session.id)
+        let started
+        const entered = new Promise((resolve) => { started = resolve })
+        const never = new Promise(() => {})
+        const engine = new OperatorJobEngine({
+            store,
+            handlers: {
+                "datasets.read": async () => {
+                    started()
+                    return never
+                },
+            },
+        })
+        const execution = engine.execute(job.id, {
+            method: "datasets.read",
+            params: {datasetId: "dataset-1"},
+            idempotencyKey: "runtime-interruption",
+        })
+        await entered
+
+        const interrupted = await engine.interrupt(job.id, {
+            code: "OPERATOR_RUNTIME_FAILED",
+            message: "Operator Runtime failed",
+        })
+        const result = await execution
+
+        assert.equal(interrupted.status, "needs_recovery")
+        assert.equal(result.status, "needs_recovery")
+        assert.equal(store.listSteps({jobId: job.id})[0].status, "needs_recovery")
     })
 
     it("checks cancellation before invoking the next hook and aborts a timed-out hook signal", async () => {

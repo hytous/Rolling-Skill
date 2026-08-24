@@ -662,6 +662,9 @@ describe("control-plane contracts", () => {
             ["APPROVAL_REQUIRED", {
                 action: "evaluations.execute",
                 reason: "budget_expansion",
+                approvalId: "approval-1",
+                jobId: "job-1",
+                stepId: "step-1",
             }, "Control action requires approval", false],
         ]
 
@@ -685,10 +688,15 @@ describe("control-plane contracts", () => {
                 reason: "budget_expansion",
                 payload: "secret",
             }],
+            ["APPROVAL_REQUIRED", {
+                action: "evaluations.execute",
+                reason: "budget_expansion",
+                approvalId: "approval-incomplete",
+            }],
         ]) {
             assert.throws(
                 () => createPublicControlError(invalid[0], {details: invalid[1]}),
-                /invalid|unrecognized|expected|resource|method|reason|payload/iu,
+                /invalid|unrecognized|expected|resource|method|reason|payload|identity|complete/iu,
             )
         }
     })

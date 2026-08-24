@@ -1516,6 +1516,62 @@ class OperatorJobStore {
         })
     }
 
+    interruptJob(jobId, error = {}) {
+        requiredText(jobId, "Operator Job id", 200)
+        const interruption = boundedEnvelope(
+            requireObject(error, "Operator Runtime interruption"),
+            "Operator Runtime interruption",
+        )
+        const normalizedError = {
+            code: requiredText(
+                interruption.code ?? "OPERATOR_RUNTIME_FAILED",
+                "Operator Runtime interruption code",
+                200,
+            ),
+            message: requiredText(
+                interruption.message ?? "Operator Runtime failed",
+                "Operator Runtime interruption message",
+                16_384,
+            ),
+        }
+        return this.#mutate((state) => {
+            const job = state.jobs.find((candidate) => candidate.id === jobId)
+            if (!job) throw new Error("Operator Job not found")
+            if (TERMINAL_JOB_STATUSES.has(job.status) || job.status === "needs_recovery") {
+                return job
+            }
+            const previousStatus = job.status
+            const now = nowTimestamp()
+            closePendingApprovals(state, job.id, now, "runtime_interrupted")
+            for (const step of state.steps) {
+                if (
+                    step.jobId !== job.id ||
+                    ["succeeded", "failed", "cancelled", "needs_recovery"].includes(step.status)
+                ) continue
+                step.status = "needs_recovery"
+                step.error = copy(normalizedError)
+                step.outputArtifactIds = []
+                step.updatedAt = now
+                step.completedAt = null
+            }
+            job.status = "needs_recovery"
+            job.error = copy(normalizedError)
+            job.updatedAt = now
+            if (job.eventSequence < MAX_JOB_EVENTS) {
+                job.eventSequence += 1
+                state.events.push({
+                    id: randomUUID(),
+                    jobId: job.id,
+                    sequence: job.eventSequence,
+                    kind: "recovery_required",
+                    payload: {previousStatus, reason: "runtime_failure"},
+                    occurredAt: now,
+                })
+            }
+            return job
+        })
+    }
+
     cancelJobTree(jobId, {rootStatus = "cancelled", rootPatch = {}} = {}) {
         requiredText(jobId, "Operator Job id", 200)
         if (rootStatus !== "cancelled" && rootStatus !== "failed") {

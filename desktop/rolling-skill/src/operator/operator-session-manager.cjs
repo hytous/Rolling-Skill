@@ -10,6 +10,10 @@ const {
     OperatorToolTransport,
     redactOperatorSecrets,
 } = require("./operator-tool-transport.cjs")
+const {
+    controlDefinition,
+    createPublicControlError,
+} = require("../control-plane/contracts.cjs")
 
 const TERMINAL_JOB_STATUSES = new Set(["succeeded", "failed", "cancelled"])
 const MAX_TRANSCRIPT_TEXT = 32 * 1_024
@@ -121,11 +125,32 @@ function capabilityLifetime(input, budget) {
     return requested
 }
 
-function safeSelection(selection) {
+function canonicalJson(value) {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`
+    if (value && typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) => (
+            `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+        )).join(",")}}`
+    }
+    return JSON.stringify(value)
+}
+
+function safeSelection(selection, runtime, support) {
     if (!plainObject(selection) || selection.ready !== true || typeof selection.kind !== "string") {
         throw new Error(selection?.reason ?? "Operator Tool transport is unavailable")
     }
-    const output = {kind: selection.kind, ready: true}
+    if (!["codex-dynamic", "acp-mcp", "cli"].includes(selection.kind)) {
+        throw new Error("Operator Tool transport selection is invalid")
+    }
+    const output = {
+        kind: selection.kind,
+        ready: true,
+        descriptor: operatorRuntime(runtime),
+        support: {
+            dynamicToolsReady: support?.dynamicToolsReady === true,
+            mcpServersReady: support?.mcpServersReady === true,
+        },
+    }
     if (selection.kind === "cli") {
         output.executablePath = requiredText(
             selection.executablePath,
@@ -140,6 +165,16 @@ function publicSelection(selection) {
     return selection.kind === "cli"
         ? {kind: selection.kind, ready: true, executablePath: selection.executablePath}
         : {kind: selection.kind, ready: true}
+}
+
+function nativeResumeUnavailable(error) {
+    return [
+        "THREAD_NOT_FOUND",
+        "SESSION_NOT_FOUND",
+        "NOT_FOUND",
+        "RESUME_UNSUPPORTED",
+        "UNSUPPORTED",
+    ].includes(error?.code)
 }
 
 function runtimeThreadId(response) {
@@ -169,8 +204,13 @@ function compactResult(value) {
     return compact
 }
 
-function toolIdempotencyKey(sessionId, turnId, callId) {
-    const identity = JSON.stringify([sessionId, turnId, callId])
+function controlIdempotencyKey(control, method, input, invocationId) {
+    const explicit = typeof input?.idempotencyKey === "string" ? input.idempotencyKey : null
+    const identity = canonicalJson([
+        control.sessionId,
+        method,
+        explicit ?? invocationId,
+    ])
     return `operator:${createHash("sha256").update(identity).digest("hex")}`
 }
 
@@ -206,6 +246,17 @@ function latestRuntimeThread(session) {
     ))?.runtimeThreadId ?? null
 }
 
+function latestCapabilityId(session) {
+    return session.transcript.findLast((entry) => (
+        typeof entry.capabilityId === "string" &&
+        [
+            "operator_authority_issued",
+            "runtime_thread_started",
+            "runtime_thread_resumed",
+        ].includes(entry.kind)
+    ))?.capabilityId ?? session.capabilityId
+}
+
 function safeCheckpoint(job, artifacts) {
     const summary = typeof job.checkpoint?.summary === "string"
         ? boundedText(job.checkpoint.summary, 8_000)
@@ -222,6 +273,7 @@ function safeCheckpoint(job, artifacts) {
 class OperatorSessionManager {
     #store
     #engine
+    #controlPlane
     #runtimeRegistry
     #capabilities
     #controlSocketPath
@@ -234,10 +286,14 @@ class OperatorSessionManager {
     #workspaceRoot
     #traceDirectory
     #controls = new Map()
+    #resumeFlights = new Map()
+    #stopPromises = new Map()
+    #blockedSessions = new Set()
 
     constructor({
         store,
         engine,
+        controlPlane,
         runtimeRegistry,
         capabilities = null,
         capabilityIssuer = null,
@@ -258,6 +314,11 @@ class OperatorSessionManager {
         if (!engine || typeof engine.execute !== "function" || typeof engine.reconcile !== "function" || typeof engine.cancel !== "function") {
             throw new TypeError("OperatorSessionManager requires an OperatorJobEngine")
         }
+        if (
+            !controlPlane ||
+            typeof controlPlane.invoke !== "function" ||
+            typeof controlPlane.registerOperatorExecutor !== "function"
+        ) throw new TypeError("OperatorSessionManager requires the shared ControlPlane")
         if (!runtimeRegistry || typeof runtimeRegistry.createClient !== "function") {
             throw new TypeError("OperatorSessionManager requires a RuntimeRegistry")
         }
@@ -278,6 +339,7 @@ class OperatorSessionManager {
         if (supportsNativeResume !== null && typeof supportsNativeResume !== "function") throw new TypeError("Operator resume support resolver is invalid")
         this.#store = store
         this.#engine = engine
+        this.#controlPlane = controlPlane
         this.#runtimeRegistry = runtimeRegistry
         this.#capabilities = {
             issue: issuer.issue.bind(issuer),
@@ -350,7 +412,7 @@ class OperatorSessionManager {
         }
     }
 
-    async #freezeTransport(runtime, authority, frozenKind = null) {
+    async #freezeTransport(runtime, authority, frozenSelection = null) {
         const childEnvironment = this.#childEnvironment(authority)
         const transport = this.#transportFactory({runtime, childEnvironment})
         if (!transport || typeof transport.freeze !== "function") {
@@ -361,9 +423,12 @@ class OperatorSessionManager {
             const preflight = transport.preflight(runtime, support)
             if (preflight?.ready !== true) throw new Error(preflight?.reason ?? "Operator Tool transport is unavailable")
         }
-        const selection = safeSelection(transport.freeze(runtime, support))
-        if (frozenKind !== null && selection.kind !== frozenKind) {
-            throw new Error("Frozen Operator Tool transport is no longer available")
+        const selection = safeSelection(transport.freeze(runtime, support), runtime, support)
+        if (
+            frozenSelection !== null &&
+            canonicalJson(selection) !== canonicalJson(frozenSelection)
+        ) {
+            throw new Error("Frozen Operator Tool transport descriptor is no longer available")
         }
         return {transport, selection, childEnvironment}
     }
@@ -394,6 +459,114 @@ class OperatorSessionManager {
     #append(control, kind, payload = {}) {
         const safe = redactOperatorSecrets(payload, control.childEnvironment)
         return this.#store.appendSessionTranscript(control.sessionId, {kind, ...safe})
+    }
+
+    #budgetSnapshot(control) {
+        const usage = {runtimeTurns: 0, evaluations: 0}
+        let revision = 0
+        for (const event of this.#store.listEvents(control.parentJobId)) {
+            if (event.kind !== "operator_budget_reserved") continue
+            for (const field of Object.keys(usage)) {
+                const amount = event.usage?.[field] ?? 0
+                if (!Number.isSafeInteger(amount) || amount < 0) {
+                    throw new Error("Durable Operator budget usage is invalid")
+                }
+                usage[field] += amount
+                if (!Number.isSafeInteger(usage[field])) {
+                    throw new Error("Durable Operator budget usage is too large")
+                }
+            }
+            revision += 1
+            if (!Number.isSafeInteger(revision)) throw new Error("Durable Operator budget revision is too large")
+        }
+        return {usage, revision}
+    }
+
+    #controlIsLive(control, generation = control.controlGeneration) {
+        return (
+            this.#controls.get(control.sessionId) === control &&
+            !control.stopped &&
+            !control.paused &&
+            control.controlGeneration === generation &&
+            (control.phase === "starting" || control.phase === "active")
+        )
+    }
+
+    #registerExecutor(control, replace = undefined) {
+        const registration = {
+            sessionId: control.authority.authoritySessionId,
+            capabilityId: control.authority.grant.id,
+            budgetSnapshot: () => this.#budgetSnapshot(control),
+            assertLive: () => this.#controlIsLive(control),
+            execute: (request) => this.#executeControl(control, request),
+            ...(replace === undefined ? {} : {replace}),
+        }
+        control.executorLease = this.#controlPlane.registerOperatorExecutor(registration)
+    }
+
+    async #executeControl(control, request) {
+        const generation = control.controlGeneration
+        if (!this.#controlIsLive(control, generation)) {
+            throw createPublicControlError("CONTROL_BUSY")
+        }
+        const method = methodName(request?.method)
+        const callId = requiredText(request.invocationId, "Operator control invocation id", 500)
+        const input = clone(request?.input ?? {}, "Operator Tool parameters")
+        const policyDecision = request?.policyDecision
+        if (!plainObject(policyDecision) || !["allow", "approval_required"].includes(policyDecision.decision)) {
+            throw createPublicControlError("FORBIDDEN", {
+                details: {action: controlDefinition(method).action},
+            })
+        }
+        this.#append(control, "tool_call_started", {callId, method})
+        let completionRecorded = false
+        try {
+            const result = await this.#engine.execute(control.parentJobId, {
+                method,
+                params: input,
+                idempotencyKey: controlIdempotencyKey(control, method, input, callId),
+                ...(policyDecision.decision === "approval_required" ? {
+                    policyApproval: {
+                        decision: "approval_required",
+                        action: policyDecision.reason === "budget_expansion"
+                            ? "budget.expand"
+                            : controlDefinition(method).action,
+                        reason: policyDecision.reason,
+                        requestedScope: policyDecision.requestedScope ?? {},
+                    },
+                } : {}),
+                assertRunnable: () => this.#controlIsLive(control, generation),
+                handlerContext: request.context,
+            })
+            this.#append(control, "tool_call_completed", {
+                callId,
+                method,
+                result: compactResult(result),
+            })
+            completionRecorded = true
+            if (result?.status === "succeeded") return result.result
+            if (result?.status === "waiting_approval") {
+                const approval = this.#store.getApproval(result.approvalId)
+                throw createPublicControlError("APPROVAL_REQUIRED", {
+                    details: {
+                        action: approval.action,
+                        reason: approval.risk,
+                        approvalId: result.approvalId,
+                        jobId: result.jobId,
+                        stepId: result.stepId,
+                    },
+                })
+            }
+            if (["cancelled", "needs_recovery"].includes(result?.status)) {
+                throw createPublicControlError("CONTROL_BUSY")
+            }
+            throw createPublicControlError("CONTROL_ERROR")
+        } catch (error) {
+            if (!completionRecorded) {
+                this.#append(control, "tool_call_failed", {callId, method, error: errorRecord(error)})
+            }
+            throw error
+        }
     }
 
     #snapshot(control) {
@@ -442,22 +615,51 @@ class OperatorSessionManager {
             paused: parentJob.status === "paused",
             stopped: false,
             generation: 0,
+            controlGeneration: 0,
             completedTurnIds: new Set(),
             itemIds: new Set(),
             completedChildIds: new Set(),
+            pendingChildIds: new Set(),
             boundaryQueue: [],
             draining: false,
             notification: null,
             runtimeError: null,
             stateListener: null,
+            executorLease: null,
+            pendingInteractions: new Set(),
+            failurePromise: null,
         }
         control.itemIds = new Set(session.transcript
             .filter((entry) => typeof entry.itemId === "string")
             .map((entry) => entry.itemId)
             .slice(-MAX_ITEM_IDS))
         control.completedChildIds = new Set(session.transcript
-            .filter((entry) => entry.kind === "child_completion_enqueued" && typeof entry.childJobId === "string")
+            .filter((entry) => entry.kind === "child_completion_delivered" && typeof entry.childJobId === "string")
             .map((entry) => entry.childJobId))
+        const deliveredBoundaries = new Set(session.transcript
+            .filter((entry) => entry.kind === "operator_boundary_delivered" && typeof entry.boundaryId === "string")
+            .map((entry) => entry.boundaryId))
+        for (const entry of session.transcript) {
+            if (
+                entry.kind !== "operator_boundary_enqueued" ||
+                typeof entry.boundaryId !== "string" ||
+                deliveredBoundaries.has(entry.boundaryId)
+            ) continue
+            if (control.boundaryQueue.length >= MAX_PENDING_BOUNDARIES) {
+                throw new Error("Durable Operator boundary queue exceeds its limit")
+            }
+            const content = messageText(entry.content, "Durable Operator boundary", MAX_BOUNDARY_TEXT)
+            const boundaryKind = entry.boundaryKind === "environment" ? "environment" : "user"
+            control.boundaryQueue.push({
+                id: entry.boundaryId,
+                kind: boundaryKind,
+                ...(typeof entry.childJobId === "string" ? {childJobId: entry.childJobId} : {}),
+                input: boundaryKind === "environment"
+                    ? [{type: "operatorContext", protocol: OPERATOR_PROTOCOL, text: content}]
+                    : [{type: "text", text: content}],
+            })
+            if (typeof entry.childJobId === "string") control.pendingChildIds.add(entry.childJobId)
+        }
         return control
     }
 
@@ -560,10 +762,54 @@ class OperatorSessionManager {
     }
 
     #runtimeFailure(control, error) {
-        if (control.stopped) return
+        if (control.failurePromise || control.stopped) return control.failurePromise
+        control.stopped = true
+        control.controlGeneration += 1
+        control.generation += 1
+        control.phase = "failed"
+        control.executorLease?.disable()
+        control.executorLease?.unregister()
+        this.#abortInteractions(control)
         try {
             this.#append(control, "runtime_error", {error: errorRecord(error)})
         } catch {}
+        this.#detach(control)
+        let interrupted
+        try {
+            interrupted = typeof this.#engine.interrupt === "function"
+                ? this.#engine.interrupt(control.parentJobId, {
+                      code: "OPERATOR_RUNTIME_FAILED",
+                      message: "Operator Runtime failed",
+                  })
+                : this.#store.interruptJob(control.parentJobId, {
+                      code: "OPERATOR_RUNTIME_FAILED",
+                      message: "Operator Runtime failed",
+                  })
+        } catch (failure) {
+            interrupted = Promise.reject(failure)
+        }
+        let revoked
+        try {
+            revoked = this.#capabilities.revoke(control.authority.grant.id)
+        } catch (failure) {
+            revoked = Promise.reject(failure)
+        }
+        let stopped
+        try {
+            stopped = control.client?.stop?.()
+        } catch (failure) {
+            stopped = Promise.reject(failure)
+        }
+        control.failurePromise = Promise.allSettled([
+            Promise.resolve(interrupted),
+            Promise.resolve(revoked),
+            Promise.resolve(stopped),
+        ]).then(() => {
+            if (this.#controls.get(control.sessionId) === control) {
+                this.#controls.delete(control.sessionId)
+            }
+        })
+        return control.failurePromise
     }
 
     async #startTurn(control, input) {
@@ -607,37 +853,66 @@ class OperatorSessionManager {
         if (!plainObject(request) || !plainObject(request.params)) throw new TypeError("Operator Tool request is invalid")
         const method = methodName(request.method)
         const callId = requiredText(request.callId, "Operator Tool call id", 500)
-        const idempotencyKey = toolIdempotencyKey(
-            control.sessionId,
-            request.turnId ?? control.turnId ?? "starting",
-            callId,
-        )
-        this.#append(control, "tool_call_started", {callId, method})
         try {
-            const result = await this.#engine.execute(control.parentJobId, {
+            const result = await this.#controlPlane.invoke({
+                token: control.authority.grant.token,
+                sessionId: control.authority.authoritySessionId,
                 method,
                 params: clone(request.params, "Operator Tool parameters"),
-                idempotencyKey,
             })
             if (control.stopped) throw new Error("Operator session is stopped")
             const publicResult = redactOperatorSecrets(
                 clone(result, "Operator Tool result"),
                 control.childEnvironment,
             )
-            this.#append(control, "tool_call_completed", {callId, method, result: compactResult(publicResult)})
             return publicResult
         } catch (error) {
-            this.#append(control, "tool_call_failed", {callId, method, error: errorRecord(error)})
             throw error
         }
     }
 
+    async #interaction(control, invoke, fallback) {
+        const generation = control.controlGeneration
+        if (!this.#controlIsLive(control, generation)) return fallback
+        const controller = new AbortController()
+        control.pendingInteractions.add(controller)
+        let rejectAbort
+        const aborted = new Promise((_resolve, reject) => { rejectAbort = reject })
+        const abort = () => rejectAbort(Object.assign(new Error("Operator interaction cancelled"), {
+            code: "OPERATOR_CANCELLED",
+        }))
+        controller.signal.addEventListener("abort", abort, {once: true})
+        try {
+            const value = await Promise.race([
+                Promise.resolve().then(() => invoke(controller.signal)),
+                aborted,
+            ])
+            return this.#controlIsLive(control, generation) ? value : fallback
+        } catch {
+            return fallback
+        } finally {
+            controller.signal.removeEventListener("abort", abort)
+            control.pendingInteractions.delete(controller)
+        }
+    }
+
+    #abortInteractions(control) {
+        for (const controller of control.pendingInteractions) {
+            controller.abort()
+        }
+        control.pendingInteractions.clear()
+    }
+
     async #permission(control, request) {
+        const generation = control.controlGeneration
+        if (!this.#controlIsLive(control, generation)) return "decline"
         const requestId = typeof request?.rpcId === "string" ? boundedText(request.rpcId, 500) : null
         this.#append(control, "permission_requested", {requestId})
         const enriched = {...clone(request ?? {}, "Operator permission request"), operatorSessionId: control.sessionId, operatorJobId: control.parentJobId}
-        const response = this.#requestPermission ? await this.#requestPermission(enriched) : "decline"
-        if (control.stopped) return "decline"
+        const response = await this.#interaction(control, (signal) => (
+            this.#requestPermission ? this.#requestPermission({...enriched, signal}) : "decline"
+        ), "decline")
+        if (!this.#controlIsLive(control, generation)) return "decline"
         this.#append(control, "permission_resolved", {
             requestId,
             decision: typeof response === "string" ? boundedText(response, 200) : "decline",
@@ -646,12 +921,16 @@ class OperatorSessionManager {
     }
 
     async #question(control, request) {
+        const generation = control.controlGeneration
+        if (!this.#controlIsLive(control, generation)) return {answers: []}
         const requestId = typeof request?.rpcId === "string" ? boundedText(request.rpcId, 500) : null
         const questions = Array.isArray(request?.questions) ? request.questions : []
         this.#append(control, "question_requested", {requestId, count: questions.length})
         const enriched = {...clone(request ?? {}, "Operator question request"), operatorSessionId: control.sessionId, operatorJobId: control.parentJobId}
-        const response = this.#requestQuestion ? await this.#requestQuestion(enriched) : {answers: []}
-        if (control.stopped) return {answers: []}
+        const response = await this.#interaction(control, (signal) => (
+            this.#requestQuestion ? this.#requestQuestion({...enriched, signal}) : {answers: []}
+        ), {answers: []})
+        if (!this.#controlIsLive(control, generation)) return {answers: []}
         this.#append(control, "question_resolved", {
             requestId,
             answerCount: Array.isArray(response?.answers) ? response.answers.length : 0,
@@ -685,7 +964,7 @@ class OperatorSessionManager {
             await bestEffort(() => this.#capabilities.revoke(authority.grant.id))
             throw error
         }
-        const protocolContext = {...context, transport: frozen.selection}
+        const protocolContext = {...context, transport: publicSelection(frozen.selection)}
         let session
         let parentJob
         let control
@@ -722,6 +1001,7 @@ class OperatorSessionManager {
             }
             control.nativeResume = this.#nativeResume(runtime, control.client)
             this.#controls.set(session.id, control)
+            this.#registerExecutor(control)
             this.#attach(control)
             this.#append(control, "operator_session_configuration", {
                 protocol: OPERATOR_PROTOCOL,
@@ -729,7 +1009,11 @@ class OperatorSessionManager {
                 scopes: context.scope,
                 budget: context.budget,
                 transport: publicSelection(frozen.selection),
+                frozenTransport: frozen.selection,
                 nativeResume: control.nativeResume,
+            })
+            this.#append(control, "operator_authority_issued", {
+                capabilityId: authority.grant.id,
             })
             this.#append(control, "message", {role: "user", content: objective})
             await control.client.start()
@@ -742,6 +1026,7 @@ class OperatorSessionManager {
         } catch (error) {
             if (control) {
                 control.stopped = true
+                control.executorLease?.unregister()
                 this.#detach(control)
                 await bestEffort(() => control.client?.stop?.())
                 this.#controls.delete(control.sessionId)
@@ -786,8 +1071,14 @@ class OperatorSessionManager {
         if (control.stopped) throw new Error("Operator session is stopped")
         const content = messageText(text)
         if (control.boundaryQueue.length >= MAX_PENDING_BOUNDARIES) throw new Error("Operator message queue is full")
+        const boundaryId = `boundary-${randomUUID()}`
+        this.#append(control, "operator_boundary_enqueued", {
+            boundaryId,
+            boundaryKind: "user",
+            content,
+        })
         this.#append(control, "message", {role: "user", content})
-        const entry = {kind: "user", input: [{type: "text", text: content}]}
+        const entry = {id: boundaryId, kind: "user", input: [{type: "text", text: content}]}
         control.boundaryQueue.push(entry)
         const queued = control.phase !== "idle" || control.paused || control.draining
         void this.#drainBoundary(control)
@@ -800,12 +1091,28 @@ class OperatorSessionManager {
 
     async #drainBoundary(control) {
         if (control.draining || control.stopped || control.paused || control.phase !== "idle") return
-        const boundary = control.boundaryQueue.shift()
+        const boundary = control.boundaryQueue[0]
         if (!boundary) return
         control.draining = true
         try {
             await this.#startTurn(control, boundary.input)
-        } catch {}
+            this.#append(control, "operator_boundary_delivered", {
+                boundaryId: boundary.id,
+                boundaryKind: boundary.kind,
+                ...(boundary.childJobId ? {childJobId: boundary.childJobId} : {}),
+            })
+            control.boundaryQueue.shift()
+            if (boundary.childJobId) {
+                control.pendingChildIds.delete(boundary.childJobId)
+                control.completedChildIds.add(boundary.childJobId)
+                this.#append(control, "child_completion_delivered", {
+                    childJobId: boundary.childJobId,
+                    boundaryId: boundary.id,
+                })
+            }
+        } catch (error) {
+            this.#runtimeFailure(control, error)
+        }
         finally {
             control.draining = false
             if (control.phase === "idle" && control.boundaryQueue.length > 0) {
@@ -824,6 +1131,7 @@ class OperatorSessionManager {
         }
         if (!TERMINAL_JOB_STATUSES.has(child.status)) throw new Error("Child Operator Job is not complete")
         if (control.completedChildIds.has(child.id)) return {queued: false, duplicate: true}
+        if (control.pendingChildIds.has(child.id)) return {queued: true, duplicate: true}
         if (control.boundaryQueue.length >= MAX_PENDING_BOUNDARIES) throw new Error("Operator message queue is full")
         const artifactIds = this.#store.listArtifacts(child.id).map((artifact) => artifact.id).slice(0, 1_000)
         const text = messageText([
@@ -837,9 +1145,18 @@ class OperatorSessionManager {
             status: child.status,
             artifactIds,
         })
-        control.completedChildIds.add(child.id)
+        const boundaryId = `boundary-${randomUUID()}`
+        this.#append(control, "operator_boundary_enqueued", {
+            boundaryId,
+            boundaryKind: "environment",
+            childJobId: child.id,
+            content: text,
+        })
+        control.pendingChildIds.add(child.id)
         control.boundaryQueue.push({
+            id: boundaryId,
             kind: "environment",
+            childJobId: child.id,
             input: [{type: "operatorContext", protocol: OPERATOR_PROTOCOL, text}],
         })
         const queued = control.phase !== "idle" || control.paused || control.draining
@@ -852,14 +1169,22 @@ class OperatorSessionManager {
         if (!control) throw new Error("Operator session must be resumed before pausing")
         if (control.stopped) throw new Error("Operator session is stopped")
         if (!control.paused) {
+            control.executorLease?.disable()
+            control.controlGeneration += 1
+            this.#abortInteractions(control)
             const parent = this.#store.getJob(control.parentJobId)
-            if (parent.status === "running" || parent.status === "waiting_approval") {
-                this.#store.transitionJob(parent.id, "paused")
-            } else if (parent.status !== "paused") {
-                throw new Error(`Operator session cannot pause while ${parent.status}`)
+            try {
+                if (parent.status === "running") {
+                    this.#store.transitionJob(parent.id, "paused")
+                } else if (parent.status !== "paused") {
+                    throw new Error(`Operator session cannot pause while ${parent.status}`)
+                }
+                control.paused = true
+                this.#append(control, "operator_session_paused", {})
+            } catch (error) {
+                control.executorLease?.enable()
+                throw error
             }
-            control.paused = true
-            this.#append(control, "operator_session_paused", {})
         }
         return this.#snapshot(control)
     }
@@ -893,6 +1218,7 @@ class OperatorSessionManager {
     }
 
     async #restore(sessionId) {
+        if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped")
         const session = this.#store.getSession(sessionId)
         const parents = this.#store.listJobs({sessionId: session.id, parentJobId: null})
         if (parents.length !== 1) throw new Error("Operator session must have exactly one parent Job")
@@ -903,12 +1229,16 @@ class OperatorSessionManager {
             throw new Error("Operator session has no supported durable configuration")
         }
         await this.#reconcile(session, parentJob)
+        if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped")
         parentJob = this.#store.getJob(parentJob.id)
         if (parentJob.status === "paused") parentJob = this.#store.transitionJob(parentJob.id, "running")
         if (parentJob.status === "queued") parentJob = this.#store.transitionJob(parentJob.id, "running")
-        if (parentJob.status !== "running") throw new Error(`Operator session cannot resume while ${parentJob.status}`)
+        if (parentJob.status !== "running" && parentJob.status !== "waiting_approval") {
+            throw new Error(`Operator session cannot resume while ${parentJob.status}`)
+        }
 
         const runtime = await this.#runtimeById(session.runtime.runtimeId)
+        if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped")
         const context = protocolSnapshot({
             actions: configuration.actions,
             scope: configuration.scopes,
@@ -921,9 +1251,18 @@ class OperatorSessionManager {
             budget: context.budget,
             expiresInMs: capabilityLifetime({}, context.budget),
         })
+        this.#store.appendSessionTranscript(session.id, {
+            kind: "operator_authority_issued",
+            capabilityId: authority.grant.id,
+        })
         let frozen
         try {
-            frozen = await this.#freezeTransport(runtime, authority, context.transport.kind)
+            frozen = await this.#freezeTransport(
+                runtime,
+                authority,
+                configuration.frozenTransport ?? context.transport,
+            )
+            if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped")
         } catch (error) {
             await bestEffort(() => this.#capabilities.revoke(authority.grant.id))
             throw error
@@ -943,18 +1282,29 @@ class OperatorSessionManager {
         })
         try {
             control.client = this.#runtimeRegistry.createClient(runtime, this.#clientOptions(control))
+            if (!control.client || typeof control.client.start !== "function" || typeof control.client.startThread !== "function" || typeof control.client.startTurn !== "function") {
+                throw new Error("Operator Runtime client is incomplete")
+            }
             this.#controls.set(session.id, control)
+            this.#registerExecutor(control)
             this.#attach(control)
             await control.client.start()
+            if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped")
             const priorThreadId = latestRuntimeThread(session)
             if (control.nativeResume && priorThreadId && typeof control.client.resumeThread === "function") {
-                const resumed = await control.client.resumeThread(priorThreadId, this.#threadOptions(control))
-                control.runtimeThreadId = runtimeThreadId(resumed)
-                this.#append(control, "runtime_thread_resumed", {
-                    runtimeThreadId: control.runtimeThreadId,
-                    capabilityId: authority.grant.id,
-                })
-            } else {
+                try {
+                    const resumed = await control.client.resumeThread(priorThreadId, this.#threadOptions(control))
+                    control.runtimeThreadId = runtimeThreadId(resumed)
+                    this.#append(control, "runtime_thread_resumed", {
+                        runtimeThreadId: control.runtimeThreadId,
+                        capabilityId: authority.grant.id,
+                    })
+                } catch (error) {
+                    if (!nativeResumeUnavailable(error)) throw error
+                    control.nativeResume = false
+                }
+            }
+            if (!control.runtimeThreadId) {
                 const started = await control.client.startThread(this.#threadOptions(control))
                 control.runtimeThreadId = runtimeThreadId(started)
                 this.#append(control, "runtime_thread_started", {
@@ -971,22 +1321,40 @@ class OperatorSessionManager {
                     actions: context.actions,
                     scope: context.scope,
                     budget: context.budget,
-                    transport: frozen.selection,
+                    transport: publicSelection(frozen.selection),
                 }, checkpoint))
+            }
+            if (control.phase === "idle" && control.boundaryQueue.length > 0) {
+                queueMicrotask(() => void this.#drainBoundary(control))
             }
             return this.#snapshot(control)
         } catch (error) {
             control.stopped = true
+            control.executorLease?.unregister()
             this.#detach(control)
             await bestEffort(() => control.client?.stop?.())
             this.#controls.delete(session.id)
             await bestEffort(() => this.#capabilities.revoke(authority.grant.id))
+            if (!TERMINAL_JOB_STATUSES.has(this.#store.getJob(parentJob.id).status)) {
+                await bestEffort(() => Promise.resolve(
+                    typeof this.#engine.interrupt === "function"
+                        ? this.#engine.interrupt(parentJob.id, {
+                              code: "OPERATOR_RESUME_FAILED",
+                              message: "Operator Runtime resume failed",
+                          })
+                        : this.#store.interruptJob(parentJob.id, {
+                              code: "OPERATOR_RESUME_FAILED",
+                              message: "Operator Runtime resume failed",
+                          }),
+                ))
+            }
             throw error
         }
     }
 
-    async resume(sessionId) {
+    async #resume(sessionId) {
         const id = requiredText(sessionId, "Operator session id")
+        if (this.#blockedSessions.has(id)) throw new Error("Operator session is stopped")
         const control = this.#controls.get(id)
         if (!control) return this.#restore(id)
         if (control.stopped) throw new Error("Operator session is stopped")
@@ -995,49 +1363,104 @@ class OperatorSessionManager {
             if (parent.status !== "paused") throw new Error("Operator pause state is inconsistent")
             this.#store.transitionJob(parent.id, "running")
             control.paused = false
+            control.controlGeneration += 1
+            if (control.executorLease?.enable() !== true) {
+                throw new Error("Operator executor lease is unavailable")
+            }
             this.#append(control, "operator_session_resumed", {})
             void this.#drainBoundary(control)
         }
         return this.#snapshot(control)
     }
 
+    resume(sessionId) {
+        const id = requiredText(sessionId, "Operator session id")
+        const existing = this.#resumeFlights.get(id)
+        if (existing) return existing
+        const flight = this.#resume(id)
+        this.#resumeFlights.set(id, flight)
+        return flight.finally(() => {
+            if (this.#resumeFlights.get(id) === flight) this.#resumeFlights.delete(id)
+        })
+    }
+
     restart(sessionId) {
         return this.resume(sessionId)
     }
 
-    async stop(sessionId) {
+    stop(sessionId) {
         const id = requiredText(sessionId, "Operator session id")
+        const existingStop = this.#stopPromises.get(id)
+        if (existingStop) return existingStop
+        this.#blockedSessions.add(id)
         const control = this.#controls.get(id)
-        if (!control) {
-            const session = this.#store.getSession(id)
-            const parent = this.#store.listJobs({sessionId: session.id, parentJobId: null})[0]
-            if (!parent) throw new Error("Operator parent Job is missing")
-            if (!TERMINAL_JOB_STATUSES.has(parent.status)) await this.#engine.cancel(parent.id)
-            return this.get(id)
-        }
-        if (control.stopped) return this.#snapshot(control)
-        control.stopped = true
-        control.generation += 1
-        control.boundaryQueue.length = 0
-        let parentJob = this.#store.getJob(control.parentJobId)
-        try {
-            if (!TERMINAL_JOB_STATUSES.has(parentJob.status)) parentJob = await this.#engine.cancel(parentJob.id)
-        } finally {
-            if (control.runtimeThreadId && typeof control.client.interruptTurn === "function") {
-                await bestEffort(() => control.client.interruptTurn(control.runtimeThreadId, control.turnId))
-            }
-            try {
-                this.#append(control, "operator_session_stopped", {})
-            } catch {}
+        const session = this.#store.getSession(id)
+        const parent = this.#store.listJobs({sessionId: session.id, parentJobId: null})[0]
+        if (!parent) throw new Error("Operator parent Job is missing")
+        if (control && !control.stopped) {
+            control.stopped = true
+            control.phase = "stopping"
+            control.controlGeneration += 1
+            control.generation += 1
+            control.boundaryQueue.length = 0
+            control.pendingChildIds.clear()
+            control.executorLease?.disable()
+            control.executorLease?.unregister()
+            this.#abortInteractions(control)
             this.#detach(control)
-            await bestEffort(() => control.client.stop?.())
-            await bestEffort(() => this.#capabilities.revoke(control.authority.grant.id))
         }
-        return this.#snapshot(control)
+        const capabilityIds = new Set([latestCapabilityId(session)])
+        if (control) capabilityIds.add(control.authority.grant.id)
+        const work = []
+        for (const capabilityId of capabilityIds) {
+            try {
+                work.push(Promise.resolve(this.#capabilities.revoke(capabilityId)))
+            } catch (error) {
+                work.push(Promise.reject(error))
+            }
+        }
+        try {
+            if (!TERMINAL_JOB_STATUSES.has(parent.status)) {
+                work.push(Promise.resolve(this.#engine.cancel(parent.id)))
+            }
+        } catch (error) {
+            work.push(Promise.reject(error))
+        }
+        if (control?.runtimeThreadId && typeof control.client?.interruptTurn === "function") {
+            try {
+                work.push(Promise.resolve(
+                    control.client.interruptTurn(control.runtimeThreadId, control.turnId),
+                ))
+            } catch (error) {
+                work.push(Promise.reject(error))
+            }
+        }
+        if (control?.client) {
+            try {
+                work.push(Promise.resolve(control.client.stop?.()))
+            } catch (error) {
+                work.push(Promise.reject(error))
+            }
+        }
+        const stopping = Promise.allSettled(work).then(() => {
+            if (control) {
+                try {
+                    this.#append(control, "operator_session_stopped", {})
+                } catch {}
+                return this.#snapshot(control)
+            }
+            return this.get(id)
+        })
+        this.#stopPromises.set(id, stopping)
+        return stopping
     }
 
     async stopAll() {
-        await Promise.allSettled([...this.#controls.keys()].map((sessionId) => this.stop(sessionId)))
+        const sessionIds = new Set([
+            ...this.#controls.keys(),
+            ...this.#resumeFlights.keys(),
+        ])
+        await Promise.allSettled([...sessionIds].map((sessionId) => this.stop(sessionId)))
     }
 }
 

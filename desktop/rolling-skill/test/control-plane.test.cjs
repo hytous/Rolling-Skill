@@ -7,7 +7,10 @@ const {
     CapabilityStore,
     createTrustedCapabilityIssuer,
 } = require("../src/control-plane/capability-store.cjs")
-const {publicControlError} = require("../src/control-plane/contracts.cjs")
+const {
+    createPublicControlError,
+    publicControlError,
+} = require("../src/control-plane/contracts.cjs")
 const {
     ControlPlane,
     createServiceErrorDiagnosticChannel,
@@ -187,6 +190,217 @@ function enqueueRequest(token, overrides = {}) {
 }
 
 describe("ControlPlane", () => {
+    it("routes an Operator grant through one capability-bound executor after policy", async () => {
+        const audit = []
+        const {control, issued, evaluationStore} = createFixture({auditSink: (event) => audit.push(event)})
+        const routed = []
+        const lease = control.registerOperatorExecutor({
+            sessionId: issued.sessionId,
+            capabilityId: issued.id,
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async (request) => {
+                routed.push(request)
+                return {datasets: [], nextCursor: null}
+            },
+        })
+
+        assert.deepEqual(await control.invoke({
+            token: issued.token,
+            sessionId: issued.sessionId,
+            method: "datasets.list",
+            params: {},
+        }), {datasets: [], nextCursor: null})
+        assert.equal(evaluationStore.listDatasets.mock.callCount(), 1)
+        assert.equal(routed.length, 1)
+        assert.equal(routed[0].method, "datasets.list")
+        assert.equal(routed[0].policyDecision.decision, "allow")
+        assert.equal(routed[0].context.grant.id, issued.id)
+        assert.equal(routed[0].context.grant.sessionId, issued.sessionId)
+        assert.equal(Object.hasOwn(routed[0].context.grant, "token"), false)
+        assert.equal(audit.length, 1)
+        lease.unregister()
+    })
+
+    it("atomically replaces a lease and never lets old or foreign capabilities fall through to services", async () => {
+        const {control, issued, capabilities, evaluationStore} = createFixture()
+        const calls = []
+        const first = control.registerOperatorExecutor({
+            sessionId: issued.sessionId,
+            capabilityId: issued.id,
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async () => { calls.push("first"); return {datasets: [], nextCursor: null} },
+        })
+        const replacementGrant = capabilities.issue({
+            sessionId: issued.sessionId,
+            actions: issued.actions,
+            scopes: issued.scopes,
+            expiresInMs: 60_000,
+            budget: issued.budget,
+        })
+        const second = control.registerOperatorExecutor({
+            sessionId: issued.sessionId,
+            capabilityId: replacementGrant.id,
+            replace: first,
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async () => { calls.push("second"); return {datasets: [], nextCursor: null} },
+        })
+
+        await assert.rejects(control.invoke({
+            token: issued.token,
+            sessionId: issued.sessionId,
+            method: "datasets.list",
+            params: {},
+        }), (error) => error.code === "CAPABILITY_REVOKED")
+        assert.deepEqual(await control.invoke({
+            token: replacementGrant.token,
+            sessionId: issued.sessionId,
+            method: "datasets.list",
+            params: {},
+        }), {datasets: [], nextCursor: null})
+        assert.deepEqual(calls, ["second"])
+        assert.equal(evaluationStore.listDatasets.mock.callCount(), 1)
+        assert.equal(first.enable(), false)
+        second.unregister()
+    })
+
+    it("checks a disabled lease again after asynchronous scope resolution", async () => {
+        let release
+        const scope = new Promise((resolve) => { release = resolve })
+        const {control, issued, evaluationStore} = createFixture({
+            resolveScope: () => scope,
+        })
+        let executed = 0
+        const lease = control.registerOperatorExecutor({
+            sessionId: issued.sessionId,
+            capabilityId: issued.id,
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async () => { executed += 1; return {datasets: [], nextCursor: null} },
+        })
+        const invocation = control.invoke({
+            token: issued.token,
+            sessionId: issued.sessionId,
+            method: "datasets.list",
+            params: {},
+        })
+        lease.disable()
+        release({method: "datasets.list", mode: "filter", datasetIds: ["dataset-1"]})
+
+        await assert.rejects(invocation, (error) => error.code === "CONTROL_BUSY")
+        assert.equal(executed, 0)
+        assert.equal(evaluationStore.listDatasets.mock.callCount(), 0)
+    })
+
+    it("keeps an unregistered Operator capability fail-closed instead of falling through to services", async () => {
+        const {control, issued, evaluationStore} = createFixture()
+        const lease = control.registerOperatorExecutor({
+            sessionId: issued.sessionId,
+            capabilityId: issued.id,
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async () => ({datasets: [], nextCursor: null}),
+        })
+        lease.unregister()
+
+        await assert.rejects(control.invoke({
+            token: issued.token,
+            sessionId: issued.sessionId,
+            method: "datasets.list",
+            params: {},
+        }), (error) => error.code === "CONTROL_BUSY")
+        assert.equal(evaluationStore.listDatasets.mock.callCount(), 0)
+    })
+
+    it("passes policy approval to the Operator executor so it creates one durable approval", async () => {
+        const {control, capabilities, issued, startEvaluation} = createFixture()
+        const zeroBudget = capabilities.issue({
+            sessionId: "operator-zero-budget",
+            actions: issued.actions,
+            scopes: issued.scopes,
+            expiresInMs: 60_000,
+            budget: {maxRuntimeTurns: 0, maxEvaluations: 0},
+        })
+        let policyDecision = null
+        control.registerOperatorExecutor({
+            sessionId: zeroBudget.sessionId,
+            capabilityId: zeroBudget.id,
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async (request) => {
+                policyDecision = request.policyDecision
+                throw createPublicControlError("APPROVAL_REQUIRED", {
+                    details: {
+                        action: "evaluations.execute",
+                        reason: "budget_expansion",
+                        approvalId: "approval-1",
+                        jobId: "job-1",
+                        stepId: "step-1",
+                    },
+                })
+            },
+        })
+
+        await assert.rejects(control.invoke({
+            token: zeroBudget.token,
+            sessionId: zeroBudget.sessionId,
+            method: "evaluations.start",
+            params: {
+                datasetId: "dataset-1",
+                caseIds: ["case-1"],
+                selectionMode: "selected",
+                activationMode: "automatic",
+                runtimeConfigurations: [{runtimeId: "runtime-1", modelId: null, effort: null}],
+                judgeConfiguration: {runtimeId: "judge-1", modelId: null, effort: null},
+                idempotencyKey: "evaluation-zero-budget",
+            },
+        }), (error) => {
+            assert.deepEqual(publicControlError(error), {
+                code: "APPROVAL_REQUIRED",
+                message: "Control action requires approval",
+                retryable: false,
+                details: {
+                    action: "evaluations.execute",
+                    reason: "budget_expansion",
+                    approvalId: "approval-1",
+                    jobId: "job-1",
+                    stepId: "step-1",
+                },
+            })
+            return true
+        })
+        assert.equal(policyDecision.decision, "approval_required")
+        assert.equal(startEvaluation.mock.callCount(), 0)
+    })
+
+    it("rejects an Operator scope policy denial before its executor can create a Step", async () => {
+        const {control, capabilities, issued} = createFixture()
+        const denied = capabilities.issue({
+            sessionId: "operator-denied-scope",
+            actions: issued.actions,
+            scopes: {...issued.scopes, datasetIds: ["dataset-other"]},
+            expiresInMs: 60_000,
+            budget: issued.budget,
+        })
+        let executed = 0
+        control.registerOperatorExecutor({
+            sessionId: denied.sessionId,
+            capabilityId: denied.id,
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            execute: async () => { executed += 1 },
+        })
+
+        await assert.rejects(control.invoke({
+            token: denied.token,
+            sessionId: denied.sessionId,
+            method: "datasets.get",
+            params: {datasetId: "dataset-1", includeCases: false},
+        }), (error) => error.code === "FORBIDDEN")
+        assert.equal(executed, 0)
+    })
     it("authorizes the expected session and replays one immutable idempotent result", async () => {
         const {control, issued, rawCaseStore} = createFixture()
         const request = enqueueRequest(issued.token)

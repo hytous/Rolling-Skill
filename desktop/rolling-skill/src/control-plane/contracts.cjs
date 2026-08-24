@@ -399,7 +399,20 @@ const approvalRequiredDetails = z.object({
         "rubric_publish",
         "budget_expansion",
     ]),
-}).strict()
+    approvalId: id.optional(),
+    jobId: id.optional(),
+    stepId: id.optional(),
+}).strict().superRefine((details, context) => {
+    const identityCount = [details.approvalId, details.jobId, details.stepId]
+        .filter((value) => value !== undefined)
+        .length
+    if (identityCount !== 0 && identityCount !== 3) {
+        context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Approval identity must be complete",
+        })
+    }
+})
 
 const PUBLIC_CONTROL_ERROR_DEFINITIONS = Object.freeze({
     UNKNOWN_CONTROL_METHOD: Object.freeze({
