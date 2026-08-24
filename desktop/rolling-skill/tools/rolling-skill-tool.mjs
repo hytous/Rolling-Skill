@@ -35,7 +35,7 @@ const CONTROL_FILE_READ_CHUNK_BYTES = 64 * 1_024
 const CONTROL_ENVIRONMENT_KEYS = Object.freeze({
     socketPath: "ROLLING_SKILL_CONTROL_SOCKET",
     token: "ROLLING_SKILL_CONTROL_TOKEN",
-    sessionId: "ROLLING_SKILL_CONTROL_SESSION",
+    sessionId: "ROLLING_SKILL_OPERATOR_SESSION",
 })
 const PUBLIC_CONTROL_ERROR_CODE_SET = new Set(PUBLIC_CONTROL_ERROR_CODES)
 
@@ -190,6 +190,7 @@ function controlCredentials(environment = process.env) {
     const credentials = Object.fromEntries(Object.entries(CONTROL_ENVIRONMENT_KEYS).map(
         ([name, environmentKey]) => [name, environment[environmentKey]],
     ))
+    credentials.sessionId ??= environment.ROLLING_SKILL_CONTROL_SESSION
     if (Object.values(credentials).some((value) => typeof value !== "string" || value.length === 0)) {
         throw new Error("Rolling Skill control credentials are unavailable")
     }
@@ -572,7 +573,8 @@ runCli(cliArguments).catch((error) => {
     if (cliArguments[0] === "control" || cliArguments[0] === "operator-mcp") {
         process.stderr.write(`${JSON.stringify(safeControlError(error, {
             token: process.env.ROLLING_SKILL_CONTROL_TOKEN,
-            sessionId: process.env.ROLLING_SKILL_CONTROL_SESSION,
+            sessionId: process.env.ROLLING_SKILL_OPERATOR_SESSION ??
+                process.env.ROLLING_SKILL_CONTROL_SESSION,
         }))}\n`)
     } else {
         console.error(error?.message || String(error))

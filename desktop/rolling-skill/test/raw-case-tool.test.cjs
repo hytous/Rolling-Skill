@@ -28,6 +28,7 @@ const controlEnvironmentKeys = [
     "ROLLING_SKILL_CONTROL_SOCKET",
     "ROLLING_SKILL_CONTROL_TOKEN",
     "ROLLING_SKILL_CONTROL_SESSION",
+    "ROLLING_SKILL_OPERATOR_SESSION",
     "ROLLING_SKILL_CONTROL_TIMEOUT_MS",
 ]
 
@@ -472,6 +473,39 @@ describe("rolling-skill external Raw Case tool", () => {
                 missingOperatorCredential.stdout + missingOperatorCredential.stderr,
                 secrets,
             )
+        } finally {
+            await server.close()
+        }
+    })
+
+    it("accepts the session-scoped Operator environment name without argv credentials", async () => {
+        const invocations = []
+        const server = await startControlFixture(async (request) => {
+            invocations.push(request)
+            return {workspaceRoot: "/workspace", runtimes: []}
+        })
+        try {
+            const result = await runToolAsync([
+                "control",
+                "context.get",
+                "--params-json",
+                "-",
+            ], {
+                environment: cleanEnvironment({
+                    ROLLING_SKILL_CONTROL_SOCKET: server.socketPath,
+                    ROLLING_SKILL_CONTROL_TOKEN: "operator-name-token",
+                    ROLLING_SKILL_OPERATOR_SESSION: "operator-name-session",
+                }),
+                input: "{}",
+            })
+
+            assert.equal(result.code, 0, result.stderr)
+            assert.equal(invocations[0].sessionId, "operator-name-session")
+            assert.equal(invocations[0].token, "operator-name-token")
+            assertNoSecrets(result.stdout + result.stderr, [
+                "operator-name-token",
+                "operator-name-session",
+            ])
         } finally {
             await server.close()
         }

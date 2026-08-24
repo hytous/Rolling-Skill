@@ -7,11 +7,22 @@ const {version: clientVersion} = require("../package.json")
 const {JsonLineDecoder, RpcRequestTracker} = require("./json-rpc.cjs")
 const {evaluationTurnError} = require("./evaluation-turn-error.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
+const {
+    mergeOperatorChildEnvironment,
+    redactOperatorSecrets,
+    sanitizeOperatorChildEnvironment,
+} = require("./operator/operator-tool-transport.cjs")
 
 function textContent(value) {
     if (typeof value === "string") return value
     if (value?.type === "text") return String(value.text ?? "")
     return ""
+}
+
+function sessionMcpServers(options) {
+    if (!Object.hasOwn(options, "mcpServers")) return []
+    if (!Array.isArray(options.mcpServers)) throw new TypeError("CodeBuddy MCP servers must be an array")
+    return JSON.parse(JSON.stringify(options.mcpServers))
 }
 
 class CodeBuddyAcpClient extends EventEmitter {
@@ -22,6 +33,7 @@ class CodeBuddyAcpClient extends EventEmitter {
         workspaceRoot,
         spawnProcess = spawn,
         requestPermission = null,
+        childEnvironment = {},
     }) {
         super()
         this.binaryPath = binaryPath
@@ -30,6 +42,7 @@ class CodeBuddyAcpClient extends EventEmitter {
         this.workspaceRoot = workspaceRoot
         this.spawnProcess = spawnProcess
         this.requestPermission = requestPermission
+        this.childEnvironment = sanitizeOperatorChildEnvironment(childEnvironment)
         this.child = null
         this.tracker = new RpcRequestTracker()
         this.recorder = null
@@ -56,6 +69,10 @@ class CodeBuddyAcpClient extends EventEmitter {
         }
     }
 
+    emitRuntimeLog(message) {
+        this.emit("runtimeLog", redactOperatorSecrets(String(message), this.childEnvironment))
+    }
+
     async start() {
         if (this.ready) return this.state()
         if (this.initialization) return this.initialization
@@ -79,8 +96,10 @@ class CodeBuddyAcpClient extends EventEmitter {
             {
                 cwd: this.workspaceRoot,
                 env: {
-                    ...process.env,
-                    PATH: `${dirname(this.binaryPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+                    ...mergeOperatorChildEnvironment({
+                        ...process.env,
+                        PATH: `${dirname(this.binaryPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+                    }, this.childEnvironment),
                 },
                 shell: false,
                 stdio: ["pipe", "pipe", "pipe"],
@@ -91,16 +110,23 @@ class CodeBuddyAcpClient extends EventEmitter {
         const decoder = new JsonLineDecoder(
             (message) => this.handleMessage(message, {sourceChild, processEpoch}),
             (error, line) => {
-                this.recorder.record("decode-error", {line, error: error.message})
-                this.emit("runtimeLog", `Invalid ACP message: ${error.message}`)
+                const diagnostic = redactOperatorSecrets(
+                    {line, error: error.message},
+                    this.childEnvironment,
+                )
+                this.recorder.record("decode-error", diagnostic)
+                this.emitRuntimeLog(`Invalid ACP message: ${diagnostic.error}`)
             },
         )
         sourceChild.stdout.on("data", (chunk) => decoder.push(chunk))
         sourceChild.stderr.on("data", (chunk) => {
-            const text = chunk.toString("utf8").trim()
+            const text = redactOperatorSecrets(
+                chunk.toString("utf8").trim(),
+                this.childEnvironment,
+            )
             if (!text) return
             this.recorder.record("stderr", {text})
-            this.emit("runtimeLog", text)
+            this.emitRuntimeLog(text)
         })
         sourceChild.once("error", (error) => this.handleExit(error, sourceChild, processEpoch))
         sourceChild.once("close", (code, signal) => {
@@ -129,8 +155,9 @@ class CodeBuddyAcpClient extends EventEmitter {
         this.child = null
         this.ready = false
         this.tracker.rejectAll(error)
-        this.emit("state", {...this.state(), error: this.stopping ? null : error.message})
-        if (!this.stopping) this.emit("runtimeError", error)
+        const message = redactOperatorSecrets(error.message, this.childEnvironment)
+        this.emit("state", {...this.state(), error: this.stopping ? null : message})
+        if (!this.stopping) this.emit("runtimeError", new Error(message))
     }
 
     handleMessage(
@@ -138,22 +165,23 @@ class CodeBuddyAcpClient extends EventEmitter {
         {sourceChild = this.child, processEpoch = this.processEpoch} = {},
     ) {
         if (this.child !== sourceChild || this.processEpoch !== processEpoch) return
-        this.recorder?.record("inbound", message)
-        if (message?.id !== undefined && message?.method) {
-            if (message.method === "session/request_permission") {
-                void this.handlePermissionRequest(message, {sourceChild, processEpoch})
+        const safeMessage = redactOperatorSecrets(message, this.childEnvironment)
+        this.recorder?.record("inbound", safeMessage)
+        if (safeMessage?.id !== undefined && safeMessage?.method) {
+            if (safeMessage.method === "session/request_permission") {
+                void this.handlePermissionRequest(safeMessage, {sourceChild, processEpoch})
                 return
             }
             this.write({
                 jsonrpc: "2.0",
-                id: message.id,
-                error: {code: -32601, message: `Unsupported ACP client request: ${message.method}`},
+                id: safeMessage.id,
+                error: {code: -32601, message: `Unsupported ACP client request: ${safeMessage.method}`},
             })
             return
         }
-        if (this.tracker.settle(message)) return
-        if (message?.method === "session/update") this.handleSessionUpdate(message.params)
-        if (message?.method) this.emit(message.method, message.params)
+        if (this.tracker.settle(safeMessage)) return
+        if (safeMessage?.method === "session/update") this.handleSessionUpdate(safeMessage.params)
+        if (safeMessage?.method) this.emit(safeMessage.method, safeMessage.params)
     }
 
     permissionRequestKey(processEpoch, requestId) {
@@ -174,7 +202,7 @@ class CodeBuddyAcpClient extends EventEmitter {
             this.write({jsonrpc: "2.0", id: pending.requestId, result: {outcome}})
             return true
         } catch (error) {
-            this.emit("runtimeLog", `Permission response failed: ${error.message}`)
+            this.emitRuntimeLog(`Permission response failed: ${error.message}`)
             return false
         }
     }
@@ -237,7 +265,7 @@ class CodeBuddyAcpClient extends EventEmitter {
                 }
             }
         } catch (error) {
-            this.emit("runtimeLog", `Permission request failed: ${error.message}`)
+            this.emitRuntimeLog(`Permission request failed: ${error.message}`)
         }
         if (this.pendingPermissionRequests.get(pending.key) !== pending) return
         optionId ??= fallback.optionId ?? fallback.name
@@ -280,7 +308,7 @@ class CodeBuddyAcpClient extends EventEmitter {
 
     write(message) {
         if (!this.child?.stdin?.writable) throw new Error("CodeBuddy ACP is not running")
-        this.recorder?.record("outbound", message)
+        this.recorder?.record("outbound", redactOperatorSecrets(message, this.childEnvironment))
         this.child.stdin.write(`${JSON.stringify(message)}\n`)
     }
 
@@ -404,7 +432,7 @@ class CodeBuddyAcpClient extends EventEmitter {
     async startThread(options = {}) {
         const response = await this.request("session/new", {
             cwd: this.workspaceRoot,
-            mcpServers: [],
+            mcpServers: sessionMcpServers(options),
         })
         this.captureModels(response)
         const runtimeModes = this.captureModes(response.sessionId, response)
@@ -436,7 +464,7 @@ class CodeBuddyAcpClient extends EventEmitter {
             const response = await this.request("session/load", {
                 sessionId: threadId,
                 cwd: this.workspaceRoot,
-                mcpServers: [],
+                mcpServers: sessionMcpServers(options),
             })
             this.captureModels(response)
             const runtimeModes = this.captureModes(threadId, response)

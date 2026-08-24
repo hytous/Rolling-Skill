@@ -5,6 +5,11 @@ const {dirname} = require("node:path")
 
 const {evaluationTurnError} = require("./evaluation-turn-error.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
+const {
+    mergeOperatorChildEnvironment,
+    redactOperatorSecrets,
+    sanitizeOperatorChildEnvironment,
+} = require("./operator/operator-tool-transport.cjs")
 
 const DEFAULT_POLL_INTERVAL_MS = 180
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000
@@ -264,6 +269,7 @@ class DeepSeekHarnessClient extends EventEmitter {
         nonInteractive = false,
         requestPermission = null,
         requestQuestion = null,
+        childEnvironment = {},
         pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
         startupTimeoutMs = DEFAULT_STARTUP_TIMEOUT_MS,
         startupRetryDelayMs = DEFAULT_STARTUP_RETRY_DELAY_MS,
@@ -291,6 +297,7 @@ class DeepSeekHarnessClient extends EventEmitter {
             : "workspace-write"
         this.requestPermission = requestPermission
         this.requestQuestion = requestQuestion
+        this.childEnvironment = sanitizeOperatorChildEnvironment(childEnvironment)
         this.pollIntervalMs = pollIntervalMs
         this.startupTimeoutMs = startupTimeoutMs
         this.startupRetryDelayMs = Math.max(1, Number(startupRetryDelayMs) || DEFAULT_STARTUP_RETRY_DELAY_MS)
@@ -328,6 +335,14 @@ class DeepSeekHarnessClient extends EventEmitter {
         }
     }
 
+    recordTrace(kind, payload) {
+        this.recorder?.record(kind, redactOperatorSecrets(payload, this.childEnvironment))
+    }
+
+    emitRuntimeLog(message) {
+        this.emit("runtimeLog", redactOperatorSecrets(String(message), this.childEnvironment))
+    }
+
     async start() {
         if (this.ready) return this.state()
         if (this.initialization) return this.initialization
@@ -357,9 +372,11 @@ class DeepSeekHarnessClient extends EventEmitter {
             {
                 cwd: this.workspaceRoot,
                 env: {
-                    ...process.env,
-                    PATH: `${dirname(this.binaryPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-                    DSH_PERMISSION_MODE: this.defaultPermissionMode,
+                    ...mergeOperatorChildEnvironment({
+                        ...process.env,
+                        PATH: `${dirname(this.binaryPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+                        DSH_PERMISSION_MODE: this.defaultPermissionMode,
+                    }, this.childEnvironment),
                 },
                 shell: false,
                 stdio: ["ignore", "pipe", "pipe"],
@@ -368,8 +385,11 @@ class DeepSeekHarnessClient extends EventEmitter {
         this.child = child
         this.emit("state", this.state())
         child.stderr.on("data", (chunk) => {
-            const text = chunk.toString("utf8").trim()
-            if (text) this.emit("runtimeLog", text)
+            const text = redactOperatorSecrets(
+                chunk.toString("utf8").trim(),
+                this.childEnvironment,
+            )
+            if (text) this.emitRuntimeLog(text)
         })
         child.once("error", (error) => this.handleExit(error, child, epoch))
         child.once("close", (code, signal) => {
@@ -458,15 +478,16 @@ class DeepSeekHarnessClient extends EventEmitter {
         this.pendingTurns.clear()
         this.pendingNonInteractiveFailures.clear()
         this.sessionPermissions.clear()
-        this.emit("state", {...this.state(), error: this.stopping ? null : error.message})
-        if (!this.stopping) this.emit("runtimeError", error)
+        const message = redactOperatorSecrets(error.message, this.childEnvironment)
+        this.emit("state", {...this.state(), error: this.stopping ? null : message})
+        if (!this.stopping) this.emit("runtimeError", new Error(message))
     }
 
     async request(method, payload = {}, {timeoutMs = null} = {}) {
         if (!this.baseUrl) throw new Error("DeepSeek Harness Host is not running")
         const rpcId = randomUUID()
         const envelope = {type: "client-request", rpcId, method, payload}
-        this.recorder?.record("outbound", {method, params: payload, rpcId})
+        this.recordTrace("outbound", {method, params: payload, rpcId})
         const boundedTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
             ? Math.max(1, Number(timeoutMs))
             : null
@@ -513,18 +534,18 @@ class DeepSeekHarnessClient extends EventEmitter {
             const error = new Error(failure.message ?? `DeepSeek Harness ${method} failed (${response.status})`)
             error.code = failure.code ?? `HTTP_${response.status}`
             error.details = failure.details ?? null
-            this.recorder?.record("inbound", {method, rpcId, error: failure})
+            this.recordTrace("inbound", {method, rpcId, error: failure})
             throw error
         }
         if (method !== "session.history") {
-            this.recorder?.record("inbound", {method, rpcId, result: body.result.value})
+            this.recordTrace("inbound", {method, rpcId, result: body.result.value})
         }
         return body.result.value
     }
 
     async respond(message) {
         if (!this.baseUrl) throw new Error("DeepSeek Harness Host is not running")
-        this.recorder?.record("outbound", {method: "respond", rpcId: message.rpcId, params: message})
+        this.recordTrace("outbound", {method: "respond", rpcId: message.rpcId, params: message})
         const response = await this.fetchImpl(`${this.baseUrl}/api/respond`, {
             method: "POST",
             headers: {"content-type": "application/json", accept: "application/json"},
@@ -543,7 +564,7 @@ class DeepSeekHarnessClient extends EventEmitter {
         if (receipt?.accepted !== true && receipt?.reason !== "not-pending") {
             throw new Error("DeepSeek Harness returned an invalid interaction receipt")
         }
-        this.recorder?.record("inbound", {
+        this.recordTrace("inbound", {
             method: "respond",
             rpcId: message.rpcId,
             result: receipt,
@@ -571,7 +592,7 @@ class DeepSeekHarnessClient extends EventEmitter {
         try {
             socket = this.webSocketFactory(this.muxUrl())
         } catch (error) {
-            this.emit("runtimeLog", `DeepSeek Harness event stream failed: ${error?.message ?? String(error)}`)
+            this.emitRuntimeLog(`DeepSeek Harness event stream failed: ${error?.message ?? String(error)}`)
             this.scheduleMuxReconnect(child, epoch)
             return
         }
@@ -584,9 +605,9 @@ class DeepSeekHarnessClient extends EventEmitter {
         const onOpen = () => {
             if (!isCurrent()) return
             this.muxReconnectAttempt = 0
-            this.recorder?.record("inbound", {method: "events.mux/open", processEpoch: epoch})
+            this.recordTrace("inbound", {method: "events.mux/open", processEpoch: epoch})
             void this.recoverPendingTurns().catch((error) => {
-                this.emit("runtimeLog", `DeepSeek Harness history recovery failed: ${error?.message ?? String(error)}`)
+                this.emitRuntimeLog(`DeepSeek Harness history recovery failed: ${error?.message ?? String(error)}`)
             })
         }
         const onMessage = (event) => {
@@ -601,14 +622,14 @@ class DeepSeekHarnessClient extends EventEmitter {
                 if (envelope?.type !== "server-request" || !envelope.rpcId || !envelope.payload?.type) {
                     throw new Error("invalid server-request envelope")
                 }
-                this.recorder?.record("inbound", {
+                this.recordTrace("inbound", {
                     method: "events.mux",
                     rpcId: envelope.rpcId,
                     params: envelope.payload,
                 })
                 this.handleMuxEnvelope(envelope, epoch)
             } catch (error) {
-                this.emit("runtimeLog", `DeepSeek Harness dropped an invalid event frame: ${error?.message ?? String(error)}`)
+                this.emitRuntimeLog(`DeepSeek Harness dropped an invalid event frame: ${error?.message ?? String(error)}`)
             }
         }
         const onClose = () => {
@@ -621,7 +642,7 @@ class DeepSeekHarnessClient extends EventEmitter {
         const onError = (error) => {
             if (!isCurrent()) return
             const message = error?.message ?? "WebSocket connection failed"
-            this.emit("runtimeLog", `DeepSeek Harness event stream error: ${message}`)
+            this.emitRuntimeLog(`DeepSeek Harness event stream error: ${message}`)
         }
         socket.addEventListener("open", onOpen)
         socket.addEventListener("message", onMessage)
@@ -693,7 +714,7 @@ class DeepSeekHarnessClient extends EventEmitter {
             this.pendingInteractions.set(envelope.rpcId, token)
             void this.resolveInteraction(token).catch((error) => {
                 if (this.pendingInteractions.get(token.rpcId) !== token) return
-                this.emit("runtimeLog", `DeepSeek Harness interaction failed: ${error?.message ?? String(error)}`)
+                this.emitRuntimeLog(`DeepSeek Harness interaction failed: ${error?.message ?? String(error)}`)
             })
             return
         }
@@ -978,7 +999,7 @@ class DeepSeekHarnessClient extends EventEmitter {
             this.sessionSummary(threadId),
         ])
         const thread = threadFromHistory({summary, entries, workspaceRoot: this.workspaceRoot})
-        this.recorder?.record("inbound", {method: "thread/read", result: {thread}})
+        this.recordTrace("inbound", {method: "thread/read", result: {thread}})
         return {thread}
     }
 
@@ -1199,7 +1220,7 @@ class DeepSeekHarnessClient extends EventEmitter {
                 const call = toolCalls.get(toolCallIdFromResult(event))
                 if (call) item = toolItem(call, event)
             }
-            this.recorder?.record("inbound", {
+            this.recordTrace("inbound", {
                 method: "session/event",
                 params: {threadId: sessionId, event, ...(item ? {item} : {})},
             })

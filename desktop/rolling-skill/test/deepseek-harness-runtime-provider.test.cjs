@@ -482,6 +482,70 @@ describe("DeepSeek Harness session adapter", () => {
         assert.equal(sockets.every((socket) => socket.readyState === FakeWebSocket.CLOSED), true)
     })
 
+    it("merges only explicit Operator CLI credentials and redacts Host stderr", async () => {
+        const child = new ManagedFakeChild()
+        const spawnCalls = []
+        const runtimeLogs = []
+        const sockets = []
+        const traceDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-dsh-operator-env-"))
+        temporaryDirectories.push(traceDirectory)
+        const childEnvironment = {
+            ROLLING_SKILL_CONTROL_SOCKET: "/private/dsh.sock",
+            ROLLING_SKILL_CONTROL_TOKEN: "dsh-operator-token",
+            ROLLING_SKILL_OPERATOR_SESSION: "dsh-operator-session",
+            SHOULD_NOT_PASS: "unknown-environment",
+        }
+        const client = new DeepSeekHarnessClient({
+            binaryPath: "/bin/dsh",
+            workspaceRoot: "/workspace",
+            traceDirectory,
+            childEnvironment,
+            spawnProcess: (path, args, options) => {
+                spawnCalls.push({path, args, options})
+                queueMicrotask(() => child.stdout.emit("data", "dsh web: http://127.0.0.1:54945\n"))
+                return child
+            },
+            webSocketFactory: (url) => {
+                const socket = new FakeWebSocket(url)
+                sockets.push(socket)
+                return socket
+            },
+            fetchImpl: async (_url, options) => {
+                const body = JSON.parse(options.body)
+                return responseFor(body, body.method === "llm.models" ? {groups: [], failures: []} : {})
+            },
+        })
+        client.on("runtimeLog", (message) => runtimeLogs.push(message))
+
+        try {
+            await client.start()
+            child.stderr.emit("data", Buffer.from(
+                `ROLLING_SKILL_CONTROL_SOCKET=/private/dsh.sock ${childEnvironment.ROLLING_SKILL_CONTROL_TOKEN}`,
+            ))
+            sockets[0].dispatch("error", {
+                message: `stream failed: ${childEnvironment.ROLLING_SKILL_OPERATOR_SESSION}`,
+            })
+            await new Promise((resolve) => setImmediate(resolve))
+
+            assert.equal(spawnCalls[0].options.env.ROLLING_SKILL_CONTROL_SOCKET, "/private/dsh.sock")
+            assert.equal(spawnCalls[0].options.env.ROLLING_SKILL_CONTROL_TOKEN, "dsh-operator-token")
+            assert.equal(spawnCalls[0].options.env.ROLLING_SKILL_OPERATOR_SESSION, "dsh-operator-session")
+            assert.equal(Object.hasOwn(spawnCalls[0].options.env, "SHOULD_NOT_PASS"), false)
+            const diagnostic = JSON.stringify({runtimeLogs, trace: client.recentTrace(50)})
+            for (const forbidden of [
+                "ROLLING_SKILL_CONTROL_SOCKET",
+                "ROLLING_SKILL_CONTROL_TOKEN",
+                "ROLLING_SKILL_OPERATOR_SESSION",
+                "/private/dsh.sock",
+                "dsh-operator-token",
+                "dsh-operator-session",
+            ]) assert.equal(diagnostic.includes(forbidden), false, forbidden)
+        } finally {
+            await client.stop()
+        }
+        assert.equal(sockets.every((socket) => socket.readyState === FakeWebSocket.CLOSED), true)
+    })
+
     it("honors the read-only sandbox requested by hidden Curator and Rubric threads", async () => {
         const client = new DeepSeekHarnessClient({
             binaryPath: "/bin/dsh",

@@ -5,8 +5,32 @@ const {dirname, join} = require("node:path")
 const {version: clientVersion} = require("../package.json")
 
 const {JsonLineDecoder, RpcRequestTracker} = require("./json-rpc.cjs")
+const {CONTROL_METHODS, publicControlError} = require("./control-plane/contracts.cjs")
 const {evaluationTurnError} = require("./evaluation-turn-error.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
+const {
+    mergeOperatorChildEnvironment,
+    redactOperatorSecrets,
+    sanitizeOperatorChildEnvironment,
+} = require("./operator/operator-tool-transport.cjs")
+
+const MAX_DYNAMIC_TOOL_ARGUMENT_BYTES = 1_048_576
+const MAX_DYNAMIC_TOOL_RESPONSE_BYTES = 256 * 1_024
+const DYNAMIC_TOOL_NAMESPACE = "rolling_skill"
+const DYNAMIC_TOOL_METHODS = new Map(CONTROL_METHODS.map((method) => [
+    method.replaceAll(".", "_"),
+    method,
+]))
+
+function plainObject(value) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+    const prototype = Object.getPrototypeOf(value)
+    return prototype === Object.prototype || prototype === null
+}
+
+function jsonBytes(value) {
+    return Buffer.byteLength(JSON.stringify(value), "utf8")
+}
 
 function turnSandboxPolicy(sandbox) {
     if (sandbox === "danger-full-access") return {type: "dangerFullAccess"}
@@ -36,6 +60,8 @@ class CodexAppServerClient extends EventEmitter {
         executionPolicy = null,
         requestPermission = null,
         requestQuestion = null,
+        requestTool = null,
+        childEnvironment = {},
         spawnProcess = spawn,
     }) {
         super()
@@ -50,6 +76,9 @@ class CodexAppServerClient extends EventEmitter {
         this.spawnProcess = spawnProcess
         this.requestPermission = requestPermission
         this.requestQuestion = requestQuestion
+        this.requestTool = requestTool
+        this.childEnvironment = sanitizeOperatorChildEnvironment(childEnvironment)
+        this.dynamicToolThreads = new Map()
         this.child = null
         this.tracker = new RpcRequestTracker()
         this.recorder = null
@@ -67,6 +96,10 @@ class CodexAppServerClient extends EventEmitter {
             tracePath: this.recorder?.path ?? null,
             traceReference: this.recorder?.latestReference ?? null,
         }
+    }
+
+    emitRuntimeLog(message) {
+        this.emit("runtimeLog", redactOperatorSecrets(String(message), this.childEnvironment))
     }
 
     async start() {
@@ -99,8 +132,10 @@ class CodexAppServerClient extends EventEmitter {
         this.child = this.spawnProcess(this.binaryPath, ["app-server"], {
             cwd: this.workspaceRoot,
             env: {
-                ...process.env,
-                ...managedEnvironment,
+                ...mergeOperatorChildEnvironment(
+                    {...process.env, ...managedEnvironment},
+                    this.childEnvironment,
+                ),
             },
             shell: false,
             stdio: ["pipe", "pipe", "pipe"],
@@ -110,16 +145,23 @@ class CodexAppServerClient extends EventEmitter {
         const decoder = new JsonLineDecoder(
             (message) => this.handleMessage(message),
             (error, line) => {
-                this.recorder.record("decode-error", {line, error: error.message})
-                this.emit("runtimeLog", `Invalid app-server message: ${error.message}`)
+                const diagnostic = redactOperatorSecrets(
+                    {line, error: error.message},
+                    this.childEnvironment,
+                )
+                this.recorder.record("decode-error", diagnostic)
+                this.emitRuntimeLog(`Invalid app-server message: ${diagnostic.error}`)
             },
         )
         this.child.stdout.on("data", (chunk) => decoder.push(chunk))
         this.child.stderr.on("data", (chunk) => {
-            const text = chunk.toString("utf8").trim()
+            const text = redactOperatorSecrets(
+                chunk.toString("utf8").trim(),
+                this.childEnvironment,
+            )
             if (!text) return
             this.recorder.record("stderr", {text})
-            this.emit("runtimeLog", text)
+            this.emitRuntimeLog(text)
         })
         this.child.once("error", (error) => this.handleExit(error))
         this.child.once("close", (code, signal) => {
@@ -148,28 +190,35 @@ class CodexAppServerClient extends EventEmitter {
         if (!this.child) return
         this.child = null
         this.ready = false
+        this.dynamicToolThreads.clear()
         this.tracker.rejectAll(error)
-        this.emit("state", {...this.state(), error: this.stopping ? null : error.message})
-        if (!this.stopping) this.emit("runtimeError", error)
+        const message = redactOperatorSecrets(error.message, this.childEnvironment)
+        this.emit("state", {...this.state(), error: this.stopping ? null : message})
+        if (!this.stopping) this.emit("runtimeError", new Error(message))
     }
 
     handleMessage(message) {
-        this.recorder?.record("inbound", message)
-        if (message?.id !== undefined && message?.method) {
-            if (this.isInteractiveServerRequest(message.method)) {
-                void this.handleInteractiveServerRequest(message)
+        const safeMessage = redactOperatorSecrets(message, this.childEnvironment)
+        this.recorder?.record("inbound", safeMessage)
+        if (safeMessage?.id !== undefined && safeMessage?.method) {
+            if (safeMessage.method === "item/tool/call") {
+                void this.handleDynamicToolCall(safeMessage)
+                return
+            }
+            if (this.isInteractiveServerRequest(safeMessage.method)) {
+                void this.handleInteractiveServerRequest(safeMessage)
                 return
             }
             this.write({
-                id: message.id,
-                error: {code: -32601, message: `Unsupported client request: ${message.method}`},
+                id: safeMessage.id,
+                error: {code: -32601, message: `Unsupported client request: ${safeMessage.method}`},
             })
             return
         }
-        if (this.tracker.settle(message)) return
-        if (message?.method) {
-            this.emit("notification", message)
-            this.emit(message.method, message.params)
+        if (this.tracker.settle(safeMessage)) return
+        if (safeMessage?.method) {
+            this.emit("notification", safeMessage)
+            this.emit(safeMessage.method, safeMessage.params)
         }
     }
 
@@ -178,6 +227,69 @@ class CodexAppServerClient extends EventEmitter {
             method === "item/fileChange/requestApproval" ||
             method === "item/permissions/requestApproval" ||
             method === "item/tool/requestUserInput"
+    }
+
+    registerDynamicTools(threadId, dynamicTools) {
+        this.dynamicToolThreads.delete(threadId)
+        if (!Array.isArray(dynamicTools)) return
+        const namespace = dynamicTools.find((entry) => (
+            entry?.type === "namespace" && entry.name === DYNAMIC_TOOL_NAMESPACE
+        ))
+        if (!namespace || !Array.isArray(namespace.tools)) return
+        const methods = new Map()
+        for (const tool of namespace.tools) {
+            if (tool?.type !== "function" || typeof tool.name !== "string") continue
+            const method = DYNAMIC_TOOL_METHODS.get(tool.name)
+            if (method) methods.set(tool.name, method)
+        }
+        if (methods.size > 0) this.dynamicToolThreads.set(threadId, methods)
+    }
+
+    dynamicToolResult(payload, success) {
+        const text = JSON.stringify(payload)
+        return {
+            contentItems: [{type: "inputText", text}],
+            success,
+        }
+    }
+
+    dynamicToolFailure(error) {
+        return this.dynamicToolResult(publicControlError(error), false)
+    }
+
+    async handleDynamicToolCall(message) {
+        const params = message.params ?? {}
+        try {
+            if (
+                typeof params.threadId !== "string" ||
+                params.namespace !== DYNAMIC_TOOL_NAMESPACE ||
+                typeof params.tool !== "string"
+            ) throw new Error("Operator dynamic Tool is unavailable")
+            const method = this.dynamicToolThreads.get(params.threadId)?.get(params.tool)
+            if (!method || typeof this.requestTool !== "function") {
+                throw new Error("Operator dynamic Tool is unavailable")
+            }
+            if (!plainObject(params.arguments) || jsonBytes(params.arguments) > MAX_DYNAMIC_TOOL_ARGUMENT_BYTES) {
+                throw new Error("Operator dynamic Tool arguments are invalid")
+            }
+            const result = await this.requestTool({
+                threadId: params.threadId,
+                turnId: params.turnId,
+                callId: params.callId,
+                method,
+                params: JSON.parse(JSON.stringify(params.arguments)),
+            })
+            if (
+                JSON.stringify(redactOperatorSecrets(result, this.childEnvironment)) !==
+                JSON.stringify(result)
+            ) throw new Error("Operator dynamic Tool result contains private authority")
+            if (jsonBytes(result) > MAX_DYNAMIC_TOOL_RESPONSE_BYTES) {
+                throw new Error("Operator dynamic Tool result exceeds its public bound")
+            }
+            this.write({id: message.id, result: this.dynamicToolResult(result, true)})
+        } catch (error) {
+            this.write({id: message.id, result: this.dynamicToolFailure(error)})
+        }
     }
 
     permissionOptions(decisions, defaults) {
@@ -289,14 +401,20 @@ class CodexAppServerClient extends EventEmitter {
         } catch (error) {
             this.write({
                 id: message.id,
-                error: {code: -32000, message: error?.message ?? String(error)},
+                error: {
+                    code: -32000,
+                    message: redactOperatorSecrets(
+                        error?.message ?? String(error),
+                        this.childEnvironment,
+                    ),
+                },
             })
         }
     }
 
     write(message) {
         if (!this.child?.stdin?.writable) throw new Error("Codex app-server is not running")
-        this.recorder?.record("outbound", message)
+        this.recorder?.record("outbound", redactOperatorSecrets(message, this.childEnvironment))
         this.child.stdin.write(`${JSON.stringify(message)}\n`)
     }
 
@@ -371,8 +489,11 @@ class CodexAppServerClient extends EventEmitter {
         return this.request("thread/read", {threadId, includeTurns: true})
     }
 
-    startThread(options = {}) {
-        return this.request("thread/start", {
+    async startThread(options = {}) {
+        const dynamicTools = Object.hasOwn(options, "dynamicTools")
+            ? JSON.parse(JSON.stringify(options.dynamicTools))
+            : null
+        const response = await this.request("thread/start", {
             cwd: this.workspaceRoot,
             approvalPolicy: options.approvalPolicy ?? this.executionPolicy.approvalPolicy,
             sandbox: options.sandbox ?? this.executionPolicy.sandbox,
@@ -380,17 +501,26 @@ class CodexAppServerClient extends EventEmitter {
             sessionStartSource: "startup",
             threadSource: options.threadSource ?? "user",
             ...(options.model ? {model: options.model} : {}),
+            ...(dynamicTools ? {dynamicTools} : {}),
         })
+        this.registerDynamicTools(response.thread.id, dynamicTools)
+        return response
     }
 
-    resumeThread(threadId, options = {}) {
-        return this.request("thread/resume", {
+    async resumeThread(threadId, options = {}) {
+        const dynamicTools = Object.hasOwn(options, "dynamicTools")
+            ? JSON.parse(JSON.stringify(options.dynamicTools))
+            : null
+        const response = await this.request("thread/resume", {
             threadId,
             cwd: options.cwd ?? this.workspaceRoot,
             approvalPolicy: options.approvalPolicy ?? this.executionPolicy.approvalPolicy,
             sandbox: options.sandbox ?? this.executionPolicy.sandbox,
             ...(options.model ? {model: options.model} : {}),
+            ...(dynamicTools ? {dynamicTools} : {}),
         })
+        this.registerDynamicTools(threadId, dynamicTools)
+        return response
     }
 
     startTurn(threadId, text, options = {}) {

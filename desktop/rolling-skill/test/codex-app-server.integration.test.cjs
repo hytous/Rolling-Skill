@@ -45,6 +45,145 @@ describe("discovered local Codex app-server smoke", {skip: !descriptor}, () => {
 })
 
 describe("Codex app-server request construction", () => {
+    it("forwards dynamic tools only for their Operator thread and routes tool calls", async () => {
+        const requests = []
+        const writes = []
+        const toolRequests = []
+        const dynamicTools = [{
+            type: "namespace",
+            name: "rolling_skill",
+            description: "Operator tools",
+            tools: [{
+                type: "function",
+                name: "context_get",
+                description: "Read context",
+                inputSchema: {type: "object", properties: {}, additionalProperties: false},
+            }],
+        }]
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            requestTool: async (request) => {
+                toolRequests.push(request)
+                return {workspaceRoot: "/workspace", runtimes: []}
+            },
+        })
+        client.request = async (method, params) => {
+            requests.push({method, params})
+            return {thread: {id: method === "thread/resume" ? params.threadId : `thread-${requests.length}`}}
+        }
+        client.write = (message) => writes.push(message)
+
+        await client.startThread({dynamicTools})
+        await client.startThread()
+        await client.resumeThread("resumed-operator", {dynamicTools})
+        client.handleMessage({
+            id: 60,
+            method: "item/tool/call",
+            params: {
+                threadId: "thread-1",
+                turnId: "turn-1",
+                callId: "call-1",
+                namespace: "rolling_skill",
+                tool: "context_get",
+                arguments: {},
+            },
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.deepEqual(requests[0].params.dynamicTools, dynamicTools)
+        assert.equal(Object.hasOwn(requests[1].params, "dynamicTools"), false)
+        assert.deepEqual(requests[2].params.dynamicTools, dynamicTools)
+        assert.deepEqual(toolRequests, [{
+            threadId: "thread-1",
+            turnId: "turn-1",
+            callId: "call-1",
+            method: "context.get",
+            params: {},
+        }])
+        assert.deepEqual(writes, [{
+            id: 60,
+            result: {
+                contentItems: [{
+                    type: "inputText",
+                    text: JSON.stringify({workspaceRoot: "/workspace", runtimes: []}),
+                }],
+                success: true,
+            },
+        }])
+    })
+
+    it("fails closed for unknown, wrong-thread, callback-error, and oversized dynamic tool calls", async () => {
+        const writes = []
+        let callbackCalls = 0
+        const dynamicTools = [{
+            type: "namespace",
+            name: "rolling_skill",
+            description: "Operator tools",
+            tools: [{
+                type: "function",
+                name: "context_get",
+                description: "Read context",
+                inputSchema: {type: "object"},
+            }],
+        }]
+        const secret = "must-not-leak-from-tool-callback"
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            childEnvironment: {
+                ROLLING_SKILL_CONTROL_SOCKET: "/private/codex.sock",
+                ROLLING_SKILL_CONTROL_TOKEN: secret,
+                ROLLING_SKILL_OPERATOR_SESSION: "operator-session",
+            },
+            requestTool: async ({params}) => {
+                callbackCalls += 1
+                if (params.fail) throw new Error(`${secret}:${"x".repeat(20_000)}`)
+                if (params.reflect) return {value: secret}
+                return {padding: "x".repeat(300_000)}
+            },
+        })
+        client.request = async (_method, params) => ({thread: {id: params.threadId ?? "operator-thread"}})
+        client.write = (message) => writes.push(message)
+        await client.startThread({dynamicTools})
+
+        const base = {
+            method: "item/tool/call",
+            params: {
+                threadId: "operator-thread",
+                turnId: "turn-1",
+                callId: "call-1",
+                namespace: "rolling_skill",
+                tool: "context_get",
+                arguments: {},
+            },
+        }
+        client.handleMessage({id: 61, ...base, params: {...base.params, namespace: "other"}})
+        client.handleMessage({id: 62, ...base, params: {...base.params, threadId: "ordinary-thread"}})
+        client.handleMessage({id: 63, ...base, params: {...base.params, arguments: {fail: true}}})
+        client.handleMessage({id: 64, ...base})
+        client.handleMessage({id: 65, ...base, params: {...base.params, arguments: {reflect: true}}})
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.equal(callbackCalls, 3)
+        for (const id of [61, 62, 63, 64, 65]) {
+            const response = writes.find((entry) => entry.id === id)
+            assert.equal(response.result.success, false)
+            assert.equal(response.result.contentItems.length, 1)
+            assert.equal(response.result.contentItems[0].type, "inputText")
+            assert.ok(Buffer.byteLength(response.result.contentItems[0].text) <= 4_096)
+            assert.equal(response.result.contentItems[0].text.includes(secret), false)
+            assert.deepEqual(JSON.parse(response.result.contentItems[0].text), {
+                code: "CONTROL_ERROR",
+                message: "Control operation failed",
+                retryable: false,
+                details: null,
+            })
+        }
+    })
+
     it("routes command approval requests through the injected permission callback", async () => {
         const writes = []
         const requests = []
@@ -184,6 +323,78 @@ describe("Codex app-server request construction", () => {
                 title: "Rolling Skill",
                 version: require("../package.json").version,
             })
+        } finally {
+            await client.stop()
+            rmSync(traceDirectory, {recursive: true, force: true})
+        }
+    })
+
+    it("merges only explicit Operator child credentials and redacts stderr logs", async () => {
+        const writes = []
+        const runtimeLogs = []
+        let spawnOptions
+        class FakeChild extends EventEmitter {
+            constructor() {
+                super()
+                this.stdout = new EventEmitter()
+                this.stderr = new EventEmitter()
+                this.stdin = {writable: true, write: (value) => writes.push(JSON.parse(value))}
+            }
+            kill() {
+                this.emit("close", 0, null)
+            }
+        }
+        const child = new FakeChild()
+        const traceDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-codex-operator-env-"))
+        const childEnvironment = {
+            ROLLING_SKILL_CONTROL_SOCKET: "/private/operator.sock",
+            ROLLING_SKILL_CONTROL_TOKEN: "codex-operator-token",
+            ROLLING_SKILL_OPERATOR_SESSION: "codex-operator-session",
+            SHOULD_NOT_PASS: "unknown-environment",
+        }
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory,
+            workspaceRoot: "/tmp/workspace",
+            childEnvironment,
+            requestQuestion: async () => {
+                throw new Error(`question failed: ${childEnvironment.ROLLING_SKILL_CONTROL_TOKEN}`)
+            },
+            spawnProcess: (_path, _args, options) => {
+                spawnOptions = options
+                return child
+            },
+        })
+        client.on("runtimeLog", (message) => runtimeLogs.push(message))
+
+        try {
+            const started = client.start()
+            await new Promise((resolve) => setImmediate(resolve))
+            child.stdout.emit("data", `${JSON.stringify({id: 1, result: {userAgent: "Codex"}})}\n`)
+            await started
+            child.stderr.emit("data", Buffer.from(
+                `ROLLING_SKILL_CONTROL_TOKEN=codex-operator-token ${childEnvironment.ROLLING_SKILL_CONTROL_SOCKET}`,
+            ))
+            client.handleMessage({
+                id: 90,
+                method: "item/tool/requestUserInput",
+                params: {threadId: "operator", questions: []},
+            })
+            await new Promise((resolve) => setImmediate(resolve))
+
+            assert.equal(spawnOptions.env.ROLLING_SKILL_CONTROL_SOCKET, "/private/operator.sock")
+            assert.equal(spawnOptions.env.ROLLING_SKILL_CONTROL_TOKEN, "codex-operator-token")
+            assert.equal(spawnOptions.env.ROLLING_SKILL_OPERATOR_SESSION, "codex-operator-session")
+            assert.equal(Object.hasOwn(spawnOptions.env, "SHOULD_NOT_PASS"), false)
+            const diagnostic = JSON.stringify({runtimeLogs, trace: client.recentTrace(50), writes})
+            for (const forbidden of [
+                "ROLLING_SKILL_CONTROL_SOCKET",
+                "ROLLING_SKILL_CONTROL_TOKEN",
+                "ROLLING_SKILL_OPERATOR_SESSION",
+                "/private/operator.sock",
+                "codex-operator-token",
+                "codex-operator-session",
+            ]) assert.equal(diagnostic.includes(forbidden), false, forbidden)
         } finally {
             await client.stop()
             rmSync(traceDirectory, {recursive: true, force: true})

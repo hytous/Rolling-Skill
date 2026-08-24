@@ -121,6 +121,139 @@ else process.exitCode = 1
 })
 
 describe("CodeBuddy ACP client", () => {
+    it("forwards exact session-scoped MCP servers on start and resume while Chat keeps an empty list", async () => {
+        const client = new CodeBuddyAcpClient({
+            binaryPath: "/bin/codebuddy",
+            workspaceRoot: "/workspace",
+            traceDirectory: "/tmp",
+        })
+        const requests = []
+        let sessionSequence = 0
+        client.request = async (method, params) => {
+            requests.push({method, params})
+            if (method === "session/new") {
+                sessionSequence += 1
+                return {sessionId: `session-${sessionSequence}`}
+            }
+            if (method === "session/load") return {sessionId: params.sessionId}
+            return {}
+        }
+        const mcpServers = [{
+            name: "rolling-skill-operator",
+            command: "/Applications/Rolling Skill.app/Contents/Resources/rolling-skill-tool",
+            args: ["operator-mcp"],
+            env: [
+                {name: "ROLLING_SKILL_CONTROL_SOCKET", value: "/private/control.sock"},
+                {name: "ROLLING_SKILL_CONTROL_TOKEN", value: "secret-token"},
+                {name: "ROLLING_SKILL_OPERATOR_SESSION", value: "operator-session"},
+            ],
+        }]
+
+        await client.startThread({mcpServers})
+        await client.startThread()
+        await client.resumeThread("resumed-session", {mcpServers})
+
+        assert.deepEqual(requests.filter(({method}) => method === "session/new"), [
+            {method: "session/new", params: {cwd: "/workspace", mcpServers}},
+            {method: "session/new", params: {cwd: "/workspace", mcpServers: []}},
+        ])
+        assert.deepEqual(requests.find(({method}) => method === "session/load"), {
+            method: "session/load",
+            params: {sessionId: "resumed-session", cwd: "/workspace", mcpServers},
+        })
+    })
+
+    it("keeps MCP credentials on the ACP wire but removes their keys and values from diagnostics", async () => {
+        const writes = []
+        const runtimeLogs = []
+        let spawnOptions
+        class FakeChild extends EventEmitter {
+            constructor() {
+                super()
+                this.stdout = new EventEmitter()
+                this.stderr = new EventEmitter()
+                this.stdin = {writable: true, write: (value) => writes.push(JSON.parse(value))}
+            }
+            kill() {
+                this.emit("close", 0, null)
+            }
+        }
+        const child = new FakeChild()
+        const traceDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-codebuddy-operator-env-"))
+        temporaryDirectories.push(traceDirectory)
+        const childEnvironment = {
+            ROLLING_SKILL_CONTROL_SOCKET: "/private/codebuddy.sock",
+            ROLLING_SKILL_CONTROL_TOKEN: "codebuddy-operator-token",
+            ROLLING_SKILL_OPERATOR_SESSION: "codebuddy-operator-session",
+            SHOULD_NOT_PASS: "unknown-environment",
+        }
+        const mcpServers = [{
+            name: "rolling-skill-operator",
+            command: "/absolute/rolling-skill-tool",
+            args: ["operator-mcp"],
+            env: Object.entries(childEnvironment)
+                .filter(([name]) => name !== "SHOULD_NOT_PASS")
+                .map(([name, value]) => ({name, value})),
+        }]
+        const client = new CodeBuddyAcpClient({
+            binaryPath: "/bin/codebuddy",
+            workspaceRoot: "/workspace",
+            traceDirectory,
+            childEnvironment,
+            requestPermission: async () => {
+                throw new Error(`permission failed: ${childEnvironment.ROLLING_SKILL_CONTROL_TOKEN}`)
+            },
+            spawnProcess: (_path, _args, options) => {
+                spawnOptions = options
+                return child
+            },
+        })
+        client.on("runtimeLog", (message) => runtimeLogs.push(message))
+
+        try {
+            const started = client.start()
+            await new Promise((resolve) => setImmediate(resolve))
+            child.stdout.emit("data", `${JSON.stringify({jsonrpc: "2.0", id: 1, result: {}})}\n`)
+            await started
+            const thread = client.startThread({mcpServers})
+            await new Promise((resolve) => setImmediate(resolve))
+            child.stdout.emit("data", `${JSON.stringify({jsonrpc: "2.0", id: 2, result: {
+                sessionId: "operator-session",
+            }})}\n`)
+            await thread
+            child.stderr.emit("data", Buffer.from(
+                `ROLLING_SKILL_OPERATOR_SESSION=codebuddy-operator-session ${childEnvironment.ROLLING_SKILL_CONTROL_TOKEN}`,
+            ))
+            client.handleMessage({
+                jsonrpc: "2.0",
+                id: 90,
+                method: "session/request_permission",
+                params: {
+                    sessionId: "operator-session",
+                    options: [{optionId: "reject_once", kind: "reject"}],
+                },
+            })
+            await new Promise((resolve) => setImmediate(resolve))
+
+            assert.equal(spawnOptions.env.ROLLING_SKILL_CONTROL_SOCKET, "/private/codebuddy.sock")
+            assert.equal(spawnOptions.env.ROLLING_SKILL_CONTROL_TOKEN, "codebuddy-operator-token")
+            assert.equal(spawnOptions.env.ROLLING_SKILL_OPERATOR_SESSION, "codebuddy-operator-session")
+            assert.equal(Object.hasOwn(spawnOptions.env, "SHOULD_NOT_PASS"), false)
+            assert.deepEqual(writes.find((entry) => entry.method === "session/new").params.mcpServers, mcpServers)
+            const diagnostic = JSON.stringify({runtimeLogs, trace: client.recentTrace(100)})
+            for (const forbidden of [
+                "ROLLING_SKILL_CONTROL_SOCKET",
+                "ROLLING_SKILL_CONTROL_TOKEN",
+                "ROLLING_SKILL_OPERATOR_SESSION",
+                "/private/codebuddy.sock",
+                "codebuddy-operator-token",
+                "codebuddy-operator-session",
+            ]) assert.equal(diagnostic.includes(forbidden), false, forbidden)
+        } finally {
+            await client.stop()
+        }
+    })
+
     it("uses native ACP model and thought_level configuration", async () => {
         const writes = []
         class FakeChild extends EventEmitter {
