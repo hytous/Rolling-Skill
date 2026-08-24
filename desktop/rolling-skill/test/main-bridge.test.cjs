@@ -1810,6 +1810,7 @@ describe("desktop main/preload bridge", () => {
                 return {job: {id: payload.params.jobId, status: payload.method.split(".").at(-1)}}
             }
             if (channel === "operator:bootstrap") return {
+                generation: "generation-a",
                 revision: 7,
                 sessions: [],
                 jobs: [],
@@ -1820,6 +1821,7 @@ describe("desktop main/preload bridge", () => {
                 nextCursor: "page-2",
             }
             if (channel === "operator:summary-page") return {
+                generation: "generation-a",
                 revision: 7,
                 sessions: [],
                 jobs: [{id: "job-2", status: "running"}],
@@ -1838,8 +1840,11 @@ describe("desktop main/preload bridge", () => {
             throw new Error(`Unexpected Operator channel: ${channel}`)
         })
 
-        assert.equal((await api.bootstrapOperator()).revision, 7)
+        const bootstrap = await api.bootstrapOperator()
+        assert.equal(bootstrap.generation, "generation-a")
+        assert.equal(bootstrap.revision, 7)
         assert.deepEqual(plain(await api.readOperatorSummaryPage("page-2", 50)), {
+            generation: "generation-a",
             revision: 7,
             sessions: [],
             jobs: [{id: "job-2", status: "running"}],
@@ -1994,6 +1999,7 @@ describe("desktop main/preload bridge", () => {
     })
 
     it("signals a revision gap after one missed notification and serves bounded catch-up pages", () => {
+        let generation = "generation-a"
         let revision = 20
         const jobs = [{
             id: "job-1",
@@ -2010,11 +2016,13 @@ describe("desktop main/preload bridge", () => {
             updatedAt: "2026-08-24T00:00:00.000Z",
         }]
         const store = {
+            get generation() { return generation },
             get revision() { return revision },
             readSummaryPage({cursor, limit}) {
                 assert.equal(cursor, null)
                 assert.equal(limit, 50)
                 return {
+                    generation,
                     revision,
                     sessions: [],
                     jobs: structuredClone(jobs),
@@ -2065,15 +2073,23 @@ describe("desktop main/preload bridge", () => {
         })
 
         context.observeOperatorStore(store)
+        const startingGeneration = store.generation
         const startingRevision = store.revision
         assert.doesNotThrow(() => store.transitionJob())
+        generation = "generation-b"
+        revision = 0
         store.transitionStep()
         const hint = delivered.find((entry) => entry.channel === "operator:changed")?.payload
-        assert.equal(hint.revision, startingRevision + 2)
+        assert.equal(hint.generation, "generation-b")
+        assert.equal(hint.revision, 1)
         assert.equal(hint.invalidate, true)
-        assert.ok(hint.revision > startingRevision + 1)
+        assert.equal(
+            hint.generation !== startingGeneration || hint.revision !== startingRevision + 1,
+            true,
+        )
 
         const caughtUp = context.operatorSummarySnapshotPage({cursor: null, limit: 50})
+        assert.equal(caughtUp.generation, hint.generation)
         assert.equal(caughtUp.revision, hint.revision)
         assert.deepEqual(caughtUp.jobs.map((job) => job.id), ["job-1"])
         assert.equal(caughtUp.truncated, false)
@@ -2090,7 +2106,11 @@ describe("desktop main/preload bridge", () => {
             recordedAt: "2026-08-24T00:00:00.000Z",
             occurredAt: "2026-08-24T00:00:00.000Z",
         }
-        const store = {revision: 17, read: () => ({sessions: [], jobs: [], approvals: []})}
+        const store = {
+            generation: "generation-a",
+            revision: 17,
+            read: () => ({sessions: [], jobs: [], approvals: []}),
+        }
         for (const method of [
             "createSession",
             "createJob",
@@ -2135,6 +2155,7 @@ describe("desktop main/preload bridge", () => {
             channel.startsWith("curation:") || channel.startsWith("rubric:")
         )), false)
         assert.equal(broadcasts.every(({payload}) => payload.revision === 17), true)
+        assert.equal(broadcasts.every(({payload}) => payload.generation === "generation-a"), true)
         assert.equal(broadcasts.every(({payload}) => payload.invalidate === true), true)
     })
 

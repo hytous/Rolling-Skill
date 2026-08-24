@@ -1107,24 +1107,25 @@ function publicEvent(event) {
     return copy({...event.payload, id: event.id, jobId: event.jobId, sequence: event.sequence, kind: event.kind, occurredAt: event.occurredAt})
 }
 
-function encodeSummaryCursor(revision, offset) {
-    return Buffer.from(`v1:${revision}:${offset}`, "utf8").toString("base64url")
+function encodeSummaryCursor(generation, revision, offset) {
+    return Buffer.from(`v2:${generation}:${revision}:${offset}`, "utf8").toString("base64url")
 }
 
 function decodeSummaryCursor(cursor) {
     const encoded = canonicalText(cursor, "Operator summary cursor", 200)
     if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) throw new Error("Operator summary cursor is invalid")
     const decoded = Buffer.from(encoded, "base64url").toString("utf8")
-    const match = /^v1:(0|[1-9]\d*):(0|[1-9]\d*)$/u.exec(decoded)
-    if (!match || encodeSummaryCursor(Number(match[1]), Number(match[2])) !== encoded) {
+    const match = /^v2:([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(0|[1-9]\d*):(0|[1-9]\d*)$/u.exec(decoded)
+    if (!match || encodeSummaryCursor(match[1], Number(match[2]), Number(match[3])) !== encoded) {
         throw new Error("Operator summary cursor is invalid")
     }
-    const revision = Number(match[1])
-    const offset = Number(match[2])
+    const generation = match[1]
+    const revision = Number(match[2])
+    const offset = Number(match[3])
     if (!Number.isSafeInteger(revision) || !Number.isSafeInteger(offset)) {
         throw new Error("Operator summary cursor is invalid")
     }
-    return {revision, offset}
+    return {generation, revision, offset}
 }
 
 function operatorSummaryRecords(state) {
@@ -1189,6 +1190,7 @@ function acquirePathBackend(path) {
     if (!backend) {
         backend = {
             state: null,
+            generation: randomUUID(),
             revision: 0,
             references: 0,
             coordinationKey: Object.freeze({}),
@@ -1257,6 +1259,11 @@ class OperatorJobStore {
     get revision() {
         if (this.#backend === null) throw new Error("Operator Job store is closed")
         return this.#backend.revision
+    }
+
+    get generation() {
+        if (this.#backend === null) throw new Error("Operator Job store is closed")
+        return this.#backend.generation
     }
 
     close() {
@@ -1339,11 +1346,12 @@ class OperatorJobStore {
             minimum: 1,
             maximum: MAX_BOOTSTRAP_SUMMARY_ITEMS,
         })
+        const generation = this.generation
         const revision = this.revision
         let offset = 0
         if (cursor !== null) {
             const decoded = decodeSummaryCursor(cursor)
-            if (decoded.revision !== revision) {
+            if (decoded.generation !== generation || decoded.revision !== revision) {
                 throw Object.assign(
                     new Error("Operator summary changed while it was being read"),
                     {code: "OPERATOR_SNAPSHOT_CHANGED"},
@@ -1365,6 +1373,7 @@ class OperatorJobStore {
             output[record.kind].push(projectors[record.kind](record.value))
         }
         return {
+            generation,
             revision,
             ...output,
             totals: {
@@ -1374,7 +1383,9 @@ class OperatorJobStore {
                 approvals: this.#state.approvals.length,
             },
             truncated: end < records.length,
-            nextCursor: end < records.length ? encodeSummaryCursor(revision, end) : null,
+            nextCursor: end < records.length
+                ? encodeSummaryCursor(generation, revision, end)
+                : null,
         }
     }
 

@@ -1675,6 +1675,7 @@ function publicOperatorManagerSnapshot(snapshot = {}) {
 function operatorSummarySnapshotPage({cursor = null, limit = OPERATOR_BOOTSTRAP_SUMMARY_LIMIT} = {}) {
     if (typeof operatorJobStore?.readSummaryPage !== "function") {
         return {
+            generation: null,
             revision: 0,
             sessions: [],
             jobs: [],
@@ -1687,6 +1688,7 @@ function operatorSummarySnapshotPage({cursor = null, limit = OPERATOR_BOOTSTRAP_
     }
     const state = operatorJobStore.readSummaryPage({cursor, limit})
     return {
+        generation: state.generation,
         revision: state.revision,
         sessions: state.sessions.map(publicOperatorSessionSummary),
         jobs: state.jobs.map(publicOperatorJob),
@@ -1753,10 +1755,13 @@ function sendOperatorNotification(channel, payload) {
 }
 
 function operatorChangeDelta(operation, result, args = []) {
+    const generation = typeof operatorJobStore?.generation === "string"
+        ? operatorJobStore.generation
+        : null
     const revision = Number.isSafeInteger(operatorJobStore?.revision)
         ? operatorJobStore.revision
         : 0
-    const delta = {revision, invalidate: true, operation}
+    const delta = {generation, revision, invalidate: true, operation}
     const candidate = result?.job ?? result
     if (candidate?.runtime && typeof candidate?.protocol === "string") {
         delta.session = publicOperatorSessionSummary(candidate)
@@ -1790,10 +1795,13 @@ function operatorChangeDelta(operation, result, args = []) {
 }
 
 function operatorNotificationEnvelope(key, value) {
+    const generation = typeof operatorJobStore?.generation === "string"
+        ? operatorJobStore.generation
+        : null
     const revision = Number.isSafeInteger(operatorJobStore?.revision)
         ? operatorJobStore.revision
         : 0
-    return operatorSafeValue({revision, invalidate: true, [key]: value})
+    return operatorSafeValue({generation, revision, invalidate: true, [key]: value})
 }
 
 function notifyOperatorChanged(result, args, operation) {

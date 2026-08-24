@@ -200,6 +200,34 @@ describe("Operator Job store", () => {
         )
     })
 
+    it("rejects snapshot cursors across three backend reopen generations", () => {
+        const {path, store: initial} = fixture()
+        const session = createSession(initial)
+        const job = createJob(initial, session.id)
+        initial.transitionJob(job.id, "cancelled")
+        initial.close()
+
+        const generations = []
+        let priorCursor = null
+        for (let cycle = 0; cycle < 3; cycle += 1) {
+            const reopened = new OperatorJobStore(path)
+            const page = reopened.readSummaryPage({limit: 1})
+            assert.equal(typeof page.generation, "string")
+            assert.match(page.generation, /^[0-9a-f-]{36}$/u)
+            generations.push(page.generation)
+            if (priorCursor !== null) {
+                assert.throws(
+                    () => reopened.readSummaryPage({cursor: priorCursor, limit: 1}),
+                    (error) => error?.code === "OPERATOR_SNAPSHOT_CHANGED",
+                )
+            }
+            priorCursor = page.nextCursor
+            assert.equal(typeof priorCursor, "string")
+            reopened.close()
+        }
+        assert.equal(new Set(generations).size, 3)
+    })
+
     it("fills remaining summary capacity by terminal update time instead of insertion order", async () => {
         const {store} = fixture()
         const session = createSession(store)
@@ -222,12 +250,19 @@ describe("Operator Job store", () => {
         const session = createSession(first)
 
         assert.equal(first.coordinationKey, second.coordinationKey)
+        assert.equal(first.generation, second.generation)
+        assert.match(first.generation, /^[0-9a-f-]{36}$/u)
         assert.deepEqual(second.getSession(session.id), session)
         assert.equal(first.revision, second.revision)
         assert.ok(first.revision > initialRevision)
 
         const job = createJob(second, session.id)
         assert.deepEqual(first.getJob(job.id), job)
+        const page = first.readSummaryPage({limit: 1})
+        assert.equal(
+            second.readSummaryPage({cursor: page.nextCursor, limit: 1}).generation,
+            first.generation,
+        )
         first.close()
         assert.throws(() => first.listJobs(), /closed/iu)
         assert.equal(second.getJob(job.id).id, job.id)
