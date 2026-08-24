@@ -18,6 +18,13 @@ const {
 const MAX_DYNAMIC_TOOL_ARGUMENT_BYTES = 1_048_576
 const MAX_DYNAMIC_TOOL_RESPONSE_BYTES = 256 * 1_024
 const DYNAMIC_TOOL_NAMESPACE = "rolling_skill"
+const TERMINAL_TURN_STATUSES = new Set([
+    "cancelled",
+    "canceled",
+    "completed",
+    "failed",
+    "interrupted",
+])
 const DYNAMIC_TOOL_METHODS = new Map(CONTROL_METHODS.map((method) => [
     method.replaceAll(".", "_"),
     method,
@@ -83,6 +90,7 @@ class CodexAppServerClient extends EventEmitter {
         this.shutdownTimeoutMs = Math.max(1, Number(shutdownTimeoutMs) || 2_000)
         this.dynamicToolThreads = new Map()
         this.dynamicToolTurnStates = new Map()
+        this.dynamicToolTurnGeneration = 0
         this.stderrRedactor = null
         this.child = null
         this.tracker = new RpcRequestTracker()
@@ -235,18 +243,8 @@ class CodexAppServerClient extends EventEmitter {
         }
         if (this.tracker.settle(safeMessage)) return
         if (safeMessage?.method) {
-            if (safeMessage.method === "turn/started") {
-                const threadId = safeMessage.params?.threadId
-                const turnId = safeMessage.params?.turn?.id
-                if (typeof threadId === "string" && typeof turnId === "string") {
-                    this.dynamicToolTurnStates.set(threadId, {turnId, active: true})
-                }
-            } else if (safeMessage.method === "turn/completed") {
-                const threadId = safeMessage.params?.threadId
-                const turnId = safeMessage.params?.turn?.id
-                if (typeof threadId === "string" && typeof turnId === "string") {
-                    this.dynamicToolTurnStates.set(threadId, {turnId, active: false})
-                }
+            if (safeMessage.method === "turn/started" || safeMessage.method === "turn/completed") {
+                this.updateDynamicTurnFromNotification(safeMessage)
             }
             this.emit("notification", safeMessage)
             this.emit(safeMessage.method, safeMessage.params)
@@ -262,18 +260,52 @@ class CodexAppServerClient extends EventEmitter {
 
     registerDynamicTools(threadId, dynamicTools) {
         this.dynamicToolThreads.delete(threadId)
-        if (!Array.isArray(dynamicTools)) return
+        if (!Array.isArray(dynamicTools)) return false
         const namespace = dynamicTools.find((entry) => (
             entry?.type === "namespace" && entry.name === DYNAMIC_TOOL_NAMESPACE
         ))
-        if (!namespace || !Array.isArray(namespace.tools)) return
+        if (!namespace || !Array.isArray(namespace.tools)) return false
         const methods = new Map()
         for (const tool of namespace.tools) {
             if (tool?.type !== "function" || typeof tool.name !== "string") continue
             const method = DYNAMIC_TOOL_METHODS.get(tool.name)
             if (method) methods.set(tool.name, method)
         }
-        if (methods.size > 0) this.dynamicToolThreads.set(threadId, methods)
+        if (methods.size === 0) return false
+        this.dynamicToolThreads.set(threadId, methods)
+        return true
+    }
+
+    beginDynamicTurnPhase(threadId, phase) {
+        const previous = this.dynamicToolTurnStates.get(threadId)
+        const retiredTurnIds = new Set(previous?.retiredTurnIds ?? [])
+        if (previous?.turnId) retiredTurnIds.add(previous.turnId)
+        while (retiredTurnIds.size > 32) retiredTurnIds.delete(retiredTurnIds.values().next().value)
+        const state = {
+            phase,
+            generation: ++this.dynamicToolTurnGeneration,
+            turnId: null,
+            retiredTurnIds,
+        }
+        this.dynamicToolTurnStates.set(threadId, state)
+        return state
+    }
+
+    updateDynamicTurnFromNotification(message) {
+        const threadId = message.params?.threadId
+        const turnId = message.params?.turn?.id
+        if (
+            typeof threadId !== "string" || threadId.length === 0 ||
+            typeof turnId !== "string" || turnId.length === 0
+        ) return
+        const state = this.dynamicToolTurnStates.get(threadId)
+        if (!state || state.phase === "idle" || state.phase === "resuming" || state.phase === "terminal") {
+            return
+        }
+        if (state.retiredTurnIds.has(turnId)) return
+        if (state.turnId !== null && state.turnId !== turnId) return
+        state.turnId = turnId
+        state.phase = message.method === "turn/started" ? "active" : "terminal"
     }
 
     dynamicToolResult(payload, success) {
@@ -298,16 +330,25 @@ class CodexAppServerClient extends EventEmitter {
                 params.namespace !== DYNAMIC_TOOL_NAMESPACE ||
                 typeof params.tool !== "string"
             ) throw new Error("Operator dynamic Tool is unavailable")
-            const turnState = this.dynamicToolTurnStates.get(params.threadId)
-            if (turnState && (!turnState.active || turnState.turnId !== params.turnId)) {
-                throw new Error("Operator dynamic Tool does not belong to the active turn")
-            }
             const method = this.dynamicToolThreads.get(params.threadId)?.get(params.tool)
             if (!method || typeof this.requestTool !== "function") {
                 throw new Error("Operator dynamic Tool is unavailable")
             }
             if (!plainObject(params.arguments) || jsonBytes(params.arguments) > MAX_DYNAMIC_TOOL_ARGUMENT_BYTES) {
                 throw new Error("Operator dynamic Tool arguments are invalid")
+            }
+            const turnState = this.dynamicToolTurnStates.get(params.threadId)
+            if (!turnState || (turnState.phase !== "starting" && turnState.phase !== "active")) {
+                throw new Error("Operator dynamic Tool does not belong to the active turn")
+            }
+            if (turnState.retiredTurnIds.has(params.turnId)) {
+                throw new Error("Operator dynamic Tool does not belong to the active turn")
+            }
+            if (turnState.turnId === null && turnState.phase === "starting") {
+                turnState.turnId = params.turnId
+            }
+            if (turnState.turnId !== params.turnId) {
+                throw new Error("Operator dynamic Tool does not belong to the active turn")
             }
             const result = await this.requestTool({
                 threadId: params.threadId,
@@ -540,32 +581,52 @@ class CodexAppServerClient extends EventEmitter {
             ...(options.model ? {model: options.model} : {}),
             ...(dynamicTools ? {dynamicTools} : {}),
         })
-        this.registerDynamicTools(response.thread.id, dynamicTools)
+        if (this.registerDynamicTools(response.thread.id, dynamicTools)) {
+            this.beginDynamicTurnPhase(response.thread.id, "idle")
+        } else {
+            this.dynamicToolTurnStates.delete(response.thread.id)
+        }
         return response
     }
 
     async resumeThread(threadId, options = {}) {
-        this.dynamicToolTurnStates.delete(threadId)
         const dynamicTools = Object.hasOwn(options, "dynamicTools")
             ? JSON.parse(JSON.stringify(options.dynamicTools))
             : null
-        const response = await this.request("thread/resume", {
-            threadId,
-            cwd: options.cwd ?? this.workspaceRoot,
-            approvalPolicy: options.approvalPolicy ?? this.executionPolicy.approvalPolicy,
-            sandbox: options.sandbox ?? this.executionPolicy.sandbox,
-            ...(options.model ? {model: options.model} : {}),
-            ...(dynamicTools ? {dynamicTools} : {}),
-        })
-        this.registerDynamicTools(threadId, dynamicTools)
-        return response
+        const turnState = this.beginDynamicTurnPhase(threadId, "resuming")
+        try {
+            const response = await this.request("thread/resume", {
+                threadId,
+                cwd: options.cwd ?? this.workspaceRoot,
+                approvalPolicy: options.approvalPolicy ?? this.executionPolicy.approvalPolicy,
+                sandbox: options.sandbox ?? this.executionPolicy.sandbox,
+                ...(options.model ? {model: options.model} : {}),
+                ...(dynamicTools ? {dynamicTools} : {}),
+            })
+            if (this.dynamicToolTurnStates.get(threadId)?.generation !== turnState.generation) {
+                return response
+            }
+            if (this.registerDynamicTools(threadId, dynamicTools)) {
+                turnState.phase = "idle"
+                turnState.turnId = null
+            } else {
+                this.dynamicToolTurnStates.delete(threadId)
+            }
+            return response
+        } catch (error) {
+            if (this.dynamicToolTurnStates.get(threadId)?.generation === turnState.generation) {
+                turnState.phase = "terminal"
+                turnState.turnId = null
+            }
+            throw error
+        }
     }
 
     async startTurn(threadId, text, options = {}) {
         const input = Array.isArray(text)
             ? text
             : [{type: "text", text, text_elements: []}]
-        const response = await this.request("turn/start", {
+        const params = {
             threadId,
             input,
             ...(Object.hasOwn(options, "model") ? {model: options.model ?? null} : {}),
@@ -576,18 +637,35 @@ class CodexAppServerClient extends EventEmitter {
             ...(Object.hasOwn(options, "sandbox")
                 ? {sandboxPolicy: turnSandboxPolicy(options.sandbox)}
                 : {}),
-        })
-        if (typeof response?.turn?.id === "string" && response.turn.id.length > 0) {
-            const known = this.dynamicToolTurnStates.get(threadId)
-            if (known?.turnId !== response.turn.id || known.active) {
-                const terminal = new Set(["completed", "failed", "interrupted", "cancelled"])
-                this.dynamicToolTurnStates.set(threadId, {
-                    turnId: response.turn.id,
-                    active: !terminal.has(response.turn.status),
-                })
-            }
         }
-        return response
+        if (!this.dynamicToolThreads.has(threadId)) return this.request("turn/start", params)
+        const turnState = this.beginDynamicTurnPhase(threadId, "starting")
+        try {
+            const response = await this.request("turn/start", params)
+            const current = this.dynamicToolTurnStates.get(threadId)
+            if (current?.generation !== turnState.generation) return response
+            const turnId = response?.turn?.id
+            if (typeof turnId !== "string" || turnId.length === 0) {
+                current.phase = "terminal"
+                current.turnId = null
+                throw new Error("Codex turn/start did not return a turn identity")
+            }
+            if (current.turnId !== null && current.turnId !== turnId) {
+                current.phase = "terminal"
+                throw new Error("Codex turn/start returned a mismatched turn identity")
+            }
+            current.turnId = turnId
+            if (current.phase !== "terminal") {
+                current.phase = TERMINAL_TURN_STATUSES.has(response.turn.status)
+                    ? "terminal"
+                    : "active"
+            }
+            return response
+        } catch (error) {
+            const current = this.dynamicToolTurnStates.get(threadId)
+            if (current?.generation === turnState.generation) current.phase = "terminal"
+            throw error
+        }
     }
 
     async runEvaluationCase(input = {}) {

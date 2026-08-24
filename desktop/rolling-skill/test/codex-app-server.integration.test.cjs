@@ -71,6 +71,7 @@ describe("Codex app-server request construction", () => {
         })
         client.request = async (method, params) => {
             requests.push({method, params})
+            if (method === "turn/start") return {turn: {id: "turn-1", status: "inProgress"}}
             return {thread: {id: method === "thread/resume" ? params.threadId : `thread-${requests.length}`}}
         }
         client.write = (message) => writes.push(message)
@@ -78,6 +79,7 @@ describe("Codex app-server request construction", () => {
         await client.startThread({dynamicTools})
         await client.startThread()
         await client.resumeThread("resumed-operator", {dynamicTools})
+        await client.startTurn("thread-1", "work")
         client.handleMessage({
             id: 60,
             method: "item/tool/call",
@@ -145,9 +147,12 @@ describe("Codex app-server request construction", () => {
                 return {padding: "x".repeat(300_000)}
             },
         })
-        client.request = async (_method, params) => ({thread: {id: params.threadId ?? "operator-thread"}})
+        client.request = async (method, params) => method === "turn/start"
+            ? {turn: {id: "turn-1", status: "inProgress"}}
+            : {thread: {id: params.threadId ?? "operator-thread"}}
         client.write = (message) => writes.push(message)
         await client.startThread({dynamicTools})
+        await client.startTurn("operator-thread", "work")
 
         const base = {
             method: "item/tool/call",
@@ -182,6 +187,96 @@ describe("Codex app-server request construction", () => {
                 details: null,
             })
         }
+    })
+
+    it("rejects a forged dynamic Tool call while its Operator thread is idle", async () => {
+        const writes = []
+        let callbackCalls = 0
+        const dynamicTools = [{
+            type: "namespace",
+            name: "rolling_skill",
+            tools: [{type: "function", name: "context_get", inputSchema: {type: "object"}}],
+        }]
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            requestTool: async () => {
+                callbackCalls += 1
+                return {}
+            },
+        })
+        client.request = async () => ({thread: {id: "operator-thread"}})
+        client.write = (message) => writes.push(message)
+        await client.startThread({dynamicTools})
+
+        client.handleMessage({
+            id: 66,
+            method: "item/tool/call",
+            params: {
+                threadId: "operator-thread",
+                turnId: "forged-turn",
+                callId: "forged-call",
+                namespace: "rolling_skill",
+                tool: "context_get",
+                arguments: {},
+            },
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.equal(callbackCalls, 0)
+        assert.equal(writes[0].result.success, false)
+    })
+
+    it("binds an early Tool call only after validating its registered dynamic method", async () => {
+        const writes = []
+        const toolRequests = []
+        let resolveTurn
+        const dynamicTools = [{
+            type: "namespace",
+            name: "rolling_skill",
+            tools: [{type: "function", name: "context_get", inputSchema: {type: "object"}}],
+        }]
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            requestTool: async (request) => {
+                toolRequests.push(request)
+                return {}
+            },
+        })
+        client.request = async (method) => {
+            if (method === "thread/start") return {thread: {id: "operator-thread"}}
+            return new Promise((resolve) => {
+                resolveTurn = resolve
+            })
+        }
+        client.write = (message) => writes.push(message)
+        await client.startThread({dynamicTools})
+
+        const starting = client.startTurn("operator-thread", "work")
+        const call = (id, turnId, tool) => client.handleMessage({
+            id,
+            method: "item/tool/call",
+            params: {
+                threadId: "operator-thread",
+                turnId,
+                callId: `call-${id}`,
+                namespace: "rolling_skill",
+                tool,
+                arguments: {},
+            },
+        })
+        call(67, "forged-turn", "unknown_tool")
+        call(68, "real-turn", "context_get")
+        await new Promise((resolve) => setImmediate(resolve))
+        resolveTurn({turn: {id: "real-turn", status: "inProgress"}})
+        await starting
+
+        assert.deepEqual(toolRequests.map((request) => request.turnId), ["real-turn"])
+        assert.equal(writes.find((message) => message.id === 67).result.success, false)
+        assert.equal(writes.find((message) => message.id === 68).result.success, true)
     })
 
     it("rejects missing and stale dynamic Tool call identities without invoking the callback", async () => {
@@ -286,9 +381,13 @@ describe("Codex app-server request construction", () => {
         assert.equal(writes[0].result.success, false)
     })
 
-    it("retains an active-turn notification that races with thread/resume", async () => {
+    it("rejects dynamic Tool calls throughout resume and remains idle after resume", async () => {
         const writes = []
         let callbackCalls = 0
+        let resolveResume
+        const resumed = new Promise((resolve) => {
+            resolveResume = resolve
+        })
         const dynamicTools = [{
             type: "namespace",
             name: "rolling_skill",
@@ -303,32 +402,88 @@ describe("Codex app-server request construction", () => {
                 return {}
             },
         })
-        client.request = async () => {
-            client.handleMessage({
-                method: "turn/started",
-                params: {threadId: "resumed-thread", turn: {id: "current-turn", status: "inProgress"}},
-            })
-            return {thread: {id: "resumed-thread"}}
-        }
+        client.request = async (method) => method === "thread/start"
+            ? {thread: {id: "resumed-thread"}}
+            : resumed
         client.write = (message) => writes.push(message)
 
-        await client.resumeThread("resumed-thread", {dynamicTools})
-        client.handleMessage({
-            id: 76,
+        await client.startThread({dynamicTools})
+        const resume = client.resumeThread("resumed-thread", {dynamicTools})
+        const toolCall = (id) => client.handleMessage({
+            id,
             method: "item/tool/call",
             params: {
                 threadId: "resumed-thread",
-                turnId: "old-turn",
-                callId: "late-call",
+                turnId: "forged-turn",
+                callId: `call-${id}`,
                 namespace: "rolling_skill",
                 tool: "context_get",
                 arguments: {},
             },
         })
+        toolCall(76)
+        resolveResume({thread: {id: "resumed-thread"}})
+        await resume
+        toolCall(77)
         await new Promise((resolve) => setImmediate(resolve))
 
         assert.equal(callbackCalls, 0)
-        assert.equal(writes[0].result.success, false)
+        assert.deepEqual(writes.map((message) => [message.id, message.result.success]), [
+            [76, false],
+            [77, false],
+        ])
+    })
+
+    it("keeps the newest startTurn generation active when an older RPC resolves late", async () => {
+        const writes = []
+        const toolRequests = []
+        const turnResolvers = []
+        const dynamicTools = [{
+            type: "namespace",
+            name: "rolling_skill",
+            tools: [{type: "function", name: "context_get", inputSchema: {type: "object"}}],
+        }]
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            requestTool: async (request) => {
+                toolRequests.push(request)
+                return {}
+            },
+        })
+        client.request = async (method) => {
+            if (method === "thread/start") return {thread: {id: "operator-thread"}}
+            return new Promise((resolve) => turnResolvers.push(resolve))
+        }
+        client.write = (message) => writes.push(message)
+        await client.startThread({dynamicTools})
+
+        const older = client.startTurn("operator-thread", "older")
+        const newer = client.startTurn("operator-thread", "newer")
+        turnResolvers[1]({turn: {id: "new-turn", status: "inProgress"}})
+        await newer
+        turnResolvers[0]({turn: {id: "old-turn", status: "inProgress"}})
+        await older
+        const call = (id, turnId) => client.handleMessage({
+            id,
+            method: "item/tool/call",
+            params: {
+                threadId: "operator-thread",
+                turnId,
+                callId: `call-${id}`,
+                namespace: "rolling_skill",
+                tool: "context_get",
+                arguments: {},
+            },
+        })
+        call(78, "old-turn")
+        call(79, "new-turn")
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.deepEqual(toolRequests.map((request) => request.turnId), ["new-turn"])
+        assert.equal(writes.find((message) => message.id === 78).result.success, false)
+        assert.equal(writes.find((message) => message.id === 79).result.success, true)
     })
 
     it("routes command approval requests through the injected permission callback", async () => {
