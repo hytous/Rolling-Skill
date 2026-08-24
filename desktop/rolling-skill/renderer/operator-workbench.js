@@ -1031,7 +1031,82 @@
             }
         }
 
-        return {listen, destroy}
+        return {
+            listen,
+            destroy,
+            get registrationCount() { return registrations.length },
+        }
+    }
+
+    function operatorJobActions(status) {
+        const actions = []
+        if (status === "running") actions.push("pause")
+        if (status === "paused") actions.push("resume")
+        if (!["succeeded", "failed", "cancelled"].includes(status)) actions.push("stop")
+        return actions
+    }
+
+    function registerOperatorActionDelegates(options = {}) {
+        const listen = options.listen
+        const containers = options.containers ?? {}
+        const getActiveSnapshot = options.getActiveSnapshot ?? (() => null)
+        const onSelectEntity = options.onSelectEntity ?? (() => {})
+        const onResolveApproval = options.onResolveApproval ?? (() => {})
+        const onApproveCurrentJob = options.onApproveCurrentJob ?? (() => {})
+        const onControlJob = options.onControlJob ?? (() => {})
+        if (typeof listen !== "function") throw new TypeError("Operator action listener is required")
+
+        listen(containers.artifacts, "click", (event) => {
+            const button = event?.target?.closest?.(
+                "[data-operator-entity-kind][data-operator-entity-id][data-operator-artifact-id]",
+            )
+            const snapshot = getActiveSnapshot()
+            if (!button || !snapshot) return
+            const artifact = snapshot.artifacts.find((entry) => (
+                entry.id === button.dataset.operatorArtifactId
+            ))
+            if (!artifact) return
+            const kind = button.dataset.operatorEntityKind
+            const id = button.dataset.operatorEntityId
+            if (!artifactDeepLinks(artifact).some((link) => link.kind === kind && link.id === id)) return
+            onSelectEntity(kind, id, artifact.metadata ?? {})
+        })
+
+        listen(containers.approvals, "click", (event) => {
+            const snapshot = getActiveSnapshot()
+            if (!snapshot) return
+            const decisionButton = event?.target?.closest?.(
+                "[data-operator-approval-decision][data-operator-approval-id][data-operator-job-id]",
+            )
+            if (decisionButton) {
+                const jobId = decisionButton.dataset.operatorJobId
+                const decision = decisionButton.dataset.operatorApprovalDecision
+                if (jobId !== snapshot.job.id || !["approve", "reject"].includes(decision)) return
+                const approval = snapshot.approvals.find((entry) => (
+                    entry.id === decisionButton.dataset.operatorApprovalId &&
+                    entry.status === "pending" &&
+                    (entry.jobId ?? jobId) === jobId
+                ))
+                if (approval) void onResolveApproval(approval.id, decision)
+                return
+            }
+            const approveJobButton = event?.target?.closest?.("[data-operator-approve-job]")
+            const jobId = approveJobButton?.dataset.operatorApproveJob
+            if (jobId !== snapshot.job.id) return
+            const pending = snapshot.approvals.filter((entry) => (
+                entry.status === "pending" && (entry.jobId ?? jobId) === jobId
+            ))
+            if (pending.length > 1) void onApproveCurrentJob(jobId)
+        })
+
+        listen(containers.sessionActions, "click", (event) => {
+            const button = event?.target?.closest?.("[data-operator-job-action][data-operator-job-id]")
+            const snapshot = getActiveSnapshot()
+            if (!button || !snapshot || button.dataset.operatorJobId !== snapshot.job.id) return
+            const action = button.dataset.operatorJobAction
+            if (!operatorJobActions(snapshot.job.status).includes(action)) return
+            void onControlJob(snapshot.job.id, action)
+        })
     }
 
     const OPERATOR_ACTIONS = Object.freeze([
@@ -1569,9 +1644,7 @@
                             button.type = "button"
                             button.dataset.operatorEntityKind = link.kind
                             button.dataset.operatorEntityId = link.id
-                            domEvents.listen(button, "click", () => (
-                                onSelectEntity(link.kind, link.id, artifact.metadata ?? {})
-                            ))
+                            button.dataset.operatorArtifactId = artifact.id
                             actions.append(button)
                         }
                         card.append(actions)
@@ -1598,14 +1671,14 @@
                             const button = createElement(document_, "button", decision === "approve" ? "primary" : "", label)
                             button.type = "button"
                             button.dataset.operatorApprovalDecision = decision
-                            domEvents.listen(button, "click", () => void resolveApproval(approval.id, decision))
+                            button.dataset.operatorApprovalId = approval.id
+                            button.dataset.operatorJobId = snapshot.job.id
                             actions.append(button)
                         }
                         if (pending.length > 1) {
                             const approveJob = createElement(document_, "button", "", "Approve current Job")
                             approveJob.type = "button"
                             approveJob.dataset.operatorApproveJob = snapshot.job.id
-                            domEvents.listen(approveJob, "click", () => void approveCurrentJob(snapshot.job.id))
                             actions.append(approveJob)
                         }
                         card.append(actions)
@@ -1618,17 +1691,12 @@
 
         function renderSessionActions(snapshot) {
             selectors.sessionActions.replaceChildren()
-            const actions = []
-            if (snapshot.job.status === "running") actions.push(["pause", "Pause"])
-            if (snapshot.job.status === "paused") actions.push(["resume", "Resume"])
-            if (!["succeeded", "failed", "cancelled"].includes(snapshot.job.status)) {
-                actions.push(["stop", "Stop"])
-            }
-            for (const [action, label] of actions) {
-                const button = createElement(document_, "button", "operator-control-button", label)
+            const labels = {pause: "Pause", resume: "Resume", stop: "Stop"}
+            for (const action of operatorJobActions(snapshot.job.status)) {
+                const button = createElement(document_, "button", "operator-control-button", labels[action])
                 button.type = "button"
                 button.dataset.operatorJobAction = action
-                domEvents.listen(button, "click", () => void controlJob(snapshot.job.id, action))
+                button.dataset.operatorJobId = snapshot.job.id
                 selectors.sessionActions.append(button)
             }
         }
@@ -1856,6 +1924,20 @@
             state.destroy()
         }
 
+        registerOperatorActionDelegates({
+            listen: domEvents.listen,
+            containers: {
+                artifacts: selectors.artifacts,
+                approvals: selectors.approvals,
+                sessionActions: selectors.sessionActions,
+            },
+            getActiveSnapshot: () => state.getSnapshot(state.activeJobId),
+            onSelectEntity,
+            onResolveApproval: resolveApproval,
+            onApproveCurrentJob: approveCurrentJob,
+            onControlJob: controlJob,
+        })
+
         domEvents.listen(selectors.jobList, "click", (event) => {
             const button = event.target.closest("[data-operator-job-id]")
             const snapshot = button ? state.getSnapshot(button.dataset.operatorJobId) : null
@@ -1913,6 +1995,7 @@
         createOperatorSurfaceGate,
         createOperatorWorkbench,
         createOperatorWorkbenchState,
+        registerOperatorActionDelegates,
         transcriptEntryKey,
     }
     if (typeof module !== "undefined" && module.exports) module.exports = exported

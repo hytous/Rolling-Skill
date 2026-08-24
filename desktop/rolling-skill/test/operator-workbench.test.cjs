@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict")
+const fs = require("node:fs")
 const {describe, it} = require("node:test")
 
 const {
@@ -12,6 +13,7 @@ const {
     createOperatorMessageSender,
     createOperatorSurfaceGate,
     createOperatorWorkbenchState,
+    registerOperatorActionDelegates,
     transcriptEntryKey,
 } = require("../renderer/operator-workbench.js")
 
@@ -926,6 +928,32 @@ describe("Operator workbench state", () => {
 })
 
 describe("Operator workbench coordination", () => {
+    function fakeEventTarget() {
+        const listeners = new Map()
+        return {
+            addEventListener(type, listener) {
+                if (!listeners.has(type)) listeners.set(type, new Set())
+                listeners.get(type).add(listener)
+            },
+            removeEventListener(type, listener) {
+                listeners.get(type)?.delete(listener)
+            },
+            dispatch(type, target) {
+                for (const listener of listeners.get(type) ?? []) listener({target})
+            },
+            listenerCount(type) {
+                return listeners.get(type)?.size ?? 0
+            },
+        }
+    }
+
+    function fakeActionButton(selector, dataset) {
+        const target = fakeEventTarget()
+        target.dataset = dataset
+        target.closest = (requested) => requested === selector ? target : null
+        return target
+    }
+
     it("atomically cleans failed initialization attempts and retries with one bounded listener set", async () => {
         for (const failurePhase of ["bootstrap", "hydrate", "catchUp"]) {
             const listeners = new Map()
@@ -1178,6 +1206,132 @@ describe("Operator workbench coordination", () => {
         target.dispatchEvent(new Event("operator"))
         assert.deepEqual(effects, {api: 1, state: 0, dom: 0})
         replacement.destroy()
+    })
+
+    it("keeps dynamic action rendering listener-free with only three fixed delegated listeners", () => {
+        const source = fs.readFileSync(require.resolve("../renderer/operator-workbench.js"), "utf8")
+        const dynamicRender = source.slice(
+            source.indexOf("function patchStatus"),
+            source.indexOf("function patchActiveChrome"),
+        )
+        assert.doesNotMatch(dynamicRender, /\.listen\(|addEventListener\(/u)
+
+        const containers = {
+            artifacts: fakeEventTarget(),
+            approvals: fakeEventTarget(),
+            sessionActions: fakeEventTarget(),
+        }
+        const scope = createOperatorDomListenerScope()
+        registerOperatorActionDelegates({
+            listen: scope.listen,
+            containers,
+            getActiveSnapshot: () => null,
+        })
+        assert.equal(scope.registrationCount, 3)
+        for (let index = 0; index < 10_000; index += 1) {
+            const oldButton = fakeActionButton("[data-operator-entity-kind]", {operatorEntityKind: "dataset"})
+            assert.equal(oldButton.listenerCount("click"), 0)
+        }
+        assert.equal(scope.registrationCount, 3)
+
+        scope.destroy()
+        const replacement = createOperatorDomListenerScope()
+        registerOperatorActionDelegates({
+            listen: replacement.listen,
+            containers,
+            getActiveSnapshot: () => null,
+        })
+        assert.equal(replacement.registrationCount, 3)
+        assert.deepEqual(Object.values(containers).map((target) => target.listenerCount("click")), [1, 1, 1])
+        replacement.destroy()
+    })
+
+    it("delegates only current validated artifact, approval, and session actions", async () => {
+        const containers = {
+            artifacts: fakeEventTarget(),
+            approvals: fakeEventTarget(),
+            sessionActions: fakeEventTarget(),
+        }
+        let snapshot = {
+            job: {id: "job-1", status: "running"},
+            artifacts: [{id: "artifact-new", metadata: {datasetId: "dataset-new"}}],
+            approvals: [
+                {id: "approval-1", jobId: "job-1", status: "pending"},
+                {id: "approval-2", jobId: "job-1", status: "pending"},
+            ],
+        }
+        const calls = []
+        const scope = createOperatorDomListenerScope()
+        registerOperatorActionDelegates({
+            listen: scope.listen,
+            containers,
+            getActiveSnapshot: () => snapshot,
+            onSelectEntity: (...args) => calls.push(["entity", ...args]),
+            onResolveApproval: (...args) => calls.push(["approval", ...args]),
+            onApproveCurrentJob: (...args) => calls.push(["approve-job", ...args]),
+            onControlJob: (...args) => calls.push(["control", ...args]),
+        })
+
+        const artifactSelector = "[data-operator-entity-kind][data-operator-entity-id][data-operator-artifact-id]"
+        containers.artifacts.dispatch("click", fakeActionButton(artifactSelector, {
+            operatorEntityKind: "dataset",
+            operatorEntityId: "dataset-new",
+            operatorArtifactId: "artifact-new",
+        }))
+        containers.artifacts.dispatch("click", fakeActionButton(artifactSelector, {
+            operatorEntityKind: "dataset",
+            operatorEntityId: "dataset-old",
+            operatorArtifactId: "artifact-old",
+        }))
+        containers.artifacts.dispatch("click", fakeActionButton(artifactSelector, {
+            operatorEntityKind: "case",
+            operatorEntityId: "forged-case",
+            operatorArtifactId: "artifact-new",
+        }))
+
+        const approvalSelector = "[data-operator-approval-decision][data-operator-approval-id][data-operator-job-id]"
+        const approvalButton = fakeActionButton(approvalSelector, {
+            operatorApprovalDecision: "approve",
+            operatorApprovalId: "approval-1",
+            operatorJobId: "job-1",
+        })
+        containers.approvals.dispatch("click", approvalButton)
+        const approveJobSelector = "[data-operator-approve-job]"
+        containers.approvals.dispatch("click", fakeActionButton(approveJobSelector, {
+            operatorApproveJob: "job-1",
+        }))
+        snapshot.approvals[0].status = "approved"
+        containers.approvals.dispatch("click", approvalButton)
+        containers.approvals.dispatch("click", fakeActionButton(approvalSelector, {
+            operatorApprovalDecision: "approve",
+            operatorApprovalId: "forged",
+            operatorJobId: "job-1",
+        }))
+
+        containers.approvals.dispatch("click", fakeActionButton(approveJobSelector, {
+            operatorApproveJob: "job-1",
+        }))
+        const sessionSelector = "[data-operator-job-action][data-operator-job-id]"
+        const pauseButton = fakeActionButton(sessionSelector, {
+            operatorJobAction: "pause",
+            operatorJobId: "job-1",
+        })
+        containers.sessionActions.dispatch("click", pauseButton)
+        containers.sessionActions.dispatch("click", fakeActionButton(sessionSelector, {
+            operatorJobAction: "resume",
+            operatorJobId: "job-1",
+        }))
+        snapshot.job.status = "paused"
+        containers.sessionActions.dispatch("click", pauseButton)
+
+        await new Promise((resolve) => setImmediate(resolve))
+        assert.deepEqual(calls.map((entry) => entry.slice(0, 3)), [
+            ["entity", "dataset", "dataset-new"],
+            ["approval", "approval-1", "approve"],
+            ["approve-job", "job-1"],
+            ["control", "job-1", "pause"],
+        ])
+        scope.destroy()
     })
 })
 
