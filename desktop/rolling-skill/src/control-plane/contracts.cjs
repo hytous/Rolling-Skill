@@ -126,6 +126,88 @@ const publicDataset = z.object({
     createdAt: boundedText(100, "Dataset creation time").optional(),
 }).strict()
 
+const publicArtifactReference = z.object({
+    id,
+    kind: boundedText(200, "Artifact kind").optional(),
+    mediaType: boundedText(200, "Artifact media type").optional(),
+    sizeBytes: z.number().int().nonnegative().max(64 * 1024 * 1024).optional(),
+    sha256: boundedText(200, "Artifact digest").optional(),
+}).strict()
+
+const publicDatasetCase = z.object({
+    id,
+    datasetId: id.optional(),
+    title: z.string().max(500).optional(),
+    status: boundedText(80, "Case status").optional(),
+    label: boundedText(200, "Case label").optional(),
+    inputSummary: z.string().max(4_096).optional(),
+    outputSummary: z.string().max(4_096).optional(),
+    artifactRefs: z.array(publicArtifactReference).max(100).optional(),
+    createdAt: boundedText(100, "Case creation time").optional(),
+    updatedAt: boundedText(100, "Case update time").optional(),
+}).strict()
+
+const publicEvaluationScore = z.object({
+    totalScore: z.number().finite().optional(),
+    outcomeTier: boundedText(80, "Evaluation outcome tier").optional(),
+    overallVerdict: boundedText(80, "Evaluation verdict").optional(),
+}).strict()
+
+const publicEvaluationResult = z.object({
+    id,
+    caseId: id,
+    runtimeId: id,
+    title: z.string().max(500).optional(),
+    status: boundedText(80, "Evaluation result status"),
+    gradingStatus: boundedText(80, "Evaluation grading status").optional(),
+    durationMs: z.number().int().nonnegative().nullable().optional(),
+    computedScore: publicEvaluationScore.nullable().optional(),
+    reasonSummary: z.string().max(4_096).nullable().optional(),
+    artifactRefs: z.array(publicArtifactReference).max(100).optional(),
+    error: z.string().max(4_096).nullable().optional(),
+    startedAt: z.string().max(100).nullable().optional(),
+    completedAt: z.string().max(100).nullable().optional(),
+}).strict()
+
+const publicEvaluationRuntime = z.object({
+    runtimeId: id,
+    displayName: boundedText(500, "Runtime display name").optional(),
+    modelId: id.nullable().optional(),
+    effort: reasoningEffort.nullable().optional(),
+}).strict()
+
+const publicEvaluationRun = z.object({
+    id,
+    datasetId: id,
+    datasetSnapshot: z.object({
+        id,
+        name: z.string().max(500).optional(),
+    }).strict().optional(),
+    selectionMode: z.enum(["selected", "dataset"]).optional(),
+    activationMode: z.enum(["automatic", "explicit"]).optional(),
+    skillReference: publicSkillReference.nullable().optional(),
+    status: boundedText(80, "Evaluation status"),
+    caseCount: z.number().int().nonnegative().optional(),
+    runtimeCount: z.number().int().nonnegative().optional(),
+    resultCount: z.number().int().nonnegative().optional(),
+    resultsTruncated: z.boolean().optional(),
+    progress: z.object({
+        total: z.number().int().nonnegative(),
+        queued: z.number().int().nonnegative(),
+        running: z.number().int().nonnegative(),
+        completed: z.number().int().nonnegative(),
+        failed: z.number().int().nonnegative(),
+        cancelled: z.number().int().nonnegative(),
+    }).strict().optional(),
+    runtimeConfigurations: z.array(publicEvaluationRuntime).max(32).optional(),
+    results: z.array(publicEvaluationResult).max(1_000).optional(),
+    artifactRefs: z.array(publicArtifactReference).max(100).optional(),
+    error: z.string().max(4_096).nullable().optional(),
+    createdAt: boundedText(100, "Evaluation creation time").optional(),
+    startedAt: z.string().max(100).nullable().optional(),
+    completedAt: z.string().max(100).nullable().optional(),
+}).strict()
+
 const publicRawCaseRecord = z.object({
     skill: publicSkillReference,
 }).passthrough()
@@ -193,13 +275,6 @@ function strictEvaluationStart() {
             })
         }
     })
-}
-
-function pageResult(name) {
-    return z.object({
-        [name]: z.array(z.any()).max(MAX_PAGE_SIZE),
-        nextCursor: cursor.nullable(),
-    }).strict()
 }
 
 const managedSkillRepository = z.object({
@@ -457,7 +532,7 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
     "datasets.get": {
         action: "datasets.read",
         input: z.object({datasetId: id, includeCases: z.boolean().default(false)}).strict(),
-        output: z.object({dataset: publicDataset, cases: z.array(z.any()).optional()}).strict(),
+        output: z.object({dataset: publicDataset, cases: z.array(publicDatasetCase).max(10_000).optional()}).strict(),
     },
     "datasets.create": {
         action: "datasets.write",
@@ -477,27 +552,30 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
     "datasets.delete_case": {
         action: "datasets.delete",
         input: z.object({datasetId: id, caseId: id, idempotencyKey: id}).strict(),
-        output: z.object({case: z.any()}).strict(),
+        output: z.object({case: publicDatasetCase}).strict(),
     },
     "evaluations.list": {
         action: "evaluations.read",
         input: page.extend({datasetId: id.nullable().default(null)}).strict(),
-        output: pageResult("runs"),
+        output: z.object({
+            runs: z.array(publicEvaluationRun).max(MAX_PAGE_SIZE),
+            nextCursor: cursor.nullable(),
+        }).strict(),
     },
     "evaluations.get": {
         action: "evaluations.read",
         input: z.object({runId: id}).strict(),
-        output: z.object({run: z.any()}).strict(),
+        output: z.object({run: publicEvaluationRun}).strict(),
     },
     "evaluations.start": {
         action: "evaluations.execute",
         input: strictEvaluationStart(),
-        output: z.object({run: z.any()}).strict(),
+        output: z.object({run: publicEvaluationRun}).strict(),
     },
     "evaluations.cancel": {
         action: "evaluations.execute",
         input: z.object({runId: id, idempotencyKey: id}).strict(),
-        output: z.object({run: z.any()}).strict(),
+        output: z.object({run: publicEvaluationRun}).strict(),
     },
     "skill_repositories.list": {
         action: "skills.read",
@@ -642,7 +720,7 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
     "curation.save": {
         action: "curation.write",
         input: z.object({sessionId: id, idempotencyKey: id}).strict(),
-        output: z.object({session: publicCurationSession, case: z.any()}).strict(),
+        output: z.object({session: publicCurationSession, case: publicDatasetCase}).strict(),
     },
     "curation.discard": {
         action: "curation.write",

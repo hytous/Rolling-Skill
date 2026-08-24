@@ -1,13 +1,31 @@
 const assert = require("node:assert/strict")
 const {createHash} = require("node:crypto")
-const {mkdtempSync, readFileSync, rmSync} = require("node:fs")
+const {
+    closeSync,
+    constants: fsConstants,
+    fstatSync,
+    lstatSync,
+    mkdirSync,
+    mkdtempSync,
+    openSync,
+    readFileSync,
+    realpathSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} = require("node:fs")
 const {tmpdir} = require("node:os")
-const {join} = require("node:path")
+const {isAbsolute, join, relative, resolve, sep} = require("node:path")
 const {describe, it} = require("node:test")
 const vm = require("node:vm")
 
 const {runtimeReportsSkill} = require("../src/evaluation-skill-binding.cjs")
 const {LocalEvaluationStore} = require("../src/local-store.cjs")
+const {
+    CapabilityStore,
+    createTrustedHumanCapabilityIssuer,
+    isTrustedHumanCapability,
+} = require("../src/control-plane/capability-store.cjs")
 
 const root = join(__dirname, "..")
 const source = (path) => readFileSync(join(root, path), "utf8")
@@ -54,7 +72,19 @@ function mainFunctionContext(startName, endName, globals = {}) {
         .filter((candidate) => candidate > start)
         .sort((left, right) => left - right)[0] ?? -1
     assert.ok(start >= 0 && end > start, `missing main helper slice: ${startName}`)
-    const context = {...globals}
+    const context = {
+        closeSync,
+        fsConstants,
+        fstatSync,
+        isAbsolute,
+        lstatSync,
+        openSync,
+        realpathSync,
+        relative,
+        resolve,
+        sep,
+        ...globals,
+    }
     vm.runInNewContext(main.slice(start, end), context)
     return context
 }
@@ -361,6 +391,207 @@ describe("desktop main/preload bridge", () => {
         assert.match(preload, /onManagedSkillsChanged/)
     })
 
+    it("resolves an enabled managed Skill to its trusted repository root", async () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-operator-workspace-"))
+        try {
+            const repositoryRoot = join(directory, "repository")
+            mkdirSync(join(repositoryRoot, "skills", "billing"), {recursive: true})
+            writeFileSync(join(repositoryRoot, "skills", "billing", "SKILL.md"), "# Billing\n")
+            const outsideRoot = join(directory, "outside")
+            mkdirSync(outsideRoot)
+            writeFileSync(join(outsideRoot, "SKILL.md"), "# Outside\n")
+            symlinkSync(outsideRoot, join(repositoryRoot, "skills", "escaped"))
+            const alias = join(directory, "repository-alias")
+            symlinkSync(repositoryRoot, alias)
+            const manager = {
+                catalog: () => ({
+                    repositories: [{id: "repository-1"}],
+                    skills: [{
+                        id: "skill-1",
+                        repositoryId: "repository-1",
+                        name: "billing",
+                        skillRoot: "skills/billing",
+                        manifestPath: "skills/billing/SKILL.md",
+                        status: "valid",
+                    }, {
+                        id: "skill-disabled",
+                        repositoryId: "repository-1",
+                        name: "disabled",
+                        skillRoot: "skills/disabled",
+                        status: "invalid",
+                    }, {
+                        id: "skill-escaped",
+                        repositoryId: "repository-1",
+                        name: "escaped",
+                        skillRoot: "skills/escaped",
+                        manifestPath: "skills/escaped/SKILL.md",
+                        status: "valid",
+                    }],
+                }),
+                repositoryPath: (repositoryId) => {
+                    assert.equal(repositoryId, "repository-1")
+                    return alias
+                },
+            }
+            const context = mainFunctionContext(
+                "digestSkillIdentity",
+                "currentRendererScopes",
+                {
+                    closeSync,
+                    fsConstants,
+                    fstatSync,
+                    isAbsolute,
+                    lstatSync,
+                    managedSkillManager: manager,
+                    openSync,
+                    realpathSync,
+                    relative,
+                    requireIdentifier: (value, label) => {
+                        const normalized = String(value ?? "").trim()
+                        if (!normalized) throw new Error(`${label} is required`)
+                        return normalized
+                    },
+                    runtimeDescriptor: {runtimeId: "codex:managed", providerId: "codex"},
+                    currentRuntimeSkillReference: async (reference) => {
+                        assert.equal(reference.name, "billing")
+                        assert.equal(reference.path, realpathSync(join(
+                            repositoryRoot,
+                            "skills",
+                            "billing",
+                            "SKILL.md",
+                        )))
+                        return reference
+                    },
+                    resolve,
+                    sep,
+                },
+            )
+
+            assert.deepEqual(plain(await context.resolveManagedSkillBinding({
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+            })), {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                name: "billing",
+                skillPath: realpathSync(join(repositoryRoot, "skills", "billing", "SKILL.md")),
+                providerId: "codex",
+                runtimeId: "codex:managed",
+                workspaceRoot: realpathSync(repositoryRoot),
+            })
+            assert.deepEqual(plain(await context.resolveManagedSkillWorkspace({
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+            })), {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                workspaceRoot: realpathSync(repositoryRoot),
+            })
+            await assert.rejects(
+                context.resolveManagedSkillWorkspace({
+                    repositoryId: "repository-other",
+                    skillId: "skill-1",
+                }),
+                /repository|managed Skill/iu,
+            )
+            await assert.rejects(
+                context.resolveManagedSkillWorkspace({
+                    repositoryId: "repository-1",
+                    skillId: "skill-disabled",
+                }),
+                /enabled|valid/iu,
+            )
+            await assert.rejects(
+                context.resolveManagedSkillBinding({
+                    repositoryId: "repository-1",
+                    skillId: "skill-escaped",
+                }),
+                /outside.*repository|managed.*outside/iu,
+            )
+        } finally {
+            rmSync(directory, {recursive: true, force: true})
+        }
+    })
+
+    it("maps a trusted managed Dataset binding and Runtime discovery to the same stable Skill id", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-managed-identity-"))
+        try {
+            const repositoryRoot = join(directory, "repository")
+            const manifestPath = join(repositoryRoot, "skills", "billing", "SKILL.md")
+            mkdirSync(join(repositoryRoot, "skills", "billing"), {recursive: true})
+            writeFileSync(manifestPath, "# Billing\n")
+            const managedSkillManager = {
+                catalog: () => ({
+                    repositories: [{id: "repository-1"}],
+                    skills: [{
+                        id: "skill-1",
+                        repositoryId: "repository-1",
+                        name: "billing",
+                        skillRoot: "skills/billing",
+                        manifestPath: "skills/billing/SKILL.md",
+                        status: "valid",
+                    }],
+                }),
+                repositoryPath: () => repositoryRoot,
+            }
+            const context = mainFunctionContext(
+                "digestSkillIdentity",
+                "listModelsForRuntimeFromControl",
+                {
+                    activeRuntimeSkillCache: null,
+                    canonicalSkillPath: undefined,
+                    clientGeneration: 1,
+                    closeSync,
+                    createHash,
+                    fsConstants,
+                    fstatSync,
+                    isAbsolute,
+                    lstatSync,
+                    managedSkillManager,
+                    normalizedSkillName: (value) => String(value ?? "").trim().toLowerCase(),
+                    openSync,
+                    rawCaseStore: {list: () => []},
+                    realpathSync,
+                    relative,
+                    requireIdentifier: (value, label) => {
+                        const normalized = String(value ?? "").trim()
+                        if (!normalized) throw new Error(`${label} is required`)
+                        return normalized
+                    },
+                    rendererAliasContext: {getStore: () => null},
+                    resolve,
+                    runtimeDescriptor: {runtimeId: "codex:managed", providerId: "codex"},
+                    sep,
+                    store: {listDatasets: () => [{
+                        id: "dataset-1",
+                        skillReference: {
+                            id: "skill-1",
+                            name: "billing",
+                            path: manifestPath,
+                            providerId: "codex",
+                            runtimeId: "codex:managed",
+                            repositoryId: "repository-1",
+                        },
+                    }]},
+                    workspaceRoot: repositoryRoot,
+                },
+            )
+            const response = context.cachedRuntimeSkills({data: [{skills: [{
+                name: "billing",
+                path: manifestPath,
+                enabled: true,
+            }]}]})
+
+            assert.equal(response.data[0].skills[0].id, "skill-1")
+            assert.equal(context.listDatasetsForControl()[0].skillReference.id, "skill-1")
+            assert.equal(context.trustedRawCaseSkills().skills.filter((skill) => (
+                skill.id === "skill-1" && skill.name === "billing"
+            )).length, 1)
+        } finally {
+            rmSync(directory, {recursive: true, force: true})
+        }
+    })
+
     it("bridges Runtime-driven Skill installation jobs without accepting target paths", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")
@@ -514,6 +745,10 @@ describe("desktop main/preload bridge", () => {
             "skills.list",
             "skill_versions.list",
             "skills.get",
+            "approvals.resolve",
+            "jobs.pause",
+            "jobs.resume",
+            "jobs.stop",
         ]) {
             assert.match(main, new RegExp(`"${method.replace(".", "\\.")}"`))
         }
@@ -531,7 +766,7 @@ describe("desktop main/preload bridge", () => {
         )
         assert.match(rotation, /scopeSignature/)
         assert.match(rotation, /expiresAt/)
-        assert.match(main, /createTrustedCapabilityIssuer/)
+        assert.match(main, /createTrustedHumanCapabilityIssuer/)
         assert.match(rotation, /rendererCapabilityIssuer\.issue/)
         assert.match(rotation, /leases/)
         assert.ok(
@@ -542,6 +777,48 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /mainWindow\.on\("closed"[\s\S]{0,180}revokeRendererCapabilities\(\)/)
         assert.doesNotMatch(preload, /capabilit|token/i)
         assert.doesNotMatch(preload, /issueControl|listControl|revokeControl|controlInvoke/)
+    })
+
+    it("brands the private Renderer grant as human authority without exposing it", async () => {
+        const capabilityStore = new CapabilityStore()
+        const context = mainFunctionContext(
+            "revokeRendererCapabilityEntry",
+            "isSafeControlRecord",
+            {
+                Date,
+                Number,
+                RENDERER_CAPABILITY_LIFETIME_MS: 3_600_000,
+                RENDERER_CAPABILITY_REFRESH_MS: 60_000,
+                RENDERER_CONTROL_ACTIONS: ["approvals.resolve", "jobs.control"],
+                capabilityStore,
+                controlInvocationsAccepted: true,
+                currentRendererScopes: () => ({
+                    skillIds: [],
+                    datasetIds: [],
+                    runtimeIds: [],
+                    repositoryIds: [],
+                }),
+                randomUUID: () => "human-renderer-session",
+                rendererCapability: null,
+                rendererCapabilityEntries: new Set(),
+                rendererCapabilityEpoch: 0,
+                rendererCapabilityIssuer: (() => {
+                    const issuer = createTrustedHumanCapabilityIssuer(capabilityStore)
+                    return {issue: (request) => issuer.issue(JSON.parse(JSON.stringify(request)))}
+                })(),
+                rendererCapabilityRotation: Promise.resolve(),
+            },
+        )
+
+        const privateGrant = await context.acquireRendererCapability()
+        const authorized = capabilityStore.authorize(
+            privateGrant.token,
+            "approvals.resolve",
+            privateGrant.sessionId,
+        )
+        assert.equal(isTrustedHumanCapability(authorized), true)
+        assert.equal(Object.hasOwn(privateGrant, "grant"), false)
+        assert.equal(Object.hasOwn(privateGrant, "human"), false)
     })
 
     it("rejects fake senders and renderer-supplied authority before private invocation", () => {

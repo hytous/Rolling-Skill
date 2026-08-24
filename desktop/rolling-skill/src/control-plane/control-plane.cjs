@@ -1,4 +1,5 @@
 const {createHash, randomUUID} = require("node:crypto")
+const {isAbsolute, resolve} = require("node:path")
 
 const intrinsicPromiseResolve = Promise.resolve.bind(Promise)
 const intrinsicPromiseThen = Promise.prototype.then
@@ -557,6 +558,7 @@ function operatorExecutorInput(value) {
         "capabilityId",
         "budgetSnapshot",
         "assertLive",
+        "contextSnapshot",
         "execute",
         "enabled",
         "replace",
@@ -576,10 +578,37 @@ function operatorExecutorInput(value) {
         identifier(input.capabilityId) === null ||
         typeof input.budgetSnapshot !== "function" ||
         typeof input.assertLive !== "function" ||
+        (input.contextSnapshot !== undefined && typeof input.contextSnapshot !== "function") ||
         typeof input.execute !== "function" ||
         (input.enabled !== undefined && typeof input.enabled !== "boolean")
     ) throw new TypeError("Operator executor registration is invalid")
     return input
+}
+
+function operatorSessionContext(route) {
+    if (route.contextSnapshot === null) return null
+    const value = route.contextSnapshot()
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Operator session context is invalid")
+    }
+    const prototype = Object.getPrototypeOf(value)
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    if (
+        (prototype !== Object.prototype && prototype !== null) ||
+        Reflect.ownKeys(descriptors).length !== 2 ||
+        !Object.hasOwn(descriptors, "workspaceRoot") ||
+        !Object.hasOwn(descriptors, "runtimeId") ||
+        Object.values(descriptors).some((descriptor) => !Object.hasOwn(descriptor, "value")) ||
+        identifier(descriptors.runtimeId.value) === null ||
+        typeof descriptors.workspaceRoot.value !== "string" ||
+        descriptors.workspaceRoot.value.length === 0 ||
+        descriptors.workspaceRoot.value.length > 8_192 ||
+        !isAbsolute(descriptors.workspaceRoot.value)
+    ) throw new Error("Operator session context is invalid")
+    return Object.freeze({
+        workspaceRoot: resolve(descriptors.workspaceRoot.value),
+        runtimeId: descriptors.runtimeId.value,
+    })
 }
 
 function sweepOperatorExecutors(state) {
@@ -602,6 +631,7 @@ function retireOperatorExecutor(state, record) {
     record.registered = false
     record.budgetSnapshot = null
     record.assertLive = null
+    record.contextSnapshot = null
     record.execute = null
     if (state.operatorExecutors.get(record.sessionId) === record) {
         let now = null
@@ -708,6 +738,7 @@ class ControlPlane {
             capabilityId: input.capabilityId,
             budgetSnapshot: input.budgetSnapshot,
             assertLive: input.assertLive,
+            contextSnapshot: input.contextSnapshot ?? null,
             execute: input.execute,
             enabled: input.enabled !== false,
             registered: true,
@@ -742,6 +773,7 @@ class ControlPlane {
             current.registered = false
             current.budgetSnapshot = null
             current.assertLive = null
+            current.contextSnapshot = null
             current.execute = null
         }
         return lease
@@ -759,7 +791,7 @@ class ControlPlane {
                 continue
             }
             live += 1
-            for (const key of ["budgetSnapshot", "assertLive", "execute"]) {
+            for (const key of ["budgetSnapshot", "assertLive", "contextSnapshot", "execute"]) {
                 if (typeof record[key] === "function") retainedCallbacks += 1
             }
         }
@@ -894,12 +926,17 @@ class ControlPlane {
             }
             if (decision === null) throw createPublicControlError("CONTROL_BUSY")
 
+            const operatorSession = operatorRoute === null
+                ? null
+                : operatorSessionContext(operatorRoute)
+            if (operatorRoute !== null) assertOperatorRouteLive(state, operatorRoute)
             const context = Object.freeze({
                 capabilityId: grant.id,
                 sessionId: grant.sessionId,
                 grant,
                 scopeFilter: decision.scopeFilter ?? null,
                 executionContext,
+                operatorSession,
             })
             executionStarted = true
             let rawResult

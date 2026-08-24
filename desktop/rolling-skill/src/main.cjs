@@ -9,15 +9,21 @@ const {
     shell,
 } = require("electron")
 const {
+    closeSync,
+    constants: fsConstants,
     chmodSync,
     existsSync,
+    fstatSync,
+    lstatSync,
     mkdirSync,
+    openSync,
     readFileSync,
+    realpathSync,
     renameSync,
     writeFileSync,
 } = require("node:fs")
 const {homedir} = require("node:os")
-const {join} = require("node:path")
+const {isAbsolute, join, relative, resolve, sep} = require("node:path")
 const {pathToFileURL} = require("node:url")
 const {createHash, randomUUID} = require("node:crypto")
 const {AsyncLocalStorage} = require("node:async_hooks")
@@ -58,7 +64,7 @@ const {
     CapabilityStore,
     MAX_CAPABILITY_LIFETIME_MS,
     MAX_TRUSTED_SCOPE_IDS,
-    createTrustedCapabilityIssuer,
+    createTrustedHumanCapabilityIssuer,
 } = require("./control-plane/capability-store.cjs")
 const {
     ControlPlane,
@@ -84,6 +90,8 @@ const RENDERER_CONTROL_ACTIONS = Object.freeze([
     "evaluations.read",
     "evaluations.execute",
     "skills.read",
+    "approvals.resolve",
+    "jobs.control",
 ])
 const RENDERER_CONTROL_METHODS = new Set([
     "raw_cases.list",
@@ -101,12 +109,20 @@ const RENDERER_CONTROL_METHODS = new Set([
     "skills.list",
     "skill_versions.list",
     "skills.get",
+    "approvals.resolve",
+    "jobs.pause",
+    "jobs.resume",
+    "jobs.stop",
 ])
 const RENDERER_CONTROL_MUTATIONS = new Set([
     "raw_cases.enqueue",
     "raw_cases.update",
     "evaluations.start",
     "evaluations.cancel",
+    "approvals.resolve",
+    "jobs.pause",
+    "jobs.resume",
+    "jobs.stop",
 ])
 const RENDERER_FORBIDDEN_CONTROL_KEYS = new Set([
     "token",
@@ -957,6 +973,73 @@ function canonicalSkillPath(value) {
     return `${absolute ? "/" : ""}${segments.join("/")}` || (absolute ? "/" : "")
 }
 
+function inspectManagedPath(inputPath, expectedType, label) {
+    if (typeof inputPath !== "string" || !isAbsolute(inputPath)) {
+        throw new Error(`${label} must be an absolute path`)
+    }
+    lstatSync(inputPath)
+    const realPath = realpathSync(inputPath)
+    const descriptor = openSync(realPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    try {
+        const metadata = fstatSync(descriptor)
+        if (
+            (expectedType === "directory" && !metadata.isDirectory()) ||
+            (expectedType === "file" && !metadata.isFile())
+        ) throw new Error(`${label} has an invalid file type`)
+    } finally {
+        closeSync(descriptor)
+    }
+    return realPath
+}
+
+function managedSkillPaths(binding = {}) {
+    const repositoryId = requireIdentifier(binding.repositoryId, "managed Skill repository")
+    const skillId = requireIdentifier(binding.skillId, "managed Skill")
+    const catalog = managedSkillManager.catalog()
+    if (!catalog || typeof catalog.then === "function") {
+        throw new Error("Managed Skill catalog resolution is invalid")
+    }
+    const repository = catalog.repositories.find((entry) => entry?.id === repositoryId)
+    const skill = catalog.skills.find((entry) => entry?.id === skillId)
+    if (!repository || !skill || skill.repositoryId !== repositoryId) {
+        throw new Error("Managed Skill does not belong to the selected repository")
+    }
+    if (skill.status !== "valid") throw new Error("Managed Skill must be valid and enabled")
+    const workspaceRoot = inspectManagedPath(
+        managedSkillManager.repositoryPath(repositoryId),
+        "directory",
+        "Managed Skill repository",
+    )
+    const skillRoot = inspectManagedPath(
+        resolve(workspaceRoot, String(skill.skillRoot ?? "")),
+        "directory",
+        "Managed Skill root",
+    )
+    const manifestPath = inspectManagedPath(
+        resolve(workspaceRoot, String(skill.manifestPath ?? "")),
+        "file",
+        "Managed Skill manifest",
+    )
+    for (const [candidate, label] of [
+        [skillRoot, "Managed Skill root"],
+        [manifestPath, "Managed Skill manifest"],
+    ]) {
+        const fromRepository = relative(workspaceRoot, candidate)
+        if (
+            fromRepository === ".." ||
+            fromRepository.startsWith(`..${sep}`) ||
+            isAbsolute(fromRepository)
+        ) throw new Error(`${label} is outside the managed repository`)
+    }
+    const fromSkill = relative(skillRoot, manifestPath)
+    if (
+        fromSkill === ".." ||
+        fromSkill.startsWith(`..${sep}`) ||
+        isAbsolute(fromSkill)
+    ) throw new Error("Managed Skill manifest is outside its Skill root")
+    return {repositoryId, skillId, repository, skill, workspaceRoot, skillRoot, manifestPath}
+}
+
 function actualLocalSkillIdentity(input = {}) {
     const {
         name,
@@ -989,7 +1072,43 @@ function actualLocalSkillIdentity(input = {}) {
 }
 
 function datasetSkillIdentity(reference) {
-    return actualLocalSkillIdentity(reference)
+    const stableId = typeof reference?.id === "string" ? reference.id.trim() : ""
+    return stableId || actualLocalSkillIdentity(reference)
+}
+
+function managedSkillIdForRuntimeSkill(runtimeSkill) {
+    if (
+        typeof runtimeSkill?.name !== "string" ||
+        typeof runtimeSkill?.path !== "string" ||
+        !isAbsolute(runtimeSkill.path)
+    ) return null
+    let candidate
+    try {
+        lstatSync(runtimeSkill.path)
+        candidate = realpathSync(runtimeSkill.path)
+    } catch {
+        return null
+    }
+    const matches = []
+    let catalog
+    try {
+        catalog = managedSkillManager.catalog()
+    } catch {
+        return null
+    }
+    for (const skill of catalog?.skills ?? []) {
+        if (skill?.name !== runtimeSkill.name || skill?.status !== "valid") continue
+        try {
+            const paths = managedSkillPaths({
+                repositoryId: skill.repositoryId,
+                skillId: skill.id,
+            })
+            if (candidate === paths.manifestPath || candidate === paths.skillRoot) {
+                matches.push(skill.id)
+            }
+        } catch {}
+    }
+    return new Set(matches).size === 1 ? matches[0] : null
 }
 
 function runtimeSkillIdentity(skill, descriptor = runtimeDescriptor, root = workspaceRoot) {
@@ -1036,7 +1155,8 @@ function cachedRuntimeSkills(
     const data = (response?.data ?? []).map((entry) => ({
         ...entry,
         skills: (entry?.skills ?? []).map((skill) => {
-            const id = runtimeSkillIdentity(skill, descriptor, root)
+            const id = managedSkillIdForRuntimeSkill(skill) ??
+                runtimeSkillIdentity(skill, descriptor, root)
             return id ? {...skill, id} : {...skill}
         }),
     }))
@@ -1162,6 +1282,36 @@ function controlScopeIds(values, key) {
         result.push(id)
     }
     return result.sort()
+}
+
+async function resolveManagedSkillBinding(binding = {}) {
+    const paths = managedSkillPaths(binding)
+    const descriptor = runtimeDescriptor
+    if (!descriptor?.runtimeId || !descriptor?.providerId) {
+        throw new Error("An active Runtime is required for a managed Skill binding")
+    }
+    await currentRuntimeSkillReference({name: paths.skill.name, path: paths.manifestPath})
+    if (descriptor !== runtimeDescriptor) {
+        throw new Error("The active Runtime changed while binding the managed Skill")
+    }
+    return {
+        repositoryId: paths.repositoryId,
+        skillId: paths.skillId,
+        name: paths.skill.name,
+        skillPath: paths.manifestPath,
+        providerId: descriptor.providerId,
+        runtimeId: descriptor.runtimeId,
+        workspaceRoot: paths.workspaceRoot,
+    }
+}
+
+async function resolveManagedSkillWorkspace(binding = {}) {
+    const paths = managedSkillPaths(binding)
+    return {
+        repositoryId: paths.repositoryId,
+        skillId: paths.skillId,
+        workspaceRoot: paths.workspaceRoot,
+    }
 }
 
 function currentRendererScopes() {
@@ -1372,7 +1522,7 @@ function removeControlIpc() {
 function initializeControlPlane() {
     if (controlPlane) return controlPlane
     capabilityStore = new CapabilityStore()
-    rendererCapabilityIssuer = createTrustedCapabilityIssuer(capabilityStore, {
+    rendererCapabilityIssuer = createTrustedHumanCapabilityIssuer(capabilityStore, {
         maxScopeIds: MAX_TRUSTED_SCOPE_IDS,
     })
     rendererServiceErrorDiagnostics = createServiceErrorDiagnosticChannel()
@@ -1388,6 +1538,7 @@ function initializeControlPlane() {
         listRuntimes: () => availableRuntimes,
         listModelsForRuntime: listModelsForRuntimeFromControl,
         startEvaluation: startEvaluationFromControl,
+        resolveManagedSkillBinding,
     })
     controlPlane = new ControlPlane({
         capabilities: capabilityStore,

@@ -162,14 +162,25 @@ const validOutputs = {
     "runtimes.list": {runtimes: []},
     "runtimes.models": {models: []},
     "datasets.list": {datasets: [], nextCursor: null},
-    "datasets.get": {dataset: {id: "dataset-1"}, cases: []},
+    "datasets.get": {
+        dataset: {id: "dataset-1"},
+        cases: [{
+            id: "case-1",
+            datasetId: "dataset-1",
+            title: "July billing",
+            label: "goodcase",
+            inputSummary: "Find the July total",
+            outputSummary: "The verified total is summarized",
+            artifactRefs: [{id: "artifact-case-1", kind: "case-summary"}],
+        }],
+    },
     "datasets.create": {dataset: {id: "dataset-1"}},
     "datasets.delete": {dataset: {id: "dataset-1"}},
     "datasets.delete_case": {case: {id: "case-1", datasetId: "dataset-1"}},
     "evaluations.list": {runs: [], nextCursor: null},
-    "evaluations.get": {run: {id: "run-1"}},
-    "evaluations.start": {run: {id: "run-1"}},
-    "evaluations.cancel": {run: {id: "run-1"}},
+    "evaluations.get": {run: {id: "run-1", datasetId: "dataset-1", status: "completed"}},
+    "evaluations.start": {run: {id: "run-1", datasetId: "dataset-1", status: "queued"}},
+    "evaluations.cancel": {run: {id: "run-1", datasetId: "dataset-1", status: "cancelled"}},
     "skill_repositories.list": {repositories: [], nextCursor: null},
     "skills.list": {repositories: [], skills: [], nextCursor: null},
     "skill_versions.list": {versions: [], nextCursor: null},
@@ -633,6 +644,47 @@ describe("control-plane contracts", () => {
         }
     })
 
+    it("rejects private Dataset Case and Evaluation payloads at the public contract", () => {
+        const safeCase = validOutputs["datasets.get"].cases[0]
+        for (const forbidden of [
+            {traceReference: "/private/trace.jsonl"},
+            {skillPath: "/private/skill"},
+            {messages: [{role: "assistant", text: "private"}]},
+            {toolEvidence: {raw: "private"}},
+        ]) {
+            assert.throws(() => parseControlOutput("datasets.get", {
+                dataset: {id: "dataset-1"},
+                cases: [{...safeCase, ...forbidden}],
+            }), /unrecognized|invalid result/iu)
+        }
+
+        const safeRun = {
+            id: "run-1",
+            datasetId: "dataset-1",
+            status: "completed",
+            results: [{
+                id: "result-1",
+                caseId: "case-1",
+                runtimeId: "runtime-1",
+                status: "completed",
+                computedScore: {totalScore: 92, outcomeTier: "formal_pass"},
+                reasonSummary: "Verified against the published rubric",
+                artifactRefs: [{id: "artifact-result-1", kind: "evaluation-summary"}],
+            }],
+        }
+        assert.doesNotThrow(() => parseControlOutput("evaluations.get", {run: safeRun}))
+        for (const forbidden of [
+            {response: "raw assistant response"},
+            {judge: {transcript: "private"}},
+            {traceEvidence: {reference: "/private/trace.jsonl"}},
+            {referenceAnswer: "private expected body"},
+        ]) {
+            assert.throws(() => parseControlOutput("evaluations.get", {
+                run: {...safeRun, results: [{...safeRun.results[0], ...forbidden}]},
+            }), /unrecognized|invalid result/iu)
+        }
+    })
+
     it("validates paged cursors and stable IDs in outputs", () => {
         const nextCursor = encodeCursor(100)
         assert.deepEqual(parseControlOutput("datasets.list", {
@@ -776,6 +828,8 @@ describe("control-plane contracts", () => {
                     ? {id: "version-1", repositoryId: "repository-1", skillId: "skill-1"}
                     : method === "raw_cases.list"
                         ? {id: "raw-1", skill: {id: "skill-1", name: "billing"}}
+                    : method === "evaluations.list"
+                        ? {id: "run-1", datasetId: "dataset-1", status: "completed"}
                 : {id: "item"}
             const related = method === "skills.list"
                 ? {repositories: []}

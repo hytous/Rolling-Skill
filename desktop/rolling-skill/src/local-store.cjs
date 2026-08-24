@@ -644,6 +644,8 @@ function normalizeSkillReference(value) {
     const name = skillIdentity(value.name, "Skill name")
     const path = skillIdentity(value.path, "Skill path")
     const evidencePrecision = skillIdentity(value.evidencePrecision, "Skill evidence precision")
+    const id = skillIdentity(value.id, "Skill id")
+    const repositoryId = skillIdentity(value.repositoryId, "Skill repository id")
     if (!name) {
         throw new Error("A valid runtime Skill name is required")
     }
@@ -656,12 +658,14 @@ function normalizeSkillReference(value) {
         }
         return {
             schemaVersion: value.schemaVersion,
+            ...(id ? {id} : {}),
             name,
             path: null,
             scope: skillIdentity(value.scope, "Skill scope"),
             description: skillIdentity(value.description, "Skill description"),
             runtimeId,
             providerId,
+            ...(repositoryId ? {repositoryId} : {}),
             workspaceRoot,
             evidencePrecision,
             confirmedAt: skillIdentity(value.confirmedAt, "Skill confirmation time"),
@@ -670,13 +674,21 @@ function normalizeSkillReference(value) {
     if (!path || !path.startsWith("/")) {
         throw new Error("A valid runtime Skill name and absolute path are required")
     }
+    const providerId = skillIdentity(value.providerId, "Skill provider id")
+    const runtimeId = skillIdentity(value.runtimeId, "Skill runtime id")
+    if (repositoryId && (!id || !providerId || !runtimeId)) {
+        throw new Error("A complete managed Skill identity is required")
+    }
     return {
         schemaVersion: value.schemaVersion,
+        ...(id ? {id} : {}),
         name,
         path,
         scope: skillIdentity(value.scope, "Skill scope"),
         description: skillIdentity(value.description, "Skill description"),
-        runtimeId: skillIdentity(value.runtimeId, "Skill runtime id"),
+        runtimeId,
+        ...(providerId ? {providerId} : {}),
+        ...(repositoryId ? {repositoryId} : {}),
         confirmedAt: skillIdentity(value.confirmedAt, "Skill confirmation time"),
     }
 }

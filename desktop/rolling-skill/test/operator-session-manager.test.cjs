@@ -269,6 +269,7 @@ function fixture(options = {}) {
         requestPermission: options.requestPermission,
         requestQuestion: options.requestQuestion,
         supportsNativeResume: options.supportsNativeResume,
+        workspaceRoot: options.workspaceRoot ?? "/private/operator",
         resolveManagedSkillWorkspace: options.resolveManagedSkillWorkspace,
     })
     return {
@@ -401,6 +402,7 @@ describe("OperatorSessionManager", () => {
             controlSocketPath: "/private/operator-control.sock",
             transportFactory(input) { return new FakeTransport(input) },
             transportSupport: () => ({dynamicToolsReady: true}),
+            workspaceRoot: "/private/operator",
         })
         const created = await manager.create(createInput({
             actions: ["datasets.delete"],
@@ -439,6 +441,11 @@ describe("OperatorSessionManager", () => {
         }))
 
         assert.equal(first.clients[0].options.workspaceRoot, workspaceRoot)
+        const executor = [...first.controlPlane.routes.values()][0]
+        assert.deepEqual(executor.contextSnapshot(), {
+            workspaceRoot,
+            runtimeId: "runtime-1",
+        })
         const configuration = first.store.getSession(created.session.id).transcript.findLast(
             (entry) => entry.kind === "operator_session_configuration",
         )

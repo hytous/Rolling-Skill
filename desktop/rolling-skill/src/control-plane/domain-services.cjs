@@ -10,7 +10,7 @@ const {
 } = require("../raw-case-store.cjs")
 const {isTrustedHumanCapability} = require("./capability-store.cjs")
 const {createHash} = require("node:crypto")
-const {relative, resolve, sep} = require("node:path")
+const {isAbsolute, relative, resolve, sep} = require("node:path")
 
 const TRUSTED_MUTATION_METHODS = new Set([
     "datasets.delete",
@@ -365,7 +365,7 @@ function publicCurationSession(session) {
         ...(Object.hasOwn(session ?? {}, "error")
             ? {error: error === null
                 ? null
-                : String(typeof error === "object" ? error?.message ?? "" : error).slice(0, 4_096)}
+                : safeDiagnosticText(typeof error === "object" ? error?.message ?? "" : error)}
             : {}),
     }
 }
@@ -390,8 +390,184 @@ function publicDataset(dataset) {
     }
 }
 
+function publicArtifactReferences(value) {
+    const references = []
+    const seen = new Set()
+    const inputs = [
+        ...(Array.isArray(value?.artifactRefs) ? value.artifactRefs : []),
+        ...(Array.isArray(value?.artifactIds) ? value.artifactIds : []),
+    ]
+    for (const input of inputs) {
+        const artifact = typeof input === "string" ? {id: input} : input
+        const artifactId = identifier(artifact?.id)
+        if (artifactId === null || seen.has(artifactId)) continue
+        const summary = {id: artifactId}
+        for (const [key, limit] of [["kind", 200], ["mediaType", 200], ["sha256", 200]]) {
+            if (typeof artifact?.[key] === "string" && artifact[key].trim()) {
+                summary[key] = safeDiagnosticText(artifact[key]).slice(0, limit)
+            }
+        }
+        if (
+            Number.isSafeInteger(artifact?.sizeBytes) &&
+            artifact.sizeBytes >= 0 &&
+            artifact.sizeBytes <= 64 * 1024 * 1024
+        ) summary.sizeBytes = artifact.sizeBytes
+        references.push(summary)
+        seen.add(artifactId)
+        if (references.length === 100) break
+    }
+    return references
+}
+
+function publicSummaryText(value, limit = 4_096) {
+    if (typeof value !== "string" || value.length === 0) return null
+    return safeDiagnosticText(value).slice(0, limit)
+}
+
 function publicCase(entry) {
-    return ownFields(entry, ["id", "datasetId", "caseType", "question", "createdAt", "updatedAt"])
+    const title = publicSummaryText(entry?.title ?? entry?.question, 500)
+    const label = identifier(entry?.label) ?? identifier(entry?.caseType)
+    const inputSummary = publicSummaryText(entry?.inputSummary ?? entry?.question)
+    const outputSummary = publicSummaryText(
+        entry?.outputSummary ?? entry?.curated?.referenceAnswer?.summary ?? entry?.answer,
+    )
+    const artifactRefs = publicArtifactReferences(entry)
+    return {
+        ...ownFields(entry, ["id", "datasetId"]),
+        ...(title === null ? {} : {title}),
+        ...(identifier(entry?.status ?? entry?.rubricCalibration?.status) === null
+            ? {}
+            : {status: identifier(entry?.status ?? entry?.rubricCalibration?.status)}),
+        ...(label === null ? {} : {label}),
+        ...(inputSummary === null ? {} : {inputSummary}),
+        ...(outputSummary === null ? {} : {outputSummary}),
+        ...(artifactRefs.length === 0 ? {} : {artifactRefs}),
+        ...ownFields(entry, ["createdAt", "updatedAt"]),
+    }
+}
+
+function publicEvaluationScore(score) {
+    if (!score || typeof score !== "object") return null
+    const result = {}
+    if (Number.isFinite(score.totalScore)) result.totalScore = score.totalScore
+    else if (Number.isFinite(score.aScore) && Number.isFinite(score.bScore)) {
+        result.totalScore = Math.round((score.aScore + score.bScore + Number.EPSILON) * 10) / 10
+    }
+    for (const key of ["outcomeTier", "overallVerdict"]) {
+        const value = identifier(score[key])
+        if (value !== null) result[key] = value
+    }
+    return Object.keys(result).length === 0 ? null : result
+}
+
+function publicEvaluationRuntime(configuration) {
+    const runtimeId = identifier(configuration?.runtimeId)
+    if (runtimeId === null) return null
+    const result = {runtimeId}
+    const displayName = publicSummaryText(configuration?.displayName, 500)
+    if (displayName !== null) result.displayName = displayName
+    if (Object.hasOwn(configuration ?? {}, "modelId")) {
+        result.modelId = configuration.modelId === null
+            ? null
+            : identifier(configuration.modelId)
+    }
+    if (Object.hasOwn(configuration ?? {}, "effort")) {
+        result.effort = PUBLIC_REASONING_EFFORTS.has(configuration.effort)
+            ? configuration.effort
+            : null
+    }
+    return result
+}
+
+function publicEvaluationResult(result) {
+    const score = publicEvaluationScore(result?.computedScore)
+    const title = publicSummaryText(result?.title ?? result?.caseSnapshot?.question, 500)
+    const reasonSummary = publicSummaryText(
+        result?.reasonSummary ?? result?.judgment?.summary ?? result?.judgment?.reason ??
+            result?.gradingError,
+    )
+    const error = result?.error === null || result?.error === undefined
+        ? result?.error ?? null
+        : publicSummaryText(
+            typeof result.error === "object" ? result.error?.message ?? "" : result.error,
+        )
+    const artifactRefs = publicArtifactReferences(result)
+    return {
+        id: result.id,
+        caseId: result.caseId,
+        runtimeId: result.runtimeId ?? result?.runtimeConfiguration?.runtimeId,
+        ...(title === null ? {} : {title}),
+        status: String(result.status ?? "queued").slice(0, 80),
+        ...(identifier(result?.gradingStatus) === null
+            ? {}
+            : {gradingStatus: identifier(result.gradingStatus)}),
+        ...(Object.hasOwn(result ?? {}, "durationMs") &&
+            (result.durationMs === null ||
+                (Number.isSafeInteger(result.durationMs) && result.durationMs >= 0))
+            ? {durationMs: result.durationMs}
+            : {}),
+        ...(score === null ? {} : {computedScore: score}),
+        ...(reasonSummary === null ? {} : {reasonSummary}),
+        ...(artifactRefs.length === 0 ? {} : {artifactRefs}),
+        ...(Object.hasOwn(result ?? {}, "error") ? {error} : {}),
+        ...ownFields(result, ["startedAt", "completedAt"]),
+    }
+}
+
+function publicEvaluationRun(run, {includeResults = false} = {}) {
+    const results = Array.isArray(run?.results) ? run.results : []
+    const publicResults = includeResults
+        ? results.slice(0, 1_000).map(publicEvaluationResult)
+        : null
+    const runtimeConfigurations = (Array.isArray(run?.runtimeConfigurations)
+        ? run.runtimeConfigurations
+        : [])
+        .map(publicEvaluationRuntime)
+        .filter(Boolean)
+        .slice(0, 32)
+    const counts = {queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0}
+    for (const result of results) {
+        const status = Object.hasOwn(counts, result?.status) ? result.status : "failed"
+        counts[status] += 1
+    }
+    const datasetId = run?.datasetId ?? run?.datasetSnapshot?.id
+    const datasetName = publicSummaryText(run?.datasetSnapshot?.name, 500)
+    const skillReference = run?.skillReference && typeof run.skillReference === "object"
+        ? publicSkillReference(run.skillReference)
+        : null
+    const artifactRefs = publicArtifactReferences(run)
+    const error = Object.hasOwn(run ?? {}, "error")
+        ? run.error === null
+            ? null
+            : publicSummaryText(typeof run.error === "object" ? run.error?.message ?? "" : run.error)
+        : undefined
+    return {
+        id: run.id,
+        datasetId,
+        ...(run?.datasetSnapshot?.id ? {datasetSnapshot: {
+            id: run.datasetSnapshot.id,
+            ...(datasetName === null ? {} : {name: datasetName}),
+        }} : {}),
+        ...ownFields(run, ["selectionMode", "activationMode"]),
+        ...(skillReference === null ? {} : {skillReference}),
+        status: String(run?.status ?? "queued").slice(0, 80),
+        caseCount: Number.isSafeInteger(run?.caseCount)
+            ? run.caseCount
+            : Array.isArray(run?.caseSnapshots) ? run.caseSnapshots.length : 0,
+        runtimeCount: Number.isSafeInteger(run?.runtimeCount)
+            ? run.runtimeCount
+            : runtimeConfigurations.length,
+        resultCount: results.length,
+        progress: {total: results.length, ...counts},
+        ...(runtimeConfigurations.length === 0 ? {} : {runtimeConfigurations}),
+        ...(publicResults === null ? {} : {
+            results: publicResults,
+            resultsTruncated: publicResults.length < results.length,
+        }),
+        ...(artifactRefs.length === 0 ? {} : {artifactRefs}),
+        ...(error === undefined ? {} : {error}),
+        ...ownFields(run, ["createdAt", "startedAt", "completedAt"]),
+    }
 }
 
 function publicRubricVersion(version) {
@@ -1319,11 +1495,15 @@ function createDomainServices(dependencies = {}) {
             const allowed = scopeIds(context, "runtimeIds")
             const execution = trustedExecution(context, "context.get")
             const inventory = execution?.runtimes ?? await runtimeInventory()
+            const operatorRuntimeId = identifier(context?.operatorSession?.runtimeId)
             const runtimes = inventory
                 .filter((entry) => allowed.has(entry.runtimeId))
-            const workspaceRoot = typeof dependencies.workspaceRoot === "function"
-                ? await dependencies.workspaceRoot()
-                : dependencies.workspaceRoot
+                .filter((entry) => operatorRuntimeId === null || entry.runtimeId === operatorRuntimeId)
+            const workspaceRoot = context?.operatorSession?.workspaceRoot ?? (
+                typeof dependencies.workspaceRoot === "function"
+                    ? await dependencies.workspaceRoot()
+                    : dependencies.workspaceRoot
+            )
             return {workspaceRoot: String(workspaceRoot ?? ""), runtimes}
         },
 
@@ -1443,7 +1623,8 @@ function createDomainServices(dependencies = {}) {
             const dataset = execution?.dataset ?? await requireDataset(input.datasetId)
             const result = {dataset: publicDataset(dataset)}
             if (input.includeCases) {
-                result.cases = execution?.cases ?? await casesForDataset(dataset.id)
+                result.cases = (execution?.cases ?? await casesForDataset(dataset.id))
+                    .map(publicCase)
             }
             return result
         },
@@ -1452,15 +1633,23 @@ function createDomainServices(dependencies = {}) {
             const execution = trustedExecution(context, "datasets.create")
             const skill = execution?.skill ??
                 await requireManagedSkillSelection(input.skillId, input.repositoryId)
-            if (typeof managedSkillManager?.repositoryPath !== "function") {
-                throw new Error("Managed Skill repository resolution unavailable")
+            if (typeof dependencies.resolveManagedSkillBinding !== "function") {
+                throw new Error("Managed Skill binding resolution unavailable")
             }
-            const repositoryRoot = resolve(await managedSkillManager.repositoryPath(input.repositoryId))
-            const skillPath = resolve(repositoryRoot, String(skill.skillRoot ?? ""))
-            const relativePath = relative(repositoryRoot, skillPath)
-            if (relativePath === ".." || relativePath.startsWith(`..${sep}`)) {
-                throw new Error("Managed Skill root is outside its repository")
-            }
+            const binding = await dependencies.resolveManagedSkillBinding(Object.freeze({
+                repositoryId: input.repositoryId,
+                skillId: input.skillId,
+            }))
+            if (
+                !binding ||
+                typeof binding !== "object" ||
+                binding.repositoryId !== input.repositoryId ||
+                binding.skillId !== input.skillId ||
+                binding.name !== skill.name ||
+                !isAbsolute(binding.skillPath) ||
+                identifier(binding.providerId) === null ||
+                identifier(binding.runtimeId) === null
+            ) throw new Error("Managed Skill binding resolution is invalid")
             if (typeof evaluationStore?.createDataset !== "function") {
                 throw new Error("Dataset store unavailable")
             }
@@ -1468,11 +1657,14 @@ function createDomainServices(dependencies = {}) {
                 name: input.name,
                 skillReference: {
                     schemaVersion: "rolling-skill-skill-reference/v1",
-                    name: skill.name,
-                    path: skillPath,
+                    id: skill.id,
+                    name: binding.name,
+                    path: binding.skillPath,
                     scope: null,
                     description: skill.description ?? null,
-                    runtimeId: null,
+                    providerId: binding.providerId,
+                    runtimeId: binding.runtimeId,
+                    repositoryId: binding.repositoryId,
                     confirmedAt: new Date().toISOString(),
                 },
             })
@@ -1516,12 +1708,20 @@ function createDomainServices(dependencies = {}) {
                 if (execution === null) await requireDataset(input.datasetId)
             }
             const page = paginate(runs, input)
-            return {runs: page.items, nextCursor: page.nextCursor}
+            return {
+                runs: page.items.map((run) => publicEvaluationRun(run)),
+                nextCursor: page.nextCursor,
+            }
         },
 
         async "evaluations.get"(input, context) {
             const execution = trustedExecution(context, "evaluations.get")
-            return {run: execution?.run ?? await requireEvaluationRun(input.runId)}
+            return {
+                run: publicEvaluationRun(
+                    execution?.run ?? await requireEvaluationRun(input.runId),
+                    {includeResults: true},
+                ),
+            }
         },
 
         async "evaluations.start"(input, context) {
@@ -1529,9 +1729,14 @@ function createDomainServices(dependencies = {}) {
                 immutableSnapshot({
                     method: "evaluations.start",
                     ...await evaluationStartSnapshot(input),
-                })
+            })
             if (typeof startEvaluation !== "function") throw new Error("Evaluation start unavailable")
-            return {run: clone(await startEvaluation(clone(input), execution))}
+            return {
+                run: publicEvaluationRun(
+                    clone(await startEvaluation(clone(input), execution)),
+                    {includeResults: true},
+                ),
+            }
         },
 
         async "evaluations.cancel"(input, context) {
@@ -1540,7 +1745,12 @@ function createDomainServices(dependencies = {}) {
             if (typeof evaluationRunner?.cancel !== "function") {
                 throw new Error("Evaluation cancellation unavailable")
             }
-            return {run: clone(await evaluationRunner.cancel(input.runId))}
+            return {
+                run: publicEvaluationRun(
+                    clone(await evaluationRunner.cancel(input.runId)),
+                    {includeResults: true},
+                ),
+            }
         },
 
         async "skill_repositories.list"(input, context) {

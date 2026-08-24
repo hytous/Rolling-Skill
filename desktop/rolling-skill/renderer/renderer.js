@@ -3870,9 +3870,13 @@ function rubricUsesUnifiedScoring(version) {
     return version?.rubric?.scoringModel === UNIFIED_SCORING_MODEL
 }
 
+function caseNeedsCalibration(entry) {
+    return entry?.rubricCalibration?.status === "needed" || entry?.status === "needed"
+}
+
 function appendDatasetCalibrationNotice(version) {
     const pendingCases = state.evaluationCases.filter(
-        (entry) => entry.rubricCalibration?.status === "needed",
+        caseNeedsCalibration,
     )
     if (!version || !pendingCases.length) return
     const batchSnapshot = calibrationBatchSnapshot()
@@ -4967,14 +4971,15 @@ function renderEvaluationWorkbench() {
         button.type = "button"
         button.dataset.evaluationCaseId = caseEntry.id
         if (caseEntry.id === state.evaluationCaseId) button.classList.add("active")
-        const caseTitle = caseEntry.source?.originalQuestion || caseEntry.question
+        const caseTitle = caseEntry.title || caseEntry.inputSummary || caseEntry.id
+        const caseLabel = caseEntry.label || caseEntry.status || "case"
         button.append(
-            node("span", `case-badge ${caseEntry.caseType}`, caseEntry.caseType),
+            node("span", `case-badge ${caseLabel}`, caseLabel),
             node("strong", "", caseTitle),
-            node("small", "", caseEntry.curated?.referenceAnswer?.summary || caseEntry.answer || ""),
+            node("small", "", caseEntry.outputSummary || ""),
         )
         let calibrate = null
-        if (caseEntry.rubricCalibration?.status === "needed") {
+        if (caseNeedsCalibration(caseEntry)) {
             button.append(node("span", "case-calibration", t("caseNeedsCalibration")))
             const calibration = activeCalibrationForCase(caseEntry.id)
             calibrate = node(
@@ -5018,12 +5023,10 @@ function renderEvaluationWorkbench() {
         ? state.evaluationRuntimeConfigurations[judgeRuntime.runtimeId]
         : null
     const judgeReady = Boolean(judgeRuntime) && !judgeCatalog?.loading && !judgeCatalog?.error
-    const selectedCaseNeedsCalibration = state.evaluationCases.find(
+    const selectedCaseNeedsCalibration = caseNeedsCalibration(state.evaluationCases.find(
         (entry) => entry.id === state.evaluationCaseId,
-    )?.rubricCalibration?.status === "needed"
-    const datasetNeedsCalibration = state.evaluationCases.some(
-        (entry) => entry.rubricCalibration?.status === "needed",
-    )
+    ))
+    const datasetNeedsCalibration = state.evaluationCases.some(caseNeedsCalibration)
     elements.startEvaluation.disabled =
         state.evaluationLoading ||
         !state.evaluationCaseId ||
@@ -5667,7 +5670,7 @@ function renderEvaluationResultCard(result, run) {
     statuses.append(executionStatus, gradingBadge)
     resultHeader.append(
         statuses,
-        node("strong", "", result.caseSnapshot?.question ?? result.id),
+        node("strong", "", result.title ?? result.caseSnapshot?.question ?? result.id),
         node(
             "small",
             "",
@@ -6964,8 +6967,7 @@ function assertCalibrationBatchContext(batch, caseId = null) {
     const caseEntry = state.evaluationCases.find((entry) => entry.id === caseId)
     if (
         !caseEntry ||
-        caseEntry.rubricCalibration?.status !== "needed" ||
-        caseEntry.rubricCalibration?.rubricVersionId !== snapshot.rubricVersionId
+        !caseNeedsCalibration(caseEntry)
     ) {
         throw new Error(t("calibrationContextChanged"))
     }
@@ -7096,7 +7098,7 @@ function startAutomaticCalibrationBatch() {
     const datasetId = state.evaluationDatasetId
     const rubricVersionId = state.evaluationRubricVersion?.id
     const caseIds = state.evaluationCases
-        .filter((entry) => entry.rubricCalibration?.status === "needed")
+        .filter(caseNeedsCalibration)
         .map((entry) => entry.id)
     if (!datasetId || !rubricVersionId || !caseIds.length) return
     const running = calibrationBatchSnapshot()?.status === "running"
@@ -7109,7 +7111,7 @@ function startAutomaticCalibrationBatch() {
 
 async function createCaseCalibration(caseId, {automatic = false, throwOnError = false} = {}) {
     const caseEntry = state.evaluationCases.find((entry) => entry.id === caseId)
-    if (!caseEntry || caseEntry.rubricCalibration?.status !== "needed") {
+    if (!caseNeedsCalibration(caseEntry)) {
         if (throwOnError) throw new Error(t("calibrationContextChanged"))
         return null
     }

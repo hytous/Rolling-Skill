@@ -591,12 +591,13 @@ async function run() {
     }
     if (
         !initialEvaluationRuntime.codexText.includes("84/100") ||
-        !initialEvaluationRuntime.codexText.includes("统一 Skill 评分标准") ||
+        initialEvaluationRuntime.codexText.includes("Smoke evaluation answer") ||
+        initialEvaluationRuntime.codexText.includes("trace:L1") ||
         initialEvaluationRuntime.codexText.includes("A · 通用") ||
         initialEvaluationRuntime.codexText.includes("B · 灵活")
     ) {
         throw new Error(
-            `Unified score was not rendered as one rubric: ${initialEvaluationRuntime.codexText}`,
+            `Safe evaluation score summary was not rendered: ${initialEvaluationRuntime.codexText}`,
         )
     }
 
@@ -626,8 +627,9 @@ async function run() {
         codeBuddyEvaluationRuntime.cases !== 2 ||
         !codeBuddyEvaluationRuntime.text.includes("66/100") ||
         !codeBuddyEvaluationRuntime.text.includes("旧版评分记录") ||
-        !codeBuddyEvaluationRuntime.text.includes("Legacy Skill evidence remains inspectable.") ||
-        !codeBuddyEvaluationRuntime.text.includes("Legacy workflow evidence remains inspectable.") ||
+        codeBuddyEvaluationRuntime.text.includes("Smoke CodeBuddy evaluation answer") ||
+        codeBuddyEvaluationRuntime.text.includes("Legacy Skill evidence remains inspectable.") ||
+        codeBuddyEvaluationRuntime.text.includes("Legacy workflow evidence remains inspectable.") ||
         codeBuddyEvaluationRuntime.text.includes("A · 通用") ||
         codeBuddyEvaluationRuntime.text.includes("B · 灵活")
     ) {

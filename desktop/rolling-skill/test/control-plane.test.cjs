@@ -139,6 +139,8 @@ function createFixture({
             "evaluations.read",
             "evaluations.execute",
             "skills.read",
+            "approvals.resolve",
+            "jobs.control",
         ],
         scopes: {
             skillIds: ["skill-1"],
@@ -224,6 +226,47 @@ describe("ControlPlane", () => {
         lease.unregister()
     })
 
+    it("binds context.get to the live Operator session workspace and Runtime", async () => {
+        const {control, issued, services} = createFixture()
+        const rendererContext = await control.invoke({
+            token: issued.token,
+            sessionId: issued.sessionId,
+            method: "context.get",
+            params: {},
+        })
+        assert.equal(rendererContext.workspaceRoot, "/trusted/workspace")
+        assert.deepEqual(rendererContext.runtimes.map((entry) => entry.runtimeId), [
+            "runtime-1",
+            "judge-1",
+        ])
+
+        control.registerOperatorExecutor({
+            sessionId: issued.sessionId,
+            capabilityId: issued.id,
+            budgetSnapshot: () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}),
+            assertLive: () => true,
+            contextSnapshot: () => ({
+                workspaceRoot: "/private/managed/repository-1",
+                runtimeId: "runtime-1",
+            }),
+            execute: ({method, input, context}) => services[method](input, context),
+        })
+
+        assert.deepEqual(await control.invoke({
+            token: issued.token,
+            sessionId: issued.sessionId,
+            method: "context.get",
+            params: {},
+        }), {
+            workspaceRoot: "/private/managed/repository-1",
+            runtimes: [{
+                runtimeId: "runtime-1",
+                providerId: "codex",
+                executablePath: "/trusted/codex",
+            }],
+        })
+    })
+
     it("denies UI-only methods to an Operator lease even when its token grants the shared action", async () => {
         const {control, issued} = createFixture()
         const privateResult = await control.invoke({
@@ -242,12 +285,24 @@ describe("ControlPlane", () => {
             execute: async () => { executed += 1 },
         })
 
-        await assert.rejects(control.invoke({
-            token: issued.token,
-            sessionId: issued.sessionId,
-            method: "skills.get",
-            params: {skillId: "skill-1"},
-        }), (error) => error.code === "FORBIDDEN")
+        for (const [method, params] of [
+            ["skills.get", {skillId: "skill-1"}],
+            ["approvals.resolve", {
+                approvalId: "approval-1",
+                decision: "approve",
+                idempotencyKey: "operator-self-approval",
+            }],
+            ["jobs.pause", {jobId: "job-1", idempotencyKey: "operator-self-pause"}],
+            ["jobs.resume", {jobId: "job-1", idempotencyKey: "operator-self-resume"}],
+            ["jobs.stop", {jobId: "job-1", idempotencyKey: "operator-self-stop"}],
+        ]) {
+            await assert.rejects(control.invoke({
+                token: issued.token,
+                sessionId: issued.sessionId,
+                method,
+                params,
+            }), (error) => error.code === "FORBIDDEN", method)
+        }
         assert.equal(executed, 0)
     })
 

@@ -229,6 +229,18 @@ function fixture(overrides = {}) {
         rubricManager,
         skillInstallationStore,
         skillInstallationManager,
+        resolveManagedSkillBinding: mock.fn(({repositoryId, skillId}) => {
+            const skill = managedSkillManager.catalog().skills.find((entry) => entry.id === skillId)
+            if (!skill || skill.repositoryId !== repositoryId) throw new Error("Unknown managed Skill")
+            return {
+                repositoryId,
+                skillId,
+                name: skill.name,
+                skillPath: `/private/managed/${repositoryId}/${skill.skillRoot ?? ""}`.replace(/\/$/u, ""),
+                providerId: "codex",
+                runtimeId: "runtime-1",
+            }
+        }),
         listRuntimes: mock.fn(() => structuredClone(runtimes)),
         listModelsForRuntime: mock.fn((runtimeId) => [{id: `${runtimeId}-model`}]),
         dispatchRawCase: mock.fn(({runtime}) => ({
@@ -461,7 +473,7 @@ describe("control-plane domain services", () => {
             status: "failed",
             error: {
                 code: "CURATION_FAILED",
-                message: "failed safely",
+                message: "failed token=curator-secret /private/curation-trace.jsonl",
                 details: {tracePath: "/private/curation-trace.jsonl"},
             },
         }))
@@ -472,8 +484,8 @@ describe("control-plane domain services", () => {
             message: "keep the failure",
             idempotencyKey: "curation-failed",
         }, serviceContext())
-        assert.equal(result.session.error, "failed safely")
-        assert.doesNotMatch(JSON.stringify(result), /tracePath|private/iu)
+        assert.match(result.session.error, /\[redacted\]|omitted/iu)
+        assert.doesNotMatch(JSON.stringify(result), /curator-secret|tracePath|private\/curation/iu)
         assert.doesNotThrow(() => parseControlOutput("curation.message", result))
     })
 
@@ -502,6 +514,10 @@ describe("control-plane domain services", () => {
         const storedReference = evaluationStore.createDataset.mock.calls[0].arguments[0].skillReference
         assert.equal(storedReference.path, "/private/managed/repository-1/billing")
         assert.equal(storedReference.name, "billing")
+        assert.equal(storedReference.id, "skill-1")
+        assert.equal(storedReference.providerId, "codex")
+        assert.equal(storedReference.runtimeId, "runtime-1")
+        assert.equal(storedReference.repositoryId, "repository-1")
 
         const diff = await services["skills.diff"]({
             repositoryId: "repository-1",
@@ -569,6 +585,23 @@ describe("control-plane domain services", () => {
         }
         context.evaluationStore.listDatasets = mock.fn(() => [structuredClone(dataset)])
         context.evaluationStore.getDataset = mock.fn(() => structuredClone(dataset))
+        context.evaluationStore.listCases = mock.fn(() => [{
+            id: "case-1",
+            datasetId: "dataset-1",
+            caseType: "goodcase",
+            question: "Find the July total",
+            answer: "Private full answer",
+            curated: {referenceAnswer: {summary: "Verified answer summary"}},
+            traceReference: "/private/case-trace.jsonl",
+            skillPath: "/private/skill",
+            messages: [{role: "assistant", text: "private raw message"}],
+            toolEvidence: {raw: "private tool output"},
+            artifactRefs: [{
+                id: "artifact-case-1",
+                kind: "case-summary",
+                path: "/private/artifact.txt",
+            }],
+        }])
         const services = createDomainServices(context.dependencies)
 
         const listed = await services["datasets.list"](
@@ -576,7 +609,7 @@ describe("control-plane domain services", () => {
             serviceContext({datasetIds: ["dataset-1"]}),
         )
         const got = await services["datasets.get"](
-            {datasetId: "dataset-1", includeCases: false},
+            {datasetId: "dataset-1", includeCases: true},
             serviceContext(),
         )
         for (const value of [listed.datasets[0], got.dataset]) {
@@ -584,8 +617,130 @@ describe("control-plane domain services", () => {
             assert.equal(Object.hasOwn(value, "privateState"), false)
             assert.doesNotMatch(JSON.stringify(value), /private|path|trace/iu)
         }
+        assert.deepEqual(got.cases, [{
+            id: "case-1",
+            datasetId: "dataset-1",
+            title: "Find the July total",
+            label: "goodcase",
+            inputSummary: "Find the July total",
+            outputSummary: "Verified answer summary",
+            artifactRefs: [{id: "artifact-case-1", kind: "case-summary"}],
+        }])
+        assert.doesNotMatch(JSON.stringify(got.cases), /private|trace|skillPath|messages|toolEvidence/iu)
         assert.doesNotThrow(() => parseControlOutput("datasets.list", listed))
         assert.doesNotThrow(() => parseControlOutput("datasets.get", got))
+    })
+
+    it("projects every Evaluation response to bounded progress, score, reason, and artifacts", async () => {
+        const value = fixture()
+        const richRun = {
+            id: "run-1",
+            datasetId: "dataset-1",
+            datasetSnapshot: {
+                id: "dataset-1",
+                name: "Billing",
+                skillReference: {path: "/private/dataset-skill"},
+            },
+            selectionMode: "selected",
+            activationMode: "automatic",
+            status: "completed",
+            skillReference: {id: "skill-1", name: "billing", path: "/private/skill"},
+            runtimeConfigurations: [{
+                runtimeId: "runtime-1",
+                displayName: "Codex",
+                modelId: "model-1",
+                effort: "high",
+                executablePath: "/private/bin/codex",
+            }],
+            caseSnapshots: [{
+                id: "case-1",
+                question: "Private full question",
+                referenceAnswer: "Private expected answer",
+            }],
+            results: [{
+                id: "result-1",
+                caseId: "case-1",
+                runtimeId: "runtime-1",
+                status: "completed",
+                gradingStatus: "completed",
+                durationMs: 1_500,
+                computedScore: {
+                    totalScore: 92,
+                    outcomeTier: "formal_pass",
+                    overallVerdict: "pass",
+                    criterionScores: [{id: "secret", score: 92}],
+                },
+                judgment: {summary: "Evidence-backed result", transcript: "private judge"},
+                response: "private assistant response",
+                judge: {runtimeId: "judge-1", transcript: "private judge transcript"},
+                traceReference: "/private/trace.jsonl",
+                traceEvidence: {entries: [{content: "private evidence"}]},
+                artifactRefs: [{
+                    id: "artifact-result-1",
+                    kind: "evaluation-summary",
+                    path: "/private/result.txt",
+                }],
+                startedAt: "2026-08-24T00:00:00.000Z",
+                completedAt: "2026-08-24T00:00:01.500Z",
+            }],
+            createdAt: "2026-08-24T00:00:00.000Z",
+            completedAt: "2026-08-24T00:00:02.000Z",
+        }
+        value.evaluationStore.listEvaluationRunSummaries = mock.fn(() => [structuredClone(richRun)])
+        value.evaluationStore.getEvaluationRun = mock.fn(() => structuredClone(richRun))
+        value.evaluationRunner.cancel = mock.fn(() => ({...structuredClone(richRun), status: "cancelled"}))
+        value.dependencies.startEvaluation = mock.fn(() => ({...structuredClone(richRun), status: "queued"}))
+        const services = createDomainServices(value.dependencies)
+        const startInput = {
+            datasetId: "dataset-1",
+            caseIds: ["case-1"],
+            selectionMode: "selected",
+            activationMode: "automatic",
+            runtimeConfigurations: [{runtimeId: "runtime-1", modelId: null, effort: null}],
+            judgeConfiguration: {runtimeId: "judge-1", modelId: null, effort: null},
+            idempotencyKey: "evaluation-safe-start",
+        }
+        const results = [
+            ["evaluations.list", await services["evaluations.list"](
+                {datasetId: "dataset-1", cursor: null, limit: 100},
+                serviceContext(),
+            )],
+            ["evaluations.get", await services["evaluations.get"](
+                {runId: "run-1"},
+                serviceContext(),
+            )],
+            ["evaluations.start", await services["evaluations.start"](
+                startInput,
+                serviceContext(),
+            )],
+            ["evaluations.cancel", await services["evaluations.cancel"](
+                {runId: "run-1", idempotencyKey: "evaluation-safe-cancel"},
+                serviceContext(),
+            )],
+        ]
+
+        for (const [method, result] of results) {
+            const run = method === "evaluations.list" ? result.runs[0] : result.run
+            assert.equal(run.id, "run-1")
+            assert.deepEqual(run.skillReference, {id: "skill-1", name: "billing"})
+            if (method !== "evaluations.list") {
+                assert.deepEqual(run.results[0].computedScore, {
+                    totalScore: 92,
+                    outcomeTier: "formal_pass",
+                    overallVerdict: "pass",
+                })
+                assert.equal(run.results[0].reasonSummary, "Evidence-backed result")
+                assert.deepEqual(run.results[0].artifactRefs, [{
+                    id: "artifact-result-1",
+                    kind: "evaluation-summary",
+                }])
+            }
+            assert.doesNotMatch(
+                JSON.stringify(result),
+                /private|response|judge|traceEvidence|traceReference|referenceAnswer|criterionScores|executablePath/iu,
+            )
+            assert.doesNotThrow(() => parseControlOutput(method, result))
+        }
     })
 
     it("freezes destructive resource facts and rejects an approved Dataset mutation after drift", async () => {
@@ -766,6 +921,14 @@ describe("control-plane domain services", () => {
                 skills: [{id: "skill-1", repositoryId: "repository-1", name: "billing", skillRoot: "."}],
             })),
         }
+        context.dependencies.resolveManagedSkillBinding = mock.fn(() => ({
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            name: "billing",
+            skillPath: "/private/managed/repository-1",
+            providerId: "codex",
+            runtimeId: "runtime-1",
+        }))
         const services = createDomainServices(context.dependencies)
 
         const created = await services["datasets.create"]({

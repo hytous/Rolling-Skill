@@ -608,6 +608,10 @@ class OperatorSessionManager {
             enabled: false,
             budgetSnapshot: () => this.#budgetSnapshot(control),
             assertLive: () => this.#controlIsLive(control),
+            contextSnapshot: () => ({
+                workspaceRoot: control.workspaceRoot,
+                runtimeId: control.runtime.runtimeId,
+            }),
             execute: (request) => this.#executeControl(control, request),
             ...(replace === undefined ? {} : {replace}),
         }

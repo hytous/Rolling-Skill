@@ -334,7 +334,7 @@ describe("local-first desktop surface", () => {
         assert.match(html, /id="dataset-skill-dialog"/)
         assert.match(html, /id="start-evaluation"/)
         assert.match(renderer, /renderEvaluationWorkbench/)
-        assert.match(renderer, /caseEntry\.source\?\.originalQuestion \|\| caseEntry\.question/)
+        assert.match(renderer, /caseEntry\.title \|\| caseEntry\.inputSummary \|\| caseEntry\.id/)
         assert.match(preload, /listSkills/)
         assert.match(preload, /bindDatasetSkill/)
         assert.match(preload, /listCases/)

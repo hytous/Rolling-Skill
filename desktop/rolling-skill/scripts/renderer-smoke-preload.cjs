@@ -452,6 +452,80 @@ function smokePublicDataset(dataset) {
         ...(dataset.createdAt === undefined ? {} : {createdAt: dataset.createdAt}),
     }
 }
+
+function smokePublicEvaluationCase(entry) {
+    return {
+        id: entry.id,
+        datasetId: entry.datasetId,
+        title: entry.source?.originalQuestion ?? entry.question,
+        status: entry.rubricCalibration?.status ?? entry.status,
+        label: entry.caseType,
+        inputSummary: entry.question,
+        outputSummary: entry.curated?.referenceAnswer?.summary ?? entry.answer ?? "",
+    }
+}
+
+function smokePublicEvaluationResult(result) {
+    const score = result.computedScore
+    const totalScore = Number.isFinite(score?.totalScore)
+        ? score.totalScore
+        : Number.isFinite(score?.aScore) && Number.isFinite(score?.bScore)
+            ? Math.round((score.aScore + score.bScore + Number.EPSILON) * 10) / 10
+            : null
+    return {
+        id: result.id,
+        caseId: result.caseId ?? result.caseSnapshot?.id,
+        runtimeId: result.runtimeId ?? result.runtimeConfiguration?.runtimeId,
+        title: result.caseSnapshot?.question ?? result.title,
+        status: result.status,
+        ...(result.gradingStatus ? {gradingStatus: result.gradingStatus} : {}),
+        ...(result.durationMs === undefined ? {} : {durationMs: result.durationMs}),
+        ...(score ? {computedScore: {
+            ...(totalScore === null ? {} : {totalScore}),
+            ...(score.outcomeTier ? {outcomeTier: score.outcomeTier} : {}),
+            ...(score.overallVerdict ? {overallVerdict: score.overallVerdict} : {}),
+        }} : {}),
+        ...(result.gradingError ? {reasonSummary: result.gradingError} : {}),
+    }
+}
+
+function smokePublicEvaluationRun(run, includeResults = false) {
+    const results = Array.isArray(run.results) ? run.results : []
+    const counts = {queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0}
+    for (const result of results) {
+        const status = Object.hasOwn(counts, result.status) ? result.status : "failed"
+        counts[status] += 1
+    }
+    return {
+        id: run.id,
+        datasetId: run.datasetId,
+        ...(run.datasetSnapshot ? {datasetSnapshot: {
+            id: run.datasetSnapshot.id,
+            name: run.datasetSnapshot.name,
+        }} : {}),
+        selectionMode: run.selectionMode,
+        activationMode: run.activationMode,
+        status: run.status,
+        caseCount: run.caseCount ?? run.caseSnapshots?.length ?? 0,
+        runtimeCount: run.runtimeCount ?? run.runtimeConfigurations?.length ?? 0,
+        resultCount: results.length,
+        progress: {total: results.length, ...counts},
+        ...(run.runtimeConfigurations?.length ? {runtimeConfigurations: run.runtimeConfigurations.map(
+            ({runtimeId, displayName, modelId = null, effort = null}) => ({
+                runtimeId,
+                displayName,
+                modelId,
+                effort,
+            }),
+        )} : {}),
+        ...(includeResults ? {
+            results: results.map(smokePublicEvaluationResult),
+            resultsTruncated: false,
+        } : {}),
+        ...(run.completedAt === undefined ? {} : {completedAt: run.completedAt}),
+        ...(run.createdAt === undefined ? {} : {createdAt: run.createdAt}),
+    }
+}
 const smokeEvaluationRun = {
     id: "run-smoke",
     datasetId: "dataset-smoke",
@@ -761,19 +835,24 @@ async function fakeControlService(method, params) {
                 ...(params.includeCases ? {
                     cases: smokeEvaluationCases.filter(
                         (entry) => entry.datasetId === params.datasetId,
-                    ),
+                    ).map(smokePublicEvaluationCase),
                 } : {}),
             }
         }
         case "evaluations.list":
             return {
                 runs: !params.datasetId || params.datasetId === smokeEvaluationRun.datasetId
-                    ? [...smokeStartedEvaluationRuns.values()].reverse().concat(smokeEvaluationRun)
+                    ? [...smokeStartedEvaluationRuns.values()].reverse()
+                        .concat(smokeEvaluationRun)
+                        .map((run) => smokePublicEvaluationRun(run, false))
                     : [],
                 nextCursor: null,
             }
         case "evaluations.get":
-            return {run: smokeStartedEvaluationRuns.get(params.runId) ?? smokeEvaluationRun}
+            return {run: smokePublicEvaluationRun(
+                smokeStartedEvaluationRuns.get(params.runId) ?? smokeEvaluationRun,
+                true,
+            )}
         case "evaluations.start": {
             smokeEvaluationRunSequence += 1
             const run = {
@@ -791,7 +870,7 @@ async function fakeControlService(method, params) {
                 results: [],
             }
             smokeStartedEvaluationRuns.set(run.id, run)
-            return {run}
+            return {run: smokePublicEvaluationRun(run, true)}
         }
         case "evaluations.cancel": {
             const current = smokeStartedEvaluationRuns.get(params.runId)
@@ -802,7 +881,7 @@ async function fakeControlService(method, params) {
                 completedAt: new Date().toISOString(),
             }
             smokeStartedEvaluationRuns.set(run.id, run)
-            return {run}
+            return {run: smokePublicEvaluationRun(run, true)}
         }
         case "skill_repositories.list": {
             const page = smokeControlPage(

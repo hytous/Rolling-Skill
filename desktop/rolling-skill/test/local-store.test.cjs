@@ -138,6 +138,27 @@ describe("local evaluation store", () => {
         assert.deepEqual(store.getDataset(created.id).skillReference, skillReference())
     })
 
+    it("persists the trusted managed Skill and Runtime identity on a path binding", () => {
+        const {path, store} = fixture()
+        const managedReference = {
+            ...skillReference("/managed/repository-1/skills/billing", "billing"),
+            id: "skill-1",
+            providerId: "codex",
+            repositoryId: "repository-1",
+        }
+
+        const created = store.createDataset({
+            name: "Managed billing regression",
+            skillReference: managedReference,
+        })
+
+        assert.deepEqual(created.skillReference, managedReference)
+        assert.deepEqual(
+            new LocalEvaluationStore(path).getDataset(created.id).skillReference,
+            managedReference,
+        )
+    })
+
     it("persists a complete name-only Runtime Skill identity without weakening path validation", () => {
         const {path, store} = fixture()
         const nameOnlyReference = {
