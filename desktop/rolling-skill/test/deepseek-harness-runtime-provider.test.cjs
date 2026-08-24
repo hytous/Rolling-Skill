@@ -519,9 +519,8 @@ describe("DeepSeek Harness session adapter", () => {
 
         try {
             await client.start()
-            child.stderr.emit("data", Buffer.from(
-                `ROLLING_SKILL_CONTROL_SOCKET=/private/dsh.sock ${childEnvironment.ROLLING_SKILL_CONTROL_TOKEN}`,
-            ))
+            child.stderr.emit("data", Buffer.from("ROLLING_SKILL_CONTROL_SOCKET=/private/dsh.sock dsh-oper"))
+            child.stderr.emit("data", Buffer.from("ator-token\n"))
             sockets[0].dispatch("error", {
                 message: `stream failed: ${childEnvironment.ROLLING_SKILL_OPERATOR_SESSION}`,
             })
@@ -532,6 +531,7 @@ describe("DeepSeek Harness session adapter", () => {
             assert.equal(spawnCalls[0].options.env.ROLLING_SKILL_OPERATOR_SESSION, "dsh-operator-session")
             assert.equal(Object.hasOwn(spawnCalls[0].options.env, "SHOULD_NOT_PASS"), false)
             const diagnostic = JSON.stringify({runtimeLogs, trace: client.recentTrace(50)})
+            assert.equal(runtimeLogs.join("").includes("dsh-operator-token"), false)
             for (const forbidden of [
                 "ROLLING_SKILL_CONTROL_SOCKET",
                 "ROLLING_SKILL_CONTROL_TOKEN",
@@ -544,6 +544,235 @@ describe("DeepSeek Harness session adapter", () => {
             await client.stop()
         }
         assert.equal(sockets.every((socket) => socket.readyState === FakeWebSocket.CLOSED), true)
+    })
+
+    it("redacts Operator authority from HTTP successes, failures, and history projections", async () => {
+        const token = "dsh-boundary-token"
+        const session = "dsh-boundary-session"
+        const childEnvironment = {
+            ROLLING_SKILL_CONTROL_SOCKET: "/private/dsh-boundary.sock",
+            ROLLING_SKILL_CONTROL_TOKEN: token,
+            ROLLING_SKILL_OPERATOR_SESSION: session,
+        }
+        const traceDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-dsh-boundary-"))
+        temporaryDirectories.push(traceDirectory)
+        const client = new DeepSeekHarnessClient({
+            binaryPath: "/bin/dsh",
+            workspaceRoot: "/workspace",
+            traceDirectory,
+            childEnvironment,
+            fetchImpl: async (url, options) => {
+                const body = JSON.parse(options.body)
+                if (url.endsWith("/api/respond")) throw new Error(`respond ${token}`)
+                if (body.method === "boundary.success") {
+                    return responseFor(body, {text: `assistant ${token}`, nested: {session}})
+                }
+                if (body.method === "boundary.failure") {
+                    return {
+                        ok: false,
+                        status: 500,
+                        json: async () => ({
+                            type: "server-response",
+                            rpcId: body.rpcId,
+                            result: {
+                                ok: false,
+                                error: {
+                                    code: "HOST_FAILURE",
+                                    message: `failed ${token}`,
+                                    details: {socket: childEnvironment.ROLLING_SKILL_CONTROL_SOCKET},
+                                },
+                            },
+                        }),
+                    }
+                }
+                if (body.method === "boundary.timeout") {
+                    return {
+                        ok: true,
+                        status: 200,
+                        json: async () => {
+                            await new Promise((resolve) => setTimeout(resolve, 5))
+                            throw new Error(`timeout ${token}`)
+                        },
+                    }
+                }
+                if (body.method === "session.history") {
+                    return responseFor(body, {events: [
+                        event("turn/start", 1, {turn: 1}),
+                        event("assistant/message", 2, {
+                            turn: 1,
+                            step: 1,
+                            message: {content: [{type: "text", text: `answer ${token}`}]},
+                        }),
+                        event("tool/call", 3, {
+                            turn: 1,
+                            callId: "tool-1",
+                            name: "Skill",
+                            arguments: JSON.stringify({session}),
+                        }),
+                        event("tool/result", 4, {
+                            turn: 1,
+                            message: {
+                                source: {callId: "tool-1"},
+                                content: [{type: "tool-result", toolCallId: "tool-1", content: [
+                                    {type: "text", text: `result ${token}`},
+                                ]}],
+                            },
+                        }),
+                        event("turn/end", 5, {
+                            turn: 1,
+                            reason: {kind: "failed", error: {message: `terminal ${token}`}},
+                        }),
+                    ], hasMore: false})
+                }
+                if (body.method === "session.list") {
+                    return responseFor(body, {items: [{
+                        sessionId: "thread-1",
+                        cwd: "/workspace",
+                        updatedAt: Date.now(),
+                        projections: {values: {title: `title ${session}`}},
+                    }]})
+                }
+                if (body.method === "workspace.list") {
+                    return responseFor(body, {items: [], archivedSessionIds: []})
+                }
+                return responseFor(body, {})
+            },
+        })
+        client.baseUrl = "http://127.0.0.1:54945"
+
+        const success = await client.request("boundary.success")
+        assert.equal(JSON.stringify(success).includes(token), false)
+        assert.equal(JSON.stringify(success).includes(session), false)
+        await assert.rejects(client.request("boundary.failure"), (error) => {
+            const snapshot = JSON.stringify({message: error.message, details: error.details})
+            assert.equal(snapshot.includes(token), false)
+            assert.equal(snapshot.includes(childEnvironment.ROLLING_SKILL_CONTROL_SOCKET), false)
+            return true
+        })
+        await assert.rejects(client.request("boundary.timeout", {}, {timeoutMs: 1}), (error) => {
+            const snapshot = JSON.stringify({
+                message: error.message,
+                cause: error.cause?.message ?? null,
+            })
+            assert.equal(snapshot.includes(token), false)
+            return true
+        })
+        await assert.rejects(client.respond({type: "client-response", rpcId: "response-1"}), (error) => {
+            assert.equal(String(error.message).includes(token), false)
+            return true
+        })
+        const thread = await client.readThread("thread-1")
+        const projection = JSON.stringify(thread)
+        assert.equal(projection.includes(token), false)
+        assert.equal(projection.includes(session), false)
+        assert.match(projection, /\[REDACTED\]/u)
+    })
+
+    it("redacts assistant chunks, Tool results, and terminal turns before notifications", () => {
+        const token = "dsh-notification-token"
+        const session = "dsh-notification-session"
+        const client = new DeepSeekHarnessClient({
+            binaryPath: "/bin/dsh",
+            workspaceRoot: "/workspace",
+            traceDirectory: "/tmp",
+            childEnvironment: {
+                ROLLING_SKILL_CONTROL_SOCKET: "/private/dsh-notification.sock",
+                ROLLING_SKILL_CONTROL_TOKEN: token,
+                ROLLING_SKILL_OPERATOR_SESSION: session,
+            },
+        })
+        const notifications = []
+        client.on("notification", (message) => notifications.push(message))
+        const pending = {
+            threadId: "thread-1",
+            turnNumber: 1,
+            turnId: "dsh-turn-1",
+            lastSeq: 0,
+            entries: [event("turn/start", 0, {turn: 1})],
+            chunks: new Map(),
+            toolCalls: new Map(),
+            stopped: false,
+        }
+        client.pendingTurns.set(pending.threadId, pending)
+
+        client.processLiveEntries(pending, [
+            event("assistant/chunk", 1, {
+                turn: 1,
+                step: 1,
+                chunk: {type: "text-delta", index: 0, text: `chunk ${token}`},
+            }),
+            event("tool/call", 2, {
+                turn: 1,
+                callId: "tool-1",
+                name: "Skill",
+                arguments: JSON.stringify({session}),
+            }),
+            event("tool/result", 3, {
+                turn: 1,
+                message: {
+                    source: {callId: "tool-1"},
+                    content: [{type: "tool-result", toolCallId: "tool-1", content: [
+                        {type: "text", text: `result ${token}`},
+                    ]}],
+                },
+            }),
+            event("assistant/message", 4, {
+                turn: 1,
+                step: 1,
+                message: {content: [{type: "text", text: `answer ${token}`}]},
+            }),
+            event("turn/end", 5, {
+                turn: 1,
+                reason: {kind: "failed", error: {message: `terminal ${token}`}},
+            }),
+        ])
+
+        const projection = JSON.stringify(notifications)
+        assert.equal(projection.includes(token), false)
+        assert.equal(projection.includes(session), false)
+        assert.match(projection, /\[REDACTED\]/u)
+        assert.equal(notifications.some((message) => message.method === "item/agentMessage/delta"), true)
+        assert.equal(notifications.some((message) => message.method === "item/completed"), true)
+        assert.equal(notifications.some((message) => message.method === "turn/completed"), true)
+    })
+
+    it("keeps raw mux routing private while callbacks receive redacted interaction payloads", async () => {
+        const token = "dsh-interaction-token"
+        const requests = []
+        const client = new DeepSeekHarnessClient({
+            binaryPath: "/bin/dsh",
+            workspaceRoot: "/workspace",
+            traceDirectory: "/tmp",
+            childEnvironment: {
+                ROLLING_SKILL_CONTROL_SOCKET: "/private/dsh-interaction.sock",
+                ROLLING_SKILL_CONTROL_TOKEN: token,
+                ROLLING_SKILL_OPERATOR_SESSION: "dsh-interaction-session",
+            },
+            requestPermission: async (request) => {
+                requests.push(request)
+                return "rejected"
+            },
+        })
+        client.ready = true
+        client.child = {}
+        client.processEpoch = 4
+        client.respond = async () => ({accepted: true})
+
+        client.handleMuxEnvelope({
+            rpcId: "interaction-1",
+            payload: {
+                type: "approval/requested",
+                sessionId: "runtime-thread-1",
+                approvalId: "approval-1",
+                toolName: "shell",
+                reason: `run ${token}`,
+            },
+        }, 4)
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.equal(requests.length, 1)
+        assert.equal(JSON.stringify(requests[0]).includes(token), false)
+        assert.match(JSON.stringify(requests[0]), /\[REDACTED\]/u)
     })
 
     it("honors the read-only sandbox requested by hidden Curator and Rubric threads", async () => {
@@ -788,6 +1017,7 @@ describe("DeepSeek Harness session adapter", () => {
                 "rejected",
             ])
             assert.equal(questionRequests.length, 2)
+            assert.equal(questionRequests.every((request) => request.signal instanceof AbortSignal), true)
             assert.deepEqual(responses, [
                 {
                     type: "client-response",

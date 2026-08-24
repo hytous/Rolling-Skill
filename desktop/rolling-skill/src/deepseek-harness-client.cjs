@@ -7,6 +7,7 @@ const {evaluationTurnError} = require("./evaluation-turn-error.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
 const {
     mergeOperatorChildEnvironment,
+    OperatorStreamRedactor,
     redactOperatorSecrets,
     sanitizeOperatorChildEnvironment,
 } = require("./operator/operator-tool-transport.cjs")
@@ -298,6 +299,7 @@ class DeepSeekHarnessClient extends EventEmitter {
         this.requestPermission = requestPermission
         this.requestQuestion = requestQuestion
         this.childEnvironment = sanitizeOperatorChildEnvironment(childEnvironment)
+        this.stderrRedactor = null
         this.pollIntervalMs = pollIntervalMs
         this.startupTimeoutMs = startupTimeoutMs
         this.startupRetryDelayMs = Math.max(1, Number(startupRetryDelayMs) || DEFAULT_STARTUP_RETRY_DELAY_MS)
@@ -343,6 +345,24 @@ class DeepSeekHarnessClient extends EventEmitter {
         this.emit("runtimeLog", redactOperatorSecrets(String(message), this.childEnvironment))
     }
 
+    publicValue(value) {
+        return redactOperatorSecrets(value, this.childEnvironment)
+    }
+
+    emitStderr(output) {
+        for (const value of output) {
+            const text = value.trim()
+            if (text) this.emitRuntimeLog(text)
+        }
+    }
+
+    flushStderr() {
+        if (!this.stderrRedactor) return
+        const redactor = this.stderrRedactor
+        this.stderrRedactor = null
+        this.emitStderr(redactor.end())
+    }
+
     async start() {
         if (this.ready) return this.state()
         if (this.initialization) return this.initialization
@@ -383,13 +403,10 @@ class DeepSeekHarnessClient extends EventEmitter {
             },
         )
         this.child = child
+        this.stderrRedactor = new OperatorStreamRedactor(this.childEnvironment)
         this.emit("state", this.state())
         child.stderr.on("data", (chunk) => {
-            const text = redactOperatorSecrets(
-                chunk.toString("utf8").trim(),
-                this.childEnvironment,
-            )
-            if (text) this.emitRuntimeLog(text)
+            this.emitStderr(this.stderrRedactor?.push(chunk) ?? [])
         })
         child.once("error", (error) => this.handleExit(error, child, epoch))
         child.once("close", (code, signal) => {
@@ -469,6 +486,7 @@ class DeepSeekHarnessClient extends EventEmitter {
 
     handleExit(error, child = this.child, epoch = this.processEpoch) {
         if (this.child !== child || this.processEpoch !== epoch) return
+        this.flushStderr()
         this.closeMux()
         this.cancelPendingInteractions()
         this.child = null
@@ -506,10 +524,8 @@ class DeepSeekHarnessClient extends EventEmitter {
             })
         } catch (error) {
             if (timeout) clearTimeout(timeout)
-            const connectionError = new Error(
-                `DeepSeek Harness ${method} request failed: ${error?.message ?? String(error)}`,
-                {cause: error},
-            )
+            const safeMessage = this.publicValue(error?.message ?? String(error))
+            const connectionError = new Error(`DeepSeek Harness ${method} request failed: ${safeMessage}`)
             connectionError.code = "HOST_CONNECTION_FAILED"
             throw connectionError
         }
@@ -518,9 +534,10 @@ class DeepSeekHarnessClient extends EventEmitter {
             body = await response.json()
         } catch (error) {
             if (controller?.signal.aborted) {
+                const safeCause = new Error(this.publicValue(error?.message ?? String(error)))
                 const connectionError = new Error(
                     `DeepSeek Harness ${method} request failed: request timed out after ${boundedTimeoutMs}ms`,
-                    {cause: error},
+                    {cause: safeCause},
                 )
                 connectionError.code = "HOST_CONNECTION_FAILED"
                 throw connectionError
@@ -531,26 +548,34 @@ class DeepSeekHarnessClient extends EventEmitter {
         }
         if (!response.ok || body?.type !== "server-response" || body.rpcId !== rpcId || !body?.result?.ok) {
             const failure = body?.result?.error ?? {}
-            const error = new Error(failure.message ?? `DeepSeek Harness ${method} failed (${response.status})`)
-            error.code = failure.code ?? `HTTP_${response.status}`
-            error.details = failure.details ?? null
+            const safeFailure = this.publicValue(failure)
+            const error = new Error(safeFailure.message ?? `DeepSeek Harness ${method} failed (${response.status})`)
+            error.code = safeFailure.code ?? `HTTP_${response.status}`
+            error.details = safeFailure.details ?? null
             this.recordTrace("inbound", {method, rpcId, error: failure})
             throw error
         }
         if (method !== "session.history") {
             this.recordTrace("inbound", {method, rpcId, result: body.result.value})
         }
-        return body.result.value
+        return this.publicValue(body.result.value)
     }
 
     async respond(message) {
         if (!this.baseUrl) throw new Error("DeepSeek Harness Host is not running")
         this.recordTrace("outbound", {method: "respond", rpcId: message.rpcId, params: message})
-        const response = await this.fetchImpl(`${this.baseUrl}/api/respond`, {
-            method: "POST",
-            headers: {"content-type": "application/json", accept: "application/json"},
-            body: JSON.stringify(message),
-        })
+        let response
+        try {
+            response = await this.fetchImpl(`${this.baseUrl}/api/respond`, {
+                method: "POST",
+                headers: {"content-type": "application/json", accept: "application/json"},
+                body: JSON.stringify(message),
+            })
+        } catch (error) {
+            throw new Error(`DeepSeek Harness respond failed: ${this.publicValue(
+                error?.message ?? String(error),
+            )}`)
+        }
         let receipt
         try {
             receipt = await response.json()
@@ -569,7 +594,7 @@ class DeepSeekHarnessClient extends EventEmitter {
             rpcId: message.rpcId,
             result: receipt,
         })
-        return receipt
+        return this.publicValue(receipt)
     }
 
     muxUrl() {
@@ -761,7 +786,7 @@ class DeepSeekHarnessClient extends EventEmitter {
             ]
             let selected = "rejected"
             if (!this.nonInteractive && typeof this.requestPermission === "function") {
-                selected = await this.requestPermission({
+                selected = await this.requestPermission(this.publicValue({
                     processEpoch: token.epoch,
                     rpcId: token.rpcId,
                     options,
@@ -775,7 +800,7 @@ class DeepSeekHarnessClient extends EventEmitter {
                             rawInput: payload.reason ?? "",
                         },
                     },
-                }).catch(() => "rejected")
+                })).catch(() => "rejected")
             }
             const outcome = selected === "allowed-once" ? "allowed-once" : "rejected"
             message = {
@@ -793,11 +818,14 @@ class DeepSeekHarnessClient extends EventEmitter {
         } else {
             let answer = null
             if (!this.nonInteractive && typeof this.requestQuestion === "function") {
-                answer = await this.requestQuestion({
+                const publicRequest = this.publicValue({
                     processEpoch: token.epoch,
                     rpcId: token.rpcId,
                     sessionId: payload.sessionId,
                     questions: payload.questions,
+                })
+                answer = await this.requestQuestion({
+                    ...publicRequest,
                     signal: token.controller.signal,
                 }).catch(() => null)
             }
@@ -1000,7 +1028,7 @@ class DeepSeekHarnessClient extends EventEmitter {
         ])
         const thread = threadFromHistory({summary, entries, workspaceRoot: this.workspaceRoot})
         this.recordTrace("inbound", {method: "thread/read", result: {thread}})
-        return {thread}
+        return this.publicValue({thread})
     }
 
     async ensureCatalogSession() {
@@ -1187,9 +1215,10 @@ class DeepSeekHarnessClient extends EventEmitter {
     }
 
     emitNotification(method, params) {
-        const message = {method, params}
+        const safeParams = this.publicValue(params)
+        const message = {method, params: safeParams}
         this.emit("notification", message)
-        if (method !== "error" || this.listenerCount("error") > 0) this.emit(method, params)
+        if (method !== "error" || this.listenerCount("error") > 0) this.emit(method, safeParams)
     }
 
     recordHistoryEvents(sessionId, entries) {

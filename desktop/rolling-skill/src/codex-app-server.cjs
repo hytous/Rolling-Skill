@@ -10,6 +10,7 @@ const {evaluationTurnError} = require("./evaluation-turn-error.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
 const {
     mergeOperatorChildEnvironment,
+    OperatorStreamRedactor,
     redactOperatorSecrets,
     sanitizeOperatorChildEnvironment,
 } = require("./operator/operator-tool-transport.cjs")
@@ -63,6 +64,7 @@ class CodexAppServerClient extends EventEmitter {
         requestTool = null,
         childEnvironment = {},
         spawnProcess = spawn,
+        shutdownTimeoutMs = 2_000,
     }) {
         super()
         this.binaryPath = binaryPath
@@ -78,7 +80,10 @@ class CodexAppServerClient extends EventEmitter {
         this.requestQuestion = requestQuestion
         this.requestTool = requestTool
         this.childEnvironment = sanitizeOperatorChildEnvironment(childEnvironment)
+        this.shutdownTimeoutMs = Math.max(1, Number(shutdownTimeoutMs) || 2_000)
         this.dynamicToolThreads = new Map()
+        this.dynamicToolTurnStates = new Map()
+        this.stderrRedactor = null
         this.child = null
         this.tracker = new RpcRequestTracker()
         this.recorder = null
@@ -100,6 +105,22 @@ class CodexAppServerClient extends EventEmitter {
 
     emitRuntimeLog(message) {
         this.emit("runtimeLog", redactOperatorSecrets(String(message), this.childEnvironment))
+    }
+
+    emitStderr(output) {
+        for (const value of output) {
+            const text = value.trim()
+            if (!text) continue
+            this.recorder?.record("stderr", {text})
+            this.emitRuntimeLog(text)
+        }
+    }
+
+    flushStderr() {
+        if (!this.stderrRedactor) return
+        const redactor = this.stderrRedactor
+        this.stderrRedactor = null
+        this.emitStderr(redactor.end())
     }
 
     async start() {
@@ -140,6 +161,7 @@ class CodexAppServerClient extends EventEmitter {
             shell: false,
             stdio: ["pipe", "pipe", "pipe"],
         })
+        this.stderrRedactor = new OperatorStreamRedactor(this.childEnvironment)
         this.emit("state", this.state())
 
         const decoder = new JsonLineDecoder(
@@ -155,13 +177,7 @@ class CodexAppServerClient extends EventEmitter {
         )
         this.child.stdout.on("data", (chunk) => decoder.push(chunk))
         this.child.stderr.on("data", (chunk) => {
-            const text = redactOperatorSecrets(
-                chunk.toString("utf8").trim(),
-                this.childEnvironment,
-            )
-            if (!text) return
-            this.recorder.record("stderr", {text})
-            this.emitRuntimeLog(text)
+            this.emitStderr(this.stderrRedactor?.push(chunk) ?? [])
         })
         this.child.once("error", (error) => this.handleExit(error))
         this.child.once("close", (code, signal) => {
@@ -188,9 +204,11 @@ class CodexAppServerClient extends EventEmitter {
 
     handleExit(error) {
         if (!this.child) return
+        this.flushStderr()
         this.child = null
         this.ready = false
         this.dynamicToolThreads.clear()
+        this.dynamicToolTurnStates.clear()
         this.tracker.rejectAll(error)
         const message = redactOperatorSecrets(error.message, this.childEnvironment)
         this.emit("state", {...this.state(), error: this.stopping ? null : message})
@@ -217,6 +235,19 @@ class CodexAppServerClient extends EventEmitter {
         }
         if (this.tracker.settle(safeMessage)) return
         if (safeMessage?.method) {
+            if (safeMessage.method === "turn/started") {
+                const threadId = safeMessage.params?.threadId
+                const turnId = safeMessage.params?.turn?.id
+                if (typeof threadId === "string" && typeof turnId === "string") {
+                    this.dynamicToolTurnStates.set(threadId, {turnId, active: true})
+                }
+            } else if (safeMessage.method === "turn/completed") {
+                const threadId = safeMessage.params?.threadId
+                const turnId = safeMessage.params?.turn?.id
+                if (typeof threadId === "string" && typeof turnId === "string") {
+                    this.dynamicToolTurnStates.set(threadId, {turnId, active: false})
+                }
+            }
             this.emit("notification", safeMessage)
             this.emit(safeMessage.method, safeMessage.params)
         }
@@ -262,9 +293,15 @@ class CodexAppServerClient extends EventEmitter {
         try {
             if (
                 typeof params.threadId !== "string" ||
+                typeof params.turnId !== "string" || params.turnId.trim().length === 0 ||
+                typeof params.callId !== "string" || params.callId.trim().length === 0 ||
                 params.namespace !== DYNAMIC_TOOL_NAMESPACE ||
                 typeof params.tool !== "string"
             ) throw new Error("Operator dynamic Tool is unavailable")
+            const turnState = this.dynamicToolTurnStates.get(params.threadId)
+            if (turnState && (!turnState.active || turnState.turnId !== params.turnId)) {
+                throw new Error("Operator dynamic Tool does not belong to the active turn")
+            }
             const method = this.dynamicToolThreads.get(params.threadId)?.get(params.tool)
             if (!method || typeof this.requestTool !== "function") {
                 throw new Error("Operator dynamic Tool is unavailable")
@@ -508,6 +545,7 @@ class CodexAppServerClient extends EventEmitter {
     }
 
     async resumeThread(threadId, options = {}) {
+        this.dynamicToolTurnStates.delete(threadId)
         const dynamicTools = Object.hasOwn(options, "dynamicTools")
             ? JSON.parse(JSON.stringify(options.dynamicTools))
             : null
@@ -523,11 +561,11 @@ class CodexAppServerClient extends EventEmitter {
         return response
     }
 
-    startTurn(threadId, text, options = {}) {
+    async startTurn(threadId, text, options = {}) {
         const input = Array.isArray(text)
             ? text
             : [{type: "text", text, text_elements: []}]
-        return this.request("turn/start", {
+        const response = await this.request("turn/start", {
             threadId,
             input,
             ...(Object.hasOwn(options, "model") ? {model: options.model ?? null} : {}),
@@ -539,6 +577,17 @@ class CodexAppServerClient extends EventEmitter {
                 ? {sandboxPolicy: turnSandboxPolicy(options.sandbox)}
                 : {}),
         })
+        if (typeof response?.turn?.id === "string" && response.turn.id.length > 0) {
+            const known = this.dynamicToolTurnStates.get(threadId)
+            if (known?.turnId !== response.turn.id || known.active) {
+                const terminal = new Set(["completed", "failed", "interrupted", "cancelled"])
+                this.dynamicToolTurnStates.set(threadId, {
+                    turnId: response.turn.id,
+                    active: !terminal.has(response.turn.status),
+                })
+            }
+        }
+        return response
     }
 
     async runEvaluationCase(input = {}) {
@@ -766,13 +815,14 @@ class CodexAppServerClient extends EventEmitter {
             const timeout = setTimeout(() => {
                 if (!child.killed) child.kill("SIGKILL")
                 resolve()
-            }, 2_000)
+            }, this.shutdownTimeoutMs)
             child.once("close", () => {
                 clearTimeout(timeout)
                 resolve()
             })
             child.kill("SIGTERM")
         })
+        if (this.child === child) this.handleExit(new Error("Codex app-server stopped"))
     }
 }
 

@@ -9,6 +9,7 @@ const {evaluationTurnError} = require("./evaluation-turn-error.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
 const {
     mergeOperatorChildEnvironment,
+    OperatorStreamRedactor,
     redactOperatorSecrets,
     sanitizeOperatorChildEnvironment,
 } = require("./operator/operator-tool-transport.cjs")
@@ -43,6 +44,7 @@ class CodeBuddyAcpClient extends EventEmitter {
         this.spawnProcess = spawnProcess
         this.requestPermission = requestPermission
         this.childEnvironment = sanitizeOperatorChildEnvironment(childEnvironment)
+        this.stderrRedactor = null
         this.child = null
         this.tracker = new RpcRequestTracker()
         this.recorder = null
@@ -71,6 +73,22 @@ class CodeBuddyAcpClient extends EventEmitter {
 
     emitRuntimeLog(message) {
         this.emit("runtimeLog", redactOperatorSecrets(String(message), this.childEnvironment))
+    }
+
+    emitStderr(output) {
+        for (const value of output) {
+            const text = value.trim()
+            if (!text) continue
+            this.recorder?.record("stderr", {text})
+            this.emitRuntimeLog(text)
+        }
+    }
+
+    flushStderr() {
+        if (!this.stderrRedactor) return
+        const redactor = this.stderrRedactor
+        this.stderrRedactor = null
+        this.emitStderr(redactor.end())
     }
 
     async start() {
@@ -106,6 +124,7 @@ class CodeBuddyAcpClient extends EventEmitter {
             },
         )
         this.child = sourceChild
+        this.stderrRedactor = new OperatorStreamRedactor(this.childEnvironment)
         this.emit("state", this.state())
         const decoder = new JsonLineDecoder(
             (message) => this.handleMessage(message, {sourceChild, processEpoch}),
@@ -120,13 +139,7 @@ class CodeBuddyAcpClient extends EventEmitter {
         )
         sourceChild.stdout.on("data", (chunk) => decoder.push(chunk))
         sourceChild.stderr.on("data", (chunk) => {
-            const text = redactOperatorSecrets(
-                chunk.toString("utf8").trim(),
-                this.childEnvironment,
-            )
-            if (!text) return
-            this.recorder.record("stderr", {text})
-            this.emitRuntimeLog(text)
+            this.emitStderr(this.stderrRedactor?.push(chunk) ?? [])
         })
         sourceChild.once("error", (error) => this.handleExit(error, sourceChild, processEpoch))
         sourceChild.once("close", (code, signal) => {
@@ -151,6 +164,7 @@ class CodeBuddyAcpClient extends EventEmitter {
 
     handleExit(error, sourceChild = this.child, processEpoch = this.processEpoch) {
         if (this.child !== sourceChild || this.processEpoch !== processEpoch) return
+        this.flushStderr()
         this.cancelPendingPermissionRequests(null, {write: false})
         this.child = null
         this.ready = false

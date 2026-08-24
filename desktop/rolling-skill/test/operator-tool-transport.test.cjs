@@ -6,7 +6,9 @@ const {afterEach, describe, it} = require("node:test")
 
 const {CONTROL_METHODS} = require("../src/control-plane/contracts.cjs")
 const {
+    MAX_OPERATOR_STREAM_BUFFER_BYTES,
     OPERATOR_ENVIRONMENT_KEYS,
+    OperatorStreamRedactor,
     OperatorToolTransport,
     mergeOperatorChildEnvironment,
     redactOperatorSecrets,
@@ -213,5 +215,31 @@ describe("Operator Tool transport", () => {
         assert.equal(JSON.stringify(redacted).includes("ROLLING_SKILL_CONTROL_SOCKET"), false)
         assert.equal(JSON.stringify(redacted).includes("ROLLING_SKILL_OPERATOR_SESSION"), false)
         assert.match(redacted.log, /\[REDACTED\]/u)
+    })
+
+    it("redacts secrets split across stream chunks and bounds lines without a terminator", () => {
+        const environment = credentials()
+        const token = environment.ROLLING_SKILL_CONTROL_TOKEN
+        const split = Math.floor(token.length / 2)
+        const redactor = new OperatorStreamRedactor(environment)
+        const output = [
+            ...redactor.push(`prefix ${token.slice(0, split)}`),
+            ...redactor.push(`${token.slice(split)} suffix\n`),
+            ...redactor.end(),
+        ].join("")
+
+        assert.equal(output.includes(token), false)
+        assert.match(output, /prefix \[REDACTED\] suffix/u)
+
+        const unterminated = new OperatorStreamRedactor(environment)
+        const boundaryPrefix = "x".repeat(MAX_OPERATOR_STREAM_BUFFER_BYTES)
+        const boundaryOutput = [
+            ...unterminated.push(boundaryPrefix + token.slice(0, split)),
+            ...unterminated.push(token.slice(split)),
+            ...unterminated.end(),
+        ].join("")
+        assert.ok(boundaryOutput.length > 0)
+        assert.equal(boundaryOutput.includes(token), false)
+        assert.match(boundaryOutput, /\[REDACTED\]/u)
     })
 })

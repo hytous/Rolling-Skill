@@ -184,6 +184,153 @@ describe("Codex app-server request construction", () => {
         }
     })
 
+    it("rejects missing and stale dynamic Tool call identities without invoking the callback", async () => {
+        const writes = []
+        const toolRequests = []
+        const dynamicTools = [{
+            type: "namespace",
+            name: "rolling_skill",
+            tools: [{type: "function", name: "context_get", inputSchema: {type: "object"}}],
+        }]
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            requestTool: async (request) => {
+                toolRequests.push(request)
+                return {workspaceRoot: "/workspace", runtimes: []}
+            },
+        })
+        client.request = async (method, params) => {
+            if (method === "thread/start") return {thread: {id: "operator-thread"}}
+            if (method === "turn/start") return {turn: {id: "active-turn", status: "inProgress"}}
+            return {thread: {id: params.threadId}}
+        }
+        client.write = (message) => writes.push(message)
+        await client.startThread({dynamicTools})
+        await client.startTurn("operator-thread", "work")
+
+        const params = {
+            threadId: "operator-thread",
+            turnId: "active-turn",
+            callId: "call-1",
+            namespace: "rolling_skill",
+            tool: "context_get",
+            arguments: {},
+        }
+        client.handleMessage({id: 70, method: "item/tool/call", params: {...params, turnId: ""}})
+        client.handleMessage({id: 71, method: "item/tool/call", params: {...params, callId: ""}})
+        client.handleMessage({id: 72, method: "item/tool/call", params: {...params, turnId: "old-turn"}})
+        client.handleMessage({id: 74, method: "item/tool/call", params: {...params, callId: "   "}})
+        client.handleMessage({
+            method: "turn/completed",
+            params: {threadId: "operator-thread", turn: {id: "active-turn", status: "completed"}},
+        })
+        client.handleMessage({id: 73, method: "item/tool/call", params})
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.equal(toolRequests.length, 0)
+        assert.deepEqual(writes.map((message) => [message.id, message.result.success]), [
+            [70, false],
+            [71, false],
+            [72, false],
+            [74, false],
+            [73, false],
+        ])
+    })
+
+    it("does not reactivate a turn that completed before turn/start returned", async () => {
+        const writes = []
+        let callbackCalls = 0
+        const dynamicTools = [{
+            type: "namespace",
+            name: "rolling_skill",
+            tools: [{type: "function", name: "context_get", inputSchema: {type: "object"}}],
+        }]
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            requestTool: async () => {
+                callbackCalls += 1
+                return {}
+            },
+        })
+        client.request = async (method) => {
+            if (method === "thread/start") return {thread: {id: "operator-thread"}}
+            client.handleMessage({
+                method: "turn/completed",
+                params: {threadId: "operator-thread", turn: {id: "fast-turn", status: "completed"}},
+            })
+            return {turn: {id: "fast-turn", status: "completed"}}
+        }
+        client.write = (message) => writes.push(message)
+
+        await client.startThread({dynamicTools})
+        await client.startTurn("operator-thread", "work")
+        client.handleMessage({
+            id: 75,
+            method: "item/tool/call",
+            params: {
+                threadId: "operator-thread",
+                turnId: "fast-turn",
+                callId: "late-call",
+                namespace: "rolling_skill",
+                tool: "context_get",
+                arguments: {},
+            },
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.equal(callbackCalls, 0)
+        assert.equal(writes[0].result.success, false)
+    })
+
+    it("retains an active-turn notification that races with thread/resume", async () => {
+        const writes = []
+        let callbackCalls = 0
+        const dynamicTools = [{
+            type: "namespace",
+            name: "rolling_skill",
+            tools: [{type: "function", name: "context_get", inputSchema: {type: "object"}}],
+        }]
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory: "/tmp",
+            workspaceRoot: "/tmp/workspace",
+            requestTool: async () => {
+                callbackCalls += 1
+                return {}
+            },
+        })
+        client.request = async () => {
+            client.handleMessage({
+                method: "turn/started",
+                params: {threadId: "resumed-thread", turn: {id: "current-turn", status: "inProgress"}},
+            })
+            return {thread: {id: "resumed-thread"}}
+        }
+        client.write = (message) => writes.push(message)
+
+        await client.resumeThread("resumed-thread", {dynamicTools})
+        client.handleMessage({
+            id: 76,
+            method: "item/tool/call",
+            params: {
+                threadId: "resumed-thread",
+                turnId: "old-turn",
+                callId: "late-call",
+                namespace: "rolling_skill",
+                tool: "context_get",
+                arguments: {},
+            },
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.equal(callbackCalls, 0)
+        assert.equal(writes[0].result.success, false)
+    })
+
     it("routes command approval requests through the injected permission callback", async () => {
         const writes = []
         const requests = []
@@ -372,8 +519,9 @@ describe("Codex app-server request construction", () => {
             await new Promise((resolve) => setImmediate(resolve))
             child.stdout.emit("data", `${JSON.stringify({id: 1, result: {userAgent: "Codex"}})}\n`)
             await started
+            child.stderr.emit("data", Buffer.from("ROLLING_SKILL_CONTROL_TOKEN=codex-oper"))
             child.stderr.emit("data", Buffer.from(
-                `ROLLING_SKILL_CONTROL_TOKEN=codex-operator-token ${childEnvironment.ROLLING_SKILL_CONTROL_SOCKET}`,
+                `ator-token ${childEnvironment.ROLLING_SKILL_CONTROL_SOCKET}\n`,
             ))
             client.handleMessage({
                 id: 90,
@@ -387,6 +535,7 @@ describe("Codex app-server request construction", () => {
             assert.equal(spawnOptions.env.ROLLING_SKILL_OPERATOR_SESSION, "codex-operator-session")
             assert.equal(Object.hasOwn(spawnOptions.env, "SHOULD_NOT_PASS"), false)
             const diagnostic = JSON.stringify({runtimeLogs, trace: client.recentTrace(50), writes})
+            assert.equal(runtimeLogs.join("").includes("codex-operator-token"), false)
             for (const forbidden of [
                 "ROLLING_SKILL_CONTROL_SOCKET",
                 "ROLLING_SKILL_CONTROL_TOKEN",
@@ -397,6 +546,53 @@ describe("Codex app-server request construction", () => {
             ]) assert.equal(diagnostic.includes(forbidden), false, forbidden)
         } finally {
             await client.stop()
+            rmSync(traceDirectory, {recursive: true, force: true})
+        }
+    })
+
+    it("flushes an unterminated redacted stderr line when forced stop receives no close", async () => {
+        const runtimeLogs = []
+        const token = "codex-stop-flush-token"
+        class HangingChild extends EventEmitter {
+            constructor() {
+                super()
+                this.stdout = new EventEmitter()
+                this.stderr = new EventEmitter()
+                this.stdin = {writable: true, write: () => {}}
+                this.killed = false
+            }
+            kill() {
+                this.killed = true
+            }
+        }
+        const child = new HangingChild()
+        const traceDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-codex-stop-flush-"))
+        const client = new CodexAppServerClient({
+            binaryPath: "/tmp/codex",
+            traceDirectory,
+            workspaceRoot: "/tmp/workspace",
+            shutdownTimeoutMs: 5,
+            childEnvironment: {
+                ROLLING_SKILL_CONTROL_SOCKET: "/private/stop-flush.sock",
+                ROLLING_SKILL_CONTROL_TOKEN: token,
+                ROLLING_SKILL_OPERATOR_SESSION: "stop-flush-session",
+            },
+            spawnProcess: () => child,
+        })
+        client.on("runtimeLog", (message) => runtimeLogs.push(message))
+
+        try {
+            const started = client.start()
+            await new Promise((resolve) => setImmediate(resolve))
+            child.stdout.emit("data", `${JSON.stringify({id: 1, result: {userAgent: "Codex"}})}\n`)
+            await started
+            child.stderr.emit("data", Buffer.from(`unterminated ${token}`))
+            await client.stop()
+
+            assert.equal(client.state().status, "stopped")
+            assert.equal(runtimeLogs.join("").includes(token), false)
+            assert.match(runtimeLogs.join(""), /unterminated \[REDACTED\]/u)
+        } finally {
             rmSync(traceDirectory, {recursive: true, force: true})
         }
     })

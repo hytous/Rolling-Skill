@@ -221,8 +221,9 @@ describe("CodeBuddy ACP client", () => {
                 sessionId: "operator-session",
             }})}\n`)
             await thread
+            child.stderr.emit("data", Buffer.from("ROLLING_SKILL_OPERATOR_SESSION=codebuddy-oper"))
             child.stderr.emit("data", Buffer.from(
-                `ROLLING_SKILL_OPERATOR_SESSION=codebuddy-operator-session ${childEnvironment.ROLLING_SKILL_CONTROL_TOKEN}`,
+                `ator-session ${childEnvironment.ROLLING_SKILL_CONTROL_TOKEN}\n`,
             ))
             client.handleMessage({
                 jsonrpc: "2.0",
@@ -241,6 +242,7 @@ describe("CodeBuddy ACP client", () => {
             assert.equal(Object.hasOwn(spawnOptions.env, "SHOULD_NOT_PASS"), false)
             assert.deepEqual(writes.find((entry) => entry.method === "session/new").params.mcpServers, mcpServers)
             const diagnostic = JSON.stringify({runtimeLogs, trace: client.recentTrace(100)})
+            assert.equal(runtimeLogs.join("").includes("codebuddy-operator-session"), false)
             for (const forbidden of [
                 "ROLLING_SKILL_CONTROL_SOCKET",
                 "ROLLING_SKILL_CONTROL_TOKEN",

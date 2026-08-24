@@ -1,6 +1,7 @@
 const {constants, lstatSync, realpathSync} = require("node:fs")
 const {accessSync} = require("node:fs")
 const {isAbsolute} = require("node:path")
+const {StringDecoder} = require("node:string_decoder")
 const {z} = require("zod")
 
 const {
@@ -15,6 +16,7 @@ const OPERATOR_ENVIRONMENT_KEYS = Object.freeze([
 ])
 const OPERATOR_ENVIRONMENT_KEY_SET = new Set(OPERATOR_ENVIRONMENT_KEYS)
 const MAX_OPERATOR_ENVIRONMENT_VALUE_LENGTH = 8_192
+const MAX_OPERATOR_STREAM_BUFFER_BYTES = 64 * 1_024
 const REDACTED = "[REDACTED]"
 
 function plainObject(value) {
@@ -36,13 +38,20 @@ function sanitizeOperatorChildEnvironment(environment = {}) {
         const value = descriptor.value
         if (
             typeof value !== "string" || value.length === 0 ||
-            value.length > MAX_OPERATOR_ENVIRONMENT_VALUE_LENGTH || value.includes("\0")
+            value.length > MAX_OPERATOR_ENVIRONMENT_VALUE_LENGTH || /[\0\r\n]/u.test(value)
         ) {
             throw new TypeError("Operator child environment value is invalid")
         }
         sanitized[name] = value
     }
     return sanitized
+}
+
+function operatorSecretPatterns(childEnvironment = {}) {
+    return [...new Set([
+        ...OPERATOR_ENVIRONMENT_KEYS,
+        ...Object.values(sanitizeOperatorChildEnvironment(childEnvironment)).filter(Boolean),
+    ])].sort((left, right) => right.length - left.length)
 }
 
 function mergeOperatorChildEnvironment(inherited = {}, childEnvironment = {}) {
@@ -57,11 +66,7 @@ function mergeOperatorChildEnvironment(inherited = {}, childEnvironment = {}) {
 }
 
 function redactOperatorSecrets(value, childEnvironment = {}) {
-    const secrets = [
-        ...OPERATOR_ENVIRONMENT_KEYS,
-        ...Object.values(sanitizeOperatorChildEnvironment(childEnvironment)).filter(Boolean),
-    ]
-        .sort((left, right) => right.length - left.length)
+    const secrets = operatorSecretPatterns(childEnvironment)
     if (secrets.length === 0) return value
     const redactText = (text) => {
         let result = text
@@ -82,6 +87,80 @@ function redactOperatorSecrets(value, childEnvironment = {}) {
         return output
     }
     return visit(value)
+}
+
+class OperatorStreamRedactor {
+    #decoder = new StringDecoder("utf8")
+    #ended = false
+    #pending = ""
+    #patterns
+    #overlap
+
+    constructor(childEnvironment = {}) {
+        this.#patterns = operatorSecretPatterns(childEnvironment)
+        this.#overlap = Math.max(0, ...this.#patterns.map((pattern) => pattern.length - 1))
+    }
+
+    #nextMatch(limit) {
+        let selected = null
+        for (const pattern of this.#patterns) {
+            const index = this.#pending.indexOf(pattern)
+            if (index < 0 || index >= limit) continue
+            if (
+                selected === null || index < selected.index ||
+                (index === selected.index && pattern.length > selected.pattern.length)
+            ) selected = {index, pattern}
+        }
+        return selected
+    }
+
+    #drain(limit) {
+        if (limit <= 0) return []
+        let output = ""
+        while (limit > 0) {
+            const match = this.#nextMatch(limit)
+            if (!match) {
+                output += this.#pending.slice(0, limit)
+                this.#pending = this.#pending.slice(limit)
+                break
+            }
+            output += this.#pending.slice(0, match.index) + REDACTED
+            const matchEnd = match.index + match.pattern.length
+            limit -= matchEnd
+            this.#pending = this.#pending.slice(matchEnd)
+        }
+        return output ? [output] : []
+    }
+
+    #drainAvailable({flush = false} = {}) {
+        const output = []
+        let newline = this.#pending.indexOf("\n")
+        while (newline >= 0) {
+            output.push(...this.#drain(newline + 1))
+            newline = this.#pending.indexOf("\n")
+        }
+        if (flush) {
+            output.push(...this.#drain(this.#pending.length))
+        } else if (Buffer.byteLength(this.#pending, "utf8") > MAX_OPERATOR_STREAM_BUFFER_BYTES) {
+            output.push(...this.#drain(Math.max(0, this.#pending.length - this.#overlap)))
+        }
+        return output
+    }
+
+    push(chunk) {
+        if (this.#ended) throw new Error("Operator stream redactor is closed")
+        this.#pending += this.#decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)))
+        return this.#drainAvailable()
+    }
+
+    end(chunk) {
+        if (this.#ended) return []
+        this.#ended = true
+        this.#pending += chunk === undefined
+            ? this.#decoder.end()
+            : this.#decoder.end(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)))
+        return this.#drainAvailable({flush: true})
+    }
 }
 
 function executablePath(value) {
@@ -204,7 +283,9 @@ class OperatorToolTransport {
 
 module.exports = {
     MAX_OPERATOR_ENVIRONMENT_VALUE_LENGTH,
+    MAX_OPERATOR_STREAM_BUFFER_BYTES,
     OPERATOR_ENVIRONMENT_KEYS,
+    OperatorStreamRedactor,
     OperatorToolTransport,
     codexDynamicTools,
     mergeOperatorChildEnvironment,
