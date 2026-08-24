@@ -8375,7 +8375,7 @@ async function bootstrap() {
                 onSelectEntity: selectOperatorEntity,
             })
             operatorWorkbench.setCatalogs(operatorCatalogSnapshot())
-            await operatorWorkbench.initialize(initial.operator ?? null)
+            await operatorWorkbench.initialize()
         }
         if (!elements.rawCaseSkill.value) elements.rawCaseSkill.value = suggestedRawCaseSkill()
         restoreActiveThreadView()

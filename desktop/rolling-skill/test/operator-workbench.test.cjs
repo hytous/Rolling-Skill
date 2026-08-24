@@ -7,6 +7,9 @@ const {
     artifactDeepLinks,
     buildOperatorSessionRequest,
     createKeyedTranscriptPatcher,
+    createOperatorInitializationGate,
+    createOperatorMessageSender,
+    createOperatorSurfaceGate,
     createOperatorWorkbenchState,
     transcriptEntryKey,
 } = require("../renderer/operator-workbench.js")
@@ -534,6 +537,36 @@ describe("Operator workbench state", () => {
         assert.deepEqual(state.listSnapshots().map(({job}) => job.id).sort(), ["job-1", "job-2"])
     })
 
+    it("retries the real OPERATOR_SNAPSHOT_CHANGED preload error from page one within bounds", async () => {
+        for (const makeError of [
+            () => Object.assign(new Error("snapshot changed"), {code: "OPERATOR_SNAPSHOT_CHANGED"}),
+            () => new Error("Error invoking remote method: OPERATOR_SNAPSHOT_CHANGED"),
+            () => Object.assign(new Error("Error invoking remote method 'operator:summary-page'"), {
+                cause: {code: "OPERATOR_SNAPSHOT_CHANGED"},
+            }),
+        ]) {
+            const cursors = []
+            let stale = true
+            const state = createOperatorWorkbenchState({
+                async readSummaryPage(cursor) {
+                    cursors.push(cursor)
+                    if (cursor === null && stale) return summary({nextCursor: "page-2", truncated: true})
+                    if (cursor === "page-2") {
+                        stale = false
+                        throw makeError()
+                    }
+                    return summary({revision: 2})
+                },
+            })
+            state.initialize(summary())
+
+            await state.catchUp()
+
+            assert.deepEqual(cursors, [null, "page-2", null])
+            assert.equal(state.revision, 2)
+        }
+    })
+
     it("recovers missed active transcript and artifacts after a gap and invalidates prior artifact paging", async () => {
         let detailVersion = 1
         let artifactVersion = 1
@@ -846,6 +879,182 @@ describe("Operator workbench state", () => {
 
         assert.deepEqual(state.getViewState("job-1"), {draft: "first", scrollTop: 144})
         assert.deepEqual(state.getViewState("job-2"), {draft: "second", scrollTop: 9})
+    })
+
+    it("keeps a late A activation in A cache without selecting or rendering over B", async () => {
+        let releaseA
+        let startedA
+        const gateA = new Promise((resolve) => { releaseA = resolve })
+        const enteredA = new Promise((resolve) => { startedA = resolve })
+        const state = createOperatorWorkbenchState({
+            async readOperatorSession(sessionId) {
+                if (sessionId === "session-1") {
+                    startedA()
+                    await gateA
+                }
+                const jobId = sessionId === "session-1" ? "job-1" : "job-2"
+                return {
+                    session: {id: sessionId, transcript: [event(`event-${jobId}`, sessionId, jobId)]},
+                    parentJob: {...summary().jobs[0], id: jobId, sessionId},
+                }
+            },
+            async readArtifactPage() {
+                return {artifacts: [], nextCursor: null}
+            },
+        })
+        state.initialize(summary({
+            sessions: [{id: "session-1"}, {id: "session-2"}],
+            jobs: [
+                summary().jobs[0],
+                {...summary().jobs[0], id: "job-2", sessionId: "session-2"},
+            ],
+        }))
+        state.setVisible(true)
+
+        const activationA = state.activateSession("session-1")
+        await enteredA
+        const selectedB = await state.activateSession("session-2")
+        releaseA()
+        const staleA = await activationA
+
+        assert.equal(selectedB.job.id, "job-2")
+        assert.equal(staleA, null)
+        assert.equal(state.activeJobId, "job-2")
+        assert.equal(state.getSnapshot("job-1").transcript.length, 1)
+    })
+})
+
+describe("Operator workbench coordination", () => {
+    it("subscribes before bootstrap, flushes the initialization window, and cleans up on destroy", async () => {
+        let releaseBootstrap
+        const bootstrapGate = new Promise((resolve) => { releaseBootstrap = resolve })
+        const listeners = new Map()
+        let catchUps = 0
+        let renders = 0
+        const state = createOperatorWorkbenchState()
+        const lifecycle = createOperatorInitializationGate({
+            subscribe(kind, listener) {
+                listeners.set(kind, listener)
+                return () => listeners.delete(kind)
+            },
+            bootstrap: () => bootstrapGate,
+            applyBootstrap(page) {
+                state.initialize(page)
+                renders += 1
+            },
+            hydrate: async () => {},
+            ingest: (kind, envelope) => state.ingest(kind, envelope),
+            catchUp: async () => { catchUps += 1 },
+        })
+
+        const initializing = lifecycle.initialize()
+        assert.deepEqual([...listeners.keys()], ["changed", "event", "approval", "artifact"])
+        listeners.get("changed")({
+            generation: "generation-a-0123456789abcdef",
+            revision: 2,
+            job: {...summary().jobs[0], status: "paused"},
+        })
+        releaseBootstrap(summary())
+        await initializing
+
+        assert.equal(state.getSnapshot("job-1").job.status, "paused")
+        assert.equal(catchUps, 1)
+        assert.equal(renders, 1)
+
+        let releaseDestroyedBootstrap
+        const destroyedBootstrap = new Promise((resolve) => { releaseDestroyedBootstrap = resolve })
+        const destroyedListeners = new Map()
+        let destroyedDomWrites = 0
+        const destroyed = createOperatorInitializationGate({
+            subscribe(kind, listener) {
+                destroyedListeners.set(kind, listener)
+                return () => destroyedListeners.delete(kind)
+            },
+            bootstrap: () => destroyedBootstrap,
+            applyBootstrap() { destroyedDomWrites += 1 },
+            hydrate: async () => { destroyedDomWrites += 1 },
+            ingest: async () => { destroyedDomWrites += 1 },
+            catchUp: async () => { destroyedDomWrites += 1 },
+        })
+        const abandoned = destroyed.initialize()
+        destroyed.destroy()
+        releaseDestroyedBootstrap(summary())
+        await abandoned
+        assert.equal(destroyedListeners.size, 0)
+        assert.equal(destroyedDomWrites, 0)
+    })
+
+    it("freezes the sending Job and restores or clears only that Job draft", async () => {
+        const state = createOperatorWorkbenchState()
+        state.initialize(summary({
+            sessions: [{id: "session-1"}, {id: "session-2"}],
+            jobs: [
+                summary().jobs[0],
+                {...summary().jobs[0], id: "job-2", sessionId: "session-2"},
+            ],
+        }))
+        state.setViewState("job-1", {draft: "send A"})
+        state.setViewState("job-2", {draft: "draft B"})
+        const pending = []
+        const sender = createOperatorMessageSender({
+            state,
+            send(sessionId, text, sendId) {
+                return new Promise((resolve, reject) => pending.push({sessionId, text, sendId, resolve, reject}))
+            },
+        })
+
+        const sent = sender.send({jobId: "job-1", sessionId: "session-1", text: "send A"})
+        assert.match(pending[0].sendId, /^operator-send-/u)
+        state.setVisible(true)
+        await state.activateSession("session-2")
+        pending[0].resolve({queued: true})
+        await sent
+        assert.deepEqual(state.getViewState("job-1"), {draft: "", scrollTop: 0})
+        assert.equal(state.getViewState("job-2").draft, "draft B")
+
+        state.setViewState("job-1", {draft: "retry A"})
+        const failed = sender.send({jobId: "job-1", sessionId: "session-1", text: "retry A"})
+        pending[1].reject(new Error("send failed"))
+        await assert.rejects(failed, /send failed/)
+        assert.equal(state.getViewState("job-1").draft, "retry A")
+        assert.equal(state.getViewState("job-2").draft, "draft B")
+    })
+
+    it("makes repeated visibility and structural catalog updates DOM-idempotent", async () => {
+        let rootHidden = false
+        let reads = 0
+        let rebuilds = 0
+        let domIdentity = {}
+        const gate = createOperatorSurfaceGate({
+            initialVisible: true,
+            setStateVisible() {},
+            setRootHidden(hidden) { rootHidden = hidden },
+            recover: async () => { reads += 1 },
+            applyCatalogs() {
+                rebuilds += 1
+                domIdentity = {}
+            },
+            render() {},
+        })
+        const catalog = {runtimes: [{runtimeId: "runtime-1"}], skills: [], datasets: []}
+        gate.setCatalogs(catalog)
+        const initialIdentity = domIdentity
+        gate.setCatalogs(structuredClone(catalog))
+        await gate.setVisible(true)
+        assert.equal(rootHidden, false)
+        assert.equal(reads, 0)
+        assert.equal(rebuilds, 1)
+        assert.equal(domIdentity, initialIdentity)
+
+        await gate.setVisible(false)
+        gate.setCatalogs({...catalog, datasets: [{id: "dataset-1"}]})
+        gate.setCatalogs({...catalog, datasets: [{id: "dataset-1"}]})
+        assert.equal(rebuilds, 1)
+        await gate.setVisible(false)
+        await gate.setVisible(true)
+        assert.equal(rootHidden, false)
+        assert.equal(reads, 1)
+        assert.equal(rebuilds, 2)
     })
 })
 

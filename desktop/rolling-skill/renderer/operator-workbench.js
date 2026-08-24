@@ -183,6 +183,9 @@
         let entityRevisions = new Map()
         let catchUpPromise = null
         let patchTimer = null
+        let destroyed = false
+        let operationEpoch = 0
+        let selectionEpoch = 0
         const dirtyEntries = new Map()
         const detailCatchUps = new Map()
         const staleGenerations = new Set()
@@ -269,6 +272,7 @@
         }
 
         function initialize(page) {
+            if (destroyed) return
             generation = typeof page?.generation === "string" ? page.generation : null
             revision = Number.isSafeInteger(page?.revision) ? page.revision : 0
             replacePages([page ?? {}], {preserve: false})
@@ -347,13 +351,13 @@
         }
 
         function scheduleActivePatch(entry, snapshot) {
-            if (!entry || !visible || snapshot?.job?.id !== activeJobId) return
+            if (destroyed || !entry || !visible || snapshot?.job?.id !== activeJobId) return
             dirtyEntries.set(transcriptEntryKey(entry), {...entry})
             if (patchTimer !== null) return
             const scheduledJobId = activeJobId
             patchTimer = schedule(() => {
                 patchTimer = null
-                if (!visible || activeJobId !== scheduledJobId) {
+                if (destroyed || !visible || activeJobId !== scheduledJobId) {
                     dirtyEntries.clear()
                     return
                 }
@@ -368,10 +372,20 @@
         }
 
         function staleCursor(error) {
-            return error?.code === "STALE_CURSOR" || /stale[^\n]*cursor|cursor[^\n]*stale/iu.test(error?.message ?? "")
+            let current = error
+            for (let depth = 0; depth < 4 && current !== null && current !== undefined; depth += 1) {
+                const code = typeof current === "object" ? current.code : null
+                const message = typeof current === "string" ? current : current?.message
+                if (code === "OPERATOR_SNAPSHOT_CHANGED" || code === "STALE_CURSOR") return true
+                if (/OPERATOR_SNAPSHOT_CHANGED|stale[^\n]*cursor|cursor[^\n]*stale/iu.test(message ?? "")) {
+                    return true
+                }
+                current = typeof current === "object" ? current.cause : null
+            }
+            return false
         }
 
-        async function readAllSummaryPages() {
+        async function readAllSummaryPages(epoch) {
             if (typeof readSummaryPage !== "function") {
                 throw new Error("Operator summary reader is unavailable")
             }
@@ -383,7 +397,9 @@
                 let expectedRevision = null
                 try {
                     for (let pageIndex = 0; pageIndex < MAX_SUMMARY_PAGES; pageIndex += 1) {
+                        if (destroyed || epoch !== operationEpoch) return null
                         const page = await readSummaryPage(cursor, SUMMARY_PAGE_LIMIT)
+                        if (destroyed || epoch !== operationEpoch) return null
                         if (pageIndex === 0) {
                             expectedGeneration = page?.generation ?? null
                             expectedRevision = page?.revision ?? 0
@@ -413,14 +429,16 @@
             throw new Error("Operator summary catch-up failed")
         }
 
-        async function readAllArtifactPages(snapshot) {
+        async function readAllArtifactPages(snapshot, epoch) {
             if (typeof readArtifactPage !== "function") return snapshot.artifacts
             const artifacts = new Map()
             for (const job of [...snapshot.jobs.values()].slice(0, SUMMARY_PAGE_LIMIT)) {
                 const seenCursors = new Set()
                 let cursor = null
                 for (let pageIndex = 0; pageIndex < MAX_SUMMARY_PAGES; pageIndex += 1) {
+                    if (destroyed || epoch !== operationEpoch) return null
                     const page = await readArtifactPage(job.id, cursor, SUMMARY_PAGE_LIMIT)
+                    if (destroyed || epoch !== operationEpoch) return null
                     for (const artifact of page?.artifacts ?? []) {
                         if (artifact?.id) artifacts.set(recordId(artifact, "artifact"), artifact)
                     }
@@ -441,6 +459,7 @@
         }
 
         async function recoverDetail(jobId, {reason = "activation", notifyReset = true} = {}) {
+            if (destroyed) return null
             const initial = snapshots.get(jobId)
             if (!initial || !initial.needsDetailCatchUp) return getSnapshot(jobId)
             if (detailCatchUps.has(jobId)) {
@@ -462,11 +481,18 @@
             const transcriptBaseline = new Map(initial.transcript)
             const eventBaseline = new Map(initial.events)
             const artifactBaseline = new Map(initial.artifacts)
+            const recoveryEpoch = operationEpoch
             const request = (async () => {
                 if (!sessionId) return getSnapshot(jobId)
                 const detail = await readOperatorSession(sessionId)
                 const current = snapshots.get(jobId)
-                if (!current || current !== initial || generation !== recoveryGeneration) {
+                if (
+                    destroyed ||
+                    recoveryEpoch !== operationEpoch ||
+                    !current ||
+                    current !== initial ||
+                    generation !== recoveryGeneration
+                ) {
                     return getSnapshot(jobId)
                 }
 
@@ -498,8 +524,14 @@
                         }
                     }
                 }
-                const artifacts = await readAllArtifactPages(current)
-                if (snapshots.get(jobId) !== current || generation !== recoveryGeneration) {
+                const artifacts = await readAllArtifactPages(current, recoveryEpoch)
+                if (
+                    destroyed ||
+                    artifacts === null ||
+                    recoveryEpoch !== operationEpoch ||
+                    snapshots.get(jobId) !== current ||
+                    generation !== recoveryGeneration
+                ) {
                     return getSnapshot(jobId)
                 }
                 for (const [key, artifact] of current.artifacts) {
@@ -523,9 +555,12 @@
         }
 
         async function catchUp() {
+            if (destroyed) return
             if (catchUpPromise) return catchUpPromise
+            const epoch = operationEpoch
             catchUpPromise = (async () => {
-                const pages = await readAllSummaryPages()
+                const pages = await readAllSummaryPages(epoch)
+                if (destroyed || epoch !== operationEpoch || pages === null) return
                 const first = pages[0] ?? {}
                 replacePages(pages)
                 generation = typeof first.generation === "string" ? first.generation : null
@@ -547,6 +582,7 @@
         }
 
         async function ingest(kind, envelope = {}) {
+            if (destroyed) return
             const incomingGeneration = typeof envelope.generation === "string"
                 ? envelope.generation
                 : generation
@@ -560,6 +596,7 @@
                 ) || incomingRevision > revision + 1
                 if (!needsCatchUp) break
                 await catchUp()
+                if (destroyed) return
             }
 
             if (incomingGeneration !== generation) {
@@ -583,11 +620,17 @@
         }
 
         function setVisible(nextVisible) {
-            visible = nextVisible === true
+            if (destroyed) return false
+            const next = nextVisible === true
+            if (visible === next) return false
+            visible = next
             if (!visible) cancelActivePatch()
+            return true
         }
 
         async function activateSession(sessionId) {
+            if (destroyed) return null
+            const selectedEpoch = ++selectionEpoch
             cancelActivePatch()
             activeSessionId = sessionId ?? null
             const root = activeSessionId ? rootForSession(activeSessionId) : null
@@ -595,6 +638,7 @@
             if (activeJobId && visible) {
                 const jobId = activeJobId
                 await recoverDetail(jobId, {reason: "activation", notifyReset: false})
+                if (destroyed || selectedEpoch !== selectionEpoch) return null
                 const snapshot = snapshots.get(jobId)
                 if (
                     visible &&
@@ -606,13 +650,15 @@
                     )
                 ) snapshot.unread = emptyUnread()
             }
+            if (destroyed || selectedEpoch !== selectionEpoch) return null
             return activeJobId ? getSnapshot(activeJobId) : null
         }
 
         async function ensureActiveCaughtUp() {
-            if (!visible || !activeJobId) return activeJobId ? getSnapshot(activeJobId) : null
+            if (destroyed || !visible || !activeJobId) return activeJobId ? getSnapshot(activeJobId) : null
             const jobId = activeJobId
             await recoverDetail(jobId, {reason: "activation", notifyReset: false})
+            if (destroyed || activeJobId !== jobId) return null
             const snapshot = snapshots.get(jobId)
             if (
                 visible &&
@@ -650,6 +696,7 @@
         }
 
         function setViewState(jobId, next = {}) {
+            if (destroyed) return
             const snapshot = snapshots.get(jobId)
             if (!snapshot) return
             if (Object.hasOwn(next, "draft")) snapshot.view.draft = String(next.draft ?? "")
@@ -665,6 +712,10 @@
         }
 
         function destroy() {
+            if (destroyed) return
+            destroyed = true
+            operationEpoch += 1
+            selectionEpoch += 1
             cancelActivePatch()
         }
 
@@ -684,6 +735,217 @@
             get activeSessionId() { return activeSessionId },
             get generation() { return generation },
             get revision() { return revision },
+        }
+    }
+
+    function createOperatorInitializationGate(options = {}) {
+        const kinds = ["changed", "event", "approval", "artifact"]
+        const subscribe = options.subscribe ?? (() => () => {})
+        const bootstrap = options.bootstrap ?? (async () => ({}))
+        const applyBootstrap = options.applyBootstrap ?? (() => {})
+        const hydrate = options.hydrate ?? (async () => {})
+        const ingest = options.ingest ?? (async () => {})
+        const catchUp = options.catchUp ?? (async () => {})
+        const afterCatchUp = options.afterCatchUp ?? (async () => {})
+        const onReady = options.onReady ?? (() => {})
+        const onError = options.onError ?? (() => {})
+        const unsubscribers = []
+        const buffered = []
+        let destroyed = false
+        let ready = false
+        let epoch = 0
+        let initializePromise = null
+        let liveTail = Promise.resolve()
+
+        function current(expectedEpoch) {
+            return !destroyed && expectedEpoch === epoch
+        }
+
+        function queueLive(kind, payload, expectedEpoch) {
+            liveTail = liveTail.then(async () => {
+                if (current(expectedEpoch)) await ingest(kind, payload)
+            }).catch((error) => {
+                if (current(expectedEpoch)) onError(error)
+            })
+        }
+
+        function initialize(initial) {
+            if (destroyed) return Promise.resolve()
+            if (initializePromise) return initializePromise
+            const expectedEpoch = epoch
+            for (const kind of kinds) {
+                const unsubscribe = subscribe(kind, (payload) => {
+                    if (!current(expectedEpoch)) return
+                    if (!ready) buffered.push({kind, payload})
+                    else queueLive(kind, payload, expectedEpoch)
+                })
+                if (typeof unsubscribe === "function") unsubscribers.push(unsubscribe)
+            }
+            initializePromise = (async () => {
+                const page = initial ?? await bootstrap()
+                if (!current(expectedEpoch)) return
+                await applyBootstrap(page)
+                if (!current(expectedEpoch)) return
+                await hydrate(page)
+                if (!current(expectedEpoch)) return
+
+                const initializationWindow = buffered.splice(0)
+                for (const notification of initializationWindow) {
+                    await ingest(notification.kind, notification.payload)
+                    if (!current(expectedEpoch)) return
+                }
+                if (initializationWindow.length) {
+                    await catchUp()
+                    if (!current(expectedEpoch)) return
+                    await afterCatchUp()
+                    if (!current(expectedEpoch)) return
+                }
+
+                ready = true
+                for (const notification of buffered.splice(0)) {
+                    queueLive(notification.kind, notification.payload, expectedEpoch)
+                }
+                await liveTail
+                if (current(expectedEpoch)) await onReady()
+            })()
+            return initializePromise
+        }
+
+        function destroy() {
+            if (destroyed) return
+            destroyed = true
+            ready = false
+            epoch += 1
+            buffered.length = 0
+            for (const unsubscribe of unsubscribers.splice(0)) unsubscribe()
+        }
+
+        return {initialize, destroy}
+    }
+
+    function createOperatorMessageSender(options = {}) {
+        const state = options.state
+        const sendRequest = options.send
+        const onPendingChange = options.onPendingChange ?? (() => {})
+        if (!state || typeof sendRequest !== "function") {
+            throw new TypeError("Operator message sender options are required")
+        }
+        let sequence = 0
+        let destroyed = false
+        const pendingByJob = new Map()
+
+        async function send(input = {}) {
+            const jobId = String(input.jobId ?? "")
+            const sessionId = String(input.sessionId ?? "")
+            const text = String(input.text ?? "")
+            if (destroyed || !jobId || !sessionId || !text.trim()) return null
+            const sendId = `operator-send-${++sequence}`
+            pendingByJob.set(jobId, sendId)
+            state.setViewState(jobId, {draft: text})
+            onPendingChange(jobId, true, sendId)
+            try {
+                const result = await sendRequest(sessionId, text, sendId)
+                if (!destroyed && pendingByJob.get(jobId) === sendId) {
+                    state.setViewState(jobId, {draft: ""})
+                }
+                return result
+            } catch (error) {
+                if (!destroyed && pendingByJob.get(jobId) === sendId) {
+                    state.setViewState(jobId, {draft: text})
+                }
+                throw error
+            } finally {
+                if (!destroyed && pendingByJob.get(jobId) === sendId) {
+                    pendingByJob.delete(jobId)
+                    onPendingChange(jobId, false, sendId)
+                }
+            }
+        }
+
+        return {
+            send,
+            isPending: (jobId) => pendingByJob.has(jobId),
+            destroy() {
+                destroyed = true
+                pendingByJob.clear()
+            },
+        }
+    }
+
+    function structuralFingerprint(value, seen = new Set()) {
+        if (value === null || typeof value !== "object") return JSON.stringify(value)
+        if (seen.has(value)) throw new TypeError("Operator catalogs must not be circular")
+        seen.add(value)
+        const result = Array.isArray(value)
+            ? `[${value.map((entry) => structuralFingerprint(entry, seen)).join(",")}]`
+            : `{${Object.keys(value).sort().map((key) => (
+                `${JSON.stringify(key)}:${structuralFingerprint(value[key], seen)}`
+            )).join(",")}}`
+        seen.delete(value)
+        return result
+    }
+
+    function createOperatorSurfaceGate(options = {}) {
+        const setStateVisible = options.setStateVisible ?? (() => {})
+        const setRootHidden = options.setRootHidden ?? (() => {})
+        const recover = options.recover ?? (async () => {})
+        const applyCatalogs = options.applyCatalogs ?? (() => {})
+        const render = options.render ?? (() => {})
+        let visible = options.initialVisible === true
+        let shown = visible
+        let destroyed = false
+        let epoch = 0
+        let catalogs = null
+        let catalogKey = null
+        let catalogsDirty = false
+
+        function setCatalogs(next) {
+            if (destroyed) return false
+            const nextKey = structuralFingerprint(next)
+            if (nextKey === catalogKey) return false
+            catalogKey = nextKey
+            catalogs = next
+            catalogsDirty = true
+            if (shown) {
+                applyCatalogs(catalogs)
+                catalogsDirty = false
+            }
+            return true
+        }
+
+        async function setVisible(nextVisible) {
+            if (destroyed) return false
+            const next = nextVisible === true
+            if (next === visible) return false
+            visible = next
+            shown = false
+            const expectedEpoch = ++epoch
+            setStateVisible(next)
+            if (!next) {
+                setRootHidden(true)
+                return true
+            }
+            await recover()
+            if (destroyed || expectedEpoch !== epoch || !visible) return false
+            if (catalogsDirty) {
+                applyCatalogs(catalogs)
+                catalogsDirty = false
+            }
+            shown = true
+            setRootHidden(false)
+            render()
+            return true
+        }
+
+        return {
+            setCatalogs,
+            setVisible,
+            get visible() { return visible },
+            destroy() {
+                destroyed = true
+                shown = false
+                epoch += 1
+            },
         }
     }
 
@@ -864,28 +1126,27 @@
         const modelsByRuntime = new Map()
         const modelLoads = new Map()
         const jobNodes = new Map()
-        const unsubscribers = []
         let initialized = false
+        let destroyed = false
         let creating = false
         let activeRenderedJobId = null
-        let visibilityEpoch = 0
 
         const state = createOperatorWorkbenchState({
             readSummaryPage: (cursor, limit) => api.readOperatorSummaryPage(cursor, limit),
             readOperatorSession: (sessionId) => api.getOperatorSession(sessionId),
             readArtifactPage: (jobId, cursor, limit) => api.listOperatorArtifacts(jobId, cursor, limit),
             onListPatch: () => {
-                if (!initialized || root.classList.contains("hidden")) return
+                if (destroyed || !initialized || root.classList.contains("hidden")) return
                 patchJobList()
                 patchActiveChrome()
             },
             onActivePatch: ({jobId, entries}) => {
-                if (root.classList.contains("hidden")) return
+                if (destroyed || root.classList.contains("hidden")) return
                 if (jobId !== state.activeJobId || activeRenderedJobId !== jobId) return
                 transcriptPatcher.patch(entries)
             },
             onActiveReset: ({jobId}) => {
-                if (root.classList.contains("hidden") || jobId !== state.activeJobId) return
+                if (destroyed || root.classList.contains("hidden") || jobId !== state.activeJobId) return
                 const snapshot = state.getSnapshot(jobId)
                 if (!snapshot) return
                 resetTranscript(snapshot)
@@ -912,6 +1173,65 @@
                     : role
                 card.querySelector(".operator-entry-copy").textContent = entryText(entry)
             },
+        })
+
+        const messageSender = createOperatorMessageSender({
+            state,
+            send: (sessionId, text, sendId) => api.sendOperatorMessage(sessionId, text, sendId),
+            onPendingChange(jobId) {
+                if (destroyed || root.classList.contains("hidden") || state.activeJobId !== jobId) return
+                const pending = messageSender.isPending(jobId)
+                selectors.composerInput.disabled = pending
+                selectors.composerSend.disabled = pending
+            },
+        })
+
+        const surfaceGate = createOperatorSurfaceGate({
+            initialVisible: !root.classList.contains("hidden"),
+            setStateVisible: (visible) => state.setVisible(visible),
+            setRootHidden: (hidden) => root.classList.toggle("hidden", hidden),
+            recover: () => state.ensureActiveCaughtUp(),
+            applyCatalogs(nextCatalogs) {
+                if (destroyed) return
+                catalogs = nextCatalogs
+                renderSetupCatalogs()
+            },
+            render: renderVisibleSurface,
+        })
+
+        const notificationMethods = {
+            changed: "onOperatorChanged",
+            event: "onOperatorEvent",
+            approval: "onOperatorApproval",
+            artifact: "onOperatorArtifact",
+        }
+        const initializationGate = createOperatorInitializationGate({
+            subscribe(kind, listener) {
+                const method = notificationMethods[kind]
+                return typeof api[method] === "function" ? api[method](listener) : () => {}
+            },
+            bootstrap: () => api.bootstrapOperator(),
+            applyBootstrap(bootstrap) {
+                if (destroyed) return
+                state.setVisible(surfaceGate.visible)
+                state.initialize(bootstrap)
+            },
+            async hydrate() {
+                await state.catchUp()
+                if (destroyed) return
+                const first = state.listSnapshots()[0]
+                if (first) await activateSession(first.session?.id ?? first.job.sessionId)
+                else creating = true
+            },
+            ingest: (kind, envelope) => state.ingest(kind, envelope),
+            catchUp: () => state.catchUp(),
+            afterCatchUp: () => state.ensureActiveCaughtUp(),
+            onReady() {
+                if (destroyed) return
+                initialized = true
+                if (!root.classList.contains("hidden")) renderVisibleSurface()
+            },
+            onError,
         })
 
         function availableModels(runtimeId) {
@@ -956,26 +1276,33 @@
         }
 
         async function loadRuntimeModels(runtimeId, force = false) {
+            if (destroyed) return
             if (!runtimeId || (modelsByRuntime.has(runtimeId) && !force)) {
-                renderModels(runtimeId)
+                if (!root.classList.contains("hidden")) renderModels(runtimeId)
                 return
             }
             if (modelLoads.has(runtimeId)) return modelLoads.get(runtimeId)
             const request = (async () => {
-                renderModels(runtimeId)
+                if (!root.classList.contains("hidden")) renderModels(runtimeId)
                 try {
                     const response = await api.listModelsForRuntime(runtimeId)
+                    if (destroyed) return
                     modelsByRuntime.set(runtimeId, Array.isArray(response?.data) ? response.data : [])
                 } catch (error) {
+                    if (destroyed) return
                     modelsByRuntime.set(runtimeId, [])
                     onError(error)
                 } finally {
                     modelLoads.delete(runtimeId)
-                    if (selectors.runtime.value === runtimeId) renderModels(runtimeId)
+                    if (
+                        !destroyed &&
+                        !root.classList.contains("hidden") &&
+                        selectors.runtime.value === runtimeId
+                    ) renderModels(runtimeId)
                 }
             })()
             modelLoads.set(runtimeId, request)
-            renderModels(runtimeId)
+            if (!root.classList.contains("hidden")) renderModels(runtimeId)
             return request
         }
 
@@ -1236,6 +1563,9 @@
             selectors.sessionState.textContent = jobStatusText(snapshot.job.status)
             renderSessionActions(snapshot)
             patchStatus(snapshot)
+            const sendPending = messageSender.isPending(snapshot.job.id)
+            selectors.composerInput.disabled = sendPending
+            selectors.composerSend.disabled = sendPending
             if (restoreView) {
                 selectors.composerInput.value = snapshot.draft
                 selectors.transcript.scrollTop = snapshot.scrollTop
@@ -1250,12 +1580,26 @@
             })
         }
 
+        function renderVisibleSurface() {
+            if (destroyed || root.classList.contains("hidden")) return
+            patchJobList()
+            const snapshot = state.getSnapshot(state.activeJobId)
+            if (snapshot) {
+                resetTranscript(snapshot)
+                patchActiveChrome({restoreView: true})
+            } else {
+                creating = true
+                patchActiveChrome()
+            }
+        }
+
         async function activateSession(sessionId) {
+            if (destroyed) return
             saveActiveView()
             creating = false
             try {
                 const snapshot = await state.activateSession(sessionId)
-                if (!snapshot) return
+                if (destroyed || !snapshot) return
                 if (!root.classList.contains("hidden")) {
                     patchJobList()
                     resetTranscript(snapshot)
@@ -1307,6 +1651,7 @@
         }
 
         async function ingest(kind, envelope) {
+            if (destroyed) return
             try {
                 await state.ingest(kind, envelope)
             } catch (error) {
@@ -1362,90 +1707,54 @@
         async function sendMessage(event) {
             event.preventDefault()
             const text = selectors.composerInput.value
-            if (!state.activeSessionId || !text.trim()) return
-            selectors.composerInput.disabled = true
-            selectors.composerSend.disabled = true
+            const sessionId = state.activeSessionId
+            const jobId = state.activeJobId
+            if (destroyed || !sessionId || !jobId || !text.trim()) return
             try {
-                await api.sendOperatorMessage(state.activeSessionId, text)
-                selectors.composerInput.value = ""
-                state.setViewState(state.activeJobId, {draft: ""})
+                await messageSender.send({sessionId, jobId, text})
             } catch (error) {
-                onError(error)
+                if (!destroyed) onError(error)
             } finally {
-                selectors.composerInput.disabled = false
-                selectors.composerSend.disabled = false
-                selectors.composerInput.focus()
+                if (!destroyed && state.activeJobId === jobId) {
+                    selectors.composerInput.value = state.getViewState(jobId).draft
+                    const pending = messageSender.isPending(jobId)
+                    selectors.composerInput.disabled = pending
+                    selectors.composerSend.disabled = pending
+                    selectors.composerInput.focus()
+                }
             }
         }
 
-        async function initialize(initial = null) {
-            const bootstrap = initial ?? await api.bootstrapOperator()
-            state.setVisible(!root.classList.contains("hidden"))
-            state.initialize(bootstrap)
-            initialized = true
-            if (bootstrap?.truncated || bootstrap?.nextCursor !== null) await state.catchUp()
-            const first = state.listSnapshots()[0]
-            if (first) await activateSession(first.session?.id ?? first.job.sessionId)
-            else {
-                creating = true
-                if (!root.classList.contains("hidden")) patchActiveChrome()
-            }
-            for (const [kind, method] of [
-                ["changed", "onOperatorChanged"],
-                ["event", "onOperatorEvent"],
-                ["approval", "onOperatorApproval"],
-                ["artifact", "onOperatorArtifact"],
-            ]) {
-                if (typeof api[method] !== "function") continue
-                unsubscribers.push(api[method]((payload) => { void ingest(kind, payload) }))
-            }
+        function initialize(initial = null) {
+            return initializationGate.initialize(initial)
         }
 
         function setCatalogs(next = {}) {
-            catalogs = {
+            return surfaceGate.setCatalogs({
                 runtimes: Array.isArray(next.runtimes) ? next.runtimes : [],
                 skills: Array.isArray(next.skills) ? next.skills : [],
                 datasets: Array.isArray(next.datasets) ? next.datasets : [],
                 activeRuntimeId: next.activeRuntimeId ?? null,
-            }
-            renderSetupCatalogs()
+            })
         }
 
         function setVisible(nextVisible) {
             const next = nextVisible === true
-            const epoch = ++visibilityEpoch
             if (!next) saveActiveView()
-            state.setVisible(next)
-            if (!next) {
-                root.classList.add("hidden")
-                return
-            }
-            root.classList.add("hidden")
-            void (async () => {
-                try {
-                    await state.ensureActiveCaughtUp()
-                    if (epoch !== visibilityEpoch) return
-                    root.classList.remove("hidden")
-                    patchJobList()
-                    const snapshot = state.getSnapshot(state.activeJobId)
-                    if (snapshot) {
-                        resetTranscript(snapshot)
-                        patchActiveChrome({restoreView: true})
-                    } else {
-                        creating = true
-                        patchActiveChrome()
-                    }
-                } catch (error) {
-                    if (epoch === visibilityEpoch) root.classList.remove("hidden")
-                    onError(error)
-                }
-            })()
+            return surfaceGate.setVisible(next).catch((error) => {
+                if (!destroyed) onError(error)
+                return false
+            })
         }
 
         function destroy() {
-            saveActiveView()
+            if (destroyed) return
+            if (initialized) saveActiveView()
+            destroyed = true
+            initializationGate.destroy()
+            surfaceGate.destroy()
+            messageSender.destroy()
             state.destroy()
-            for (const unsubscribe of unsubscribers.splice(0)) unsubscribe?.()
         }
 
         selectors.jobList.addEventListener("click", (event) => {
@@ -1495,6 +1804,9 @@
         artifactDeepLinks,
         buildOperatorSessionRequest,
         createKeyedTranscriptPatcher,
+        createOperatorInitializationGate,
+        createOperatorMessageSender,
+        createOperatorSurfaceGate,
         createOperatorWorkbench,
         createOperatorWorkbenchState,
         transcriptEntryKey,
