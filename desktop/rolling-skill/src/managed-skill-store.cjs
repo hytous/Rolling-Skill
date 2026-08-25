@@ -82,6 +82,14 @@ function validateNullableText(value, label, maxLength) {
     return requiredString(value, label, maxLength)
 }
 
+function validateOptimizationEpoch(value) {
+    if (value === null || value === undefined) return null
+    if (!Number.isSafeInteger(value) || value < 1 || value > 100) {
+        throw new Error("Optimization epoch must be an integer between 1 and 100")
+    }
+    return value
+}
+
 function validateState(state) {
     if (!state || typeof state !== "object" || state.schemaVersion !== MANAGED_SKILL_SCHEMA) {
         throw new Error("Unsupported managed Skill registry schema")
@@ -145,6 +153,7 @@ function validateState(state) {
     const versionIds = new Set()
     const commits = new Set()
     const labels = new Set()
+    const optimizationCoordinates = new Set()
     for (const version of state.versions) {
         if (!version || typeof version !== "object") {
             throw new Error("Managed Skill registry version is invalid")
@@ -186,6 +195,22 @@ function validateState(state) {
         const creator = requiredString(version.createdBy, "Version creator", 40)
         if (!VERSION_CREATORS.has(creator)) throw new Error("Unsupported version creator")
         validateNullableText(version.optimizationRoundId, "Optimization round", 200)
+        const optimizationRunId = validateNullableText(
+            version.optimizationRunId,
+            "Optimization Run",
+            200,
+        )
+        const optimizationEpoch = validateOptimizationEpoch(version.optimizationEpoch)
+        if ((optimizationRunId === null) !== (optimizationEpoch === null)) {
+            throw new Error("Optimization Run and epoch provenance must be provided together")
+        }
+        if (optimizationRunId !== null) {
+            const coordinate = `${skillId}\0${optimizationRunId}\0${optimizationEpoch}`
+            if (optimizationCoordinates.has(coordinate)) {
+                throw new Error("Duplicate Optimization Run and Epoch Candidate provenance")
+            }
+            optimizationCoordinates.add(coordinate)
+        }
         requiredString(version.createdAt, "Version creation time", 100)
         validateNullableText(version.releasedAt, "Version release time", 100)
         validateNullableText(version.deprecatedAt, "Version deprecation time", 100)
@@ -526,6 +551,22 @@ class ManagedSkillStore {
         }
         const createdBy = requiredString(input.createdBy, "Version creator", 40)
         if (!VERSION_CREATORS.has(createdBy)) throw new Error("Unsupported version creator")
+        const optimizationRunId = validateNullableText(
+            input.optimizationRunId,
+            "Optimization Run",
+            200,
+        )
+        const optimizationEpoch = validateOptimizationEpoch(input.optimizationEpoch)
+        if ((optimizationRunId === null) !== (optimizationEpoch === null)) {
+            throw new Error("Optimization Run and epoch provenance must be provided together")
+        }
+        if (optimizationRunId !== null && this.state.versions.some((entry) =>
+            entry.skillId === skill.id &&
+            entry.optimizationRunId === optimizationRunId &&
+            entry.optimizationEpoch === optimizationEpoch,
+        )) {
+            throw new Error("Optimization Run and Epoch Candidate provenance already exists")
+        }
         if (this.state.versions.some((entry) => entry.skillId === skill.id && entry.commit === commit)) {
             throw new Error("Managed Skill version already exists for this commit")
         }
@@ -542,6 +583,8 @@ class ManagedSkillStore {
             optimizationRoundId: input.optimizationRoundId
                 ? requiredString(input.optimizationRoundId, "Optimization round", 200)
                 : null,
+            optimizationRunId,
+            optimizationEpoch,
             createdAt: new Date().toISOString(),
             releasedAt: null,
             deprecatedAt: null,

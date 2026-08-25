@@ -94,6 +94,35 @@ describe("managed Skill Git service", () => {
         assert.match(dirty.entries[0], /SKILL\.md/)
     })
 
+    it("creates and removes an exact detached baseline worktree through argument-array Git calls", async () => {
+        const root = temporaryDirectory()
+        const repository = join(root, "repository")
+        const workspace = join(root, "workspaces", "run-1")
+        mkdirSync(repository)
+        mkdirSync(join(root, "workspaces"))
+        const git = new ManagedSkillGit()
+        await git.initialize(repository)
+        writeSkill(repository, "Baseline")
+        const baseline = await git.commitAll(repository, "Baseline")
+        writeSkill(repository, "Main moved")
+        const later = await git.commitAll(repository, "Later")
+
+        await git.createWorktree(
+            repository,
+            workspace,
+            "rolling-skill/optimization/run-1",
+            baseline,
+        )
+
+        assert.equal(await git.worktreeHead(workspace), baseline)
+        assert.equal(await git.defaultBranch(workspace), "rolling-skill/optimization/run-1")
+        assert.equal(await git.isAncestor(repository, baseline, later), true)
+        assert.equal(await git.isAncestor(repository, later, baseline), false)
+        await git.removeWorktree(repository, workspace)
+        assert.equal(existsSync(workspace), false)
+        await assert.rejects(() => git.removeWorktree(repository, workspace), /registered|worktree/i)
+    })
+
     it("clones local Git history into an independent managed repository", async () => {
         const root = temporaryDirectory()
         const source = join(root, "source")

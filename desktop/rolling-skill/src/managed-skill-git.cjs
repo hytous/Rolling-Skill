@@ -1,6 +1,7 @@
 const {createHash} = require("node:crypto")
 const {execFile} = require("node:child_process")
-const {basename, isAbsolute, posix} = require("node:path")
+const {realpathSync} = require("node:fs")
+const {basename, isAbsolute, posix, resolve: resolvePath} = require("node:path")
 
 const {DEFAULT_SCAN_LIMITS} = require("./managed-skill-snapshot.cjs")
 
@@ -242,6 +243,68 @@ class ManagedSkillGit {
         )
         const entries = result.stdout.split("\0").filter(Boolean)
         return {dirty: entries.length > 0, entries}
+    }
+
+    async createWorktree(repositoryPath, workspacePath, branchName, baselineCommit) {
+        repositoryPath = resolvePath(requiredText(repositoryPath, "Managed repository path", 8_192))
+        workspacePath = resolvePath(requiredText(workspacePath, "Optimization workspace path", 8_192))
+        branchName = requiredText(branchName, "Optimization branch", 500)
+        await this.run(["check-ref-format", `refs/heads/${branchName}`], {cwd: repositoryPath})
+        baselineCommit = await this.resolve(
+            repositoryPath,
+            requiredText(baselineCommit, "Optimization baseline commit", 500),
+        )
+        const existing = await this.run(
+            ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
+            {cwd: repositoryPath, allowExitCodes: [0, 1]},
+        )
+        if (existing.exitCode === 0) throw new Error("Optimization branch already exists")
+        await this.run(
+            ["worktree", "add", "-b", branchName, "--", workspacePath, baselineCommit],
+            {cwd: repositoryPath},
+        )
+        return {
+            workspacePath,
+            branchName,
+            commit: await this.worktreeHead(workspacePath),
+        }
+    }
+
+    async worktreeHead(workspacePath) {
+        return this.head(resolvePath(requiredText(workspacePath, "Optimization workspace path", 8_192)))
+    }
+
+    async isAncestor(repositoryPath, ancestorCommit, descendantCommit) {
+        repositoryPath = resolvePath(requiredText(repositoryPath, "Managed repository path", 8_192))
+        ancestorCommit = await this.resolve(repositoryPath, ancestorCommit)
+        descendantCommit = await this.resolve(repositoryPath, descendantCommit)
+        const result = await this.run(
+            ["merge-base", "--is-ancestor", ancestorCommit, descendantCommit],
+            {cwd: repositoryPath, allowExitCodes: [0, 1]},
+        )
+        return result.exitCode === 0
+    }
+
+    async removeWorktree(repositoryPath, workspacePath) {
+        repositoryPath = resolvePath(requiredText(repositoryPath, "Managed repository path", 8_192))
+        workspacePath = resolvePath(requiredText(workspacePath, "Optimization workspace path", 8_192))
+        try {
+            workspacePath = realpathSync(workspacePath)
+        } catch {
+            throw new Error("Optimization path is not a registered Git worktree")
+        }
+        const listed = await this.run(["worktree", "list", "--porcelain", "-z"], {
+            cwd: repositoryPath,
+        })
+        const registered = listed.stdout
+            .split("\0\0")
+            .flatMap((record) => record.split("\0"))
+            .some((field) => field === `worktree ${workspacePath}`)
+        if (!registered) throw new Error("Optimization path is not a registered Git worktree")
+        await this.run(["worktree", "remove", "--force", "--", workspacePath], {
+            cwd: repositoryPath,
+        })
+        return {workspacePath}
     }
 
     async commitAll(repositoryPath, message, options = {}) {

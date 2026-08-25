@@ -243,6 +243,46 @@ describe("managed Skill registry", () => {
         assert.equal(reopened.listVersions(skill.id)[0].versionLabel, "v1.0.0")
     })
 
+    it("persists exact optimization Run and Epoch provenance for generated Candidates", () => {
+        const {root, path, store} = fixture()
+        const repository = addRepository(store, root)
+        const skill = addSkill(store, repository.id)
+        const candidate = store.addVersion({
+            repositoryId: repository.id,
+            skillId: skill.id,
+            commit: "e".repeat(40),
+            contentDigest: `sha256:${"f".repeat(64)}`,
+            state: "candidate",
+            createdBy: "optimization",
+            optimizationRunId: "optimization-run-1",
+            optimizationEpoch: 2,
+        })
+
+        assert.equal(candidate.optimizationRunId, "optimization-run-1")
+        assert.equal(candidate.optimizationEpoch, 2)
+        assert.equal(new ManagedSkillStore(path).getVersion(candidate.id).optimizationEpoch, 2)
+        assert.throws(() => store.addVersion({
+            repositoryId: repository.id,
+            skillId: skill.id,
+            commit: "3".repeat(40),
+            contentDigest: `sha256:${"4".repeat(64)}`,
+            state: "candidate",
+            createdBy: "optimization",
+            optimizationRunId: "optimization-run-1",
+            optimizationEpoch: 2,
+        }), /Run.*Epoch|provenance|already/i)
+        assert.throws(() => store.addVersion({
+            repositoryId: repository.id,
+            skillId: skill.id,
+            commit: "1".repeat(40),
+            contentDigest: `sha256:${"2".repeat(64)}`,
+            state: "candidate",
+            createdBy: "optimization",
+            optimizationRunId: "optimization-run-2",
+            optimizationEpoch: 0,
+        }), /epoch/i)
+    })
+
     it("deprecates releases without deleting their evidence", () => {
         const {root, store} = fixture()
         const repository = addRepository(store, root)
