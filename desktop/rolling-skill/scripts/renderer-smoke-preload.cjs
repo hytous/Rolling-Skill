@@ -274,6 +274,235 @@ const rubricChangedListeners = new Set()
 const rubricActivityListeners = new Set()
 const modelDelayByRuntime = new Map()
 let currentRuntimeId = "codex:renderer-smoke"
+const operatorChangedListeners = new Set()
+const operatorEventListeners = new Set()
+const operatorApprovalListeners = new Set()
+const operatorArtifactListeners = new Set()
+let operatorGeneration = "operator-smoke-generation-a"
+let operatorRevision = 1
+let operatorApprovalCalls = 0
+let operatorStopCalls = 0
+const operatorSummaryPageCalls = []
+
+function operatorTimestamp(offset) {
+    return new Date(Date.parse("2026-08-24T08:00:00.000Z") + offset).toISOString()
+}
+
+function operatorBudget() {
+    return {
+        maxDurationMs: 3_600_000,
+        maxRuntimeTurns: 20,
+        maxEvaluations: 5,
+        maxTargetExecutions: 50,
+        maxJudgeExecutions: 20,
+        maxTokens: null,
+        maxReportedCost: null,
+    }
+}
+
+function operatorSession(id, transcript) {
+    return {
+        id,
+        runtime: {
+            runtimeId: "codex:renderer-smoke",
+            providerId: "codex",
+            displayName: "Codex",
+            version: "smoke",
+        },
+        modelId: "gpt-5.6-sol",
+        effort: "high",
+        protocol: "rolling-skill-operator/v1",
+        transcript,
+        createdAt: operatorTimestamp(0),
+        updatedAt: operatorTimestamp(1_000),
+        closedAt: null,
+    }
+}
+
+function operatorTranscript(id, jobId, contents) {
+    return [{
+        id: `${id}-configuration`,
+        sessionId: id,
+        sequence: 1,
+        kind: "operator_session_configuration",
+        payload: {
+            scopes: {
+                skillIds: ["managed-skill-smoke"],
+                datasetIds: ["dataset-smoke"],
+                runtimeIds: ["codex:renderer-smoke"],
+                repositoryIds: ["managed-repository-smoke"],
+            },
+        },
+        recordedAt: operatorTimestamp(1),
+    }, ...contents.map((content, index) => ({
+        id: `${id}-message-${index}`,
+        sessionId: id,
+        jobId,
+        sequence: index + 2,
+        kind: "message",
+        payload: {role: "assistant", content},
+        recordedAt: operatorTimestamp(index + 2),
+    }))]
+}
+
+function operatorJob({id, sessionId, objective, status, parentJobId = null, offset = 0}) {
+    return {
+        id,
+        sessionId,
+        parentJobId,
+        type: parentJobId ? "evaluation" : "operator-session",
+        objective,
+        budget: operatorBudget(),
+        status,
+        children: [],
+        artifactIds: [],
+        approvalIds: [],
+        checkpoint: null,
+        result: null,
+        error: null,
+        createdAt: operatorTimestamp(offset),
+        updatedAt: operatorTimestamp(offset + 1_000),
+        startedAt: operatorTimestamp(offset + 100),
+        completedAt: null,
+    }
+}
+
+const operatorSessions = [
+    operatorSession(
+        "operator-session-running",
+        operatorTranscript(
+            "operator-session-running",
+            "operator-job-running",
+            Array.from({length: 14}, (_unused, index) => `Running fixture output ${index}`),
+        ),
+    ),
+    operatorSession(
+        "operator-session-streaming",
+        operatorTranscript(
+            "operator-session-streaming",
+            "operator-job-streaming",
+            Array.from({length: 30}, (_unused, index) => `Hidden fixture output ${index}`),
+        ),
+    ),
+    operatorSession(
+        "operator-session-waiting",
+        operatorTranscript(
+            "operator-session-waiting",
+            "operator-job-waiting",
+            ["Candidate evaluation finished; release is waiting for approval."],
+        ),
+    ),
+]
+const operatorJobs = [
+    operatorJob({
+        id: "operator-job-running",
+        sessionId: "operator-session-running",
+        objective: "Running Operator smoke Job",
+        status: "running",
+        offset: 3_000,
+    }),
+    operatorJob({
+        id: "operator-job-streaming",
+        sessionId: "operator-session-streaming",
+        objective: "Hidden streaming Operator smoke Job",
+        status: "running",
+        offset: 2_000,
+    }),
+    operatorJob({
+        id: "operator-job-waiting",
+        sessionId: "operator-session-waiting",
+        objective: "Release candidate after evaluation",
+        status: "waiting_approval",
+        offset: 1_000,
+    }),
+    operatorJob({
+        id: "operator-job-evaluation",
+        sessionId: "operator-session-waiting",
+        parentJobId: "operator-job-waiting",
+        objective: "Evaluation 1/2",
+        status: "running",
+        offset: 1_100,
+    }),
+]
+operatorJobs.find((job) => job.id === "operator-job-waiting").children = ["operator-job-evaluation"]
+const operatorSteps = [{
+    id: "operator-step-evaluation",
+    jobId: "operator-job-evaluation",
+    sessionId: "operator-session-waiting",
+    method: "evaluations.start",
+    status: "running",
+    attempt: 1,
+    error: null,
+    createdAt: operatorTimestamp(1_200),
+    updatedAt: operatorTimestamp(1_300),
+    startedAt: operatorTimestamp(1_300),
+    completedAt: null,
+}]
+const operatorApprovals = [{
+    id: "operator-approval-release",
+    jobId: "operator-job-waiting",
+    sessionId: "operator-session-waiting",
+    stepId: null,
+    action: "skills.release",
+    scope: {skillIds: ["managed-skill-smoke"]},
+    risk: "Release changes the version visible to installers.",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    status: "pending",
+    decision: null,
+    decisionScope: null,
+    decidedBy: null,
+    createdAt: operatorTimestamp(1_400),
+    resolvedAt: null,
+}]
+const operatorArtifacts = [{
+    id: "operator-artifact-report",
+    jobId: "operator-job-waiting",
+    kind: "evaluation-report",
+    name: "Evaluation report",
+    mediaType: "application/json",
+    byteLength: 128,
+    sha256: "a".repeat(64),
+    metadata: {
+        datasetId: "dataset-smoke",
+        evaluationId: "run-smoke",
+        candidateId: "managed-version-smoke",
+    },
+    createdAt: operatorTimestamp(1_500),
+}]
+
+function copyOperator(value) {
+    return JSON.parse(JSON.stringify(value))
+}
+
+function operatorSummaryPage(cursor = null, limit = 100) {
+    const expectedCursor = `operator-summary:${operatorGeneration}:${operatorRevision}:2`
+    if (cursor !== null && cursor !== expectedCursor) {
+        const error = new Error("Operator smoke summary cursor is stale")
+        error.code = "OPERATOR_SNAPSHOT_CHANGED"
+        throw error
+    }
+    const first = cursor === null
+    return copyOperator({
+        generation: operatorGeneration,
+        revision: operatorRevision,
+        sessions: first ? operatorSessions : [],
+        jobs: first ? operatorJobs : [],
+        steps: first ? operatorSteps : [],
+        approvals: first ? [] : operatorApprovals,
+        totals: {
+            sessions: operatorSessions.length,
+            jobs: operatorJobs.length,
+            steps: operatorSteps.length,
+            approvals: operatorApprovals.length,
+        },
+        truncated: first,
+        nextCursor: first ? expectedCursor : null,
+    })
+}
+
+function emitOperator(listeners, payload) {
+    for (const listener of listeners) listener(copyOperator(payload))
+}
 const smokeSkillReference = {
     id: "local-skill-renderer-smoke",
     schemaVersion: "rolling-skill-skill-reference/v1",
@@ -1047,6 +1276,138 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         managedSkills: smokeManagedOverview(),
         skillInstallations: {jobs: [], matrix: []},
         settings,
+    }),
+    bootstrapOperator: async () => operatorSummaryPage(),
+    readOperatorSummaryPage: async (cursor = null, limit = 100) => {
+        operatorSummaryPageCalls.push({cursor, limit})
+        return operatorSummaryPage(cursor, limit)
+    },
+    createOperatorSession: async () => {
+        throw new Error("Creating an Operator session is outside the renderer smoke fixture")
+    },
+    getOperatorSession: async (sessionId) => {
+        const session = operatorSessions.find((entry) => entry.id === sessionId)
+        const parentJob = operatorJobs.find((entry) => (
+            entry.sessionId === sessionId && entry.parentJobId === null
+        ))
+        if (!session || !parentJob) throw new Error("Unknown smoke Operator session")
+        return copyOperator({
+            session,
+            parentJob,
+            runtimeThreadId: `runtime-thread-${sessionId}`,
+            transport: {kind: "codex-dynamic", ready: true},
+            state: "idle",
+        })
+    },
+    sendOperatorMessage: async () => ({queued: true}),
+    pauseOperatorJob: async (jobId) => {
+        const job = operatorJobs.find((entry) => entry.id === jobId)
+        if (!job) throw new Error("Unknown smoke Operator Job")
+        job.status = "paused"
+        return copyOperator(job)
+    },
+    resumeOperatorJob: async (jobId) => {
+        const job = operatorJobs.find((entry) => entry.id === jobId)
+        if (!job) throw new Error("Unknown smoke Operator Job")
+        job.status = "running"
+        return copyOperator(job)
+    },
+    stopOperatorJob: async (jobId) => {
+        const job = operatorJobs.find((entry) => entry.id === jobId)
+        if (!job) throw new Error("Unknown smoke Operator Job")
+        operatorStopCalls += 1
+        job.status = "cancelled"
+        job.completedAt = operatorTimestamp(20_000)
+        return copyOperator(job)
+    },
+    resolveOperatorApproval: async (approvalId, decision) => {
+        operatorApprovalCalls += 1
+        const approval = operatorApprovals.find((entry) => entry.id === approvalId)
+        if (!approval || approval.status !== "pending") {
+            throw new Error("Unknown or resolved smoke Operator approval")
+        }
+        approval.status = decision === "approve" ? "approved" : "rejected"
+        approval.decision = decision
+        approval.decisionScope = "once"
+        approval.decidedBy = "renderer-smoke"
+        approval.resolvedAt = operatorTimestamp(19_000)
+        return copyOperator({
+            approval,
+            execution: {status: decision === "approve" ? "succeeded" : "failed"},
+        })
+    },
+    listOperatorArtifacts: async (jobId, cursor = null, limit = 100) => {
+        const offset = cursor === null ? 0 : Number(cursor)
+        const artifacts = operatorArtifacts.filter((entry) => entry.jobId === jobId)
+        const end = Math.min(offset + limit, artifacts.length)
+        return copyOperator({
+            artifacts: artifacts.slice(offset, end),
+            nextCursor: end < artifacts.length ? end : null,
+        })
+    },
+    onOperatorChanged: (listener) => {
+        operatorChangedListeners.add(listener)
+        return () => operatorChangedListeners.delete(listener)
+    },
+    onOperatorEvent: (listener) => {
+        operatorEventListeners.add(listener)
+        return () => operatorEventListeners.delete(listener)
+    },
+    onOperatorApproval: (listener) => {
+        operatorApprovalListeners.add(listener)
+        return () => operatorApprovalListeners.delete(listener)
+    },
+    onOperatorArtifact: (listener) => {
+        operatorArtifactListeners.add(listener)
+        return () => operatorArtifactListeners.delete(listener)
+    },
+    smokeEmitHiddenOperatorDelta: () => {
+        operatorRevision += 1
+        emitOperator(operatorEventListeners, {
+            generation: operatorGeneration,
+            revision: operatorRevision,
+            event: {
+                id: "operator-hidden-stream-event",
+                jobId: "operator-job-streaming",
+                sessionId: "operator-session-streaming",
+                sequence: 100,
+                kind: "message",
+                payload: {role: "assistant", content: "Hidden streamed output after bootstrap"},
+                occurredAt: operatorTimestamp(10_000),
+            },
+        })
+    },
+    smokeEmitOperatorGap: () => {
+        const session = operatorSessions.find((entry) => entry.id === "operator-session-streaming")
+        session.transcript.push({
+            id: "operator-gap-catch-up-message",
+            sessionId: session.id,
+            jobId: "operator-job-streaming",
+            sequence: 200,
+            kind: "message",
+            payload: {role: "assistant", content: "Gap catch-up output"},
+            recordedAt: operatorTimestamp(11_000),
+        })
+        operatorGeneration = "operator-smoke-generation-b"
+        operatorRevision += 3
+        const job = operatorJobs.find((entry) => entry.id === "operator-job-streaming")
+        job.updatedAt = operatorTimestamp(11_000)
+        emitOperator(operatorChangedListeners, {
+            generation: operatorGeneration,
+            revision: operatorRevision,
+            job,
+        })
+    },
+    smokeOperatorMetrics: () => ({
+        summaryPageCalls: copyOperator(operatorSummaryPageCalls),
+        approvalCalls: operatorApprovalCalls,
+        stopCalls: operatorStopCalls,
+        subscriptions: {
+            changed: operatorChangedListeners.size,
+            event: operatorEventListeners.size,
+            approval: operatorApprovalListeners.size,
+            artifact: operatorArtifactListeners.size,
+        },
     }),
     listRuntimes: async () => (await fakeControlInvoke("runtimes.list")).runtimes,
     listModels: async () => ({

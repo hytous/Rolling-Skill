@@ -48,12 +48,49 @@ macOS 可能要求先按住 Control 点击应用，再选择 **打开**。
 当前自动评测重点是 Skill 工作流和输出格式。数字结论暂不作为自动硬门槛，仍保留给人工
 或后续 Agent Judge 审核。
 
+## 自操作（Operator）工作台
+
+**自操作** 是独立于普通对话和正式评测的 Rolling Skill Operator。用户先选择本机已发现且
+通过兼容性探测的 Runtime，再从该 Runtime 实际返回的目录中选择模型和推理强度；应用不内置
+Runtime 或模型名单。模型没有公布推理强度时就不传该字段，例如 DSH 的
+`wetv-glm/glm-5.3` 在 effort 为空时不会被补成通用默认值。
+
+Operator 只能调用启动时明确授予的 scoped tools，并同时受对象范围、动作集合、预算、有效期
+和权限策略约束。读操作、写操作和高风险动作分别校验；发布 Candidate、正式安装或覆盖 Skill、
+删除以及预算扩张等动作会进入 Approval 队列，必须由用户明确批准，Agent 不能自行扩大授权或
+用自然语言声称已经获批。Operator 控制面依赖正在运行的 Rolling Skill.app；App 关闭时只有
+Raw Case 的离线 enqueue/list 例外，不能继续 Operator Job。
+
+三种 Runtime 使用同一套 Operator 协议和控制面，但传输各自独立：
+
+- Codex app-server 使用当前 Operator 线程专属的 dynamic tools；
+- CodeBuddy ACP 使用当前 Operator 会话专属的 stdio MCP bridge；
+- DeepSeek Harness（DSH）通过 Bash 调用随 App 构建的受控 CLI；CLI 连接同一控制面，不能
+  绕过 capability、权限或审批。
+
+左侧 Job 列表、中间 Operator 会话和右侧状态/Artifact/Approval 面板使用持久化快照。后台
+Job 的高频增量不会重绘当前 DOM，只更新状态摘要、未读数和持久化事件；切回时直接恢复该 Job
+的完整快照、有限 catch-up、输入草稿和阅读位置，不从顶部重放。停止 Operator Job 不会停止或
+改写普通 Chat，也不会把 Operator 工具、身份、权限、MCP/CLI 配置带给被测 Runtime、Judge、
+Curator 或 Rubric Agent，因此正式自动触发评测仍与自操作严格隔离。
+
+Operator 修改 Skill 时使用 Rolling Skill 管理的独立 Git 仓库 workspace，不直接改 Runtime
+自己的 Skill 目录。Working、Candidate 和 Released 保持分层；发布与安装仍是两个独立步骤，
+即使发布成功，正式安装仍需单独选择 Runtime 配置并获得人工批准。
+
+App 或 Runtime 中断后，`running` Job 会先进入恢复流程，不会盲目重放有副作用的 Step。
+Evaluation 按持久化的 run ID 对账；安装先做只读 inspect；pending Approval 原样保留，恢复后的
+父 Job 回到 `waiting_approval`。无法确认结果时进入 `needs_recovery`，并阻止后续发布、安装或
+新一轮操作；已经生成的 Artifact、评测结果和错误证据会继续保留。停止会取消未开始工作并
+中断当前执行，但不会把未知结果伪装成成功。
+
 ## Runtime 支持
 
 | Runtime | 接入协议 | 当前能力 |
 | --- | --- | --- |
 | Codex | app-server JSONL | 对话、历史任务、模型、推理强度、会话权限、Skills、Plugins、Trace、评测 |
 | CodeBuddy | ACP stdio JSONL | 对话、模型、推理强度、会话权限与授权确认、流式输出、Trace、评测 |
+| DeepSeek Harness（DSH） | 本地 Web Host HTTP/WebSocket | 对话、历史会话、模型、权限与问答、Skills、流式输出、Trace、评测 |
 
 Chat 始终绑定一个活动 Runtime。Skill 评测使用隔离的 Runtime 客户端，因此可以让多个
 Runtime 配置并行运行，而不会共享活动对话的客户端状态。同一个 Runtime 内的 Cases 顺序
@@ -76,6 +113,10 @@ Homebrew 和常见用户目录。候选文件必须能标识为 Codex 并支持 
 
 CodeBuddy 会检查已保存路径、`ROLLING_SKILL_CODEBUDDY_BIN`、`PATH`、Homebrew、常见用户
 目录和兼容的 `.sre-codex` 安装。候选文件必须支持 stdio ACP。
+
+DeepSeek Harness 会检查已保存路径、`ROLLING_SKILL_DSH_BIN`、`PATH`、Homebrew 和常见用户
+目录。候选文件必须支持动态端口的本地 Web Host；Rolling Skill 负责启动和停止该 Host，并通过
+HTTP/WebSocket 访问会话、模型、Skill、工具和实时事件，不下载或替换 `dsh`。
 
 每个候选 Runtime 都必须通过对应 Provider 的兼容性探测，不能仅凭文件名被选中。
 
@@ -183,6 +224,7 @@ Curator/capture 或 Rubric Agent 会话时不能更换绑定。
 | --- | --- |
 | `~/Library/Application Support/Rolling Skill/evaluation-store.json` | 设置、数据集、Rubric 版本/会话、Cases、Curator 会话和评测记录 |
 | `~/Library/Application Support/Rolling Skill/preferences.json` | 工作目录和 Runtime 选择 |
+| `~/Library/Application Support/Rolling Skill/operator-jobs.json` | Operator 会话、Job、Step、Approval、Artifact 索引和恢复事件 |
 | `~/Library/Application Support/Rolling Skill/traces/*.jsonl` | 带 Runtime 身份的追加式 Trace |
 
 ## 构建与开发

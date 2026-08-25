@@ -1119,6 +1119,138 @@ async function run() {
         throw new Error("A stale thread read replaced the empty archived view")
     }
 
+    await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
+    await inspect(window, 'document.querySelector("[data-thread-view=current]").click()')
+    await inspect(window, 'document.querySelector("[data-thread-id=thread-a]").click()')
+    await waitFor(window, 'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation")')
+    const operatorChatBaseline = await inspect(window, `(() => ({
+        text: document.querySelector("#conversation").textContent,
+        draft: document.querySelector("#composer-input").value,
+    }))()`)
+
+    await inspect(window, 'document.querySelector("[data-surface=operator]").click()')
+    await waitFor(
+        window,
+        'document.querySelector("[data-operator-job-id=operator-job-running].active") && document.querySelector("#operator-transcript").textContent.includes("Running fixture output 0")',
+    )
+    const activeOperatorDomBeforeHiddenDelta = await inspect(
+        window,
+        'document.querySelector("#operator-transcript").innerHTML',
+    )
+    await inspect(window, 'window.rollingSkill.smokeEmitHiddenOperatorDelta()')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const hiddenOperatorIsolation = await inspect(window, `(() => ({
+        activeDom: document.querySelector("#operator-transcript").innerHTML,
+        hiddenUnread: Number(document.querySelector("[data-operator-job-id=operator-job-streaming] .operator-job-unread")?.textContent ?? 0),
+    }))()`)
+    if (
+        hiddenOperatorIsolation.activeDom !== activeOperatorDomBeforeHiddenDelta ||
+        hiddenOperatorIsolation.hiddenUnread < 1
+    ) {
+        throw new Error(`Hidden Operator delta touched active DOM: ${JSON.stringify(hiddenOperatorIsolation)}`)
+    }
+
+    await inspect(window, `(() => {
+        const input = document.querySelector("#operator-composer-input")
+        input.value = "running job draft"
+        input.dispatchEvent(new Event("input", {bubbles: true}))
+        document.querySelector("#operator-transcript").scrollTop = 120
+    })()`)
+    await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-streaming]").click()')
+    await waitFor(
+        window,
+        'document.querySelector("[data-operator-job-id=operator-job-streaming].active") && document.querySelector("#operator-transcript").textContent.includes("Hidden streamed output after bootstrap")',
+    )
+    const hiddenCatchUp = await inspect(window, `(() => ({
+        complete: ["Hidden fixture output 0", "Hidden fixture output 11", "Hidden streamed output after bootstrap"]
+            .every((text) => document.querySelector("#operator-transcript").textContent.includes(text)),
+        initialScrollTop: document.querySelector("#operator-transcript").scrollTop,
+    }))()`)
+    if (!hiddenCatchUp.complete) {
+        throw new Error(`Hidden Operator output did not catch up directly: ${JSON.stringify(hiddenCatchUp)}`)
+    }
+    await inspect(window, `(() => {
+        const input = document.querySelector("#operator-composer-input")
+        input.value = "hidden job draft"
+        input.dispatchEvent(new Event("input", {bubbles: true}))
+        document.querySelector("#operator-transcript").scrollTop = 96
+    })()`)
+    await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-running]").click()')
+    await waitFor(window, 'document.querySelector("#operator-composer-input").value === "running job draft"')
+    await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-streaming]").click()')
+    await waitFor(
+        window,
+        'document.querySelector("#operator-composer-input").value === "hidden job draft" && document.querySelector("#operator-transcript").scrollTop > 0',
+    )
+
+    const gapCallsBefore = await inspect(
+        window,
+        'window.rollingSkill.smokeOperatorMetrics().summaryPageCalls.length',
+    )
+    await inspect(window, 'window.rollingSkill.smokeEmitOperatorGap()')
+    await waitFor(
+        window,
+        'document.querySelector("#operator-transcript").textContent.includes("Gap catch-up output")',
+    )
+    const operatorGapMetrics = await inspect(window, `(() => {
+        const metrics = window.rollingSkill.smokeOperatorMetrics()
+        const calls = metrics.summaryPageCalls.slice(${gapCallsBefore})
+        return {
+            calls: calls.length,
+            bounded: calls.length > 1 && calls.length <= 6 && calls.every((entry) => entry.limit === 100),
+            subscriptions: metrics.subscriptions,
+        }
+    })()`)
+    if (
+        !operatorGapMetrics.bounded ||
+        JSON.stringify(operatorGapMetrics.subscriptions) !== JSON.stringify({
+            changed: 1,
+            event: 1,
+            approval: 1,
+            artifact: 1,
+        })
+    ) {
+        throw new Error(`Operator gap catch-up was not bounded: ${JSON.stringify(operatorGapMetrics)}`)
+    }
+
+    for (let index = 0; index < 4; index += 1) {
+        await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-waiting]").click()')
+        await waitFor(window, 'document.querySelector("[data-operator-job-id=operator-job-waiting].active")')
+        await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-running]").click()')
+        await waitFor(window, 'document.querySelector("[data-operator-job-id=operator-job-running].active")')
+    }
+    await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-waiting]").click()')
+    await waitFor(
+        window,
+        'document.querySelector("[data-operator-approval-id=operator-approval-release] [data-operator-approval-decision=approve]") && document.querySelector("#operator-child-jobs").textContent.includes("Evaluation 1/2") && document.querySelector("[data-operator-artifact-id=operator-artifact-report]")',
+    )
+    await inspect(window, 'document.querySelector("[data-operator-approval-id=operator-approval-release] [data-operator-approval-decision=approve]").click()')
+    await waitFor(
+        window,
+        'document.querySelector("[data-operator-approval-id=operator-approval-release] .operator-approval-status").textContent === "approved"',
+    )
+    if ((await inspect(window, 'window.rollingSkill.smokeOperatorMetrics().approvalCalls')) !== 1) {
+        throw new Error("Dynamic Operator approval buttons accumulated listeners")
+    }
+
+    await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-running]").click()')
+    await waitFor(window, 'document.querySelector("[data-operator-job-action=stop][data-operator-job-id=operator-job-running]")')
+    await inspect(window, 'document.querySelector("[data-operator-job-action=stop][data-operator-job-id=operator-job-running]").click()')
+    await waitFor(window, 'document.querySelector("#operator-session-state").textContent === "cancelled"')
+    if ((await inspect(window, 'window.rollingSkill.smokeOperatorMetrics().stopCalls')) !== 1) {
+        throw new Error("Dynamic Operator control buttons accumulated listeners")
+    }
+
+    await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
+    await waitFor(window, 'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation")')
+    const operatorChatAfterStop = await inspect(window, `(() => ({
+        text: document.querySelector("#conversation").textContent,
+        draft: document.querySelector("#composer-input").value,
+    }))()`)
+    if (JSON.stringify(operatorChatAfterStop) !== JSON.stringify(operatorChatBaseline)) {
+        throw new Error("Stopping an Operator Job changed the active Chat")
+    }
+
     await inspect(window, 'window.rollingSkill.smokeEmitRuntimeState("codex:slow", 160)')
     await new Promise((resolve) => setTimeout(resolve, 10))
     await inspect(window, 'window.rollingSkill.smokeEmitRuntimeState("codex:fast", 0)')
@@ -1243,6 +1375,13 @@ async function run() {
             boundedStreamingRender: true,
             backgroundNotificationRouting: true,
             backgroundThreadCatchUp: true,
+            operatorHiddenDeltaIsolated: true,
+            operatorHiddenCatchUp: hiddenCatchUp.complete,
+            operatorPerJobViewState: true,
+            operatorGapCatchUpPages: operatorGapMetrics.calls,
+            operatorApprovalResolved: true,
+            operatorStopChatIsolated: true,
+            operatorDelegatedActions: true,
             readFailureRecovered: true,
             emptyArchiveLoadCancelled: true,
             staleRuntimeModelsIgnored: true,

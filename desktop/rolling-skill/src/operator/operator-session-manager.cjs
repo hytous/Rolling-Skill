@@ -1493,6 +1493,14 @@ class OperatorSessionManager {
                 await this.#engine.reconcile(job.id)
             }
         }
+        const pendingApproval = jobs.some((job) => (
+            !TERMINAL_JOB_STATUSES.has(this.#store.getJob(job.id).status) &&
+            this.#store.listApprovals(job.id).some((approval) => approval.status === "pending")
+        ))
+        const recoveredParent = this.#store.getJob(parentJob.id)
+        if (pendingApproval && recoveredParent.status === "running") {
+            this.#store.transitionJob(recoveredParent.id, "waiting_approval")
+        }
     }
 
     async #restore(sessionId) {
