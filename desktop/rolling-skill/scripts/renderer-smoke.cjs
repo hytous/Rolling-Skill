@@ -1129,6 +1129,23 @@ async function run() {
     }))()`)
 
     await inspect(window, 'document.querySelector("[data-surface=operator]").click()')
+    const operatorBootstrapProjection = await inspect(window, `(async () => {
+        const snapshot = await window.rollingSkill.bootstrapOperator()
+        const session = snapshot.sessions[0]
+        const parent = snapshot.jobs.find((job) => job.id === "operator-job-waiting")
+        return {
+            generationIsUuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+                .test(snapshot.generation),
+            sessionIsSummary: Number.isSafeInteger(session?.transcriptSequence) &&
+                !Object.hasOwn(session ?? {}, "transcript"),
+            jobIsPublic: Array.isArray(parent?.childJobIds) &&
+                !Object.hasOwn(parent ?? {}, "children") &&
+                !Object.hasOwn(parent ?? {}, "result"),
+        }
+    })()`)
+    if (!Object.values(operatorBootstrapProjection).every(Boolean)) {
+        throw new Error(`Operator bootstrap fixture is not the main public projection: ${JSON.stringify(operatorBootstrapProjection)}`)
+    }
     await waitFor(
         window,
         'document.querySelector("[data-operator-job-id=operator-job-running].active") && document.querySelector("#operator-transcript").textContent.includes("Running fixture output 0")',
@@ -1176,11 +1193,14 @@ async function run() {
         document.querySelector("#operator-transcript").scrollTop = 96
     })()`)
     await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-running]").click()')
-    await waitFor(window, 'document.querySelector("#operator-composer-input").value === "running job draft"')
+    await waitFor(
+        window,
+        'document.querySelector("#operator-composer-input").value === "running job draft" && Math.abs(document.querySelector("#operator-transcript").scrollTop - 120) <= 2',
+    )
     await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-streaming]").click()')
     await waitFor(
         window,
-        'document.querySelector("#operator-composer-input").value === "hidden job draft" && document.querySelector("#operator-transcript").scrollTop > 0',
+        'document.querySelector("#operator-composer-input").value === "hidden job draft" && Math.abs(document.querySelector("#operator-transcript").scrollTop - 96) <= 2',
     )
 
     const gapCallsBefore = await inspect(

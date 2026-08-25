@@ -278,7 +278,7 @@ const operatorChangedListeners = new Set()
 const operatorEventListeners = new Set()
 const operatorApprovalListeners = new Set()
 const operatorArtifactListeners = new Set()
-let operatorGeneration = "operator-smoke-generation-a"
+let operatorGeneration = "20d027ce-27f1-4fc0-a1bc-85b3190238c3"
 let operatorRevision = 1
 let operatorApprovalCalls = 0
 let operatorStopCalls = 0
@@ -312,10 +312,25 @@ function operatorSession(id, transcript) {
         modelId: "gpt-5.6-sol",
         effort: "high",
         protocol: "rolling-skill-operator/v1",
+        transcriptSequence: transcript.at(-1)?.sequence ?? 0,
         transcript,
         createdAt: operatorTimestamp(0),
         updatedAt: operatorTimestamp(1_000),
         closedAt: null,
+    }
+}
+
+function operatorSessionSummary(session) {
+    return {
+        id: session.id,
+        runtime: session.runtime,
+        modelId: session.modelId,
+        effort: session.effort,
+        protocol: session.protocol,
+        transcriptSequence: session.transcriptSequence,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        closedAt: session.closedAt,
     }
 }
 
@@ -364,6 +379,27 @@ function operatorJob({id, sessionId, objective, status, parentJobId = null, offs
         updatedAt: operatorTimestamp(offset + 1_000),
         startedAt: operatorTimestamp(offset + 100),
         completedAt: null,
+    }
+}
+
+function publicOperatorJob(job) {
+    return {
+        id: job.id,
+        sessionId: job.sessionId,
+        parentJobId: job.parentJobId,
+        type: job.type,
+        objective: job.objective,
+        budget: job.budget,
+        status: job.status,
+        childJobIds: job.children,
+        artifactIds: job.artifactIds,
+        approvalIds: job.approvalIds,
+        checkpoint: job.checkpoint,
+        error: job.error,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt,
     }
 }
 
@@ -431,6 +467,7 @@ const operatorSteps = [{
     sessionId: "operator-session-waiting",
     method: "evaluations.start",
     status: "running",
+    outputArtifactIds: [],
     attempt: 1,
     error: null,
     createdAt: operatorTimestamp(1_200),
@@ -445,6 +482,16 @@ const operatorApprovals = [{
     stepId: null,
     action: "skills.release",
     scope: {skillIds: ["managed-skill-smoke"]},
+    proposedMutation: {
+        method: "skills.release",
+        params: {
+            skillId: "managed-skill-smoke",
+            versionId: "managed-version-smoke",
+            versionLabel: "v1.0.0",
+        },
+        idempotencyKey: "renderer-smoke-release",
+        reservation: {},
+    },
     risk: "Release changes the version visible to installers.",
     expiresAt: "2099-01-01T00:00:00.000Z",
     status: "pending",
@@ -485,8 +532,8 @@ function operatorSummaryPage(cursor = null, limit = 100) {
     return copyOperator({
         generation: operatorGeneration,
         revision: operatorRevision,
-        sessions: first ? operatorSessions : [],
-        jobs: first ? operatorJobs : [],
+        sessions: first ? operatorSessions.map(operatorSessionSummary) : [],
+        jobs: first ? operatorJobs.map(publicOperatorJob) : [],
         steps: first ? operatorSteps : [],
         approvals: first ? [] : operatorApprovals,
         totals: {
@@ -1293,7 +1340,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         if (!session || !parentJob) throw new Error("Unknown smoke Operator session")
         return copyOperator({
             session,
-            parentJob,
+            parentJob: publicOperatorJob(parentJob),
             runtimeThreadId: `runtime-thread-${sessionId}`,
             transport: {kind: "codex-dynamic", ready: true},
             state: "idle",
@@ -1304,13 +1351,13 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         const job = operatorJobs.find((entry) => entry.id === jobId)
         if (!job) throw new Error("Unknown smoke Operator Job")
         job.status = "paused"
-        return copyOperator(job)
+        return copyOperator(publicOperatorJob(job))
     },
     resumeOperatorJob: async (jobId) => {
         const job = operatorJobs.find((entry) => entry.id === jobId)
         if (!job) throw new Error("Unknown smoke Operator Job")
         job.status = "running"
-        return copyOperator(job)
+        return copyOperator(publicOperatorJob(job))
     },
     stopOperatorJob: async (jobId) => {
         const job = operatorJobs.find((entry) => entry.id === jobId)
@@ -1318,7 +1365,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         operatorStopCalls += 1
         job.status = "cancelled"
         job.completedAt = operatorTimestamp(20_000)
-        return copyOperator(job)
+        return copyOperator(publicOperatorJob(job))
     },
     resolveOperatorApproval: async (approvalId, decision) => {
         operatorApprovalCalls += 1
@@ -1388,14 +1435,15 @@ contextBridge.exposeInMainWorld("rollingSkill", {
             payload: {role: "assistant", content: "Gap catch-up output"},
             recordedAt: operatorTimestamp(11_000),
         })
-        operatorGeneration = "operator-smoke-generation-b"
+        session.transcriptSequence = 200
+        operatorGeneration = "51fbf4ec-d284-4986-9ddd-d9e52adb3330"
         operatorRevision += 3
         const job = operatorJobs.find((entry) => entry.id === "operator-job-streaming")
         job.updatedAt = operatorTimestamp(11_000)
         emitOperator(operatorChangedListeners, {
             generation: operatorGeneration,
             revision: operatorRevision,
-            job,
+            job: publicOperatorJob(job),
         })
     },
     smokeOperatorMetrics: () => ({

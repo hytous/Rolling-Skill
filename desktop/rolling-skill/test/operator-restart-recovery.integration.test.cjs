@@ -44,7 +44,7 @@ class RecoveryRuntimeClient extends EventEmitter {
     async stop() {}
 }
 
-function managerFixture(store, engine) {
+function managerFixture(store, engine, {onCreateClient = () => {}} = {}) {
     let capabilitySequence = 0
     const capabilities = {
         issue(request) {
@@ -62,7 +62,10 @@ function managerFixture(store, engine) {
         engine,
         runtimeRegistry: {
             discover: () => ({available: [runtime], selected: runtime}),
-            createClient: () => new RecoveryRuntimeClient(),
+            createClient: () => {
+                onCreateClient()
+                return new RecoveryRuntimeClient()
+            },
         },
         capabilities,
         controlPlane: {
@@ -90,80 +93,94 @@ function managerFixture(store, engine) {
     })
 }
 
-describe("Operator restart recovery integration", () => {
-    it("reconciles a running Evaluation by run ID and restores the untouched release gate", async () => {
-        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-operator-restart-"))
-        directories.push(directory)
-        const registryPath = join(directory, "operator-jobs.json")
-        const initialStore = new OperatorJobStore(registryPath)
-        const initialEngine = new OperatorJobEngine({store: initialStore})
-        const initialManager = managerFixture(initialStore, initialEngine)
-        const created = await initialManager.create({
-            runtimeId: runtime.runtimeId,
-            modelId: "gpt-5.6-sol",
-            effort: "high",
-            objective: "Recover evaluation before releasing the candidate",
-            actions: ["evaluations.execute", "skills.release"],
-            scopes: {
-                skillIds: ["skill-1"],
-                datasetIds: ["dataset-1"],
-                runtimeIds: [runtime.runtimeId],
-                repositoryIds: ["repository-1"],
-            },
-            budget,
-            expiresInMs: 60_000,
-        })
-        const evaluation = initialStore.createStep(created.parentJob.id, {
-            method: "evaluations.start",
-            params: {
-                runId: "evaluation-run-restart",
-                datasetId: "dataset-1",
-                selectionMode: "selected",
-                caseIds: ["case-1"],
-                runtimeConfigurations: [{runtimeId: runtime.runtimeId}],
-            },
-            reservation: {evaluations: 1, targetExecutions: 1},
-            idempotencyKey: "restart-evaluation",
-        })
-        initialStore.transitionStep(evaluation.id, "running")
-        const releaseJob = initialStore.createJob({
-            sessionId: created.session.id,
-            parentJobId: created.parentJob.id,
-            type: "release",
-            objective: "Release candidate after human approval",
-            budget,
-        })
-        initialStore.transitionJob(releaseJob.id, "running")
-        const release = initialStore.createStep(releaseJob.id, {
+async function persistRecoveryTree() {
+    const directory = mkdtempSync(join(tmpdir(), "rolling-skill-operator-restart-"))
+    directories.push(directory)
+    const registryPath = join(directory, "operator-jobs.json")
+    const initialStore = new OperatorJobStore(registryPath)
+    const initialEngine = new OperatorJobEngine({store: initialStore})
+    const initialManager = managerFixture(initialStore, initialEngine)
+    const created = await initialManager.create({
+        runtimeId: runtime.runtimeId,
+        modelId: "gpt-5.6-sol",
+        effort: "high",
+        objective: "Recover evaluation before releasing the candidate",
+        actions: ["evaluations.execute", "skills.release"],
+        scopes: {
+            skillIds: ["skill-1"],
+            datasetIds: ["dataset-1"],
+            runtimeIds: [runtime.runtimeId],
+            repositoryIds: ["repository-1"],
+        },
+        budget,
+        expiresInMs: 60_000,
+    })
+    const evaluationJob = initialStore.createJob({
+        sessionId: created.session.id,
+        parentJobId: created.parentJob.id,
+        type: "evaluation",
+        objective: "Recover evaluation by durable run ID",
+        budget,
+    })
+    initialStore.transitionJob(evaluationJob.id, "running")
+    const evaluation = initialStore.createStep(evaluationJob.id, {
+        method: "evaluations.start",
+        params: {
+            runId: "evaluation-run-restart",
+            datasetId: "dataset-1",
+            selectionMode: "selected",
+            caseIds: ["case-1"],
+            runtimeConfigurations: [{runtimeId: runtime.runtimeId}],
+        },
+        reservation: {evaluations: 1, targetExecutions: 1},
+        idempotencyKey: "restart-evaluation",
+    })
+    initialStore.transitionStep(evaluation.id, "running")
+    const releaseJob = initialStore.createJob({
+        sessionId: created.session.id,
+        parentJobId: created.parentJob.id,
+        type: "release",
+        objective: "Release candidate after human approval",
+        budget,
+    })
+    initialStore.transitionJob(releaseJob.id, "running")
+    const release = initialStore.createStep(releaseJob.id, {
+        method: "skills.release",
+        params: {
+            skillId: "skill-1",
+            versionId: "candidate-1",
+            versionLabel: "v1.0.0",
+        },
+        reservation: {},
+        idempotencyKey: "restart-release",
+    })
+    initialStore.transitionStep(release.id, "waiting_approval")
+    initialStore.transitionJob(releaseJob.id, "waiting_approval")
+    const approval = initialStore.createApproval(releaseJob.id, {
+        stepId: release.id,
+        action: "skills.release",
+        scope: {skillIds: ["skill-1"]},
+        proposedMutation: {
             method: "skills.release",
             params: {
                 skillId: "skill-1",
                 versionId: "candidate-1",
                 versionLabel: "v1.0.0",
             },
-            reservation: {},
             idempotencyKey: "restart-release",
-        })
-        initialStore.transitionStep(release.id, "waiting_approval")
-        initialStore.transitionJob(releaseJob.id, "waiting_approval")
-        const approval = initialStore.createApproval(releaseJob.id, {
-            stepId: release.id,
-            action: "skills.release",
-            scope: {skillIds: ["skill-1"]},
-            proposedMutation: {
-                method: "skills.release",
-                params: {
-                    skillId: "skill-1",
-                    versionId: "candidate-1",
-                    versionLabel: "v1.0.0",
-                },
-                idempotencyKey: "restart-release",
-                reservation: {},
-            },
-            risk: "release_requires_human_approval",
-            expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        })
-        initialStore.close()
+            reservation: {},
+        },
+        risk: "release_requires_human_approval",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    })
+    initialStore.close()
+    return {registryPath, created, evaluationJob, evaluation, release, approval}
+}
+
+describe("Operator restart recovery integration", () => {
+    it("reconciles a running Evaluation by run ID and restores the untouched release gate", async () => {
+        const {registryPath, created, evaluationJob, evaluation, release, approval} =
+            await persistRecoveryTree()
 
         const recoveredStore = new OperatorJobStore(registryPath)
         let evaluationReconciliations = 0
@@ -197,9 +214,57 @@ describe("Operator restart recovery integration", () => {
 
         assert.equal(evaluationReconciliations, 1)
         assert.equal(recoveredStore.getStep(evaluation.id).status, "succeeded")
+        assert.equal(recoveredStore.getJob(evaluationJob.id).status, "running")
         assert.equal(recoveredStore.getStep(release.id).status, "waiting_approval")
         assert.equal(recoveredStore.getApproval(approval.id).status, "pending")
         assert.equal(resumed.parentJob.status, "waiting_approval")
+        assert.equal(releaseExecutions, 0)
+        recoveredStore.close()
+    })
+
+    it("fails closed when a pending release gate has an Evaluation descendant with unknown outcome", async () => {
+        const {registryPath, created, evaluationJob, evaluation, release, approval} =
+            await persistRecoveryTree()
+        const recoveredStore = new OperatorJobStore(registryPath)
+        let evaluationReconciliations = 0
+        let releaseExecutions = 0
+        let runtimeClients = 0
+        const recoveredEngine = new OperatorJobEngine({
+            store: recoveredStore,
+            handlers: {
+                "skills.release": async () => {
+                    releaseExecutions += 1
+                    return {versionId: "candidate-1", versionLabel: "v1.0.0"}
+                },
+            },
+            reconcilers: {
+                evaluation: async (input) => {
+                    evaluationReconciliations += 1
+                    assert.equal(input.runId, "evaluation-run-restart")
+                    return {status: "running", result: {runId: input.runId}}
+                },
+                release: async () => {
+                    releaseExecutions += 1
+                    return {status: "released", candidateId: "candidate-1", tag: "v1.0.0"}
+                },
+            },
+        })
+        const recoveredManager = managerFixture(recoveredStore, recoveredEngine, {
+            onCreateClient: () => { runtimeClients += 1 },
+        })
+
+        await assert.rejects(
+            () => recoveredManager.restart(created.session.id),
+            /cannot resume while needs_recovery/iu,
+        )
+
+        assert.equal(evaluationReconciliations, 1)
+        assert.equal(recoveredStore.getStep(evaluation.id).status, "needs_recovery")
+        assert.equal(recoveredStore.getJob(evaluationJob.id).status, "needs_recovery")
+        assert.equal(recoveredStore.getStep(release.id).status, "waiting_approval")
+        assert.equal(recoveredStore.getApproval(approval.id).status, "pending")
+        assert.equal(recoveredStore.getJob(created.parentJob.id).status, "needs_recovery")
+        assert.equal(runtimeClients, 0)
         assert.equal(releaseExecutions, 0)
         recoveredStore.close()
     })

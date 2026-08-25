@@ -1493,11 +1493,21 @@ class OperatorSessionManager {
                 await this.#engine.reconcile(job.id)
             }
         }
+        const hasUnknownRecovery = ordered.some((job) => (
+            this.#store.getJob(job.id).status === "needs_recovery" ||
+            this.#store.listSteps({jobId: job.id}).some((step) => step.status === "needs_recovery")
+        ))
+        let recoveredParent = this.#store.getJob(parentJob.id)
+        if (hasUnknownRecovery) {
+            if (recoveredParent.status === "running") {
+                recoveredParent = this.#store.transitionJob(recoveredParent.id, "needs_recovery")
+            }
+            throw new Error("Operator session cannot resume while needs_recovery")
+        }
         const pendingApproval = jobs.some((job) => (
             !TERMINAL_JOB_STATUSES.has(this.#store.getJob(job.id).status) &&
             this.#store.listApprovals(job.id).some((approval) => approval.status === "pending")
         ))
-        const recoveredParent = this.#store.getJob(parentJob.id)
         if (pendingApproval && recoveredParent.status === "running") {
             this.#store.transitionJob(recoveredParent.id, "waiting_approval")
         }
