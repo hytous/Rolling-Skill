@@ -1385,7 +1385,7 @@ describe("DeepSeek Harness session adapter", () => {
             workspaceRoot: "/workspace",
             traceDirectory,
             spawnProcess: (_path, args) => {
-                assert.deepEqual(args, ["--profile", "web", "--port", "0"])
+                assert.deepEqual(args, ["--profile", "web", "--no-open", "--port", "0"])
                 queueMicrotask(() => child.stdout.emit("data", "dsh web: http://127.0.0.1:54945\n"))
                 return child
             },

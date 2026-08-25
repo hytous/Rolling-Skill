@@ -17,6 +17,7 @@ const {
     optimizationPanelView,
     optimizationPreflightSummary,
     optimizationRunActions,
+    operatorStatusText,
     operatorJobTreeIds,
     reduceOptimizationTimeline,
     registerOperatorActionDelegates,
@@ -61,6 +62,16 @@ function event(id, sessionId = "session-1", jobId = "job-1") {
 }
 
 describe("Operator workbench state", () => {
+    it("uses the host translation pipeline for dynamic Job statuses", () => {
+        const translate = (key) => ({
+            operatorStatusWaitingApproval: "等待审批",
+            operatorStatusUnknown: "未知状态",
+        })[key] ?? key
+
+        assert.equal(operatorStatusText("waiting_approval", translate), "等待审批")
+        assert.equal(operatorStatusText(null, translate), "未知状态")
+    })
+
     it("bounds root approval actions to its persisted Job tree", () => {
         assert.deepEqual([...operatorJobTreeIds({
             job: {id: "job-root", childJobIds: ["job-child"]},

@@ -591,9 +591,13 @@ kbd {
     overflow: hidden;
     min-width: 0;
     min-height: 0;
-    background: var(--surface);
+    padding: 20px 24px 24px;
+    background:
+        radial-gradient(circle at 92% 4%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 30%),
+        var(--surface);
     grid-row: 2 / -1;
     grid-template-columns: minmax(190px, 0.68fr) minmax(360px, 1.75fr) minmax(245px, 0.86fr);
+    gap: 12px;
 }
 
 .workbench.operator-mode:has(> .error-banner:not(.hidden)) > .operator-workbench {
@@ -603,19 +607,16 @@ kbd {
 .operator-job-panel,
 .operator-session-panel,
 .operator-status-panel {
+    overflow: hidden;
     min-width: 0;
     min-height: 0;
-}
-
-.operator-job-panel,
-.operator-status-panel {
-    background: color-mix(in srgb, var(--surface-raised) 42%, var(--surface));
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--surface-raised) 54%, var(--surface));
 }
 
 .operator-job-panel {
     display: grid;
-    overflow: hidden;
-    border-right: 1px solid var(--border);
     grid-template-rows: auto minmax(0, 1fr);
 }
 
@@ -623,7 +624,7 @@ kbd {
 .operator-session-header {
     display: flex;
     min-height: 64px;
-    padding: 13px 14px;
+    padding: 14px;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
@@ -637,18 +638,19 @@ kbd {
 }
 
 .operator-panel-header strong {
-    font-size: 15px;
+    font-size: 16px;
 }
 
 .operator-panel-header button {
-    padding: 6px 9px;
+    min-height: 28px;
+    padding: 0 9px;
     border-radius: 7px;
-    font-size: 11px;
+    font-size: 10.5px;
 }
 
 .operator-job-list {
     overflow-y: auto;
-    padding: 8px;
+    padding: 10px;
 }
 
 .operator-job-item {
@@ -657,7 +659,7 @@ kbd {
     width: 100%;
     min-width: 0;
     margin-bottom: 5px;
-    padding: 10px 28px 10px 10px;
+    padding: 11px 30px 11px 11px;
     border: 1px solid transparent;
     border-radius: 9px;
     background: transparent;
@@ -683,8 +685,7 @@ kbd {
 
 .operator-job-meta {
     color: var(--muted);
-    font-size: 10.5px;
-    text-transform: capitalize;
+    font-size: 11px;
 }
 
 .operator-job-unread {
@@ -708,17 +709,21 @@ kbd {
     position: relative;
     display: grid;
     overflow: hidden;
-    background:
-        radial-gradient(circle at 90% 0, color-mix(in srgb, var(--accent) 7%, transparent), transparent 28%),
-        var(--surface);
+    background: var(--surface);
     grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
-.operator-session-header h1,
-.operator-setup-form h1 {
+.operator-session-header h1 {
     margin: 2px 0 0;
-    font-size: 17px;
+    font-size: 18px;
     letter-spacing: -0.02em;
+}
+
+.operator-setup-form h1 {
+    margin: 4px 0 5px;
+    font-size: 24px;
+    font-weight: 670;
+    letter-spacing: -0.035em;
 }
 
 .operator-state-pill {
@@ -727,9 +732,8 @@ kbd {
     border-radius: 999px;
     background: color-mix(in srgb, var(--accent) 10%, var(--surface-raised));
     color: var(--accent);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 650;
-    text-transform: capitalize;
 }
 
 .operator-session-actions,
@@ -744,11 +748,12 @@ kbd {
 .operator-control-button,
 .operator-approval-actions button,
 .operator-link {
-    padding: 5px 8px;
+    min-height: 28px;
+    padding: 0 9px;
     border: 1px solid var(--border-strong);
     border-radius: 7px;
     background: var(--surface);
-    font-size: 10.5px;
+    font-size: 11px;
 }
 
 .operator-transcript {
@@ -786,6 +791,7 @@ kbd {
     border: 1px solid var(--border);
     border-radius: 10px;
     background: var(--surface-raised);
+    font-size: 12.5px;
     line-height: 1.52;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -847,8 +853,7 @@ kbd {
 
 .operator-status-panel {
     overflow-y: auto;
-    padding: 12px;
-    border-left: 1px solid var(--border);
+    padding: 14px;
 }
 
 .operator-status-panel > section {
@@ -858,16 +863,14 @@ kbd {
 
 .operator-status-panel h2 {
     margin: 0 0 7px;
-    font-size: 10px;
+    font-size: 11.5px;
     font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
 }
 
 .operator-compact-copy {
     margin: 0;
     color: var(--muted);
-    font-size: 10.5px;
+    font-size: 11.5px;
     line-height: 1.45;
     overflow-wrap: anywhere;
 }
@@ -891,7 +894,7 @@ kbd {
 .operator-side-card small,
 .operator-approval-status {
     color: var(--muted);
-    font-size: 9.5px;
+    font-size: 10.5px;
 }
 
 .operator-link {
@@ -917,7 +920,7 @@ kbd {
 .operator-empty {
     padding: 14px 8px;
     color: var(--faint);
-    font-size: 11px;
+    font-size: 11.5px;
     text-align: center;
 }
 
@@ -935,7 +938,8 @@ kbd {
 .operator-setup-form header p {
     margin: 5px 0 0;
     color: var(--muted);
-    font-size: 11px;
+    font-size: 11.5px;
+    line-height: 1.55;
 }
 
 .operator-field,
@@ -943,19 +947,21 @@ kbd {
     display: grid;
     gap: 5px;
     color: var(--muted);
-    font-size: 10.5px;
+    font-size: 11.5px;
 }
 
 .operator-field textarea,
 .operator-field select,
 .operator-budget-grid input {
     width: 100%;
+    min-height: 36px;
     padding: 8px 9px;
     border: 1px solid var(--border-strong);
     border-radius: 8px;
     outline: 0;
     background: var(--surface);
     color: var(--text);
+    font-size: 12px;
 }
 
 .operator-objective-field {
@@ -978,7 +984,7 @@ kbd {
     gap: 12px;
     padding: 14px;
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: 13px;
     background: color-mix(in srgb, var(--surface-raised) 55%, var(--surface));
 }
 
@@ -1040,7 +1046,7 @@ kbd {
 .operator-fieldset legend,
 .operator-setup-details summary {
     color: var(--muted);
-    font-size: 10.5px;
+    font-size: 11px;
     font-weight: 620;
 }
 
@@ -1060,7 +1066,7 @@ kbd {
     align-items: center;
     gap: 6px;
     color: var(--muted);
-    font-size: 9.5px;
+    font-size: 10.5px;
 }
 
 .operator-check span {
@@ -1099,7 +1105,8 @@ kbd {
 }
 
 .operator-setup-actions button {
-    padding: 8px 13px;
+    min-height: 32px;
+    padding: 0 12px;
     border-radius: 8px;
 }
 

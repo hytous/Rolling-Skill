@@ -294,186 +294,186 @@
                     </div>
                 </section>
 
-                <section id="operator-workbench" class="operator-workbench hidden" aria-label="Operator self-operation">
+                <section id="operator-workbench" class="operator-workbench hidden" aria-label="Operator self-operation" data-i18n-aria-label="operatorWorkbenchAria">
                     <aside class="operator-job-panel">
                         <header class="operator-panel-header">
                             <div>
-                                <span class="panel-kicker">Operator</span>
-                                <strong>Jobs</strong>
+                                <span class="panel-kicker" data-i18n="operator">Self-operation</span>
+                                <strong data-i18n="operatorJobs">Jobs</strong>
                             </div>
-                            <button id="operator-new-job" class="primary" type="button">New Job</button>
+                            <button id="operator-new-job" class="primary" type="button" data-i18n="operatorNewJob">New Job</button>
                         </header>
-                        <nav id="operator-job-list" class="operator-job-list" aria-label="Operator Jobs"></nav>
+                        <nav id="operator-job-list" class="operator-job-list" aria-label="Operator Jobs" data-i18n-aria-label="operatorJobs"></nav>
                     </aside>
 
                     <section class="operator-session-panel">
                         <form id="operator-setup-form" class="operator-setup-form hidden">
                             <header>
-                                <span class="panel-kicker">Scoped session</span>
-                                <h1>Start self-operation</h1>
-                                <p>Choose the Runtime, authority, scope, and hard budget for this durable Job.</p>
+                                <span class="panel-kicker" data-i18n="operatorScopedSession">Scoped session</span>
+                                <h1 data-i18n="operatorStartSelfOperation">Start self-operation</h1>
+                                <p data-i18n="operatorStartHelp">Choose the Runtime, authority, scope, and hard budget for this durable Job.</p>
                             </header>
                             <label class="operator-field">
-                                <span>Task type</span>
+                                <span data-i18n="operatorTaskType">Task type</span>
                                 <select id="operator-job-kind">
-                                    <option value="operator">Operator Job</option>
-                                    <option value="optimization">Multi-Epoch Skill optimization</option>
+                                    <option value="operator" data-i18n="operatorJobType">Operator Job</option>
+                                    <option value="optimization" data-i18n="operatorOptimizationType">Multi-Epoch Skill optimization</option>
                                 </select>
                             </label>
                             <label class="operator-field operator-objective-field">
-                                <span>Objective</span>
-                                <textarea name="objective" rows="3" maxlength="32768" required placeholder="Describe the bounded outcome…"></textarea>
+                                <span data-i18n="operatorObjective">Objective</span>
+                                <textarea name="objective" rows="3" maxlength="32768" required placeholder="Describe the bounded outcome…" data-i18n-placeholder="operatorObjectivePlaceholder"></textarea>
                             </label>
                             <div class="operator-setup-row">
                                 <label class="operator-field">
-                                    <span>Operator Runtime</span>
+                                    <span data-i18n="operatorRuntime">Operator Runtime</span>
                                     <select id="operator-runtime" required></select>
                                 </label>
                                 <label class="operator-field">
-                                    <span>Model</span>
+                                    <span data-i18n="model">Model</span>
                                     <select id="operator-model"></select>
                                 </label>
                                 <label class="operator-field">
-                                    <span>Reasoning effort</span>
+                                    <span data-i18n="reasoningEffort">Reasoning effort</span>
                                     <select id="operator-effort"></select>
                                 </label>
                             </div>
                             <div class="operator-setup-row two">
                                 <label class="operator-field">
-                                    <span>Managed Skill · optional</span>
+                                    <span data-i18n="operatorManagedSkillOptional">Managed Skill · optional</span>
                                     <select id="operator-managed-skill"></select>
                                 </label>
                                 <label class="operator-field">
-                                    <span>Dataset · optional</span>
+                                    <span data-i18n="operatorDatasetOptional">Dataset · optional</span>
                                     <select id="operator-managed-dataset"></select>
                                 </label>
                             </div>
                             <fieldset class="operator-fieldset">
-                                <legend>Allowed target Runtimes</legend>
+                                <legend data-i18n="operatorAllowedTargets">Allowed target Runtimes</legend>
                                 <div id="operator-target-runtimes" class="operator-check-grid"></div>
                             </fieldset>
                             <section id="operator-optimization-fields" class="operator-optimization-fields hidden">
                                 <div class="operator-optimization-grid">
                                     <label class="operator-field">
-                                        <span>Released baseline</span>
+                                        <span data-i18n="operatorReleasedBaseline">Released baseline</span>
                                         <select id="operator-optimization-baseline"></select>
                                     </label>
                                     <label class="operator-field">
-                                        <span>Judge Runtime</span>
+                                        <span data-i18n="operatorJudgeRuntime">Judge Runtime</span>
                                         <select id="operator-optimization-judge-runtime"></select>
                                     </label>
                                     <label class="operator-field">
-                                        <span>Judge model</span>
+                                        <span data-i18n="operatorJudgeModel">Judge model</span>
                                         <select id="operator-optimization-judge-model"></select>
                                     </label>
                                     <label class="operator-field">
-                                        <span>Judge effort</span>
+                                        <span data-i18n="operatorJudgeEffort">Judge effort</span>
                                         <select id="operator-optimization-judge-effort"></select>
                                     </label>
                                     <label class="operator-field">
-                                        <span>Activation</span>
+                                        <span data-i18n="activationMode">Activation</span>
                                         <select id="operator-optimization-activation">
-                                            <option value="automatic">Automatic</option>
-                                            <option value="explicit">Explicit</option>
+                                            <option value="automatic" data-i18n="operatorAutomatic">Automatic</option>
+                                            <option value="explicit" data-i18n="operatorExplicit">Explicit</option>
                                         </select>
                                     </label>
                                     <label class="operator-field">
-                                        <span>Epoch mode</span>
+                                        <span data-i18n="operatorEpochMode">Epoch mode</span>
                                         <select id="operator-optimization-mode">
-                                            <option value="adaptive">Adaptive</option>
-                                            <option value="fixed">Fixed</option>
+                                            <option value="adaptive" data-i18n="operatorAdaptive">Adaptive</option>
+                                            <option value="fixed" data-i18n="operatorFixed">Fixed</option>
                                         </select>
                                     </label>
                                 </div>
                                 <fieldset class="operator-fieldset">
-                                    <legend>Stopping rules and hard limits</legend>
+                                    <legend data-i18n="operatorStoppingRules">Stopping rules and hard limits</legend>
                                     <div class="operator-budget-grid">
-                                        <label><span>Max Epochs</span><input type="number" min="1" max="100" value="5" data-optimization-limit="maxEpochs" /></label>
-                                        <label><span>Patience</span><input type="number" min="1" max="100" value="2" data-optimization-limit="patience" /></label>
-                                        <label><span>Minimum improvement</span><input type="number" min="0" max="100" step="0.1" value="1" data-optimization-limit="minimumImprovement" /></label>
-                                        <label><span>Duration (ms)</span><input type="number" min="1000" step="1000" value="7200000" data-optimization-limit="maxDurationMs" /></label>
-                                        <label><span>Operator turns</span><input type="number" min="1" value="50" data-optimization-limit="maxTurns" /></label>
-                                        <label><span>Tokens · telemetry required</span><input type="number" min="0" data-optimization-limit="maxTokens" /></label>
-                                        <label><span>Cost micros · telemetry required</span><input type="number" min="0" data-optimization-limit="maxCostMicros" /></label>
-                                        <label><span>Target score</span><input type="number" min="0" max="100" step="0.1" value="90" data-optimization-target="minimumScore" /></label>
-                                        <label><span>Target pass rate</span><input type="number" min="0" max="1" step="0.01" value="0.95" data-optimization-target="minimumPassRate" /></label>
-                                        <label class="operator-check"><input type="checkbox" checked data-optimization-target="requireCriticalCases" /><span>Require critical Cases</span></label>
+                                        <label><span data-i18n="operatorMaxEpochs">Max Epochs</span><input type="number" min="1" max="100" value="5" data-optimization-limit="maxEpochs" /></label>
+                                        <label><span data-i18n="operatorPatience">Patience</span><input type="number" min="1" max="100" value="2" data-optimization-limit="patience" /></label>
+                                        <label><span data-i18n="operatorMinimumImprovement">Minimum improvement</span><input type="number" min="0" max="100" step="0.1" value="1" data-optimization-limit="minimumImprovement" /></label>
+                                        <label><span data-i18n="operatorDurationMs">Duration (ms)</span><input type="number" min="1000" step="1000" value="7200000" data-optimization-limit="maxDurationMs" /></label>
+                                        <label><span data-i18n="operatorTurns">Operator turns</span><input type="number" min="1" value="50" data-optimization-limit="maxTurns" /></label>
+                                        <label><span data-i18n="operatorTokensTelemetry">Tokens · telemetry required</span><input type="number" min="0" data-optimization-limit="maxTokens" /></label>
+                                        <label><span data-i18n="operatorCostTelemetry">Cost micros · telemetry required</span><input type="number" min="0" data-optimization-limit="maxCostMicros" /></label>
+                                        <label><span data-i18n="operatorTargetScore">Target score</span><input type="number" min="0" max="100" step="0.1" value="90" data-optimization-target="minimumScore" /></label>
+                                        <label><span data-i18n="operatorTargetPassRate">Target pass rate</span><input type="number" min="0" max="1" step="0.01" value="0.95" data-optimization-target="minimumPassRate" /></label>
+                                        <label class="operator-check"><input type="checkbox" checked data-optimization-target="requireCriticalCases" /><span data-i18n="operatorRequireCriticalCases">Require critical Cases</span></label>
                                     </div>
                                 </fieldset>
-                                <div id="operator-optimization-preflight-summary" class="operator-optimization-preflight-summary" aria-live="polite">Run preflight to freeze inputs and inspect installation readiness.</div>
+                                <div id="operator-optimization-preflight-summary" class="operator-optimization-preflight-summary" aria-live="polite" data-i18n="operatorPreflightInitial">Run preflight to freeze inputs and inspect installation readiness.</div>
                             </section>
                             <details class="operator-setup-details">
-                                <summary>Permission grants and budget</summary>
+                                <summary data-i18n="operatorPermissionsBudget">Permission grants and budget</summary>
                                 <fieldset class="operator-fieldset">
-                                    <legend>Permission grants</legend>
+                                    <legend data-i18n="operatorPermissionGrants">Permission grants</legend>
                                     <div id="operator-permission-grants" class="operator-check-grid permission-grid"></div>
                                 </fieldset>
                                 <fieldset class="operator-fieldset">
-                                    <legend>Hard budget</legend>
+                                    <legend data-i18n="operatorHardBudget">Hard budget</legend>
                                     <div class="operator-budget-grid">
-                                        <label><span>Duration (ms)</span><input type="number" min="0" step="1000" value="3600000" data-operator-budget="maxDurationMs" required /></label>
-                                        <label><span>Runtime turns</span><input type="number" min="0" value="20" data-operator-budget="maxRuntimeTurns" required /></label>
-                                        <label><span>Evaluations</span><input type="number" min="0" value="5" data-operator-budget="maxEvaluations" required /></label>
-                                        <label><span>Target executions</span><input type="number" min="0" value="50" data-operator-budget="maxTargetExecutions" required /></label>
-                                        <label><span>Judge executions</span><input type="number" min="0" value="20" data-operator-budget="maxJudgeExecutions" required /></label>
-                                        <label><span>Tokens · optional</span><input type="number" min="0" data-operator-budget="maxTokens" /></label>
-                                        <label><span>Reported cost · optional</span><input type="number" min="0" step="0.01" data-operator-budget="maxReportedCost" /></label>
+                                        <label><span data-i18n="operatorDurationMs">Duration (ms)</span><input type="number" min="0" step="1000" value="3600000" data-operator-budget="maxDurationMs" required /></label>
+                                        <label><span data-i18n="operatorRuntimeTurns">Runtime turns</span><input type="number" min="0" value="20" data-operator-budget="maxRuntimeTurns" required /></label>
+                                        <label><span data-i18n="operatorEvaluations">Evaluations</span><input type="number" min="0" value="5" data-operator-budget="maxEvaluations" required /></label>
+                                        <label><span data-i18n="operatorTargetExecutions">Target executions</span><input type="number" min="0" value="50" data-operator-budget="maxTargetExecutions" required /></label>
+                                        <label><span data-i18n="operatorJudgeExecutions">Judge executions</span><input type="number" min="0" value="20" data-operator-budget="maxJudgeExecutions" required /></label>
+                                        <label><span data-i18n="operatorTokensOptional">Tokens · optional</span><input type="number" min="0" data-operator-budget="maxTokens" /></label>
+                                        <label><span data-i18n="operatorReportedCostOptional">Reported cost · optional</span><input type="number" min="0" step="0.01" data-operator-budget="maxReportedCost" /></label>
                                     </div>
                                 </fieldset>
                             </details>
                             <p id="operator-setup-error" class="operator-error hidden" role="alert"></p>
                             <div class="operator-setup-actions">
-                                <button id="operator-generic-start" class="primary" type="submit">Start Operator Job</button>
-                                <button id="operator-optimization-preflight" class="hidden" type="button">Run Optimization preflight</button>
-                                <button id="operator-optimization-start" class="primary hidden" type="submit" disabled>Start Optimization</button>
+                                <button id="operator-generic-start" class="primary" type="submit" data-i18n="operatorStartJob">Start Operator Job</button>
+                                <button id="operator-optimization-preflight" class="hidden" type="button" data-i18n="operatorRunPreflight">Run Optimization preflight</button>
+                                <button id="operator-optimization-start" class="primary hidden" type="submit" disabled data-i18n="operatorStartOptimization">Start Optimization</button>
                             </div>
                         </form>
 
                         <header id="operator-session-header" class="operator-session-header hidden">
                             <div>
                                 <span id="operator-session-state" class="operator-state-pill"></span>
-                                <h1 id="operator-session-title">Operator Job</h1>
+                                <h1 id="operator-session-title" data-i18n="operatorJobTitle">Operator Job</h1>
                             </div>
                             <div id="operator-session-actions" class="operator-session-actions"></div>
                         </header>
                         <div id="operator-transcript" class="operator-transcript" aria-live="polite"></div>
                         <div class="operator-composer-wrap">
                             <form id="operator-composer" class="operator-composer hidden">
-                                <textarea id="operator-composer-input" rows="2" maxlength="32768" aria-label="Operator message" placeholder="Message this Operator session…"></textarea>
-                                <button id="operator-composer-send" class="primary" type="submit">Send</button>
+                                <textarea id="operator-composer-input" rows="2" maxlength="32768" aria-label="Operator message" placeholder="Message this Operator session…" data-i18n-aria-label="operatorMessageAria" data-i18n-placeholder="operatorMessagePlaceholder"></textarea>
+                                <button id="operator-composer-send" class="primary" type="submit" data-i18n="send">Send</button>
                             </form>
                         </div>
                     </section>
 
                     <aside id="operator-status-panel" class="operator-status-panel">
                         <section id="operator-optimization-panel" class="operator-side-section hidden">
-                            <h2>Multi-Epoch Optimization</h2>
+                            <h2 data-i18n="operatorMultiEpochOptimization">Multi-Epoch Optimization</h2>
                             <div id="operator-optimization-frozen" class="operator-compact-copy"></div>
                             <div id="operator-optimization-timeline" class="operator-optimization-timeline"></div>
                             <div id="operator-optimization-installations" class="operator-side-list"></div>
                             <div id="operator-optimization-budget" class="operator-compact-copy"></div>
                             <div id="operator-optimization-recovery" class="operator-optimization-recovery"></div>
-                            <p id="operator-optimization-stop-warning" class="operator-optimization-stop-warning hidden">Stopping cancels queued work, interrupts current work, and restores Runtime Skills.</p>
+                            <p id="operator-optimization-stop-warning" class="operator-optimization-stop-warning hidden" data-i18n="operatorStopWarning">Stopping cancels queued work, interrupts current work, and restores Runtime Skills.</p>
                             <div id="operator-optimization-actions" class="operator-inline-actions"></div>
                         </section>
                         <section>
-                            <h2>Scope</h2>
-                            <p id="operator-scope" class="operator-compact-copy">No scope selected</p>
+                            <h2 data-i18n="operatorScope">Scope</h2>
+                            <p id="operator-scope" class="operator-compact-copy" data-i18n="operatorNoScope">No scope selected</p>
                         </section>
                         <section>
-                            <h2>Budget</h2>
-                            <p id="operator-budget" class="operator-compact-copy">No budget details</p>
+                            <h2 data-i18n="operatorBudget">Budget</h2>
+                            <p id="operator-budget" class="operator-compact-copy" data-i18n="operatorNoBudget">No budget details</p>
                         </section>
                         <section class="operator-side-section">
-                            <h2>Child Jobs</h2>
+                            <h2 data-i18n="operatorChildJobs">Child Jobs</h2>
                             <div id="operator-child-jobs" class="operator-side-list"></div>
                         </section>
                         <section class="operator-side-section">
-                            <h2>Artifacts</h2>
+                            <h2 data-i18n="operatorArtifacts">Artifacts</h2>
                             <div id="operator-artifacts" class="operator-side-list"></div>
                         </section>
                         <section class="operator-side-section approval-section">
-                            <h2>Approval queue</h2>
+                            <h2 data-i18n="operatorApprovalQueue">Approval queue</h2>
                             <div id="operator-approval-queue" class="operator-side-list"></div>
                         </section>
                     </aside>

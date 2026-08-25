@@ -388,7 +388,22 @@
         }
     }
 
-    function artifactDeepLinks(artifact = {}) {
+    function translatedText(translate, key, fallback = key) {
+        const value = typeof translate === "function" ? translate(key) : key
+        return typeof value === "string" && value && value !== key ? value : fallback
+    }
+
+    function formattedText(formatMessage, translate, key, values = {}, fallback = key) {
+        const value = typeof formatMessage === "function" ? formatMessage(key, values) : key
+        const template = typeof value === "string" && value && value !== key
+            ? value
+            : translatedText(translate, key, fallback)
+        return template.replace(/\{(\w+)\}/gu, (match, name) =>
+            values[name] === undefined ? match : String(values[name]),
+        )
+    }
+
+    function artifactDeepLinks(artifact = {}, translate = null, formatMessage = null) {
         const metadata = artifact?.metadata && typeof artifact.metadata === "object"
             ? artifact.metadata
             : {}
@@ -397,11 +412,11 @@
             ...(Array.isArray(metadata.installationIds) ? metadata.installationIds.slice(0, 100) : []),
         ]
         const candidates = [
-            ["dataset", metadata.datasetId, "Dataset"],
-            ["case", metadata.caseId, "Case"],
-            ["evaluation", metadata.evaluationId ?? metadata.runId, "Evaluation"],
-            ["candidate", metadata.candidateId ?? metadata.versionId, "Candidate"],
-            ...installationIds.map((id) => ["installation", id, "Installation"]),
+            ["dataset", metadata.datasetId, "operatorArtifactDataset", "Dataset"],
+            ["case", metadata.caseId, "operatorArtifactCase", "Case"],
+            ["evaluation", metadata.evaluationId ?? metadata.runId, "operatorArtifactEvaluation", "Evaluation"],
+            ["candidate", metadata.candidateId ?? metadata.versionId, "operatorArtifactCandidate", "Candidate"],
+            ...installationIds.map((id) => ["installation", id, "operatorArtifactInstallation", "Installation"]),
         ]
         const seen = new Set()
         return candidates
@@ -412,7 +427,11 @@
                 seen.add(key)
                 return true
             })
-            .map(([kind, id, label]) => ({kind, id, label: `${label} ${id}`}))
+            .map(([kind, id, key, fallback]) => ({
+                kind,
+                id,
+                label: formattedText(formatMessage, translate, key, {id}, `${fallback} {id}`),
+            }))
     }
 
     function recordId(value, prefix) {
@@ -1452,6 +1471,107 @@
         "optimizations.execute",
     ])
 
+    const OPERATOR_STATUS_KEYS = Object.freeze({
+        unknown: "operatorStatusUnknown",
+        queued: "operatorStatusQueued",
+        running: "operatorStatusRunning",
+        waiting_approval: "operatorStatusWaitingApproval",
+        paused: "operatorStatusPaused",
+        succeeded: "operatorStatusSucceeded",
+        failed: "operatorStatusFailed",
+        cancelled: "operatorStatusCancelled",
+        needs_recovery: "operatorStatusNeedsRecovery",
+        restoring: "operatorStatusRestoring",
+        pending: "operatorStatusPending",
+        approved: "operatorStatusApproved",
+        rejected: "operatorStatusRejected",
+        expired: "operatorStatusExpired",
+        completed: "operatorStatusCompleted",
+        preparing: "operatorStatusPreparing",
+        installing: "operatorStatusInstalling",
+        evaluating: "operatorStatusEvaluating",
+        editing: "operatorStatusEditing",
+    })
+
+    const OPERATOR_ACTION_KEYS = Object.freeze({
+        "context.read": "operatorActionContextRead",
+        "raw_cases.read": "operatorActionRawCasesRead",
+        "raw_cases.write": "operatorActionRawCasesWrite",
+        "runtime.execute": "operatorActionRuntimeExecute",
+        "runtimes.read": "operatorActionRuntimesRead",
+        "datasets.read": "operatorActionDatasetsRead",
+        "datasets.write": "operatorActionDatasetsWrite",
+        "datasets.delete": "operatorActionDatasetsDelete",
+        "evaluations.read": "operatorActionEvaluationsRead",
+        "evaluations.execute": "operatorActionEvaluationsExecute",
+        "skills.read": "operatorActionSkillsRead",
+        "skills.write": "operatorActionSkillsWrite",
+        "skills.release": "operatorActionSkillsRelease",
+        "jobs.read": "operatorActionJobsRead",
+        "approvals.read": "operatorActionApprovalsRead",
+        "curation.write": "operatorActionCurationWrite",
+        "rubrics.publish": "operatorActionRubricsPublish",
+        "installations.execute": "operatorActionInstallationsExecute",
+        "installations.read": "operatorActionInstallationsRead",
+        "optimizations.read": "operatorActionOptimizationsRead",
+        "optimizations.execute": "operatorActionOptimizationsExecute",
+    })
+
+    const OPERATOR_SCOPE_KEYS = Object.freeze({
+        skillIds: "operatorScopeSkillIds",
+        datasetIds: "operatorScopeDatasetIds",
+        runtimeIds: "operatorScopeRuntimeIds",
+        repositoryIds: "operatorScopeRepositoryIds",
+    })
+
+    const OPERATOR_BUDGET_KEYS = Object.freeze({
+        maxDurationMs: "operatorDurationMs",
+        maxRuntimeTurns: "operatorRuntimeTurns",
+        maxEvaluations: "operatorEvaluations",
+        maxTargetExecutions: "operatorTargetExecutions",
+        maxJudgeExecutions: "operatorJudgeExecutions",
+        maxTokens: "operatorTokensOptional",
+        maxReportedCost: "operatorReportedCostOptional",
+    })
+
+    const OPTIMIZATION_REASON_KEYS = Object.freeze({
+        cancel_requested: "operatorStatusCancelled",
+        recovery_failed: "operatorStatusNeedsRecovery",
+        duration_budget_exhausted: "operatorDurationMs",
+        turn_budget_exhausted: "operatorTurns",
+        token_budget_exhausted: "operatorTokensOptional",
+        cost_budget_exhausted: "operatorReportedCostOptional",
+        critical_regression: "criticalFailure",
+        broad_regression: "operatorRegressionsValue",
+        target_achieved: "operatorPassed",
+        max_epochs_reached: "operatorMaxEpochs",
+        patience_exhausted: "operatorPatience",
+        agent_finish: "operatorStatusSucceeded",
+        agent_pause: "operatorStatusPaused",
+        app_shutdown: "operatorStatusPaused",
+        process_interrupted: "operatorStatusNeedsRecovery",
+        continue: "operatorStatusRunning",
+    })
+
+    function operatorStatusText(status, translate = null) {
+        const normalized = String(status ?? "unknown").trim().toLowerCase() || "unknown"
+        const key = OPERATOR_STATUS_KEYS[normalized]
+        return key
+            ? translatedText(translate, key, normalized.replaceAll("_", " "))
+            : normalized.replaceAll("_", " ")
+    }
+
+    function operatorActionText(action, translate = null) {
+        const key = OPERATOR_ACTION_KEYS[action]
+        return key ? translatedText(translate, key, action) : String(action ?? "")
+    }
+
+    function optimizationReasonText(reason, translate = null) {
+        if (!reason) return "—"
+        const key = OPTIMIZATION_REASON_KEYS[reason]
+        return key ? translatedText(translate, key, String(reason)) : String(reason).replaceAll("_", " ")
+    }
+
     function createElement(document_, tag, className = "", text = "") {
         const element = document_.createElement(tag)
         if (className) element.className = className
@@ -1556,13 +1676,16 @@
         return {reset, patch}
     }
 
-    function scopeText(scope = {}) {
+    function scopeText(scope = {}, translate = null) {
         const parts = []
         for (const [key, values] of Object.entries(scope ?? {})) {
-            if (Array.isArray(values) && values.length) parts.push(`${key}: ${values.join(", ")}`)
-            else if (values !== null && values !== undefined && values !== "") parts.push(`${key}: ${String(values)}`)
+            const label = OPERATOR_SCOPE_KEYS[key]
+                ? translatedText(translate, OPERATOR_SCOPE_KEYS[key], key)
+                : key
+            if (Array.isArray(values) && values.length) parts.push(`${label}: ${values.join(", ")}`)
+            else if (values !== null && values !== undefined && values !== "") parts.push(`${label}: ${String(values)}`)
         }
-        return parts.join(" · ") || "No additional scope"
+        return parts.join(" · ") || translatedText(translate, "operatorNoAdditionalScope", "No additional scope")
     }
 
     function createOperatorWorkbench(options = {}) {
@@ -1570,7 +1693,31 @@
         const root = options.root
         const document_ = root?.ownerDocument ?? globalObject?.document
         if (!api || !root || !document_) throw new TypeError("Operator workbench DOM options are required")
-        const onError = options.onError ?? (() => {})
+        const translate = options.translate ?? ((key) => key)
+        const formatMessage_ = options.formatMessage ?? ((key, values) => (
+            formattedText(null, translate, key, values)
+        ))
+        const text = (key, fallback = key) => translatedText(translate, key, fallback)
+        const message = (key, values = {}, fallback = key) => (
+            formattedText(formatMessage_, translate, key, values, fallback)
+        )
+        const rawOnError = options.onError ?? (() => {})
+        function localizedErrorText(error) {
+            const detail = error?.message ?? String(error)
+            if (/telemetry/iu.test(detail)) return text("operatorErrorTelemetryRequired", detail)
+            if (/catalog|matching Released|binding do not match/iu.test(detail)) {
+                return text("operatorErrorCatalogMismatch", detail)
+            }
+            if (/invalid|required|must|at least|unique|preflight/iu.test(detail)) {
+                return text("operatorErrorInvalidConfiguration", detail)
+            }
+            return message("operatorErrorWithDetail", {message: detail}, `Operation failed: ${detail}`)
+        }
+        const onError = (error) => {
+            const localized = new Error(localizedErrorText(error))
+            localized.code = error?.code
+            rawOnError(localized)
+        }
         const onSelectEntity = options.onSelectEntity ?? (() => {})
         const language = options.language ?? (() => "en")
         const selectors = {
@@ -1675,9 +1822,11 @@
             updateNode(card, entry) {
                 const role = entryRole(entry)
                 card.className = `operator-entry ${role}`
-                card.querySelector(".operator-entry-label").textContent = role === "activity"
-                    ? String(entry.kind ?? "activity").replaceAll("_", " ")
-                    : role
+                card.querySelector(".operator-entry-label").textContent = {
+                    user: text("operatorRoleUser", "You"),
+                    assistant: text("operatorRoleAssistant", "Operator"),
+                    activity: text("operatorRoleActivity", "Activity"),
+                }[role] ?? role
                 card.querySelector(".operator-entry-copy").textContent = entryText(entry)
             },
         })
@@ -1781,7 +1930,7 @@
             }
             const efforts = runtimeEfforts(runtimeId, modelSelect.value)
             effortSelect.replaceChildren()
-            appendOption(effortSelect, "", "Runtime default")
+            appendOption(effortSelect, "", text("operatorRuntimeDefault", "Runtime default"))
             for (const effort of efforts) appendOption(effortSelect, effort, effort)
             effortSelect.value = efforts.includes(selectedEffort) ? selectedEffort : ""
         }
@@ -1825,7 +1974,7 @@
             const efforts = (modelEfforts.length ? modelEfforts : runtime?.efforts ?? [])
                 .map((entry) => String(entry?.reasoningEffort ?? entry?.effort ?? entry?.value ?? entry))
             selectors.effort.replaceChildren()
-            appendOption(selectors.effort, "", "Runtime default")
+            appendOption(selectors.effort, "", text("operatorRuntimeDefault", "Runtime default"))
             for (const effort of [...new Set(efforts)]) appendOption(selectors.effort, effort, effort)
             selectors.effort.value = efforts.includes(selected) ? selected : ""
         }
@@ -1833,7 +1982,13 @@
         function renderModels(runtimeId) {
             const selected = selectors.model.value
             selectors.model.replaceChildren()
-            appendOption(selectors.model, "", modelLoads.has(runtimeId) ? "Loading models…" : "Runtime default")
+            appendOption(
+                selectors.model,
+                "",
+                modelLoads.has(runtimeId)
+                    ? text("operatorLoadingModels", "Loading models…")
+                    : text("operatorRuntimeDefault", "Runtime default"),
+            )
             for (const model of availableModels(runtimeId)) {
                 const value = modelId(model)
                 if (value) appendOption(selectors.model, value, model.displayName ?? value)
@@ -1905,13 +2060,13 @@
                 catalogs.skills.filter((entry) => entry.status === undefined || entry.status === "valid")
                     .map((entry) => ({id: entry.id, label: entry.name ?? entry.id})),
                 selectors.skill.value,
-                "No managed Skill",
+                text("operatorNoManagedSkill", "No managed Skill"),
             )
             setSelectOptions(
                 selectors.dataset,
                 catalogs.datasets.map((entry) => ({id: entry.id, label: entry.name ?? entry.id})),
                 selectors.dataset.value,
-                "No Dataset",
+                text("operatorNoDataset", "No Dataset"),
             )
             const selectedBaseline = selectors.optimizationBaseline.value
             const releasedVersions = catalogs.versions.filter((entry) => (
@@ -1924,7 +2079,7 @@
                     label: entry.label ?? entry.versionLabel ?? entry.id,
                 })),
                 selectedBaseline,
-                "Select Released baseline",
+                text("operatorSelectReleasedBaseline", "Select Released baseline"),
             )
             const selectedTargets = new Set(
                 [...selectors.targets.querySelectorAll("[data-operator-target]:checked")]
@@ -1988,8 +2143,10 @@
             optimizationPreflightSignature = null
             selectors.optimizationStart.disabled = true
             if (isOptimizationSetup()) {
-                selectors.optimizationPreflightSummary.textContent =
-                    "Configuration changed. Run preflight again before starting."
+                selectors.optimizationPreflightSummary.textContent = text(
+                    "operatorConfigurationChanged",
+                    "Configuration changed. Run preflight again before starting.",
+                )
             }
         }
 
@@ -2061,12 +2218,29 @@
         function renderOptimizationPreflight(summary) {
             const frozen = summary.frozen
             selectors.optimizationPreflightSummary.textContent = [
-                `Frozen ${frozen.baselineVersionId} (${frozen.baselineDigest ?? "digest pending"})`,
-                `Dataset ${frozen.datasetId} @ revision ${frozen.datasetRevision}`,
-                `Rubric ${frozen.rubricId} @ version ${frozen.rubricVersion}`,
-                `${summary.runtimeMatrix.length} target Runtime(s)`,
-                `Telemetry: tokens ${summary.telemetry.tokens ? "yes" : "no"}, cost ${summary.telemetry.cost ? "yes" : "no"}`,
-                "Approvals: first Candidate experiment install, release, and Released install remain explicit.",
+                message("operatorPreflightFrozen", {
+                    version: frozen.baselineVersionId,
+                    digest: frozen.baselineDigest ?? text("operatorDigestPending", "digest pending"),
+                }, "Frozen {version} ({digest})"),
+                message("operatorPreflightDataset", {
+                    id: frozen.datasetId,
+                    revision: frozen.datasetRevision,
+                }, "Dataset {id} @ revision {revision}"),
+                message("operatorPreflightRubric", {
+                    id: frozen.rubricId,
+                    version: frozen.rubricVersion,
+                }, "Rubric {id} @ version {version}"),
+                message("operatorPreflightTargets", {
+                    count: summary.runtimeMatrix.length,
+                }, "{count} target Runtime(s)"),
+                message("operatorPreflightTelemetry", {
+                    tokens: text(summary.telemetry.tokens ? "operatorYes" : "operatorNo", summary.telemetry.tokens ? "yes" : "no"),
+                    cost: text(summary.telemetry.cost ? "operatorYes" : "operatorNo", summary.telemetry.cost ? "yes" : "no"),
+                }, "Telemetry: tokens {tokens}, cost {cost}"),
+                text(
+                    "operatorPreflightApprovals",
+                    "Approvals remain explicit for the first Candidate experiment install, release, and Released install.",
+                ),
             ].join(" · ")
         }
 
@@ -2077,7 +2251,10 @@
                 const config = optimizationConfigFromSetup()
                 const signature = JSON.stringify(config)
                 selectors.optimizationPreflight.disabled = true
-                selectors.optimizationPreflightSummary.textContent = "Checking frozen inputs and Runtime readiness…"
+                selectors.optimizationPreflightSummary.textContent = text(
+                    "operatorCheckingPreflight",
+                    "Checking frozen inputs and Runtime readiness…",
+                )
                 const preflight = await api.preflightOptimization({
                     ...config,
                     idempotencyKey: optimizationRequestId("optimization-preflight"),
@@ -2092,8 +2269,11 @@
                 optimizationPreflight = null
                 optimizationPreflightSignature = null
                 selectors.optimizationStart.disabled = true
-                selectors.optimizationPreflightSummary.textContent = "Preflight failed. Fix the configuration and retry."
-                selectors.setupError.textContent = error?.message ?? String(error)
+                selectors.optimizationPreflightSummary.textContent = text(
+                    "operatorPreflightFailed",
+                    "Preflight failed. Fix the configuration and retry.",
+                )
+                selectors.setupError.textContent = localizedErrorText(error)
                 selectors.setupError.classList.remove("hidden")
             } finally {
                 if (!destroyed) selectors.optimizationPreflight.disabled = false
@@ -2110,23 +2290,42 @@
             if (!run) return
             const view = optimizationPanelView(run)
             selectors.optimizationFrozen.textContent = [
-                `Baseline ${view.baseline.versionId ?? "—"}`,
-                `Dataset ${view.dataset.id ?? "—"} @ ${view.dataset.revision ?? "—"}`,
-                `Rubric ${view.rubric.id ?? "—"} @ ${view.rubric.version ?? "—"}`,
-                `State ${jobStatusText(view.state)}`,
+                message("operatorBaselineValue", {value: view.baseline.versionId ?? "—"}, "Baseline {value}"),
+                message("operatorDatasetValue", {
+                    id: view.dataset.id ?? "—",
+                    revision: view.dataset.revision ?? "—",
+                }, "Dataset {id} @ {revision}"),
+                message("operatorRubricValue", {
+                    id: view.rubric.id ?? "—",
+                    version: view.rubric.version ?? "—",
+                }, "Rubric {id} @ {version}"),
+                message("operatorState", {value: jobStatusText(view.state)}, "State {value}"),
             ].join(" · ")
             selectors.optimizationTimeline.replaceChildren()
             for (const point of view.scoreTrend) {
                 const row = createElement(document_, "div", "operator-optimization-epoch")
                 row.append(
                     createElement(document_, "strong", "", `E${point.epoch}`),
-                    createElement(document_, "span", "", `score ${point.score}`),
-                    createElement(document_, "span", "", `pass ${(point.passRate * 100).toFixed(1)}%`),
+                    createElement(document_, "span", "", message(
+                        "operatorScoreValue",
+                        {value: point.score},
+                        "score {value}",
+                    )),
+                    createElement(document_, "span", "", message(
+                        "operatorPassValue",
+                        {value: (point.passRate * 100).toFixed(1)},
+                        "pass {value}%",
+                    )),
                 )
                 selectors.optimizationTimeline.append(row)
             }
             if (!view.scoreTrend.length) {
-                selectors.optimizationTimeline.append(createElement(document_, "div", "operator-empty", "No completed Epoch score yet"))
+                selectors.optimizationTimeline.append(createElement(
+                    document_,
+                    "div",
+                    "operator-empty",
+                    text("operatorNoEpochScore", "No completed Epoch score yet"),
+                ))
             }
             renderList(
                 selectors.optimizationInstallations,
@@ -2135,31 +2334,46 @@
                     const card = createElement(document_, "article", "operator-side-card")
                     card.append(
                         createElement(document_, "strong", "", installation.runtimeId),
-                        createElement(document_, "small", "", `${installation.status} · ${installation.installationJobId}`),
+                        createElement(
+                            document_,
+                            "small",
+                            "",
+                            `${operatorStatusText(installation.status, translate)} · ${installation.installationJobId}`,
+                        ),
                     )
                     return card
                 },
-                "No current installation state",
+                text("operatorNoInstallationState", "No current installation state"),
             )
+            const notReported = text("operatorNotReported", "not reported")
+            const finalRegression = view.release.finalRegressionPassed === true
+                ? text("operatorPassed", "passed")
+                : view.release.finalRegressionPassed === false
+                  ? text("operatorFailed", "failed")
+                  : text("operatorNotRun", "not run")
             selectors.optimizationBudget.textContent = [
-                `Epoch ${view.currentEpoch}`,
-                `Regressions ${view.regressionCount}`,
-                `Remaining duration ${view.remaining.durationMs ?? "not reported"}`,
-                `turns ${view.remaining.turns ?? "not reported"}`,
-                `tokens ${view.remaining.tokens ?? "not reported"}`,
-                `cost µ ${view.remaining.costMicros ?? "not reported"}`,
-                `Stop reason ${view.stopReason ?? "—"}`,
-                `Release approval ${view.release.approvalId ?? "not requested"}`,
-                `Released ${view.release.releasedVersionId ?? "not published"}`,
-                `Final regression ${view.release.finalRegressionPassed === true ? "passed" : view.release.finalRegressionPassed === false ? "failed" : "not run"}`,
+                message("operatorEpochValue", {value: view.currentEpoch}, "Epoch {value}"),
+                message("operatorRegressionsValue", {value: view.regressionCount}, "Regressions {value}"),
+                message("operatorRemainingDuration", {value: view.remaining.durationMs ?? notReported}, "Remaining duration {value}"),
+                message("operatorRemainingTurns", {value: view.remaining.turns ?? notReported}, "turns {value}"),
+                message("operatorRemainingTokens", {value: view.remaining.tokens ?? notReported}, "tokens {value}"),
+                message("operatorRemainingCost", {value: view.remaining.costMicros ?? notReported}, "cost µ {value}"),
+                message("operatorStopReason", {value: optimizationReasonText(view.stopReason, translate)}, "Stop reason {value}"),
+                message("operatorReleaseApproval", {
+                    value: view.release.approvalId ?? text("operatorNotRequested", "not requested"),
+                }, "Release approval {value}"),
+                message("operatorReleasedValue", {
+                    value: view.release.releasedVersionId ?? text("operatorNotPublished", "not published"),
+                }, "Released {value}"),
+                message("operatorFinalRegression", {value: finalRegression}, "Final regression {value}"),
             ].join(" · ")
             selectors.optimizationRecovery.replaceChildren()
             for (const target of view.recoveryTargets) {
                 const card = createElement(document_, "button", "operator-link", [
                     target.runtimeId,
-                    target.status,
-                    `Job ${target.installationJobId}`,
-                    target.lastVerifiedDigest ?? "digest unavailable",
+                    operatorStatusText(target.status, translate),
+                    message("operatorJobValue", {value: target.installationJobId}, "Job {value}"),
+                    target.lastVerifiedDigest ?? text("operatorDigestUnavailable", "digest unavailable"),
                 ].join(" · "))
                 card.type = "button"
                 card.dataset.optimizationInstallationId = target.installationJobId
@@ -2168,7 +2382,12 @@
             }
             selectors.optimizationStopWarning.classList.toggle("hidden", !view.actions.includes("stop"))
             selectors.optimizationActions.replaceChildren()
-            const labels = {pause: "Pause", resume: "Resume", stop: "Stop and restore", report: "Report"}
+            const labels = {
+                pause: text("operatorPause", "Pause"),
+                resume: text("operatorResume", "Resume"),
+                stop: text("operatorStopAndRestore", "Stop and restore"),
+                report: text("operatorReport", "Report"),
+            }
             for (const action of view.actions) {
                 const button = createElement(document_, "button", action === "stop" ? "danger" : "", labels[action])
                 button.type = "button"
@@ -2238,7 +2457,7 @@
         }
 
         function jobStatusText(status) {
-            return String(status ?? "unknown").replaceAll("_", " ")
+            return operatorStatusText(status, translate)
         }
 
         function ensureJobNode(jobId) {
@@ -2265,7 +2484,13 @@
             const retained = new Set()
             if (!snapshots.length) {
                 const empty = selectors.jobList.querySelector(".operator-empty") ??
-                    createElement(document_, "div", "operator-empty", "No Operator Jobs yet")
+                    createElement(
+                        document_,
+                        "div",
+                        "operator-empty",
+                        text("operatorNoJobs", "No Operator Jobs yet"),
+                    )
+                empty.textContent = text("operatorNoJobs", "No Operator Jobs yet")
                 selectors.jobList.append(empty)
             } else {
                 selectors.jobList.querySelector(".operator-empty")?.remove()
@@ -2321,10 +2546,15 @@
 
         function patchStatus(snapshot) {
             const configuration = sessionConfiguration(snapshot)
-            selectors.scope.textContent = scopeText(configuration.scopes ?? configuration.scope)
+            selectors.scope.textContent = scopeText(configuration.scopes ?? configuration.scope, translate)
             selectors.budget.textContent = Object.entries(snapshot.job.budget ?? {})
-                .map(([key, value]) => `${key}: ${value ?? "unlimited"}`)
-                .join(" · ") || "No budget details"
+                .map(([key, value]) => {
+                    const label = OPERATOR_BUDGET_KEYS[key]
+                        ? text(OPERATOR_BUDGET_KEYS[key], key)
+                        : key
+                    return `${label}: ${value ?? text("operatorUnlimited", "unlimited")}`
+                })
+                .join(" · ") || text("operatorNoBudget", "No budget details")
             renderList(
                 selectors.children,
                 snapshot.jobs.filter((job) => job.id !== snapshot.job.id),
@@ -2336,7 +2566,7 @@
                     )
                     return card
                 },
-                "No child Jobs",
+                text("operatorNoChildJobs", "No child Jobs"),
             )
             renderList(
                 selectors.artifacts,
@@ -2346,9 +2576,12 @@
                     card.dataset.operatorArtifactId = artifact.id
                     card.append(
                         createElement(document_, "strong", "", artifact.name ?? artifact.kind ?? artifact.id),
-                        createElement(document_, "small", "", `${artifact.kind ?? "artifact"} · ${artifact.byteLength ?? 0} bytes`),
+                        createElement(document_, "small", "", message("operatorArtifactMeta", {
+                            kind: artifact.kind ?? text("operatorArtifacts", "artifact"),
+                            bytes: artifact.byteLength ?? 0,
+                        }, "{kind} · {bytes} bytes")),
                     )
-                    const links = artifactDeepLinks(artifact)
+                    const links = artifactDeepLinks(artifact, translate, formatMessage_)
                     if (links.length) {
                         const actions = createElement(document_, "div", "operator-inline-actions")
                         for (const link of links) {
@@ -2363,7 +2596,7 @@
                     }
                     return card
                 },
-                "No artifacts",
+                text("operatorNoArtifacts", "No artifacts"),
             )
             const pending = snapshot.approvals.filter((approval) => approval.status === "pending")
             renderList(
@@ -2373,13 +2606,23 @@
                     const card = createElement(document_, "article", "operator-approval-card")
                     card.dataset.operatorApprovalId = approval.id
                     card.append(
-                        createElement(document_, "strong", "operator-approval-action", approval.action ?? "Unknown action"),
-                        createElement(document_, "p", "operator-approval-scope", scopeText(approval.scope)),
+                        createElement(
+                            document_,
+                            "strong",
+                            "operator-approval-action",
+                            approval.action
+                                ? operatorActionText(approval.action, translate)
+                                : text("operatorUnknownAction", "Unknown action"),
+                        ),
+                        createElement(document_, "p", "operator-approval-scope", scopeText(approval.scope, translate)),
                         createElement(document_, "small", "operator-approval-status", jobStatusText(approval.status)),
                     )
                     if (approval.status === "pending") {
                         const actions = createElement(document_, "div", "operator-approval-actions")
-                        for (const [decision, label] of [["reject", "Reject"], ["approve", "Approve once"]]) {
+                        for (const [decision, label] of [
+                            ["reject", text("operatorReject", "Reject")],
+                            ["approve", text("operatorApproveOnce", "Approve once")],
+                        ]) {
                             const button = createElement(document_, "button", decision === "approve" ? "primary" : "", label)
                             button.type = "button"
                             button.dataset.operatorApprovalDecision = decision
@@ -2388,7 +2631,12 @@
                             actions.append(button)
                         }
                         if (pending.length > 1) {
-                            const approveJob = createElement(document_, "button", "", "Approve current Job")
+                            const approveJob = createElement(
+                                document_,
+                                "button",
+                                "",
+                                text("operatorApproveCurrentJob", "Approve current Job"),
+                            )
                             approveJob.type = "button"
                             approveJob.dataset.operatorApproveJob = snapshot.job.id
                             actions.append(approveJob)
@@ -2397,13 +2645,17 @@
                     }
                     return card
                 },
-                "No approvals",
+                text("operatorNoApprovals", "No approvals"),
             )
         }
 
         function renderSessionActions(snapshot) {
             selectors.sessionActions.replaceChildren()
-            const labels = {pause: "Pause", resume: "Resume", stop: "Stop"}
+            const labels = {
+                pause: text("operatorPause", "Pause"),
+                resume: text("operatorResume", "Resume"),
+                stop: text("operatorStop", "Stop"),
+            }
             for (const action of operatorJobActions(snapshot.job.status)) {
                 const button = createElement(document_, "button", "operator-control-button", labels[action])
                 button.type = "button"
@@ -2425,7 +2677,12 @@
                 renderOptimizationPanel(null)
                 if (creating) {
                     selectors.transcript.replaceChildren(
-                        createElement(document_, "div", "operator-empty operator-setup-prompt", "Configure a scoped Operator Job"),
+                        createElement(
+                            document_,
+                            "div",
+                            "operator-empty operator-setup-prompt",
+                            text("operatorConfigureScopedJob", "Configure a scoped Operator Job"),
+                        ),
                     )
                 }
                 return
@@ -2551,7 +2808,10 @@
                     const config = optimizationConfigFromSetup()
                     const signature = JSON.stringify(config)
                     if (!optimizationPreflight?.ready || optimizationPreflightSignature !== signature) {
-                        throw new Error("Run Optimization preflight for the current configuration before Start")
+                        throw new Error(text(
+                            "operatorPreflightRequired",
+                            "Run Optimization preflight for the current configuration before Start.",
+                        ))
                     }
                     selectors.optimizationStart.disabled = true
                     const run = await api.startOptimization({
@@ -2576,7 +2836,7 @@
                     scheduleOptimizationPoll(250)
                 } catch (error) {
                     if (destroyed) return
-                    selectors.setupError.textContent = error?.message ?? String(error)
+                    selectors.setupError.textContent = localizedErrorText(error)
                     selectors.setupError.classList.remove("hidden")
                     selectors.optimizationStart.disabled = !optimizationPreflight?.ready
                 }
@@ -2622,7 +2882,7 @@
                 await activateSession(result.session.id)
             } catch (error) {
                 if (destroyed) return
-                selectors.setupError.textContent = error?.message ?? String(error)
+                selectors.setupError.textContent = localizedErrorText(error)
                 selectors.setupError.classList.remove("hidden")
             }
         }
@@ -2673,6 +2933,18 @@
                 if (!destroyed) onError(error)
                 return false
             })
+        }
+
+        function localize() {
+            if (destroyed) return
+            for (const input of selectors.setup.querySelectorAll("[data-operator-action]")) {
+                const label = input.closest("label")?.querySelector("span")
+                if (label) label.textContent = operatorActionText(input.value, translate)
+            }
+            renderSetupCatalogs()
+            if (optimizationPreflight?.ready) renderOptimizationPreflight(optimizationPreflight)
+            if (!initialized || root.classList.contains("hidden")) return
+            renderVisibleSurface()
         }
 
         function destroy() {
@@ -2800,11 +3072,11 @@
             input.value = action
             input.dataset.operatorAction = action
             input.checked = action.endsWith(".read") || action === "context.read"
-            label.append(input, createElement(document_, "span", "", action))
+            label.append(input, createElement(document_, "span", "", operatorActionText(action, translate)))
             selectors.setup.querySelector("#operator-permission-grants")?.append(label)
         }
 
-        return {initialize, setCatalogs, setVisible, ingest, activateSession, destroy, state, language}
+        return {initialize, setCatalogs, setVisible, ingest, activateSession, localize, destroy, state, language}
     }
 
     const exported = {
@@ -2822,6 +3094,7 @@
         createOperatorWorkbenchState,
         optimizationPanelView,
         optimizationPreflightSummary,
+        operatorStatusText,
         operatorJobTreeIds,
         optimizationRunActions,
         reduceOptimizationTimeline,

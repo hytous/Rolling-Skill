@@ -388,7 +388,7 @@ class DeepSeekHarnessClient extends EventEmitter {
         const epoch = ++this.processEpoch
         const child = this.spawnProcess(
             this.binaryPath,
-            ["--profile", "web", "--port", "0"],
+            ["--profile", "web", "--no-open", "--port", "0"],
             {
                 cwd: this.workspaceRoot,
                 env: {
