@@ -535,6 +535,7 @@ class OperatorJobEngine {
     #approvalTtlMs
     #coordination
     #activeSteps
+    #manualApprovalWaiters
 
     constructor({
         store,
@@ -580,6 +581,7 @@ class OperatorJobEngine {
         this.#approvalTtlMs = approvalTtlMs
         this.#coordination = engineCoordination(store)
         this.#activeSteps = this.#coordination.activeSteps
+        this.#manualApprovalWaiters = new Map()
     }
 
     scheduleChild(parentJobId, input = {}) {
@@ -655,6 +657,96 @@ class OperatorJobEngine {
                 throw error
             }
         }))
+    }
+
+    requestApproval(jobId, input = {}) {
+        const request = requireObject(input, "Internal Operator approval")
+        const action = requiredText(request.action, "Internal approval action", 300)
+        const risk = requiredText(request.risk, "Internal approval risk", 16_384)
+        const scope = cloneJson(requireObject(request.scope, "Internal approval scope"))
+        const proposedMutation = cloneJson(requireObject(
+            request.proposedMutation,
+            "Internal approval mutation",
+        ))
+        const idempotencyKey = requiredText(
+            request.idempotencyKey,
+            "Internal approval idempotency key",
+            300,
+        )
+        return this.#enqueue(jobId, () => {
+            let job = this.#store.getJob(jobId)
+            const existing = this.#store.listSteps({jobId}).find((step) => (
+                step.idempotencyKey === idempotencyKey
+            ))
+            if (existing) {
+                if (existing.method !== "optimization.approval") {
+                    throw new Error("Internal approval idempotency conflict")
+                }
+                const approval = this.#store.listApprovals(jobId).find(
+                    (entry) => entry.stepId === existing.id,
+                )
+                if (!approval) throw new Error("Internal approval evidence is incomplete")
+                if (approval.action !== action || approval.risk !== risk ||
+                    stableJson(approval.scope) !== stableJson(scope) ||
+                    stableJson(approval.proposedMutation.params?.proposedMutation) !==
+                        stableJson(proposedMutation)) {
+                    throw new Error("Internal approval idempotency conflict")
+                }
+                return approval
+            }
+            if (job.status === "queued") job = this.#store.transitionJob(job.id, "running")
+            if (job.status !== "running") {
+                throw new Error(`Operator Job cannot request approval while ${job.status}`)
+            }
+            let step = this.#store.createStep(job.id, {
+                method: "optimization.approval",
+                params: {action, risk, scope, proposedMutation},
+                idempotencyKey,
+                reservation: {},
+            })
+            step = this.#store.transitionStep(step.id, "waiting_approval")
+            this.#store.transitionJob(job.id, "waiting_approval")
+            return this.#store.createApproval(job.id, {
+                stepId: step.id,
+                action,
+                scope,
+                proposedMutation: {
+                    method: "optimization.approval",
+                    params: {action, risk, scope, proposedMutation},
+                    idempotencyKey,
+                    reservation: {},
+                },
+                risk,
+                expiresAt: new Date(this.#now() + this.#approvalTtlMs).toISOString(),
+            })
+        }).then((approval) => this.#waitForManualApproval(approval))
+    }
+
+    #manualApprovalResult(approval) {
+        if (approval.status === "pending") return null
+        return {
+            approved: approval.status === "approved",
+            approvalId: approval.id,
+            decisionScope: approval.decisionScope,
+        }
+    }
+
+    #waitForManualApproval(approval) {
+        const settled = this.#manualApprovalResult(approval)
+        if (settled) return settled
+        const existing = this.#manualApprovalWaiters.get(approval.id)
+        if (existing) return existing.promise
+        let resolveWaiter
+        const promise = new Promise((resolve_) => { resolveWaiter = resolve_ })
+        this.#manualApprovalWaiters.set(approval.id, {promise, resolve: resolveWaiter})
+        return promise
+    }
+
+    #settleManualApproval(approval) {
+        const waiter = this.#manualApprovalWaiters.get(approval.id)
+        if (!waiter) return
+        this.#manualApprovalWaiters.delete(approval.id)
+        waiter.resolve(this.#manualApprovalResult(approval))
     }
 
     execute(jobId, input = {}) {
@@ -1026,6 +1118,34 @@ class OperatorJobEngine {
         const step = this.#store.getStep(resolved.stepId)
         if (this.#store.getJob(resolved.jobId).status === "waiting_approval") {
             this.#store.transitionJob(resolved.jobId, "running")
+        }
+        if (step.method === "optimization.approval") {
+            if (decision.decision === "approve") {
+                this.#store.transitionStep(step.id, "running")
+                const artifact = this.#store.createArtifact(resolved.jobId, {
+                    kind: "optimization-approval",
+                    name: `optimization-approval-${resolved.id}.json`,
+                    mediaType: "application/json",
+                    body: `${JSON.stringify({
+                        approvalId: resolved.id,
+                        approved: true,
+                        decisionScope: resolved.decisionScope,
+                    })}\n`,
+                    metadata: null,
+                })
+                this.#store.transitionStep(step.id, "succeeded", {
+                    outputArtifactIds: [artifact.id],
+                })
+            } else {
+                this.#store.transitionStep(step.id, "failed", {error: errorOverride ?? {
+                    code: "APPROVAL_REJECTED",
+                    message: "Operator approval was rejected",
+                }})
+            }
+            this.#settleManualApproval(resolved)
+            return decision.decision === "approve"
+                ? this.#succeededResult(this.#store.getStep(step.id))
+                : this.#failedResult(this.#store.getStep(step.id))
         }
         if (decision.decision === "reject") {
             const error = errorOverride ?? {

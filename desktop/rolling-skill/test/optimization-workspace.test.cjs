@@ -107,6 +107,10 @@ describe("OptimizationWorkspaceManager", () => {
         assert.equal(await git.worktreeHead(workspace.workspacePath), run.snapshot.baseline.commit)
         assert.equal(await git.defaultBranch(workspace.workspacePath), workspace.branchName)
         assert.equal((await git.status(repository.managedPath)).dirty, false)
+        const registered = workspaces.get(run.id)
+        assert.deepEqual(registered, workspace)
+        registered.workspacePath = "/forged"
+        assert.equal(workspaces.get(run.id).workspacePath, workspace.workspacePath)
 
         write(join(workspace.workspacePath, "SKILL.md"), manifest("Optimized Epoch 1"))
         assert.equal((await git.status(repository.managedPath)).dirty, false)
@@ -217,5 +221,31 @@ describe("OptimizationWorkspaceManager", () => {
         assert.equal(recovered.optimizationRunId, run.id)
         assert.equal(recovered.optimizationEpoch, 1)
         assert.equal(store.getVersion(recovered.id).commit, recovered.commit)
+    })
+
+    it("re-registers an exact persisted worktree after process restart", async () => {
+        const {applicationSupportDirectory, git, run, store, workspaces} = await fixture()
+        const workspace = await workspaces.create(run)
+        write(join(workspace.workspacePath, "SKILL.md"), manifest("Persisted Candidate"))
+        const candidate = await workspaces.createCandidate({
+            runId: run.id,
+            epoch: 1,
+            message: "Persist candidate",
+        })
+        const restarted = new OptimizationWorkspaceManager({
+            applicationSupportDirectory,
+            store,
+            git,
+        })
+
+        const recovered = await restarted.recover(run, workspace)
+
+        assert.deepEqual(recovered, workspace)
+        assert.equal(restarted.get(run.id).workspacePath, workspace.workspacePath)
+        assert.equal(await git.worktreeHead(workspace.workspacePath), candidate.commit)
+        await assert.rejects(() => restarted.recover(run, {
+            ...workspace,
+            branchName: "rolling-skill/optimization/other-run",
+        }), /registered|branch|identity/iu)
     })
 })

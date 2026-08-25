@@ -169,6 +169,11 @@ function runnerFixture(options = {}) {
             artifacts.push(artifact)
             return artifact
         },
+        readArtifactBody(artifactId) {
+            const artifact = artifacts.find((entry) => entry.id === artifactId)
+            if (!artifact) throw new Error("Unknown artifact")
+            return Buffer.from(artifact.body, "utf8")
+        },
     }
     const installationJobs = new Map()
     const installationCalls = []
@@ -222,13 +227,23 @@ function runnerFixture(options = {}) {
     let candidateEpoch = 0
     const workspaceManager = {
         createCalls: 0,
+        registered: null,
         async create() {
             this.createCalls += 1
-            return {workspacePath: "/app-support/optimization-workspaces/optimization-run-1"}
+            this.registered = {
+                runId: run.id,
+                workspacePath: "/app-support/optimization-workspaces/optimization-run-1",
+            }
+            return structuredClone(this.registered)
+        },
+        get(runId) {
+            assert.equal(runId, run.id)
+            if (!this.registered) throw new Error("Unknown workspace")
+            return structuredClone(this.registered)
         },
         async createCandidate(input) {
-            candidateEpoch += 1
-            assert.equal(input.epoch, candidateEpoch)
+            assert.equal(input.epoch > candidateEpoch, true)
+            candidateEpoch = input.epoch
             return candidate(run.id, candidateEpoch)
         },
         async cleanup() {},
@@ -297,6 +312,28 @@ function runnerFixture(options = {}) {
 }
 
 describe("multi-Epoch OptimizationRunner", () => {
+    it("uses the controller-created registered workspace without creating a second worktree", async () => {
+        const fixture = runnerFixture()
+        const workspace = {
+            runId: fixture.run.id,
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            versionId: "released-baseline",
+            workspacePath: "/app-support/optimization-workspaces/optimization-run-1",
+            branchName: "rolling-skill/optimization/optimization-run-1",
+            baselineCommit: "a".repeat(40),
+        }
+
+        const outcome = await fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+            workspace,
+        })
+
+        assert.equal(outcome.status, "succeeded")
+        assert.equal(fixture.workspaceManager.createCalls, 0)
+    })
+
     it("runs baseline, two Candidates, release install, and final regression in engine-owned order", async () => {
         const fixture = runnerFixture()
         const frozenDataset = JSON.stringify(fixture.run.snapshot.dataset)
@@ -335,6 +372,10 @@ describe("multi-Epoch OptimizationRunner", () => {
         assert.equal(fixture.operatorGateway.candidateRequests, 2)
         assert.equal(fixture.operatorGateway.decisionRequests, 2)
         assert.deepEqual(fixture.approvalCalls.map((entry) => entry.kind), ["release", "install"])
+        assert.equal(
+            fixture.approvalCalls.every((entry) => entry.parentJobId === "operator-job-1"),
+            true,
+        )
         assert.equal(fixture.releaseCalls.length, 1)
         assert.equal(fixture.workspaceManager.createCalls, 1)
         assert.equal(fixture.childJobs.active, 0)
@@ -464,6 +505,35 @@ describe("multi-Epoch OptimizationRunner", () => {
         assert.match(attempts[1].validationError, /JSON/u)
     })
 
+    it("rebuilds durable context and resumes a paused Run at the next Epoch", async () => {
+        const fixture = runnerFixture()
+        fixture.operatorGateway.requestDecision = async () => ({
+            schemaVersion: "rolling-skill-optimization-decision/v1",
+            action: "pause",
+            rationale: "等待用户检查",
+        })
+        const paused = await fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+        assert.equal(paused.status, "paused")
+
+        fixture.operatorGateway.requestDecision = async () => ({
+            schemaVersion: "rolling-skill-optimization-decision/v1",
+            action: "finish",
+            rationale: "恢复后目标已达到",
+        })
+        const resumed = await fixture.runner.resume(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+
+        assert.equal(resumed.status, "succeeded")
+        assert.equal(fixture.store.getRun(fixture.run.id).epochs.length, 2)
+        assert.equal(fixture.workspaceManager.createCalls, 1)
+        assert.equal(fixture.store.getRun(fixture.run.id).checkpoint.paused, false)
+    })
+
     it("restores after Candidate install/evaluation failure and release rejection", async () => {
         const installFailure = runnerFixture()
         const originalInstallStart = installFailure.installationManager.startOptimizationExperiment.bind(
@@ -582,6 +652,69 @@ describe("multi-Epoch OptimizationRunner", () => {
             ["experiment_restore", ["codex:target"]],
             ["experiment_remove", ["codebuddy:target"]],
         ])
+    })
+
+    it("checkpoints active Runs for shutdown and permanently stops new scheduling", async () => {
+        const fixture = runnerFixture()
+        let shutdown
+        fixture.operatorGateway.requestDecision = async () => {
+            shutdown = fixture.runner.checkpointAndStop()
+            return {
+                schemaVersion: "rolling-skill-optimization-decision/v1",
+                action: "continue",
+                rationale: "the App is shutting down",
+            }
+        }
+
+        const outcome = await fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+
+        assert.deepEqual(shutdown, {activeRunIds: [fixture.run.id]})
+        assert.equal(outcome.status, "paused")
+        assert.equal(fixture.store.getRun(fixture.run.id).checkpoint.paused, true)
+        assert.deepEqual(await fixture.runner.waitForIdle(), {activeRunIds: []})
+        assert.throws(
+            () => fixture.runner.run(fixture.run.id, {
+                operatorSessionId: "operator-session-1",
+                parentJobId: "operator-job-1",
+            }),
+            /shutting down|scheduling.*stopped/iu,
+        )
+        assert.throws(
+            () => fixture.runner.resume(fixture.run.id),
+            /shutting down|scheduling.*stopped/iu,
+        )
+    })
+
+    it("resumes from a shutdown checkpoint when a pending Candidate request is cancelled", async () => {
+        const fixture = runnerFixture()
+        let firstRequest = true
+        fixture.operatorGateway.requestCandidate = async () => {
+            if (firstRequest) {
+                firstRequest = false
+                fixture.runner.checkpointAndStop()
+                throw new Error("Optimization Operator gateway stopped")
+            }
+            return {message: "Candidate after restart"}
+        }
+
+        const paused = await fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+        assert.equal(paused.status, "paused")
+        assert.equal(fixture.store.getRun(fixture.run.id).checkpoint.paused, true)
+
+        fixture.runner.schedulingStopped = false
+        const resumed = await fixture.runner.resume(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+
+        assert.equal(resumed.status, "succeeded", JSON.stringify(resumed))
+        assert.equal(fixture.store.getRun(fixture.run.id).state, "succeeded")
     })
 
     it("restores after a Released installation or final regression failure", async () => {

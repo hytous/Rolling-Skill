@@ -177,10 +177,20 @@ class OptimizationRunner {
         this.onChanged = options.onChanged ?? (() => {})
         if (typeof this.onChanged !== "function") throw new Error("Optimization change callback is invalid")
         this.controls = new Map()
+        this.schedulingStopped = false
     }
 
     run(runId, context = {}) {
+        if (this.schedulingStopped) {
+            throw new Error("Optimization Runner scheduling is stopped for App shutdown")
+        }
         if (this.controls.has(runId)) return this.controls.get(runId).operation
+        const workspace = context.workspace === undefined || context.workspace === null
+            ? null
+            : clone(context.workspace)
+        if (workspace !== null && workspace.runId !== runId) {
+            throw new Error("Optimization workspace does not belong to the requested Run")
+        }
         const control = {
             runId,
             operatorSessionId: String(context.operatorSessionId ?? ""),
@@ -193,7 +203,7 @@ class OptimizationRunner {
             baselineEvaluation: null,
             previousEvaluation: null,
             analyses: [],
-            workspace: null,
+            workspace,
             approvedLimits: {},
         }
         if (!control.operatorSessionId || !control.parentJobId) {
@@ -202,6 +212,48 @@ class OptimizationRunner {
         const operation = this.#execute(control).finally(() => {
             if (this.controls.get(runId) === control) this.controls.delete(runId)
         })
+        control.operation = operation
+        this.controls.set(runId, control)
+        return operation
+    }
+
+    resume(runId, context = {}) {
+        if (this.schedulingStopped) {
+            throw new Error("Optimization Runner scheduling is stopped for App shutdown")
+        }
+        if (this.controls.has(runId)) throw new Error("Optimization Run is already active")
+        const run = this.store.getRun(runId)
+        if (run.state !== "needs_recovery" || run.checkpoint?.paused !== true) {
+            throw new Error("Optimization Run is not paused and resumable")
+        }
+        const control = {
+            runId,
+            operatorSessionId: String(
+                context.operatorSessionId ?? run.checkpoint.operatorSessionId ?? "",
+            ),
+            parentJobId: String(
+                context.parentJobId ?? run.checkpoint.operatorParentJobId ?? "",
+            ),
+            cancelRequested: false,
+            pauseRequested: false,
+            initialTargets: clone(run.checkpoint.initialTargets ?? null),
+            currentCandidate: null,
+            previousCandidate: null,
+            baselineEvaluation: null,
+            previousEvaluation: null,
+            analyses: [],
+            workspace: clone(context.workspace ?? this.workspaceManager.get?.(runId) ?? null),
+            approvedLimits: clone(run.checkpoint.approvedLimits ?? {}),
+            resumePrepared: true,
+        }
+        if (!control.operatorSessionId || !control.parentJobId || !control.workspace) {
+            throw new Error("Optimization resume requires its frozen Operator and workspace identities")
+        }
+        const operation = this.#prepareResume(control)
+            .then(() => this.#execute(control))
+            .finally(() => {
+                if (this.controls.get(runId) === control) this.controls.delete(runId)
+            })
         control.operation = operation
         this.controls.set(runId, control)
         return operation
@@ -219,6 +271,59 @@ class OptimizationRunner {
         if (!control) throw new Error("Optimization Run is not active")
         control.pauseRequested = true
         return {runId, status: "pausing"}
+    }
+
+    checkpointAndStop() {
+        this.schedulingStopped = true
+        const activeRunIds = [...this.controls.keys()].sort()
+        for (const runId of activeRunIds) this.controls.get(runId).pauseRequested = true
+        return {activeRunIds}
+    }
+
+    async waitForIdle() {
+        const operations = [...this.controls.values()].map((control) => control.operation)
+        await Promise.allSettled(operations)
+        return {activeRunIds: [...this.controls.keys()].sort()}
+    }
+
+    #readArtifact(artifactId) {
+        if (typeof this.artifactStore.readArtifactBody !== "function") {
+            throw new Error("Optimization Artifact store cannot restore persisted bodies")
+        }
+        const body = this.artifactStore.readArtifactBody(artifactId)
+        return JSON.parse(Buffer.from(body).toString("utf8"))
+    }
+
+    async #prepareResume(control) {
+        const run = this.store.getRun(control.runId)
+        const epoch = run.epochs.at(-1)
+        if (!run.checkpoint?.baselineEvaluationArtifactId) {
+            throw new Error("Paused Optimization Run lacks durable resume evidence")
+        }
+        control.baselineEvaluation = this.#readArtifact(
+            run.checkpoint.baselineEvaluationArtifactId,
+        )
+        control.analyses = run.epochs
+            .filter((entry) => entry.analysisArtifactId)
+            .map((entry) => this.#readArtifact(entry.analysisArtifactId))
+        const evaluatedEpoch = [...run.epochs].reverse().find((entry) => (
+            entry.candidateArtifactId && entry.evaluationArtifactIds?.length
+        ))
+        if (evaluatedEpoch) {
+            control.previousCandidate = this.#readArtifact(evaluatedEpoch.candidateArtifactId)
+            control.previousEvaluation = this.#readArtifact(evaluatedEpoch.evaluationArtifactIds[0])
+        } else {
+            control.previousEvaluation = control.baselineEvaluation
+        }
+        if (epoch && !["completed", "succeeded", "failed", "cancelled"].includes(epoch.status)) {
+            const completeEvidence = epoch.candidateArtifactId &&
+                epoch.installArtifactIds?.length && epoch.evaluationArtifactIds?.length &&
+                epoch.analysisArtifactId && epoch.decisionArtifactId
+            this.store.updateEpoch(control.runId, epoch.id, {
+                status: completeEvidence ? "completed" : "cancelled",
+            })
+        }
+        this.#transition(control, "editing", {paused: false})
     }
 
     #checkpoint(control, patch = {}) {
@@ -368,21 +473,26 @@ class OptimizationRunner {
         let terminalIntent = "failed"
         try {
             let run = this.store.getRun(control.runId)
-            if (run.state !== "preflight") throw new Error("Optimization Run must start in preflight")
-            control.workspace = await this.workspaceManager.create(run)
-            this.#transition(control, "baseline", {workspace: control.workspace})
-            const baseline = await this.#evaluate(
-                control,
-                "baseline",
-                run.snapshot.baseline,
-                [],
-            )
-            control.baselineEvaluation = baseline.evaluation
-            control.previousEvaluation = baseline.evaluation
-            this.#transition(control, "editing", {
-                baselineEvaluationArtifactId: baseline.artifact.id,
-                baselineEvaluationRunId: baseline.evaluation.id,
-            })
+            if (run.state === "preflight") {
+                if (control.workspace === null) {
+                    control.workspace = await this.workspaceManager.create(run)
+                }
+                this.#transition(control, "baseline", {workspace: control.workspace})
+                const baseline = await this.#evaluate(
+                    control,
+                    "baseline",
+                    run.snapshot.baseline,
+                    [],
+                )
+                control.baselineEvaluation = baseline.evaluation
+                control.previousEvaluation = baseline.evaluation
+                this.#transition(control, "editing", {
+                    baselineEvaluationArtifactId: baseline.artifact.id,
+                    baselineEvaluationRunId: baseline.evaluation.id,
+                })
+            } else if (!(control.resumePrepared === true && run.state === "editing")) {
+                throw new Error("Optimization Run must start in preflight or a prepared resume")
+            }
 
             while (true) {
                 if (control.cancelRequested) {
@@ -422,7 +532,7 @@ class OptimizationRunner {
                     candidateArtifactId: candidateChild.artifact.id,
                 })
 
-                if (epochNumber === 1) {
+                if (control.initialTargets === null) {
                     const preflight = await this.#experiment(
                         control,
                         "experiment_inspect",
@@ -504,6 +614,7 @@ class OptimizationRunner {
                 if (limitRequest) {
                     limitApproval = await this.approvals.request({
                         kind: "limit",
+                        parentJobId: control.parentJobId,
                         runId: control.runId,
                         epoch: epochNumber,
                         request: limitRequest,
@@ -574,6 +685,13 @@ class OptimizationRunner {
                 })
             }
         } catch (error) {
+            if (control.pauseRequested) {
+                this.#transition(control, "needs_recovery", {
+                    paused: true,
+                    pauseReason: "app_shutdown",
+                })
+                return {runId: control.runId, status: "paused", reason: "app_shutdown"}
+            }
             return this.#restore(control, terminalIntent, error)
         }
     }
@@ -582,6 +700,7 @@ class OptimizationRunner {
         this.#transition(control, "waiting_approval", {stopReason: context.stopReason})
         const releaseApproval = await this.approvals.request({
             kind: "release",
+            parentJobId: control.parentJobId,
             runId: control.runId,
             epoch: context.epochNumber,
             candidate: clone(context.candidate),
@@ -613,6 +732,7 @@ class OptimizationRunner {
         )
         const installApproval = await this.approvals.request({
             kind: "install",
+            parentJobId: control.parentJobId,
             runId: control.runId,
             epoch: context.epochNumber,
             versionId: released.id,

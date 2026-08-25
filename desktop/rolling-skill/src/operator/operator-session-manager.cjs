@@ -400,16 +400,31 @@ class OperatorSessionManager {
             return {binding: null, workspaceRoot: this.#workspaceRoot}
         }
         if (!plainObject(value)) throw new TypeError("Managed Skill binding is invalid")
-        const allowed = persisted
-            ? new Set(["repositoryId", "skillId", "workspaceDigest"])
-            : new Set(["repositoryId", "skillId"])
+        const allowed = new Set([
+            "repositoryId",
+            "skillId",
+            "optimizationRunId",
+            ...(persisted ? ["workspaceDigest"] : []),
+        ])
+        const required = new Set([
+            "repositoryId",
+            "skillId",
+            ...(persisted ? ["workspaceDigest"] : []),
+        ])
         if (Object.keys(value).some((key) => !allowed.has(key)) ||
-            Object.keys(value).length !== allowed.size) {
+            [...required].some((key) => !Object.hasOwn(value, key))) {
             throw new TypeError("Managed Skill binding is invalid")
         }
         const binding = {
             repositoryId: requiredText(value.repositoryId, "Managed Skill repository id", 200),
             skillId: requiredText(value.skillId, "Managed Skill id", 200),
+            ...(value.optimizationRunId === undefined ? {} : {
+                optimizationRunId: requiredText(
+                    value.optimizationRunId,
+                    "Optimization Run id",
+                    200,
+                ),
+            }),
         }
         if (!Array.isArray(scope?.repositoryIds) || !scope.repositoryIds.includes(binding.repositoryId) ||
             !Array.isArray(scope?.skillIds) || !scope.skillIds.includes(binding.skillId)) {
@@ -422,6 +437,7 @@ class OperatorSessionManager {
         if (!plainObject(resolvedWorkspace) ||
             resolvedWorkspace.repositoryId !== binding.repositoryId ||
             resolvedWorkspace.skillId !== binding.skillId ||
+            resolvedWorkspace.optimizationRunId !== binding.optimizationRunId ||
             typeof resolvedWorkspace.workspaceRoot !== "string" ||
             !isAbsolute(resolvedWorkspace.workspaceRoot)) {
             throw new Error("Managed Skill workspace resolution is invalid")

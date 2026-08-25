@@ -726,6 +726,80 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /controlShutdownPromise/)
     })
 
+    it("wires Optimization lifecycle behind typed Renderer controls and recovers before window creation", () => {
+        const main = source("src/main.cjs")
+        const preload = source("src/preload.cjs")
+
+        for (const constructor of [
+            "OptimizationStore",
+            "OptimizationWorkspaceManager",
+            "OptimizationOperatorGateway",
+            "OptimizationRunner",
+            "OptimizationControlService",
+        ]) {
+            assert.equal(
+                [...main.matchAll(new RegExp(`new ${constructor}\\(`, "g"))].length,
+                1,
+                `${constructor} must be constructed exactly once`,
+            )
+        }
+        for (const action of [
+            "optimizations.read",
+            "optimizations.execute",
+            "optimizations.control",
+        ]) assert.match(main, new RegExp(`"${action.replace(".", "\\.")}"`))
+        for (const method of [
+            "optimization.preflight",
+            "optimization.start",
+            "optimization.get",
+            "optimization.pause",
+            "optimization.resume",
+            "optimization.stop",
+            "optimization.report",
+        ]) assert.match(main, new RegExp(`"${method.replace(".", "\\.")}"`))
+        assert.doesNotMatch(
+            main.slice(main.indexOf("const RENDERER_CONTROL_METHODS"), main.indexOf("const RENDERER_CONTROL_MUTATIONS")),
+            /optimization\.submit_(?:candidate|decision)/u,
+        )
+
+        for (const method of [
+            "preflightOptimization",
+            "startOptimization",
+            "getOptimizationRun",
+            "pauseOptimization",
+            "resumeOptimization",
+            "stopOptimization",
+            "getOptimizationReport",
+        ]) assert.match(preload, new RegExp(`${method}:`))
+        assert.doesNotMatch(preload, /submitOptimizationCandidate|submitOptimizationDecision/u)
+
+        const resolver = main.slice(
+            main.indexOf("async function resolveManagedSkillWorkspace"),
+            main.indexOf("\nfunction currentRendererScopes"),
+        )
+        assert.match(resolver, /optimizationRunId/u)
+        assert.match(resolver, /optimizationWorkspaceManager\.get/u)
+        assert.doesNotMatch(resolver, /binding\.workspaceRoot|binding\.workspacePath/u)
+
+        const startup = main.slice(main.indexOf("app.whenReady().then"))
+        assert.ok(
+            startup.indexOf("initializeOperatorRuntime()") < startup.indexOf("initializeOptimizationRuntime()"),
+        )
+        assert.ok(
+            startup.indexOf("optimizationControlService.recoverStartup()") < startup.indexOf("createWindow()"),
+        )
+        const shutdown = main.slice(main.indexOf("async function shutdownApplication"))
+        assert.ok(
+            shutdown.indexOf("optimizationRunner?.checkpointAndStop") < shutdown.indexOf("operatorSessionManager?.stopAll"),
+        )
+        assert.ok(
+            shutdown.indexOf("optimizationOperatorGateway?.cancelAll") < shutdown.indexOf("operatorSessionManager?.stopAll"),
+        )
+        assert.ok(
+            shutdown.indexOf("operatorSessionManager?.stopAll") < shutdown.indexOf("optimizationStore?.close"),
+        )
+    })
+
     it("keeps renderer capability private, rotates scoped grants, and validates the sender", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")

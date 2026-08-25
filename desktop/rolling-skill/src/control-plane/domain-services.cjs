@@ -640,6 +640,7 @@ function createDomainServices(dependencies = {}) {
         rubricManager,
         skillInstallationStore,
         skillInstallationManager,
+        optimizationControlService,
         listDatasets,
         listRawCaseSkills,
         listRuntimes,
@@ -1320,6 +1321,35 @@ function createDomainServices(dependencies = {}) {
                 repositoryIds: [source.repositoryId],
                 runtimeIds: [installation.runtime.runtimeId],
             }, {method, installation})
+        }
+        if (method === "optimization.preflight" || method === "optimization.start") {
+            if (typeof optimizationControlService?.preflight !== "function") {
+                throw new Error("Optimization control service unavailable")
+            }
+            const {idempotencyKey: _idempotencyKey, ...config} = input
+            const preflight = await optimizationControlService.preflight(config)
+            return scopeResolution({
+                method,
+                mode: "access",
+                skillIds: [preflight.baseline.skillId],
+                datasetIds: [preflight.dataset.id],
+                runtimeIds: unique([
+                    input.operator.runtimeId,
+                    input.judge.runtimeId,
+                    ...input.targets.map((target) => target.runtimeId),
+                ]),
+                repositoryIds: [preflight.baseline.repositoryId],
+            }, {method, preflight})
+        }
+        if (method.startsWith("optimization.")) {
+            if (typeof optimizationControlService?.scope !== "function") {
+                throw new Error("Optimization control service unavailable")
+            }
+            return scopeResolution({
+                method,
+                mode: "access",
+                ...optimizationControlService.scope(input.runId),
+            }, {method, runId: input.runId})
         }
         if (method === "datasets.delete") {
             return scopeResolution(null, {
@@ -2134,6 +2164,74 @@ function createDomainServices(dependencies = {}) {
                     {inspection: true},
                 ),
             )}
+        },
+
+        async "optimization.preflight"(input, context) {
+            if (typeof optimizationControlService?.preflight !== "function") {
+                throw new Error("Optimization control service unavailable")
+            }
+            const execution = trustedExecution(context, "optimization.preflight")
+            if (execution?.preflight) return clone(execution.preflight)
+            const {idempotencyKey: _idempotencyKey, ...config} = input
+            return optimizationControlService.preflight(config)
+        },
+
+        async "optimization.start"(input) {
+            if (typeof optimizationControlService?.start !== "function") {
+                throw new Error("Optimization control service unavailable")
+            }
+            return optimizationControlService.start(input)
+        },
+
+        async "optimization.get"(input) {
+            if (typeof optimizationControlService?.get !== "function") {
+                throw new Error("Optimization control service unavailable")
+            }
+            return optimizationControlService.get(input.runId)
+        },
+
+        async "optimization.pause"(input) {
+            if (typeof optimizationControlService?.pause !== "function") {
+                throw new Error("Optimization control service unavailable")
+            }
+            return optimizationControlService.pause(input.runId)
+        },
+
+        async "optimization.resume"(input) {
+            if (typeof optimizationControlService?.resume !== "function") {
+                throw new Error("Optimization control service unavailable")
+            }
+            return optimizationControlService.resume(input.runId)
+        },
+
+        async "optimization.stop"(input) {
+            if (typeof optimizationControlService?.stop !== "function") {
+                throw new Error("Optimization control service unavailable")
+            }
+            return optimizationControlService.stop(input.runId)
+        },
+
+        async "optimization.submit_candidate"(input, context) {
+            if (typeof optimizationControlService?.submitCandidate !== "function") {
+                throw new Error("Optimization control service unavailable")
+            }
+            const {idempotencyKey: _idempotencyKey, ...submission} = input
+            return optimizationControlService.submitCandidate(submission, context)
+        },
+
+        async "optimization.submit_decision"(input, context) {
+            if (typeof optimizationControlService?.submitDecision !== "function") {
+                throw new Error("Optimization control service unavailable")
+            }
+            const {idempotencyKey: _idempotencyKey, ...submission} = input
+            return optimizationControlService.submitDecision(submission, context)
+        },
+
+        async "optimization.report"(input) {
+            if (typeof optimizationControlService?.report !== "function") {
+                throw new Error("Optimization control service unavailable")
+            }
+            return optimizationControlService.report(input.runId)
         },
     }
 

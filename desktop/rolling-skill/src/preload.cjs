@@ -100,6 +100,27 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         .then((result) => result.job),
     stopOperatorJob: (jobId) => invokeControl("jobs.stop", {jobId})
         .then((result) => result.job),
+    preflightOptimization: (input) => invokeControl("optimization.preflight", input),
+    startOptimization: (input) => invokeControl("optimization.start", input)
+        .then((result) => result.run),
+    getOptimizationRun: (runId) => invokeControl("optimization.get", {runId})
+        .then((result) => result.run),
+    pauseOptimization: (runId, idempotencyKey) => invokeControl(
+        "optimization.pause",
+        {runId, idempotencyKey},
+    ).then((result) => result.run),
+    resumeOptimization: (runId, idempotencyKey) => invokeControl(
+        "optimization.resume",
+        {runId, idempotencyKey},
+    ).then((result) => result.run),
+    stopOptimization: (runId, idempotencyKey) => invokeControl(
+        "optimization.stop",
+        {runId, idempotencyKey},
+    ).then((result) => result.run),
+    getOptimizationReport: (runId, idempotencyKey) => invokeControl(
+        "optimization.report",
+        {runId, idempotencyKey},
+    ).then((result) => result.report),
     resolveOperatorApproval: (approvalId, decision) =>
         invokeControl("approvals.resolve", {approvalId, decision}),
     listOperatorArtifacts: (jobId, cursor = null, limit = CONTROL_PAGE_LIMIT) =>

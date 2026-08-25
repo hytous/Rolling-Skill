@@ -137,6 +137,32 @@ function waitForChildText(child, pattern, label) {
 }
 
 describe("OptimizationStore", () => {
+    it("merges a durable checkpoint on terminal Runs with revision CAS", () => {
+        const {path, store} = fixture()
+        const created = store.createRun(frozenRun())
+        store.transitionRun(created.runId, "failed", {checkpoint: {stopReason: "preflight_failed"}})
+        const before = store.getRun(created.runId)
+
+        const updated = store.updateCheckpoint(created.runId, {
+            reportArtifactId: "report-artifact-1",
+            reportDigest: `sha256:${"a".repeat(64)}`,
+        }, {expectedRevision: before.revision})
+
+        assert.equal(updated.revision, before.revision + 1)
+        assert.deepEqual(store.getRun(created.runId).checkpoint, {
+            stopReason: "preflight_failed",
+            reportArtifactId: "report-artifact-1",
+            reportDigest: `sha256:${"a".repeat(64)}`,
+        })
+        assert.throws(() => store.updateCheckpoint(created.runId, {
+            reportArtifactId: "report-artifact-2",
+        }, {expectedRevision: before.revision}), /revision|CAS/iu)
+
+        store.close()
+        const restarted = new OptimizationStore(path)
+        assert.equal(restarted.getRun(created.runId).checkpoint.reportArtifactId, "report-artifact-1")
+    })
+
     it("allows approved Released installation and final regression to finish the deciding Epoch", () => {
         const {store} = fixture()
         const created = store.createRun(frozenRun())

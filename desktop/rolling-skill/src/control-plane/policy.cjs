@@ -65,6 +65,42 @@ const SCOPE_REQUIREMENTS = Object.freeze({
         mode: "access",
         keys: Object.freeze(["skillIds", "runtimeIds", "repositoryIds"]),
     }),
+    "optimization.preflight": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"]),
+    }),
+    "optimization.start": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"]),
+    }),
+    "optimization.get": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"]),
+    }),
+    "optimization.pause": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"]),
+    }),
+    "optimization.resume": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"]),
+    }),
+    "optimization.stop": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"]),
+    }),
+    "optimization.submit_candidate": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"]),
+    }),
+    "optimization.submit_decision": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"]),
+    }),
+    "optimization.report": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"]),
+    }),
 })
 const RESOLVED_SCOPE_KEYS = Object.freeze([
     "skillIds",
@@ -310,6 +346,8 @@ function canonicalObjectIds(input) {
             ? request.runtimeConfigurations.map((runtime) => runtime?.runtimeId)
             : []),
         request.judgeConfiguration?.runtimeId,
+        request.operator?.runtimeId,
+        request.judge?.runtimeId,
     ])
     const repositoryIds = uniqueStrings([
         request.repositoryId,

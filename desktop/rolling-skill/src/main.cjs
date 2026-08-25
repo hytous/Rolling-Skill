@@ -45,7 +45,10 @@ const {
     resolveSkillEvidenceBinding,
     runtimeReportsSkill,
 } = require("./evaluation-skill-binding.cjs")
-const {snapshotSkillEvidence} = require("./evaluation-skill-evidence.cjs")
+const {
+    snapshotManagedSkillEvidence,
+    snapshotSkillEvidence,
+} = require("./evaluation-skill-evidence.cjs")
 const {LocalEvaluationStore, reasoningEffort} = require("./local-store.cjs")
 const {ManagedSkillManager} = require("./managed-skill-manager.cjs")
 const {ManagedSkillStore} = require("./managed-skill-store.cjs")
@@ -84,6 +87,17 @@ const {OperatorJobStore} = require("./operator/job-store.cjs")
 const {OperatorJobEngine} = require("./operator/job-engine.cjs")
 const {OperatorSessionManager} = require("./operator/operator-session-manager.cjs")
 const {publicOperatorSummaryPage} = require("./operator/public-summary.cjs")
+const {OptimizationStore} = require("./optimization/optimization-store.cjs")
+const {
+    OptimizationWorkspaceManager,
+} = require("./optimization/optimization-workspace.cjs")
+const {
+    OptimizationOperatorGateway,
+} = require("./optimization/optimization-operator-gateway.cjs")
+const {OptimizationRunner} = require("./optimization/optimization-runner.cjs")
+const {
+    OptimizationControlService,
+} = require("./optimization/optimization-control-service.cjs")
 
 const RENDERER_FILE = join(__dirname, "..", "renderer", "index.html")
 const PRELOAD_FILE = join(__dirname, "preload.cjs")
@@ -102,6 +116,9 @@ const RENDERER_CONTROL_ACTIONS = Object.freeze([
     "skills.read",
     "approvals.resolve",
     "jobs.control",
+    "optimizations.read",
+    "optimizations.execute",
+    "optimizations.control",
 ])
 const RENDERER_CONTROL_METHODS = new Set([
     "raw_cases.list",
@@ -123,6 +140,13 @@ const RENDERER_CONTROL_METHODS = new Set([
     "jobs.pause",
     "jobs.resume",
     "jobs.stop",
+    "optimization.preflight",
+    "optimization.start",
+    "optimization.get",
+    "optimization.pause",
+    "optimization.resume",
+    "optimization.stop",
+    "optimization.report",
 ])
 const RENDERER_CONTROL_MUTATIONS = new Set([
     "raw_cases.enqueue",
@@ -133,6 +157,11 @@ const RENDERER_CONTROL_MUTATIONS = new Set([
     "jobs.pause",
     "jobs.resume",
     "jobs.stop",
+    "optimization.start",
+    "optimization.pause",
+    "optimization.resume",
+    "optimization.stop",
+    "optimization.report",
 ])
 const RENDERER_FORBIDDEN_CONTROL_KEYS = new Set([
     "token",
@@ -183,6 +212,11 @@ let operatorJobStore = null
 let operatorJobEngine = null
 let operatorSessionManager = null
 let operatorCapabilityIssuer = null
+let optimizationStore = null
+let optimizationWorkspaceManager = null
+let optimizationOperatorGateway = null
+let optimizationRunner = null
+let optimizationControlService = null
 let workspaceRoot = null
 let rendererUrl = null
 let runtimeStart = null
@@ -1320,6 +1354,24 @@ async function resolveManagedSkillBinding(binding = {}) {
 }
 
 async function resolveManagedSkillWorkspace(binding = {}) {
+    if (binding.optimizationRunId !== undefined && binding.optimizationRunId !== null) {
+        if (!optimizationWorkspaceManager) {
+            throw new Error("Optimization workspace manager unavailable")
+        }
+        const runId = requireIdentifier(binding.optimizationRunId, "Optimization Run")
+        const repositoryId = requireIdentifier(binding.repositoryId, "managed repository")
+        const skillId = requireIdentifier(binding.skillId, "managed Skill")
+        const workspace = optimizationWorkspaceManager.get(runId)
+        if (workspace.repositoryId !== repositoryId || workspace.skillId !== skillId) {
+            throw new Error("Optimization workspace does not match the managed Skill binding")
+        }
+        return {
+            repositoryId,
+            skillId,
+            optimizationRunId: runId,
+            workspaceRoot: workspace.workspacePath,
+        }
+    }
     const paths = managedSkillPaths(binding)
     return {
         repositoryId: paths.repositoryId,
@@ -1884,6 +1936,28 @@ const operatorSessionServiceFacade = Object.freeze({
     },
 })
 
+function requireOptimizationControlService() {
+    if (!optimizationControlService) throw new Error("Optimization control service unavailable")
+    return optimizationControlService
+}
+
+const optimizationControlServiceFacade = Object.freeze({
+    preflight(input) { return requireOptimizationControlService().preflight(input) },
+    start(input) { return requireOptimizationControlService().start(input) },
+    get(runId) { return requireOptimizationControlService().get(runId) },
+    scope(runId) { return requireOptimizationControlService().scope(runId) },
+    pause(runId) { return requireOptimizationControlService().pause(runId) },
+    resume(runId) { return requireOptimizationControlService().resume(runId) },
+    stop(runId) { return requireOptimizationControlService().stop(runId) },
+    submitCandidate(input, context) {
+        return requireOptimizationControlService().submitCandidate(input, context)
+    },
+    submitDecision(input, context) {
+        return requireOptimizationControlService().submitDecision(input, context)
+    },
+    report(runId) { return requireOptimizationControlService().report(runId) },
+})
+
 function initializeControlPlane() {
     if (controlPlane) return controlPlane
     capabilityStore = new CapabilityStore()
@@ -1905,6 +1979,7 @@ function initializeControlPlane() {
         rubricManager,
         skillInstallationStore,
         skillInstallationManager,
+        optimizationControlService: optimizationControlServiceFacade,
         listDatasets: listDatasetsForControl,
         listRawCaseSkills: trustedRawCaseSkills,
         workspaceRoot: () => workspaceRoot,
@@ -2083,6 +2158,302 @@ function initializeOperatorRuntime() {
         traceDirectory: join(app.getPath("userData"), "traces", "operator"),
     })
     return operatorSessionManager
+}
+
+function optimizationDigest(value) {
+    return `sha256:${createHash("sha256").update(canonicalOperatorJson(value)).digest("hex")}`
+}
+
+function optimizationRevision(value) {
+    const hex = createHash("sha256").update(canonicalOperatorJson(value)).digest("hex").slice(0, 12)
+    return Number.parseInt(hex, 16) + 1
+}
+
+function optimizationDatasetSnapshot(datasetId) {
+    const dataset = store.getDataset(requireIdentifier(datasetId, "Optimization Dataset"))
+    const cases = store.listCases(dataset.id)
+        .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+    const rubric = store.getActiveDatasetRubric(dataset.id)
+    if (!rubric) throw new Error("Optimization requires an active published Dataset Rubric")
+    const binding = dataset.skillReference ?? {}
+    const repositoryId = requireIdentifier(binding.repositoryId, "Dataset repository")
+    const skillId = requireIdentifier(binding.id, "Dataset Skill")
+    const caseRevisions = cases.map((entry) => ({
+        caseId: requireIdentifier(entry.id, "Dataset Case"),
+        revision: Number.isSafeInteger(entry.revision) && entry.revision > 0
+            ? entry.revision
+            : optimizationRevision(entry),
+        rubricVersionId: requireIdentifier(entry.rubricVersionId, "Case Rubric version"),
+        calibrationStatus: entry.rubricCalibration?.status === "current"
+            ? "current"
+            : "needed",
+    }))
+    const datasetBody = {dataset, cases}
+    return {
+        dataset,
+        cases,
+        rubric,
+        snapshot: {
+            id: dataset.id,
+            revision: optimizationRevision(datasetBody),
+            caseRevisions,
+            digest: optimizationDigest(datasetBody),
+            repositoryId,
+            skillId,
+        },
+    }
+}
+
+async function resolveOptimizationPreflight(config) {
+    const skill = managedSkillStore.getSkill(requireIdentifier(config.skillId, "Optimization Skill"))
+    const version = managedSkillStore.getVersion(requireIdentifier(
+        config.baselineVersionId,
+        "Optimization baseline version",
+    ))
+    const repository = managedSkillStore.getRepository(skill.repositoryId)
+    if (version.state !== "released" || version.skillId !== skill.id ||
+        version.repositoryId !== repository.id) {
+        throw new Error("Optimization baseline must be the selected Skill's Released version")
+    }
+    const frozenDataset = optimizationDatasetSnapshot(config.datasetId)
+    const runtimeIds = [...new Set([
+        config.operator.runtimeId,
+        config.judge.runtimeId,
+        ...config.targets.map((target) => target.runtimeId),
+    ])]
+    const runtimes = runtimeIds.map((runtimeId) => {
+        const runtime = availableRuntimes.find((entry) => entry.runtimeId === runtimeId)
+        if (!runtime) throw new Error(`Optimization Runtime ${runtimeId} is unavailable`)
+        return runtime
+    })
+    const allSupport = (capability) => runtimes.every((runtime) => (
+        Array.isArray(runtime.capabilities) && runtime.capabilities.includes(capability)
+    ))
+    if (config.telemetry.tokens && !allSupport("token-usage")) {
+        throw new Error("Optimization token telemetry is unavailable on one or more Runtimes")
+    }
+    if (config.telemetry.cost && !allSupport("cost-usage")) {
+        throw new Error("Optimization cost telemetry is unavailable on one or more Runtimes")
+    }
+    const skillEvidence = await snapshotManagedSkillEvidence({
+        name: skill.name,
+        repositoryId: repository.id,
+        skillId: skill.id,
+        versionId: version.id,
+        repositoryPath: repository.managedPath,
+        commit: version.commit,
+        skillRoot: version.skillRoot,
+        contentDigest: version.contentDigest,
+    }, {git: managedSkillManager.git})
+    return {
+        baseline: {
+            repositoryId: repository.id,
+            skillId: skill.id,
+            versionId: version.id,
+            commit: version.commit,
+            skillRoot: version.skillRoot,
+            contentDigest: version.contentDigest,
+            state: version.state,
+        },
+        dataset: frozenDataset.snapshot,
+        rubric: {
+            id: frozenDataset.rubric.id,
+            version: frozenDataset.rubric.version,
+            scoringModel: frozenDataset.rubric.rubric?.scoringModel,
+            digest: frozenDataset.rubric.rubricDigest,
+            datasetId: frozenDataset.dataset.id,
+            publishedAt: frozenDataset.rubric.publishedAt,
+        },
+        skillEvidence,
+    }
+}
+
+function optimizationRuntimeConfiguration(requested, label) {
+    const runtimeId = requireIdentifier(requested.runtimeId, `${label} runtime`)
+    const descriptor = availableRuntimes.find((entry) => entry.runtimeId === runtimeId)
+    if (!descriptor) throw new Error(`${label} Runtime ${runtimeId} is unavailable`)
+    return {
+        ...descriptor,
+        modelId: optionalIdentifier(requested.modelId, `${label} model`),
+        effort: optionalEffort(requested.effort),
+        skillEvidenceBinding: "verified",
+    }
+}
+
+async function runOptimizationEvaluation(input) {
+    const optimizationRun = input.optimizationRun
+    const snapshot = optimizationRun.snapshot
+    const frozenDataset = optimizationDatasetSnapshot(snapshot.dataset.id)
+    if (frozenDataset.snapshot.digest !== snapshot.dataset.digest ||
+        frozenDataset.rubric.id !== snapshot.rubric.id ||
+        frozenDataset.rubric.rubricDigest !== snapshot.rubric.digest) {
+        throw Object.assign(new Error("Frozen Optimization Dataset or Rubric changed"), {
+            code: "RESOURCE_CHANGED",
+        })
+    }
+    const candidate = input.candidate
+    const skill = managedSkillStore.getSkill(candidate.skillId)
+    const repository = managedSkillStore.getRepository(candidate.repositoryId)
+    const skillEvidence = await snapshotManagedSkillEvidence({
+        name: skill.name,
+        repositoryId: repository.id,
+        skillId: skill.id,
+        versionId: candidate.id,
+        repositoryPath: repository.managedPath,
+        commit: candidate.commit,
+        skillRoot: candidate.skillRoot,
+        contentDigest: candidate.contentDigest,
+    }, {git: managedSkillManager.git})
+    const runtimeConfigurations = input.targets.map((target) => (
+        optimizationRuntimeConfiguration(target, "Target")
+    ))
+    const installationJobIdsByRuntime = Object.fromEntries(
+        (input.installationJobs ?? []).map((job) => [job.runtime.runtimeId, job.id]),
+    )
+    const managedVersionSnapshot = input.installationJobs?.length ? {
+        repositoryId: repository.id,
+        skillId: skill.id,
+        versionId: candidate.id,
+        commit: candidate.commit,
+        skillRoot: candidate.skillRoot,
+        contentDigest: candidate.contentDigest,
+        installationJobIdsByRuntime,
+    } : null
+    const judgeConfiguration = optimizationRuntimeConfiguration(snapshot.judge, "Judge")
+    const run = store.createEvaluationRun({
+        datasetId: snapshot.dataset.id,
+        caseIds: snapshot.dataset.caseRevisions.map((entry) => entry.caseId),
+        selectionMode: "selected",
+        activationMode: snapshot.activationMode,
+        skillEvidence,
+        ...(managedVersionSnapshot ? {managedVersionSnapshot} : {}),
+        judgeProfile: {
+            runtimePolicy: "active",
+            modelId: judgeConfiguration.modelId,
+            effort: judgeConfiguration.effort,
+        },
+        judgeConfiguration,
+        runtimeConfigurations,
+    }, {optimizationAuthorized: true})
+    await evaluationRunner.run(run)
+    return store.getEvaluationRun(run.id)
+}
+
+function optimizationVersionLabel(runId, epoch) {
+    const safeRun = String(runId).replace(/[^A-Za-z0-9._-]/gu, "-").slice(-40)
+    return `opt-${safeRun}-e${epoch}`.slice(0, 64)
+}
+
+async function requestOptimizationApproval(input) {
+    const kind = requireIdentifier(input.kind, "Optimization approval kind")
+    const parentJobId = requireIdentifier(input.parentJobId, "Optimization parent Job")
+    const versionId = input.candidate?.id ?? input.versionId ?? null
+    const scope = {
+        runId: input.runId,
+        epoch: input.epoch,
+        kind,
+        ...(versionId ? {versionId} : {}),
+        ...(input.request ? {requestedLimit: input.request} : {}),
+    }
+    const risks = {
+        limit: "Expand a frozen Optimization hard limit",
+        release: "Release the selected immutable Optimization Candidate",
+        install: "Install the approved Released Skill on every selected Runtime",
+    }
+    const approval = await operatorJobEngine.requestApproval(parentJobId, {
+        action: `optimization.${kind}`,
+        risk: risks[kind] ?? "Approve an Optimization mutation",
+        scope,
+        proposedMutation: scope,
+        idempotencyKey: [input.runId, kind, input.epoch, versionId ?? input.request?.field]
+            .filter((value) => value !== null && value !== undefined)
+            .join(":"),
+    })
+    return {
+        ...approval,
+        ...(kind === "release" ? {
+            versionLabel: optimizationVersionLabel(input.runId, input.epoch),
+        } : {}),
+    }
+}
+
+function releaseOptimizationCandidate(input) {
+    const candidate = input.candidate
+    return managedSkillManager.releaseVersion({
+        versionId: candidate.id,
+        versionLabel: input.approval.versionLabel,
+        expectedCandidate: {
+            commit: candidate.commit,
+            contentDigest: candidate.contentDigest,
+            state: candidate.state,
+            versionLabel: input.approval.versionLabel,
+        },
+    })
+}
+
+function optimizationTelemetry({runId}) {
+    const run = optimizationStore.getRun(runId)
+    const parentJobId = run.checkpoint?.operatorParentJobId
+    const usage = {runtimeTurns: 0, tokens: 0, reportedCost: 0}
+    if (parentJobId) {
+        for (const event of operatorJobStore.listEvents(parentJobId)) {
+            if (event.kind !== "operator_budget_reserved") continue
+            for (const field of Object.keys(usage)) usage[field] += Number(event.usage?.[field] ?? 0)
+        }
+    }
+    return {
+        elapsedMs: Math.max(0, Date.now() - Date.parse(run.createdAt)),
+        turnsUsed: usage.runtimeTurns,
+        tokensUsed: run.snapshot.telemetry.tokens ? usage.tokens : null,
+        costMicros: run.snapshot.telemetry.cost
+            ? Math.round(usage.reportedCost * 1_000_000)
+            : null,
+    }
+}
+
+function initializeOptimizationRuntime() {
+    if (optimizationControlService) return optimizationControlService
+    optimizationStore = new OptimizationStore(
+        join(app.getPath("userData"), "optimization-runs.json"),
+    )
+    optimizationWorkspaceManager = new OptimizationWorkspaceManager({
+        applicationSupportDirectory: app.getPath("userData"),
+        store: managedSkillStore,
+    })
+    optimizationOperatorGateway = new OptimizationOperatorGateway({
+        onRequest: ({runId, kind, epoch, operatorSessionId}) => (
+            operatorSessionManager.sendMessage(operatorSessionId, [
+                `Optimization Run ${runId} is waiting for the Epoch ${epoch} ${kind} submission.`,
+                kind === "candidate"
+                    ? "Edit only the bound experiment worktree, then call optimization.submit_candidate."
+                    : "Review the deterministic analysis, then call optimization.submit_decision.",
+            ].join(" "))
+        ),
+    })
+    optimizationRunner = new OptimizationRunner({
+        store: optimizationStore,
+        artifactStore: operatorJobStore,
+        childJobs: {run: (input, operation) => operatorJobEngine.runChild(input, operation)},
+        workspaceManager: optimizationWorkspaceManager,
+        installationManager: skillInstallationManager,
+        evaluationManager: {run: runOptimizationEvaluation},
+        operatorGateway: optimizationOperatorGateway,
+        approvals: {request: requestOptimizationApproval},
+        releaseManager: {release: releaseOptimizationCandidate},
+        telemetry: optimizationTelemetry,
+        onChanged: (update) => send("optimization:changed", update),
+    })
+    optimizationControlService = new OptimizationControlService({
+        store: optimizationStore,
+        workspaceManager: optimizationWorkspaceManager,
+        operatorSessionManager,
+        runner: optimizationRunner,
+        operatorGateway: optimizationOperatorGateway,
+        artifactStore: operatorJobStore,
+        readArtifact: (artifactId) => operatorJobStore.readArtifactBody(artifactId),
+        resolvePreflight: resolveOptimizationPreflight,
+    })
+    return optimizationControlService
 }
 
 function startControlSocket() {
@@ -3121,11 +3492,15 @@ async function shutdownApplication() {
             console.error(`Rolling Skill ${label} shutdown failed`, error)
         }
     }
+    await stage("Optimization Runner", () => optimizationRunner?.checkpointAndStop?.())
+    await stage("Optimization gateway", () => optimizationOperatorGateway?.cancelAll?.())
     await stage("Operator", () => operatorSessionManager?.stopAll?.())
+    await stage("Optimization Runner idle", () => optimizationRunner?.waitForIdle?.())
     await stage("Evaluation", () => evaluationRunner?.stopAll?.())
     await stage("Skill installation", () => skillInstallationManager?.stopAll?.())
     await stage("Chat Runtime", () => client?.stop?.())
     await stage("control transport", () => stopControlPlane())
+    await stage("Optimization store close", () => optimizationStore?.close())
     await stage("Operator store flush", () => operatorJobStore?.flush())
     await stage("Operator store close", () => operatorJobStore?.close())
     await stage("activity store flush", () => activityStore?.flush())
@@ -3145,7 +3520,7 @@ if (!hasLock) {
         mainWindow?.focus()
     })
 
-    app.whenReady().then(() => {
+    app.whenReady().then(async () => {
         rendererUrl = pathToFileURL(RENDERER_FILE).toString()
         session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => {
             callback(false)
@@ -3230,6 +3605,8 @@ if (!hasLock) {
         })
         discoverLocalRuntimes()
         initializeOperatorRuntime()
+        initializeOptimizationRuntime()
+        await optimizationControlService.recoverStartup()
         void startControlSocket()
         client = createClient()
         installIpc()

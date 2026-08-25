@@ -1396,6 +1396,34 @@ class OptimizationStore {
             .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id))
     }
 
+    updateCheckpoint(runId, patch = {}, options = {}) {
+        this.#requireOpen()
+        const checkpointPatch = boundedJson(
+            requireObject(cloneJson(patch, "Optimization checkpoint patch"), "Optimization checkpoint patch"),
+            "Optimization checkpoint patch",
+        )
+        const normalizedOptions = cloneJson(options, "Optimization checkpoint options")
+        exactKeys(
+            normalizedOptions,
+            [],
+            ["expectedRevision"],
+            "Optimization checkpoint options",
+        )
+        const current = this.#requireRun(runId)
+        this.#checkRevision(current, normalizedOptions.expectedRevision)
+        return this.#mutate((state) => {
+            const run = this.#requireRun(runId, state)
+            const now = nowTimestamp()
+            run.checkpoint = boundedJson(
+                {...run.checkpoint, ...checkpointPatch},
+                "Optimization checkpoint",
+            )
+            run.revision += 1
+            run.updatedAt = now
+            return copyRun(run)
+        })
+    }
+
     transitionRun(runId, nextState, patch = {}, options = {}) {
         this.#requireOpen()
         nextState = requiredText(nextState, "Optimization next state", 40)

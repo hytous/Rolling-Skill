@@ -35,6 +35,43 @@ const runtime = {
     effort: "high",
 }
 
+const optimizationConfig = {
+    skillId: "skill-1",
+    baselineVersionId: "version-1",
+    datasetId: "dataset-1",
+    operator: {runtimeId: "codex:operator", modelId: "gpt-5.6-sol", effort: "high"},
+    targets: [{runtimeId: "codex:local", modelId: "gpt-5.6-sol", effort: "high"}],
+    judge: {runtimeId: "codex:judge", modelId: "gpt-5.6-sol", effort: "high"},
+    activationMode: "automatic",
+    mode: "adaptive",
+    limits: {
+        maxEpochs: 3,
+        maxDurationMs: 3_600_000,
+        patience: 2,
+        minimumImprovement: 1,
+        maxTurns: 50,
+        maxTokens: null,
+        maxCostMicros: null,
+    },
+    target: {minimumScore: 90, minimumPassRate: 1, requireCriticalCases: true},
+    telemetry: {tokens: false, cost: false},
+}
+
+const optimizationRun = {
+    id: "optimization-run-1",
+    state: "editing",
+    revision: 2,
+    currentEpoch: 1,
+    snapshotDigest: `sha256:${"a".repeat(64)}`,
+    baseline: {repositoryId: "repository-1", skillId: "skill-1", versionId: "version-1"},
+    dataset: {id: "dataset-1", revision: 7},
+    rubric: {id: "rubric-1", version: 4},
+    targets: optimizationConfig.targets,
+    epochs: [{number: 1, status: "editing", candidateArtifactId: null}],
+    checkpoint: {paused: false},
+    error: null,
+}
+
 const validInputs = {
     "context.get": {},
     "raw_cases.list": {skillName: "billing", limit: 20},
@@ -149,6 +186,29 @@ const validInputs = {
         installationId: "installation-1",
         idempotencyKey: "install-inspect-1",
     },
+    "optimization.preflight": {...optimizationConfig, idempotencyKey: "optimization-preflight-1"},
+    "optimization.start": {...optimizationConfig, idempotencyKey: "optimization-start-1"},
+    "optimization.get": {runId: "optimization-run-1"},
+    "optimization.pause": {runId: "optimization-run-1", idempotencyKey: "optimization-pause-1"},
+    "optimization.resume": {runId: "optimization-run-1", idempotencyKey: "optimization-resume-1"},
+    "optimization.stop": {runId: "optimization-run-1", idempotencyKey: "optimization-stop-1"},
+    "optimization.submit_candidate": {
+        runId: "optimization-run-1",
+        message: "Improve billing guidance",
+        idempotencyKey: "optimization-candidate-1",
+    },
+    "optimization.submit_decision": {
+        runId: "optimization-run-1",
+        decision: {
+            schemaVersion: "rolling-skill-optimization-decision/v1",
+            action: "continue",
+            rationale: "Continue after the first Epoch",
+            observations: [],
+        },
+        limitRequest: null,
+        idempotencyKey: "optimization-decision-1",
+    },
+    "optimization.report": {runId: "optimization-run-1", idempotencyKey: "optimization-report-1"},
 }
 
 const validOutputs = {
@@ -226,6 +286,32 @@ const validOutputs = {
     "installations.inspect": {
         installation: {id: "inspection-1", status: "queued", repositoryId: "repository-1", skillId: "skill-1", runtimeId: "codex:local"},
     },
+    "optimization.preflight": {
+        snapshotDigest: optimizationRun.snapshotDigest,
+        baseline: optimizationRun.baseline,
+        dataset: optimizationRun.dataset,
+        rubric: optimizationRun.rubric,
+        targets: optimizationRun.targets,
+        ready: true,
+    },
+    "optimization.start": {run: optimizationRun},
+    "optimization.get": {run: optimizationRun},
+    "optimization.pause": {run: optimizationRun},
+    "optimization.resume": {run: optimizationRun},
+    "optimization.stop": {run: optimizationRun},
+    "optimization.submit_candidate": {
+        accepted: {runId: "optimization-run-1", kind: "candidate"},
+    },
+    "optimization.submit_decision": {
+        accepted: {runId: "optimization-run-1", kind: "decision"},
+    },
+    "optimization.report": {
+        report: {
+            artifactId: "optimization-report-1",
+            digest: `sha256:${"b".repeat(64)}`,
+            mediaType: "text/markdown; charset=utf-8",
+        },
+    },
 }
 
 describe("control-plane contracts", () => {
@@ -274,6 +360,15 @@ describe("control-plane contracts", () => {
                 "installations.get": "installations.read",
                 "installations.cancel": "installations.execute",
                 "installations.inspect": "installations.execute",
+                "optimization.preflight": "optimizations.read",
+                "optimization.start": "optimizations.execute",
+                "optimization.get": "optimizations.read",
+                "optimization.pause": "optimizations.control",
+                "optimization.resume": "optimizations.control",
+                "optimization.stop": "optimizations.control",
+                "optimization.submit_candidate": "optimizations.execute",
+                "optimization.submit_decision": "optimizations.execute",
+                "optimization.report": "optimizations.read",
             },
         )
         assert.deepEqual(Object.keys(METHOD_DEFINITIONS), CONTROL_METHODS)
@@ -304,6 +399,11 @@ describe("control-plane contracts", () => {
             "jobs.pause",
             "jobs.resume",
             "jobs.stop",
+            "optimization.preflight",
+            "optimization.start",
+            "optimization.pause",
+            "optimization.resume",
+            "optimization.stop",
             "skills.get",
         ]
         assert.deepEqual(
@@ -446,6 +546,13 @@ describe("control-plane contracts", () => {
             "installations.start",
             "installations.cancel",
             "installations.inspect",
+            "optimization.start",
+            "optimization.pause",
+            "optimization.resume",
+            "optimization.stop",
+            "optimization.submit_candidate",
+            "optimization.submit_decision",
+            "optimization.report",
         ]) {
             const {idempotencyKey: _idempotencyKey, ...withoutKey} = validInputs[method]
             assert.throws(

@@ -452,12 +452,160 @@ const publicSkillDiff = z.object({
     changed: z.boolean(),
 }).strict()
 
+const optimizationRuntime = z.object({
+    runtimeId: id,
+    modelId: id,
+    effort: reasoningEffort.nullable().default(null),
+}).strict()
+
+const optimizationLimits = z.object({
+    maxEpochs: z.number().int().min(1).max(100),
+    maxDurationMs: z.number().int().min(1).max(30 * 24 * 60 * 60 * 1_000),
+    patience: z.number().int().min(1).max(100),
+    minimumImprovement: z.number().finite().min(0).max(100),
+    maxTurns: z.number().int().min(1).max(1_000_000).nullable().default(null),
+    maxTokens: z.number().int().min(0).max(1_000_000_000_000).nullable().default(null),
+    maxCostMicros: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().default(null),
+}).strict().superRefine((limits, context) => {
+    if (limits.patience > limits.maxEpochs) {
+        context.addIssue({
+            code: "custom",
+            path: ["patience"],
+            message: "Optimization patience cannot exceed max epochs",
+        })
+    }
+})
+
+const optimizationConfigInput = z.object({
+    skillId: id,
+    baselineVersionId: id,
+    datasetId: id,
+    operator: optimizationRuntime,
+    targets: z.array(optimizationRuntime).min(1).max(64),
+    judge: optimizationRuntime,
+    activationMode: z.enum(["automatic", "explicit"]),
+    mode: z.enum(["fixed", "adaptive"]),
+    limits: optimizationLimits,
+    target: z.object({
+        minimumScore: z.number().finite().min(0).max(100),
+        minimumPassRate: z.number().finite().min(0).max(1),
+        requireCriticalCases: z.boolean(),
+    }).strict(),
+    telemetry: z.object({tokens: z.boolean(), cost: z.boolean()}).strict(),
+}).strict().superRefine((input, context) => {
+    const runtimeIds = input.targets.map((target) => target.runtimeId)
+    if (new Set(runtimeIds).size !== runtimeIds.length) {
+        context.addIssue({code: "custom", path: ["targets"], message: "Runtime ids must be unique"})
+    }
+    if ((input.limits.maxTokens ?? 0) > 0 && input.telemetry.tokens !== true) {
+        context.addIssue({code: "custom", path: ["limits", "maxTokens"], message: "Token telemetry is required"})
+    }
+    if ((input.limits.maxCostMicros ?? 0) > 0 && input.telemetry.cost !== true) {
+        context.addIssue({code: "custom", path: ["limits", "maxCostMicros"], message: "Cost telemetry is required"})
+    }
+})
+
+const optimizationDecisionInput = z.object({
+    schemaVersion: z.literal("rolling-skill-optimization-decision/v1"),
+    action: z.enum(["continue", "finish", "pause"]),
+    rationale: boundedText(8_192, "Optimization decision rationale"),
+    observations: z.array(z.object({
+        kind: boundedText(100, "Optimization observation kind"),
+        summary: boundedText(2_000, "Optimization observation summary"),
+        artifactId: id.optional(),
+    }).strict()).max(64).default([]),
+}).strict()
+
+const optimizationLimitRequest = z.object({
+    field: z.enum(["maxEpochs", "maxDurationMs", "maxTurns", "maxTokens", "maxCostMicros"]),
+    value: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    rationale: boundedText(8_192, "Optimization limit request rationale"),
+}).strict()
+
+const publicOptimizationBaseline = z.object({
+    repositoryId: id,
+    skillId: id,
+    versionId: id,
+    commit: boundedText(80, "Optimization baseline commit").optional(),
+    contentDigest: boundedText(80, "Optimization baseline digest").optional(),
+}).strict()
+
+const publicOptimizationDataset = z.object({
+    id,
+    revision: z.number().int().min(1),
+    digest: boundedText(80, "Optimization Dataset digest").optional(),
+}).strict()
+
+const publicOptimizationRubric = z.object({
+    id,
+    version: z.number().int().min(1),
+    digest: boundedText(80, "Optimization Rubric digest").optional(),
+}).strict()
+
+const publicOptimizationEpoch = z.object({
+    number: z.number().int().min(1).max(100),
+    status: boundedText(40, "Optimization Epoch status"),
+    candidateArtifactId: id.nullable(),
+    installArtifactIds: z.array(id).max(512).optional(),
+    evaluationArtifactIds: z.array(id).max(512).optional(),
+    analysisArtifactId: id.nullable().optional(),
+    decisionArtifactId: id.nullable().optional(),
+}).strict()
+
+const publicOptimizationCheckpoint = z.object({
+    paused: z.boolean().optional(),
+    pauseReason: z.string().max(300).optional(),
+    stopReason: z.string().max(300).optional(),
+    reportArtifactId: id.optional(),
+    reportDigest: boundedText(80, "Optimization report digest").optional(),
+    releaseApprovalId: id.nullable().optional(),
+    installApprovalId: id.nullable().optional(),
+    releasedVersionId: id.nullable().optional(),
+    finalEvaluationArtifactId: id.nullable().optional(),
+    finalRegressionPassed: z.boolean().optional(),
+}).strict()
+
+const publicOptimizationRun = z.object({
+    id,
+    state: z.enum([
+        "preflight", "baseline", "editing", "installing", "evaluating", "deciding",
+        "waiting_approval", "restoring", "succeeded", "failed", "cancelled", "needs_recovery",
+    ]),
+    revision: z.number().int().min(0),
+    currentEpoch: z.number().int().min(0).max(100),
+    snapshotDigest: boundedText(80, "Optimization snapshot digest"),
+    baseline: publicOptimizationBaseline,
+    dataset: publicOptimizationDataset,
+    rubric: publicOptimizationRubric,
+    targets: z.array(optimizationRuntime).min(1).max(64),
+    epochs: z.array(publicOptimizationEpoch).max(100),
+    checkpoint: publicOptimizationCheckpoint,
+    error: z.object({
+        code: boundedText(MAX_IDENTIFIER_LENGTH, "Optimization error code"),
+        message: z.string().max(4_096),
+    }).strict().nullable(),
+}).strict()
+
+const publicOptimizationPreflight = z.object({
+    snapshotDigest: boundedText(80, "Optimization snapshot digest"),
+    baseline: publicOptimizationBaseline,
+    dataset: publicOptimizationDataset,
+    rubric: publicOptimizationRubric,
+    targets: z.array(optimizationRuntime).min(1).max(64),
+    ready: z.boolean(),
+}).strict()
+
 const OPERATOR_UI_ONLY_METHODS = new Set([
     "approvals.resolve",
     "jobs.pause",
     "jobs.resume",
     "jobs.stop",
     "skills.get",
+    "optimization.preflight",
+    "optimization.start",
+    "optimization.pause",
+    "optimization.resume",
+    "optimization.stop",
 ])
 
 function freezeMethodDefinitions(definitions) {
@@ -759,6 +907,64 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
         action: "installations.execute",
         input: z.object({installationId: id, idempotencyKey: id}).strict(),
         output: z.object({installation: publicInstallation}).strict(),
+    },
+    "optimization.preflight": {
+        action: "optimizations.read",
+        input: optimizationConfigInput.extend({idempotencyKey: id}).strict(),
+        output: publicOptimizationPreflight,
+    },
+    "optimization.start": {
+        action: "optimizations.execute",
+        input: optimizationConfigInput.extend({idempotencyKey: id}).strict(),
+        output: z.object({run: publicOptimizationRun}).strict(),
+    },
+    "optimization.get": {
+        action: "optimizations.read",
+        input: z.object({runId: id}).strict(),
+        output: z.object({run: publicOptimizationRun}).strict(),
+    },
+    "optimization.pause": {
+        action: "optimizations.control",
+        input: z.object({runId: id, idempotencyKey: id}).strict(),
+        output: z.object({run: publicOptimizationRun}).strict(),
+    },
+    "optimization.resume": {
+        action: "optimizations.control",
+        input: z.object({runId: id, idempotencyKey: id}).strict(),
+        output: z.object({run: publicOptimizationRun}).strict(),
+    },
+    "optimization.stop": {
+        action: "optimizations.control",
+        input: z.object({runId: id, idempotencyKey: id}).strict(),
+        output: z.object({run: publicOptimizationRun}).strict(),
+    },
+    "optimization.submit_candidate": {
+        action: "optimizations.execute",
+        input: z.object({
+            runId: id,
+            message: boundedText(MAX_CANDIDATE_MESSAGE_LENGTH, "Candidate commit message"),
+            idempotencyKey: id,
+        }).strict(),
+        output: z.object({accepted: z.object({runId: id, kind: z.literal("candidate")}).strict()}).strict(),
+    },
+    "optimization.submit_decision": {
+        action: "optimizations.execute",
+        input: z.object({
+            runId: id,
+            decision: optimizationDecisionInput,
+            limitRequest: optimizationLimitRequest.nullable().default(null),
+            idempotencyKey: id,
+        }).strict(),
+        output: z.object({accepted: z.object({runId: id, kind: z.literal("decision")}).strict()}).strict(),
+    },
+    "optimization.report": {
+        action: "optimizations.read",
+        input: z.object({runId: id, idempotencyKey: id}).strict(),
+        output: z.object({report: z.object({
+            artifactId: id,
+            digest: boundedText(80, "Optimization report digest"),
+            mediaType: z.literal("text/markdown; charset=utf-8"),
+        }).strict()}).strict(),
     },
 })
 

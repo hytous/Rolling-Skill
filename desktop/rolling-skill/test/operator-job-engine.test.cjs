@@ -264,6 +264,50 @@ describe("Operator Job engine", () => {
         assert.equal(calls, 1)
     })
 
+    it("persists an internal Optimization approval and waits for the existing approval resolver", async () => {
+        const {store, session} = fixture()
+        const parent = createJob(store, session.id)
+        const engine = new OperatorJobEngine({store})
+
+        const pending = engine.requestApproval(parent.id, {
+            action: "optimization.release",
+            risk: "Release the selected immutable Candidate",
+            scope: {runId: "optimization-run-1", versionId: "candidate-2"},
+            proposedMutation: {kind: "release", versionId: "candidate-2"},
+            idempotencyKey: "optimization-run-1:release:candidate-2",
+        })
+        await new Promise((resolve_) => setImmediate(resolve_))
+        const [approval] = store.listApprovals(parent.id)
+
+        assert.equal(approval.status, "pending")
+        assert.equal(approval.action, "optimization.release")
+        assert.equal(store.getJob(parent.id).status, "waiting_approval")
+        await engine.resolveApproval(approval.id, {
+            decision: "approve",
+            scope: "single_action",
+            decidedBy: "human-renderer",
+        })
+
+        assert.deepEqual(await pending, {
+            approved: true,
+            approvalId: approval.id,
+            decisionScope: "single_action",
+        })
+        assert.equal(store.getStep(approval.stepId).status, "succeeded")
+        assert.equal(store.getJob(parent.id).status, "running")
+        assert.deepEqual(await engine.requestApproval(parent.id, {
+            action: "optimization.release",
+            risk: "Release the selected immutable Candidate",
+            scope: {runId: "optimization-run-1", versionId: "candidate-2"},
+            proposedMutation: {kind: "release", versionId: "candidate-2"},
+            idempotencyKey: "optimization-run-1:release:candidate-2",
+        }), {
+            approved: true,
+            approvalId: approval.id,
+            decisionScope: "single_action",
+        })
+    })
+
     it("runs an internal phase inside a durable child Job and terminalizes success or failure", async () => {
         const {store, session} = fixture()
         const parent = createJob(store, session.id)

@@ -490,6 +490,49 @@ describe("OperatorSessionManager", () => {
         await assert.rejects(restarted.resume(created.session.id), /workspace changed/iu)
         assert.equal(resumedClients.length, 0)
     })
+
+    it("binds a registered optimization Run workspace without accepting a caller path", async () => {
+        const resolved = []
+        const context = fixture({
+            resolveManagedSkillWorkspace: async (binding) => {
+                resolved.push(structuredClone(binding))
+                return {
+                    ...binding,
+                    workspaceRoot: "/private/optimization-workspaces/run-1",
+                }
+            },
+        })
+
+        const created = await context.manager.create(createInput({
+            actions: ["optimizations.read", "optimizations.execute"],
+            managedSkillBinding: {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                optimizationRunId: "run-1",
+            },
+        }))
+
+        assert.deepEqual(resolved, [{
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            optimizationRunId: "run-1",
+        }])
+        assert.equal(context.clients[0].options.workspaceRoot, "/private/optimization-workspaces/run-1")
+        const configuration = context.store.getSession(created.session.id).transcript.findLast(
+            (entry) => entry.kind === "operator_session_configuration",
+        )
+        assert.equal(configuration.managedSkillBinding.optimizationRunId, "run-1")
+        assert.doesNotMatch(JSON.stringify(configuration), /private\/optimization-workspaces/iu)
+
+        await assert.rejects(context.manager.create(createInput({
+            managedSkillBinding: {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                optimizationRunId: "run-2",
+                workspaceRoot: "/attacker/path",
+            },
+        })), /binding|unsupported/iu)
+    })
     it("rejects UI-only authority before issuing an Operator capability", async () => {
         const context = fixture()
 

@@ -110,6 +110,75 @@ class OptimizationWorkspaceManager {
         return this.enqueue(() => this.#create(run))
     }
 
+    get(runId) {
+        runId = requiredId(runId, "Optimization Run")
+        const record = this.workspaces.get(runId)
+        if (!record) throw new Error("Unknown registered Optimization workspace")
+        this.#verifyWorkspace(record)
+        return workspaceCopy(record)
+    }
+
+    recover(run, expectedWorkspace) {
+        return this.enqueue(async () => {
+            if (!run || typeof run !== "object" || Array.isArray(run)) {
+                throw new Error("Optimization Run is required")
+            }
+            exactKeys(
+                expectedWorkspace,
+                [
+                    "runId",
+                    "repositoryId",
+                    "skillId",
+                    "versionId",
+                    "workspacePath",
+                    "branchName",
+                    "baselineCommit",
+                ],
+                "Persisted Optimization workspace",
+            )
+            const runId = requiredId(run.id, "Optimization Run")
+            if (this.workspaces.has(runId)) {
+                throw new Error("Optimization workspace is already registered")
+            }
+            const baseline = run.snapshot?.baseline
+            const repository = this.store.getRepository(baseline?.repositoryId)
+            const skill = this.store.getSkill(baseline?.skillId)
+            const version = this.store.getVersion(baseline?.versionId)
+            if (skill.repositoryId !== repository.id || version.repositoryId !== repository.id ||
+                version.skillId !== skill.id || version.state !== "released" ||
+                version.commit !== baseline.commit || version.skillRoot !== baseline.skillRoot ||
+                version.contentDigest !== baseline.contentDigest) {
+                throw new Error("Persisted Optimization baseline identity changed")
+            }
+            const record = {
+                runId,
+                repositoryId: repository.id,
+                skillId: skill.id,
+                versionId: version.id,
+                skillRoot: skill.skillRoot,
+                repositoryPath: realpathSync(repository.managedPath),
+                workspacePath: resolve(this.workspacesRoot, runId),
+                branchName: `rolling-skill/optimization/${runId}`,
+                baselineCommit: version.commit,
+                baselineDigest: version.contentDigest,
+            }
+            if (JSON.stringify(workspaceCopy(record)) !== JSON.stringify(expectedWorkspace)) {
+                throw new Error("Persisted Optimization workspace identity changed")
+            }
+            this.#verifyWorkspace(record)
+            if (await this.git.defaultBranch(record.workspacePath) !== record.branchName ||
+                !await this.git.isAncestor(
+                    record.repositoryPath,
+                    record.baselineCommit,
+                    await this.git.worktreeHead(record.workspacePath),
+                )) {
+                throw new Error("Persisted Optimization workspace branch identity changed")
+            }
+            this.workspaces.set(runId, record)
+            return workspaceCopy(record)
+        })
+    }
+
     async #create(run) {
         if (!run || typeof run !== "object" || Array.isArray(run)) {
             throw new Error("Optimization Run is required")
