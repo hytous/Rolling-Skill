@@ -264,6 +264,41 @@ describe("Operator Job engine", () => {
         assert.equal(calls, 1)
     })
 
+    it("runs an internal phase inside a durable child Job and terminalizes success or failure", async () => {
+        const {store, session} = fixture()
+        const parent = createJob(store, session.id)
+        const engine = new OperatorJobEngine({store})
+        const result = await engine.runChild({
+            parentJobId: parent.id,
+            type: "optimization_candidate",
+            objective: "Commit one immutable Candidate",
+            budget: budget(),
+        }, ({jobId, createArtifact}) => {
+            const artifact = createArtifact({
+                kind: "optimization-candidate",
+                name: "candidate.json",
+                mediaType: "application/json",
+                body: "{}",
+            })
+            return {jobId, artifactId: artifact.id}
+        })
+        const succeeded = store.getJob(result.jobId)
+        assert.equal(succeeded.status, "succeeded")
+        assert.deepEqual(succeeded.artifactIds, [result.artifactId])
+
+        await assert.rejects(() => engine.runChild({
+            parentJobId: parent.id,
+            type: "optimization_evaluation",
+            objective: "Evaluate one Candidate",
+            budget: budget(),
+        }, () => {
+            throw Object.assign(new Error("evaluation failed"), {code: "EVALUATION_FAILED"})
+        }), /evaluation failed/u)
+        const failed = store.listJobs({parentJobId: parent.id}).at(-1)
+        assert.equal(failed.status, "failed")
+        assert.equal(failed.error.code, "EVALUATION_FAILED")
+    })
+
     it("coordinates idempotency and Job queues across Store instances for the same path", async () => {
         const {root, path, store, session} = fixture()
         const job = createJob(store, session.id)

@@ -891,13 +891,23 @@ function canonicalRun(value) {
     const snapshot = validateFrozenOptimizationRun(value.snapshot)
     const epochs = value.epochs.map(canonicalEpoch)
     const operations = value.operations.map(canonicalOperation)
+    const checkpoint = boundedJson(
+        requireObject(value.checkpoint, "Optimization checkpoint"),
+        "Optimization checkpoint",
+    )
     if (new Set(epochs.map((entry) => entry.id)).size !== epochs.length) {
         throw new Error("Optimization epoch ids must be unique")
     }
     epochs.forEach((epoch, index) => {
         if (epoch.number !== index + 1) throw new Error("Optimization epoch sequence is invalid")
     })
-    if (epochs.length > snapshot.limits.maxEpochs) {
+    const effectiveMaxEpochs = Number.isSafeInteger(checkpoint?.approvedLimits?.maxEpochs)
+        ? checkpoint.approvedLimits.maxEpochs
+        : snapshot.limits.maxEpochs
+    if (effectiveMaxEpochs < snapshot.limits.maxEpochs || effectiveMaxEpochs > 100) {
+        throw new Error("Optimization approved epoch limit is invalid")
+    }
+    if (epochs.length > effectiveMaxEpochs) {
         throw new Error("Optimization run exceeds its frozen epoch limit")
     }
     if (new Set(operations.map((entry) => entry.key)).size !== operations.length) {
@@ -910,7 +920,7 @@ function canonicalRun(value) {
         snapshot: cloneJson(snapshot),
         epochs,
         currentEpoch: integer(value.currentEpoch, "Optimization current epoch", 0, epochs.length),
-        checkpoint: boundedJson(requireObject(value.checkpoint, "Optimization checkpoint"), "Optimization checkpoint"),
+        checkpoint,
         recovery: canonicalRecovery(value.recovery),
         error: value.error === null ? null : boundedJson(value.error, "Optimization error", 32 * 1024),
         operations,
@@ -927,11 +937,16 @@ function canonicalRun(value) {
         throw new Error("A terminal Optimization run cannot contain a nonterminal Epoch")
     }
     if (["editing", "installing", "evaluating", "deciding"].includes(run.state)) {
+        const releaseFinalRegression =
+            run.state === "evaluating" &&
+            run.checkpoint.releasePhase === "final-regression" &&
+            currentEpoch?.status === "deciding"
         if (
             currentEpoch !== null &&
             !TERMINAL_EPOCH_STATES.has(currentEpoch.status) &&
             currentEpoch.status !== run.state &&
-            !(run.state === "installing" && currentEpoch.status === "deciding")
+            !(run.state === "installing" && currentEpoch.status === "deciding") &&
+            !releaseFinalRegression
         ) {
             throw new Error("Optimization Run phase does not match its current Epoch")
         }
@@ -1411,6 +1426,18 @@ class OptimizationStore {
                 current.state === "waiting_approval" ||
                 releaseInstallRecovery
             )
+        const releaseFinalRegression = currentEpoch?.status === "deciding" && (
+            (
+                current.state === "installing" &&
+                current.checkpoint?.releasePhase === "released-install" &&
+                nextState === "evaluating"
+            ) ||
+            (
+                current.state === "evaluating" &&
+                current.checkpoint?.releasePhase === "final-regression" &&
+                nextState === "deciding"
+            )
+        )
         if (
             releaseInstallRecovery &&
             !new Set(["installing", "restoring", "failed", "cancelled"]).has(nextState)
@@ -1421,7 +1448,7 @@ class OptimizationStore {
             if (currentEpoch === null || TERMINAL_EPOCH_STATES.has(currentEpoch.status)) {
                 throw new Error(`Optimization ${nextState} phase requires a nonterminal current Epoch`)
             }
-            const allowedEpochStatuses = approvedReleaseInstall
+            const allowedEpochStatuses = approvedReleaseInstall || releaseFinalRegression
                 ? new Set(["deciding"])
                 : new Map([
                     ["installing", new Set(["editing", "installing"])],
@@ -1471,7 +1498,11 @@ class OptimizationStore {
             const run = this.#requireRun(runId, state)
             const now = nowTimestamp()
             run.state = nextState
-            if (["installing", "evaluating", "deciding"].includes(nextState) && !approvedReleaseInstall) {
+            if (
+                ["installing", "evaluating", "deciding"].includes(nextState) &&
+                !approvedReleaseInstall &&
+                !releaseFinalRegression
+            ) {
                 const epoch = run.epochs.at(-1)
                 epoch.status = nextState
                 epoch.updatedAt = now
@@ -1526,7 +1557,16 @@ class OptimizationStore {
         if (current.epochs.some((entry) => !TERMINAL_EPOCH_STATES.has(entry.status))) {
             throw new Error("An Optimization Epoch is already in progress")
         }
-        if (current.epochs.length >= current.snapshot.limits.maxEpochs) {
+        const effectiveMaxEpochs = Number.isSafeInteger(current.checkpoint?.approvedLimits?.maxEpochs)
+            ? current.checkpoint.approvedLimits.maxEpochs
+            : current.snapshot.limits.maxEpochs
+        if (
+            effectiveMaxEpochs < current.snapshot.limits.maxEpochs ||
+            effectiveMaxEpochs > 100
+        ) {
+            throw new Error("Optimization approved epoch limit is invalid")
+        }
+        if (current.epochs.length >= effectiveMaxEpochs) {
             throw new Error("Optimization run reached its frozen epoch limit")
         }
         return this.#mutate((state) => {
@@ -1630,9 +1670,14 @@ class OptimizationStore {
             }
         }
         for (const field of IMMUTABLE_EPOCH_FIELDS.get(epoch.status) ?? []) {
+            const finalRegressionAppend =
+                field === "evaluationArtifactIds" &&
+                current.state === "evaluating" &&
+                current.checkpoint?.releasePhase === "final-regression"
             if (
                 Object.hasOwn(evidencePatch, field) &&
-                !sameJson(evidencePatch[field], epoch[field])
+                !sameJson(evidencePatch[field], epoch[field]) &&
+                !finalRegressionAppend
             ) {
                 throw new Error(`Optimization Epoch ${field} is append-only and immutable in ${epoch.status}`)
             }

@@ -596,6 +596,67 @@ class OperatorJobEngine {
         })
     }
 
+    async runChild(input = {}, operation) {
+        const request = requireObject(input, "Internal child Operator Job")
+        if (typeof operation !== "function") {
+            throw new Error("Internal child Operator Job operation is required")
+        }
+        const child = await this.scheduleChild(
+            requiredText(request.parentJobId, "Parent Operator Job id", 200),
+            {
+                type: requiredText(request.type, "Child Operator Job type", 200),
+                objective: requiredText(request.objective, "Child Operator Job objective", 32_768),
+                budget: request.budget,
+            },
+        )
+        return this.#enqueue(child.id, () => this.#withJobOperation(child.id, async (signal) => {
+            this.#store.transitionJob(child.id, "running")
+            try {
+                const result = await operation({
+                    jobId: child.id,
+                    signal,
+                    createArtifact: (artifact) => this.#store.createArtifact(child.id, artifact),
+                })
+                if (signal.aborted) {
+                    this.#store.beginCancellation(child.id)
+                    this.#store.transitionJob(child.id, "cancelled", {
+                        error: {code: "OPERATOR_CHILD_CANCELLED", message: "Internal child Job was cancelled"},
+                    })
+                    return result
+                }
+                this.#store.transitionJob(child.id, "succeeded", {
+                    result: {internal: true},
+                })
+                return result
+            } catch (error) {
+                const current = this.#store.getJob(child.id)
+                if (current.status === "cancelling" || signal.aborted) {
+                    if (current.status !== "cancelling") this.#store.beginCancellation(child.id)
+                    this.#store.transitionJob(child.id, "cancelled", {
+                        error: {
+                            code: "OPERATOR_CHILD_CANCELLED",
+                            message: error?.message ?? "Internal child Job was cancelled",
+                        },
+                    })
+                } else if (error?.code === "OPTIMIZATION_INSTALL_NEEDS_RECOVERY") {
+                    this.#store.transitionJob(child.id, "needs_recovery", {
+                        error: {code: error.code, message: error.message},
+                    })
+                } else {
+                    this.#store.transitionJob(child.id, "failed", {
+                        error: {
+                            code: typeof error?.code === "string" && error.code
+                                ? error.code
+                                : "OPERATOR_CHILD_FAILED",
+                            message: error?.message ?? String(error),
+                        },
+                    })
+                }
+                throw error
+            }
+        }))
+    }
+
     execute(jobId, input = {}) {
         return this.#enqueue(jobId, () => this.#withJobOperation(
             jobId,

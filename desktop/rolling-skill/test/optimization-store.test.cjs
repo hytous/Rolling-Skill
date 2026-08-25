@@ -137,6 +137,48 @@ function waitForChildText(child, pattern, label) {
 }
 
 describe("OptimizationStore", () => {
+    it("allows approved Released installation and final regression to finish the deciding Epoch", () => {
+        const {store} = fixture()
+        const created = store.createRun(frozenRun())
+        store.transitionRun(created.runId, "baseline")
+        store.transitionRun(created.runId, "editing")
+        const epoch = store.createEpoch(created.runId)
+        store.updateEpoch(created.runId, epoch.epochId, {candidateArtifactId: "candidate-artifact"})
+        store.transitionRun(created.runId, "installing")
+        store.updateEpoch(created.runId, epoch.epochId, {installArtifactIds: ["candidate-install"]})
+        store.transitionRun(created.runId, "evaluating")
+        store.updateEpoch(created.runId, epoch.epochId, {evaluationArtifactIds: ["candidate-evaluation"]})
+        store.transitionRun(created.runId, "deciding")
+        store.updateEpoch(created.runId, epoch.epochId, {
+            analysisArtifactId: "candidate-analysis",
+            decisionArtifactId: "candidate-decision",
+        })
+        store.transitionRun(created.runId, "waiting_approval")
+
+        store.transitionRun(created.runId, "installing", {
+            checkpoint: {releasePhase: "released-install"},
+        })
+        store.transitionRun(created.runId, "evaluating", {
+            checkpoint: {releasePhase: "final-regression"},
+        })
+        store.updateEpoch(created.runId, epoch.epochId, {
+            evaluationArtifactIds: ["candidate-evaluation", "final-regression"],
+        })
+        store.transitionRun(created.runId, "deciding", {
+            checkpoint: {releasePhase: "verified"},
+        })
+        store.updateEpoch(created.runId, epoch.epochId, {status: "succeeded"})
+        store.transitionRun(created.runId, "succeeded")
+
+        const completed = store.getRun(created.runId)
+        assert.equal(completed.state, "succeeded")
+        assert.equal(completed.epochs[0].status, "succeeded")
+        assert.deepEqual(completed.epochs[0].evaluationArtifactIds, [
+            "candidate-evaluation",
+            "final-regression",
+        ])
+    })
+
     it("rejects a second process while the live owner keeps active state unchanged", () => {
         const {path, store} = fixture()
         const created = store.createRun(frozenRun())
