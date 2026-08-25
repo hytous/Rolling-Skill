@@ -18,9 +18,21 @@ const SKILL_INSTALLATION_STORE_SCHEMA = "rolling-skill-installations/v1"
 const MAX_STORE_BYTES = 24 * 1024 * 1024
 const MAX_ENTRY_BYTES = 128 * 1024
 const MAX_TIMELINE_ENTRIES = 2_000
-const OPERATIONS = new Set(["install", "inspect"])
+const EXPERIMENT_OPERATIONS = new Set([
+    "experiment_install",
+    "experiment_restore",
+    "experiment_remove",
+    "experiment_inspect",
+])
+const OPERATIONS = new Set(["install", "inspect", ...EXPERIMENT_OPERATIONS])
 const CONVERSATION_STATUSES = new Set(["idle", "running", "failed"])
-const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "unverified"])
+const TERMINAL_STATUSES = new Set([
+    "succeeded",
+    "failed",
+    "cancelled",
+    "unverified",
+    "needs_recovery",
+])
 const NONTERMINAL_STATUSES = new Set([
     "queued",
     "running",
@@ -39,10 +51,25 @@ const TRANSITIONS = new Map([
         "failed",
         "cancelled",
         "unverified",
+        "needs_recovery",
     ])],
-    ["awaiting_permission", new Set(["running", "verifying", "failed", "cancelled", "unverified"])],
-    ["awaiting_confirmation", new Set(["running", "verifying", "failed", "cancelled", "unverified"])],
-    ["verifying", new Set(["succeeded", "failed", "cancelled", "unverified"])],
+    ["awaiting_permission", new Set([
+        "running",
+        "verifying",
+        "failed",
+        "cancelled",
+        "unverified",
+        "needs_recovery",
+    ])],
+    ["awaiting_confirmation", new Set([
+        "running",
+        "verifying",
+        "failed",
+        "cancelled",
+        "unverified",
+        "needs_recovery",
+    ])],
+    ["verifying", new Set(["succeeded", "failed", "cancelled", "unverified", "needs_recovery"])],
 ])
 
 function copy(value) {
@@ -88,8 +115,10 @@ function normalizeRuntime(runtime = {}) {
 
 function normalizeRequest(request = {}) {
     const source = request.source ?? {}
-    return {
+    const purpose = request.purpose ?? "managed-installation"
+    const normalized = {
         schema: requiredText(request.schema, "Installation request schema", 100),
+        purpose: requiredText(purpose, "Installation purpose", 100),
         markerSchema: requiredText(request.markerSchema, "Installation marker schema", 100),
         repositoryPath: requiredText(request.repositoryPath, "Managed repository path", 8_192),
         skillName: requiredText(request.skillName, "Skill name", 200),
@@ -103,6 +132,41 @@ function normalizeRequest(request = {}) {
             expectedDigest: requiredText(source.expectedDigest, "Expected digest", 80),
         },
     }
+    if (purpose === "managed-installation") return normalized
+    if (purpose !== "optimization-experiment") {
+        throw new Error("Skill installation purpose is invalid")
+    }
+    const experiment = request.experiment
+    if (!experiment || typeof experiment !== "object" || Array.isArray(experiment)) {
+        throw new Error("Optimization experiment evidence is required")
+    }
+    normalized.operation = requiredText(request.operation, "Optimization experiment operation", 80)
+    if (!EXPERIMENT_OPERATIONS.has(normalized.operation)) {
+        throw new Error("Optimization experiment operation is invalid")
+    }
+    normalized.experiment = copy(experiment)
+    requiredText(experiment.runId, "Optimization Run id", 200)
+    if (!Number.isSafeInteger(experiment.epoch) || experiment.epoch < 1 || experiment.epoch > 100) {
+        throw new Error("Optimization Epoch is invalid")
+    }
+    requiredText(experiment.snapshotDigest, "Optimization snapshot digest", 80)
+    if (!experiment.marker || typeof experiment.marker !== "object") {
+        throw new Error("Optimization experiment marker is required")
+    }
+    requiredText(experiment.marker.runId, "Optimization marker Run id", 200)
+    requiredText(experiment.marker.versionId, "Optimization marker version id", 200)
+    requiredText(experiment.baseline?.versionId, "Optimization baseline version id", 200)
+    if (experiment.initial !== null) {
+        const classification = requiredText(
+            experiment.initial?.classification,
+            "Optimization initial classification",
+            80,
+        )
+        if (!new Set(["absent", "managed-clean"]).has(classification)) {
+            throw new Error("Optimization initial classification is invalid")
+        }
+    }
+    return normalized
 }
 
 function validateTimelineEntry(value, label) {
@@ -132,8 +196,14 @@ function validateState(state) {
         if (jobIds.has(id)) throw new Error("Duplicate Skill installation job")
         jobIds.add(id)
         normalizeRuntime(job.runtime)
-        normalizeRequest(job.request)
+        const request = normalizeRequest(job.request)
         if (!OPERATIONS.has(job.operation)) throw new Error("Skill installation operation is invalid")
+        if (
+            (request.purpose === "optimization-experiment") !== EXPERIMENT_OPERATIONS.has(job.operation) ||
+            (request.purpose === "optimization-experiment" && request.operation !== job.operation)
+        ) {
+            throw new Error("Skill installation Job operation does not match its frozen request")
+        }
         nullableText(job.parentJobId, "Parent installation job id", 200)
         if (!CONVERSATION_STATUSES.has(job.conversationStatus)) {
             throw new Error("Skill installation conversation status is invalid")
@@ -429,7 +499,7 @@ class SkillInstallationStore {
             stored.error = normalizeError(input.error ?? input.parsedResult?.error)
             stored.updatedAt = new Date().toISOString()
             stored.completedAt = stored.updatedAt
-            if (status === "succeeded") {
+            if (status === "succeeded" && stored.request.purpose !== "optimization-experiment") {
                 const result = input.parsedResult
                 this.state.installations.push({
                     id: randomUUID(),
@@ -458,6 +528,7 @@ class SkillInstallationStore {
         }
         const lastJobs = new Map()
         for (const job of this.state.jobs) {
+            if (job.request.purpose === "optimization-experiment") continue
             if (job.request.source.skillId === skillId) lastJobs.set(job.runtime.runtimeId, job)
         }
         const runtimeIds = new Set([...installations.keys(), ...lastJobs.keys()])

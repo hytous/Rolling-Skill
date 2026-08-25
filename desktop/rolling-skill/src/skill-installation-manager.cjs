@@ -2,11 +2,25 @@ const {join} = require("node:path")
 
 const {
     buildSkillInstallationPrompt,
+    freezeSkillExperimentRecoveryInspectionRequest,
+    freezeSkillExperimentRequest,
     freezeSkillInstallationRequest,
     parseSkillInstallationResult,
 } = require("./skill-installation-protocol.cjs")
 
-const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "unverified"])
+const TERMINAL_STATUSES = new Set([
+    "succeeded",
+    "failed",
+    "cancelled",
+    "unverified",
+    "needs_recovery",
+])
+const EXPERIMENT_OPERATIONS = new Set([
+    "experiment_install",
+    "experiment_restore",
+    "experiment_remove",
+    "experiment_inspect",
+])
 const ACTIVITY_TYPES = new Set([
     "commandExecution",
     "fileChange",
@@ -119,6 +133,43 @@ class SkillInstallationManager {
         })
     }
 
+    frozenExperimentRequest(input, target) {
+        const runId = requiredText(input.run?.id, "Optimization Run id", 200)
+        const epoch = Number(input.epoch)
+        const baselineIdentity = input.run?.snapshot?.baseline ?? {}
+        const skill = this.managedSkillStore.getSkill(
+            requiredText(baselineIdentity.skillId, "Optimization Skill id", 200),
+        )
+        const repository = this.managedSkillStore.getRepository(skill.repositoryId)
+        const baseline = this.managedSkillStore.getVersion(
+            requiredText(baselineIdentity.versionId, "Optimization baseline version id", 200),
+        )
+        const candidate = this.managedSkillStore.getVersion(
+            requiredText(input.candidateVersionId, "Optimization Candidate version id", 200),
+        )
+        const previousCandidate = input.previousCandidateVersionId
+            ? this.managedSkillStore.getVersion(requiredText(
+                input.previousCandidateVersionId,
+                "Previous Optimization Candidate version id",
+                200,
+            ))
+            : null
+        return freezeSkillExperimentRequest({
+            operation: input.operation,
+            run: {...input.run, id: runId},
+            epoch,
+            repository: {
+                ...repository,
+                managedPath: this.managedSkillManager.repositoryPath(repository.id),
+            },
+            skill,
+            baseline,
+            candidate,
+            previousCandidate,
+            initial: input.operation === "experiment_inspect" ? null : target.initial,
+        })
+    }
+
     runtimeById(runtimeId) {
         runtimeId = requiredText(runtimeId, "Runtime id", 300)
         const descriptor = this.getRuntimes().find((entry) => entry.runtimeId === runtimeId)
@@ -152,17 +203,61 @@ class SkillInstallationManager {
         return jobs
     }
 
+    // This entry point is intentionally not exposed through Renderer IPC. OptimizationRunner
+    // supplies the frozen Run and immutable Candidate IDs from the control plane.
+    async startOptimizationExperiment(input = {}) {
+        const operation = requiredText(input.operation, "Optimization experiment operation", 80)
+        if (!EXPERIMENT_OPERATIONS.has(operation)) {
+            throw new Error("Unsupported optimization experiment operation")
+        }
+        if (!Array.isArray(input.targets) || !input.targets.length || input.targets.length > 20) {
+            throw new Error("Select between one and twenty Runtime experiment targets")
+        }
+        const seen = new Set()
+        const prepared = input.targets.map((target) => {
+            const descriptor = this.runtimeById(target.runtimeId)
+            if (seen.has(descriptor.runtimeId)) throw new Error("Duplicate Runtime experiment target")
+            seen.add(descriptor.runtimeId)
+            const request = this.frozenExperimentRequest(input, target)
+            const permissionMode = operation === "experiment_inspect"
+                ? readOnlyPermissionMode(descriptor.providerId)
+                : optionalText(target.permissionMode, "Installation permission", 100)
+            if (operation === "experiment_inspect" && !permissionMode) {
+                throw new Error("This Runtime has no supported read-only permission mode")
+            }
+            return {descriptor, permissionMode, request, target}
+        })
+        const jobs = prepared.map(({descriptor, permissionMode, request, target}) => {
+            const job = this.store.createJob({
+                operation,
+                runtime: publicRuntime(descriptor),
+                request,
+                modelId: optionalText(target.modelId, "Installation model", 300),
+                effort: optionalText(target.effort, "Installation effort", 100),
+                permissionMode,
+            })
+            this.schedule(job)
+            this.emit(job.id)
+            return job
+        })
+        return jobs
+    }
+
     async inspect(jobId) {
         const parent = this.store.getJob(requiredText(jobId, "Installation job id", 200))
         const descriptor = this.runtimeById(parent.runtime.runtimeId)
         const permissionMode = readOnlyPermissionMode(descriptor.providerId)
         if (!permissionMode) throw new Error("This Runtime has no supported read-only permission mode")
+        const experiment = parent.request.purpose === "optimization-experiment"
+        const request = experiment
+            ? freezeSkillExperimentRecoveryInspectionRequest(parent.request)
+            : parent.request
         const job = this.store.createJob({
-            operation: "inspect",
+            operation: experiment ? "experiment_inspect" : "inspect",
             parentJobId: parent.id,
             threadId: parent.threadId,
             runtime: publicRuntime(descriptor),
-            request: parent.request,
+            request,
             modelId: parent.modelId,
             effort: parent.effort,
             permissionMode,
@@ -282,9 +377,9 @@ class SkillInstallationManager {
         this.store.updateJob(jobId, {status: "running"})
         this.store.appendMessage(jobId, {
             role: "user",
-            content: job.operation === "inspect"
+            content: job.operation === "inspect" || job.operation === "experiment_inspect"
                 ? `Inspect ${job.request.skillName} ${job.request.versionLabel} in ${job.runtime.displayName}`
-                : `Install ${job.request.skillName} ${job.request.versionLabel} in ${job.runtime.displayName}`,
+                : `${job.operation.startsWith("experiment_") ? "Experiment" : "Install"} ${job.request.skillName} ${job.request.versionLabel} in ${job.runtime.displayName}`,
         })
         this.emit(jobId)
         job = this.store.getJob(jobId)
@@ -310,7 +405,7 @@ class SkillInstallationManager {
                 threadSource: "subagent",
                 ephemeral: false,
             }
-            const threadResponse = job.operation === "inspect" && job.threadId
+            const threadResponse = (job.operation === "inspect" || job.operation === "experiment_inspect") && job.threadId
                 ? await client.resumeThread(job.threadId, profile)
                 : await client.startThread(profile)
             control.threadId = requiredText(threadResponse?.thread?.id, "Installer thread id", 300)
@@ -331,7 +426,7 @@ class SkillInstallationManager {
             })
             const output = await this.runTurn({client, jobId, threadId: control.threadId, prompt, profile, control})
             if (control.cancelRequested || output.turnStatus === "interrupted" || output.turnStatus === "cancelled") {
-                if (job.operation === "inspect") {
+                if (job.operation === "inspect" || job.operation === "experiment_inspect") {
                     return this.finish(jobId, "unverified", {
                         rawResult: output.response,
                         traceReference: traceReferenceFor(client),
@@ -358,6 +453,9 @@ class SkillInstallationManager {
                 if (job.operation === "inspect" && parsed.operation !== "inspect") {
                     throw new Error("Inspection result must report an inspect operation")
                 }
+                if (job.operation === "experiment_inspect" && parsed.operation !== "experiment_inspect") {
+                    throw new Error("Experiment inspection result must report an experiment_inspect operation")
+                }
             } catch (error) {
                 return this.finish(jobId, "unverified", {
                     rawResult: output.response,
@@ -376,7 +474,7 @@ class SkillInstallationManager {
             const current = this.store.getJob(jobId)
             if (TERMINAL_STATUSES.has(current.status)) return current
             const cancelled = control.cancelRequested || error?.code === "INSTALLATION_CANCELLED"
-            if (cancelled && job.operation === "inspect") {
+            if (cancelled && (job.operation === "inspect" || job.operation === "experiment_inspect")) {
                 return this.finish(jobId, "unverified", {
                     traceReference: traceReferenceFor(client),
                     error: {
@@ -445,9 +543,13 @@ class SkillInstallationManager {
                 error: errorRecord(error, "POST_CANCEL_INSPECTION_PERMISSION_FAILED"),
             })
         }
-        const request = this.store.getJob(jobId).request
+        const originalRequest = this.store.getJob(jobId).request
+        const experiment = originalRequest.purpose === "optimization-experiment"
+        const request = experiment
+            ? freezeSkillExperimentRecoveryInspectionRequest(originalRequest)
+            : originalRequest
         const prompt = buildSkillInstallationPrompt(request, {
-            operation: "inspect",
+            operation: experiment ? "experiment_inspect" : "inspect",
             requestedPermission: permissionMode,
             priorInstallation: this.store.installationMatrix(request.source.skillId)
                 .find((entry) => entry.runtimeId === descriptor.runtimeId) ?? null,
@@ -467,8 +569,9 @@ class SkillInstallationManager {
                 })
             }
             const parsed = parseSkillInstallationResult(output.response, request)
-            if (parsed.operation !== "inspect") {
-                throw new Error("Post-cancellation result must report an inspect operation")
+            const expectedOperation = experiment ? "experiment_inspect" : "inspect"
+            if (parsed.operation !== expectedOperation) {
+                throw new Error(`Post-cancellation result must report an ${expectedOperation} operation`)
             }
             return this.finish(jobId, "cancelled", {
                 parsedResult: parsed,

@@ -1,14 +1,23 @@
 const {isAbsolute, posix} = require("node:path")
 
 const INSTALL_MARKER_SCHEMA = "rolling-skill-install/v1"
-const INSTALL_RESULT_SCHEMA = "rolling-skill-install-result/v1"
+const EXPERIMENT_MARKER_SCHEMA = "rolling-skill-experiment/v1"
+const EXPERIMENT_MARKER_FILE = ".rolling-skill-experiment.json"
+const INSTALL_RESULT_SCHEMA = "rolling-skill-install-result/v2"
 const INSTALL_RESULT_SENTINEL = Object.freeze({
     open: "<rolling-skill-install-result>",
     close: "</rolling-skill-install-result>",
 })
 
-const STATUSES = new Set(["succeeded", "failed", "cancelled", "unverified"])
-const OPERATIONS = new Set(["install", "update", "overwrite", "inspect"])
+const STATUSES = new Set(["succeeded", "failed", "cancelled", "unverified", "needs_recovery"])
+const ORDINARY_OPERATIONS = new Set(["install", "update", "overwrite", "inspect"])
+const EXPERIMENT_OPERATIONS = new Set([
+    "experiment_install",
+    "experiment_restore",
+    "experiment_remove",
+    "experiment_inspect",
+])
+const OPERATIONS = new Set([...ORDINARY_OPERATIONS, ...EXPERIMENT_OPERATIONS])
 const CLASSIFICATIONS = new Set([
     "absent",
     "managed-clean",
@@ -50,6 +59,33 @@ function deepFreeze(value) {
     return Object.freeze(value)
 }
 
+function versionSource(version, label) {
+    const commit = requiredText(version?.commit, `${label} commit`, 40)
+    if (!COMMIT_PATTERN.test(commit)) throw new Error(`${label} commit must be a full SHA-1`)
+    const expectedDigest = requiredText(version?.contentDigest, `${label} content digest`, 80)
+    if (!DIGEST_PATTERN.test(expectedDigest)) throw new Error(`${label} content digest must be SHA-256`)
+    return {
+        repositoryId: requiredText(version?.repositoryId, `${label} repository id`, 200),
+        skillId: requiredText(version?.skillId, `${label} Skill id`, 200),
+        versionId: requiredText(version?.id, `${label} version id`, 200),
+        commit,
+        skillRoot: relativeSkillRoot(version?.skillRoot),
+        expectedDigest,
+    }
+}
+
+function experimentMarker(runId, epoch, source) {
+    return {
+        schema: EXPERIMENT_MARKER_SCHEMA,
+        runId,
+        epoch,
+        skillId: source.skillId,
+        versionId: source.versionId,
+        commit: source.commit,
+        contentDigest: source.expectedDigest,
+    }
+}
+
 function freezeSkillInstallationRequest(input = {}) {
     const repositoryId = requiredText(input.repository?.id, "Repository id", 200)
     const repositoryPath = requiredText(input.repository?.managedPath, "Managed repository path")
@@ -73,6 +109,7 @@ function freezeSkillInstallationRequest(input = {}) {
     const versionLabel = requiredText(input.version?.versionLabel, "Released version label", 64)
     return deepFreeze({
         schema: "rolling-skill-install-request/v1",
+        purpose: "managed-installation",
         markerSchema: INSTALL_MARKER_SCHEMA,
         repositoryPath,
         skillName,
@@ -88,21 +125,201 @@ function freezeSkillInstallationRequest(input = {}) {
     })
 }
 
-function buildSkillInstallationPrompt(request, options = {}) {
-    request = freezeSkillInstallationRequest({
-        repository: {id: request.source.repositoryId, managedPath: request.repositoryPath},
-        skill: {id: request.source.skillId, name: request.skillName, skillRoot: request.source.skillRoot},
-        version: {
-            id: request.source.versionId,
-            repositoryId: request.source.repositoryId,
-            skillId: request.source.skillId,
-            state: "released",
-            commit: request.source.commit,
-            contentDigest: request.source.expectedDigest,
-            versionLabel: request.versionLabel,
+function freezeInitialState(value, baselineSource) {
+    if (value === null || value === undefined) return null
+    const classification = requireEnum(value.classification, CLASSIFICATIONS, "initial classification")
+    if (!new Set(["absent", "managed-clean"]).has(classification)) {
+        throw new Error("Optimization experiment initial state must be absent or managed-clean")
+    }
+    if (classification === "absent") {
+        if (value.destination !== null && value.destination !== undefined) {
+            throw new Error("An absent optimization target cannot have a destination")
+        }
+        return {classification, destination: null}
+    }
+    const destination = requiredText(value.destination, "Initial managed destination")
+    if (!isAbsolute(destination)) throw new Error("Initial managed destination must be absolute")
+    if (
+        value.versionId !== baselineSource.versionId ||
+        value.commit !== baselineSource.commit ||
+        value.contentDigest !== baselineSource.expectedDigest
+    ) {
+        throw new Error("Initial managed target must exactly match the frozen baseline")
+    }
+    return {
+        classification,
+        destination,
+        versionId: baselineSource.versionId,
+        commit: baselineSource.commit,
+        contentDigest: baselineSource.expectedDigest,
+    }
+}
+
+function freezeSkillExperimentRequest(input = {}) {
+    const operation = requiredText(input.operation, "Optimization experiment operation", 80)
+    if (!EXPERIMENT_OPERATIONS.has(operation)) {
+        throw new Error("Unsupported optimization experiment operation")
+    }
+    const runId = requiredText(input.run?.id, "Optimization Run id", 200)
+    const snapshotDigest = requiredText(input.run?.snapshot?.digest, "Optimization Run snapshot digest", 80)
+    if (!DIGEST_PATTERN.test(snapshotDigest)) {
+        throw new Error("Optimization Run snapshot digest must be SHA-256")
+    }
+    const epoch = Number(input.epoch)
+    if (!Number.isSafeInteger(epoch) || epoch < 1 || epoch > 100) {
+        throw new Error("Optimization Epoch must be between 1 and 100")
+    }
+    const repositoryId = requiredText(input.repository?.id, "Repository id", 200)
+    const repositoryPath = requiredText(input.repository?.managedPath, "Managed repository path")
+    if (!isAbsolute(repositoryPath)) throw new Error("Managed repository path must be absolute")
+    const skillId = requiredText(input.skill?.id, "Skill id", 200)
+    const skillName = requiredText(input.skill?.name, "Skill name", 200)
+    const skillRoot = relativeSkillRoot(input.skill?.skillRoot)
+    if (input.skill?.repositoryId !== repositoryId) {
+        throw new Error("Optimization Skill does not belong to the selected repository")
+    }
+
+    if (input.baseline?.state !== "released") {
+        throw new Error("Optimization experiment requires a Released baseline")
+    }
+    const baseline = versionSource(input.baseline, "Optimization baseline")
+    const frozenBaseline = input.run?.snapshot?.baseline ?? {}
+    if (
+        baseline.repositoryId !== repositoryId ||
+        baseline.skillId !== skillId ||
+        baseline.skillRoot !== skillRoot ||
+        frozenBaseline.repositoryId !== baseline.repositoryId ||
+        frozenBaseline.skillId !== baseline.skillId ||
+        frozenBaseline.versionId !== baseline.versionId ||
+        frozenBaseline.commit !== baseline.commit ||
+        frozenBaseline.skillRoot !== baseline.skillRoot ||
+        frozenBaseline.contentDigest !== baseline.expectedDigest
+    ) {
+        throw new Error("Optimization baseline does not match the frozen Run")
+    }
+
+    if (input.candidate?.state !== "candidate" || input.candidate?.createdBy !== "optimization") {
+        throw new Error("Optimization experiment requires an immutable optimization Candidate")
+    }
+    const source = versionSource(input.candidate, "Optimization Candidate")
+    if (
+        source.repositoryId !== repositoryId ||
+        source.skillId !== skillId ||
+        source.skillRoot !== skillRoot
+    ) {
+        throw new Error("Optimization Candidate does not belong to the frozen Skill")
+    }
+    if (input.candidate.optimizationRunId !== runId || input.candidate.optimizationEpoch !== epoch) {
+        throw new Error("Optimization Candidate does not match the frozen Run and Epoch")
+    }
+
+    let previous = null
+    if (epoch > 1) {
+        if (!input.previousCandidate) {
+            throw new Error("A later Optimization Epoch requires the previous Candidate")
+        }
+        if (
+            input.previousCandidate.state !== "candidate" ||
+            input.previousCandidate.createdBy !== "optimization" ||
+            input.previousCandidate.optimizationRunId !== runId ||
+            input.previousCandidate.optimizationEpoch !== epoch - 1
+        ) {
+            throw new Error("Optimization previous Candidate does not match the prior Run Epoch")
+        }
+        previous = versionSource(input.previousCandidate, "Optimization previous Candidate")
+        if (
+            previous.repositoryId !== repositoryId ||
+            previous.skillId !== skillId ||
+            previous.skillRoot !== skillRoot
+        ) {
+            throw new Error("Optimization previous Candidate does not belong to the frozen Skill")
+        }
+        previous.marker = experimentMarker(runId, epoch - 1, previous)
+    } else if (input.previousCandidate !== null && input.previousCandidate !== undefined) {
+        throw new Error("The first Optimization Epoch cannot have a previous Candidate")
+    }
+
+    const initial = freezeInitialState(input.initial, baseline)
+    if (operation !== "experiment_inspect" && !initial) {
+        throw new Error("Optimization mutation requires a frozen initial target state")
+    }
+    if (operation === "experiment_restore" && initial?.classification !== "managed-clean") {
+        throw new Error("Optimization restore requires a managed-clean initial baseline")
+    }
+    if (operation === "experiment_remove" && initial?.classification !== "absent") {
+        throw new Error("Optimization removal requires an initially absent target")
+    }
+    const restoration = initial === null
+        ? null
+        : initial.classification === "absent"
+          ? {mode: "remove", source: null}
+          : {mode: "restore", source: {...baseline}}
+    return deepFreeze({
+        schema: "rolling-skill-experiment-request/v1",
+        purpose: "optimization-experiment",
+        operation,
+        markerSchema: EXPERIMENT_MARKER_SCHEMA,
+        repositoryPath,
+        skillName,
+        versionLabel: `Candidate Epoch ${epoch}`,
+        source,
+        experiment: {
+            runId,
+            epoch,
+            snapshotDigest,
+            inspectionMode: operation === "experiment_inspect" ? "preflight" : null,
+            marker: experimentMarker(runId, epoch, source),
+            baseline,
+            initial,
+            restoration,
+            previous,
         },
     })
-    const operation = OPERATIONS.has(options.operation) ? options.operation : "install"
+}
+
+function freezeSkillExperimentRecoveryInspectionRequest(request) {
+    if (
+        request?.purpose !== "optimization-experiment" ||
+        !EXPERIMENT_OPERATIONS.has(request.operation) ||
+        !request.experiment ||
+        !sameMarker(request.experiment.marker, experimentMarker(
+            request.experiment.runId,
+            request.experiment.epoch,
+            request.source,
+        ))
+    ) {
+        throw new Error("A frozen optimization experiment request is required for recovery inspection")
+    }
+    return deepFreeze({
+        ...request,
+        operation: "experiment_inspect",
+        experiment: {
+            ...request.experiment,
+            inspectionMode: "recovery",
+        },
+    })
+}
+
+function buildSkillInstallationPrompt(request, options = {}) {
+    const experiment = request?.purpose === "optimization-experiment"
+    if (!experiment) {
+        request = freezeSkillInstallationRequest({
+            repository: {id: request.source.repositoryId, managedPath: request.repositoryPath},
+            skill: {id: request.source.skillId, name: request.skillName, skillRoot: request.source.skillRoot},
+            version: {
+                id: request.source.versionId,
+                repositoryId: request.source.repositoryId,
+                skillId: request.source.skillId,
+                state: "released",
+                commit: request.source.commit,
+                contentDigest: request.source.expectedDigest,
+                versionLabel: request.versionLabel,
+            },
+        })
+    }
+    const operation = experiment
+        ? request.operation
+        : ORDINARY_OPERATIONS.has(options.operation) ? options.operation : "install"
     const requestedPermission = nullableText(
         options.requestedPermission,
         "Requested permission",
@@ -111,16 +328,84 @@ function buildSkillInstallationPrompt(request, options = {}) {
     const priorInstallation = options.priorInstallation && typeof options.priorInstallation === "object"
         ? options.priorInstallation
         : null
+    let experimentResult = null
+    let destinationExample = "/absolute/path/reported/by/the/runtime"
+    if (experiment) {
+        const currentMarker = request.experiment.marker
+        if (operation === "experiment_inspect" && request.experiment.inspectionMode !== "recovery") {
+            destinationExample = null
+            experimentResult = {
+                actualDigest: null,
+                markerWritten: false,
+                runtimeDiscovered: "true | false | null",
+                beforeDigest: null,
+                mutationPerformed: false,
+                markerBefore: null,
+                markerAfter: null,
+            }
+        } else if (operation === "experiment_inspect") {
+            experimentResult = {
+                actualDigest: request.source.expectedDigest,
+                markerWritten: true,
+                runtimeDiscovered: "true | false | null",
+                beforeDigest: request.source.expectedDigest,
+                mutationPerformed: false,
+                markerBefore: currentMarker,
+                markerAfter: currentMarker,
+            }
+        } else if (operation === "experiment_restore") {
+            experimentResult = {
+                actualDigest: request.experiment.baseline.expectedDigest,
+                markerWritten: true,
+                runtimeDiscovered: "true | false | null",
+                beforeDigest: request.source.expectedDigest,
+                mutationPerformed: true,
+                markerBefore: currentMarker,
+                markerAfter: null,
+            }
+        } else if (operation === "experiment_remove") {
+            experimentResult = {
+                actualDigest: null,
+                markerWritten: false,
+                runtimeDiscovered: false,
+                beforeDigest: request.source.expectedDigest,
+                mutationPerformed: true,
+                markerBefore: currentMarker,
+                markerAfter: null,
+            }
+        } else {
+            const previous = request.experiment.previous
+            const beforeDigest = previous?.expectedDigest ?? (
+                request.experiment.initial?.classification === "managed-clean"
+                    ? request.experiment.baseline.expectedDigest
+                    : null
+            )
+            experimentResult = {
+                actualDigest: request.source.expectedDigest,
+                markerWritten: true,
+                runtimeDiscovered: "true | false | null",
+                beforeDigest,
+                mutationPerformed: true,
+                markerBefore: previous?.marker ?? null,
+                markerAfter: currentMarker,
+            }
+        }
+    }
     const finalShape = {
         schema: INSTALL_RESULT_SCHEMA,
-        status: "succeeded | failed | cancelled | unverified",
-        operation: "install | update | overwrite | inspect",
+        purpose: experiment ? "optimization-experiment" : "managed-installation",
+        status: experiment
+            ? "succeeded | failed | cancelled | unverified | needs_recovery"
+            : "succeeded | failed | cancelled | unverified",
+        operation: experiment
+            ? "experiment_install | experiment_restore | experiment_remove | experiment_inspect"
+            : "install | update | overwrite | inspect",
         classificationBefore:
             "absent | managed-clean | managed-drifted | unmanaged | conflict | uncertain",
-        destination: "/absolute/path/reported/by/the/runtime",
+        destination: destinationExample,
         source: request.source,
         permission: {requested: requestedPermission, effective: null},
-        result: {
+        result: experimentResult ?? {
             actualDigest: request.source.expectedDigest,
             markerWritten: true,
             runtimeDiscovered: "true | false | null",
@@ -128,8 +413,58 @@ function buildSkillInstallationPrompt(request, options = {}) {
         warnings: [],
         error: null,
     }
-    const procedure = operation === "inspect"
-        ? [
+    let procedure
+    if (experiment) {
+        const common = [
+            "1. This is an optimization experiment. Verify the repository, frozen Run, exact commit, Skill identity, digest, and operation before touching any Runtime target.",
+            "2. Export only source.skillRoot from the exact frozen commit. Never use the managed Working tree or implicit HEAD, and never run code from the Skill.",
+            "3. Discover the exact Runtime target yourself. Refuse symlinks, broad destinations, ambiguous identity boundaries, or any path you cannot prove is the one Skill target.",
+            "4. Inspect the current target, deterministic digest, management marker, and rolling-skill-experiment/v1 marker before any mutation.",
+        ]
+        if (operation === "experiment_inspect") {
+            procedure = request.experiment.inspectionMode === "recovery"
+                ? [
+                    ...common,
+                    "5. This is a strict read-only recovery inspection. Do not create, edit, move, delete, overwrite, or chmod any target or marker, and do not request write permission.",
+                    "6. Inspect for the exact current Candidate marker and digest, the exact frozen Released baseline without an experiment marker, or the exact absent state. Any partial or mismatched state must report needs_recovery with mutationPerformed=false.",
+                    "7. Report mutationPerformed=false and identical before/after marker evidence because no mutation is permitted.",
+                    "8. Finish with exactly one result block using the schema below.",
+                ]
+                : [
+                    ...common,
+                    "5. This is strict read-only preflight. Do not create, edit, move, delete, overwrite, or chmod any target or marker, and do not request write permission.",
+                    "6. Epoch 1 enrollment succeeds only when the target is absent or is managed-clean at the exact frozen Released baseline digest and identity. managed-drifted, unmanaged, conflict, and uncertain must fail preflight.",
+                    "7. Report mutationPerformed=false and exact before-state evidence. Never claim an experiment marker was written.",
+                    "8. Finish with exactly one result block using the schema below.",
+                ]
+        } else if (operation === "experiment_install") {
+            procedure = [
+                ...common,
+                "5. For Epoch 1, continue only from the frozen initial absent state or the exact managed-clean frozen baseline. For later Epochs, require the exact current Run marker and previous Candidate digest shown in the request.",
+                "6. If the target, previous Candidate digest, or marker differs, do not delete or overwrite anything. Report needs_recovery with mutationPerformed=false.",
+                `7. Install the exact Candidate and write the exact rolling-skill-experiment/v1 marker from experiment.marker to ${EXPERIMENT_MARKER_FILE}. Do not represent it as a formal Released installation.`,
+                "8. Recompute the installed digest and verify the exact marker. Report the before and after evidence and whether Runtime inventory discovered it.",
+                "9. Finish with exactly one result block using the schema below.",
+            ]
+        } else if (operation === "experiment_restore") {
+            procedure = [
+                ...common,
+                "5. Before restoration, require the exact current Run marker and current Candidate digest. On any mismatch, do not delete or overwrite anything; report needs_recovery with mutationPerformed=false.",
+                "6. Export and reinstall only the exact frozen Released source in experiment.restoration.source, then write its normal management marker and remove the experiment marker.",
+                "7. Re-inspect the target and require the frozen baseline digest, matching management identity, and no experiment marker.",
+                "8. Finish with exactly one result block using the schema below.",
+            ]
+        } else {
+            procedure = [
+                ...common,
+                "5. Before removal, require the exact current Run marker and current Candidate digest. On any mismatch, do not delete or overwrite anything; report needs_recovery with mutationPerformed=false.",
+                "6. Because the frozen initial state was absent, remove only that exact target after all identity checks. Never delete a parent, sibling, symlink target, or path outside the exact target.",
+                "7. Re-inspect and require the exact target to be absent with no experiment marker.",
+                "8. Finish with exactly one result block using the schema below.",
+            ]
+        }
+    } else if (operation === "inspect") {
+        procedure = [
             "1. Verify the repository and exact commit. Export only source.skillRoot from that commit into a temporary directory. Never read install bytes from the current working tree.",
             "2. Compute the deterministic source Skill SHA-256 digest, excluding .rolling-skill-managed.json, and require it to equal source.expectedDigest.",
             "3. Discover the Skill root actually used by this Runtime and select only the exact target for skillName. Do not assume a provider-specific path supplied by this prompt.",
@@ -139,7 +474,8 @@ function buildSkillInstallationPrompt(request, options = {}) {
             "7. Report succeeded only when the installed target already matches source.expectedDigest and contains the matching management marker. Otherwise report failed, cancelled, or unverified with a structured error.",
             "8. Finish with exactly one result block using the schema below. Natural-language progress may appear before it, but never emit a second result block.",
         ]
-        : [
+    } else {
+        procedure = [
             "1. Verify the repository and exact commit. Export only source.skillRoot from that commit into a temporary directory. Never copy the current working tree.",
             "2. Compute the deterministic Skill content SHA-256 digest, excluding .rolling-skill-managed.json, and require it to equal source.expectedDigest before touching a target.",
             "3. Discover the Skill root actually used by this Runtime and select only the exact target for skillName. Do not assume a provider-specific path supplied by this prompt.",
@@ -151,9 +487,12 @@ function buildSkillInstallationPrompt(request, options = {}) {
             "9. If permission is insufficient, request it through the Runtime. Never elevate silently. If the user refuses, stop without pretending success.",
             "10. Finish with exactly one result block using the schema below. Natural-language progress may appear before it, but never emit a second result block.",
         ]
+    }
     return [
-        "You are running a managed Skill installation task inside your own local Runtime.",
-        operation === "inspect"
+        experiment
+            ? "You are running a bounded optimization experiment installation task inside your own local Runtime."
+            : "You are running a managed Skill installation task inside your own local Runtime.",
+        operation === "inspect" || operation === "experiment_inspect"
             ? "Perform every inspection yourself through Bash/tool calls. This recovery turn is strictly read-only."
             : "Perform every inspection and filesystem change yourself through Bash/tool calls. Do not ask the host application to copy, delete, or discover paths for you.",
         "Do not run scripts from the managed Skill. Do not install from the working tree or implicit HEAD.",
@@ -161,6 +500,7 @@ function buildSkillInstallationPrompt(request, options = {}) {
         "Frozen installation request (immutable):",
         JSON.stringify({
             operation,
+            purpose: request.purpose,
             markerSchema: request.markerSchema,
             digestAlgorithm: DIGEST_ALGORITHM,
             repositoryPath: request.repositoryPath,
@@ -168,9 +508,10 @@ function buildSkillInstallationPrompt(request, options = {}) {
             versionLabel: request.versionLabel,
             source: request.source,
             priorInstallation,
+            ...(experiment ? {experiment: request.experiment} : {}),
         }, null, 2),
         "",
-        `Digest algorithm ${DIGEST_ALGORITHM}: enumerate every file and symbolic link below the Skill root except the root .rolling-skill-managed.json, sort relative POSIX paths lexicographically, and for each entry hash UTF-8 header type\\0path\\0executable-bit\\0byte-length\\0, then the exact blob/link-target bytes, then one NUL byte. type is file or symlink; executable-bit is 1 only for executable regular files.`,
+        `Digest algorithm ${DIGEST_ALGORITHM}: enumerate every file and symbolic link below the Skill root; exclude the root .rolling-skill-managed.json${experiment ? ` and ${EXPERIMENT_MARKER_FILE}` : ""}; sort relative POSIX paths lexicographically; and for each entry hash UTF-8 header type\\0path\\0executable-bit\\0byte-length\\0, then the exact blob/link-target bytes, then one NUL byte. type is file or symlink; executable-bit is 1 only for executable regular files.`,
         "",
         "Required procedure:",
         ...procedure,
@@ -231,6 +572,188 @@ function normalizeError(value, required) {
     }
 }
 
+function normalizeExperimentMarker(value, label) {
+    if (value === null || value === undefined) return null
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} experiment marker is invalid`)
+    }
+    const epoch = Number(value.epoch)
+    if (!Number.isSafeInteger(epoch) || epoch < 1 || epoch > 100) {
+        throw new Error(`${label} experiment marker is invalid`)
+    }
+    const commit = requiredText(value.commit, `${label} experiment marker commit`, 40)
+    const contentDigest = requiredText(
+        value.contentDigest,
+        `${label} experiment marker digest`,
+        80,
+    )
+    if (
+        value.schema !== EXPERIMENT_MARKER_SCHEMA ||
+        !COMMIT_PATTERN.test(commit) ||
+        !DIGEST_PATTERN.test(contentDigest)
+    ) {
+        throw new Error(`${label} experiment marker is invalid`)
+    }
+    return {
+        schema: EXPERIMENT_MARKER_SCHEMA,
+        runId: requiredText(value.runId, `${label} experiment marker Run id`, 200),
+        epoch,
+        skillId: requiredText(value.skillId, `${label} experiment marker Skill id`, 200),
+        versionId: requiredText(value.versionId, `${label} experiment marker version id`, 200),
+        commit,
+        contentDigest,
+    }
+}
+
+function sameMarker(actual, expected) {
+    if (actual === null || expected === null) return actual === expected
+    return Object.keys(expected).every((key) => actual[key] === expected[key]) &&
+        Object.keys(actual).every((key) => Object.hasOwn(expected, key))
+}
+
+function experimentVerification({
+    actualDigest,
+    beforeDigest,
+    classificationBefore,
+    destination,
+    markerAfter,
+    markerBefore,
+    markerWritten,
+    mutationPerformed,
+    operation,
+    request,
+}) {
+    if (operation === "experiment_inspect") {
+        if (mutationPerformed) throw new Error("Optimization experiment preflight must not mutate the target")
+        if (request.experiment.inspectionMode === "recovery") {
+            if (
+                classificationBefore === "managed-clean" &&
+                actualDigest === request.source.expectedDigest &&
+                beforeDigest === request.source.expectedDigest &&
+                markerWritten &&
+                destination &&
+                sameMarker(markerBefore, request.experiment.marker) &&
+                sameMarker(markerAfter, request.experiment.marker)
+            ) {
+                return "experiment-inspection"
+            }
+            if (
+                classificationBefore === "managed-clean" &&
+                actualDigest === request.experiment.baseline.expectedDigest &&
+                beforeDigest === request.experiment.baseline.expectedDigest &&
+                markerWritten &&
+                destination &&
+                markerBefore === null &&
+                markerAfter === null
+            ) {
+                return "experiment-inspection"
+            }
+            if (
+                classificationBefore === "absent" &&
+                actualDigest === null &&
+                beforeDigest === null &&
+                !markerWritten &&
+                destination === null &&
+                markerBefore === null &&
+                markerAfter === null
+            ) {
+                return "experiment-inspection"
+            }
+            throw new Error("Optimization recovery inspection does not match a known safe target state")
+        }
+        if (!new Set(["absent", "managed-clean"]).has(classificationBefore)) {
+            throw new Error("Optimization experiment preflight rejected the unsafe target classification")
+        }
+        if (markerBefore !== null || markerAfter !== null) {
+            throw new Error("Optimization experiment preflight found an unexpected experiment marker")
+        }
+        if (classificationBefore === "absent") {
+            if (destination !== null || actualDigest !== null || markerWritten) {
+                throw new Error("Optimization experiment absent preflight evidence is inconsistent")
+            }
+        } else if (
+            actualDigest !== request.experiment.baseline.expectedDigest ||
+            !markerWritten ||
+            !destination
+        ) {
+            throw new Error("Optimization experiment managed-clean preflight does not match the baseline")
+        }
+        return "experiment-preflight"
+    }
+
+    if (!mutationPerformed) {
+        throw new Error("A successful optimization experiment mutation must report its mutation")
+    }
+    let expectedBeforeDigest
+    let expectedBeforeMarker
+    if (operation === "experiment_install" && request.experiment.previous) {
+        expectedBeforeDigest = request.experiment.previous.expectedDigest
+        expectedBeforeMarker = request.experiment.previous.marker
+        if (actualDigest !== request.source.expectedDigest) {
+            throw new Error("Installed Candidate digest does not match the frozen Candidate")
+        }
+        if (!markerWritten || !sameMarker(markerAfter, request.experiment.marker)) {
+            throw new Error("Installed Candidate experiment marker does not match the frozen marker")
+        }
+        if (beforeDigest !== expectedBeforeDigest) {
+            throw new Error("Installed target does not match the previous Candidate digest")
+        }
+        if (!sameMarker(markerBefore, expectedBeforeMarker)) {
+            throw new Error("Installed target does not match the previous Candidate experiment marker")
+        }
+        return "experiment-marker"
+    }
+    if (operation === "experiment_install") {
+        const initial = request.experiment.initial
+        expectedBeforeDigest = initial.classification === "absent"
+            ? null
+            : request.experiment.baseline.expectedDigest
+        if (beforeDigest !== expectedBeforeDigest || markerBefore !== null) {
+            throw new Error("Epoch 1 target does not match the frozen experiment initial state")
+        }
+        if (classificationBefore !== initial.classification) {
+            throw new Error("Epoch 1 target classification changed after preflight")
+        }
+        if (
+            actualDigest !== request.source.expectedDigest ||
+            !markerWritten ||
+            !sameMarker(markerAfter, request.experiment.marker)
+        ) {
+            throw new Error("Installed Candidate experiment marker or digest does not match")
+        }
+        return "experiment-marker"
+    }
+
+    if (
+        beforeDigest !== request.source.expectedDigest ||
+        !sameMarker(markerBefore, request.experiment.marker)
+    ) {
+        throw new Error("Restoration target does not match the current Candidate experiment marker and digest")
+    }
+    if (operation === "experiment_restore") {
+        if (
+            request.experiment.restoration?.mode !== "restore" ||
+            actualDigest !== request.experiment.baseline.expectedDigest ||
+            !markerWritten ||
+            markerAfter !== null ||
+            !destination
+        ) {
+            throw new Error("Restored target does not match the frozen Released baseline")
+        }
+        return "experiment-restored"
+    }
+    if (
+        request.experiment.restoration?.mode !== "remove" ||
+        actualDigest !== null ||
+        markerWritten ||
+        markerAfter !== null ||
+        !destination
+    ) {
+        throw new Error("Removed experiment target is not proven absent")
+    }
+    return "experiment-removed"
+}
+
 function parseSkillInstallationResult(text, request) {
     const payload = parseJsonBody(oneSentinelBody(text))
     if (payload.schema !== INSTALL_RESULT_SCHEMA) {
@@ -238,6 +761,22 @@ function parseSkillInstallationResult(text, request) {
     }
     const status = requireEnum(payload.status, STATUSES, "status")
     const operation = requireEnum(payload.operation, OPERATIONS, "operation")
+    const experiment = request?.purpose === "optimization-experiment"
+    const purpose = payload.purpose === undefined && !experiment
+        ? "managed-installation"
+        : requiredText(payload.purpose, "Installation purpose", 100)
+    if (
+        purpose !== request?.purpose ||
+        !(experiment ? EXPERIMENT_OPERATIONS : ORDINARY_OPERATIONS).has(operation)
+    ) {
+        throw new Error("Installation result purpose or operation does not match the frozen request")
+    }
+    if (experiment && operation !== request.operation) {
+        throw new Error("Optimization experiment result operation does not match the frozen request")
+    }
+    if (!experiment && status === "needs_recovery") {
+        throw new Error("Ordinary installation cannot report optimization recovery state")
+    }
     const classificationBefore = requireEnum(
         payload.classificationBefore,
         CLASSIFICATIONS,
@@ -248,7 +787,13 @@ function parseSkillInstallationResult(text, request) {
     if (destination && !isAbsolute(destination)) {
         throw new Error("Installation destination must be absolute")
     }
-    if (status === "succeeded" && !destination) {
+    if (
+        status === "succeeded" &&
+        !destination &&
+        !(experiment && (
+            (operation === "experiment_inspect" && classificationBefore === "absent")
+        ))
+    ) {
         throw new Error("Successful installation requires an absolute destination")
     }
     const result = payload.result && typeof payload.result === "object" && !Array.isArray(payload.result)
@@ -264,19 +809,55 @@ function parseSkillInstallationResult(text, request) {
         : result.runtimeDiscovered === false
           ? false
           : null
-    if (status === "succeeded" && actualDigest !== request.source.expectedDigest) {
-        throw new Error("Successful installation digest does not match the frozen digest")
-    }
-    if (status === "succeeded" && !markerWritten) {
-        throw new Error("Successful installation must write the management marker")
-    }
-    const verification = runtimeDiscovered === true
-        ? "runtime-inventory"
-        : actualDigest === request.source.expectedDigest && markerWritten
-          ? "filesystem-only"
-          : "none"
-    if (status === "succeeded" && verification === "none") {
-        throw new Error("Successful installation has no reliable verification")
+    let beforeDigest = null
+    let mutationPerformed = false
+    let markerBefore = null
+    let markerAfter = null
+    let verification
+    if (experiment) {
+        beforeDigest = nullableText(result.beforeDigest, "Experiment before digest", 80)
+        if (beforeDigest && !DIGEST_PATTERN.test(beforeDigest)) {
+            throw new Error("Experiment before digest is invalid")
+        }
+        mutationPerformed = result.mutationPerformed === true
+        markerBefore = normalizeExperimentMarker(result.markerBefore, "Before")
+        markerAfter = normalizeExperimentMarker(result.markerAfter, "After")
+        if (status === "needs_recovery") {
+            if (mutationPerformed) {
+                throw new Error("A needs_recovery result must not mutate the experiment target")
+            }
+            verification = "none"
+        } else if (status === "succeeded") {
+            verification = experimentVerification({
+                actualDigest,
+                beforeDigest,
+                classificationBefore,
+                destination,
+                markerAfter,
+                markerBefore,
+                markerWritten,
+                mutationPerformed,
+                operation,
+                request,
+            })
+        } else {
+            verification = "none"
+        }
+    } else {
+        if (status === "succeeded" && actualDigest !== request.source.expectedDigest) {
+            throw new Error("Successful installation digest does not match the frozen digest")
+        }
+        if (status === "succeeded" && !markerWritten) {
+            throw new Error("Successful installation must write the management marker")
+        }
+        verification = runtimeDiscovered === true
+            ? "runtime-inventory"
+            : actualDigest === request.source.expectedDigest && markerWritten
+              ? "filesystem-only"
+              : "none"
+        if (status === "succeeded" && verification === "none") {
+            throw new Error("Successful installation has no reliable verification")
+        }
     }
     const warnings = Array.isArray(payload.warnings)
         ? payload.warnings.map((warning) => requiredText(warning, "Installation warning", 4_096))
@@ -284,6 +865,7 @@ function parseSkillInstallationResult(text, request) {
     const error = normalizeError(payload.error, status !== "succeeded")
     return deepFreeze({
         schema: INSTALL_RESULT_SCHEMA,
+        purpose,
         status,
         operation,
         classificationBefore,
@@ -293,7 +875,17 @@ function parseSkillInstallationResult(text, request) {
             requested: nullableText(payload.permission?.requested, "Requested permission", 100),
             effective: nullableText(payload.permission?.effective, "Effective permission", 100),
         },
-        result: {actualDigest, markerWritten, runtimeDiscovered},
+        result: {
+            actualDigest,
+            markerWritten,
+            runtimeDiscovered,
+            ...(experiment ? {
+                beforeDigest,
+                mutationPerformed,
+                markerBefore,
+                markerAfter,
+            } : {}),
+        },
         warnings,
         error,
         verification,
@@ -302,11 +894,14 @@ function parseSkillInstallationResult(text, request) {
 }
 
 module.exports = {
+    EXPERIMENT_MARKER_SCHEMA,
     INSTALL_MARKER_SCHEMA,
     INSTALL_RESULT_SCHEMA,
     INSTALL_RESULT_SENTINEL,
     DIGEST_ALGORITHM,
     buildSkillInstallationPrompt,
+    freezeSkillExperimentRequest,
+    freezeSkillExperimentRecoveryInspectionRequest,
     freezeSkillInstallationRequest,
     parseSkillInstallationResult,
 }
