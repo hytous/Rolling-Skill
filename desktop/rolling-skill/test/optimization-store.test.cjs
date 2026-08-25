@@ -150,71 +150,109 @@ describe("OptimizationStore", () => {
         }), /revision|changed|CAS/i)
     })
 
-    it("returns stable durable results for old idempotency keys", () => {
-        const {store} = fixture()
-        let run = store.createRun(frozenRun(), {idempotencyKey: "create:stable"})
+    it("returns persisted narrow mutation receipts unchanged after later mutations and restart", () => {
+        const {path, store} = fixture()
+        const run = store.createRun(frozenRun(), {idempotencyKey: "create:stable"})
         const baseline = store.transitionRun(run.id, "baseline", {}, {
             idempotencyKey: "transition:stable-baseline",
         })
-        run = store.transitionRun(run.id, "editing")
-        const retriedBaseline = store.transitionRun(run.id, "baseline", {}, {
-            idempotencyKey: "transition:stable-baseline",
-        })
-        assert.equal(retriedBaseline.state, baseline.state)
-        assert.equal(retriedBaseline.revision, baseline.revision)
+        assert.deepEqual(Object.keys(baseline).sort(), ["revision", "runId", "state", "updatedAt"])
+        const editing = store.transitionRun(run.id, "editing")
 
         const epoch1 = store.createEpoch(run.id, {candidateArtifactId: "candidate:1"}, {
             idempotencyKey: "epoch:create:stable-1",
         })
-        store.updateEpoch(run.id, epoch1.id, {
+        assert.deepEqual(Object.keys(epoch1).sort(), [
+            "epochId",
+            "index",
+            "revision",
+            "runId",
+            "status",
+            "updatedAt",
+        ])
+        const installing = store.updateEpoch(run.id, epoch1.epochId, {
             status: "installing",
             installArtifactIds: ["install:1"],
+        }, {
+            idempotencyKey: "epoch:update:stable-installing",
         })
-        store.updateEpoch(run.id, epoch1.id, {
+        store.updateEpoch(run.id, epoch1.epochId, {
             status: "evaluating",
             evaluationArtifactIds: ["evaluation:1"],
         })
-        store.updateEpoch(run.id, epoch1.id, {
+        store.updateEpoch(run.id, epoch1.epochId, {
             status: "deciding",
             analysisArtifactId: "analysis:1",
             decisionArtifactId: "decision:1",
         })
-        store.updateEpoch(run.id, epoch1.id, {status: "completed"})
+        store.updateEpoch(run.id, epoch1.epochId, {status: "completed"})
         const epoch2 = store.createEpoch(run.id, {candidateArtifactId: "candidate:2"}, {
             idempotencyKey: "epoch:create:stable-2",
         })
 
+        const retriedBaseline = store.transitionRun(run.id, "baseline", {}, {
+            idempotencyKey: "transition:stable-baseline",
+        })
         const retriedEpoch1 = store.createEpoch(run.id, {candidateArtifactId: "candidate:1"}, {
             idempotencyKey: "epoch:create:stable-1",
         })
-        assert.equal(retriedEpoch1.id, epoch1.id)
-        assert.notEqual(retriedEpoch1.id, epoch2.id)
+        const retriedInstalling = store.updateEpoch(run.id, epoch1.epochId, {
+            status: "installing",
+            installArtifactIds: ["install:1"],
+        }, {
+            idempotencyKey: "epoch:update:stable-installing",
+        })
+        assert.deepEqual(retriedBaseline, baseline)
+        assert.deepEqual(retriedEpoch1, epoch1)
+        assert.deepEqual(retriedInstalling, installing)
+        assert.notEqual(retriedEpoch1.epochId, epoch2.epochId)
         assert.throws(() => store.createEpoch(run.id, {candidateArtifactId: "candidate:forged"}, {
             idempotencyKey: "epoch:create:stable-1",
         }), /different input|idempotency/i)
 
         const stored = store.getRun(run.id)
-        const creation = stored.operations.find((entry) => entry.key === "epoch:create:stable-1")
-        assert.deepEqual(creation.result, {
-            runId: run.id,
-            epochId: epoch1.id,
-            revision: creation.resultRevision,
-            state: "editing",
-            epochStatus: "editing",
-        })
+        assert.deepEqual(
+            stored.operations.find((entry) => entry.key === "transition:stable-baseline").result,
+            baseline,
+        )
+        assert.deepEqual(
+            stored.operations.find((entry) => entry.key === "epoch:create:stable-1").result,
+            epoch1,
+        )
+        assert.deepEqual(
+            stored.operations.find((entry) => entry.key === "epoch:update:stable-installing").result,
+            installing,
+        )
+        assert.equal(JSON.stringify(retriedEpoch1), JSON.stringify(epoch1))
+
+        store.close()
+        const restarted = new OptimizationStore(path)
+        assert.deepEqual(restarted.transitionRun(run.id, "baseline", {}, {
+            idempotencyKey: "transition:stable-baseline",
+        }), baseline)
+        assert.deepEqual(restarted.createEpoch(run.id, {candidateArtifactId: "candidate:1"}, {
+            idempotencyKey: "epoch:create:stable-1",
+        }), epoch1)
+        assert.deepEqual(restarted.updateEpoch(run.id, epoch1.epochId, {
+            status: "installing",
+            installArtifactIds: ["install:1"],
+        }, {
+            idempotencyKey: "epoch:update:stable-installing",
+        }), installing)
+        assert.equal(editing.runId, run.id)
     })
 
     it("coordinates live stores for one path without recovering or overwriting active state", () => {
         const {path, store: first} = fixture()
-        let run = first.createRun(frozenRun())
-        run = first.transitionRun(run.id, "baseline")
-        run = first.transitionRun(run.id, "editing")
+        const run = first.createRun(frozenRun())
+        let mutation = first.transitionRun(run.id, "baseline")
+        mutation = first.transitionRun(run.id, "editing")
 
         const second = new OptimizationStore(path)
         assert.equal(second.getRun(run.id).state, "editing")
         assert.equal(second.coordinationKey, first.coordinationKey)
         const installing = second.transitionRun(run.id, "installing", {}, {
-            expectedRevision: run.revision,
+            expectedRevision: mutation.revision,
         })
         assert.equal(first.getRun(run.id).state, "installing")
         assert.equal(first.revision, second.revision)
@@ -224,7 +262,8 @@ describe("OptimizationStore", () => {
 
     it("enforces lifecycle transitions and terminal immutability", () => {
         const {store} = fixture()
-        let run = store.createRun(frozenRun())
+        const run = store.createRun(frozenRun())
+        let mutation = {revision: run.revision}
         assert.throws(() => store.transitionRun(run.id, "evaluating"), /transition/i)
         for (const state of [
             "baseline",
@@ -235,64 +274,64 @@ describe("OptimizationStore", () => {
             "restoring",
             "succeeded",
         ]) {
-            run = store.transitionRun(run.id, state, {}, {expectedRevision: run.revision})
+            mutation = store.transitionRun(run.id, state, {}, {expectedRevision: mutation.revision})
         }
-        assert.ok(run.completedAt)
+        assert.ok(store.getRun(run.id).completedAt)
         assert.throws(() => store.transitionRun(run.id, "failed"), /terminal/i)
         assert.throws(() => store.createEpoch(run.id, {}), /terminal/i)
     })
 
     it("supports approval-to-install and restore paths without allowing phase skips", () => {
         const {store} = fixture()
-        let run = store.createRun(frozenRun())
+        const run = store.createRun(frozenRun())
         assert.throws(() => store.transitionRun(run.id, "installing"), /transition/i)
-        run = store.transitionRun(run.id, "baseline")
+        store.transitionRun(run.id, "baseline")
         assert.throws(() => store.transitionRun(run.id, "installing"), /transition/i)
-        run = store.transitionRun(run.id, "editing")
-        run = store.transitionRun(run.id, "installing")
-        run = store.transitionRun(run.id, "evaluating")
-        run = store.transitionRun(run.id, "deciding")
-        run = store.transitionRun(run.id, "waiting_approval")
-        run = store.transitionRun(run.id, "installing")
-        assert.equal(run.state, "installing")
-        run = store.transitionRun(run.id, "restoring")
-        assert.equal(run.state, "restoring")
+        store.transitionRun(run.id, "editing")
+        store.transitionRun(run.id, "installing")
+        store.transitionRun(run.id, "evaluating")
+        store.transitionRun(run.id, "deciding")
+        store.transitionRun(run.id, "waiting_approval")
+        assert.equal(store.transitionRun(run.id, "installing").state, "installing")
+        assert.equal(store.transitionRun(run.id, "restoring").state, "restoring")
 
-        let stopped = store.createRun(frozenRun())
-        stopped = store.transitionRun(stopped.id, "baseline")
-        stopped = store.transitionRun(stopped.id, "editing")
+        const stopped = store.createRun(frozenRun())
+        store.transitionRun(stopped.id, "baseline")
+        store.transitionRun(stopped.id, "editing")
         assert.equal(store.transitionRun(stopped.id, "restoring").state, "restoring")
     })
 
     it("stores bounded epoch artifact references and freezes terminal epochs append-only", () => {
         const {store} = fixture()
-        let run = store.createRun(frozenRun())
-        run = store.transitionRun(run.id, "baseline")
-        run = store.transitionRun(run.id, "editing")
-        let epoch = store.createEpoch(run.id, {candidateArtifactId: "candidate:1"}, {
-            expectedRevision: run.revision,
+        const run = store.createRun(frozenRun())
+        store.transitionRun(run.id, "baseline")
+        const editing = store.transitionRun(run.id, "editing")
+        const epoch = store.createEpoch(run.id, {candidateArtifactId: "candidate:1"}, {
+            expectedRevision: editing.revision,
             idempotencyKey: "epoch:1:create",
         })
-        epoch = store.updateEpoch(run.id, epoch.id, {
+        store.updateEpoch(run.id, epoch.epochId, {
             status: "installing",
             installArtifactIds: ["install:1"],
         })
-        epoch = store.updateEpoch(run.id, epoch.id, {
+        store.updateEpoch(run.id, epoch.epochId, {
             status: "evaluating",
             evaluationArtifactIds: ["evaluation:1"],
         })
-        epoch = store.updateEpoch(run.id, epoch.id, {
+        store.updateEpoch(run.id, epoch.epochId, {
             status: "deciding",
             analysisArtifactId: "analysis:1",
             decisionArtifactId: "decision:1",
         })
-        epoch = store.updateEpoch(run.id, epoch.id, {
+        const completed = store.updateEpoch(run.id, epoch.epochId, {
             status: "completed",
         }, {idempotencyKey: "epoch:1:complete"})
 
-        assert.deepEqual(epoch.evaluationArtifactIds, ["evaluation:1"])
-        assert.ok(epoch.completedAt)
-        assert.throws(() => store.updateEpoch(run.id, epoch.id, {
+        const storedEpoch = store.getRun(run.id).epochs[0]
+        assert.deepEqual(storedEpoch.evaluationArtifactIds, ["evaluation:1"])
+        assert.ok(storedEpoch.completedAt)
+        assert.equal(completed.status, "completed")
+        assert.throws(() => store.updateEpoch(run.id, epoch.epochId, {
             analysisArtifactId: "analysis:forged",
         }), /terminal|append-only/i)
         assert.throws(() => store.createEpoch(run.id, {payload: {large: true}}), /unknown|payload/i)
@@ -300,85 +339,85 @@ describe("OptimizationStore", () => {
 
     it("does not allow terminal evaluation references to be rewritten while deciding", () => {
         const {store} = fixture()
-        let run = store.createRun(frozenRun())
-        run = store.transitionRun(run.id, "baseline")
-        run = store.transitionRun(run.id, "editing")
+        const run = store.createRun(frozenRun())
+        store.transitionRun(run.id, "baseline")
+        store.transitionRun(run.id, "editing")
         const epoch = store.createEpoch(run.id, {candidateArtifactId: "candidate:1"})
-        store.updateEpoch(run.id, epoch.id, {
+        store.updateEpoch(run.id, epoch.epochId, {
             status: "installing",
             installArtifactIds: ["install:1"],
         })
-        store.updateEpoch(run.id, epoch.id, {
+        store.updateEpoch(run.id, epoch.epochId, {
             status: "evaluating",
             evaluationArtifactIds: ["evaluation:1"],
         })
-        store.updateEpoch(run.id, epoch.id, {status: "deciding"})
+        store.updateEpoch(run.id, epoch.epochId, {status: "deciding"})
 
-        assert.throws(() => store.updateEpoch(run.id, epoch.id, {
+        assert.throws(() => store.updateEpoch(run.id, epoch.epochId, {
             evaluationArtifactIds: ["evaluation:forged"],
         }), /evaluation.*immutable|append-only/i)
     })
 
     it("enforces the complete forward-only Epoch lifecycle", () => {
         const {store} = fixture()
-        let run = store.createRun(frozenRun())
-        run = store.transitionRun(run.id, "baseline")
-        run = store.transitionRun(run.id, "editing")
+        const run = store.createRun(frozenRun())
+        store.transitionRun(run.id, "baseline")
+        store.transitionRun(run.id, "editing")
         let epoch = store.createEpoch(run.id, {candidateArtifactId: "candidate:1"})
         assert.throws(
             () => store.createEpoch(run.id, {candidateArtifactId: "candidate:parallel"}),
             /active.*epoch|epoch.*progress/i,
         )
         assert.throws(
-            () => store.updateEpoch(run.id, epoch.id, {status: "evaluating"}),
+            () => store.updateEpoch(run.id, epoch.epochId, {status: "evaluating"}),
             /transition|phase/i,
         )
-        epoch = store.updateEpoch(run.id, epoch.id, {
+        epoch = store.updateEpoch(run.id, epoch.epochId, {
             status: "installing",
             installArtifactIds: ["install:1"],
         })
         assert.throws(
-            () => store.updateEpoch(run.id, epoch.id, {status: "editing"}),
+            () => store.updateEpoch(run.id, epoch.epochId, {status: "editing"}),
             /transition|phase/i,
         )
-        epoch = store.updateEpoch(run.id, epoch.id, {
+        epoch = store.updateEpoch(run.id, epoch.epochId, {
             status: "evaluating",
             evaluationArtifactIds: ["evaluation:1"],
         })
         assert.throws(
-            () => store.updateEpoch(run.id, epoch.id, {status: "editing"}),
+            () => store.updateEpoch(run.id, epoch.epochId, {status: "editing"}),
             /transition|phase/i,
         )
-        epoch = store.updateEpoch(run.id, epoch.id, {
+        epoch = store.updateEpoch(run.id, epoch.epochId, {
             status: "deciding",
             analysisArtifactId: "analysis:1",
             decisionArtifactId: "decision:1",
         })
         assert.throws(
-            () => store.updateEpoch(run.id, epoch.id, {status: "installing"}),
+            () => store.updateEpoch(run.id, epoch.epochId, {status: "installing"}),
             /transition|phase/i,
         )
-        assert.equal(store.updateEpoch(run.id, epoch.id, {status: "completed"}).status, "completed")
+        assert.equal(store.updateEpoch(run.id, epoch.epochId, {status: "completed"}).status, "completed")
     })
 
     it("normalizes interrupted active phases to needs_recovery with a checkpoint", () => {
         const {path, store} = fixture()
-        let run = store.createRun(frozenRun())
-        run = store.transitionRun(run.id, "baseline")
-        run = store.transitionRun(run.id, "editing")
+        const run = store.createRun(frozenRun())
+        store.transitionRun(run.id, "baseline")
+        const editing = store.transitionRun(run.id, "editing")
         store.close()
 
         const restarted = new OptimizationStore(path)
         const recovered = restarted.getRun(run.id)
         assert.equal(recovered.state, "needs_recovery")
         assert.equal(recovered.checkpoint.previousState, "editing")
-        assert.equal(recovered.revision, run.revision + 1)
+        assert.equal(recovered.revision, editing.revision + 1)
     })
 
     it("normalizes an interrupted baseline phase to needs_recovery", () => {
         const {path, store} = fixture()
-        let run = store.createRun(frozenRun())
-        run = store.transitionRun(run.id, "baseline")
+        const run = store.createRun(frozenRun())
+        store.transitionRun(run.id, "baseline")
         store.close()
 
         const restarted = new OptimizationStore(path)
@@ -389,9 +428,9 @@ describe("OptimizationStore", () => {
 
     it("returns summaries without trusted paths, commits, digests, models, or internal snapshots", () => {
         const {store} = fixture()
-        let run = store.createRun(frozenRun())
-        run = store.transitionRun(run.id, "baseline")
-        run = store.transitionRun(run.id, "editing")
+        const run = store.createRun(frozenRun())
+        store.transitionRun(run.id, "baseline")
+        store.transitionRun(run.id, "editing")
         store.createEpoch(run.id, {candidateArtifactId: "candidate:1"})
 
         const summary = store.publicSummary(run.id)
@@ -406,9 +445,9 @@ describe("OptimizationStore", () => {
     it("rejects path-shaped public run and artifact identifiers", () => {
         const {store} = fixture()
         assert.throws(() => store.createRun(frozenRun(), {id: "/tmp/private-run"}), /id|path|reference/i)
-        let run = store.createRun(frozenRun())
-        run = store.transitionRun(run.id, "baseline")
-        run = store.transitionRun(run.id, "editing")
+        const run = store.createRun(frozenRun())
+        store.transitionRun(run.id, "baseline")
+        store.transitionRun(run.id, "editing")
         assert.throws(
             () => store.createEpoch(run.id, {candidateArtifactId: "/tmp/private-candidate"}),
             /artifact|path|reference/i,
