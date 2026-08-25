@@ -412,6 +412,24 @@ class ManagedSkillGit {
         return {digest: `sha256:${hash.digest("hex")}`, files, totalBytes}
     }
 
+    async readSkillFile(repositoryPath, commit, inputSkillRoot, inputPath) {
+        commit = await this.resolve(repositoryPath, requiredText(commit, "Commit", 500))
+        const skillRoot = normalizedSkillRoot(inputSkillRoot)
+        const path = requiredText(inputPath, "Skill file path", 4_096).replace(/\\/gu, "/")
+        if (
+            isAbsolute(path) ||
+            posix.normalize(path) !== path ||
+            path.split("/").some((segment) => !segment || segment === "." || segment === "..")
+        ) {
+            throw new Error("Skill file path must stay inside the Skill root")
+        }
+        const repositoryFile = skillRoot === "." ? path : `${skillRoot}/${path}`
+        return this.runRaw(["show", `${commit}:${repositoryFile}`], {
+            cwd: repositoryPath,
+            maxBuffer: MAX_GIT_OUTPUT,
+        })
+    }
+
     async createAnnotatedTag(repositoryPath, tagName, message, commit) {
         tagName = requiredText(tagName, "Release tag", 500)
         message = requiredText(message, "Release tag message", 2_000)

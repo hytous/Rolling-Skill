@@ -1,16 +1,20 @@
-function runtimeReportsSkill(response, skillReference, {allowNameOnly = false} = {}) {
+function runtimeReportsSkill(response, skillReference, {
+    allowNameOnly = false,
+    expectedContentDigest = null,
+} = {}) {
     for (const entry of response?.data ?? []) {
         for (const skill of entry.skills ?? []) {
-            if (
-                skill?.enabled &&
-                skill.name === skillReference.name &&
-                (
-                    skill.path === skillReference.path ||
-                    (allowNameOnly && skill.evidencePrecision === "name-only" && !skill.path)
-                )
-            ) {
-                return true
+            if (!skill?.enabled || skill.name !== skillReference.name) continue
+            if (skill.path === skillReference.path) {
+                if (!expectedContentDigest || skill.contentDigest === expectedContentDigest) return true
+                continue
             }
+            if (
+                !expectedContentDigest &&
+                allowNameOnly &&
+                skill.evidencePrecision === "name-only" &&
+                !skill.path
+            ) return true
         }
     }
     return false
@@ -23,6 +27,7 @@ async function resolveSkillEvidenceBinding({
     createClient,
     clientOptions,
     skillReference,
+    expectedContentDigest = null,
 }) {
     let temporaryClient = null
     try {
@@ -32,7 +37,9 @@ async function resolveSkillEvidenceBinding({
         if (temporaryClient) await temporaryClient.start()
         if (typeof runtime.listSkills !== "function") return "unverified"
         const response = await runtime.listSkills({forceReload: true})
-        return runtimeReportsSkill(response, skillReference) ? "verified" : "unverified"
+        return runtimeReportsSkill(response, skillReference, {expectedContentDigest})
+            ? "verified"
+            : "unverified"
     } catch {
         return "unverified"
     } finally {
@@ -45,11 +52,12 @@ function resolveExecutedSkillEvidenceBinding({
     skillReference,
     skillEvidence,
     traceEvidence,
+    expectedContentDigest = null,
 }) {
     const frozenSkill = skillEvidence?.files?.find((entry) => entry.path === "SKILL.md")
-    const expectedContentDigest = frozenSkill?.content === undefined
-        ? null
-        : skillContentDigest(frozenSkill.content)
+    expectedContentDigest = expectedContentDigest ?? (
+        frozenSkill?.content === undefined ? null : skillContentDigest(frozenSkill.content)
+    )
     const skillName = String(skillReference?.name ?? skillEvidence?.name ?? "")
     const observed = []
     for (const entry of traceEvidence?.entries ?? []) {

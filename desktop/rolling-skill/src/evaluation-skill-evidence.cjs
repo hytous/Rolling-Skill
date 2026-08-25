@@ -1,6 +1,6 @@
 const {createHash} = require("node:crypto")
 const {existsSync, lstatSync, readFileSync, realpathSync} = require("node:fs")
-const {dirname, isAbsolute, relative, resolve, sep} = require("node:path")
+const {dirname, isAbsolute, posix, relative, resolve, sep} = require("node:path")
 
 const SKILL_EVIDENCE_SCHEMA = "rolling-skill-evaluation-skill-evidence/v1"
 const DEFAULT_LIMITS = Object.freeze({
@@ -44,6 +44,24 @@ function resolveLinkedPath(root, currentLogicalPath, linkedPath) {
         candidates.push(resolve(root, "references", linkedPath), resolve(root, "assets", linkedPath))
     }
     return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]
+}
+
+function resolveManagedLinkedPath(available, currentLogicalPath, linkedPath) {
+    const root = "/managed-skill"
+    const rootRelative =
+        linkedPath === "SKILL.md" ||
+        linkedPath === "DEPENDENCIES.md" ||
+        /^(?:references|assets|scripts)\//u.test(linkedPath)
+    const base = rootRelative ? root : posix.dirname(posix.resolve(root, currentLogicalPath))
+    const candidates = [posix.resolve(base, linkedPath)]
+    if (!rootRelative && currentLogicalPath === "SKILL.md" && !linkedPath.includes("/")) {
+        candidates.push(
+            posix.resolve(root, "references", linkedPath),
+            posix.resolve(root, "assets", linkedPath),
+        )
+    }
+    const logicalPaths = candidates.map((candidate) => posix.relative(root, candidate))
+    return logicalPaths.find((candidate) => available.has(candidate)) ?? logicalPaths[0]
 }
 
 function linkedLocalPaths(markdown) {
@@ -211,4 +229,121 @@ function snapshotSkillEvidence(skillReference, options = {}) {
     return Object.freeze({...snapshot, digest: sha256(canonicalJson(snapshot))})
 }
 
-module.exports = {SKILL_EVIDENCE_SCHEMA, snapshotSkillEvidence, validateSkillEvidence}
+async function snapshotManagedSkillEvidence(source = {}, options = {}) {
+    const name = String(source.name ?? "").trim()
+    const repositoryId = String(source.repositoryId ?? "").trim()
+    const skillId = String(source.skillId ?? "").trim()
+    const versionId = String(source.versionId ?? "").trim()
+    const repositoryPath = String(source.repositoryPath ?? "").trim()
+    const commit = String(source.commit ?? "").trim()
+    const skillRoot = String(source.skillRoot ?? "").trim().replace(/\\/gu, "/")
+    const contentDigest = String(source.contentDigest ?? "").trim()
+    const git = options.git
+    if (!name || !repositoryId || !skillId || !versionId || !isAbsolute(repositoryPath)) {
+        throw new Error("Managed Skill evidence requires a name and absolute repository path")
+    }
+    if (!/^[a-f0-9]{40}$/u.test(commit) || !/^sha256:[a-f0-9]{64}$/u.test(contentDigest)) {
+        throw new Error("Managed Skill evidence requires an immutable commit and content digest")
+    }
+    if (
+        !skillRoot ||
+        isAbsolute(skillRoot) ||
+        (skillRoot !== "." && (
+            skillRoot !== skillRoot.split("/").filter(Boolean).join("/") ||
+            skillRoot.split("/").some((segment) => segment === "." || segment === "..")
+        ))
+    ) {
+        throw new Error("Managed Skill evidence requires a repository-relative Skill root")
+    }
+    if (
+        !git ||
+        typeof git.snapshotSkill !== "function" ||
+        typeof git.readSkillFile !== "function"
+    ) {
+        throw new Error("Managed Skill Git reader is required")
+    }
+    const limits = {
+        maxFiles: Math.max(1, Number(options.maxFiles) || DEFAULT_LIMITS.maxFiles),
+        maxFileBytes: Math.max(1, Number(options.maxFileBytes) || DEFAULT_LIMITS.maxFileBytes),
+        maxTotalBytes: Math.max(1, Number(options.maxTotalBytes) || DEFAULT_LIMITS.maxTotalBytes),
+    }
+    const managed = await git.snapshotSkill(repositoryPath, commit, skillRoot)
+    if (managed.digest !== contentDigest) {
+        throw new Error("Managed Skill commit content digest does not match the frozen Candidate")
+    }
+    const available = new Map(managed.files.map((file) => [file.path, file]))
+    if (available.get("SKILL.md")?.type !== "file") {
+        throw new Error("Managed Skill commit does not contain a regular SKILL.md")
+    }
+    const queue = ["SKILL.md"]
+    const visited = new Set()
+    const files = []
+    const warnings = []
+    let totalBytes = 0
+    while (queue.length) {
+        const logicalPath = queue.shift()
+        if (visited.has(logicalPath)) continue
+        visited.add(logicalPath)
+        const metadata = available.get(logicalPath)
+        if (!metadata || metadata.type !== "file") {
+            warnings.push(`Skipped ${logicalPath}: unavailable in the frozen managed commit`)
+            continue
+        }
+        if (files.length >= limits.maxFiles) {
+            warnings.push(`File limit reached; omitted ${logicalPath}`)
+            continue
+        }
+        const buffer = await git.readSkillFile(repositoryPath, commit, skillRoot, logicalPath)
+        if (buffer.length > limits.maxFileBytes || totalBytes + buffer.length > limits.maxTotalBytes) {
+            warnings.push(`Skipped ${logicalPath}: snapshot limit exceeded`)
+            continue
+        }
+        if (buffer.includes(0)) {
+            warnings.push(`Skipped ${logicalPath}: binary content is not supported`)
+            continue
+        }
+        let content
+        try {
+            content = new TextDecoder("utf-8", {fatal: true}).decode(buffer)
+        } catch {
+            warnings.push(`Skipped ${logicalPath}: content is not valid UTF-8`)
+            continue
+        }
+        totalBytes += buffer.length
+        files.push({
+            id: `skill:${logicalPath}`,
+            path: logicalPath,
+            content,
+            bytes: buffer.length,
+            digest: sha256(buffer),
+        })
+        for (const linkedPath of linkedLocalPaths(content)) {
+            const next = resolveManagedLinkedPath(available, logicalPath, linkedPath)
+            if (next && !next.startsWith("../") && !visited.has(next)) queue.push(next)
+        }
+    }
+    const snapshot = {
+        schemaVersion: SKILL_EVIDENCE_SCHEMA,
+        name,
+        files,
+        warnings,
+        limits,
+        truncated: warnings.some((warning) => /limit|omitted/iu.test(warning)),
+        managedSource: {
+            repositoryId,
+            skillId,
+            versionId,
+            commit,
+            skillRoot,
+            contentDigest,
+        },
+    }
+    return Object.freeze({...snapshot, digest: sha256(canonicalJson(snapshot))})
+}
+
+module.exports = {
+    SKILL_EVIDENCE_SCHEMA,
+    snapshotManagedSkillEvidence,
+    snapshotSkillEvidence,
+    validateSkillEvidence,
+}

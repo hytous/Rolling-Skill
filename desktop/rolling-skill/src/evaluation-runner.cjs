@@ -7,8 +7,11 @@ const {
 const {buildEvidenceCatalog} = require("./evaluation-evidence-catalog.cjs")
 const {snapshotSkillEvidence} = require("./evaluation-skill-evidence.cjs")
 const {resolveExecutedSkillEvidenceBinding} = require("./evaluation-skill-binding.cjs")
+const {skillContentDigest} = require("./skill-content.cjs")
 
 const SKILL_DRIFT_ERROR = "Skill changed after evaluation snapshot"
+const SKILL_VERSION_CHANGED = "SKILL_VERSION_CHANGED"
+const SKILL_VERSION_UNVERIFIED = "SKILL_VERSION_UNVERIFIED"
 const CANCELLATION_ERROR = "Evaluation cancelled by user"
 
 class AsyncTaskQueue {
@@ -126,6 +129,7 @@ class EvaluationRunner {
     }
 
     assertSkillSnapshotUnchanged(run) {
+        if (run.managedVersionSnapshot) return
         if (!run.skillReference || !run.skillEvidence?.digest) return
         let current
         try {
@@ -136,6 +140,33 @@ class EvaluationRunner {
         if (current?.digest !== run.skillEvidence.digest) {
             throw new Error(SKILL_DRIFT_ERROR)
         }
+    }
+
+    async verifyManagedRuntimeVersion(client, run, configuration) {
+        if (!run.managedVersionSnapshot) return configuration.skillEvidenceBinding ?? "unverified"
+        const expected = configuration.expectedContentDigest
+        if (
+            expected !== run.managedVersionSnapshot.contentDigest ||
+            !configuration.experimentInstallationJobId
+        ) {
+            const error = new Error(`${SKILL_VERSION_CHANGED}: frozen target binding is incomplete`)
+            error.code = SKILL_VERSION_CHANGED
+            throw error
+        }
+        if (typeof client.listSkills !== "function") return "unverified"
+        const response = await client.listSkills({forceReload: true})
+        const matchingName = (response?.data ?? []).flatMap((entry) => entry.skills ?? [])
+            .filter((skill) => skill?.enabled && skill.name === run.skillReference?.name)
+        const pathPrecise = matchingName.filter((skill) =>
+            skill.path || skill.evidencePrecision !== "name-only",
+        )
+        if (!pathPrecise.length) return "unverified"
+        if (pathPrecise.some((skill) =>
+            skill.path === run.skillReference?.path && skill.contentDigest === expected,
+        )) return "verified"
+        const error = new Error(`${SKILL_VERSION_CHANGED}: Runtime Skill digest no longer matches Candidate`)
+        error.code = SKILL_VERSION_CHANGED
+        throw error
     }
 
     run(run) {
@@ -250,6 +281,15 @@ class EvaluationRunner {
                 this.onChanged({runId: run.id, resultId: result.id, status: "running"})
                 try {
                     this.assertSkillSnapshotUnchanged(run)
+                    let preExecutionBinding =
+                        configuration.skillEvidenceBinding ?? "unverified"
+                    if (run.managedVersionSnapshot) {
+                        preExecutionBinding = await this.verifyManagedRuntimeVersion(
+                            client,
+                            run,
+                            configuration,
+                        )
+                    }
                     const output = await client.runEvaluationCase({
                         question: result.caseSnapshot.question,
                         activationMode: run.activationMode,
@@ -258,12 +298,25 @@ class EvaluationRunner {
                         effort: configuration.effort,
                     })
                     this.assertSkillSnapshotUnchanged(run)
+                    let postExecutionBinding = preExecutionBinding
+                    if (run.managedVersionSnapshot) {
+                        postExecutionBinding = await this.verifyManagedRuntimeVersion(
+                            client,
+                            run,
+                            configuration,
+                        )
+                    }
                     if (control.cancelRequested) {
                         this.cancelExecutionResult(run, result, control)
                         continue
                     }
                     const gradingQueuedAt = new Date().toISOString()
                     const declaredBinding =
+                        (run.managedVersionSnapshot
+                            ? postExecutionBinding === "verified" && preExecutionBinding === "verified"
+                                ? "verified"
+                                : "unverified"
+                            : null) ??
                         result.runtimeConfiguration?.skillEvidenceBinding ??
                         configuration.skillEvidenceBinding ??
                         "unverified"
@@ -272,7 +325,34 @@ class EvaluationRunner {
                         skillReference: run.skillReference,
                         skillEvidence: run.skillEvidence,
                         traceEvidence: output.traceEvidence,
+                        expectedContentDigest: run.managedVersionSnapshot
+                            ? (() => {
+                                const content = run.skillEvidence?.files?.find(
+                                    (entry) => entry.path === "SKILL.md",
+                                )?.content
+                                return content === undefined ? null : skillContentDigest(content)
+                            })()
+                            : null,
                     })
+                    if (
+                        run.managedVersionSnapshot &&
+                        skillExecutionBinding.observedBinding === "mismatched"
+                    ) {
+                        const error = new Error(`${SKILL_VERSION_CHANGED}: executed Skill body digest changed`)
+                        error.code = SKILL_VERSION_CHANGED
+                        throw error
+                    }
+                    if (
+                        run.managedVersionSnapshot &&
+                        preExecutionBinding !== "verified" &&
+                        skillExecutionBinding.effectiveBinding !== "verified-by-trace"
+                    ) {
+                        const error = new Error(
+                            `${SKILL_VERSION_UNVERIFIED}: name-only Runtime did not expose the frozen Skill body digest`,
+                        )
+                        error.code = SKILL_VERSION_UNVERIFIED
+                        throw error
+                    }
                     output.skillExecutionBinding = skillExecutionBinding
                     this.store.updateEvaluationResult(run.id, result.id, {
                         status: "completed",

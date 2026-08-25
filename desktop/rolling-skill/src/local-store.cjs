@@ -381,6 +381,10 @@ function migrateState(input) {
             run.skillEvidence = null
             changed = true
         }
+        if (!("managedVersionSnapshot" in run)) {
+            run.managedVersionSnapshot = null
+            changed = true
+        }
         if (!("rubricVersionSnapshot" in run)) {
             run.rubricVersionSnapshot = null
             changed = true
@@ -633,6 +637,66 @@ function evaluationRuntimeConfiguration(configuration, labels = {}) {
         efforts: copy(configuration.efforts ?? []),
         modelId: modelId(configuration.modelId, labels.modelId ?? "Evaluation model id"),
         effort: reasoningEffort(configuration.effort, labels.effort ?? "Evaluation reasoning effort"),
+    }
+}
+
+function managedEvaluationVersionSnapshot(value, runtimeIds) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("A managed Candidate snapshot is required")
+    }
+    const expectedKeys = [
+        "commit",
+        "contentDigest",
+        "installationJobIdsByRuntime",
+        "repositoryId",
+        "skillId",
+        "skillRoot",
+        "versionId",
+    ]
+    if (Object.keys(value).sort().join(",") !== expectedKeys.sort().join(",")) {
+        throw new Error("Managed Candidate snapshot contains unsupported fields")
+    }
+    const required = (field, label, maxLength = 200) => {
+        const normalized = String(value[field] ?? "").trim()
+        if (!normalized || normalized.length > maxLength) throw new Error(`${label} is required`)
+        return normalized
+    }
+    const commit = required("commit", "Managed Candidate commit", 40)
+    const contentDigest = required("contentDigest", "Managed Candidate content digest", 80)
+    const skillRoot = required("skillRoot", "Managed Candidate Skill root", 4_096).replace(/\\/gu, "/")
+    if (!/^[a-f0-9]{40}$/u.test(commit)) throw new Error("Managed Candidate commit must be a full SHA-1")
+    if (!/^sha256:[a-f0-9]{64}$/u.test(contentDigest)) {
+        throw new Error("Managed Candidate content digest must be SHA-256")
+    }
+    if (
+        skillRoot.startsWith("/") ||
+        (skillRoot !== "." && skillRoot.split("/").some((part) => !part || part === "." || part === ".."))
+    ) {
+        throw new Error("Managed Candidate Skill root must be repository-relative")
+    }
+    const jobs = value.installationJobIdsByRuntime
+    if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) {
+        throw new Error("Managed Candidate installation Jobs are required")
+    }
+    const installationJobIdsByRuntime = {}
+    for (const runtimeId of runtimeIds) {
+        const jobId = String(jobs[runtimeId] ?? "").trim()
+        if (!jobId || jobId.length > 200) {
+            throw new Error(`Managed Candidate installation Job is required for ${runtimeId}`)
+        }
+        installationJobIdsByRuntime[runtimeId] = jobId
+    }
+    if (Object.keys(jobs).some((runtimeId) => !runtimeIds.includes(runtimeId))) {
+        throw new Error("Managed Candidate installation Jobs contain an unknown Runtime")
+    }
+    return {
+        repositoryId: required("repositoryId", "Managed Candidate repository id"),
+        skillId: required("skillId", "Managed Candidate Skill id"),
+        versionId: required("versionId", "Managed Candidate version id"),
+        commit,
+        skillRoot,
+        contentDigest,
+        installationJobIdsByRuntime,
     }
 }
 
@@ -1790,7 +1854,7 @@ class LocalEvaluationStore {
         return copy(deleted)
     }
 
-    createEvaluationRun(input = {}) {
+    createEvaluationRun(input = {}, options = {}) {
         const state = this.load()
         const dataset = requireDataset(state, input.datasetId)
         const datasetSkillReference = copy(requireDatasetSkill(dataset))
@@ -1842,7 +1906,7 @@ class LocalEvaluationStore {
                 "One or more Cases require calibration for the active dataset rubric version",
             )
         }
-        const runtimeConfigurations = (input.runtimeConfigurations ?? []).map((configuration) => ({
+        let runtimeConfigurations = (input.runtimeConfigurations ?? []).map((configuration) => ({
             ...evaluationRuntimeConfiguration(configuration),
             skillEvidenceBinding:
                 configuration.skillEvidenceBinding === "verified" ? "verified" : "unverified",
@@ -1854,6 +1918,22 @@ class LocalEvaluationStore {
                 throw new Error("Each runtime may only appear once in an evaluation")
             }
             duplicateRuntimes.add(configuration.runtimeId)
+        }
+        let managedVersionSnapshot = null
+        if (input.managedVersionSnapshot !== undefined && input.managedVersionSnapshot !== null) {
+            if (options.optimizationAuthorized !== true) {
+                throw new Error("Managed Candidate evaluation requires an internal Optimization capability")
+            }
+            managedVersionSnapshot = managedEvaluationVersionSnapshot(
+                input.managedVersionSnapshot,
+                runtimeConfigurations.map((configuration) => configuration.runtimeId),
+            )
+            runtimeConfigurations = runtimeConfigurations.map((configuration) => ({
+                ...configuration,
+                expectedContentDigest: managedVersionSnapshot.contentDigest,
+                experimentInstallationJobId:
+                    managedVersionSnapshot.installationJobIdsByRuntime[configuration.runtimeId],
+            }))
         }
         const now = new Date().toISOString()
         const requestedJudgeProfile = input.judgeProfile ?? state.settings.judgeProfile
@@ -1875,6 +1955,24 @@ class LocalEvaluationStore {
                   effort: "Judge reasoning effort",
               })
             : null
+        const skillEvidence = validateSkillEvidence(input.skillEvidence, {
+            expectedName: datasetSkillReference.name,
+            requireComplete: true,
+        })
+        if (managedVersionSnapshot) {
+            const managedSource = skillEvidence.managedSource
+            if (
+                !managedSource ||
+                managedSource.repositoryId !== managedVersionSnapshot.repositoryId ||
+                managedSource.skillId !== managedVersionSnapshot.skillId ||
+                managedSource.versionId !== managedVersionSnapshot.versionId ||
+                managedSource.commit !== managedVersionSnapshot.commit ||
+                managedSource.skillRoot !== managedVersionSnapshot.skillRoot ||
+                managedSource.contentDigest !== managedVersionSnapshot.contentDigest
+            ) {
+                throw new Error("Managed Candidate evaluation requires exact managed commit evidence")
+            }
+        }
         const run = {
             id: randomUUID(),
             datasetId: input.datasetId,
@@ -1884,10 +1982,8 @@ class LocalEvaluationStore {
             selectedCaseIds: caseSnapshots.map((entry) => entry.id),
             caseSnapshots: copy(caseSnapshots),
             skillReference: datasetSkillReference,
-            skillEvidence: validateSkillEvidence(input.skillEvidence, {
-                expectedName: datasetSkillReference.name,
-                requireComplete: true,
-            }),
+            skillEvidence,
+            managedVersionSnapshot,
             activationMode: input.activationMode,
             judgeProfile,
             judgeConfiguration,
