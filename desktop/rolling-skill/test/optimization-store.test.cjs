@@ -1,7 +1,7 @@
 "use strict"
 
 const assert = require("node:assert/strict")
-const {spawnSync} = require("node:child_process")
+const {spawn, spawnSync} = require("node:child_process")
 const {createHash} = require("node:crypto")
 const {
     chmodSync,
@@ -107,6 +107,35 @@ function fixture() {
     return {directory, path, store: new OptimizationStore(path)}
 }
 
+function waitForChildText(child, pattern, label) {
+    return new Promise((resolve, reject) => {
+        let output = ""
+        const timeout = setTimeout(() => {
+            cleanup()
+            reject(new Error(`Timed out waiting for ${label}; output=${JSON.stringify(output)}`))
+        }, 5_000)
+        const onData = (chunk) => {
+            output += chunk
+            if (pattern.test(output)) {
+                cleanup()
+                resolve(output)
+            }
+        }
+        const onExit = (code, signal) => {
+            cleanup()
+            reject(new Error(`${label} child exited (${code ?? signal}); output=${JSON.stringify(output)}`))
+        }
+        function cleanup() {
+            clearTimeout(timeout)
+            child.stdout.off("data", onData)
+            child.off("exit", onExit)
+        }
+        child.stdout.setEncoding("utf8")
+        child.stdout.on("data", onData)
+        child.on("exit", onExit)
+    })
+}
+
 describe("OptimizationStore", () => {
     it("rejects a second process while the live owner keeps active state unchanged", () => {
         const {path, store} = fixture()
@@ -162,6 +191,246 @@ describe("OptimizationStore", () => {
         assert.throws(() => reopened.createRun(frozenRun(), {
             expectedRevision: revision - 1,
         }), /revision|CAS|stale/i)
+    })
+
+    it("does not let a paused stale contender displace a faster live owner", async () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-optimization-owner-race-"))
+        temporaryDirectories.push(directory)
+        const path = join(directory, "optimization-runs.json")
+        const ownerPath = join(directory, ".optimization-runs.json.owner")
+        const takeoverPath = `${ownerPath}.takeover`
+        const releasePath = join(directory, "release-slow-contender")
+        const modulePath = require.resolve("../src/optimization/optimization-store.cjs")
+        const stale = spawnSync(process.execPath, ["-e", `
+            const {OptimizationStore} = require(process.argv[1])
+            new OptimizationStore(process.argv[2])
+            process.exit(0)
+        `, modulePath, path], {encoding: "utf8"})
+        assert.equal(stale.status, 0, stale.stderr)
+
+        const slow = spawn(process.execPath, ["-e", `
+            const fs = require("node:fs")
+            const originalOpen = fs.openSync
+            const originalRename = fs.renameSync
+            let paused = false
+            function pauseAfterStaleRead() {
+                if (paused) return
+                paused = true
+                process.stdout.write("SLOW_READY\\n")
+                const cell = new Int32Array(new SharedArrayBuffer(4))
+                while (!fs.existsSync(process.argv[5])) Atomics.wait(cell, 0, 0, 25)
+            }
+            fs.openSync = function(path, flags, ...rest) {
+                if (String(path).endsWith(".owner.takeover") && (flags & fs.constants.O_EXCL)) {
+                    pauseAfterStaleRead()
+                }
+                return originalOpen.call(this, path, flags, ...rest)
+            }
+            fs.renameSync = function(from, to) {
+                if (String(from).endsWith(".owner")) pauseAfterStaleRead()
+                return originalRename.call(this, from, to)
+            }
+            const {OptimizationStore} = require(process.argv[1])
+            try {
+                const store = new OptimizationStore(process.argv[2])
+                process.stdout.write("SLOW_OPEN\\n")
+                process.stdin.resume()
+                process.stdin.on("data", () => {
+                    store.close()
+                    process.exit(0)
+                })
+            } catch (error) {
+                process.stdout.write("SLOW_REJECT:" + error.message + "\\n")
+            }
+        `, modulePath, path, ownerPath, takeoverPath, releasePath], {
+            stdio: ["pipe", "pipe", "pipe"],
+        })
+        let fast = null
+        try {
+            await waitForChildText(slow, /SLOW_READY/u, "slow contender readiness")
+            fast = spawn(process.execPath, ["-e", `
+                const {OptimizationStore} = require(process.argv[1])
+                const store = new OptimizationStore(process.argv[2])
+                process.stdout.write("FAST_OPEN\\n")
+                process.stdin.setEncoding("utf8")
+                process.stdin.on("data", (command) => {
+                    if (command.includes("PERSIST")) {
+                        try {
+                            store.persist()
+                            process.stdout.write("PERSIST_OK\\n")
+                        } catch (error) {
+                            process.stdout.write("PERSIST_FAIL:" + error.message + "\\n")
+                        }
+                    }
+                    if (command.includes("EXIT")) {
+                        store.close()
+                        process.exit(0)
+                    }
+                })
+            `, modulePath, path], {stdio: ["pipe", "pipe", "pipe"]})
+            const fastOpen = await waitForChildText(fast, /FAST_OPEN/u, "fast owner acquisition")
+            writeFileSync(releasePath, "release", {mode: 0o600})
+            const slowOutcome = await waitForChildText(slow, /SLOW_(?:OPEN|REJECT:)/u, "slow contender result")
+
+            assert.equal(
+                [...`${fastOpen}\n${slowOutcome}`.matchAll(/(?:FAST|SLOW)_OPEN/gu)].length,
+                1,
+            )
+            assert.match(slowOutcome, /SLOW_REJECT:/u)
+            assert.equal(JSON.parse(readFileSync(ownerPath, "utf8")).pid, fast.pid)
+            const persisted = waitForChildText(fast, /PERSIST_(?:OK|FAIL:)/u, "live owner persistence")
+            fast.stdin.write("PERSIST\n")
+            assert.match(await persisted, /PERSIST_OK/u)
+        } finally {
+            if (slow.exitCode === null) {
+                slow.stdin.write("EXIT\n")
+                slow.kill()
+            }
+            if (fast?.exitCode === null) {
+                fast.stdin.write("EXIT\n")
+                fast.kill()
+            }
+        }
+    })
+
+    it("recovers when a stale ownership takeover crashes after publishing its claim", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-optimization-claim-crash-"))
+        temporaryDirectories.push(directory)
+        const path = join(directory, "optimization-runs.json")
+        const ownerPath = join(directory, ".optimization-runs.json.owner")
+        const takeoverPath = `${ownerPath}.takeover`
+        const modulePath = require.resolve("../src/optimization/optimization-store.cjs")
+        const stale = spawnSync(process.execPath, ["-e", `
+            const {OptimizationStore} = require(process.argv[1])
+            new OptimizationStore(process.argv[2])
+            process.exit(0)
+        `, modulePath, path], {encoding: "utf8"})
+        assert.equal(stale.status, 0, stale.stderr)
+
+        const crashed = spawnSync(process.execPath, ["-e", `
+            const fs = require("node:fs")
+            const originalOpen = fs.openSync
+            const originalClose = fs.closeSync
+            let takeoverDescriptor = null
+            fs.openSync = function(path, flags, ...rest) {
+                const descriptor = originalOpen.call(this, path, flags, ...rest)
+                if (String(path).endsWith(".owner.takeover") && (flags & fs.constants.O_EXCL)) {
+                    takeoverDescriptor = descriptor
+                }
+                return descriptor
+            }
+            fs.closeSync = function(descriptor) {
+                originalClose.call(this, descriptor)
+                if (descriptor === takeoverDescriptor) process.exit(77)
+            }
+            const {OptimizationStore} = require(process.argv[1])
+            new OptimizationStore(process.argv[2])
+        `, modulePath, path], {encoding: "utf8"})
+        assert.equal(crashed.status, 77, crashed.stderr)
+        assert.equal(lstatSync(takeoverPath).isFile(), true)
+
+        const recovered = new OptimizationStore(path)
+        assert.equal(JSON.parse(readFileSync(ownerPath, "utf8")).pid, process.pid)
+        recovered.persist()
+    })
+
+    it("cleans a partial takeover claim when control-file persistence fails", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-optimization-claim-write-failure-"))
+        temporaryDirectories.push(directory)
+        const path = join(directory, "optimization-runs.json")
+        const ownerPath = join(directory, ".optimization-runs.json.owner")
+        const takeoverPath = `${ownerPath}.takeover`
+        const modulePath = require.resolve("../src/optimization/optimization-store.cjs")
+        const stale = spawnSync(process.execPath, ["-e", `
+            const {OptimizationStore} = require(process.argv[1])
+            new OptimizationStore(process.argv[2])
+            process.exit(0)
+        `, modulePath, path], {encoding: "utf8"})
+        assert.equal(stale.status, 0, stale.stderr)
+
+        const failed = spawnSync(process.execPath, ["-e", `
+            const fs = require("node:fs")
+            const originalOpen = fs.openSync
+            const originalWrite = fs.writeFileSync
+            let takeoverDescriptor = null
+            fs.openSync = function(path, flags, ...rest) {
+                const descriptor = originalOpen.call(this, path, flags, ...rest)
+                if (String(path).endsWith(".owner.takeover") && (flags & fs.constants.O_EXCL)) {
+                    takeoverDescriptor = descriptor
+                }
+                return descriptor
+            }
+            fs.writeFileSync = function(destination, ...rest) {
+                if (destination === takeoverDescriptor) {
+                    const error = new Error("injected takeover write failure")
+                    error.code = "EIO"
+                    throw error
+                }
+                return originalWrite.call(this, destination, ...rest)
+            }
+            const {OptimizationStore} = require(process.argv[1])
+            try {
+                new OptimizationStore(process.argv[2])
+                process.stdout.write("unexpected-open")
+            } catch (error) {
+                process.stdout.write("rejected:" + error.message)
+            }
+        `, modulePath, path], {encoding: "utf8"})
+        assert.equal(failed.status, 0, failed.stderr)
+        assert.match(failed.stdout, /^rejected:injected takeover write failure$/u)
+        assert.throws(() => lstatSync(takeoverPath), {code: "ENOENT"})
+
+        const recovered = new OptimizationStore(path)
+        assert.equal(JSON.parse(readFileSync(ownerPath, "utf8")).pid, process.pid)
+        recovered.persist()
+    })
+
+    it("restores a raced takeover claim when its retired identity cannot be verified", () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-optimization-claim-read-failure-"))
+        temporaryDirectories.push(directory)
+        const path = join(directory, "optimization-runs.json")
+        const ownerPath = join(directory, ".optimization-runs.json.owner")
+        const takeoverPath = `${ownerPath}.takeover`
+        const modulePath = require.resolve("../src/optimization/optimization-store.cjs")
+        const stale = spawnSync(process.execPath, ["-e", `
+            const {OptimizationStore} = require(process.argv[1])
+            new OptimizationStore(process.argv[2])
+            process.exit(0)
+        `, modulePath, path], {encoding: "utf8"})
+        assert.equal(stale.status, 0, stale.stderr)
+
+        const failed = spawnSync(process.execPath, ["-e", `
+            const fs = require("node:fs")
+            const originalOpen = fs.openSync
+            let failedRetiredRead = false
+            fs.openSync = function(path, flags, ...rest) {
+                if (
+                    !failedRetiredRead &&
+                    String(path).includes(".owner.takeover.retired-") &&
+                    (flags & fs.constants.O_ACCMODE) === fs.constants.O_RDONLY
+                ) {
+                    failedRetiredRead = true
+                    const error = new Error("injected retired claim read failure")
+                    error.code = "EIO"
+                    throw error
+                }
+                return originalOpen.call(this, path, flags, ...rest)
+            }
+            const {OptimizationStore} = require(process.argv[1])
+            try {
+                new OptimizationStore(process.argv[2])
+                process.stdout.write("unexpected-open")
+            } catch (error) {
+                process.stdout.write("rejected:" + error.message)
+            }
+        `, modulePath, path], {encoding: "utf8"})
+        assert.equal(failed.status, 0, failed.stderr)
+        assert.match(failed.stdout, /^rejected:injected retired claim read failure$/u)
+        assert.equal(lstatSync(takeoverPath).isFile(), true)
+
+        const recovered = new OptimizationStore(path)
+        assert.equal(JSON.parse(readFileSync(ownerPath, "utf8")).pid, process.pid)
+        recovered.persist()
     })
 
     it("refuses to persist after its ownership token is replaced", () => {
@@ -406,6 +675,10 @@ describe("OptimizationStore", () => {
         store.transitionRun(run.runId, "evaluating")
         store.updateEpoch(run.runId, epoch.epochId, {evaluationArtifactIds: ["evaluation:1"]})
         store.transitionRun(run.runId, "deciding")
+        store.updateEpoch(run.runId, epoch.epochId, {
+            analysisArtifactId: "analysis:1",
+            decisionArtifactId: "decision:1",
+        })
         store.transitionRun(run.runId, "waiting_approval")
         assert.equal(store.transitionRun(run.runId, "installing").state, "installing")
         assert.equal(store.transitionRun(run.runId, "restoring").state, "restoring")
@@ -414,6 +687,87 @@ describe("OptimizationStore", () => {
         store.transitionRun(stopped.runId, "baseline")
         store.transitionRun(stopped.runId, "editing")
         assert.equal(store.transitionRun(stopped.runId, "restoring").state, "restoring")
+    })
+
+    it("keeps an approved Epoch forward-only and its evidence frozen through release installation", () => {
+        const {path, store} = fixture()
+        const run = store.createRun(frozenRun())
+        store.transitionRun(run.runId, "baseline")
+        store.transitionRun(run.runId, "editing")
+        const epoch = store.createEpoch(run.runId, {candidateArtifactId: "candidate:approved"})
+        store.transitionRun(run.runId, "installing")
+        store.updateEpoch(run.runId, epoch.epochId, {installArtifactIds: ["install:evaluation"]})
+        store.transitionRun(run.runId, "evaluating")
+        store.updateEpoch(run.runId, epoch.epochId, {evaluationArtifactIds: ["evaluation:approved"]})
+        store.transitionRun(run.runId, "deciding")
+        const evidence = {
+            candidateArtifactId: "candidate:approved",
+            installArtifactIds: ["install:evaluation"],
+            evaluationArtifactIds: ["evaluation:approved"],
+            analysisArtifactId: "analysis:approved",
+            decisionArtifactId: "decision:approved",
+        }
+        store.updateEpoch(run.runId, epoch.epochId, evidence)
+        store.transitionRun(run.runId, "waiting_approval")
+
+        assert.equal(store.updateEpoch(run.runId, epoch.epochId, evidence).status, "deciding")
+        for (const patch of [
+            {candidateArtifactId: "candidate:forged"},
+            {installArtifactIds: ["install:forged"]},
+            {evaluationArtifactIds: ["evaluation:forged"]},
+            {analysisArtifactId: "analysis:forged"},
+            {decisionArtifactId: "decision:forged"},
+        ]) {
+            assert.throws(
+                () => store.updateEpoch(run.runId, epoch.epochId, patch),
+                /append-only|immutable|frozen/i,
+            )
+        }
+
+        assert.equal(store.transitionRun(run.runId, "installing").state, "installing")
+        assert.equal(store.getRun(run.runId).epochs[0].status, "deciding")
+        assert.deepEqual(store.getRun(run.runId).epochs[0], {
+            ...store.getRun(run.runId).epochs[0],
+            ...evidence,
+        })
+        assert.equal(store.updateEpoch(run.runId, epoch.epochId, evidence).status, "deciding")
+        assert.throws(
+            () => store.transitionRun(run.runId, "evaluating"),
+            /forward|backtrack|transition|phase/i,
+        )
+        assert.throws(
+            () => store.updateEpoch(run.runId, epoch.epochId, {decisionArtifactId: "decision:forged"}),
+            /append-only|immutable|frozen/i,
+        )
+
+        store.close()
+        const recovered = new OptimizationStore(path)
+        assert.equal(recovered.getRun(run.runId).state, "needs_recovery")
+        assert.equal(recovered.getRun(run.runId).recovery.previousState, "installing")
+        assert.equal(recovered.getRun(run.runId).epochs[0].status, "deciding")
+        for (const patch of [
+            {installArtifactIds: ["install:evaluation", "install:forged"]},
+            {evaluationArtifactIds: ["evaluation:approved", "evaluation:forged"]},
+        ]) {
+            assert.throws(
+                () => recovered.updateEpoch(run.runId, epoch.epochId, patch),
+                /append-only|immutable|frozen/i,
+            )
+        }
+        assert.throws(
+            () => recovered.transitionRun(run.runId, "deciding"),
+            /forward|backtrack|transition|phase|recovery/i,
+        )
+        assert.equal(recovered.transitionRun(run.runId, "installing").state, "installing")
+        assert.equal(recovered.getRun(run.runId).epochs[0].status, "deciding")
+        assert.deepEqual(recovered.getRun(run.runId).epochs[0], {
+            ...recovered.getRun(run.runId).epochs[0],
+            ...evidence,
+        })
+
+        recovered.transitionRun(run.runId, "restoring")
+        recovered.updateEpoch(run.runId, epoch.epochId, {status: "completed"})
+        assert.equal(recovered.transitionRun(run.runId, "succeeded").state, "succeeded")
     })
 
     it("stores bounded epoch artifact references and freezes terminal epochs append-only", () => {

@@ -5,6 +5,7 @@ const {
     fchmodSync,
     fstatSync,
     fsyncSync,
+    linkSync,
     lstatSync,
     mkdirSync,
     openSync,
@@ -29,6 +30,7 @@ const MAX_ARTIFACT_REFERENCES = 512
 const MAX_CHECKPOINT_BYTES = 64 * 1024
 const MAX_OWNERSHIP_BYTES = 4 * 1024
 const OWNERSHIP_SCHEMA = "rolling-skill-optimization-owner/v1"
+const TAKEOVER_SCHEMA = "rolling-skill-optimization-takeover/v1"
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0
 const DIRECTORY = constants.O_DIRECTORY ?? 0
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled"])
@@ -112,6 +114,13 @@ const IMMUTABLE_EPOCH_FIELDS = new Map([
     ["evaluating", ["candidateArtifactId", "installArtifactIds"]],
     ["deciding", ["candidateArtifactId", "installArtifactIds", "evaluationArtifactIds"]],
 ])
+const EPOCH_EVIDENCE_FIELDS = [
+    "candidateArtifactId",
+    "installArtifactIds",
+    "evaluationArtifactIds",
+    "analysisArtifactId",
+    "decisionArtifactId",
+]
 const OPERATION_KINDS = new Set(["transition", "create_epoch", "update_epoch"])
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"])
 
@@ -245,6 +254,22 @@ function artifactIds(value, label) {
     return normalized
 }
 
+function epochEvidencePatchValue(field, value) {
+    if (field === "candidateArtifactId") return nullableArtifactId(value, "Candidate artifact id")
+    if (field === "installArtifactIds") return artifactIds(value, "Install artifact ids")
+    if (field === "evaluationArtifactIds") return artifactIds(value, "Evaluation artifact ids")
+    if (field === "analysisArtifactId") return nullableArtifactId(value, "Analysis artifact id")
+    return nullableArtifactId(value, "Decision artifact id")
+}
+
+function sameJson(left, right) {
+    return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function extendsArtifactSequence(current, next) {
+    return current.every((value, index) => next[index] === value)
+}
+
 function pathEntryExists(path) {
     try {
         lstatSync(path)
@@ -297,7 +322,7 @@ function canonicalStorePath(value) {
     ).realPath
 }
 
-function readSecureFile(path, directory, maximumBytes, label) {
+function readSecureFileRecord(path, directory, maximumBytes, label) {
     const before = secureFileMetadata(path, directory, maximumBytes, label)
     const descriptor = openSync(before.filePath, constants.O_RDONLY | NOFOLLOW)
     try {
@@ -319,10 +344,17 @@ function readSecureFile(path, directory, maximumBytes, label) {
         if (readSync(descriptor, extra, 0, 1, offset) !== 0) {
             throw new Error(`${label} grew while it was being read`)
         }
-        return body
+        return {
+            body,
+            identity: {dev: String(opened.dev), ino: String(opened.ino)},
+        }
     } finally {
         closeSync(descriptor)
     }
+}
+
+function readSecureFile(path, directory, maximumBytes, label) {
+    return readSecureFileRecord(path, directory, maximumBytes, label).body
 }
 
 function fsyncDirectoryBestEffort(path) {
@@ -395,77 +427,218 @@ function ownershipPath(path) {
 }
 
 function readOwnership(path) {
-    const body = readSecureFile(path, dirname(path), MAX_OWNERSHIP_BYTES, "Optimization ownership lock")
-    const value = JSON.parse(body.toString("utf8"))
+    const record = readSecureFileRecord(
+        path,
+        dirname(path),
+        MAX_OWNERSHIP_BYTES,
+        "Optimization ownership lock",
+    )
+    const value = JSON.parse(record.body.toString("utf8"))
     exactKeys(value, ["schemaVersion", "pid", "token"], [], "Optimization ownership lock")
     if (value.schemaVersion !== OWNERSHIP_SCHEMA) throw new Error("Optimization ownership lock schema is invalid")
     return {
         schemaVersion: OWNERSHIP_SCHEMA,
         pid: integer(value.pid, "Optimization ownership pid", 1),
         token: publicId(value.token, "Optimization ownership token"),
+        ...record.identity,
     }
 }
 
-function createOwnership(path) {
-    const token = randomUUID()
-    const body = `${JSON.stringify({schemaVersion: OWNERSHIP_SCHEMA, pid: process.pid, token})}\n`
+function takeoverPath(path) {
+    return `${path}.takeover`
+}
+
+function sameFileIdentity(left, right) {
+    return left.dev === right.dev && left.ino === right.ino
+}
+
+function sameControlIdentity(left, right) {
+    return left.token === right.token && sameFileIdentity(left, right)
+}
+
+function readControlFileIdentity(path) {
+    const {status} = secureFileMetadata(
+        path,
+        dirname(path),
+        MAX_OWNERSHIP_BYTES,
+        "Optimization control file",
+    )
+    return {dev: String(status.dev), ino: String(status.ino)}
+}
+
+function createControlFile(path, value) {
+    const body = `${JSON.stringify(value)}\n`
     const descriptor = openSync(
         path,
         constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | NOFOLLOW,
         0o600,
     )
+    let identity = null
+    let failure = null
     try {
+        const status = fstatSync(descriptor)
+        identity = {dev: String(status.dev), ino: String(status.ino)}
         fchmodSync(descriptor, 0o600)
         writeFileSync(descriptor, body)
         fsyncSync(descriptor)
+    } catch (error) {
+        failure = error
     } finally {
         closeSync(descriptor)
     }
+    if (failure !== null) {
+        if (identity !== null) {
+            try {
+                verifiedUnlink(
+                    path,
+                    identity,
+                    readControlFileIdentity,
+                    "Incomplete Optimization control file",
+                    sameFileIdentity,
+                )
+            } catch {}
+        }
+        throw failure
+    }
     fsyncDirectoryBestEffort(dirname(path))
-    return {path, token}
+    return {...value, path, ...identity}
 }
 
-function acquireOwnership(storePath) {
-    const path = ownershipPath(storePath)
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-        try {
-            return createOwnership(path)
-        } catch (error) {
-            if (error?.code !== "EEXIST") throw error
+function readTakeover(path) {
+    const record = readSecureFileRecord(
+        path,
+        dirname(path),
+        MAX_OWNERSHIP_BYTES,
+        "Optimization takeover claim",
+    )
+    const value = JSON.parse(record.body.toString("utf8"))
+    exactKeys(
+        value,
+        ["schemaVersion", "pid", "token", "ownerToken", "ownerDev", "ownerIno"],
+        [],
+        "Optimization takeover claim",
+    )
+    if (value.schemaVersion !== TAKEOVER_SCHEMA) throw new Error("Optimization takeover claim schema is invalid")
+    for (const field of ["ownerDev", "ownerIno"]) {
+        if (!/^\d+$/u.test(requiredText(value[field], `Optimization takeover ${field}`, 100))) {
+            throw new Error(`Optimization takeover ${field} is invalid`)
         }
-        let owner
-        try {
-            owner = readOwnership(path)
-        } catch (error) {
-            throw new Error(`Could not verify Optimization store owner: ${error.message}`)
-        }
-        if (owner.pid !== process.pid && processIsAlive(owner.pid)) {
-            throw new Error(`Optimization store is owned by live process ${owner.pid}`)
-        }
-        const stalePath = `${path}.stale-${process.pid}-${randomUUID()}`
-        try {
-            renameSync(path, stalePath)
-            fsyncDirectoryBestEffort(dirname(path))
-        } catch (error) {
-            if (error?.code === "ENOENT") continue
-            throw new Error(`Could not replace stale Optimization ownership lock: ${error.message}`)
-        }
-        try {
-            unlinkSync(stalePath)
-        } catch {}
     }
-    throw new Error("Could not acquire Optimization store ownership")
+    return {
+        schemaVersion: TAKEOVER_SCHEMA,
+        pid: integer(value.pid, "Optimization takeover pid", 1),
+        token: publicId(value.token, "Optimization takeover token"),
+        ownerToken: publicId(value.ownerToken, "Optimization takeover owner token"),
+        ownerDev: value.ownerDev,
+        ownerIno: value.ownerIno,
+        ...record.identity,
+    }
+}
+
+function createTakeover(path, owner) {
+    const token = randomUUID()
+    return createControlFile(path, {
+        schemaVersion: TAKEOVER_SCHEMA,
+        pid: process.pid,
+        token,
+        ownerToken: owner.token,
+        ownerDev: owner.dev,
+        ownerIno: owner.ino,
+    })
+}
+
+function restoreRetiredControlFile(path, retiredPath, label) {
+    try {
+        linkSync(retiredPath, path)
+    } catch (error) {
+        if (error?.code !== "EEXIST") {
+            throw new Error(`${label} could not be restored: ${error.message}`)
+        }
+    }
+    unlinkSync(retiredPath)
+    fsyncDirectoryBestEffort(dirname(path))
+}
+
+function verifiedUnlink(path, expected, reader, label, sameIdentity = sameControlIdentity) {
+    const retiredPath = `${path}.retired-${process.pid}-${randomUUID()}`
+    try {
+        renameSync(path, retiredPath)
+    } catch (error) {
+        if (error?.code === "ENOENT") return false
+        throw error
+    }
+    let retired
+    try {
+        retired = reader(retiredPath)
+    } catch (error) {
+        try {
+            restoreRetiredControlFile(path, retiredPath, label)
+        } catch (restoreError) {
+            throw new Error(`${label} verification failed and ${restoreError.message}`, {cause: error})
+        }
+        throw error
+    }
+    if (!sameIdentity(retired, expected)) {
+        restoreRetiredControlFile(path, retiredPath, label)
+        return false
+    }
+    unlinkSync(retiredPath)
+    fsyncDirectoryBestEffort(dirname(path))
+    return true
+}
+
+function ownershipBlockedError() {
+    const error = new Error("Optimization ownership creation is blocked by a takeover claim")
+    error.code = "EOWNERSHIPCLAIM"
+    return error
+}
+
+function createOwnership(path, takeover = null) {
+    const claimPath = takeoverPath(path)
+    if (takeover === null && pathEntryExists(claimPath)) throw ownershipBlockedError()
+    if (takeover !== null) {
+        const currentClaim = readTakeover(claimPath)
+        if (!sameControlIdentity(currentClaim, takeover)) {
+            throw new Error("Optimization takeover claim changed before ownership creation")
+        }
+    }
+    const token = randomUUID()
+    const ownership = createControlFile(path, {
+        schemaVersion: OWNERSHIP_SCHEMA,
+        pid: process.pid,
+        token,
+    })
+    try {
+        if (takeover === null && pathEntryExists(claimPath)) {
+            throw ownershipBlockedError()
+        }
+        if (takeover !== null) {
+            const currentClaim = readTakeover(claimPath)
+            if (!sameControlIdentity(currentClaim, takeover)) {
+                throw new Error("Optimization takeover claim changed during ownership creation")
+            }
+        }
+    } catch (error) {
+        verifiedUnlink(path, ownership, readOwnership, "Optimization unclaimed ownership")
+        throw error
+    }
+    return ownership
 }
 
 function releaseOwnership(ownership) {
     if (!ownership) return
     try {
-        const current = readOwnership(ownership.path)
-        if (current.pid === process.pid && current.token === ownership.token) {
-            unlinkSync(ownership.path)
-            fsyncDirectoryBestEffort(dirname(ownership.path))
-        }
+        verifiedUnlink(
+            ownership.path,
+            ownership,
+            readOwnership,
+            "Optimization ownership lock",
+        )
     } catch {}
+}
+
+function releaseTakeover(path, takeover) {
+    return verifiedUnlink(path, takeover, readTakeover, "Optimization takeover claim")
 }
 
 function verifyOwnership(ownership) {
@@ -475,9 +648,91 @@ function verifyOwnership(ownership) {
     } catch (error) {
         throw new Error(`Could not verify Optimization store ownership: ${error.message}`)
     }
-    if (current.pid !== process.pid || current.token !== ownership.token) {
+    if (current.pid !== process.pid || !sameControlIdentity(current, ownership)) {
         throw new Error("Optimization store ownership was lost")
     }
+}
+
+function acquireOwnership(storePath) {
+    const path = ownershipPath(storePath)
+    const claimPath = takeoverPath(path)
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+        try {
+            return createOwnership(path)
+        } catch (error) {
+            if (!["EEXIST", "EOWNERSHIPCLAIM"].includes(error?.code)) throw error
+        }
+        if (pathEntryExists(claimPath)) {
+            const claim = readTakeover(claimPath)
+            if (processIsAlive(claim.pid)) {
+                throw new Error(`Optimization ownership takeover is held by live process ${claim.pid}`)
+            }
+            verifiedUnlink(claimPath, claim, readTakeover, "Stale Optimization takeover claim")
+            continue
+        }
+        let owner
+        try {
+            owner = readOwnership(path)
+        } catch (error) {
+            if (error?.code === "ENOENT") continue
+            throw new Error(`Could not verify Optimization store owner: ${error.message}`)
+        }
+        if (owner.pid !== process.pid && processIsAlive(owner.pid)) {
+            throw new Error(`Optimization store is owned by live process ${owner.pid}`)
+        }
+        let takeover
+        try {
+            takeover = createTakeover(claimPath, owner)
+        } catch (error) {
+            if (error?.code !== "EEXIST") throw error
+            const claim = readTakeover(claimPath)
+            if (processIsAlive(claim.pid)) {
+                throw new Error(`Optimization ownership takeover is held by live process ${claim.pid}`)
+            }
+            verifiedUnlink(claimPath, claim, readTakeover, "Stale Optimization takeover claim")
+            continue
+        }
+        let currentOwner = null
+        try {
+            currentOwner = readOwnership(path)
+        } catch (error) {
+            if (error?.code !== "ENOENT") {
+                releaseTakeover(claimPath, takeover)
+                throw error
+            }
+        }
+        if (currentOwner !== null && !sameControlIdentity(currentOwner, owner)) {
+            releaseTakeover(claimPath, takeover)
+            if (currentOwner.pid !== process.pid && processIsAlive(currentOwner.pid)) {
+                throw new Error(`Optimization store is owned by live process ${currentOwner.pid}`)
+            }
+            continue
+        }
+        if (currentOwner !== null && !verifiedUnlink(
+            path,
+            owner,
+            readOwnership,
+            "Stale Optimization ownership lock",
+        )) {
+            releaseTakeover(claimPath, takeover)
+            continue
+        }
+        let ownership
+        try {
+            ownership = createOwnership(path, takeover)
+        } catch (error) {
+            releaseTakeover(claimPath, takeover)
+            if (["EEXIST", "EOWNERSHIPCLAIM"].includes(error?.code)) continue
+            throw error
+        }
+        if (!releaseTakeover(claimPath, takeover)) {
+            releaseOwnership(ownership)
+            throw new Error("Optimization takeover claim changed before release")
+        }
+        verifyOwnership(ownership)
+        return ownership
+    }
+    throw new Error("Could not acquire Optimization store ownership")
 }
 
 function initialState() {
@@ -675,7 +930,8 @@ function canonicalRun(value) {
         if (
             currentEpoch !== null &&
             !TERMINAL_EPOCH_STATES.has(currentEpoch.status) &&
-            currentEpoch.status !== run.state
+            currentEpoch.status !== run.state &&
+            !(run.state === "installing" && currentEpoch.status === "deciding")
         ) {
             throw new Error("Optimization Run phase does not match its current Epoch")
         }
@@ -702,6 +958,14 @@ function canonicalRun(value) {
     if (["deciding", "waiting_approval"].includes(run.state)) {
         if (currentEpoch.evaluationArtifactIds.length === 0) {
             throw new Error("Optimization deciding phase requires an evaluation artifact")
+        }
+    }
+    if (
+        run.state === "waiting_approval" ||
+        (run.state === "installing" && currentEpoch?.status === "deciding")
+    ) {
+        if (currentEpoch.analysisArtifactId === null || currentEpoch.decisionArtifactId === null) {
+            throw new Error("Optimization approval requires analysis and decision artifacts")
         }
     }
     for (const operation of run.operations) {
@@ -1138,9 +1402,34 @@ class OptimizationStore {
             throw new Error(`Invalid Optimization run transition: ${current.state} -> ${nextState}`)
         }
         const currentEpoch = current.epochs.at(-1) ?? null
+        const releaseInstallRecovery = current.state === "needs_recovery" &&
+            current.recovery?.previousState === "installing" &&
+            currentEpoch?.status === "deciding"
+        const approvedReleaseInstall = nextState === "installing" &&
+            currentEpoch?.status === "deciding" &&
+            (
+                current.state === "waiting_approval" ||
+                releaseInstallRecovery
+            )
+        if (
+            releaseInstallRecovery &&
+            !new Set(["installing", "restoring", "failed", "cancelled"]).has(nextState)
+        ) {
+            throw new Error("Optimization approved installation recovery cannot backtrack or skip phase")
+        }
         if (["installing", "evaluating", "deciding"].includes(nextState)) {
             if (currentEpoch === null || TERMINAL_EPOCH_STATES.has(currentEpoch.status)) {
                 throw new Error(`Optimization ${nextState} phase requires a nonterminal current Epoch`)
+            }
+            const allowedEpochStatuses = approvedReleaseInstall
+                ? new Set(["deciding"])
+                : new Map([
+                    ["installing", new Set(["editing", "installing"])],
+                    ["evaluating", new Set(["installing", "evaluating"])],
+                    ["deciding", new Set(["evaluating", "deciding"])],
+                ]).get(nextState)
+            if (!allowedEpochStatuses.has(currentEpoch.status)) {
+                throw new Error(`Optimization Epoch cannot backtrack or skip forward into ${nextState}`)
             }
             if (currentEpoch.candidateArtifactId === null) {
                 throw new Error("Optimization installing phase requires a Candidate artifact")
@@ -1151,12 +1440,24 @@ class OptimizationStore {
             if (nextState === "deciding" && currentEpoch.evaluationArtifactIds.length === 0) {
                 throw new Error("Optimization deciding phase requires an evaluation artifact")
             }
+            if (approvedReleaseInstall && (
+                currentEpoch.analysisArtifactId === null ||
+                currentEpoch.decisionArtifactId === null
+            )) {
+                throw new Error("Optimization approved installation requires analysis and decision artifacts")
+            }
         }
         if (nextState === "waiting_approval" && (
             currentEpoch === null ||
             currentEpoch.status !== "deciding"
         )) {
             throw new Error("Optimization approval requires a deciding current Epoch")
+        }
+        if (nextState === "waiting_approval" && (
+            currentEpoch.analysisArtifactId === null ||
+            currentEpoch.decisionArtifactId === null
+        )) {
+            throw new Error("Optimization approval requires analysis and decision artifacts")
         }
         if (nextState === "editing" && currentEpoch !== null && !TERMINAL_EPOCH_STATES.has(currentEpoch.status)) {
             throw new Error("Optimization must terminalize the current Epoch before returning to editing")
@@ -1170,7 +1471,7 @@ class OptimizationStore {
             const run = this.#requireRun(runId, state)
             const now = nowTimestamp()
             run.state = nextState
-            if (["installing", "evaluating", "deciding"].includes(nextState)) {
+            if (["installing", "evaluating", "deciding"].includes(nextState) && !approvedReleaseInstall) {
                 const epoch = run.epochs.at(-1)
                 epoch.status = nextState
                 epoch.updatedAt = now
@@ -1290,10 +1591,48 @@ class OptimizationStore {
         if (TERMINAL_EPOCH_STATES.has(epoch.status)) {
             throw new Error("A terminal Optimization epoch is append-only and immutable")
         }
+        const evidencePatch = {}
+        for (const field of EPOCH_EVIDENCE_FIELDS) {
+            if (Object.hasOwn(normalized.patch, field)) {
+                evidencePatch[field] = epochEvidencePatchValue(field, normalized.patch[field])
+            }
+        }
+        const frozenEvidence = current.state === "waiting_approval" ||
+            (epoch.status === "deciding" && (
+                current.state === "installing" ||
+                (
+                    current.state === "needs_recovery" &&
+                    current.recovery?.previousState === "installing"
+                )
+            ))
+        if (frozenEvidence) {
+            for (const [field, value] of Object.entries(evidencePatch)) {
+                if (!sameJson(value, epoch[field])) {
+                    throw new Error(`Optimization Epoch ${field} evidence is frozen and immutable`)
+                }
+            }
+        }
+        for (const field of ["candidateArtifactId", "analysisArtifactId", "decisionArtifactId"]) {
+            if (
+                Object.hasOwn(evidencePatch, field) &&
+                epoch[field] !== null &&
+                evidencePatch[field] !== epoch[field]
+            ) {
+                throw new Error(`Optimization Epoch ${field} is append-only and immutable`)
+            }
+        }
+        for (const field of ["installArtifactIds", "evaluationArtifactIds"]) {
+            if (
+                Object.hasOwn(evidencePatch, field) &&
+                !extendsArtifactSequence(epoch[field], evidencePatch[field])
+            ) {
+                throw new Error(`Optimization Epoch ${field} is append-only and immutable`)
+            }
+        }
         for (const field of IMMUTABLE_EPOCH_FIELDS.get(epoch.status) ?? []) {
             if (
-                Object.hasOwn(normalized.patch, field) &&
-                JSON.stringify(normalized.patch[field]) !== JSON.stringify(epoch[field])
+                Object.hasOwn(evidencePatch, field) &&
+                !sameJson(evidencePatch[field], epoch[field])
             ) {
                 throw new Error(`Optimization Epoch ${field} is append-only and immutable in ${epoch.status}`)
             }
