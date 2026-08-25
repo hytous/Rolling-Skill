@@ -13,6 +13,7 @@ const {
     createOperatorMessageSender,
     createOperatorSurfaceGate,
     createOperatorWorkbenchState,
+    operatorJobTreeIds,
     registerOperatorActionDelegates,
     transcriptEntryKey,
 } = require("../renderer/operator-workbench.js")
@@ -55,6 +56,18 @@ function event(id, sessionId = "session-1", jobId = "job-1") {
 }
 
 describe("Operator workbench state", () => {
+    it("bounds root approval actions to its persisted Job tree", () => {
+        assert.deepEqual([...operatorJobTreeIds({
+            job: {id: "job-root", childJobIds: ["job-child"]},
+            jobs: [
+                {id: "job-root", parentJobId: null, childJobIds: ["job-child"]},
+                {id: "job-child", parentJobId: "job-root", children: ["job-grandchild"]},
+                {id: "job-grandchild", parentJobId: "job-child", children: []},
+                {id: "job-foreign", parentJobId: null, children: []},
+            ],
+        })], ["job-root", "job-child", "job-grandchild"])
+    })
+
     it("offers only actions exposed to the Operator control catalog", () => {
         assert.deepEqual(OPERATOR_ACTIONS, [
             "context.read",
@@ -1253,11 +1266,17 @@ describe("Operator workbench coordination", () => {
             sessionActions: fakeEventTarget(),
         }
         let snapshot = {
-            job: {id: "job-1", status: "running"},
+            job: {id: "job-1", status: "running", childJobIds: ["job-child"]},
+            jobs: [
+                {id: "job-1", parentJobId: null, childJobIds: ["job-child"]},
+                {id: "job-child", parentJobId: "job-1", childJobIds: []},
+                {id: "job-foreign", parentJobId: null, childJobIds: []},
+            ],
             artifacts: [{id: "artifact-new", metadata: {datasetId: "dataset-new"}}],
             approvals: [
-                {id: "approval-1", jobId: "job-1", status: "pending"},
+                {id: "approval-1", jobId: "job-child", status: "pending"},
                 {id: "approval-2", jobId: "job-1", status: "pending"},
+                {id: "approval-foreign", jobId: "job-foreign", status: "pending"},
             ],
         }
         const calls = []
@@ -1305,6 +1324,11 @@ describe("Operator workbench coordination", () => {
         containers.approvals.dispatch("click", fakeActionButton(approvalSelector, {
             operatorApprovalDecision: "approve",
             operatorApprovalId: "forged",
+            operatorJobId: "job-1",
+        }))
+        containers.approvals.dispatch("click", fakeActionButton(approvalSelector, {
+            operatorApprovalDecision: "approve",
+            operatorApprovalId: "approval-foreign",
             operatorJobId: "job-1",
         }))
 

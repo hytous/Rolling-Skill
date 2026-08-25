@@ -170,11 +170,86 @@ async function persistRecoveryTree() {
             idempotencyKey: "restart-release",
             reservation: {},
         },
-        risk: "release_requires_human_approval",
+        risk: "release",
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
     })
     initialStore.close()
     return {registryPath, created, evaluationJob, evaluation, release, approval}
+}
+
+async function persistReleaseGate({
+    pauseParent = false,
+    decisionWithoutContinuation = null,
+    expired = false,
+} = {}) {
+    const directory = mkdtempSync(join(tmpdir(), "rolling-skill-operator-release-restart-"))
+    directories.push(directory)
+    const registryPath = join(directory, "operator-jobs.json")
+    const initialStore = new OperatorJobStore(registryPath)
+    const initialEngine = new OperatorJobEngine({store: initialStore})
+    const initialManager = managerFixture(initialStore, initialEngine)
+    const created = await initialManager.create({
+        runtimeId: runtime.runtimeId,
+        modelId: "gpt-5.6-sol",
+        effort: "high",
+        objective: "Resume only after the durable release gate settles",
+        actions: ["skills.release"],
+        scopes: {
+            skillIds: ["skill-1"],
+            datasetIds: [],
+            runtimeIds: [runtime.runtimeId],
+            repositoryIds: ["repository-1"],
+        },
+        budget,
+        expiresInMs: 60_000,
+    })
+    const releaseJob = initialStore.createJob({
+        sessionId: created.session.id,
+        parentJobId: created.parentJob.id,
+        type: "release",
+        objective: "Release candidate after human approval",
+        budget,
+    })
+    initialStore.transitionJob(releaseJob.id, "running")
+    const release = initialStore.createStep(releaseJob.id, {
+        method: "skills.release",
+        params: {
+            skillId: "skill-1",
+            versionId: "candidate-1",
+            versionLabel: "v1.0.0",
+        },
+        reservation: {},
+        idempotencyKey: "restart-release-gate",
+    })
+    initialStore.transitionStep(release.id, "waiting_approval")
+    initialStore.transitionJob(releaseJob.id, "waiting_approval")
+    const approval = initialStore.createApproval(releaseJob.id, {
+        stepId: release.id,
+        action: "skills.release",
+        scope: {skillIds: ["skill-1"]},
+        proposedMutation: {
+            method: "skills.release",
+            params: {
+                skillId: "skill-1",
+                versionId: "candidate-1",
+                versionLabel: "v1.0.0",
+            },
+            idempotencyKey: "restart-release-gate",
+            reservation: {},
+        },
+        risk: "release",
+        expiresAt: new Date(Date.now() + (expired ? -60_000 : 60_000)).toISOString(),
+    })
+    if (decisionWithoutContinuation !== null) {
+        initialStore.resolveApproval(approval.id, {
+            decision: decisionWithoutContinuation,
+            scope: "once",
+            decidedBy: "restart-integration",
+        })
+    }
+    if (pauseParent) await initialManager.pause(created.session.id)
+    initialStore.close()
+    return {registryPath, created, releaseJob, release, approval}
 }
 
 describe("Operator restart recovery integration", () => {
@@ -267,5 +342,111 @@ describe("Operator restart recovery integration", () => {
         assert.equal(runtimeClients, 0)
         assert.equal(releaseExecutions, 0)
         recoveredStore.close()
+    })
+
+    it("keeps a paused parent at its pending release gate without restoring a Runtime", async () => {
+        const {registryPath, created, release, approval} = await persistReleaseGate({pauseParent: true})
+        const recoveredStore = new OperatorJobStore(registryPath)
+        let releaseExecutions = 0
+        let runtimeClients = 0
+        const recoveredEngine = new OperatorJobEngine({
+            store: recoveredStore,
+            handlers: {
+                "skills.release": async () => {
+                    releaseExecutions += 1
+                    return {versionId: "candidate-1", versionLabel: "v1.0.0"}
+                },
+            },
+            reconcilers: {
+                release: async () => {
+                    releaseExecutions += 1
+                    return {status: "released", candidateId: "candidate-1", tag: "v1.0.0"}
+                },
+            },
+        })
+        const recoveredManager = managerFixture(recoveredStore, recoveredEngine, {
+            onCreateClient: () => { runtimeClients += 1 },
+        })
+
+        const resumed = await recoveredManager.restart(created.session.id)
+
+        assert.equal(resumed.parentJob.status, "waiting_approval")
+        assert.equal(resumed.state, "waiting_approval")
+        assert.equal(recoveredStore.getStep(release.id).status, "waiting_approval")
+        assert.equal(recoveredStore.getApproval(approval.id).status, "pending")
+        assert.equal(runtimeClients, 0)
+        assert.equal(releaseExecutions, 0)
+        recoveredStore.close()
+    })
+
+    it("continues an approved release Step left waiting by a crash exactly once", async () => {
+        const {registryPath, created, release, approval} = await persistReleaseGate({
+            decisionWithoutContinuation: "approve",
+        })
+        const recoveredStore = new OperatorJobStore(registryPath)
+        let releaseHandlerCalls = 0
+        let releaseReconciliations = 0
+        const recoveredEngine = new OperatorJobEngine({
+            store: recoveredStore,
+            handlers: {
+                "skills.release": async () => {
+                    releaseHandlerCalls += 1
+                    return {versionId: "candidate-1", versionLabel: "v1.0.0"}
+                },
+            },
+            reconcilers: {
+                release: async () => {
+                    releaseReconciliations += 1
+                    return {status: "released", candidateId: "candidate-1", tag: "v1.0.0"}
+                },
+            },
+        })
+        const recoveredManager = managerFixture(recoveredStore, recoveredEngine)
+
+        await recoveredManager.restart(created.session.id)
+
+        assert.equal(recoveredStore.getApproval(approval.id).status, "approved")
+        assert.equal(recoveredStore.getStep(release.id).status, "succeeded")
+        assert.equal(releaseHandlerCalls, 1)
+        assert.equal(releaseReconciliations, 0)
+        assert.ok(releaseHandlerCalls + releaseReconciliations <= 1)
+        recoveredStore.close()
+    })
+
+    it("settles rejected and expired release Steps left waiting by a crash", async () => {
+        for (const scenario of ["rejected", "expired"]) {
+            const {registryPath, created, release, approval} = await persistReleaseGate({
+                decisionWithoutContinuation: scenario === "rejected" ? "reject" : null,
+                expired: scenario === "expired",
+            })
+            const recoveredStore = new OperatorJobStore(registryPath)
+            let releaseExecutions = 0
+            const recoveredEngine = new OperatorJobEngine({
+                store: recoveredStore,
+                handlers: {
+                    "skills.release": async () => {
+                        releaseExecutions += 1
+                        return {versionId: "candidate-1", versionLabel: "v1.0.0"}
+                    },
+                },
+                reconcilers: {
+                    release: async () => {
+                        releaseExecutions += 1
+                        return {status: "released", candidateId: "candidate-1", tag: "v1.0.0"}
+                    },
+                },
+            })
+            const recoveredManager = managerFixture(recoveredStore, recoveredEngine)
+
+            await recoveredManager.restart(created.session.id)
+
+            assert.equal(recoveredStore.getApproval(approval.id).status, "rejected", scenario)
+            assert.equal(recoveredStore.getStep(release.id).status, "failed", scenario)
+            assert.equal(recoveredStore.getStep(release.id).error.code, (
+                scenario === "expired" ? "APPROVAL_EXPIRED" : "APPROVAL_REJECTED"
+            ))
+            assert.equal(releaseExecutions, 0, scenario)
+            recoveredStore.close()
+        }
     })
 })

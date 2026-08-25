@@ -1489,11 +1489,29 @@ class OperatorSessionManager {
             }
         }
         for (const job of ordered) {
-            if (!TERMINAL_JOB_STATUSES.has(this.#store.getJob(job.id).status)) {
+            let current = this.#store.getJob(job.id)
+            if (current.status === "paused" || current.status === "queued") {
+                current = this.#store.transitionJob(current.id, "running")
+            }
+            if (!TERMINAL_JOB_STATUSES.has(current.status)) {
+                if (typeof this.#engine.expireApprovals === "function") {
+                    await this.#engine.expireApprovals(current.id)
+                }
                 await this.#engine.reconcile(job.id)
             }
         }
-        const hasUnknownRecovery = ordered.some((job) => (
+        const steps = ordered.flatMap((job) => this.#store.listSteps({jobId: job.id}))
+        const approvals = ordered.flatMap((job) => this.#store.listApprovals(job.id))
+        const pendingApprovals = approvals.filter((approval) => approval.status === "pending")
+        const pendingStepIds = new Set(pendingApprovals.map((approval) => approval.stepId))
+        const invalidPendingApproval = pendingApprovals.some((approval) => (
+            approval.stepId === null ||
+            this.#store.getStep(approval.stepId).status !== "waiting_approval"
+        ))
+        const unresolvedWaitingStep = steps.some((step) => (
+            step.status === "waiting_approval" && !pendingStepIds.has(step.id)
+        ))
+        const hasUnknownRecovery = invalidPendingApproval || unresolvedWaitingStep || ordered.some((job) => (
             this.#store.getJob(job.id).status === "needs_recovery" ||
             this.#store.listSteps({jobId: job.id}).some((step) => step.status === "needs_recovery")
         ))
@@ -1504,13 +1522,12 @@ class OperatorSessionManager {
             }
             throw new Error("Operator session cannot resume while needs_recovery")
         }
-        const pendingApproval = jobs.some((job) => (
-            !TERMINAL_JOB_STATUSES.has(this.#store.getJob(job.id).status) &&
-            this.#store.listApprovals(job.id).some((approval) => approval.status === "pending")
-        ))
-        if (pendingApproval && recoveredParent.status === "running") {
-            this.#store.transitionJob(recoveredParent.id, "waiting_approval")
+        if (pendingApprovals.length > 0) {
+            if (recoveredParent.status === "running") {
+                this.#store.transitionJob(recoveredParent.id, "waiting_approval")
+            }
         }
+        return {pendingApproval: pendingApprovals.length > 0}
     }
 
     async #restore(sessionId) {
@@ -1525,11 +1542,17 @@ class OperatorSessionManager {
             throw new Error("Operator session has no supported durable configuration")
         }
         const wasSessionPaused = sessionIsPaused(session)
-        await this.#reconcile(session, parentJob)
+        const recovery = await this.#reconcile(session, parentJob)
         if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped")
         parentJob = this.#store.getJob(parentJob.id)
         if (parentJob.status === "paused") parentJob = this.#store.transitionJob(parentJob.id, "running")
         if (parentJob.status === "queued") parentJob = this.#store.transitionJob(parentJob.id, "running")
+        if (parentJob.status === "waiting_approval" && recovery.pendingApproval) {
+            if (wasSessionPaused) {
+                this.#store.appendSessionTranscript(session.id, {kind: "operator_session_resumed"})
+            }
+            return this.get(sessionId)
+        }
         if (parentJob.status !== "running" && parentJob.status !== "waiting_approval") {
             throw new Error(`Operator session cannot resume while ${parentJob.status}`)
         }

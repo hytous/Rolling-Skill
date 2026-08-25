@@ -1046,6 +1046,35 @@
         return actions
     }
 
+    function operatorJobTreeIds(snapshot) {
+        const rootId = snapshot?.job?.id
+        if (!rootId) return new Set()
+        const jobs = new Map((snapshot.jobs ?? []).filter((job) => job?.id).map((job) => [job.id, job]))
+        if (!jobs.has(rootId)) jobs.set(rootId, snapshot.job)
+        const childrenByParent = new Map()
+        for (const job of jobs.values()) {
+            if (!job.parentJobId) continue
+            if (!childrenByParent.has(job.parentJobId)) childrenByParent.set(job.parentJobId, [])
+            childrenByParent.get(job.parentJobId).push(job.id)
+        }
+        const ids = new Set([rootId])
+        const pending = [rootId]
+        for (let index = 0; index < pending.length; index += 1) {
+            const parentId = pending[index]
+            const parent = jobs.get(parentId)
+            const children = new Set([
+                ...(parent?.childJobIds ?? parent?.children ?? []),
+                ...(childrenByParent.get(parentId) ?? []),
+            ])
+            for (const childId of children) {
+                if (!jobs.has(childId) || ids.has(childId)) continue
+                ids.add(childId)
+                pending.push(childId)
+            }
+        }
+        return ids
+    }
+
     function registerOperatorActionDelegates(options = {}) {
         const listen = options.listen
         const containers = options.containers ?? {}
@@ -1075,6 +1104,7 @@
         listen(containers.approvals, "click", (event) => {
             const snapshot = getActiveSnapshot()
             if (!snapshot) return
+            const currentJobIds = operatorJobTreeIds(snapshot)
             const decisionButton = event?.target?.closest?.(
                 "[data-operator-approval-decision][data-operator-approval-id][data-operator-job-id]",
             )
@@ -1085,7 +1115,7 @@
                 const approval = snapshot.approvals.find((entry) => (
                     entry.id === decisionButton.dataset.operatorApprovalId &&
                     entry.status === "pending" &&
-                    (entry.jobId ?? jobId) === jobId
+                    currentJobIds.has(entry.jobId ?? jobId)
                 ))
                 if (approval) void onResolveApproval(approval.id, decision)
                 return
@@ -1094,7 +1124,7 @@
             const jobId = approveJobButton?.dataset.operatorApproveJob
             if (jobId !== snapshot.job.id) return
             const pending = snapshot.approvals.filter((entry) => (
-                entry.status === "pending" && (entry.jobId ?? jobId) === jobId
+                entry.status === "pending" && currentJobIds.has(entry.jobId ?? jobId)
             ))
             if (pending.length > 1) void onApproveCurrentJob(jobId)
         })
@@ -1806,7 +1836,10 @@
             if (destroyed) return
             const snapshot = state.getSnapshot(jobId)
             if (!snapshot) return
-            for (const approval of snapshot.approvals.filter((entry) => entry.status === "pending")) {
+            const currentJobIds = operatorJobTreeIds(snapshot)
+            for (const approval of snapshot.approvals.filter((entry) => (
+                entry.status === "pending" && currentJobIds.has(entry.jobId ?? jobId)
+            ))) {
                 await resolveApproval(approval.id, "approve")
             }
         }
@@ -1995,6 +2028,7 @@
         createOperatorSurfaceGate,
         createOperatorWorkbench,
         createOperatorWorkbenchState,
+        operatorJobTreeIds,
         registerOperatorActionDelegates,
         transcriptEntryKey,
     }

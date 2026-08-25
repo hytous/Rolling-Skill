@@ -7,9 +7,371 @@ const {
     parseControlInput,
     parseControlOutput,
 } = require("../src/control-plane/contracts.cjs")
+const {OperatorJobEngine} = require("../src/operator/job-engine.cjs")
+const {OperatorJobStore} = require("../src/operator/job-store.cjs")
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-renderer-smoke-"))
 app.setPath("userData", join(temporaryDirectory, "profile"))
+let operatorFixture = null
+
+function operatorBudget() {
+    return {
+        maxDurationMs: 3_600_000,
+        maxRuntimeTurns: 20,
+        maxEvaluations: 5,
+        maxTargetExecutions: 50,
+        maxJudgeExecutions: 20,
+        maxTokens: null,
+        maxReportedCost: null,
+    }
+}
+
+function operatorRuntime() {
+    return {
+        runtimeId: "codex:renderer-smoke",
+        providerId: "codex",
+        displayName: "Codex",
+        version: "smoke",
+    }
+}
+
+function publicOperatorSession(session) {
+    return {
+        id: session.id,
+        runtime: session.runtime,
+        modelId: session.modelId,
+        effort: session.effort,
+        protocol: session.protocol,
+        transcriptSequence: session.transcriptSequence,
+        transcript: session.transcript,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        closedAt: session.closedAt,
+    }
+}
+
+function publicOperatorJob(job) {
+    return {
+        id: job.id,
+        sessionId: job.sessionId,
+        parentJobId: job.parentJobId,
+        type: job.type,
+        objective: job.objective,
+        budget: job.budget,
+        status: job.status,
+        childJobIds: job.children,
+        artifactIds: job.artifactIds,
+        approvalIds: job.approvalIds,
+        checkpoint: job.checkpoint,
+        error: job.error,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt,
+    }
+}
+
+function publicOperatorApproval(approval) {
+    return {
+        id: approval.id,
+        jobId: approval.jobId,
+        sessionId: approval.sessionId,
+        stepId: approval.stepId,
+        action: approval.action,
+        scope: approval.scope,
+        risk: approval.risk,
+        expiresAt: approval.expiresAt,
+        status: approval.status,
+        decision: approval.decision,
+        decisionScope: approval.decisionScope,
+        decidedBy: approval.decidedBy,
+        createdAt: approval.createdAt,
+        resolvedAt: approval.resolvedAt,
+    }
+}
+
+function createOperatorFixture() {
+    const registryFile = join(temporaryDirectory, "operator-jobs.json")
+    let store = new OperatorJobStore(registryFile)
+    let engine = createEngine()
+    let fixtureIds = null
+    let pagingRecordsPopulated = false
+    let approvalCalls = 0
+    let stopCalls = 0
+    const summaryPageCalls = []
+    const artifacts = []
+
+    function createEngine() {
+        return new OperatorJobEngine({
+            store,
+            handlers: {
+                "skills.release": async () => ({
+                    versionId: "managed-version-smoke",
+                    versionLabel: "v1.0.0",
+                }),
+            },
+        })
+    }
+
+    function createSession() {
+        return store.createSession({
+            runtime: operatorRuntime(),
+            modelId: "gpt-5.6-sol",
+            effort: "high",
+            protocol: "rolling-skill-operator/v1",
+            capabilityId: "renderer-smoke-capability",
+        })
+    }
+
+    function appendTranscript(sessionId, jobId, contents) {
+        store.appendSessionTranscript(sessionId, {
+            kind: "operator_session_configuration",
+            scopes: {
+                skillIds: ["managed-skill-smoke"],
+                datasetIds: ["dataset-smoke"],
+                runtimeIds: ["codex:renderer-smoke"],
+                repositoryIds: ["managed-repository-smoke"],
+            },
+        })
+        for (const content of contents) {
+            store.appendSessionTranscript(sessionId, {
+                kind: "message",
+                jobId,
+                role: "assistant",
+                content,
+            })
+        }
+    }
+
+    async function initialize() {
+        const runningSession = createSession()
+        const runningJob = store.createJob({
+            sessionId: runningSession.id,
+            type: "operator-session",
+            objective: "Running Operator smoke Job",
+            budget: operatorBudget(),
+        })
+        store.transitionJob(runningJob.id, "running")
+        appendTranscript(
+            runningSession.id,
+            runningJob.id,
+            Array.from({length: 14}, (_unused, index) => `Running fixture output ${index}`),
+        )
+
+        const streamingSession = createSession()
+        const streamingJob = store.createJob({
+            sessionId: streamingSession.id,
+            type: "operator-session",
+            objective: "Hidden streaming Operator smoke Job",
+            budget: operatorBudget(),
+        })
+        store.transitionJob(streamingJob.id, "running")
+        appendTranscript(
+            streamingSession.id,
+            streamingJob.id,
+            Array.from({length: 30}, (_unused, index) => `Hidden fixture output ${index}`),
+        )
+
+        const waitingSession = createSession()
+        const waitingJob = store.createJob({
+            sessionId: waitingSession.id,
+            type: "operator-session",
+            objective: "Release candidate after evaluation",
+            budget: operatorBudget(),
+        })
+        store.transitionJob(waitingJob.id, "running")
+        const evaluationJob = store.createJob({
+            sessionId: waitingSession.id,
+            parentJobId: waitingJob.id,
+            type: "evaluation",
+            objective: "Evaluation 1/2",
+            budget: operatorBudget(),
+        })
+        store.transitionJob(evaluationJob.id, "running")
+        const evaluationStep = store.createStep(evaluationJob.id, {
+            method: "evaluations.start",
+            params: {
+                runId: "run-smoke",
+                datasetId: "dataset-smoke",
+                selectionMode: "selected",
+                caseIds: ["case-smoke"],
+                runtimeConfigurations: [{runtimeId: "codex:renderer-smoke"}],
+            },
+            reservation: {evaluations: 1, targetExecutions: 1},
+            idempotencyKey: "renderer-smoke-evaluation",
+        })
+        store.transitionStep(evaluationStep.id, "running")
+        const releaseJob = store.createJob({
+            sessionId: waitingSession.id,
+            parentJobId: waitingJob.id,
+            type: "release",
+            objective: "Release approved candidate",
+            budget: operatorBudget(),
+        })
+        const releaseGate = await engine.execute(releaseJob.id, {
+            method: "skills.release",
+            params: {
+                skillId: "managed-skill-smoke",
+                versionId: "managed-version-smoke",
+                versionLabel: "v1.0.0",
+            },
+            idempotencyKey: "renderer-smoke-release",
+        })
+        store.transitionJob(waitingJob.id, "waiting_approval")
+        appendTranscript(
+            waitingSession.id,
+            waitingJob.id,
+            ["Candidate evaluation finished; release is waiting for approval."],
+        )
+
+        fixtureIds = {
+            runningSessionId: runningSession.id,
+            runningJobId: runningJob.id,
+            streamingSessionId: streamingSession.id,
+            streamingJobId: streamingJob.id,
+            waitingSessionId: waitingSession.id,
+            waitingJobId: waitingJob.id,
+            evaluationJobId: evaluationJob.id,
+            evaluationStepId: evaluationStep.id,
+            releaseJobId: releaseJob.id,
+            approvalId: releaseGate.approvalId,
+        }
+        artifacts.push({
+            id: "operator-artifact-report",
+            jobId: waitingJob.id,
+            kind: "evaluation-report",
+            name: "Evaluation report",
+            mediaType: "application/json",
+            byteLength: 128,
+            sha256: "a".repeat(64),
+            metadata: {
+                datasetId: "dataset-smoke",
+                evaluationId: "run-smoke",
+                candidateId: "managed-version-smoke",
+            },
+            createdAt: "2026-08-24T08:00:01.500Z",
+        })
+    }
+
+    function changedPayload(jobId = null) {
+        return {
+            generation: store.generation,
+            revision: store.revision,
+            ...(jobId ? {job: publicOperatorJob(store.getJob(jobId))} : {invalidate: true}),
+        }
+    }
+
+    const ready = initialize()
+    return {
+        ready,
+        async invoke(method, input = {}) {
+            await ready
+            switch (method) {
+            case "bootstrap":
+                return store.readSummaryPage({cursor: null, limit: 100})
+            case "read-summary":
+                summaryPageCalls.push({cursor: input.cursor ?? null, limit: input.limit ?? 100})
+                return store.readSummaryPage({cursor: input.cursor ?? null, limit: input.limit ?? 100})
+            case "get-session": {
+                const session = store.getSession(input.sessionId)
+                const parentJob = store.listJobs({
+                    sessionId: input.sessionId,
+                    parentJobId: null,
+                }).find((entry) => entry.parentJobId === null)
+                if (!parentJob) throw new Error("Unknown smoke Operator session")
+                return {
+                    session: publicOperatorSession(session),
+                    parentJob: publicOperatorJob(parentJob),
+                    runtimeThreadId: `runtime-thread-${input.sessionId}`,
+                    transport: {kind: "codex-dynamic", ready: true},
+                    state: "idle",
+                }
+            }
+            case "pause":
+                return publicOperatorJob(store.transitionJob(input.jobId, "paused"))
+            case "resume":
+                return publicOperatorJob(store.transitionJob(input.jobId, "running"))
+            case "stop":
+                stopCalls += 1
+                store.beginCancellation(input.jobId)
+                return publicOperatorJob(store.cancelJobTree(input.jobId).job)
+            case "resolve-approval": {
+                approvalCalls += 1
+                const execution = await engine.resolveApproval(input.approvalId, {
+                    decision: input.decision,
+                    scope: "once",
+                    decidedBy: "renderer-smoke",
+                })
+                return {
+                    approval: publicOperatorApproval(store.getApproval(input.approvalId)),
+                    execution,
+                }
+            }
+            case "list-artifacts": {
+                const offset = input.cursor === null ? 0 : Number(input.cursor)
+                const matches = artifacts.filter((entry) => entry.jobId === input.jobId)
+                const end = Math.min(offset + input.limit, matches.length)
+                return {artifacts: matches.slice(offset, end), nextCursor: end < matches.length ? end : null}
+            }
+            case "emit-hidden": {
+                const event = store.appendEvent(fixtureIds.streamingJobId, {
+                    kind: "message",
+                    sessionId: fixtureIds.streamingSessionId,
+                    role: "assistant",
+                    content: "Hidden streamed output after bootstrap",
+                })
+                return {generation: store.generation, revision: store.revision, event}
+            }
+            case "emit-gap":
+                store.appendSessionTranscript(fixtureIds.streamingSessionId, {
+                    kind: "message",
+                    jobId: fixtureIds.streamingJobId,
+                    role: "assistant",
+                    content: "Gap catch-up output",
+                })
+                store.appendEvent(fixtureIds.streamingJobId, {kind: "progress", completed: 1})
+                store.appendEvent(fixtureIds.streamingJobId, {kind: "progress", completed: 2})
+                return changedPayload(fixtureIds.streamingJobId)
+            case "restart":
+                store.close()
+                store = new OperatorJobStore(registryFile)
+                engine = createEngine()
+                for (const jobId of [
+                    fixtureIds.runningJobId,
+                    fixtureIds.streamingJobId,
+                    fixtureIds.evaluationJobId,
+                ]) {
+                    if (store.getJob(jobId).status === "needs_recovery") {
+                        store.transitionJob(jobId, "running")
+                    }
+                }
+                return changedPayload()
+            case "populate-pages":
+                if (!pagingRecordsPopulated) {
+                    for (let index = 0; index < 90; index += 1) {
+                        const terminal = store.createJob({
+                            sessionId: fixtureIds.runningSessionId,
+                            parentJobId: fixtureIds.runningJobId,
+                            type: "fixture-history",
+                            objective: `Completed fixture history ${index}`,
+                            budget: operatorBudget(),
+                        })
+                        store.transitionJob(terminal.id, "cancelled")
+                    }
+                    pagingRecordsPopulated = true
+                }
+                return changedPayload()
+            case "metrics":
+                return {summaryPageCalls, approvalCalls, stopCalls, fixtureIds}
+            default:
+                throw new Error(`Unknown smoke Operator method: ${method}`)
+            }
+        },
+        close() {
+            store.close()
+        },
+    }
+}
 
 async function waitFor(window, expression, timeoutMs = 5_000) {
     const deadline = Date.now() + timeoutMs
@@ -34,10 +396,22 @@ async function inspect(window, expression) {
 
 async function run() {
     await app.whenReady()
+    operatorFixture = createOperatorFixture()
+    await operatorFixture.ready
     ipcMain.handle("smoke:parse-control-input", (_event, {method, value}) =>
         parseControlInput(method, value))
     ipcMain.handle("smoke:parse-control-output", (_event, {method, value}) =>
         parseControlOutput(method, value))
+    ipcMain.handle("smoke:operator", async (_event, {method, input}) => {
+        try {
+            return {ok: true, value: await operatorFixture.invoke(method, input)}
+        } catch (error) {
+            return {
+                ok: false,
+                error: {message: error.message, code: error.code ?? null},
+            }
+        }
+    })
     const rendererErrors = []
     const window = new BrowserWindow({
         width: Number(process.env.ROLLING_SKILL_RENDERER_SMOKE_WIDTH) || 1_180,
@@ -1128,27 +1502,96 @@ async function run() {
         draft: document.querySelector("#composer-input").value,
     }))()`)
 
-    await inspect(window, 'document.querySelector("[data-surface=operator]").click()')
     const operatorBootstrapProjection = await inspect(window, `(async () => {
-        const snapshot = await window.rollingSkill.bootstrapOperator()
-        const session = snapshot.sessions[0]
-        const parent = snapshot.jobs.find((job) => job.id === "operator-job-waiting")
+        await window.rollingSkill.smokePopulateOperatorPagingRecords()
+        async function collect(limit) {
+            const records = {sessions: [], jobs: [], steps: [], approvals: []}
+            const pages = []
+            let cursor = null
+            do {
+                const page = await window.rollingSkill.readOperatorSummaryPage(cursor, limit)
+                const count = ["sessions", "jobs", "steps", "approvals"]
+                    .reduce((sum, key) => sum + page[key].length, 0)
+                pages.push({
+                    generation: page.generation,
+                    revision: page.revision,
+                    count,
+                    truncated: page.truncated,
+                    nextCursor: page.nextCursor,
+                })
+                for (const key of Object.keys(records)) records[key].push(...page[key])
+                cursor = page.nextCursor
+                if (pages.length > 500) throw new Error("Operator summary paging did not converge")
+            } while (cursor !== null)
+            return {records, pages}
+        }
+        const limitOne = await collect(1)
+        const limitSeven = await collect(7)
+        const first = limitOne.pages[0]
+        const secondWithDifferentLimit = await window.rollingSkill.readOperatorSummaryPage(
+            first.nextCursor,
+            3,
+        )
+        const session = limitOne.records.sessions[0]
+        const parent = limitOne.records.jobs.find((job) => job.objective === "Release candidate after evaluation")
+        const approval = limitOne.records.approvals[0]
+        const expectedRecords = Object.values(limitOne.records)
+            .reduce((sum, records) => sum + records.length, 0)
+        const totals = Object.values((await window.rollingSkill.bootstrapOperator()).totals)
+            .reduce((sum, count) => sum + count, 0)
         return {
-            generationIsUuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
-                .test(snapshot.generation),
+            generationIsUuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(first.generation),
+            limitOneExact: limitOne.pages.every((page) => page.count === 1),
+            differentLimitCursor: secondWithDifferentLimit.generation === first.generation &&
+                secondWithDifferentLimit.revision === first.revision &&
+                ["sessions", "jobs", "steps", "approvals"].reduce((sum, key) => (
+                    sum + secondWithDifferentLimit[key].length
+                ), 0) === 3,
+            boundedRealPages: limitSeven.pages.length > 1 &&
+                limitSeven.pages.length < limitOne.pages.length &&
+                limitSeven.pages.every((page) => page.count >= 1 && page.count <= 7) &&
+                limitSeven.pages.at(-1).truncated === false &&
+                limitSeven.pages.at(-1).nextCursor === null,
+            allRecords: expectedRecords === totals,
             sessionIsSummary: Number.isSafeInteger(session?.transcriptSequence) &&
                 !Object.hasOwn(session ?? {}, "transcript"),
-            jobIsPublic: Array.isArray(parent?.childJobIds) &&
-                !Object.hasOwn(parent ?? {}, "children") &&
+            jobIsPublic: Array.isArray(parent?.children) &&
                 !Object.hasOwn(parent ?? {}, "result"),
+            approvalIsPublic: approval?.status === "pending" &&
+                !Object.hasOwn(approval ?? {}, "proposedMutation"),
         }
     })()`)
     if (!Object.values(operatorBootstrapProjection).every(Boolean)) {
         throw new Error(`Operator bootstrap fixture is not the main public projection: ${JSON.stringify(operatorBootstrapProjection)}`)
     }
+    const staleGenerationProbe = await inspect(window, `(async () => {
+        const before = await window.rollingSkill.readOperatorSummaryPage(null, 1)
+        await window.rollingSkill.smokeRestartOperatorStore()
+        let staleCode = null
+        try {
+            await window.rollingSkill.readOperatorSummaryPage(before.nextCursor, 1)
+        } catch (error) {
+            staleCode = error?.code ?? null
+        }
+        const after = await window.rollingSkill.readOperatorSummaryPage(null, 1)
+        return {changed: before.generation !== after.generation, staleCode}
+    })()`)
+    if (!staleGenerationProbe.changed || staleGenerationProbe.staleCode !== "OPERATOR_SNAPSHOT_CHANGED") {
+        throw new Error(`Operator Store generation cursor did not fail stale: ${JSON.stringify(staleGenerationProbe)}`)
+    }
+    const operatorFixtureIds = await inspect(
+        window,
+        'window.rollingSkill.smokeOperatorMetrics().then(({fixtureIds}) => fixtureIds)',
+    )
+    const runningJobSelector = `[data-operator-job-id="${operatorFixtureIds.runningJobId}"]`
+    const streamingJobSelector = `[data-operator-job-id="${operatorFixtureIds.streamingJobId}"]`
+    const waitingJobSelector = `[data-operator-job-id="${operatorFixtureIds.waitingJobId}"]`
+    const approvalSelector = `[data-operator-approval-id="${operatorFixtureIds.approvalId}"]`
+
+    await inspect(window, 'document.querySelector("[data-surface=operator]").click()')
     await waitFor(
         window,
-        'document.querySelector("[data-operator-job-id=operator-job-running].active") && document.querySelector("#operator-transcript").textContent.includes("Running fixture output 0")',
+        `document.querySelector(${JSON.stringify(`${runningJobSelector}.active`)}) && document.querySelector("#operator-transcript").textContent.includes("Running fixture output 0")`,
     )
     const activeOperatorDomBeforeHiddenDelta = await inspect(
         window,
@@ -1158,7 +1601,7 @@ async function run() {
     await new Promise((resolve) => setTimeout(resolve, 100))
     const hiddenOperatorIsolation = await inspect(window, `(() => ({
         activeDom: document.querySelector("#operator-transcript").innerHTML,
-        hiddenUnread: Number(document.querySelector("[data-operator-job-id=operator-job-streaming] .operator-job-unread")?.textContent ?? 0),
+        hiddenUnread: Number(document.querySelector(${JSON.stringify(`${streamingJobSelector} .operator-job-unread`)})?.textContent ?? 0),
     }))()`)
     if (
         hiddenOperatorIsolation.activeDom !== activeOperatorDomBeforeHiddenDelta ||
@@ -1173,10 +1616,10 @@ async function run() {
         input.dispatchEvent(new Event("input", {bubbles: true}))
         document.querySelector("#operator-transcript").scrollTop = 120
     })()`)
-    await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-streaming]").click()')
+    await inspect(window, `document.querySelector(${JSON.stringify(streamingJobSelector)}).click()`)
     await waitFor(
         window,
-        'document.querySelector("[data-operator-job-id=operator-job-streaming].active") && document.querySelector("#operator-transcript").textContent.includes("Hidden streamed output after bootstrap")',
+        `document.querySelector(${JSON.stringify(`${streamingJobSelector}.active`)}) && document.querySelector("#operator-transcript").textContent.includes("Hidden streamed output after bootstrap")`,
     )
     const hiddenCatchUp = await inspect(window, `(() => ({
         complete: ["Hidden fixture output 0", "Hidden fixture output 11", "Hidden streamed output after bootstrap"]
@@ -1192,12 +1635,12 @@ async function run() {
         input.dispatchEvent(new Event("input", {bubbles: true}))
         document.querySelector("#operator-transcript").scrollTop = 96
     })()`)
-    await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-running]").click()')
+    await inspect(window, `document.querySelector(${JSON.stringify(runningJobSelector)}).click()`)
     await waitFor(
         window,
         'document.querySelector("#operator-composer-input").value === "running job draft" && Math.abs(document.querySelector("#operator-transcript").scrollTop - 120) <= 2',
     )
-    await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-streaming]").click()')
+    await inspect(window, `document.querySelector(${JSON.stringify(streamingJobSelector)}).click()`)
     await waitFor(
         window,
         'document.querySelector("#operator-composer-input").value === "hidden job draft" && Math.abs(document.querySelector("#operator-transcript").scrollTop - 96) <= 2',
@@ -1205,15 +1648,15 @@ async function run() {
 
     const gapCallsBefore = await inspect(
         window,
-        'window.rollingSkill.smokeOperatorMetrics().summaryPageCalls.length',
+        'window.rollingSkill.smokeOperatorMetrics().then(({summaryPageCalls}) => summaryPageCalls.length)',
     )
     await inspect(window, 'window.rollingSkill.smokeEmitOperatorGap()')
     await waitFor(
         window,
         'document.querySelector("#operator-transcript").textContent.includes("Gap catch-up output")',
     )
-    const operatorGapMetrics = await inspect(window, `(() => {
-        const metrics = window.rollingSkill.smokeOperatorMetrics()
+    const operatorGapMetrics = await inspect(window, `(async () => {
+        const metrics = await window.rollingSkill.smokeOperatorMetrics()
         const calls = metrics.summaryPageCalls.slice(${gapCallsBefore})
         return {
             calls: calls.length,
@@ -1234,30 +1677,43 @@ async function run() {
     }
 
     for (let index = 0; index < 4; index += 1) {
-        await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-waiting]").click()')
-        await waitFor(window, 'document.querySelector("[data-operator-job-id=operator-job-waiting].active")')
-        await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-running]").click()')
-        await waitFor(window, 'document.querySelector("[data-operator-job-id=operator-job-running].active")')
+        await inspect(window, `document.querySelector(${JSON.stringify(waitingJobSelector)}).click()`)
+        await waitFor(window, `document.querySelector(${JSON.stringify(`${waitingJobSelector}.active`)})`)
+        await inspect(window, `document.querySelector(${JSON.stringify(runningJobSelector)}).click()`)
+        await waitFor(window, `document.querySelector(${JSON.stringify(`${runningJobSelector}.active`)})`)
     }
-    await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-waiting]").click()')
+    await inspect(window, `document.querySelector(${JSON.stringify(waitingJobSelector)}).click()`)
     await waitFor(
         window,
-        'document.querySelector("[data-operator-approval-id=operator-approval-release] [data-operator-approval-decision=approve]") && document.querySelector("#operator-child-jobs").textContent.includes("Evaluation 1/2") && document.querySelector("[data-operator-artifact-id=operator-artifact-report]")',
+        `document.querySelector(${JSON.stringify(`${approvalSelector} [data-operator-approval-decision="approve"]`)}) && document.querySelector("#operator-child-jobs").textContent.includes("Evaluation 1/2") && document.querySelector("[data-operator-artifact-id=operator-artifact-report]")`,
     )
-    await inspect(window, 'document.querySelector("[data-operator-approval-id=operator-approval-release] [data-operator-approval-decision=approve]").click()')
-    await waitFor(
-        window,
-        'document.querySelector("[data-operator-approval-id=operator-approval-release] .operator-approval-status").textContent === "approved"',
-    )
-    if ((await inspect(window, 'window.rollingSkill.smokeOperatorMetrics().approvalCalls')) !== 1) {
+    await inspect(window, `document.querySelector(${JSON.stringify(`${approvalSelector} [data-operator-approval-decision="approve"]`)}).click()`)
+    try {
+        await waitFor(
+            window,
+            `document.querySelector(${JSON.stringify(`${approvalSelector} .operator-approval-status`)}).textContent === "approved"`,
+        )
+    } catch (error) {
+        const approvalDiagnostic = await inspect(window, `(async () => {
+            const page = await window.rollingSkill.readOperatorSummaryPage(null, 100)
+            return {
+                domStatus: document.querySelector(${JSON.stringify(`${approvalSelector} .operator-approval-status`)})?.textContent ?? null,
+                storeStatus: page.approvals.find((entry) => entry.id === ${JSON.stringify(operatorFixtureIds.approvalId)})?.status ?? null,
+                approvalCalls: (await window.rollingSkill.smokeOperatorMetrics()).approvalCalls,
+            }
+        })()`)
+        throw new Error(`Operator approval did not patch active DOM: ${JSON.stringify(approvalDiagnostic)}`, {cause: error})
+    }
+    if ((await inspect(window, 'window.rollingSkill.smokeOperatorMetrics().then(({approvalCalls}) => approvalCalls)')) !== 1) {
         throw new Error("Dynamic Operator approval buttons accumulated listeners")
     }
 
-    await inspect(window, 'document.querySelector("[data-operator-job-id=operator-job-running]").click()')
-    await waitFor(window, 'document.querySelector("[data-operator-job-action=stop][data-operator-job-id=operator-job-running]")')
-    await inspect(window, 'document.querySelector("[data-operator-job-action=stop][data-operator-job-id=operator-job-running]").click()')
+    await inspect(window, `document.querySelector(${JSON.stringify(runningJobSelector)}).click()`)
+    const stopSelector = `${runningJobSelector}[data-operator-job-action="stop"]`
+    await waitFor(window, `document.querySelector(${JSON.stringify(stopSelector)})`)
+    await inspect(window, `document.querySelector(${JSON.stringify(stopSelector)}).click()`)
     await waitFor(window, 'document.querySelector("#operator-session-state").textContent === "cancelled"')
-    if ((await inspect(window, 'window.rollingSkill.smokeOperatorMetrics().stopCalls')) !== 1) {
+    if ((await inspect(window, 'window.rollingSkill.smokeOperatorMetrics().then(({stopCalls}) => stopCalls)')) !== 1) {
         throw new Error("Dynamic Operator control buttons accumulated listeners")
     }
 
@@ -1439,11 +1895,13 @@ async function run() {
 
 run()
     .then(() => {
+        operatorFixture?.close()
         rmSync(temporaryDirectory, {recursive: true, force: true})
         app.quit()
     })
     .catch((error) => {
         process.stderr.write(`${error.stack || error.message}\n`)
+        operatorFixture?.close()
         rmSync(temporaryDirectory, {recursive: true, force: true})
         app.exit(1)
     })

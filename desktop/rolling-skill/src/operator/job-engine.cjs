@@ -1429,7 +1429,9 @@ class OperatorJobEngine {
 
     async #reconcile(jobId, signal) {
         let job = this.#store.getJob(jobId)
-        if (job.status !== "needs_recovery") return {status: job.status, jobId}
+        if (job.status !== "needs_recovery" && job.status !== "waiting_approval") {
+            return {status: job.status, jobId}
+        }
         const recovery = this.#store.listEvents(jobId).findLast((event) => event.kind === "recovery_required")
         if (recovery?.previousStatus === "cancelling") {
             this.#store.beginCancellation(jobId)
