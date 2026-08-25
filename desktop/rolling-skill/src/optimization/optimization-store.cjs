@@ -557,28 +557,15 @@ function canonicalRun(value) {
 }
 
 function canonicalCreationKey(value) {
-    exactKeys(
-        value,
-        ["key", "inputDigest", "runId"],
-        ["resultRevision", "resultState"],
-        "Optimization creation idempotency record",
-    )
+    exactKeys(value, ["key", "inputDigest", "result"], [], "Optimization creation idempotency record")
     const inputDigest = requiredText(value.inputDigest, "Optimization creation input digest", 80)
     if (!/^sha256:[a-f0-9]{64}$/u.test(inputDigest)) {
         throw new Error("Optimization creation input digest is invalid")
     }
-    const resultState = value.resultState === undefined
-        ? "preflight"
-        : requiredText(value.resultState, "Optimization creation result state", 40)
-    if (!RUN_STATES.has(resultState)) throw new Error("Optimization creation result state is invalid")
     return {
         key: requiredText(value.key, "Optimization creation idempotency key", 500),
         inputDigest,
-        runId: publicId(value.runId, "Optimization creation run id"),
-        resultRevision: value.resultRevision === undefined
-            ? 0
-            : integer(value.resultRevision, "Optimization creation result revision"),
-        resultState,
+        result: canonicalRunMutationResult(value.result),
     }
 }
 
@@ -607,10 +594,14 @@ function canonicalState(value) {
     }
     const runs = new Map(state.runs.map((entry) => [entry.id, entry]))
     for (const creation of state.creationKeys) {
-        const run = runs.get(creation.runId)
+        const run = runs.get(creation.result.runId)
         if (!run) throw new Error("Optimization creation key references an unknown run")
-        if (creation.resultRevision > run.revision) {
-            throw new Error("Optimization creation result revision is in the future")
+        if (
+            creation.result.state !== "preflight" ||
+            creation.result.revision !== 0 ||
+            creation.result.updatedAt !== run.createdAt
+        ) {
+            throw new Error("Optimization creation result is inconsistent with Run creation")
         }
     }
     return state
@@ -897,11 +888,7 @@ class OptimizationStore {
                 if (existing.inputDigest !== inputDigest) {
                     throw new Error("Optimization creation idempotency key was already used for different input")
                 }
-                const output = copyRun(this.#requireRun(existing.runId))
-                output.state = existing.resultState
-                output.revision = existing.resultRevision
-                if (!TERMINAL_STATES.has(output.state)) output.completedAt = null
-                return output
+                return cloneJson(existing.result)
             }
         }
         if (this.#state.runs.length >= MAX_RUNS) throw new Error("Optimization store reached its run limit")
@@ -927,16 +914,20 @@ class OptimizationStore {
                 throw new Error("Optimization run id already exists")
             }
             state.runs.push(run)
+            const result = canonicalRunMutationResult({
+                runId: run.id,
+                state: run.state,
+                revision: run.revision,
+                updatedAt: run.updatedAt,
+            })
             if (normalizedOptions.idempotencyKey !== undefined) {
                 state.creationKeys.push({
                     key: normalizedOptions.idempotencyKey,
                     inputDigest,
-                    runId: run.id,
-                    resultRevision: run.revision,
-                    resultState: run.state,
+                    result,
                 })
             }
-            return run
+            return result
         })
     }
 
