@@ -1948,18 +1948,56 @@ function createDomainServices(dependencies = {}) {
             if (typeof operatorJobEngine?.resolveApproval !== "function") {
                 throw new Error("Operator approval engine unavailable")
             }
-            const result = await operatorJobEngine.resolveApproval(approval.id, {
-                decision: input.decision,
-                scope: "action",
-                decidedBy: "user",
-            })
+            const expectedStatus = input.decision === "approve" ? "approved" : "rejected"
+            let result
+            if (approval.status === "pending") {
+                try {
+                    result = await operatorJobEngine.resolveApproval(approval.id, {
+                        decision: input.decision,
+                        scope: "action",
+                        decidedBy: "user",
+                    })
+                } catch (error) {
+                    const current = requireOperatorApproval(
+                        approval.id,
+                        context.sessionId,
+                        context.grant,
+                    )
+                    if (current.status !== expectedStatus) throw error
+                }
+            } else if (approval.status !== expectedStatus) {
+                throw resourceChanged("approval")
+            }
+            const currentApproval = requireOperatorApproval(
+                approval.id,
+                context.sessionId,
+                context.grant,
+            )
+            if (currentApproval.status !== expectedStatus) throw resourceChanged("approval")
+            if (result === undefined) {
+                if (typeof operatorJobStore?.getStep !== "function" || currentApproval.stepId === null) {
+                    throw new Error("Operator approval Step unavailable")
+                }
+                const step = operatorJobStore.getStep(currentApproval.stepId)
+                result = {
+                    status: step.status,
+                    jobId: step.jobId,
+                    stepId: step.id,
+                    approvalId: currentApproval.id,
+                    ...(step.error === null ? {} : {error: step.error}),
+                }
+            }
+            if (typeof operatorSessionManager?.resumeAfterApproval !== "function") {
+                throw new Error("Operator approval recovery unavailable")
+            }
+            try {
+                await operatorSessionManager.resumeAfterApproval(currentApproval.sessionId)
+            } catch (cause) {
+                throw createPublicControlError("CONTROL_BUSY", {cause})
+            }
             return {
-                approval: publicApproval(requireOperatorApproval(
-                    approval.id,
-                    context.sessionId,
-                    context.grant,
-                )),
-                execution: publicApprovalExecution(result, approval),
+                approval: publicApproval(currentApproval),
+                execution: publicApprovalExecution(result, currentApproval),
             }
         },
 

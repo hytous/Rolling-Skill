@@ -83,6 +83,7 @@ const {ControlSocketServer} = require("./control-plane/socket-server.cjs")
 const {OperatorJobStore} = require("./operator/job-store.cjs")
 const {OperatorJobEngine} = require("./operator/job-engine.cjs")
 const {OperatorSessionManager} = require("./operator/operator-session-manager.cjs")
+const {publicOperatorSummaryPage} = require("./operator/public-summary.cjs")
 
 const RENDERER_FILE = join(__dirname, "..", "renderer", "index.html")
 const PRELOAD_FILE = join(__dirname, "preload.cjs")
@@ -1686,18 +1687,7 @@ function operatorSummarySnapshotPage({cursor = null, limit = OPERATOR_BOOTSTRAP_
             nextCursor: null,
         }
     }
-    const state = operatorJobStore.readSummaryPage({cursor, limit})
-    return {
-        generation: state.generation,
-        revision: state.revision,
-        sessions: state.sessions.map(publicOperatorSessionSummary),
-        jobs: state.jobs.map(publicOperatorJob),
-        steps: state.steps.map(publicOperatorStep),
-        approvals: state.approvals.map(publicOperatorApproval),
-        totals: operatorSafeValue(state.totals),
-        truncated: state.truncated === true,
-        nextCursor: state.nextCursor ?? null,
-    }
+    return publicOperatorSummaryPage(operatorJobStore.readSummaryPage({cursor, limit}))
 }
 
 function operatorBootstrapSnapshot() {
@@ -1883,6 +1873,10 @@ const operatorSessionServiceFacade = Object.freeze({
     resume(sessionId) {
         if (!operatorSessionManager) throw new Error("Operator session manager unavailable")
         return operatorSessionManager.resume(sessionId)
+    },
+    resumeAfterApproval(sessionId) {
+        if (!operatorSessionManager) throw new Error("Operator session manager unavailable")
+        return operatorSessionManager.resumeAfterApproval(sessionId)
     },
     stop(sessionId) {
         if (!operatorSessionManager) throw new Error("Operator session manager unavailable")

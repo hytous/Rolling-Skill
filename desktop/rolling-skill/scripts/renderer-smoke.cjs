@@ -9,6 +9,7 @@ const {
 } = require("../src/control-plane/contracts.cjs")
 const {OperatorJobEngine} = require("../src/operator/job-engine.cjs")
 const {OperatorJobStore} = require("../src/operator/job-store.cjs")
+const {publicOperatorSummaryPage} = require("../src/operator/public-summary.cjs")
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-renderer-smoke-"))
 app.setPath("userData", join(temporaryDirectory, "profile"))
@@ -268,10 +269,13 @@ function createOperatorFixture() {
             await ready
             switch (method) {
             case "bootstrap":
-                return store.readSummaryPage({cursor: null, limit: 100})
+                return publicOperatorSummaryPage(store.readSummaryPage({cursor: null, limit: 100}))
             case "read-summary":
                 summaryPageCalls.push({cursor: input.cursor ?? null, limit: input.limit ?? 100})
-                return store.readSummaryPage({cursor: input.cursor ?? null, limit: input.limit ?? 100})
+                return publicOperatorSummaryPage(store.readSummaryPage({
+                    cursor: input.cursor ?? null,
+                    limit: input.limit ?? 100,
+                }))
             case "get-session": {
                 const session = store.getSession(input.sessionId)
                 const parentJob = store.listJobs({
@@ -1555,10 +1559,18 @@ async function run() {
             allRecords: expectedRecords === totals,
             sessionIsSummary: Number.isSafeInteger(session?.transcriptSequence) &&
                 !Object.hasOwn(session ?? {}, "transcript"),
-            jobIsPublic: Array.isArray(parent?.children) &&
+            jobIsPublic: Array.isArray(parent?.childJobIds) &&
+                !Object.hasOwn(parent ?? {}, "children") &&
+                !Object.hasOwn(parent ?? {}, "checkpoint") &&
                 !Object.hasOwn(parent ?? {}, "result"),
             approvalIsPublic: approval?.status === "pending" &&
                 !Object.hasOwn(approval ?? {}, "proposedMutation"),
+            allRecordsArePublic: Object.values(limitOne.records).flat().every((record) => (
+                !Object.hasOwn(record, "children") &&
+                !Object.hasOwn(record, "checkpoint") &&
+                !Object.hasOwn(record, "result") &&
+                !Object.hasOwn(record, "proposedMutation")
+            )),
         }
     })()`)
     if (!Object.values(operatorBootstrapProjection).every(Boolean)) {

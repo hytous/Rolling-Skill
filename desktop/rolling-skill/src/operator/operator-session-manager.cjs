@@ -1526,6 +1526,8 @@ class OperatorSessionManager {
             if (recoveredParent.status === "running") {
                 this.#store.transitionJob(recoveredParent.id, "waiting_approval")
             }
+        } else if (recoveredParent.status === "waiting_approval") {
+            this.#store.transitionJob(recoveredParent.id, "running")
         }
         return {pendingApproval: pendingApprovals.length > 0}
     }
@@ -1738,6 +1740,10 @@ class OperatorSessionManager {
     }
 
     restart(sessionId) {
+        return this.resume(sessionId)
+    }
+
+    resumeAfterApproval(sessionId) {
         return this.resume(sessionId)
     }
 

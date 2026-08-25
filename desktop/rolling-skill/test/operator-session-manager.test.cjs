@@ -964,7 +964,7 @@ describe("OperatorSessionManager", () => {
         assert.equal(restarted.controlPlane.routes.size, 1)
     })
 
-    it("recovers a durable waiting-approval session without discarding its gate", async () => {
+    it("normalizes a durable waiting-approval parent when no Approval gate exists", async () => {
         const first = fixture({supportsNativeResume: () => true})
         const created = await first.manager.create(createInput())
         completed(first.clients[0])
@@ -974,7 +974,7 @@ describe("OperatorSessionManager", () => {
 
         const resumed = await restarted.manager.resume(created.session.id)
 
-        assert.equal(resumed.parentJob.status, "waiting_approval")
+        assert.equal(resumed.parentJob.status, "running")
         assert.equal(resumed.state, "idle")
         assert.equal(restarted.clients.length, 1)
     })

@@ -162,6 +162,9 @@ function fixture(overrides = {}) {
             operatorJobs.find((entry) => entry.sessionId === sessionId).status = "running"
             return {session: {id: sessionId, transcript: ["private"]}}
         }),
+        resumeAfterApproval: mock.fn((sessionId) => ({
+            session: {id: sessionId, transcript: ["private"]},
+        })),
         stop: mock.fn((sessionId) => {
             operatorJobs.find((entry) => entry.sessionId === sessionId).status = "cancelled"
             return {session: {id: sessionId, transcript: ["private"]}}
@@ -389,7 +392,7 @@ describe("control-plane domain services", () => {
     })
 
     it("lists approvals safely and only lets a trusted human authority resolve them", async () => {
-        const {dependencies, operatorJobEngine} = fixture()
+        const {dependencies, operatorJobEngine, operatorSessionManager} = fixture()
         const services = createDomainServices(dependencies)
 
         const listed = await services["approvals.list"](
@@ -423,6 +426,9 @@ describe("control-plane domain services", () => {
         assert.deepEqual(operatorJobEngine.resolveApproval.mock.calls[0].arguments, [
             "approval-1",
             {decision: "approve", scope: "action", decidedBy: "user"},
+        ])
+        assert.deepEqual(operatorSessionManager.resumeAfterApproval.mock.calls[0].arguments, [
+            "operator-1",
         ])
         assert.equal(resolved.approval.status, "approved")
         assert.equal(resolved.execution.status, "succeeded")

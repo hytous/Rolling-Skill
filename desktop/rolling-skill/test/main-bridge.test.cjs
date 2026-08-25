@@ -26,6 +26,7 @@ const {
     createTrustedHumanCapabilityIssuer,
     isTrustedHumanCapability,
 } = require("../src/control-plane/capability-store.cjs")
+const {publicOperatorSummaryPage} = require("../src/operator/public-summary.cjs")
 
 const root = join(__dirname, "..")
 const source = (path) => readFileSync(join(root, path), "utf8")
@@ -2062,6 +2063,7 @@ describe("desktop main/preload bridge", () => {
             OPERATOR_PRIVATE_KEYS: /(?:token|socket|path|capabilityId|executablePath|inline|body)/iu,
             OPERATOR_PRIVATE_INPUT_KEYS: /(?:token|socket|capabilityId|executablePath)/iu,
             operatorJobStore: store,
+            publicOperatorSummaryPage,
             send: (channel, payload) => {
                 if (channel === "operator:changed" && dropNextChanged) {
                     dropNextChanged = false

@@ -8,6 +8,13 @@ const {afterEach, describe, it} = require("node:test")
 const {OperatorJobStore} = require("../src/operator/job-store.cjs")
 const {OperatorJobEngine} = require("../src/operator/job-engine.cjs")
 const {OperatorSessionManager} = require("../src/operator/operator-session-manager.cjs")
+const {
+    CapabilityStore,
+    createTrustedHumanCapabilityIssuer,
+} = require("../src/control-plane/capability-store.cjs")
+const {ControlPlane} = require("../src/control-plane/control-plane.cjs")
+const {createDomainServices} = require("../src/control-plane/domain-services.cjs")
+const {createControlPolicy} = require("../src/control-plane/policy.cjs")
 
 const directories = []
 
@@ -37,16 +44,38 @@ const budget = {
 }
 
 class RecoveryRuntimeClient extends EventEmitter {
-    async start() {}
+    constructor({onStartTurn = () => {}, autoCompleteTurns = false, failStart = false} = {}) {
+        super()
+        this.onStartTurn = onStartTurn
+        this.autoCompleteTurns = autoCompleteTurns
+        this.failStart = failStart
+    }
+    async start() {
+        if (this.failStart) throw new Error("Runtime restoration failed")
+    }
     async startThread() { return {thread: {id: "operator-restart-thread"}} }
     async resumeThread(threadId) { return {thread: {id: threadId}} }
-    async startTurn() { return {turn: {id: "operator-restart-turn", status: "inProgress"}} }
+    async startTurn() {
+        this.onStartTurn()
+        if (this.autoCompleteTurns) {
+            queueMicrotask(() => this.emit("notification", {
+                method: "turn/completed",
+                params: {turn: {id: "operator-restart-turn", status: "completed"}},
+            }))
+        }
+        return {turn: {id: "operator-restart-turn", status: "inProgress"}}
+    }
     async stop() {}
 }
 
-function managerFixture(store, engine, {onCreateClient = () => {}} = {}) {
+function managerFixture(store, engine, {
+    onCreateClient = () => {},
+    createClient = () => new RecoveryRuntimeClient(),
+    capabilities: suppliedCapabilities = null,
+    controlPlane: suppliedControlPlane = null,
+} = {}) {
     let capabilitySequence = 0
-    const capabilities = {
+    const capabilities = suppliedCapabilities ?? {
         issue(request) {
             capabilitySequence += 1
             return {
@@ -64,11 +93,11 @@ function managerFixture(store, engine, {onCreateClient = () => {}} = {}) {
             discover: () => ({available: [runtime], selected: runtime}),
             createClient: () => {
                 onCreateClient()
-                return new RecoveryRuntimeClient()
+                return createClient()
             },
         },
         capabilities,
-        controlPlane: {
+        controlPlane: suppliedControlPlane ?? {
             async invoke() { throw new Error("Control invocation is not part of restart recovery") },
             registerOperatorExecutor() {
                 let enabled = true
@@ -90,6 +119,55 @@ function managerFixture(store, engine, {onCreateClient = () => {}} = {}) {
         },
         transportSupport: () => ({dynamicToolsReady: true, mcpServersReady: false}),
         supportsNativeResume: () => true,
+    })
+}
+
+function recoveredControlStack(store, engine, {onCreateClient, createClient} = {}) {
+    const capabilities = new CapabilityStore()
+    let manager
+    const services = createDomainServices({
+        operatorJobStore: store,
+        operatorJobEngine: engine,
+        operatorSessionManager: {
+            resumeAfterApproval(sessionId) {
+                return manager.resumeAfterApproval(sessionId)
+            },
+        },
+    })
+    const controlPlane = new ControlPlane({
+        capabilities,
+        policy: createControlPolicy(),
+        services,
+    })
+    manager = managerFixture(store, engine, {
+        capabilities,
+        controlPlane,
+        onCreateClient,
+        createClient,
+    })
+    return {capabilities, controlPlane, manager}
+}
+
+async function resolveApprovalThroughHumanControl({
+    capabilities,
+    controlPlane,
+    sessionId,
+    approvalId,
+    decision = "approve",
+    idempotencyKey = `resolve-${approvalId}`,
+}) {
+    const issued = createTrustedHumanCapabilityIssuer(capabilities).issue({
+        sessionId,
+        actions: ["approvals.resolve"],
+        scopes: {},
+        expiresInMs: 60_000,
+        budget: {},
+    })
+    return controlPlane.invoke({
+        token: issued.token,
+        sessionId,
+        method: "approvals.resolve",
+        params: {approvalId, decision, idempotencyKey},
     })
 }
 
@@ -252,6 +330,49 @@ async function persistReleaseGate({
     return {registryPath, created, releaseJob, release, approval}
 }
 
+function appendPendingReleaseGate(registryPath, created, suffix) {
+    const store = new OperatorJobStore(registryPath)
+    const job = store.createJob({
+        sessionId: created.session.id,
+        parentJobId: created.parentJob.id,
+        type: "release",
+        objective: `Release another candidate ${suffix}`,
+        budget,
+    })
+    store.transitionJob(job.id, "running")
+    const step = store.createStep(job.id, {
+        method: "skills.release",
+        params: {
+            skillId: "skill-1",
+            versionId: `candidate-${suffix}`,
+            versionLabel: `v1.0.${suffix}`,
+        },
+        reservation: {},
+        idempotencyKey: `restart-release-${suffix}`,
+    })
+    store.transitionStep(step.id, "waiting_approval")
+    store.transitionJob(job.id, "waiting_approval")
+    const approval = store.createApproval(job.id, {
+        stepId: step.id,
+        action: "skills.release",
+        scope: {skillIds: ["skill-1"]},
+        proposedMutation: {
+            method: "skills.release",
+            params: {
+                skillId: "skill-1",
+                versionId: `candidate-${suffix}`,
+                versionLabel: `v1.0.${suffix}`,
+            },
+            idempotencyKey: `restart-release-${suffix}`,
+            reservation: {},
+        },
+        risk: "release",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    })
+    store.close()
+    return {job, step, approval}
+}
+
 describe("Operator restart recovery integration", () => {
     it("reconciles a running Evaluation by run ID and restores the untouched release gate", async () => {
         const {registryPath, created, evaluationJob, evaluation, release, approval} =
@@ -324,9 +445,11 @@ describe("Operator restart recovery integration", () => {
                 },
             },
         })
-        const recoveredManager = managerFixture(recoveredStore, recoveredEngine, {
-            onCreateClient: () => { runtimeClients += 1 },
-        })
+        const {capabilities, controlPlane, manager: recoveredManager} = recoveredControlStack(
+            recoveredStore,
+            recoveredEngine,
+            {onCreateClient: () => { runtimeClients += 1 }},
+        )
 
         await assert.rejects(
             () => recoveredManager.restart(created.session.id),
@@ -341,6 +464,28 @@ describe("Operator restart recovery integration", () => {
         assert.equal(recoveredStore.getJob(created.parentJob.id).status, "needs_recovery")
         assert.equal(runtimeClients, 0)
         assert.equal(releaseExecutions, 0)
+
+        const request = {
+            capabilities,
+            controlPlane,
+            sessionId: created.session.id,
+            approvalId: approval.id,
+            idempotencyKey: "resolve-with-unknown-descendant",
+        }
+        await assert.rejects(
+            () => resolveApprovalThroughHumanControl(request),
+            (error) => error.code === "CONTROL_BUSY" && error.retryable === true,
+        )
+        assert.equal(recoveredStore.getApproval(approval.id).status, "approved")
+        assert.equal(recoveredStore.getStep(release.id).status, "succeeded")
+        assert.equal(recoveredStore.getJob(created.parentJob.id).status, "needs_recovery")
+        assert.equal(runtimeClients, 0)
+        assert.equal(releaseExecutions, 1)
+        await assert.rejects(
+            () => resolveApprovalThroughHumanControl(request),
+            (error) => error.code === "CONTROL_BUSY" && error.retryable === true,
+        )
+        assert.equal(releaseExecutions, 1)
         recoveredStore.close()
     })
 
@@ -376,6 +521,154 @@ describe("Operator restart recovery integration", () => {
         assert.equal(recoveredStore.getApproval(approval.id).status, "pending")
         assert.equal(runtimeClients, 0)
         assert.equal(releaseExecutions, 0)
+        recoveredStore.close()
+    })
+
+    it("automatically restores a cold Runtime after a human resolves its last pending Approval", async () => {
+        const {registryPath, created, release, approval} = await persistReleaseGate({
+            pauseParent: true,
+        })
+        const recoveredStore = new OperatorJobStore(registryPath)
+        let releaseHandlerCalls = 0
+        let releaseReconciliations = 0
+        let runtimeClients = 0
+        let runtimeTurns = 0
+        let resolveFollowUpTurn
+        const followUpTurn = new Promise((resolve) => { resolveFollowUpTurn = resolve })
+        const recoveredEngine = new OperatorJobEngine({
+            store: recoveredStore,
+            handlers: {
+                "skills.release": async () => {
+                    releaseHandlerCalls += 1
+                    return {versionId: "candidate-1", versionLabel: "v1.0.0"}
+                },
+            },
+            reconcilers: {
+                release: async () => {
+                    releaseReconciliations += 1
+                    return {status: "released", candidateId: "candidate-1", tag: "v1.0.0"}
+                },
+            },
+        })
+        const {capabilities, controlPlane, manager} = recoveredControlStack(
+            recoveredStore,
+            recoveredEngine,
+            {
+                onCreateClient: () => { runtimeClients += 1 },
+                createClient: () => new RecoveryRuntimeClient({
+                    autoCompleteTurns: true,
+                    onStartTurn: () => {
+                        runtimeTurns += 1
+                        resolveFollowUpTurn()
+                    },
+                }),
+            },
+        )
+
+        const waiting = await manager.restart(created.session.id)
+        assert.equal(waiting.parentJob.status, "waiting_approval")
+        assert.equal(waiting.state, "waiting_approval")
+        assert.equal(runtimeClients, 0)
+
+        const resolved = await resolveApprovalThroughHumanControl({
+            capabilities,
+            controlPlane,
+            sessionId: created.session.id,
+            approvalId: approval.id,
+        })
+
+        assert.equal(resolved.approval.status, "approved")
+        assert.equal(recoveredStore.getStep(release.id).status, "succeeded")
+        assert.equal(manager.get(created.session.id).parentJob.status, "running")
+        assert.equal(runtimeClients, 1)
+        assert.ok(releaseHandlerCalls + releaseReconciliations <= 1)
+        await manager.followUp(created.session.id, "Continue after the approved release gate")
+        await followUpTurn
+        assert.equal(runtimeTurns, 1)
+        recoveredStore.close()
+    })
+
+    it("keeps the cold Runtime stopped while another Approval remains pending", async () => {
+        const {registryPath, created, approval} = await persistReleaseGate({pauseParent: true})
+        const second = appendPendingReleaseGate(registryPath, created, "second")
+        const recoveredStore = new OperatorJobStore(registryPath)
+        let releaseExecutions = 0
+        let runtimeClients = 0
+        const recoveredEngine = new OperatorJobEngine({
+            store: recoveredStore,
+            handlers: {
+                "skills.release": async () => {
+                    releaseExecutions += 1
+                    return {versionId: "candidate-1", versionLabel: "v1.0.0"}
+                },
+            },
+        })
+        const {capabilities, controlPlane, manager} = recoveredControlStack(
+            recoveredStore,
+            recoveredEngine,
+            {onCreateClient: () => { runtimeClients += 1 }},
+        )
+
+        await manager.restart(created.session.id)
+        await resolveApprovalThroughHumanControl({
+            capabilities,
+            controlPlane,
+            sessionId: created.session.id,
+            approvalId: approval.id,
+        })
+
+        assert.equal(recoveredStore.getApproval(approval.id).status, "approved")
+        assert.equal(recoveredStore.getApproval(second.approval.id).status, "pending")
+        assert.equal(manager.get(created.session.id).parentJob.status, "waiting_approval")
+        assert.equal(runtimeClients, 0)
+        assert.equal(releaseExecutions, 1)
+        recoveredStore.close()
+    })
+
+    it("retries Runtime restoration after durable Approval resolution without replaying release", async () => {
+        const {registryPath, created, approval} = await persistReleaseGate({pauseParent: true})
+        const recoveredStore = new OperatorJobStore(registryPath)
+        let releaseExecutions = 0
+        let runtimeClients = 0
+        const recoveredEngine = new OperatorJobEngine({
+            store: recoveredStore,
+            handlers: {
+                "skills.release": async () => {
+                    releaseExecutions += 1
+                    return {versionId: "candidate-1", versionLabel: "v1.0.0"}
+                },
+            },
+        })
+        const {capabilities, controlPlane, manager} = recoveredControlStack(
+            recoveredStore,
+            recoveredEngine,
+            {
+                onCreateClient: () => { runtimeClients += 1 },
+                createClient: () => new RecoveryRuntimeClient({failStart: runtimeClients === 1}),
+            },
+        )
+
+        await manager.restart(created.session.id)
+        const request = {
+            capabilities,
+            controlPlane,
+            sessionId: created.session.id,
+            approvalId: approval.id,
+            idempotencyKey: "retry-approved-runtime-resume",
+        }
+        await assert.rejects(
+            () => resolveApprovalThroughHumanControl(request),
+            (error) => error.code === "CONTROL_BUSY" && error.retryable === true,
+        )
+        assert.equal(recoveredStore.getApproval(approval.id).status, "approved")
+        assert.equal(releaseExecutions, 1)
+
+        const retried = await resolveApprovalThroughHumanControl(request)
+
+        assert.equal(retried.approval.status, "approved")
+        assert.equal(manager.get(created.session.id).parentJob.status, "running")
+        assert.equal(runtimeClients, 2)
+        assert.equal(releaseExecutions, 1)
         recoveredStore.close()
     })
 
