@@ -31,6 +31,7 @@ const NOFOLLOW = constants.O_NOFOLLOW ?? 0
 const DIRECTORY = constants.O_DIRECTORY ?? 0
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled"])
 const ACTIVE_RESTART_STATES = new Set([
+    "baseline",
     "editing",
     "installing",
     "evaluating",
@@ -54,7 +55,7 @@ const RUN_STATES = new Set([
 const RUN_TRANSITIONS = new Map([
     ["preflight", new Set(["baseline", "failed", "cancelled", "needs_recovery"])],
     ["baseline", new Set(["editing", "failed", "cancelled", "needs_recovery"])],
-    ["editing", new Set(["installing", "failed", "cancelled", "needs_recovery"])],
+    ["editing", new Set(["installing", "restoring", "failed", "cancelled", "needs_recovery"])],
     ["installing", new Set(["evaluating", "restoring", "failed", "cancelled", "needs_recovery"])],
     ["evaluating", new Set(["deciding", "restoring", "failed", "cancelled", "needs_recovery"])],
     ["deciding", new Set([
@@ -68,6 +69,7 @@ const RUN_TRANSITIONS = new Map([
     ])],
     ["waiting_approval", new Set([
         "editing",
+        "installing",
         "restoring",
         "failed",
         "cancelled",
@@ -97,6 +99,17 @@ const EPOCH_STATES = new Set([
     "cancelled",
 ])
 const TERMINAL_EPOCH_STATES = new Set(["completed", "succeeded", "failed", "cancelled"])
+const EPOCH_TRANSITIONS = new Map([
+    ["editing", new Set(["installing", "failed", "cancelled"])],
+    ["installing", new Set(["evaluating", "failed", "cancelled"])],
+    ["evaluating", new Set(["deciding", "failed", "cancelled"])],
+    ["deciding", new Set(["completed", "succeeded", "failed", "cancelled"])],
+])
+const IMMUTABLE_EPOCH_FIELDS = new Map([
+    ["installing", ["candidateArtifactId"]],
+    ["evaluating", ["candidateArtifactId", "installArtifactIds"]],
+    ["deciding", ["candidateArtifactId", "installArtifactIds", "evaluationArtifactIds"]],
+])
 const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"])
 
 function isPlainObject(value) {
@@ -413,16 +426,46 @@ function canonicalEpoch(value) {
 }
 
 function canonicalOperation(value) {
-    exactKeys(value, ["key", "kind", "inputDigest", "resultRevision"], [], "Optimization operation")
+    exactKeys(
+        value,
+        ["key", "kind", "inputDigest", "resultRevision"],
+        ["result"],
+        "Optimization operation",
+    )
     const inputDigest = requiredText(value.inputDigest, "Optimization operation input digest", 80)
     if (!/^sha256:[a-f0-9]{64}$/u.test(inputDigest)) {
         throw new Error("Optimization operation input digest is invalid")
+    }
+    let result = null
+    if (value.result !== undefined && value.result !== null) {
+        exactKeys(
+            value.result,
+            ["runId", "epochId", "revision", "state", "epochStatus"],
+            [],
+            "Optimization operation result",
+        )
+        result = {
+            runId: publicId(value.result.runId, "Optimization operation result run id"),
+            epochId: value.result.epochId === null
+                ? null
+                : publicId(value.result.epochId, "Optimization operation result epoch id"),
+            revision: integer(value.result.revision, "Optimization operation result revision"),
+            state: requiredText(value.result.state, "Optimization operation result state", 40),
+            epochStatus: value.result.epochStatus === null
+                ? null
+                : requiredText(value.result.epochStatus, "Optimization operation result Epoch status", 40),
+        }
+        if (!RUN_STATES.has(result.state)) throw new Error("Optimization operation result state is invalid")
+        if (result.epochStatus !== null && !EPOCH_STATES.has(result.epochStatus)) {
+            throw new Error("Optimization operation result Epoch status is invalid")
+        }
     }
     return {
         key: requiredText(value.key, "Optimization idempotency key", 500),
         kind: requiredText(value.kind, "Optimization operation kind", 100),
         inputDigest,
         resultRevision: integer(value.resultRevision, "Optimization operation result revision"),
+        result,
     }
 }
 
@@ -482,19 +525,44 @@ function canonicalRun(value) {
     if (TERMINAL_STATES.has(run.state) !== (run.completedAt !== null)) {
         throw new Error("Optimization run terminal fields are inconsistent")
     }
+    for (const operation of run.operations) {
+        if (operation.result === null) continue
+        if (operation.result.runId !== run.id || operation.result.revision !== operation.resultRevision) {
+            throw new Error("Optimization operation result reference is inconsistent")
+        }
+        if (operation.result.revision > run.revision) {
+            throw new Error("Optimization operation result revision is in the future")
+        }
+        if (operation.result.epochId !== null && !epochs.some((entry) => entry.id === operation.result.epochId)) {
+            throw new Error("Optimization operation result references an unknown Epoch")
+        }
+    }
     return run
 }
 
 function canonicalCreationKey(value) {
-    exactKeys(value, ["key", "inputDigest", "runId"], [], "Optimization creation idempotency record")
+    exactKeys(
+        value,
+        ["key", "inputDigest", "runId"],
+        ["resultRevision", "resultState"],
+        "Optimization creation idempotency record",
+    )
     const inputDigest = requiredText(value.inputDigest, "Optimization creation input digest", 80)
     if (!/^sha256:[a-f0-9]{64}$/u.test(inputDigest)) {
         throw new Error("Optimization creation input digest is invalid")
     }
+    const resultState = value.resultState === undefined
+        ? "preflight"
+        : requiredText(value.resultState, "Optimization creation result state", 40)
+    if (!RUN_STATES.has(resultState)) throw new Error("Optimization creation result state is invalid")
     return {
         key: requiredText(value.key, "Optimization creation idempotency key", 500),
         inputDigest,
         runId: publicId(value.runId, "Optimization creation run id"),
+        resultRevision: value.resultRevision === undefined
+            ? 0
+            : integer(value.resultRevision, "Optimization creation result revision"),
+        resultState,
     }
 }
 
@@ -523,7 +591,11 @@ function canonicalState(value) {
     }
     const runs = new Map(state.runs.map((entry) => [entry.id, entry]))
     for (const creation of state.creationKeys) {
-        if (!runs.has(creation.runId)) throw new Error("Optimization creation key references an unknown run")
+        const run = runs.get(creation.runId)
+        if (!run) throw new Error("Optimization creation key references an unknown run")
+        if (creation.resultRevision > run.revision) {
+            throw new Error("Optimization creation result revision is in the future")
+        }
     }
     return state
 }
@@ -750,7 +822,7 @@ class OptimizationStore {
         return existing
     }
 
-    #recordOperation(run, key, kind, inputDigest) {
+    #recordOperation(run, key, kind, inputDigest, epoch = null) {
         if (key === undefined || key === null) return
         if (run.operations.length >= MAX_OPERATIONS) {
             throw new Error("Optimization run reached its idempotency operation limit")
@@ -760,7 +832,35 @@ class OptimizationStore {
             kind,
             inputDigest,
             resultRevision: run.revision,
+            result: {
+                runId: run.id,
+                epochId: epoch?.id ?? null,
+                revision: run.revision,
+                state: run.state,
+                epochStatus: epoch?.status ?? null,
+            },
         })
+    }
+
+    #stableRunResult(run, operation) {
+        const output = copyRun(run)
+        if (operation.result === null) return output
+        output.state = operation.result.state
+        output.revision = operation.result.revision
+        if (!TERMINAL_STATES.has(output.state)) output.completedAt = null
+        return output
+    }
+
+    #stableEpochResult(run, operation, fallbackEpoch) {
+        const epochId = operation.result?.epochId ?? fallbackEpoch?.id ?? null
+        const epoch = run.epochs.find((entry) => entry.id === epochId)
+        if (!epoch) throw new Error("Optimization idempotency result references an unknown Epoch")
+        const output = cloneJson(epoch)
+        if (operation.result?.epochStatus !== null && operation.result?.epochStatus !== undefined) {
+            output.status = operation.result.epochStatus
+            if (!TERMINAL_EPOCH_STATES.has(output.status)) output.completedAt = null
+        }
+        return output
     }
 
     read() {
@@ -792,7 +892,11 @@ class OptimizationStore {
                 if (existing.inputDigest !== inputDigest) {
                     throw new Error("Optimization creation idempotency key was already used for different input")
                 }
-                return copyRun(this.#requireRun(existing.runId))
+                const output = copyRun(this.#requireRun(existing.runId))
+                output.state = existing.resultState
+                output.revision = existing.resultRevision
+                if (!TERMINAL_STATES.has(output.state)) output.completedAt = null
+                return output
             }
         }
         if (this.#state.runs.length >= MAX_RUNS) throw new Error("Optimization store reached its run limit")
@@ -823,6 +927,8 @@ class OptimizationStore {
                     key: normalizedOptions.idempotencyKey,
                     inputDigest,
                     runId: run.id,
+                    resultRevision: run.revision,
+                    resultState: run.state,
                 })
             }
             return run
@@ -855,7 +961,7 @@ class OptimizationStore {
             "transition",
             inputDigest,
         )
-        if (existing) return copyRun(current)
+        if (existing) return this.#stableRunResult(current, existing)
         this.#checkRevision(current, normalized.options.expectedRevision)
         if (TERMINAL_STATES.has(current.state)) throw new Error("A terminal Optimization run is immutable")
         if (!RUN_TRANSITIONS.get(current.state)?.has(nextState)) {
@@ -908,10 +1014,13 @@ class OptimizationStore {
             "create_epoch",
             inputDigest,
         )
-        if (existing) return cloneJson(current.epochs.at(-1))
+        if (existing) return this.#stableEpochResult(current, existing, current.epochs.at(-1))
         this.#checkRevision(current, normalizedOptions.expectedRevision)
         if (TERMINAL_STATES.has(current.state)) throw new Error("A terminal Optimization run is immutable")
         if (current.state !== "editing") throw new Error("Optimization epochs can only start while editing")
+        if (current.epochs.some((entry) => !TERMINAL_EPOCH_STATES.has(entry.status))) {
+            throw new Error("An Optimization Epoch is already in progress")
+        }
         if (current.epochs.length >= current.snapshot.limits.maxEpochs) {
             throw new Error("Optimization run reached its frozen epoch limit")
         }
@@ -944,6 +1053,7 @@ class OptimizationStore {
                 normalizedOptions.idempotencyKey,
                 "create_epoch",
                 inputDigest,
+                epoch,
             )
             return epoch
         })
@@ -971,32 +1081,31 @@ class OptimizationStore {
             "update_epoch",
             inputDigest,
         )
-        if (existing) return cloneJson(epoch)
+        if (existing) return this.#stableEpochResult(current, existing, epoch)
         this.#checkRevision(current, normalized.options.expectedRevision)
         if (TERMINAL_STATES.has(current.state)) throw new Error("A terminal Optimization run is immutable")
         if (TERMINAL_EPOCH_STATES.has(epoch.status)) {
             throw new Error("A terminal Optimization epoch is append-only and immutable")
         }
-        if (epoch.status === "deciding") {
-            for (const field of [
-                "candidateArtifactId",
-                "installArtifactIds",
-                "evaluationArtifactIds",
-            ]) {
-                if (
-                    Object.hasOwn(normalized.patch, field) &&
-                    JSON.stringify(normalized.patch[field]) !== JSON.stringify(epoch[field])
-                ) {
-                    throw new Error("Terminal evaluation artifact references are append-only and immutable")
-                }
-            }
+        for (const field of IMMUTABLE_EPOCH_FIELDS.get(epoch.status) ?? []) {
             if (
-                Object.hasOwn(normalized.patch, "status") &&
-                !["deciding", "completed", "succeeded", "failed", "cancelled"].includes(
-                    normalized.patch.status,
-                )
+                Object.hasOwn(normalized.patch, field) &&
+                JSON.stringify(normalized.patch[field]) !== JSON.stringify(epoch[field])
             ) {
-                throw new Error("A deciding Optimization epoch cannot return to evaluation")
+                throw new Error(`Optimization Epoch ${field} is append-only and immutable in ${epoch.status}`)
+            }
+        }
+        if (Object.hasOwn(normalized.patch, "status")) {
+            const requestedStatus = requiredText(
+                normalized.patch.status,
+                "Optimization epoch status",
+                40,
+            )
+            if (
+                requestedStatus !== epoch.status &&
+                !EPOCH_TRANSITIONS.get(epoch.status)?.has(requestedStatus)
+            ) {
+                throw new Error(`Invalid Optimization Epoch transition: ${epoch.status} -> ${requestedStatus}`)
             }
         }
         return this.#mutate((state) => {
@@ -1044,6 +1153,7 @@ class OptimizationStore {
                 normalized.options.idempotencyKey,
                 "update_epoch",
                 inputDigest,
+                stored,
             )
             return stored
         })

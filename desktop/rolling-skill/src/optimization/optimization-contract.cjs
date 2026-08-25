@@ -272,6 +272,12 @@ function parseOptimizationConfig(value) {
         target: target(source.target),
         telemetry: telemetry(source.telemetry),
     }
+    if (parsed.limits.maxTokens > 0 && !parsed.telemetry.tokens) {
+        throw new Error("A hard token budget requires token telemetry capability")
+    }
+    if (parsed.limits.maxCostMicros > 0 && !parsed.telemetry.cost) {
+        throw new Error("A hard cost budget requires cost telemetry capability")
+    }
     return deepFreeze(parsed)
 }
 
@@ -481,10 +487,10 @@ function frozenRunBody(value, {trustedFacts = true} = {}) {
     if (dataset.caseRevisions.some((entry) => entry.rubricVersionId !== rubric.id)) {
         throw new Error("One or more Dataset Cases have stale Rubric calibration")
     }
-    if (config.limits.maxTokens !== null && !config.telemetry.tokens) {
+    if (config.limits.maxTokens > 0 && !config.telemetry.tokens) {
         throw new Error("A hard token budget requires token telemetry capability")
     }
-    if (config.limits.maxCostMicros !== null && !config.telemetry.cost) {
+    if (config.limits.maxCostMicros > 0 && !config.telemetry.cost) {
         throw new Error("A hard cost budget requires cost telemetry capability")
     }
     return {

@@ -239,6 +239,17 @@ describe("optimization contract", () => {
     })
 
     it("rejects hard token or cost budgets without matching telemetry", () => {
+        assert.throws(() => parseOptimizationConfig(config({
+            telemetry: {tokens: false, cost: true},
+        })), /token.*telemetry/i)
+        assert.throws(() => parseOptimizationConfig(config({
+            telemetry: {tokens: true, cost: false},
+        })), /cost.*telemetry/i)
+        assert.doesNotThrow(() => parseOptimizationConfig(config({
+            limits: {...config().limits, maxTokens: 0, maxCostMicros: 0},
+            telemetry: {tokens: false, cost: false},
+        })))
+
         const noTokens = freezeInput()
         noTokens.config.telemetry.tokens = false
         assert.throws(() => freezeOptimizationRun(noTokens), /token.*telemetry/i)
@@ -246,6 +257,12 @@ describe("optimization contract", () => {
         const noCost = freezeInput()
         noCost.config.telemetry.cost = false
         assert.throws(() => freezeOptimizationRun(noCost), /cost.*telemetry/i)
+
+        const zeroBudgets = freezeInput()
+        zeroBudgets.config.limits.maxTokens = 0
+        zeroBudgets.config.limits.maxCostMicros = 0
+        zeroBudgets.config.telemetry = {tokens: false, cost: false}
+        assert.doesNotThrow(() => freezeOptimizationRun(zeroBudgets))
     })
 
     it("parses bounded structured decisions from objects or fenced JSON", () => {
