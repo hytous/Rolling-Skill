@@ -298,18 +298,29 @@ function parseJsonText(value, label) {
     }
 }
 
-function rejectDecisionMutation(value, path = "Decision observations") {
-    if (Array.isArray(value)) {
-        value.forEach((entry, index) => rejectDecisionMutation(entry, `${path}[${index}]`))
-        return
+function decisionObservation(value, index) {
+    exactKeys(
+        value,
+        ["kind", "summary"],
+        ["artifactId"],
+        `Optimization decision observation ${index + 1}`,
+    )
+    const observation = {
+        kind: requiredText(value.kind, `Optimization decision observation ${index + 1} kind`, 100),
+        summary: requiredText(value.summary, `Optimization decision observation ${index + 1} summary`, 2_000),
     }
-    if (!isPlainObject(value)) return
-    for (const [key, child] of Object.entries(value)) {
-        if (/^(?:phase|nextPhase|state|status|action|mode|activationMode|limits?|budgets?|targets?|maxEpochs|maxDurationMs|maxTurns|maxTokens|maxCostMicros|minimumImprovement)$/iu.test(key)) {
-            throw new Error(`${path} cannot override phases or mutate optimization limits`)
+    if (value.artifactId !== undefined) {
+        const artifactId = requiredText(
+            value.artifactId,
+            `Optimization decision observation ${index + 1} artifact id`,
+            200,
+        )
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u.test(artifactId)) {
+            throw new Error("Optimization decision observation artifact id must be opaque")
         }
-        rejectDecisionMutation(child, `${path}.${key}`)
+        observation.artifactId = artifactId
     }
+    return observation
 }
 
 function parseOptimizationDecision(value) {
@@ -327,13 +338,11 @@ function parseOptimizationDecision(value) {
     if (!DECISION_ACTIONS.has(action)) {
         throw new Error("Optimization decision action must be continue, finish, or pause")
     }
-    const observations = source.observations === undefined
-        ? []
-        : cloneJson(source.observations, "Optimization decision observations")
-    if (!Array.isArray(observations) && !isPlainObject(observations)) {
-        throw new Error("Optimization decision observations must be structured JSON")
+    const observationSource = source.observations === undefined ? [] : source.observations
+    if (!Array.isArray(observationSource) || observationSource.length > 64) {
+        throw new Error("Optimization decision observations must be a bounded array")
     }
-    rejectDecisionMutation(observations)
+    const observations = observationSource.map(decisionObservation)
     const parsed = {
         schemaVersion: OPTIMIZATION_DECISION_SCHEMA,
         action,
@@ -415,8 +424,8 @@ function caseRevision(value, index) {
 function datasetSnapshot(value, {bindingFact = true} = {}) {
     exactKeys(
         value,
-        ["id", "revision", "caseRevisions", "digest"],
-        bindingFact ? ["skillId", "repositoryId"] : [],
+        ["id", "revision", "caseRevisions", "digest", "repositoryId"],
+        bindingFact ? ["skillId"] : [],
         "Optimization Dataset",
     )
     if (!Array.isArray(value.caseRevisions) || value.caseRevisions.length === 0) {
@@ -434,6 +443,7 @@ function datasetSnapshot(value, {bindingFact = true} = {}) {
         revision: boundedInteger(value.revision, "Optimization Dataset revision", 1, Number.MAX_SAFE_INTEGER),
         caseRevisions,
         digest: digestText(value.digest, "Optimization Dataset digest"),
+        repositoryId: requiredText(value.repositoryId, "Optimization Dataset repository id", 200),
     }
 }
 
@@ -474,10 +484,7 @@ function frozenRunBody(value, {trustedFacts = true} = {}) {
         if (datasetSkillId !== baseline.skillId) {
             throw new Error("Dataset is bound to a different stable Skill identity")
         }
-        if (
-            value.dataset.repositoryId !== undefined &&
-            requiredText(value.dataset.repositoryId, "Dataset repository identity", 200) !== baseline.repositoryId
-        ) {
+        if (dataset.repositoryId !== baseline.repositoryId) {
             throw new Error("Dataset is bound to a different stable Skill repository identity")
         }
         if (value.rubric.datasetId !== dataset.id) {

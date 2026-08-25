@@ -27,6 +27,8 @@ const MAX_RUNS = 10_000
 const MAX_OPERATIONS = 10_000
 const MAX_ARTIFACT_REFERENCES = 512
 const MAX_CHECKPOINT_BYTES = 64 * 1024
+const MAX_OWNERSHIP_BYTES = 4 * 1024
+const OWNERSHIP_SCHEMA = "rolling-skill-optimization-owner/v1"
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0
 const DIRECTORY = constants.O_DIRECTORY ?? 0
 const TERMINAL_STATES = new Set(["succeeded", "failed", "cancelled"])
@@ -378,8 +380,114 @@ function writePrivateFile(path, body) {
     }
 }
 
+function processIsAlive(pid) {
+    try {
+        process.kill(pid, 0)
+        return true
+    } catch (error) {
+        if (error?.code === "ESRCH") return false
+        return true
+    }
+}
+
+function ownershipPath(path) {
+    return join(dirname(path), `.${basename(path)}.owner`)
+}
+
+function readOwnership(path) {
+    const body = readSecureFile(path, dirname(path), MAX_OWNERSHIP_BYTES, "Optimization ownership lock")
+    const value = JSON.parse(body.toString("utf8"))
+    exactKeys(value, ["schemaVersion", "pid", "token"], [], "Optimization ownership lock")
+    if (value.schemaVersion !== OWNERSHIP_SCHEMA) throw new Error("Optimization ownership lock schema is invalid")
+    return {
+        schemaVersion: OWNERSHIP_SCHEMA,
+        pid: integer(value.pid, "Optimization ownership pid", 1),
+        token: publicId(value.token, "Optimization ownership token"),
+    }
+}
+
+function createOwnership(path) {
+    const token = randomUUID()
+    const body = `${JSON.stringify({schemaVersion: OWNERSHIP_SCHEMA, pid: process.pid, token})}\n`
+    const descriptor = openSync(
+        path,
+        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | NOFOLLOW,
+        0o600,
+    )
+    try {
+        fchmodSync(descriptor, 0o600)
+        writeFileSync(descriptor, body)
+        fsyncSync(descriptor)
+    } finally {
+        closeSync(descriptor)
+    }
+    fsyncDirectoryBestEffort(dirname(path))
+    return {path, token}
+}
+
+function acquireOwnership(storePath) {
+    const path = ownershipPath(storePath)
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+            return createOwnership(path)
+        } catch (error) {
+            if (error?.code !== "EEXIST") throw error
+        }
+        let owner
+        try {
+            owner = readOwnership(path)
+        } catch (error) {
+            throw new Error(`Could not verify Optimization store owner: ${error.message}`)
+        }
+        if (owner.pid !== process.pid && processIsAlive(owner.pid)) {
+            throw new Error(`Optimization store is owned by live process ${owner.pid}`)
+        }
+        const stalePath = `${path}.stale-${process.pid}-${randomUUID()}`
+        try {
+            renameSync(path, stalePath)
+            fsyncDirectoryBestEffort(dirname(path))
+        } catch (error) {
+            if (error?.code === "ENOENT") continue
+            throw new Error(`Could not replace stale Optimization ownership lock: ${error.message}`)
+        }
+        try {
+            unlinkSync(stalePath)
+        } catch {}
+    }
+    throw new Error("Could not acquire Optimization store ownership")
+}
+
+function releaseOwnership(ownership) {
+    if (!ownership) return
+    try {
+        const current = readOwnership(ownership.path)
+        if (current.pid === process.pid && current.token === ownership.token) {
+            unlinkSync(ownership.path)
+            fsyncDirectoryBestEffort(dirname(ownership.path))
+        }
+    } catch {}
+}
+
+function verifyOwnership(ownership) {
+    let current
+    try {
+        current = readOwnership(ownership.path)
+    } catch (error) {
+        throw new Error(`Could not verify Optimization store ownership: ${error.message}`)
+    }
+    if (current.pid !== process.pid || current.token !== ownership.token) {
+        throw new Error("Optimization store ownership was lost")
+    }
+}
+
 function initialState() {
-    return {schemaVersion: OPTIMIZATION_STORE_SCHEMA, runs: [], creationKeys: []}
+    return {
+        schemaVersion: OPTIMIZATION_STORE_SCHEMA,
+        generation: randomUUID(),
+        revision: 0,
+        runs: [],
+        creationKeys: [],
+    }
 }
 
 function canonicalEpoch(value) {
@@ -480,6 +588,27 @@ function canonicalOperation(value) {
     }
 }
 
+function canonicalRecovery(value) {
+    if (value === null) return null
+    exactKeys(
+        value,
+        ["previousState", "reason", "recoveredAt"],
+        [],
+        "Optimization recovery metadata",
+    )
+    const previousState = requiredText(value.previousState, "Optimization recovery previous state", 40)
+    if (!ACTIVE_RESTART_STATES.has(previousState)) {
+        throw new Error("Optimization recovery previous state is invalid")
+    }
+    const reason = requiredText(value.reason, "Optimization recovery reason", 100)
+    if (reason !== "process_interrupted") throw new Error("Optimization recovery reason is invalid")
+    return {
+        previousState,
+        reason,
+        recoveredAt: timestamp(value.recoveredAt, "Optimization recovery time"),
+    }
+}
+
 function canonicalRun(value) {
     exactKeys(value, [
         "id",
@@ -489,6 +618,7 @@ function canonicalRun(value) {
         "epochs",
         "currentEpoch",
         "checkpoint",
+        "recovery",
         "error",
         "operations",
         "createdAt",
@@ -526,6 +656,7 @@ function canonicalRun(value) {
         epochs,
         currentEpoch: integer(value.currentEpoch, "Optimization current epoch", 0, epochs.length),
         checkpoint: boundedJson(requireObject(value.checkpoint, "Optimization checkpoint"), "Optimization checkpoint"),
+        recovery: canonicalRecovery(value.recovery),
         error: value.error === null ? null : boundedJson(value.error, "Optimization error", 32 * 1024),
         operations,
         createdAt: timestamp(value.createdAt, "Optimization run createdAt"),
@@ -535,6 +666,43 @@ function canonicalRun(value) {
     if (run.currentEpoch !== epochs.length) throw new Error("Optimization current epoch is inconsistent")
     if (TERMINAL_STATES.has(run.state) !== (run.completedAt !== null)) {
         throw new Error("Optimization run terminal fields are inconsistent")
+    }
+    const currentEpoch = epochs.at(-1) ?? null
+    if (TERMINAL_STATES.has(run.state) && epochs.some((epoch) => !TERMINAL_EPOCH_STATES.has(epoch.status))) {
+        throw new Error("A terminal Optimization run cannot contain a nonterminal Epoch")
+    }
+    if (["editing", "installing", "evaluating", "deciding"].includes(run.state)) {
+        if (
+            currentEpoch !== null &&
+            !TERMINAL_EPOCH_STATES.has(currentEpoch.status) &&
+            currentEpoch.status !== run.state
+        ) {
+            throw new Error("Optimization Run phase does not match its current Epoch")
+        }
+        if (["installing", "evaluating", "deciding"].includes(run.state) && currentEpoch === null) {
+            throw new Error(`Optimization Run phase ${run.state} requires a current Epoch`)
+        }
+    }
+    if (run.state === "waiting_approval" && (
+        currentEpoch === null ||
+        (!TERMINAL_EPOCH_STATES.has(currentEpoch.status) && currentEpoch.status !== "deciding")
+    )) {
+        throw new Error("Optimization approval requires a deciding current Epoch")
+    }
+    if (["installing", "evaluating", "deciding", "waiting_approval"].includes(run.state)) {
+        if (currentEpoch.candidateArtifactId === null) {
+            throw new Error("Optimization installing phase requires a Candidate artifact")
+        }
+    }
+    if (["evaluating", "deciding", "waiting_approval"].includes(run.state)) {
+        if (currentEpoch.installArtifactIds.length === 0) {
+            throw new Error("Optimization evaluating phase requires an install artifact")
+        }
+    }
+    if (["deciding", "waiting_approval"].includes(run.state)) {
+        if (currentEpoch.evaluationArtifactIds.length === 0) {
+            throw new Error("Optimization deciding phase requires an evaluation artifact")
+        }
     }
     for (const operation of run.operations) {
         if (operation.result.runId !== run.id) {
@@ -574,7 +742,12 @@ function canonicalState(value) {
     if (value.schemaVersion !== OPTIMIZATION_STORE_SCHEMA) {
         throw new Error(`Unsupported Optimization store schema: ${value.schemaVersion}`)
     }
-    exactKeys(value, ["schemaVersion", "runs", "creationKeys"], [], "Optimization store")
+    exactKeys(
+        value,
+        ["schemaVersion", "generation", "revision", "runs", "creationKeys"],
+        [],
+        "Optimization store",
+    )
     if (!Array.isArray(value.runs) || value.runs.length > MAX_RUNS) {
         throw new Error("Optimization store run count is invalid")
     }
@@ -583,6 +756,8 @@ function canonicalState(value) {
     }
     const state = {
         schemaVersion: OPTIMIZATION_STORE_SCHEMA,
+        generation: publicId(value.generation, "Optimization store generation"),
+        revision: integer(value.revision, "Optimization store revision"),
         runs: value.runs.map(canonicalRun),
         creationKeys: value.creationKeys.map(canonicalCreationKey),
     }
@@ -654,25 +829,30 @@ function publicRunSummary(run) {
 }
 
 const PATH_BACKENDS = new Map()
-const PATH_BACKEND_FINALIZER = new FinalizationRegistry(({path, reference}) => {
+const PATH_BACKEND_FINALIZER = new FinalizationRegistry(({path, reference, ownership}) => {
     if (PATH_BACKENDS.get(path) === reference) PATH_BACKENDS.delete(path)
+    releaseOwnership(ownership)
 })
 
 function acquirePathBackend(path) {
     const existingReference = PATH_BACKENDS.get(path)
     let backend = existingReference?.deref()
     if (!backend) {
+        const ownership = acquireOwnership(path)
         backend = {
             state: null,
-            revision: 0,
-            generation: randomUUID(),
             coordinationKey: Object.freeze({}),
+            ownership,
             references: 0,
             finalizerToken: {},
         }
         const reference = new WeakRef(backend)
         PATH_BACKENDS.set(path, reference)
-        PATH_BACKEND_FINALIZER.register(backend, {path, reference}, backend.finalizerToken)
+        PATH_BACKEND_FINALIZER.register(
+            backend,
+            {path, reference, ownership},
+            backend.finalizerToken,
+        )
     }
     backend.references += 1
     return backend
@@ -684,6 +864,7 @@ function releasePathBackend(path, backend) {
     const reference = PATH_BACKENDS.get(path)
     if (reference?.deref() === backend) PATH_BACKENDS.delete(path)
     PATH_BACKEND_FINALIZER.unregister(backend.finalizerToken)
+    releaseOwnership(backend.ownership)
 }
 
 class OptimizationStore {
@@ -701,13 +882,7 @@ class OptimizationStore {
     }
 
     get #storeRevision() {
-        if (this.#backend === null) throw new Error("Optimization store is closed")
-        return this.#backend.revision
-    }
-
-    set #storeRevision(value) {
-        if (this.#backend === null) throw new Error("Optimization store is closed")
-        this.#backend.revision = value
+        return this.#state.revision
     }
 
     constructor(path) {
@@ -733,7 +908,7 @@ class OptimizationStore {
 
     get generation() {
         this.#requireOpen()
-        return this.#backend.generation
+        return this.#state.generation
     }
 
     get coordinationKey() {
@@ -757,7 +932,6 @@ class OptimizationStore {
         if (!pathEntryExists(this.#path)) {
             this.#state = canonicalState(initialState())
             this.persist()
-            this.#storeRevision += 1
             return this.read()
         }
         try {
@@ -777,6 +951,7 @@ class OptimizationStore {
 
     persist() {
         this.#requireOpen()
+        verifyOwnership(this.#backend.ownership)
         this.#state = canonicalState(this.#state)
         const encoded = `${JSON.stringify(this.#state, null, 2)}\n`
         if (Buffer.byteLength(encoded) > MAX_STORE_BYTES) {
@@ -788,17 +963,15 @@ class OptimizationStore {
     #mutate(callback) {
         this.#requireOpen()
         const previous = this.#state
-        const previousStoreRevision = this.#storeRevision
         this.#state = cloneJson(previous)
         try {
             const result = callback(this.#state)
+            this.#state.revision += 1
             this.#state = canonicalState(this.#state)
             this.persist()
-            this.#storeRevision += 1
             return cloneJson(result)
         } catch (error) {
             this.#state = previous
-            this.#storeRevision = previousStoreRevision
             throw error
         }
     }
@@ -903,6 +1076,7 @@ class OptimizationStore {
             epochs: [],
             currentEpoch: 0,
             checkpoint: {},
+            recovery: null,
             error: null,
             operations: [],
             createdAt: now,
@@ -963,10 +1137,45 @@ class OptimizationStore {
         if (!RUN_TRANSITIONS.get(current.state)?.has(nextState)) {
             throw new Error(`Invalid Optimization run transition: ${current.state} -> ${nextState}`)
         }
+        const currentEpoch = current.epochs.at(-1) ?? null
+        if (["installing", "evaluating", "deciding"].includes(nextState)) {
+            if (currentEpoch === null || TERMINAL_EPOCH_STATES.has(currentEpoch.status)) {
+                throw new Error(`Optimization ${nextState} phase requires a nonterminal current Epoch`)
+            }
+            if (currentEpoch.candidateArtifactId === null) {
+                throw new Error("Optimization installing phase requires a Candidate artifact")
+            }
+            if (["evaluating", "deciding"].includes(nextState) && currentEpoch.installArtifactIds.length === 0) {
+                throw new Error("Optimization evaluating phase requires an install artifact")
+            }
+            if (nextState === "deciding" && currentEpoch.evaluationArtifactIds.length === 0) {
+                throw new Error("Optimization deciding phase requires an evaluation artifact")
+            }
+        }
+        if (nextState === "waiting_approval" && (
+            currentEpoch === null ||
+            currentEpoch.status !== "deciding"
+        )) {
+            throw new Error("Optimization approval requires a deciding current Epoch")
+        }
+        if (nextState === "editing" && currentEpoch !== null && !TERMINAL_EPOCH_STATES.has(currentEpoch.status)) {
+            throw new Error("Optimization must terminalize the current Epoch before returning to editing")
+        }
+        if (TERMINAL_STATES.has(nextState) && current.epochs.some(
+            (epoch) => !TERMINAL_EPOCH_STATES.has(epoch.status),
+        )) {
+            throw new Error("A terminal Optimization run requires every Epoch to be terminal")
+        }
         return this.#mutate((state) => {
             const run = this.#requireRun(runId, state)
             const now = nowTimestamp()
             run.state = nextState
+            if (["installing", "evaluating", "deciding"].includes(nextState)) {
+                const epoch = run.epochs.at(-1)
+                epoch.status = nextState
+                epoch.updatedAt = now
+                epoch.completedAt = null
+            }
             if (Object.hasOwn(normalized.patch, "checkpoint")) {
                 run.checkpoint = boundedJson(
                     requireObject(normalized.patch.checkpoint, "Optimization checkpoint"),
@@ -1170,15 +1379,15 @@ class OptimizationStore {
             const previousState = run.state
             run.state = "needs_recovery"
             run.revision += 1
-            run.checkpoint = {
+            run.recovery = {
                 previousState,
-                recoveryReason: "process_interrupted",
+                reason: "process_interrupted",
                 recoveredAt: now,
             }
             run.updatedAt = now
         }
+        this.#state.revision += 1
         this.persist()
-        this.#storeRevision += 1
     }
 }
 

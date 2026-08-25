@@ -87,6 +87,7 @@ function freezeInput(overrides = {}) {
             }],
             digest: digest("dataset revision 7"),
             skillId: "skill-1",
+            repositoryId: "repository-1",
         },
         rubric: {
             id: "rubric-1",
@@ -238,6 +239,29 @@ describe("optimization contract", () => {
         assert.throws(() => freezeOptimizationRun(incompleteEvidence), /complete|truncat|digest/i)
     })
 
+    it("requires and freezes the Dataset repository identity", () => {
+        const matching = freezeInput()
+        matching.dataset.repositoryId = matching.baseline.repositoryId
+        const frozen = freezeOptimizationRun(matching)
+        assert.equal(frozen.dataset.repositoryId, matching.baseline.repositoryId)
+
+        const missing = freezeInput()
+        delete missing.dataset.repositoryId
+        assert.throws(() => freezeOptimizationRun(missing), /dataset.*repository|required/i)
+
+        const differentRepository = freezeInput()
+        differentRepository.dataset.repositoryId = "repository-2"
+        assert.throws(
+            () => freezeOptimizationRun(differentRepository),
+            /dataset.*repository|repository.*identity/i,
+        )
+
+        const secondRepository = freezeInput()
+        secondRepository.baseline.repositoryId = "repository-2"
+        secondRepository.dataset.repositoryId = "repository-2"
+        assert.notEqual(frozen.digest, freezeOptimizationRun(secondRepository).digest)
+    })
+
     it("rejects hard token or cost budgets without matching telemetry", () => {
         assert.throws(() => parseOptimizationConfig(config({
             telemetry: {tokens: false, cost: true},
@@ -294,5 +318,32 @@ describe("optimization contract", () => {
             observations: [{kind: "proposal", limits: {maxEpochs: 100}}],
         }), /limit|override|mutation/i)
         assert.throws(() => parseOptimizationDecision({...base, rationale: "x".repeat(9_000)}), /rationale|long/i)
+    })
+
+    it("accepts only the positive Decision observation schema", () => {
+        const base = {
+            schemaVersion: OPTIMIZATION_DECISION_SCHEMA,
+            action: "continue",
+            rationale: "Continue because the score is improving.",
+        }
+        assert.deepEqual(parseOptimizationDecision({...base, observations: [{
+            kind: "score",
+            summary: "Score increased by 3.5 points.",
+            artifactId: "analysis-1",
+        }]}).observations, [{
+            kind: "score",
+            summary: "Score increased by 3.5 points.",
+            artifactId: "analysis-1",
+        }])
+        assert.throws(() => parseOptimizationDecision({
+            ...base,
+            observations: {kind: "score", summary: "Not an observation list."},
+        }), /observation.*array|schema/i)
+        for (const field of ["config", "target", "runtime", "judge", "telemetry", "details"]) {
+            assert.throws(() => parseOptimizationDecision({
+                ...base,
+                observations: [{kind: "score", summary: "Forged mutation.", [field]: {enabled: true}}],
+            }), /observation|unsupported|unknown|schema/i, field)
+        }
     })
 })
