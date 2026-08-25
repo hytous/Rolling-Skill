@@ -60,6 +60,11 @@ function publicJobSummary(job = {}) {
         childJobIds,
         artifactIds: Array.isArray(job.artifactIds) ? job.artifactIds : [],
         approvalIds: Array.isArray(job.approvalIds) ? job.approvalIds : [],
+        optimizationRunId: typeof job.optimizationRunId === "string"
+            ? job.optimizationRunId
+            : typeof job.checkpoint?.optimizationRunId === "string"
+                ? job.checkpoint.optimizationRunId
+                : null,
         error: job.error ?? null,
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,

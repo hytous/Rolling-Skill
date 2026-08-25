@@ -6,6 +6,8 @@ const {
 } = require("./optimization-contract.cjs")
 const {persistOptimizationReport} = require("./optimization-report.cjs")
 
+const MAX_PUBLIC_ARTIFACT_BYTES = 1024 * 1024
+
 function dependency(value, method, label) {
     if (!value || typeof value[method] !== "function") {
         throw new Error(`${label} with ${method}() is required`)
@@ -24,6 +26,70 @@ function normalizedConfig(value) {
     return structuredClone(config)
 }
 
+function boundedArtifactValue(readArtifact, artifactId) {
+    if (!artifactId) return null
+    let value
+    try {
+        value = readArtifact(artifactId, MAX_PUBLIC_ARTIFACT_BYTES)
+        if (Buffer.isBuffer(value)) value = value.toString("utf8")
+        if (typeof value === "string") {
+            if (Buffer.byteLength(value, "utf8") > MAX_PUBLIC_ARTIFACT_BYTES) return null
+            value = JSON.parse(value)
+        }
+        if (value?.inline && typeof value.inline.body === "string") {
+            if (
+                value.inline.encoding === "base64" &&
+                value.inline.body.length > Math.ceil(MAX_PUBLIC_ARTIFACT_BYTES * 4 / 3) + 4
+            ) return null
+            const body = value.inline.encoding === "base64"
+                ? Buffer.from(value.inline.body, "base64").toString("utf8")
+                : value.inline.body
+            if (Buffer.byteLength(body, "utf8") > MAX_PUBLIC_ARTIFACT_BYTES) return null
+            value = JSON.parse(body)
+        } else if (value && typeof value.body === "string") {
+            if (Buffer.byteLength(value.body, "utf8") > MAX_PUBLIC_ARTIFACT_BYTES) return null
+            value = JSON.parse(value.body)
+        }
+    } catch {
+        return null
+    }
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null
+}
+
+function publicMarker(value) {
+    if (!value || typeof value !== "object") return null
+    const runId = typeof value.runId === "string" ? value.runId.slice(0, 200) : ""
+    const versionId = typeof value.versionId === "string" ? value.versionId.slice(0, 200) : ""
+    const contentDigest = typeof value.contentDigest === "string"
+        ? value.contentDigest.slice(0, 80)
+        : ""
+    if (!runId || !versionId || !Number.isSafeInteger(value.epoch) || !contentDigest) return null
+    return {runId, epoch: value.epoch, versionId, contentDigest}
+}
+
+function publicInstallation(value) {
+    if (!value || typeof value !== "object") return null
+    const runtimeId = typeof value.runtimeId === "string"
+        ? value.runtimeId
+        : value.runtime?.runtimeId
+    const installationJobId = typeof value.installationJobId === "string"
+        ? value.installationJobId
+        : value.id
+    if (typeof runtimeId !== "string" || !runtimeId || typeof installationJobId !== "string" || !installationJobId) {
+        return null
+    }
+    const result = value.parsedResult?.result ?? {}
+    const digest = value.lastVerifiedDigest ?? result.actualDigest ?? null
+    const marker = value.lastVerifiedMarker ?? result.markerAfter ?? null
+    return {
+        runtimeId: runtimeId.slice(0, 200),
+        status: String(value.status ?? "unknown").slice(0, 80),
+        installationJobId: installationJobId.slice(0, 200),
+        ...(typeof digest === "string" ? {lastVerifiedDigest: digest.slice(0, 80)} : {}),
+        ...(publicMarker(marker) ? {lastVerifiedMarker: publicMarker(marker)} : {}),
+    }
+}
+
 function publicCheckpoint(value = {}) {
     const fields = [
         "paused",
@@ -37,12 +103,108 @@ function publicCheckpoint(value = {}) {
         "finalEvaluationArtifactId",
         "finalRegressionPassed",
     ]
-    return Object.fromEntries(fields
+    const checkpoint = Object.fromEntries(fields
         .filter((field) => value[field] !== undefined)
         .map((field) => [field, structuredClone(value[field])]))
+    if (value.telemetry && typeof value.telemetry === "object") {
+        const elapsedMs = Number(value.telemetry.elapsedMs)
+        const turnsUsed = Number(value.telemetry.turnsUsed)
+        const tokens = value.telemetry.tokens
+        const costMicros = value.telemetry.costMicros
+        if (Number.isFinite(elapsedMs) && elapsedMs >= 0 && Number.isSafeInteger(turnsUsed) && turnsUsed >= 0) {
+            checkpoint.telemetry = {
+                elapsedMs,
+                turnsUsed,
+                tokens: Number.isSafeInteger(tokens) && tokens >= 0 ? tokens : null,
+                costMicros: Number.isSafeInteger(costMicros) && costMicros >= 0 ? costMicros : null,
+            }
+        }
+    }
+    const recoveryTargets = (Array.isArray(value.recoveryTargets) ? value.recoveryTargets : [])
+        .slice(0, 64)
+        .map(publicInstallation)
+        .filter(Boolean)
+    if (recoveryTargets.length) checkpoint.recoveryTargets = recoveryTargets
+    return checkpoint
 }
 
-function publicRun(run) {
+function publicCandidate(value) {
+    if (!value || typeof value !== "object") return null
+    const versionId = typeof value.versionId === "string" ? value.versionId : value.id
+    if (
+        typeof versionId !== "string" || !versionId ||
+        typeof value.commit !== "string" || !value.commit ||
+        typeof value.contentDigest !== "string" || !value.contentDigest
+    ) return null
+    return {
+        versionId: versionId.slice(0, 200),
+        commit: value.commit.slice(0, 80),
+        contentDigest: value.contentDigest.slice(0, 80),
+    }
+}
+
+function publicAnalysis(value) {
+    if (!value || typeof value !== "object") return null
+    const regressionCount = Number.isSafeInteger(value.regressionCount)
+        ? value.regressionCount
+        : Array.isArray(value.regressed) ? value.regressed.length : 0
+    const summary = {regressionCount: Math.max(0, Math.min(regressionCount, 100_000))}
+    for (const [field, minimum, maximum] of [
+        ["score", 0, 100],
+        ["scoreDelta", -100, 100],
+        ["passRate", 0, 1],
+    ]) {
+        if (Number.isFinite(value[field]) && value[field] >= minimum && value[field] <= maximum) {
+            summary[field] = value[field]
+        }
+    }
+    for (const field of ["executionFailureCount", "gradingFailureCount"]) {
+        if (Number.isSafeInteger(value[field]) && value[field] >= 0) {
+            summary[field] = Math.min(value[field], 100_000)
+        }
+    }
+    return summary
+}
+
+function publicDecision(value) {
+    if (!value || typeof value !== "object" || !["continue", "finish", "pause"].includes(value.action)) {
+        return null
+    }
+    return {
+        action: value.action,
+        rationale: String(value.rationale ?? "").slice(0, 8_192),
+    }
+}
+
+function publicEpoch(epoch, readArtifact) {
+    const candidate = publicCandidate(boundedArtifactValue(readArtifact, epoch.candidateArtifactId))
+    const installationArtifacts = (epoch.installArtifactIds ?? [])
+        .slice(0, 64)
+        .map((artifactId) => boundedArtifactValue(readArtifact, artifactId))
+        .filter(Boolean)
+    const installations = installationArtifacts
+        .flatMap((artifact) => Array.isArray(artifact.jobs) ? artifact.jobs.slice(0, 64) : [artifact])
+        .slice(0, 64)
+        .map(publicInstallation)
+        .filter(Boolean)
+    const analysis = publicAnalysis(boundedArtifactValue(readArtifact, epoch.analysisArtifactId))
+    const decision = publicDecision(boundedArtifactValue(readArtifact, epoch.decisionArtifactId))
+    return {
+        number: epoch.number,
+        status: epoch.status,
+        candidateArtifactId: epoch.candidateArtifactId ?? null,
+        installArtifactIds: structuredClone(epoch.installArtifactIds ?? []),
+        evaluationArtifactIds: structuredClone(epoch.evaluationArtifactIds ?? []),
+        analysisArtifactId: epoch.analysisArtifactId ?? null,
+        decisionArtifactId: epoch.decisionArtifactId ?? null,
+        ...(candidate ? {candidate} : {}),
+        ...(installations.length ? {installations} : {}),
+        ...(analysis ? {analysis} : {}),
+        ...(decision ? {decision} : {}),
+    }
+}
+
+function publicRun(run, readArtifact = () => null) {
     const snapshot = run.snapshot ?? {}
     return {
         id: run.id,
@@ -69,16 +231,15 @@ function publicRun(run) {
             version: snapshot.rubric?.version,
             ...(snapshot.rubric?.digest ? {digest: snapshot.rubric.digest} : {}),
         },
+        operator: structuredClone(snapshot.operator),
         targets: structuredClone(snapshot.targets ?? []),
-        epochs: (run.epochs ?? []).map((epoch) => ({
-            number: epoch.number,
-            status: epoch.status,
-            candidateArtifactId: epoch.candidateArtifactId ?? null,
-            installArtifactIds: structuredClone(epoch.installArtifactIds ?? []),
-            evaluationArtifactIds: structuredClone(epoch.evaluationArtifactIds ?? []),
-            analysisArtifactId: epoch.analysisArtifactId ?? null,
-            decisionArtifactId: epoch.decisionArtifactId ?? null,
-        })),
+        judge: structuredClone(snapshot.judge),
+        activationMode: snapshot.activationMode,
+        mode: snapshot.mode,
+        limits: structuredClone(snapshot.limits),
+        target: structuredClone(snapshot.target),
+        telemetry: structuredClone(snapshot.telemetry),
+        epochs: (run.epochs ?? []).slice(0, 100).map((epoch) => publicEpoch(epoch, readArtifact)),
         checkpoint: publicCheckpoint(run.checkpoint),
         error: run.error === null || run.error === undefined
             ? null
@@ -233,7 +394,10 @@ class OptimizationControlService {
     }
 
     get(runId) {
-        return {run: publicRun(this.store.getRun(requiredText(runId, "Optimization Run id", 200)))}
+        return {run: publicRun(
+            this.store.getRun(requiredText(runId, "Optimization Run id", 200)),
+            this.readArtifact,
+        )}
     }
 
     scope(runId) {

@@ -1259,6 +1259,9 @@ class OperatorSessionManager {
                 type: "operator-session",
                 objective,
                 budget: context.budget,
+                checkpoint: managedWorkspace.binding?.optimizationRunId
+                    ? {optimizationRunId: managedWorkspace.binding.optimizationRunId}
+                    : null,
             })
             control = this.#createControl({
                 session,

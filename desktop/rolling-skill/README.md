@@ -234,11 +234,76 @@ socket is transport, not ambient authorization.
   `rolling_skill_evaluations_start`, and `rolling_skill_evaluations_cancel`
 - `rolling_skill_skill_repositories_list`, `rolling_skill_skills_list`,
   `rolling_skill_skill_versions_list`, and `rolling_skill_skills_get`
+- `rolling_skill_optimization_preflight`, `rolling_skill_optimization_start`,
+  `rolling_skill_optimization_get`, `rolling_skill_optimization_pause`,
+  `rolling_skill_optimization_resume`, `rolling_skill_optimization_stop`,
+  `rolling_skill_optimization_submit_candidate`,
+  `rolling_skill_optimization_submit_decision`, and `rolling_skill_optimization_report`
 
 Ordinary Chat sessions and formal target/Judge evaluation clients never receive this Operator
 capability, the `operator-mcp` server, or its credential environment. The desktop renderer uses a
 separate main-process-private capability for its existing UI actions; no token or session is exposed
 through preload, Renderer IPC arguments/results, or DevTools.
+
+## Multi-Epoch Skill optimization
+
+Use **Self-operation → Multi-Epoch Optimization** to improve one managed Skill against a stable
+evaluation contract. Before Start is enabled, preflight resolves and freezes the selected Released
+baseline, managed Skill/repository identity, Dataset and published Rubric revision, calibrated Case
+revisions, Operator Runtime, target Runtime matrix, Judge, activation mode, model/effort choices,
+stop targets, and hard budgets. A later Dataset, Rubric, Case, catalog, or Working-tree change does
+not mutate an existing Run. Start a new Run when the comparison inputs must change.
+
+The engine, rather than the Operator Agent, owns the phase order:
+
+```text
+preflight → baseline evaluation
+          → edit → Candidate → experiment install → evaluation → decision
+          → next Epoch, release approval, or stop-and-restore
+          → Released install → final regression → succeeded
+```
+
+The baseline evaluation is not an Epoch. Each Epoch edits a linked worktree under Application
+Support, commits an immutable Candidate, installs and verifies it on every selected target Runtime,
+evaluates the same frozen Dataset/Rubric, and records deterministic score/pass deltas and
+regressions. Candidate installations advance directly between Epochs; the initial Runtime state is
+restored only when the whole Run stops, fails, is rejected, or otherwise finishes without a
+successful Released installation. Fixed mode follows the configured Epoch bound. Adaptive mode lets
+the Agent submit a typed `continue`, `finish`, or `pause` recommendation, but deterministic target,
+patience, regression, duration, turn, Epoch, token, and cost gates remain authoritative. Token or
+cost can be a hard gate only when every selected Runtime advertises that telemetry.
+
+Experiment installation is separate from ordinary Released installation. It accepts only the
+Candidate and worktree registered to the current Run, writes a Run/Epoch experiment marker, and does
+not update the trusted Released installation matrix. Preflight permits unattended rotation only
+from an absent target or an exactly verified clean managed baseline with a frozen restoration
+source. Drifted, unmanaged, conflicting, or uncertain targets must first be repaired in **Runtime
+installs**. Restoration rechecks the experiment marker before changing a target and verifies the
+restored content and inventory afterward; any uncertain target leaves the parent Job in
+`needs_recovery` with its last verified digest, marker, and installer Job link.
+
+Release, formal Released installation, and any requested budget increase are distinct approval
+boundaries. The Agent cannot approve them or raise its own limits. A successful release followed by
+a failed install remains recorded as “released but not installed”; the Released version is not
+rolled back, while enrolled Runtime targets are restored or surfaced for recovery. Only a successful
+Released install followed by final regression keeps the new installation instead of restoring the
+baseline.
+
+Pause prevents new phase scheduling without pretending an in-flight side effect was undone. Stop
+cancels queued work, interrupts active children, and then restores enrolled Runtime targets. During
+App shutdown the runner checkpoints the current phase, active installation/evaluation references,
+restoration evidence, and the latest available elapsed-time, turn, token, and cost telemetry before
+Runtime sessions are stopped.
+Startup reconciles unfinished Runs before the window opens: read-only inspection and saved IDs are
+used instead of blindly replaying installation or evaluation writes. Recovery failure remains
+durable and blocks a new Epoch or release action.
+
+The right-hand Run panel shows the frozen inputs, Epoch/Candidate timeline, per-Runtime installation
+state, score/pass trend, regressions, remaining budgets, stop reason, approvals, release/final
+regression result, and recovery targets. Large Diff, evaluation, Trace, and report bodies stay in
+lazy Artifacts rather than the Renderer snapshot. The generated Chinese Markdown report is derived
+from persisted evidence; unavailable Runtime telemetry is labeled as unavailable, never reported as
+zero.
 
 ## Managed Skill repositories
 
@@ -301,7 +366,8 @@ evaluation continues to verify the Skill actually exposed by each selected runti
 ## Chat and Skill evaluation workbench
 
 Use the switch below the Rolling Skill logo to move among the native **Chat** client, the
-**Skill evaluation** workbench, and **Skill management**. The evaluation workbench can:
+**Skill evaluation** workbench, **Skill management**, and **Self-operation**. The evaluation
+workbench can:
 
 - create, browse, and delete local datasets;
 - export all Cases or only Good Cases as CSV, choosing either curated references or only the final
@@ -553,7 +619,10 @@ Local state is stored under `~/Library/Application Support/Rolling Skill/`:
 | `raw-case-events.jsonl` | Append-only Raw Case inbox events shared with the external CLI/MCP Tool |
 | `skill-registry.json` | Atomic registry of managed repositories, Skills, Candidates, Releases, and deprecation state |
 | `skill-installations.json` | Runtime installer jobs, ordered message/tool timelines, typed results, and trusted installed-version matrix |
+| `operator-jobs.json` | Operator sessions, parent/child Jobs, approvals, bounded events, checkpoints, and Artifact references |
+| `optimization-runs.json` | Frozen Optimization Runs, Epochs, Candidates, analyses, decisions, telemetry checkpoints, and recovery state |
 | `repositories/<repository-id>/` | Independent editable Git repository for each imported Skill source |
+| `optimization-workspaces/<run-id>/` | Registered linked Git worktree for one active Optimization Run; never the primary managed Working tree |
 | `traces/*.jsonl` and `traces/skill-installations/` | Append-only runtime events with runtime identity metadata |
 
 ## Security model

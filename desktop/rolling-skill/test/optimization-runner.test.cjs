@@ -98,6 +98,12 @@ class MemoryOptimizationStore {
         Object.assign(epoch, structuredClone(patch))
         return {epochId, status: epoch.status}
     }
+
+    updateCheckpoint(_runId, patch) {
+        Object.assign(this.run.checkpoint, structuredClone(patch))
+        this.run.revision += 1
+        return structuredClone(this.run)
+    }
 }
 
 function runnerFixture(options = {}) {
@@ -468,6 +474,12 @@ describe("multi-Epoch OptimizationRunner", () => {
 
             assert.equal(outcome.status, "failed")
             assert.equal(fixture.store.getRun(fixture.run.id).state, "failed")
+            assert.deepEqual(fixture.store.getRun(fixture.run.id).checkpoint.telemetry, {
+                elapsedMs: telemetry.elapsedMs,
+                turnsUsed: telemetry.turnsUsed,
+                tokens: telemetry.tokensUsed,
+                costMicros: telemetry.costMicros,
+            })
             assert.equal(
                 fixture.installationCalls.at(-1).operation,
                 "experiment_restore",
@@ -594,7 +606,17 @@ describe("multi-Epoch OptimizationRunner", () => {
         fixture.installationManager.startOptimizationExperiment = async (input) => {
             const jobs = await originalStart(input)
             if (input.operation === "experiment_restore") {
-                for (const job of jobs) fixture.installationJobs.get(job.id).status = "needs_recovery"
+                for (const job of jobs) {
+                    const stored = fixture.installationJobs.get(job.id)
+                    stored.status = "needs_recovery"
+                    stored.parsedResult.result.actualDigest = digest("e")
+                    stored.parsedResult.result.markerAfter = {
+                        runId: fixture.run.id,
+                        epoch: 1,
+                        versionId: "candidate-1",
+                        contentDigest: digest("e"),
+                    }
+                }
             }
             return jobs
         }
@@ -604,7 +626,20 @@ describe("multi-Epoch OptimizationRunner", () => {
         })
 
         assert.equal(outcome.status, "needs_recovery")
-        assert.equal(fixture.store.getRun(fixture.run.id).state, "needs_recovery")
+        const stored = fixture.store.getRun(fixture.run.id)
+        assert.equal(stored.state, "needs_recovery")
+        assert.deepEqual(stored.checkpoint.recoveryTargets, [{
+            runtimeId: "codex:target",
+            status: "needs_recovery",
+            installationJobId: "installation-3",
+            lastVerifiedDigest: digest("e"),
+            lastVerifiedMarker: {
+                runId: fixture.run.id,
+                epoch: 1,
+                versionId: "candidate-1",
+                contentDigest: digest("e"),
+            },
+        }])
     })
 
     it("honors a user stop and restores each mixed initial target with only its safe operation", async () => {

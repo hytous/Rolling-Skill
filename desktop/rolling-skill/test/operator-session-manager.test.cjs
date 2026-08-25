@@ -518,6 +518,7 @@ describe("OperatorSessionManager", () => {
             optimizationRunId: "run-1",
         }])
         assert.equal(context.clients[0].options.workspaceRoot, "/private/optimization-workspaces/run-1")
+        assert.deepEqual(created.parentJob.checkpoint, {optimizationRunId: "run-1"})
         const configuration = context.store.getSession(created.session.id).transcript.findLast(
             (entry) => entry.kind === "operator_session_configuration",
         )

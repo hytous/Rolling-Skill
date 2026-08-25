@@ -37,6 +37,295 @@
         return numeric
     }
 
+    function optimizationCatalogRuntime(catalogs, runtimeId) {
+        const runtimes = Array.isArray(catalogs?.runtimes) ? catalogs.runtimes : []
+        return runtimes.find((entry) => entry?.runtimeId === runtimeId) ?? null
+    }
+
+    function optimizationSelection(value, catalogs, label) {
+        const runtimeId = String(value?.runtimeId ?? "").trim()
+        const model = String(value?.modelId ?? "").trim()
+        const effort = String(value?.effort ?? "").trim()
+        const runtime = optimizationCatalogRuntime(catalogs, runtimeId)
+        if (!runtime) throw new Error(`${label} Runtime is not in the capability catalog`)
+        const catalogModels = catalogForRuntime(catalogs, runtimeId)
+        const models = catalogModels.length
+            ? catalogModels
+            : Array.isArray(runtime.models) ? runtime.models : []
+        const selectedModel = models.find((entry) => modelId(entry) === model) ?? null
+        if (!model || !selectedModel) throw new Error(`${label} model is not in the Runtime catalog`)
+        const efforts = selectedModel.reasoningEfforts ??
+            selectedModel.supportedReasoningEfforts ??
+            selectedModel.supportedEfforts ??
+            runtime.efforts ?? []
+        const normalizedEfforts = efforts.map((entry) => String(
+            entry?.reasoningEffort ?? entry?.effort ?? entry?.value ?? entry,
+        ))
+        if (effort && !normalizedEfforts.includes(effort)) {
+            throw new Error(`${label} effort is not in the Runtime catalog`)
+        }
+        return {
+            runtimeId,
+            modelId: model,
+            ...(effort ? {effort} : {}),
+        }
+    }
+
+    function requiredOptimizationNumber(value, label, {integer = false, minimum = 0, maximum} = {}) {
+        const numeric = Number(value)
+        if (
+            !Number.isFinite(numeric) ||
+            (integer && !Number.isSafeInteger(numeric)) ||
+            numeric < minimum ||
+            (maximum !== undefined && numeric > maximum)
+        ) throw new TypeError(`${label} is invalid`)
+        return numeric
+    }
+
+    function optionalOptimizationInteger(value, label, maximum) {
+        if (value === "" || value === null || value === undefined) return null
+        return requiredOptimizationNumber(value, label, {integer: true, minimum: 0, maximum})
+    }
+
+    function runtimeTelemetry(runtime, capability) {
+        const capabilities = Array.isArray(runtime?.capabilities) ? runtime.capabilities : []
+        return capabilities.includes(capability)
+    }
+
+    function buildOptimizationConfig(values = {}, catalogs = {}) {
+        const skills = Array.isArray(catalogs.skills) ? catalogs.skills : []
+        const versions = Array.isArray(catalogs.versions) ? catalogs.versions : []
+        const datasets = Array.isArray(catalogs.datasets) ? catalogs.datasets : []
+        const skill = skills.find((entry) => entry?.id === values.skillId) ?? null
+        if (!skill) throw new Error("Optimization Skill is not in the managed Skill catalog")
+        const baseline = versions.find((entry) => entry?.id === values.baselineVersionId) ?? null
+        if (
+            !baseline ||
+            baseline.state !== "released" ||
+            baseline.skillId !== skill.id ||
+            baseline.repositoryId !== skill.repositoryId
+        ) throw new Error("Optimization baseline must be a matching Released version")
+        const dataset = datasets.find((entry) => entry?.id === values.datasetId) ?? null
+        if (!dataset) throw new Error("Optimization Dataset is not in the catalog")
+        if (
+            dataset.skillReference?.id !== skill.id ||
+            dataset.skillReference?.repositoryId !== skill.repositoryId
+        ) throw new Error("Optimization Dataset and Skill binding do not match")
+        if (typeof dataset.activeRubricVersionId !== "string" || !dataset.activeRubricVersionId) {
+            throw new Error("Optimization Dataset requires a published Rubric")
+        }
+
+        const operator = optimizationSelection(values.operator, catalogs, "Operator")
+        const rawTargets = Array.isArray(values.targets) ? values.targets : []
+        if (!rawTargets.length) throw new Error("Optimization requires at least one target Runtime")
+        const targets = rawTargets.map((entry, index) => (
+            optimizationSelection(entry, catalogs, `Target ${index + 1}`)
+        ))
+        if (new Set(targets.map((entry) => entry.runtimeId)).size !== targets.length) {
+            throw new Error("Optimization target Runtime ids must be unique")
+        }
+        const judge = optimizationSelection(values.judge, catalogs, "Judge")
+        const mode = String(values.mode ?? "").trim()
+        if (!["fixed", "adaptive"].includes(mode)) {
+            throw new Error("Optimization mode must be fixed or adaptive")
+        }
+        const activationMode = String(values.activationMode ?? "").trim()
+        if (!["automatic", "explicit"].includes(activationMode)) {
+            throw new Error("Optimization activation mode must be automatic or explicit")
+        }
+
+        const maxEpochs = requiredOptimizationNumber(values.limits?.maxEpochs, "Optimization max Epochs", {
+            integer: true,
+            minimum: 1,
+            maximum: 100,
+        })
+        const limits = {
+            maxEpochs,
+            maxDurationMs: requiredOptimizationNumber(
+                values.limits?.maxDurationMs,
+                "Optimization max duration",
+                {integer: true, minimum: 1, maximum: 30 * 24 * 60 * 60 * 1_000},
+            ),
+            patience: requiredOptimizationNumber(values.limits?.patience, "Optimization patience", {
+                integer: true,
+                minimum: 1,
+                maximum: maxEpochs,
+            }),
+            minimumImprovement: requiredOptimizationNumber(
+                values.limits?.minimumImprovement,
+                "Optimization minimum improvement",
+                {minimum: 0, maximum: 100},
+            ),
+            maxTurns: optionalOptimizationInteger(values.limits?.maxTurns, "Optimization max turns", 1_000_000),
+            maxTokens: optionalOptimizationInteger(
+                values.limits?.maxTokens,
+                "Optimization max tokens",
+                1_000_000_000_000,
+            ),
+            maxCostMicros: optionalOptimizationInteger(
+                values.limits?.maxCostMicros,
+                "Optimization max cost",
+                Number.MAX_SAFE_INTEGER,
+            ),
+        }
+        const target = {
+            minimumScore: requiredOptimizationNumber(
+                values.target?.minimumScore,
+                "Optimization minimum score",
+                {minimum: 0, maximum: 100},
+            ),
+            minimumPassRate: requiredOptimizationNumber(
+                values.target?.minimumPassRate,
+                "Optimization minimum pass rate",
+                {minimum: 0, maximum: 1},
+            ),
+            requireCriticalCases: values.target?.requireCriticalCases === true,
+        }
+        if (typeof values.target?.requireCriticalCases !== "boolean") {
+            throw new TypeError("Optimization critical Case target must be boolean")
+        }
+
+        const selectedRuntimes = [operator, ...targets, judge].map((selection) => (
+            optimizationCatalogRuntime(catalogs, selection.runtimeId)
+        ))
+        const telemetry = {
+            tokens: selectedRuntimes.every((runtime) => runtimeTelemetry(runtime, "token-usage")),
+            cost: selectedRuntimes.every((runtime) => runtimeTelemetry(runtime, "cost-usage")),
+        }
+        if (limits.maxTokens > 0 && !telemetry.tokens) {
+            throw new Error("A hard token budget requires token telemetry from every Runtime")
+        }
+        if (limits.maxCostMicros > 0 && !telemetry.cost) {
+            throw new Error("A hard cost budget requires cost telemetry from every Runtime")
+        }
+        return {
+            skillId: skill.id,
+            baselineVersionId: baseline.id,
+            datasetId: dataset.id,
+            operator,
+            targets,
+            judge,
+            activationMode,
+            mode,
+            limits,
+            target,
+            telemetry,
+        }
+    }
+
+    function cloneOptimizationSummary(value, seen = new Set()) {
+        if (value === null || typeof value !== "object") return value
+        if (seen.has(value)) throw new TypeError("Optimization summary must not be cyclic")
+        seen.add(value)
+        const copy = Array.isArray(value)
+            ? value.map((entry) => cloneOptimizationSummary(entry, seen))
+            : Object.fromEntries(Object.entries(value).map(([key, entry]) => (
+                [key, cloneOptimizationSummary(entry, seen)]
+            )))
+        seen.delete(value)
+        return copy
+    }
+
+    function reduceOptimizationTimeline(previous, run) {
+        if (!run || typeof run !== "object" || typeof run.id !== "string" || !run.id) {
+            throw new TypeError("Optimization Run summary is invalid")
+        }
+        const revision = Number.isSafeInteger(run.revision) ? run.revision : 0
+        if (previous?.id === run.id && Number.isSafeInteger(previous.revision) && revision <= previous.revision) {
+            return previous
+        }
+        const summary = cloneOptimizationSummary(run)
+        summary.revision = revision
+        summary.epochs = (Array.isArray(summary.epochs) ? summary.epochs : [])
+            .filter((epoch) => Number.isSafeInteger(epoch?.number) && epoch.number > 0)
+            .sort((left, right) => left.number - right.number)
+        summary.scoreTrend = summary.epochs
+            .filter((epoch) => (
+                Number.isFinite(epoch.analysis?.score) && Number.isFinite(epoch.analysis?.passRate)
+            ))
+            .map((epoch) => ({
+                epoch: epoch.number,
+                score: epoch.analysis.score,
+                passRate: epoch.analysis.passRate,
+            }))
+        summary.stopReason = summary.checkpoint?.stopReason ?? summary.stopReason ?? null
+        summary.recoveryTargets = Array.isArray(summary.checkpoint?.recoveryTargets)
+            ? cloneOptimizationSummary(summary.checkpoint.recoveryTargets)
+            : []
+        return summary
+    }
+
+    function optimizationRunActions(run = {}) {
+        if (run.state === "restoring") return ["report"]
+        if (run.state === "needs_recovery") {
+            return run.checkpoint?.paused === true ? ["resume", "stop", "report"] : ["report"]
+        }
+        if (run.state === "paused") {
+            return ["resume", "stop", "report"]
+        }
+        if (["succeeded", "failed", "cancelled"].includes(run.state)) return ["report"]
+        return ["pause", "stop", "report"]
+    }
+
+    function optimizationPreflightSummary(preflight = {}, config = {}) {
+        return {
+            ready: preflight.ready === true,
+            frozen: {
+                snapshotDigest: preflight.snapshotDigest ?? null,
+                baselineVersionId: preflight.baseline?.versionId ?? null,
+                baselineDigest: preflight.baseline?.contentDigest ?? null,
+                datasetId: preflight.dataset?.id ?? null,
+                datasetRevision: preflight.dataset?.revision ?? null,
+                rubricId: preflight.rubric?.id ?? null,
+                rubricVersion: preflight.rubric?.version ?? null,
+            },
+            runtimeMatrix: cloneOptimizationSummary(preflight.targets ?? config.targets ?? []),
+            telemetry: cloneOptimizationSummary(config.telemetry ?? {tokens: false, cost: false}),
+            approvals: ["candidate-experiment-install", "release", "released-install"],
+        }
+    }
+
+    function remainingOptimizationBudget(limit, used) {
+        if (!Number.isFinite(limit) || !Number.isFinite(used)) return null
+        return Math.max(0, limit - used)
+    }
+
+    function optimizationPanelView(run = {}) {
+        const epochs = Array.isArray(run.epochs) ? run.epochs : []
+        const epoch = epochs.findLast?.((entry) => entry.number === run.currentEpoch) ?? epochs.at(-1) ?? null
+        const usage = run.checkpoint?.telemetry ?? {}
+        return {
+            id: run.id ?? null,
+            state: run.state ?? null,
+            currentEpoch: run.currentEpoch ?? 0,
+            baseline: cloneOptimizationSummary(run.baseline ?? {}),
+            dataset: cloneOptimizationSummary(run.dataset ?? {}),
+            rubric: cloneOptimizationSummary(run.rubric ?? {}),
+            candidate: cloneOptimizationSummary(epoch?.candidate ?? null),
+            installations: cloneOptimizationSummary(epoch?.installations ?? []),
+            scoreTrend: cloneOptimizationSummary(run.scoreTrend ?? []),
+            regressionCount: Number.isSafeInteger(epoch?.analysis?.regressionCount)
+                ? epoch.analysis.regressionCount
+                : 0,
+            remaining: {
+                durationMs: remainingOptimizationBudget(run.limits?.maxDurationMs, usage.elapsedMs),
+                turns: remainingOptimizationBudget(run.limits?.maxTurns, usage.turnsUsed),
+                tokens: remainingOptimizationBudget(run.limits?.maxTokens, usage.tokens),
+                costMicros: remainingOptimizationBudget(run.limits?.maxCostMicros, usage.costMicros),
+            },
+            stopReason: run.stopReason ?? run.checkpoint?.stopReason ?? null,
+            recoveryTargets: cloneOptimizationSummary(run.recoveryTargets ?? run.checkpoint?.recoveryTargets ?? []),
+            reportArtifactId: run.checkpoint?.reportArtifactId ?? null,
+            release: {
+                approvalId: run.checkpoint?.releaseApprovalId ?? null,
+                releasedVersionId: run.checkpoint?.releasedVersionId ?? null,
+                finalEvaluationArtifactId: run.checkpoint?.finalEvaluationArtifactId ?? null,
+                finalRegressionPassed: run.checkpoint?.finalRegressionPassed ?? null,
+            },
+            actions: optimizationRunActions(run),
+        }
+    }
+
     function buildOperatorSessionRequest(values = {}, catalogs = {}) {
         const runtimes = Array.isArray(catalogs.runtimes) ? catalogs.runtimes : []
         const runtime = runtimes.find((entry) => entry.runtimeId === values.runtimeId)
@@ -1159,6 +1448,8 @@
         "rubrics.publish",
         "installations.execute",
         "installations.read",
+        "optimizations.read",
+        "optimizations.execute",
     ])
 
     function createElement(document_, tag, className = "", text = "") {
@@ -1287,12 +1578,24 @@
             newJob: root.querySelector("#operator-new-job"),
             setup: root.querySelector("#operator-setup-form"),
             setupError: root.querySelector("#operator-setup-error"),
+            jobKind: root.querySelector("#operator-job-kind"),
             runtime: root.querySelector("#operator-runtime"),
             model: root.querySelector("#operator-model"),
             effort: root.querySelector("#operator-effort"),
             skill: root.querySelector("#operator-managed-skill"),
             dataset: root.querySelector("#operator-managed-dataset"),
             targets: root.querySelector("#operator-target-runtimes"),
+            optimizationFields: root.querySelector("#operator-optimization-fields"),
+            optimizationBaseline: root.querySelector("#operator-optimization-baseline"),
+            optimizationJudgeRuntime: root.querySelector("#operator-optimization-judge-runtime"),
+            optimizationJudgeModel: root.querySelector("#operator-optimization-judge-model"),
+            optimizationJudgeEffort: root.querySelector("#operator-optimization-judge-effort"),
+            optimizationActivation: root.querySelector("#operator-optimization-activation"),
+            optimizationMode: root.querySelector("#operator-optimization-mode"),
+            optimizationPreflightSummary: root.querySelector("#operator-optimization-preflight-summary"),
+            optimizationPreflight: root.querySelector("#operator-optimization-preflight"),
+            genericStart: root.querySelector("#operator-generic-start"),
+            optimizationStart: root.querySelector("#operator-optimization-start"),
             transcript: root.querySelector("#operator-transcript"),
             sessionHeader: root.querySelector("#operator-session-header"),
             sessionTitle: root.querySelector("#operator-session-title"),
@@ -1307,12 +1610,20 @@
             children: root.querySelector("#operator-child-jobs"),
             artifacts: root.querySelector("#operator-artifacts"),
             approvals: root.querySelector("#operator-approval-queue"),
+            optimizationPanel: root.querySelector("#operator-optimization-panel"),
+            optimizationFrozen: root.querySelector("#operator-optimization-frozen"),
+            optimizationTimeline: root.querySelector("#operator-optimization-timeline"),
+            optimizationInstallations: root.querySelector("#operator-optimization-installations"),
+            optimizationBudget: root.querySelector("#operator-optimization-budget"),
+            optimizationRecovery: root.querySelector("#operator-optimization-recovery"),
+            optimizationStopWarning: root.querySelector("#operator-optimization-stop-warning"),
+            optimizationActions: root.querySelector("#operator-optimization-actions"),
         }
         if (Object.values(selectors).some((element) => !element)) {
             throw new Error("Operator workbench markup is incomplete")
         }
 
-        let catalogs = {runtimes: [], skills: [], datasets: [], activeRuntimeId: null}
+        let catalogs = {runtimes: [], skills: [], versions: [], datasets: [], activeRuntimeId: null}
         const modelsByRuntime = new Map()
         const modelLoads = new Map()
         const jobNodes = new Map()
@@ -1320,6 +1631,11 @@
         let destroyed = false
         let creating = false
         let activeRenderedJobId = null
+        let optimizationPreflight = null
+        let optimizationPreflightSignature = null
+        let activeOptimizationRunId = null
+        let optimizationPollTimer = null
+        const optimizationRuns = new Map()
         const domEvents = createOperatorDomListenerScope()
 
         const state = createOperatorWorkbenchState({
@@ -1429,10 +1745,73 @@
             return modelsByRuntime.get(runtimeId) ?? []
         }
 
+        function runtimeEfforts(runtimeId, selectedModelId) {
+            const runtime = catalogs.runtimes.find((entry) => entry.runtimeId === runtimeId)
+            const selectedModel = availableModels(runtimeId)
+                .find((entry) => modelId(entry) === selectedModelId)
+            const efforts = selectedModel?.reasoningEfforts ??
+                selectedModel?.supportedReasoningEfforts ??
+                selectedModel?.supportedEfforts ??
+                runtime?.efforts ?? []
+            return [...new Set(efforts.map((entry) => String(
+                entry?.reasoningEffort ?? entry?.effort ?? entry?.value ?? entry,
+            )))]
+        }
+
         function appendOption(select, value, label) {
             const option = createElement(document_, "option", "", label)
             option.value = value
             select.append(option)
+        }
+
+        function populateOptimizationModelSelect(runtimeId, modelSelect, effortSelect) {
+            const selectedModel = modelSelect.value
+            const selectedEffort = effortSelect.value
+            modelSelect.replaceChildren()
+            for (const model of availableModels(runtimeId)) {
+                const value = modelId(model)
+                if (value) appendOption(modelSelect, value, model.displayName ?? value)
+            }
+            if (availableModels(runtimeId).some((entry) => modelId(entry) === selectedModel)) {
+                modelSelect.value = selectedModel
+            } else {
+                modelSelect.value = availableModels(runtimeId)[0]
+                    ? modelId(availableModels(runtimeId)[0])
+                    : ""
+            }
+            const efforts = runtimeEfforts(runtimeId, modelSelect.value)
+            effortSelect.replaceChildren()
+            appendOption(effortSelect, "", "Runtime default")
+            for (const effort of efforts) appendOption(effortSelect, effort, effort)
+            effortSelect.value = efforts.includes(selectedEffort) ? selectedEffort : ""
+        }
+
+        function renderOptimizationRuntimeSelectors() {
+            const selectedJudge = selectors.optimizationJudgeRuntime.value || selectors.runtime.value
+            selectors.optimizationJudgeRuntime.replaceChildren()
+            for (const runtime of catalogs.runtimes) {
+                appendOption(
+                    selectors.optimizationJudgeRuntime,
+                    runtime.runtimeId,
+                    runtime.displayName ?? runtime.runtimeId,
+                )
+            }
+            selectors.optimizationJudgeRuntime.value = catalogs.runtimes.some((entry) => (
+                entry.runtimeId === selectedJudge
+            )) ? selectedJudge : catalogs.runtimes[0]?.runtimeId ?? ""
+            populateOptimizationModelSelect(
+                selectors.optimizationJudgeRuntime.value,
+                selectors.optimizationJudgeModel,
+                selectors.optimizationJudgeEffort,
+            )
+            for (const card of selectors.targets.querySelectorAll("[data-operator-target-card]")) {
+                const runtimeId = card.dataset.operatorTargetCard
+                const modelSelect = card.querySelector("[data-optimization-target-model]")
+                const effortSelect = card.querySelector("[data-optimization-target-effort]")
+                if (modelSelect && effortSelect) {
+                    populateOptimizationModelSelect(runtimeId, modelSelect, effortSelect)
+                }
+            }
         }
 
         function renderEfforts() {
@@ -1485,11 +1864,10 @@
                     onError(error)
                 } finally {
                     modelLoads.delete(runtimeId)
-                    if (
-                        !destroyed &&
-                        !root.classList.contains("hidden") &&
-                        selectors.runtime.value === runtimeId
-                    ) renderModels(runtimeId)
+                    if (!destroyed && !root.classList.contains("hidden")) {
+                        if (selectors.runtime.value === runtimeId) renderModels(runtimeId)
+                        renderOptimizationRuntimeSelectors()
+                    }
                 }
             })()
             modelLoads.set(runtimeId, request)
@@ -1535,13 +1913,36 @@
                 selectors.dataset.value,
                 "No Dataset",
             )
+            const selectedBaseline = selectors.optimizationBaseline.value
+            const releasedVersions = catalogs.versions.filter((entry) => (
+                entry.state === "released" && entry.skillId === selectors.skill.value
+            ))
+            setSelectOptions(
+                selectors.optimizationBaseline,
+                releasedVersions.map((entry) => ({
+                    id: entry.id,
+                    label: entry.label ?? entry.versionLabel ?? entry.id,
+                })),
+                selectedBaseline,
+                "Select Released baseline",
+            )
             const selectedTargets = new Set(
                 [...selectors.targets.querySelectorAll("[data-operator-target]:checked")]
                     .map((input) => input.value),
             )
+            const targetSelections = new Map(
+                [...selectors.targets.querySelectorAll("[data-operator-target-card]")].map((card) => [
+                    card.dataset.operatorTargetCard,
+                    {
+                        modelId: card.querySelector("[data-optimization-target-model]")?.value ?? "",
+                        effort: card.querySelector("[data-optimization-target-effort]")?.value ?? "",
+                    },
+                ]),
+            )
             selectors.targets.replaceChildren()
             for (const runtime of catalogs.runtimes) {
-                const label = createElement(document_, "label", "operator-check")
+                const label = createElement(document_, "label", "operator-check operator-target-card")
+                label.dataset.operatorTargetCard = runtime.runtimeId
                 const input = document_.createElement("input")
                 input.type = "checkbox"
                 input.value = runtime.runtimeId
@@ -1549,10 +1950,291 @@
                 input.checked = selectedTargets.size
                     ? selectedTargets.has(runtime.runtimeId)
                     : runtime.runtimeId === selectors.runtime.value
-                label.append(input, createElement(document_, "span", "", runtime.displayName ?? runtime.runtimeId))
+                const options = createElement(document_, "span", "operator-target-runtime-options")
+                const targetModel = document_.createElement("select")
+                targetModel.dataset.optimizationTargetModel = runtime.runtimeId
+                const targetEffort = document_.createElement("select")
+                targetEffort.dataset.optimizationTargetEffort = runtime.runtimeId
+                options.append(targetModel, targetEffort)
+                label.append(
+                    input,
+                    createElement(document_, "span", "", runtime.displayName ?? runtime.runtimeId),
+                    options,
+                )
                 selectors.targets.append(label)
+                const selected = targetSelections.get(runtime.runtimeId)
+                populateOptimizationModelSelect(runtime.runtimeId, targetModel, targetEffort)
+                if (selected && availableModels(runtime.runtimeId).some((entry) => (
+                    modelId(entry) === selected.modelId
+                ))) {
+                    targetModel.value = selected.modelId
+                    populateOptimizationModelSelect(runtime.runtimeId, targetModel, targetEffort)
+                }
+                const efforts = runtimeEfforts(runtime.runtimeId, targetModel.value)
+                if (selected && efforts.includes(selected.effort)) targetEffort.value = selected.effort
+                if (!modelsByRuntime.has(runtime.runtimeId)) void loadRuntimeModels(runtime.runtimeId)
             }
             void loadRuntimeModels(selectors.runtime.value)
+            renderOptimizationRuntimeSelectors()
+            renderOptimizationSetupMode()
+        }
+
+        function isOptimizationSetup() {
+            return selectors.jobKind.value === "optimization"
+        }
+
+        function invalidateOptimizationPreflight() {
+            optimizationPreflight = null
+            optimizationPreflightSignature = null
+            selectors.optimizationStart.disabled = true
+            if (isOptimizationSetup()) {
+                selectors.optimizationPreflightSummary.textContent =
+                    "Configuration changed. Run preflight again before starting."
+            }
+        }
+
+        function renderOptimizationSetupMode() {
+            const optimization = isOptimizationSetup()
+            selectors.optimizationFields.classList.toggle("hidden", !optimization)
+            selectors.optimizationPreflight.classList.toggle("hidden", !optimization)
+            selectors.optimizationStart.classList.toggle("hidden", !optimization)
+            selectors.genericStart.classList.toggle("hidden", optimization)
+            const objective = selectors.setup.elements.objective
+            objective.required = !optimization
+            for (const card of selectors.targets.querySelectorAll("[data-operator-target-card]")) {
+                card.querySelector(".operator-target-runtime-options")?.classList.toggle("hidden", !optimization)
+            }
+        }
+
+        function optimizationValues() {
+            const targets = [...selectors.targets.querySelectorAll("[data-operator-target]:checked")]
+                .map((input) => {
+                    const card = input.closest("[data-operator-target-card]")
+                    return {
+                        runtimeId: input.value,
+                        modelId: card?.querySelector("[data-optimization-target-model]")?.value ?? "",
+                        effort: card?.querySelector("[data-optimization-target-effort]")?.value ?? "",
+                    }
+                })
+            const limits = Object.fromEntries(
+                [...selectors.setup.querySelectorAll("[data-optimization-limit]")]
+                    .map((input) => [input.dataset.optimizationLimit, input.value]),
+            )
+            const target = Object.fromEntries(
+                [...selectors.setup.querySelectorAll("[data-optimization-target]")]
+                    .map((input) => [
+                        input.dataset.optimizationTarget,
+                        input.type === "checkbox" ? input.checked : input.value,
+                    ]),
+            )
+            return {
+                skillId: selectors.skill.value,
+                baselineVersionId: selectors.optimizationBaseline.value,
+                datasetId: selectors.dataset.value,
+                operator: {
+                    runtimeId: selectors.runtime.value,
+                    modelId: selectors.model.value,
+                    effort: selectors.effort.value,
+                },
+                targets,
+                judge: {
+                    runtimeId: selectors.optimizationJudgeRuntime.value,
+                    modelId: selectors.optimizationJudgeModel.value,
+                    effort: selectors.optimizationJudgeEffort.value,
+                },
+                activationMode: selectors.optimizationActivation.value,
+                mode: selectors.optimizationMode.value,
+                limits,
+                target,
+            }
+        }
+
+        function optimizationConfigFromSetup() {
+            return buildOptimizationConfig(optimizationValues(), {...catalogs, modelsByRuntime})
+        }
+
+        function optimizationRequestId(prefix) {
+            const suffix = globalObject?.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
+            return `${prefix}-${suffix}`
+        }
+
+        function renderOptimizationPreflight(summary) {
+            const frozen = summary.frozen
+            selectors.optimizationPreflightSummary.textContent = [
+                `Frozen ${frozen.baselineVersionId} (${frozen.baselineDigest ?? "digest pending"})`,
+                `Dataset ${frozen.datasetId} @ revision ${frozen.datasetRevision}`,
+                `Rubric ${frozen.rubricId} @ version ${frozen.rubricVersion}`,
+                `${summary.runtimeMatrix.length} target Runtime(s)`,
+                `Telemetry: tokens ${summary.telemetry.tokens ? "yes" : "no"}, cost ${summary.telemetry.cost ? "yes" : "no"}`,
+                "Approvals: first Candidate experiment install, release, and Released install remain explicit.",
+            ].join(" · ")
+        }
+
+        async function preflightOptimization() {
+            selectors.setupError.textContent = ""
+            selectors.setupError.classList.add("hidden")
+            try {
+                const config = optimizationConfigFromSetup()
+                const signature = JSON.stringify(config)
+                selectors.optimizationPreflight.disabled = true
+                selectors.optimizationPreflightSummary.textContent = "Checking frozen inputs and Runtime readiness…"
+                const preflight = await api.preflightOptimization({
+                    ...config,
+                    idempotencyKey: optimizationRequestId("optimization-preflight"),
+                })
+                if (destroyed) return
+                optimizationPreflight = optimizationPreflightSummary(preflight, config)
+                optimizationPreflightSignature = signature
+                selectors.optimizationStart.disabled = optimizationPreflight.ready !== true
+                renderOptimizationPreflight(optimizationPreflight)
+            } catch (error) {
+                if (destroyed) return
+                optimizationPreflight = null
+                optimizationPreflightSignature = null
+                selectors.optimizationStart.disabled = true
+                selectors.optimizationPreflightSummary.textContent = "Preflight failed. Fix the configuration and retry."
+                selectors.setupError.textContent = error?.message ?? String(error)
+                selectors.setupError.classList.remove("hidden")
+            } finally {
+                if (!destroyed) selectors.optimizationPreflight.disabled = false
+            }
+        }
+
+        function optimizationRunForSnapshot(snapshot) {
+            const runId = snapshot?.job?.optimizationRunId ?? activeOptimizationRunId
+            return runId ? optimizationRuns.get(runId) ?? null : null
+        }
+
+        function renderOptimizationPanel(run) {
+            selectors.optimizationPanel.classList.toggle("hidden", !run)
+            if (!run) return
+            const view = optimizationPanelView(run)
+            selectors.optimizationFrozen.textContent = [
+                `Baseline ${view.baseline.versionId ?? "—"}`,
+                `Dataset ${view.dataset.id ?? "—"} @ ${view.dataset.revision ?? "—"}`,
+                `Rubric ${view.rubric.id ?? "—"} @ ${view.rubric.version ?? "—"}`,
+                `State ${jobStatusText(view.state)}`,
+            ].join(" · ")
+            selectors.optimizationTimeline.replaceChildren()
+            for (const point of view.scoreTrend) {
+                const row = createElement(document_, "div", "operator-optimization-epoch")
+                row.append(
+                    createElement(document_, "strong", "", `E${point.epoch}`),
+                    createElement(document_, "span", "", `score ${point.score}`),
+                    createElement(document_, "span", "", `pass ${(point.passRate * 100).toFixed(1)}%`),
+                )
+                selectors.optimizationTimeline.append(row)
+            }
+            if (!view.scoreTrend.length) {
+                selectors.optimizationTimeline.append(createElement(document_, "div", "operator-empty", "No completed Epoch score yet"))
+            }
+            renderList(
+                selectors.optimizationInstallations,
+                view.installations,
+                (installation) => {
+                    const card = createElement(document_, "article", "operator-side-card")
+                    card.append(
+                        createElement(document_, "strong", "", installation.runtimeId),
+                        createElement(document_, "small", "", `${installation.status} · ${installation.installationJobId}`),
+                    )
+                    return card
+                },
+                "No current installation state",
+            )
+            selectors.optimizationBudget.textContent = [
+                `Epoch ${view.currentEpoch}`,
+                `Regressions ${view.regressionCount}`,
+                `Remaining duration ${view.remaining.durationMs ?? "not reported"}`,
+                `turns ${view.remaining.turns ?? "not reported"}`,
+                `tokens ${view.remaining.tokens ?? "not reported"}`,
+                `cost µ ${view.remaining.costMicros ?? "not reported"}`,
+                `Stop reason ${view.stopReason ?? "—"}`,
+                `Release approval ${view.release.approvalId ?? "not requested"}`,
+                `Released ${view.release.releasedVersionId ?? "not published"}`,
+                `Final regression ${view.release.finalRegressionPassed === true ? "passed" : view.release.finalRegressionPassed === false ? "failed" : "not run"}`,
+            ].join(" · ")
+            selectors.optimizationRecovery.replaceChildren()
+            for (const target of view.recoveryTargets) {
+                const card = createElement(document_, "button", "operator-link", [
+                    target.runtimeId,
+                    target.status,
+                    `Job ${target.installationJobId}`,
+                    target.lastVerifiedDigest ?? "digest unavailable",
+                ].join(" · "))
+                card.type = "button"
+                card.dataset.optimizationInstallationId = target.installationJobId
+                card.dataset.optimizationSkillId = view.baseline.skillId ?? ""
+                selectors.optimizationRecovery.append(card)
+            }
+            selectors.optimizationStopWarning.classList.toggle("hidden", !view.actions.includes("stop"))
+            selectors.optimizationActions.replaceChildren()
+            const labels = {pause: "Pause", resume: "Resume", stop: "Stop and restore", report: "Report"}
+            for (const action of view.actions) {
+                const button = createElement(document_, "button", action === "stop" ? "danger" : "", labels[action])
+                button.type = "button"
+                button.dataset.optimizationAction = action
+                button.dataset.optimizationRunId = view.id
+                selectors.optimizationActions.append(button)
+            }
+        }
+
+        function clearOptimizationPoll() {
+            if (optimizationPollTimer !== null) clearTimeout(optimizationPollTimer)
+            optimizationPollTimer = null
+        }
+
+        function scheduleOptimizationPoll(delay = 0) {
+            clearOptimizationPoll()
+            if (destroyed || root.classList.contains("hidden") || !activeOptimizationRunId) return
+            optimizationPollTimer = setTimeout(async () => {
+                optimizationPollTimer = null
+                const runId = activeOptimizationRunId
+                try {
+                    const latest = await api.getOptimizationRun(runId)
+                    if (destroyed || runId !== activeOptimizationRunId) return
+                    const reduced = reduceOptimizationTimeline(optimizationRuns.get(runId) ?? null, latest)
+                    optimizationRuns.set(runId, reduced)
+                    renderOptimizationPanel(reduced)
+                    if (!["succeeded", "failed", "cancelled"].includes(reduced.state)) {
+                        scheduleOptimizationPoll(1_000)
+                    }
+                } catch (error) {
+                    if (!destroyed) onError(error)
+                }
+            }, delay)
+        }
+
+        async function controlOptimization(runId, action) {
+            const methods = {
+                pause: "pauseOptimization",
+                resume: "resumeOptimization",
+                stop: "stopOptimization",
+                report: "getOptimizationReport",
+            }
+            const method = methods[action]
+            if (!runId || typeof api[method] !== "function") return
+            try {
+                const result = await api[method](runId, optimizationRequestId(`optimization-${action}`))
+                if (destroyed) return
+                if (action === "report") {
+                    const current = optimizationRuns.get(runId)
+                    if (current) {
+                        current.checkpoint = {
+                            ...current.checkpoint,
+                            reportArtifactId: result.artifactId,
+                            reportDigest: result.digest,
+                        }
+                        renderOptimizationPanel(current)
+                    }
+                    return
+                }
+                const reduced = reduceOptimizationTimeline(optimizationRuns.get(runId) ?? null, result)
+                optimizationRuns.set(runId, reduced)
+                renderOptimizationPanel(reduced)
+                scheduleOptimizationPoll(500)
+            } catch (error) {
+                if (!destroyed) onError(error)
+            }
         }
 
         function jobStatusText(status) {
@@ -1738,6 +2420,9 @@
             selectors.composer.classList.toggle("hidden", creating || !snapshot)
             selectors.status.classList.toggle("operator-panel-empty", creating || !snapshot)
             if (!snapshot || creating) {
+                activeOptimizationRunId = null
+                clearOptimizationPoll()
+                renderOptimizationPanel(null)
                 if (creating) {
                     selectors.transcript.replaceChildren(
                         createElement(document_, "div", "operator-empty operator-setup-prompt", "Configure a scoped Operator Job"),
@@ -1745,6 +2430,9 @@
                 }
                 return
             }
+            activeOptimizationRunId = snapshot.job.optimizationRunId ?? null
+            renderOptimizationPanel(optimizationRunForSnapshot(snapshot))
+            if (activeOptimizationRunId) scheduleOptimizationPoll(0)
             selectors.sessionTitle.textContent = snapshot.job.objective || snapshot.job.id
             selectors.sessionState.textContent = jobStatusText(snapshot.job.status)
             renderSessionActions(snapshot)
@@ -1858,6 +2546,42 @@
             event.preventDefault()
             selectors.setupError.textContent = ""
             selectors.setupError.classList.add("hidden")
+            if (isOptimizationSetup()) {
+                try {
+                    const config = optimizationConfigFromSetup()
+                    const signature = JSON.stringify(config)
+                    if (!optimizationPreflight?.ready || optimizationPreflightSignature !== signature) {
+                        throw new Error("Run Optimization preflight for the current configuration before Start")
+                    }
+                    selectors.optimizationStart.disabled = true
+                    const run = await api.startOptimization({
+                        ...config,
+                        idempotencyKey: optimizationRequestId("optimization-start"),
+                    })
+                    if (destroyed) return
+                    const reduced = reduceOptimizationTimeline(null, run)
+                    optimizationRuns.set(reduced.id, reduced)
+                    activeOptimizationRunId = reduced.id
+                    creating = false
+                    renderOptimizationPanel(reduced)
+                    await state.catchUp()
+                    const snapshot = state.listSnapshots().find((entry) => (
+                        entry.job.optimizationRunId === reduced.id
+                    ))
+                    if (snapshot?.session?.id) await activateSession(snapshot.session.id)
+                    else {
+                        patchJobList()
+                        patchActiveChrome()
+                    }
+                    scheduleOptimizationPoll(250)
+                } catch (error) {
+                    if (destroyed) return
+                    selectors.setupError.textContent = error?.message ?? String(error)
+                    selectors.setupError.classList.remove("hidden")
+                    selectors.optimizationStart.disabled = !optimizationPreflight?.ready
+                }
+                return
+            }
             const values = {
                 runtimeId: selectors.runtime.value,
                 modelId: selectors.model.value,
@@ -1932,6 +2656,7 @@
             return surfaceGate.setCatalogs({
                 runtimes: Array.isArray(next.runtimes) ? next.runtimes : [],
                 skills: Array.isArray(next.skills) ? next.skills : [],
+                versions: Array.isArray(next.versions) ? next.versions : [],
                 datasets: Array.isArray(next.datasets) ? next.datasets : [],
                 activeRuntimeId: next.activeRuntimeId ?? null,
             })
@@ -1940,7 +2665,11 @@
         function setVisible(nextVisible) {
             const next = nextVisible === true
             if (!next) saveActiveView()
-            return surfaceGate.setVisible(next).catch((error) => {
+            if (!next) clearOptimizationPoll()
+            return surfaceGate.setVisible(next).then((result) => {
+                if (next && activeOptimizationRunId) scheduleOptimizationPoll(0)
+                return result
+            }).catch((error) => {
                 if (!destroyed) onError(error)
                 return false
             })
@@ -1950,6 +2679,7 @@
             if (destroyed) return
             if (initialized) saveActiveView()
             destroyed = true
+            clearOptimizationPoll()
             initializationGate.destroy()
             surfaceGate.destroy()
             messageSender.destroy()
@@ -1986,11 +2716,72 @@
         })
         domEvents.listen(selectors.runtime, "change", () => {
             if (destroyed) return
+            invalidateOptimizationPreflight()
             renderSetupCatalogs()
             void loadRuntimeModels(selectors.runtime.value, true)
         })
         domEvents.listen(selectors.model, "change", () => {
-            if (!destroyed) renderEfforts()
+            if (!destroyed) {
+                invalidateOptimizationPreflight()
+                renderEfforts()
+            }
+        })
+        domEvents.listen(selectors.effort, "change", invalidateOptimizationPreflight)
+        domEvents.listen(selectors.jobKind, "change", () => {
+            invalidateOptimizationPreflight()
+            renderOptimizationSetupMode()
+        })
+        domEvents.listen(selectors.skill, "change", () => {
+            invalidateOptimizationPreflight()
+            renderSetupCatalogs()
+        })
+        domEvents.listen(selectors.dataset, "change", invalidateOptimizationPreflight)
+        domEvents.listen(selectors.optimizationJudgeRuntime, "change", () => {
+            invalidateOptimizationPreflight()
+            void loadRuntimeModels(selectors.optimizationJudgeRuntime.value)
+            populateOptimizationModelSelect(
+                selectors.optimizationJudgeRuntime.value,
+                selectors.optimizationJudgeModel,
+                selectors.optimizationJudgeEffort,
+            )
+        })
+        domEvents.listen(selectors.optimizationJudgeModel, "change", () => {
+            invalidateOptimizationPreflight()
+            populateOptimizationModelSelect(
+                selectors.optimizationJudgeRuntime.value,
+                selectors.optimizationJudgeModel,
+                selectors.optimizationJudgeEffort,
+            )
+        })
+        domEvents.listen(selectors.optimizationJudgeEffort, "change", invalidateOptimizationPreflight)
+        domEvents.listen(selectors.targets, "change", (event) => {
+            if (destroyed) return
+            const modelSelect = event.target.closest?.("[data-optimization-target-model]")
+            if (modelSelect) {
+                const card = modelSelect.closest("[data-operator-target-card]")
+                populateOptimizationModelSelect(
+                    card.dataset.operatorTargetCard,
+                    modelSelect,
+                    card.querySelector("[data-optimization-target-effort]"),
+                )
+            }
+            invalidateOptimizationPreflight()
+        })
+        domEvents.listen(selectors.optimizationFields, "input", invalidateOptimizationPreflight)
+        domEvents.listen(selectors.optimizationFields, "change", invalidateOptimizationPreflight)
+        domEvents.listen(selectors.optimizationPreflight, "click", () => { void preflightOptimization() })
+        domEvents.listen(selectors.optimizationActions, "click", (event) => {
+            const button = event.target.closest?.("[data-optimization-action][data-optimization-run-id]")
+            if (button) void controlOptimization(
+                button.dataset.optimizationRunId,
+                button.dataset.optimizationAction,
+            )
+        })
+        domEvents.listen(selectors.optimizationRecovery, "click", (event) => {
+            const button = event.target.closest?.("[data-optimization-installation-id]")
+            if (button) void onSelectEntity("installation", button.dataset.optimizationInstallationId, {
+                skillId: button.dataset.optimizationSkillId,
+            })
         })
         domEvents.listen(selectors.setup, "submit", (event) => { void createSession(event) })
         domEvents.listen(selectors.composer, "submit", (event) => { void sendMessage(event) })
@@ -2020,6 +2811,7 @@
         OPERATOR_ACTIONS,
         OPERATOR_DELTA_INTERVAL_MS,
         artifactDeepLinks,
+        buildOptimizationConfig,
         buildOperatorSessionRequest,
         createKeyedTranscriptPatcher,
         createOperatorDomListenerScope,
@@ -2028,7 +2820,11 @@
         createOperatorSurfaceGate,
         createOperatorWorkbench,
         createOperatorWorkbenchState,
+        optimizationPanelView,
+        optimizationPreflightSummary,
         operatorJobTreeIds,
+        optimizationRunActions,
+        reduceOptimizationTimeline,
         registerOperatorActionDelegates,
         transcriptEntryKey,
     }

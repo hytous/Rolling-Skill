@@ -155,8 +155,10 @@ function sanitizedWarningMessage(warning) {
 
 function publicSkillReference(skill) {
     const stableId = identifier(skill?.id) ?? identifier(skill?.skillId)
+    const repositoryId = identifier(skill?.repositoryId)
     return {
         ...(stableId === null ? {} : {id: stableId}),
+        ...(repositoryId === null ? {} : {repositoryId}),
         name: String(skill?.name ?? ""),
     }
 }

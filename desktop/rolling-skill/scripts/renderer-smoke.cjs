@@ -365,6 +365,40 @@ function createOperatorFixture() {
                     pagingRecordsPopulated = true
                 }
                 return changedPayload()
+            case "create-optimization": {
+                const session = store.createSession({
+                    runtime: operatorRuntime(),
+                    modelId: "gpt-5.6-sol",
+                    effort: "high",
+                    protocol: "rolling-skill-operator/v1",
+                    capabilityId: "renderer-smoke-optimization-capability",
+                })
+                store.appendSessionTranscript(session.id, {
+                    kind: "operator_session_configuration",
+                    payload: {
+                        scopes: {
+                            skillIds: ["managed-skill-smoke-two"],
+                            datasetIds: ["optimization-dataset-smoke"],
+                            runtimeIds: ["codex:renderer-smoke", "codebuddy:renderer-smoke"],
+                        },
+                    },
+                })
+                const job = store.createJob({
+                    sessionId: session.id,
+                    type: "operator-session",
+                    objective: "Multi-Epoch Optimization smoke Run",
+                    budget: operatorBudget(),
+                    checkpoint: {optimizationRunId: input.runId},
+                })
+                store.transitionJob(job.id, "running")
+                fixtureIds.optimizationJobId = job.id
+                fixtureIds.optimizationSessionId = session.id
+                return {
+                    changed: changedPayload(job.id),
+                    job: publicOperatorJob(store.getJob(job.id)),
+                    session: publicOperatorSession(store.getSession(session.id)),
+                }
+            }
             case "metrics":
                 return {summaryPageCalls, approvalCalls, stopCalls, fixtureIds}
             default:
@@ -728,7 +762,7 @@ async function run() {
     if (
         !managedSkillInstallations.visible ||
         managedSkillInstallations.version !== "managed-version-created-smoke" ||
-        managedSkillInstallations.runtimes !== 1 ||
+        managedSkillInstallations.runtimes !== 2 ||
         managedSkillInstallations.permissions < 3 ||
         !managedSkillInstallations.startEnabled
     ) {
@@ -1729,6 +1763,113 @@ async function run() {
         throw new Error("Dynamic Operator control buttons accumulated listeners")
     }
 
+    await inspect(window, 'document.querySelector("#operator-new-job").click()')
+    await waitFor(window, '!document.querySelector("#operator-setup-form").classList.contains("hidden")')
+    await inspect(window, `(() => {
+        const change = (selector, value) => {
+            const element = document.querySelector(selector)
+            element.value = value
+            element.dispatchEvent(new Event("change", {bubbles: true}))
+        }
+        change("#operator-job-kind", "optimization")
+        change("#operator-managed-skill", "managed-skill-smoke-two")
+    })()`)
+    await waitFor(window, 'document.querySelector("#operator-optimization-baseline option[value=managed-version-released-smoke]")')
+    await waitFor(window, 'document.querySelector("[data-operator-target=\\"codebuddy:renderer-smoke\\"]") && document.querySelector("[data-optimization-target-model=\\"codebuddy:renderer-smoke\\"] option")')
+    await inspect(window, `(() => {
+        const change = (selector, value) => {
+            const element = document.querySelector(selector)
+            element.value = value
+            element.dispatchEvent(new Event("change", {bubbles: true}))
+        }
+        change("#operator-managed-dataset", "optimization-dataset-smoke")
+        change("#operator-optimization-baseline", "managed-version-released-smoke")
+        change("#operator-runtime", "codex:renderer-smoke")
+        change("#operator-model", "gpt-5.6-sol")
+        change("#operator-effort", "high")
+        change("#operator-optimization-judge-runtime", "codex:renderer-smoke")
+        change("#operator-optimization-judge-model", "gpt-5.6-sol")
+        change("#operator-optimization-judge-effort", "high")
+        for (const input of document.querySelectorAll("[data-operator-target]")) input.checked = false
+        const target = document.querySelector('[data-operator-target="codebuddy:renderer-smoke"]')
+        target.checked = true
+        target.dispatchEvent(new Event("change", {bubbles: true}))
+        change('[data-optimization-target-model="codebuddy:renderer-smoke"]', "model-renderer-smoke")
+        change('[data-optimization-target-effort="codebuddy:renderer-smoke"]', "high")
+        document.querySelector("#operator-optimization-preflight").click()
+    })()`)
+    await waitFor(window, '!document.querySelector("#operator-optimization-start").disabled && document.querySelector("#operator-optimization-preflight-summary").textContent.includes("Frozen")')
+    await inspect(window, 'document.querySelector("#operator-optimization-start").click()')
+    try {
+        await waitFor(window, '[...document.querySelectorAll("[data-operator-job-id]")].some((node) => node.textContent.includes("Multi-Epoch Optimization smoke Run"))')
+    } catch (error) {
+        const diagnostic = await inspect(window, `(() => ({
+            setupError: document.querySelector("#operator-setup-error").textContent,
+            preflight: document.querySelector("#operator-optimization-preflight-summary").textContent,
+            formValid: document.querySelector("#operator-setup-form").checkValidity(),
+            invalid: [...document.querySelector("#operator-setup-form").elements]
+                .filter((element) => typeof element.checkValidity === "function" && !element.checkValidity())
+                .map((element) => ({id: element.id, name: element.name, value: element.value, validationMessage: element.validationMessage})),
+            jobs: [...document.querySelectorAll("[data-operator-job-id]")].map((node) => node.textContent),
+        }))()`)
+        throw new Error(`Optimization Start did not create a Job: ${JSON.stringify({diagnostic, rendererErrors})}`, {cause: error})
+    }
+    const optimizationJobId = await inspect(window, `[...document.querySelectorAll("[data-operator-job-id]")]
+        .find((node) => node.textContent.includes("Multi-Epoch Optimization smoke Run"))?.dataset.operatorJobId`)
+    const optimizationJobSelector = `[data-operator-job-id="${optimizationJobId}"]`
+    try {
+        await waitFor(window, `document.querySelector(${JSON.stringify(`${optimizationJobSelector}.active`)}) && !document.querySelector("#operator-optimization-panel").classList.contains("hidden")`)
+    } catch (error) {
+        const diagnostic = await inspect(window, `(async () => {
+            const page = await window.rollingSkill.readOperatorSummaryPage(null, 100)
+            return ({
+            activeJobs: [...document.querySelectorAll("[data-operator-job-id].active")].map((node) => ({id: node.dataset.operatorJobId, text: node.textContent})),
+            optimizationJob: document.querySelector(${JSON.stringify(optimizationJobSelector)})?.outerHTML,
+            summaryJob: page.jobs.find((job) => job.id === ${JSON.stringify(optimizationJobId)}),
+            summarySession: page.sessions.find((session) => session.id === page.jobs.find((job) => job.id === ${JSON.stringify(optimizationJobId)})?.sessionId),
+            panelHidden: document.querySelector("#operator-optimization-panel").classList.contains("hidden"),
+            setupHidden: document.querySelector("#operator-setup-form").classList.contains("hidden"),
+            sessionTitle: document.querySelector("#operator-session-title").textContent,
+            })
+        })()`)
+        throw new Error(`Optimization Job was not activated: ${JSON.stringify({diagnostic, rendererErrors})}`, {cause: error})
+    }
+    await inspect(window, `document.querySelector(${JSON.stringify(streamingJobSelector)}).click()`)
+    await waitFor(window, `document.querySelector(${JSON.stringify(`${streamingJobSelector}.active`)})`)
+    const hiddenOptimizationDom = await inspect(window, 'document.querySelector("#operator-status-panel").innerHTML')
+    await inspect(window, 'window.rollingSkill.smokeAdvanceOptimization()')
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    if ((await inspect(window, 'document.querySelector("#operator-status-panel").innerHTML')) !== hiddenOptimizationDom) {
+        throw new Error("Hidden Optimization progress triggered active-panel rendering")
+    }
+    await inspect(window, `document.querySelector(${JSON.stringify(optimizationJobSelector)}).click()`)
+    await waitFor(window, 'document.querySelector("#operator-optimization-timeline").textContent.includes("score 82") && document.querySelector("#operator-optimization-budget").textContent.includes("Epoch 2")')
+    await waitFor(window, 'document.querySelector("[data-optimization-action=stop]")')
+    await inspect(window, 'document.querySelector("[data-optimization-action=stop]").click()')
+    await waitFor(window, 'document.querySelector("#operator-optimization-recovery").textContent.includes("restore-smoke-2") && document.querySelector("#operator-optimization-budget").textContent.includes("Regressions 3")')
+    const optimizationEvidenceBeforeSwitch = await inspect(window, `(() => ({
+        recovery: document.querySelector("#operator-optimization-recovery").textContent,
+        timeline: document.querySelector("#operator-optimization-timeline").textContent,
+        release: document.querySelector("#operator-optimization-budget").textContent,
+        composerSticky: getComputedStyle(document.querySelector(".operator-composer-wrap")).position === "sticky",
+    }))()`)
+    if (!optimizationEvidenceBeforeSwitch.composerSticky ||
+        !optimizationEvidenceBeforeSwitch.release.includes("Release approval release-approval-smoke") ||
+        !optimizationEvidenceBeforeSwitch.release.includes("Final regression failed")) {
+        throw new Error(`Optimization release/regression or pinned composer missing: ${JSON.stringify(optimizationEvidenceBeforeSwitch)}`)
+    }
+    await inspect(window, `document.querySelector(${JSON.stringify(streamingJobSelector)}).click()`)
+    await inspect(window, `document.querySelector(${JSON.stringify(optimizationJobSelector)}).click()`)
+    await waitFor(window, 'document.querySelector("#operator-optimization-recovery").textContent.includes("restore-smoke-2")')
+    const optimizationEvidenceAfterSwitch = await inspect(window, `(() => ({
+        recovery: document.querySelector("#operator-optimization-recovery").textContent,
+        timeline: document.querySelector("#operator-optimization-timeline").textContent,
+    }))()`)
+    if (optimizationEvidenceAfterSwitch.recovery !== optimizationEvidenceBeforeSwitch.recovery ||
+        optimizationEvidenceAfterSwitch.timeline !== optimizationEvidenceBeforeSwitch.timeline) {
+        throw new Error("Optimization recovery or score trend did not survive task switching")
+    }
+
     await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
     await waitFor(window, 'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation")')
     const operatorChatAfterStop = await inspect(window, `(() => ({
@@ -1870,6 +2011,12 @@ async function run() {
             operatorApprovalResolved: true,
             operatorStopChatIsolated: true,
             operatorDelegatedActions: true,
+            optimizationHiddenProgressIsolated: true,
+            optimizationTwoEpochTrend: optimizationEvidenceAfterSwitch.timeline,
+            optimizationRecoveryPersisted: optimizationEvidenceAfterSwitch.recovery,
+            optimizationReleaseApproval: true,
+            optimizationFinalRegression: true,
+            optimizationComposerPinned: optimizationEvidenceBeforeSwitch.composerSticky,
             readFailureRecovered: true,
             emptyArchiveLoadCancelled: true,
             staleRuntimeModelsIgnored: true,

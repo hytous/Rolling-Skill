@@ -111,6 +111,7 @@ const rawCaseSource = z.object({
 
 const publicSkillReference = z.object({
     id: id.optional(),
+    repositoryId: id.optional(),
     name: boundedText(MAX_IDENTIFIER_LENGTH, "Skill name"),
 }).strict()
 
@@ -542,6 +543,41 @@ const publicOptimizationRubric = z.object({
     digest: boundedText(80, "Optimization Rubric digest").optional(),
 }).strict()
 
+const publicOptimizationCandidate = z.object({
+    versionId: id,
+    commit: boundedText(80, "Optimization Candidate commit"),
+    contentDigest: boundedText(80, "Optimization Candidate digest"),
+}).strict()
+
+const publicOptimizationMarker = z.object({
+    runId: id,
+    epoch: z.number().int().min(1).max(100),
+    versionId: id,
+    contentDigest: boundedText(80, "Optimization marker digest"),
+}).strict()
+
+const publicOptimizationInstallation = z.object({
+    runtimeId: id,
+    status: boundedText(80, "Optimization installation status"),
+    installationJobId: id,
+    lastVerifiedDigest: boundedText(80, "Optimization installation digest").nullable().optional(),
+    lastVerifiedMarker: publicOptimizationMarker.nullable().optional(),
+}).strict()
+
+const publicOptimizationAnalysis = z.object({
+    score: z.number().finite().min(0).max(100).nullable().optional(),
+    scoreDelta: z.number().finite().min(-100).max(100).nullable().optional(),
+    passRate: z.number().finite().min(0).max(1).nullable().optional(),
+    regressionCount: z.number().int().min(0).max(100_000),
+    executionFailureCount: z.number().int().min(0).max(100_000).optional(),
+    gradingFailureCount: z.number().int().min(0).max(100_000).optional(),
+}).strict()
+
+const publicOptimizationDecision = z.object({
+    action: z.enum(["continue", "finish", "pause"]),
+    rationale: z.string().max(8_192),
+}).strict()
+
 const publicOptimizationEpoch = z.object({
     number: z.number().int().min(1).max(100),
     status: boundedText(40, "Optimization Epoch status"),
@@ -550,6 +586,10 @@ const publicOptimizationEpoch = z.object({
     evaluationArtifactIds: z.array(id).max(512).optional(),
     analysisArtifactId: id.nullable().optional(),
     decisionArtifactId: id.nullable().optional(),
+    candidate: publicOptimizationCandidate.optional(),
+    installations: z.array(publicOptimizationInstallation).max(64).optional(),
+    analysis: publicOptimizationAnalysis.optional(),
+    decision: publicOptimizationDecision.optional(),
 }).strict()
 
 const publicOptimizationCheckpoint = z.object({
@@ -563,6 +603,13 @@ const publicOptimizationCheckpoint = z.object({
     releasedVersionId: id.nullable().optional(),
     finalEvaluationArtifactId: id.nullable().optional(),
     finalRegressionPassed: z.boolean().optional(),
+    telemetry: z.object({
+        elapsedMs: z.number().finite().min(0),
+        turnsUsed: z.number().int().min(0),
+        tokens: z.number().int().min(0).nullable(),
+        costMicros: z.number().int().min(0).nullable(),
+    }).strict().optional(),
+    recoveryTargets: z.array(publicOptimizationInstallation).max(64).optional(),
 }).strict()
 
 const publicOptimizationRun = z.object({
@@ -577,7 +624,14 @@ const publicOptimizationRun = z.object({
     baseline: publicOptimizationBaseline,
     dataset: publicOptimizationDataset,
     rubric: publicOptimizationRubric,
+    operator: optimizationRuntime,
     targets: z.array(optimizationRuntime).min(1).max(64),
+    judge: optimizationRuntime,
+    activationMode: z.enum(["automatic", "explicit"]),
+    mode: z.enum(["fixed", "adaptive"]),
+    limits: optimizationLimits,
+    target: optimizationConfigInput.shape.target,
+    telemetry: optimizationConfigInput.shape.telemetry,
     epochs: z.array(publicOptimizationEpoch).max(100),
     checkpoint: publicOptimizationCheckpoint,
     error: z.object({

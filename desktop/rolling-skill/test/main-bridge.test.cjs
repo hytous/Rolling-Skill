@@ -781,6 +781,18 @@ describe("desktop main/preload bridge", () => {
         assert.match(resolver, /optimizationWorkspaceManager\.get/u)
         assert.doesNotMatch(resolver, /binding\.workspaceRoot|binding\.workspacePath/u)
 
+        const optimizationInitialization = main.slice(
+            main.indexOf("function initializeOptimizationRuntime"),
+            main.indexOf("\nfunction startControlSocket"),
+        )
+        assert.match(optimizationInitialization, /getArtifact\(artifactId\)/u)
+        assert.match(optimizationInitialization, /artifact\.byteLength\s*>\s*maximumBytes/u)
+        assert.ok(
+            optimizationInitialization.indexOf("getArtifact(artifactId)") <
+                optimizationInitialization.indexOf("readArtifactBody(artifactId)"),
+            "Optimization Artifact size must be checked before its body is read",
+        )
+
         const startup = main.slice(main.indexOf("app.whenReady().then"))
         assert.ok(
             startup.indexOf("initializeOperatorRuntime()") < startup.indexOf("initializeOptimizationRuntime()"),
@@ -1871,6 +1883,38 @@ describe("desktop main/preload bridge", () => {
             api.startEvaluationRun({datasetId: "dataset-1"}),
             /selected Skill is not installed/u,
         )
+    })
+
+    it("exposes an Optimization Run id from the safe parent Job checkpoint without leaking workspace data", () => {
+        const page = publicOperatorSummaryPage({
+            generation: "generation-a",
+            revision: 1,
+            sessions: [],
+            jobs: [{
+                id: "job-1",
+                sessionId: "session-1",
+                parentJobId: null,
+                type: "operator-session",
+                objective: "Optimize the frozen Skill",
+                budget: {},
+                status: "running",
+                children: [],
+                artifactIds: [],
+                approvalIds: [],
+                checkpoint: {
+                    optimizationRunId: "optimization-run-1",
+                    workspacePath: "/private/optimization-workspaces/run-1",
+                },
+            }],
+            steps: [],
+            approvals: [],
+            totals: {sessions: 0, jobs: 1, steps: 0, approvals: 0},
+            truncated: false,
+            nextCursor: null,
+        })
+
+        assert.equal(page.jobs[0].optimizationRunId, "optimization-run-1")
+        assert.doesNotMatch(JSON.stringify(page), /workspacePath|private\/optimization/iu)
     })
 
     it("exposes a token-free Operator lifecycle bridge and routes human controls privately", async () => {

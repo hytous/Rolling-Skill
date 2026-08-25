@@ -6340,6 +6340,7 @@ function operatorCatalogSnapshot() {
         runtimes: state.runtime?.availableRuntimes ?? [],
         activeRuntimeId: state.runtime?.runtime?.runtimeId ?? null,
         skills: state.managedSkills.skills ?? [],
+        versions: state.managedSkills.versions ?? [],
         datasets: state.datasets ?? [],
     }
 }

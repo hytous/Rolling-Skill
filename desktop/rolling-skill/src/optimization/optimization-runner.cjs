@@ -139,12 +139,32 @@ function boundedAnalysisSummary(analysis) {
     }
 }
 
+function recoveryTargetSummary(job) {
+    const result = job?.parsedResult?.result ?? {}
+    const marker = result.markerAfter
+    return {
+        runtimeId: job?.runtime?.runtimeId ?? job?.runtimeId ?? "unknown-runtime",
+        status: job?.status ?? "needs_recovery",
+        installationJobId: job?.id ?? "unknown-installation-job",
+        ...(typeof result.actualDigest === "string"
+            ? {lastVerifiedDigest: result.actualDigest}
+            : {}),
+        ...(marker && typeof marker === "object" ? {lastVerifiedMarker: {
+            runId: marker.runId,
+            epoch: marker.epoch,
+            versionId: marker.versionId,
+            contentDigest: marker.contentDigest,
+        }} : {}),
+    }
+}
+
 class OptimizationRunner {
     constructor(options = {}) {
         this.store = requiredDependency(options.store, "getRun", "Optimization store")
         requiredDependency(this.store, "transitionRun", "Optimization store")
         requiredDependency(this.store, "createEpoch", "Optimization store")
         requiredDependency(this.store, "updateEpoch", "Optimization store")
+        requiredDependency(this.store, "updateCheckpoint", "Optimization store")
         this.artifactStore = requiredDependency(options.artifactStore, "createArtifact", "Artifact store")
         this.childJobs = requiredDependency(options.childJobs, "run", "Optimization child Job runner")
         this.workspaceManager = requiredDependency(
@@ -393,6 +413,7 @@ class OptimizationRunner {
                 ? "OPTIMIZATION_INSTALL_NEEDS_RECOVERY"
                 : "OPTIMIZATION_INSTALL_FAILED"
             error.installationJob = failed
+            error.installationJobs = completed
             throw error
         }
         return completed
@@ -579,6 +600,15 @@ class OptimizationRunner {
                     cancelRequested: control.cancelRequested,
                     recoveryFailed: false,
                 }
+                this.store.updateCheckpoint(control.runId, {
+                    telemetry: {
+                        elapsedMs: progress.elapsedMs,
+                        turnsUsed: progress.turnsUsed,
+                        tokens: progress.tokensUsed,
+                        costMicros: progress.costMicros,
+                    },
+                })
+                this.onChanged({runId: control.runId, state: "deciding"})
                 const analysisInput = {
                     baseline: control.baselineEvaluation,
                     previous: control.previousEvaluation,
@@ -884,8 +914,12 @@ class OptimizationRunner {
             await this.workspaceManager.cleanup?.(control.runId)
             return {runId: control.runId, status: terminalState, error: errorRecord(cause)}
         } catch (recoveryError) {
+            const recoveryJobs = Array.isArray(recoveryError.installationJobs)
+                ? recoveryError.installationJobs
+                : recoveryError.installationJob ? [recoveryError.installationJob] : []
             this.#transition(control, "needs_recovery", {
                 recoveryError: errorRecord(recoveryError),
+                recoveryTargets: recoveryJobs.map(recoveryTargetSummary),
             }, errorRecord(cause))
             return {
                 runId: control.runId,

@@ -373,6 +373,85 @@ function smokeManagedOverview() {
     }
 }
 
+const smokeOptimizationDataset = {
+    id: "optimization-dataset-smoke",
+    name: "Optimization Smoke Dataset",
+    caseCount: 2,
+    goodcaseCount: 2,
+    badcaseCount: 0,
+    skillReference: {
+        id: smokeManagedSkillTwo.id,
+        name: smokeManagedSkillTwo.name,
+        repositoryId: smokeManagedSkillTwo.repositoryId,
+    },
+    activeRubricVersionId: "rubric-version-smoke",
+}
+
+let smokeOptimizationRun = null
+let smokeOptimizationStage = 0
+
+function smokeOptimizationBase(config) {
+    return {
+        id: "optimization-renderer-smoke",
+        state: "editing",
+        revision: 1,
+        currentEpoch: 1,
+        snapshotDigest: `sha256:${"d".repeat(64)}`,
+        baseline: {
+            repositoryId: smokeManagedSkillTwo.repositoryId,
+            skillId: smokeManagedSkillTwo.id,
+            versionId: "managed-version-released-smoke",
+            commit: "89abcdef0123456789abcdef0123456789abcdef",
+            contentDigest: `sha256:${"b".repeat(64)}`,
+        },
+        dataset: {id: smokeOptimizationDataset.id, revision: 7, digest: `sha256:${"e".repeat(64)}`},
+        rubric: {id: smokeRubricVersion.id, version: 1, digest: `sha256:${"f".repeat(64)}`},
+        operator: config.operator,
+        targets: config.targets,
+        judge: config.judge,
+        activationMode: config.activationMode,
+        mode: config.mode,
+        limits: config.limits,
+        target: config.target,
+        telemetry: config.telemetry,
+        epochs: [{number: 1, status: "editing", candidateArtifactId: null}],
+        checkpoint: {paused: false},
+        error: null,
+    }
+}
+
+function advanceSmokeOptimization() {
+    if (!smokeOptimizationRun) throw new Error("Optimization smoke Run has not started")
+    smokeOptimizationStage += 1
+    smokeOptimizationRun.revision += 1
+    if (smokeOptimizationStage === 1) {
+        smokeOptimizationRun.state = "editing"
+        smokeOptimizationRun.currentEpoch = 2
+        smokeOptimizationRun.epochs = [{
+            number: 1,
+            status: "completed",
+            candidateArtifactId: "candidate-artifact-1",
+            candidate: {versionId: "candidate-smoke-1", commit: "c".repeat(40), contentDigest: `sha256:${"c".repeat(64)}`},
+            installations: [{runtimeId: "codebuddy:renderer-smoke", status: "succeeded", installationJobId: "install-smoke-1", lastVerifiedDigest: `sha256:${"c".repeat(64)}`}],
+            analysis: {score: 82, scoreDelta: 8, passRate: 0.75, regressionCount: 1},
+            decision: {action: "continue", rationale: "继续第二轮"},
+        }, {
+            number: 2,
+            status: "installing",
+            candidateArtifactId: "candidate-artifact-2",
+            candidate: {versionId: "candidate-smoke-2", commit: "d".repeat(40), contentDigest: `sha256:${"d".repeat(64)}`},
+            installations: [{runtimeId: "codebuddy:renderer-smoke", status: "running", installationJobId: "install-smoke-2", lastVerifiedDigest: `sha256:${"c".repeat(64)}`}],
+        }]
+        smokeOptimizationRun.checkpoint = {
+            releaseApprovalId: "release-approval-smoke",
+            finalEvaluationArtifactId: "final-regression-smoke",
+            finalRegressionPassed: false,
+            telemetry: {elapsedMs: 2_000, turnsUsed: 12, tokens: 4_000, costMicros: 2_000},
+        }
+    }
+    return structuredClone(smokeOptimizationRun)
+}
+
 function emitManagedSkillsChanged() {
     const overview = smokeManagedOverview()
     for (const listener of managedSkillsChangedListeners) listener(overview)
@@ -445,7 +524,7 @@ let smokeDatasets = [{
     badcaseCount: 0,
     skillReference: smokeSkillReference,
     activeRubricVersionId: smokeRubricVersion.id,
-}]
+}, smokeOptimizationDataset]
 function smokePublicDataset(dataset) {
     return {
         id: dataset.id,
@@ -459,6 +538,9 @@ function smokePublicDataset(dataset) {
                     ...(dataset.skillReference.id === undefined
                         ? {}
                         : {id: dataset.skillReference.id}),
+                    ...(dataset.skillReference.repositoryId === undefined
+                        ? {}
+                        : {repositoryId: dataset.skillReference.repositoryId}),
                     name: dataset.skillReference.name,
                 }}),
         ...(dataset.activeRubricVersionId === undefined
@@ -1036,7 +1118,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
                 version: "smoke",
                 executablePath: "/usr/local/bin/codex",
                 source: "smoke fixture",
-                capabilities: ["thread-archive", "sandbox-policy"],
+                capabilities: ["thread-archive", "sandbox-policy", "token-usage", "cost-usage"],
             },
             availableRuntimes: [{
                 runtimeId: "codex:renderer-smoke",
@@ -1046,6 +1128,15 @@ contextBridge.exposeInMainWorld("rollingSkill", {
                 executablePath: "/usr/local/bin/codex",
                 efforts: ["low", "medium", "high", "xhigh"],
                 models: ["gpt-5.6-sol"],
+                capabilities: ["token-usage", "cost-usage"],
+            }, {
+                runtimeId: "codebuddy:renderer-smoke",
+                providerId: "codebuddy",
+                displayName: "CodeBuddy",
+                version: "smoke",
+                efforts: ["low", "medium", "high"],
+                models: ["model-renderer-smoke"],
+                capabilities: ["token-usage", "cost-usage"],
             }],
         },
         workspaceRoot: "/tmp/rolling-skill-renderer-smoke",
@@ -1077,6 +1168,70 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     pauseOperatorJob: (jobId) => invokeOperator("pause", {jobId}),
     resumeOperatorJob: (jobId) => invokeOperator("resume", {jobId}),
     stopOperatorJob: (jobId) => invokeOperator("stop", {jobId}),
+    preflightOptimization: async (input) => ({
+        snapshotDigest: `sha256:${"d".repeat(64)}`,
+        baseline: smokeOptimizationBase(input).baseline,
+        dataset: smokeOptimizationBase(input).dataset,
+        rubric: smokeOptimizationBase(input).rubric,
+        targets: input.targets,
+        ready: true,
+    }),
+    startOptimization: async (input) => {
+        smokeOptimizationStage = 0
+        smokeOptimizationRun = smokeOptimizationBase(input)
+        const created = await invokeOperator("create-optimization", {runId: smokeOptimizationRun.id})
+        emitOperator(operatorChangedListeners, created.changed)
+        return structuredClone(smokeOptimizationRun)
+    },
+    getOptimizationRun: async (runId) => {
+        if (runId !== smokeOptimizationRun?.id) throw new Error("Unknown Optimization smoke Run")
+        return structuredClone(smokeOptimizationRun)
+    },
+    pauseOptimization: async (runId) => {
+        if (runId !== smokeOptimizationRun?.id) throw new Error("Unknown Optimization smoke Run")
+        smokeOptimizationRun = {...smokeOptimizationRun, state: "needs_recovery", revision: smokeOptimizationRun.revision + 1, checkpoint: {...smokeOptimizationRun.checkpoint, paused: true, pauseReason: "user_pause"}}
+        return structuredClone(smokeOptimizationRun)
+    },
+    resumeOptimization: async (runId) => {
+        if (runId !== smokeOptimizationRun?.id) throw new Error("Unknown Optimization smoke Run")
+        smokeOptimizationRun = {...smokeOptimizationRun, state: "editing", revision: smokeOptimizationRun.revision + 1, checkpoint: {...smokeOptimizationRun.checkpoint, paused: false}}
+        return structuredClone(smokeOptimizationRun)
+    },
+    stopOptimization: async (runId) => {
+        if (runId !== smokeOptimizationRun?.id) throw new Error("Unknown Optimization smoke Run")
+        smokeOptimizationRun = {
+            ...smokeOptimizationRun,
+            state: "needs_recovery",
+            revision: smokeOptimizationRun.revision + 1,
+            epochs: smokeOptimizationRun.epochs.map((epoch) => epoch.number === 2 ? {
+                ...epoch,
+                status: "failed",
+                analysis: {score: 78, scoreDelta: -4, passRate: 0.5, regressionCount: 3},
+            } : epoch),
+            checkpoint: {
+                ...smokeOptimizationRun.checkpoint,
+                stopReason: "user_stop_restore_failed",
+                recoveryTargets: [{
+                    runtimeId: "codebuddy:renderer-smoke",
+                    status: "needs_recovery",
+                    installationJobId: "restore-smoke-2",
+                    lastVerifiedDigest: `sha256:${"d".repeat(64)}`,
+                    lastVerifiedMarker: {
+                        runId,
+                        epoch: 2,
+                        versionId: "candidate-smoke-2",
+                        contentDigest: `sha256:${"d".repeat(64)}`,
+                    },
+                }],
+            },
+        }
+        return structuredClone(smokeOptimizationRun)
+    },
+    getOptimizationReport: async (runId) => ({
+        artifactId: `report-${runId}`,
+        digest: `sha256:${"9".repeat(64)}`,
+        mediaType: "text/markdown; charset=utf-8",
+    }),
     resolveOperatorApproval: (approvalId, decision) =>
         invokeOperator("resolve-approval", {approvalId, decision}),
     listOperatorArtifacts: (jobId, cursor = null, limit = 100) =>
@@ -1100,6 +1255,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     smokeEmitHiddenOperatorDelta: async () => {
         emitOperator(operatorEventListeners, await invokeOperator("emit-hidden"))
     },
+    smokeAdvanceOptimization: () => advanceSmokeOptimization(),
     smokeEmitOperatorGap: async () => {
         emitOperator(operatorChangedListeners, await invokeOperator("emit-gap"))
     },

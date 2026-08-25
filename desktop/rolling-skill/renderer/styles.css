@@ -973,6 +973,62 @@ kbd {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.operator-optimization-fields {
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--surface-raised) 55%, var(--surface));
+}
+
+.operator-optimization-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.operator-optimization-preflight-summary,
+.operator-optimization-stop-warning,
+.operator-optimization-recovery {
+    padding: 10px;
+    border-radius: 9px;
+    background: var(--surface-raised);
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.operator-optimization-stop-warning,
+.operator-optimization-recovery:not(:empty) {
+    border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+.operator-optimization-timeline {
+    display: grid;
+    gap: 6px;
+    margin: 8px 0;
+}
+
+.operator-optimization-epoch {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 6px;
+    align-items: center;
+    font-size: 12px;
+}
+
+.operator-target-runtime-options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.operator-target-runtime-options select {
+    min-width: 0;
+}
+
 .operator-fieldset {
     min-width: 0;
     margin: 0 0 12px;
@@ -5416,6 +5472,10 @@ kbd {
     .operator-setup-row,
     .operator-setup-row.two {
         grid-template-columns: minmax(0, 1fr);
+    }
+
+    .operator-optimization-grid {
+        grid-template-columns: 1fr;
     }
 
     .operator-check-grid.permission-grid,

@@ -2450,7 +2450,11 @@ function initializeOptimizationRuntime() {
         runner: optimizationRunner,
         operatorGateway: optimizationOperatorGateway,
         artifactStore: operatorJobStore,
-        readArtifact: (artifactId) => operatorJobStore.readArtifactBody(artifactId),
+        readArtifact: (artifactId, maximumBytes) => {
+            const artifact = operatorJobStore.getArtifact(artifactId)
+            if (artifact.byteLength > maximumBytes) return null
+            return operatorJobStore.readArtifactBody(artifactId)
+        },
         resolvePreflight: resolveOptimizationPreflight,
     })
     return optimizationControlService

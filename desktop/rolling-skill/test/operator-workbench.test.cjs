@@ -6,6 +6,7 @@ const {
     OPERATOR_ACTIONS,
     OPERATOR_DELTA_INTERVAL_MS,
     artifactDeepLinks,
+    buildOptimizationConfig,
     buildOperatorSessionRequest,
     createKeyedTranscriptPatcher,
     createOperatorDomListenerScope,
@@ -13,7 +14,11 @@ const {
     createOperatorMessageSender,
     createOperatorSurfaceGate,
     createOperatorWorkbenchState,
+    optimizationPanelView,
+    optimizationPreflightSummary,
+    optimizationRunActions,
     operatorJobTreeIds,
+    reduceOptimizationTimeline,
     registerOperatorActionDelegates,
     transcriptEntryKey,
 } = require("../renderer/operator-workbench.js")
@@ -89,6 +94,8 @@ describe("Operator workbench state", () => {
             "rubrics.publish",
             "installations.execute",
             "installations.read",
+            "optimizations.read",
+            "optimizations.execute",
         ])
     })
 
@@ -1356,6 +1363,254 @@ describe("Operator workbench coordination", () => {
             ["control", "job-1", "pause"],
         ])
         scope.destroy()
+    })
+})
+
+describe("multi-Epoch Optimization workbench", () => {
+    function catalogs() {
+        return {
+            runtimes: [
+                {
+                    runtimeId: "codex:operator",
+                    capabilities: ["token-usage", "cost-usage"],
+                    models: [{id: "gpt-5.6-sol", reasoningEfforts: ["high"]}],
+                },
+                {
+                    runtimeId: "codebuddy:target",
+                    capabilities: ["token-usage", "cost-usage"],
+                    models: [{id: "claude-sonnet", reasoningEfforts: ["medium"]}],
+                },
+            ],
+            skills: [{id: "skill-1", repositoryId: "repository-1", status: "valid"}],
+            versions: [{
+                id: "released-1",
+                skillId: "skill-1",
+                repositoryId: "repository-1",
+                state: "released",
+                commit: "a".repeat(40),
+                contentDigest: `sha256:${"b".repeat(64)}`,
+            }],
+            datasets: [{
+                id: "dataset-1",
+                activeRubricVersionId: "rubric-1",
+                skillReference: {id: "skill-1", repositoryId: "repository-1"},
+            }],
+        }
+    }
+
+    function values() {
+        return {
+            skillId: "skill-1",
+            baselineVersionId: "released-1",
+            datasetId: "dataset-1",
+            operator: {runtimeId: "codex:operator", modelId: "gpt-5.6-sol", effort: "high"},
+            targets: [{runtimeId: "codebuddy:target", modelId: "claude-sonnet", effort: "medium"}],
+            judge: {runtimeId: "codex:operator", modelId: "gpt-5.6-sol", effort: "high"},
+            activationMode: "automatic",
+            mode: "adaptive",
+            limits: {
+                maxEpochs: "5",
+                maxDurationMs: "7200000",
+                patience: "2",
+                minimumImprovement: "1",
+                maxTurns: "50",
+                maxTokens: "100000",
+                maxCostMicros: "5000000",
+            },
+            target: {minimumScore: "90", minimumPassRate: "0.95", requireCriticalCases: true},
+        }
+    }
+
+    it("builds a frozen optimization config only from matching Released, Dataset, model, and telemetry catalogs", () => {
+        assert.deepEqual(buildOptimizationConfig(values(), catalogs()), {
+            skillId: "skill-1",
+            baselineVersionId: "released-1",
+            datasetId: "dataset-1",
+            operator: values().operator,
+            targets: values().targets,
+            judge: values().judge,
+            activationMode: "automatic",
+            mode: "adaptive",
+            limits: {
+                maxEpochs: 5,
+                maxDurationMs: 7_200_000,
+                patience: 2,
+                minimumImprovement: 1,
+                maxTurns: 50,
+                maxTokens: 100_000,
+                maxCostMicros: 5_000_000,
+            },
+            target: {minimumScore: 90, minimumPassRate: 0.95, requireCriticalCases: true},
+            telemetry: {tokens: true, cost: true},
+        })
+
+        const wrongDataset = catalogs()
+        wrongDataset.datasets[0].skillReference.id = "skill-other"
+        assert.throws(() => buildOptimizationConfig(values(), wrongDataset), /Dataset.*Skill|binding/iu)
+        const candidateBaseline = catalogs()
+        candidateBaseline.versions[0].state = "candidate"
+        assert.throws(() => buildOptimizationConfig(values(), candidateBaseline), /Released/iu)
+        const unsupportedTelemetry = catalogs()
+        unsupportedTelemetry.runtimes[1].capabilities = []
+        assert.throws(
+            () => buildOptimizationConfig(values(), unsupportedTelemetry),
+            /token.*telemetry|telemetry.*Runtime/iu,
+        )
+    })
+
+    it("reduces revisioned Epoch summaries into a stable score trend without accepting stale updates", () => {
+        const first = reduceOptimizationTimeline(null, {
+            id: "optimization-1",
+            revision: 4,
+            state: "evaluating",
+            currentEpoch: 2,
+            checkpoint: {},
+            epochs: [
+                {number: 1, status: "completed", analysis: {score: 80, passRate: 0.75, scoreDelta: 5, regressionCount: 1}},
+                {number: 2, status: "evaluating", installations: [{runtimeId: "codex:target", status: "succeeded"}]},
+            ],
+        })
+        const stale = reduceOptimizationTimeline(first, {
+            id: "optimization-1",
+            revision: 3,
+            state: "editing",
+            currentEpoch: 1,
+            checkpoint: {},
+            epochs: [],
+        })
+        const completed = reduceOptimizationTimeline(stale, {
+            id: "optimization-1",
+            revision: 5,
+            state: "deciding",
+            currentEpoch: 2,
+            checkpoint: {stopReason: "target_achieved"},
+            epochs: [
+                {number: 1, status: "completed", analysis: {score: 80, passRate: 0.75, scoreDelta: 5, regressionCount: 1}},
+                {number: 2, status: "succeeded", analysis: {score: 92, passRate: 1, scoreDelta: 12, regressionCount: 0}},
+            ],
+        })
+
+        assert.equal(stale, first)
+        assert.deepEqual(completed.scoreTrend, [
+            {epoch: 1, score: 80, passRate: 0.75},
+            {epoch: 2, score: 92, passRate: 1},
+        ])
+        assert.equal(completed.epochs[1].analysis.regressionCount, 0)
+        assert.equal(completed.stopReason, "target_achieved")
+    })
+
+    it("disables forward actions while restoring and exposes exact recovery targets", () => {
+        const recovering = reduceOptimizationTimeline(null, {
+            id: "optimization-1",
+            revision: 9,
+            state: "needs_recovery",
+            currentEpoch: 2,
+            checkpoint: {
+                recoveryTargets: [{
+                    runtimeId: "codebuddy:target",
+                    status: "needs_recovery",
+                    installationJobId: "install-9",
+                    lastVerifiedDigest: `sha256:${"c".repeat(64)}`,
+                }],
+            },
+            epochs: [],
+        })
+
+        assert.deepEqual(optimizationRunActions({state: "restoring", checkpoint: {}}), ["report"])
+        assert.deepEqual(optimizationRunActions(recovering), ["report"])
+        assert.deepEqual(optimizationRunActions({
+            state: "needs_recovery",
+            checkpoint: {paused: true},
+        }), ["resume", "stop", "report"])
+        assert.equal(recovering.recoveryTargets[0].installationJobId, "install-9")
+        assert.match(recovering.recoveryTargets[0].lastVerifiedDigest, /^sha256:/u)
+    })
+
+    it("summarizes frozen preflight evidence and experiment approval boundaries", () => {
+        const config = buildOptimizationConfig(values(), catalogs())
+        const summary = optimizationPreflightSummary({
+            ready: true,
+            snapshotDigest: `sha256:${"d".repeat(64)}`,
+            baseline: {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                versionId: "released-1",
+                contentDigest: `sha256:${"b".repeat(64)}`,
+            },
+            dataset: {id: "dataset-1", revision: 7, digest: `sha256:${"e".repeat(64)}`},
+            rubric: {id: "rubric-1", version: 4, digest: `sha256:${"f".repeat(64)}`},
+            targets: config.targets,
+        }, config)
+
+        assert.equal(summary.ready, true)
+        assert.deepEqual(summary.frozen, {
+            snapshotDigest: `sha256:${"d".repeat(64)}`,
+            baselineVersionId: "released-1",
+            baselineDigest: `sha256:${"b".repeat(64)}`,
+            datasetId: "dataset-1",
+            datasetRevision: 7,
+            rubricId: "rubric-1",
+            rubricVersion: 4,
+        })
+        assert.deepEqual(summary.telemetry, {tokens: true, cost: true})
+        assert.deepEqual(summary.approvals, [
+            "candidate-experiment-install",
+            "release",
+            "released-install",
+        ])
+    })
+
+    it("derives live Epoch, regression, remaining-budget, stop, and recovery panel state", () => {
+        const timeline = reduceOptimizationTimeline(null, {
+            id: "optimization-1",
+            revision: 12,
+            state: "needs_recovery",
+            currentEpoch: 2,
+            baseline: {versionId: "released-1", contentDigest: `sha256:${"b".repeat(64)}`},
+            dataset: {id: "dataset-1", revision: 7},
+            rubric: {id: "rubric-1", version: 4},
+            limits: {maxDurationMs: 10_000, maxTurns: 20, maxTokens: 1_000, maxCostMicros: 5_000},
+            epochs: [{
+                number: 2,
+                status: "failed",
+                candidate: {versionId: "candidate-2"},
+                installations: [{runtimeId: "codebuddy:target", status: "needs_recovery", installationJobId: "install-2"}],
+                analysis: {score: 86, passRate: 0.8, regressionCount: 3},
+            }],
+            checkpoint: {
+                stopReason: "broad_regression",
+                telemetry: {elapsedMs: 4_000, turnsUsed: 8, tokens: 600, costMicros: 2_000},
+                reportArtifactId: "report-1",
+                releaseApprovalId: "release-approval-1",
+                finalEvaluationArtifactId: "final-regression-1",
+                finalRegressionPassed: false,
+                recoveryTargets: [{
+                    runtimeId: "codebuddy:target",
+                    status: "needs_recovery",
+                    installationJobId: "install-restore-2",
+                    lastVerifiedDigest: `sha256:${"c".repeat(64)}`,
+                }],
+            },
+        })
+
+        const panel = optimizationPanelView(timeline)
+        assert.deepEqual(panel.remaining, {
+            durationMs: 6_000,
+            turns: 12,
+            tokens: 400,
+            costMicros: 3_000,
+        })
+        assert.equal(panel.regressionCount, 3)
+        assert.equal(panel.stopReason, "broad_regression")
+        assert.equal(panel.reportArtifactId, "report-1")
+        assert.deepEqual(panel.release, {
+            approvalId: "release-approval-1",
+            releasedVersionId: null,
+            finalEvaluationArtifactId: "final-regression-1",
+            finalRegressionPassed: false,
+        })
+        assert.deepEqual(panel.actions, ["report"])
+        assert.equal(panel.recoveryTargets[0].installationJobId, "install-restore-2")
     })
 })
 

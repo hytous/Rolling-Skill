@@ -133,7 +133,12 @@ describe("Operator Job store", () => {
     it("prioritizes active Jobs and exposes revision-bound bounded summary pages", () => {
         const {store} = fixture()
         const first = createSession(store)
-        const firstJob = createJob(store, first.id)
+        const firstJob = createJob(store, first.id, {
+            checkpoint: {
+                optimizationRunId: "optimization-run-1",
+                workspacePath: "/private/must-not-leak",
+            },
+        })
         store.transitionJob(firstJob.id, "running")
         for (let index = 0; index < 20; index += 1) {
             store.appendSessionTranscript(first.id, {
@@ -160,6 +165,9 @@ describe("Operator Job store", () => {
         assert.equal(summary.truncated, true)
         assert.equal(typeof summary.nextCursor, "string")
         assert.deepEqual(summary.jobs.map((job) => job.id), [firstJob.id])
+        assert.equal(summary.jobs[0].optimizationRunId, "optimization-run-1")
+        assert.equal(Object.hasOwn(summary.jobs[0], "checkpoint"), false)
+        assert.doesNotMatch(JSON.stringify(summary), /workspacePath|must-not-leak/iu)
         assert.deepEqual(summary.sessions, [])
         assert.deepEqual(summary.approvals, [])
         assert.doesNotMatch(JSON.stringify(summary), /large transcript|sensitive artifact body/iu)

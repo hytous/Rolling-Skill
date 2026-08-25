@@ -65,6 +65,8 @@ function fixture() {
     const operatorCalls = []
     const runnerCalls = []
     const artifactCalls = []
+    const artifactBodies = new Map()
+    const artifactReadLimits = []
     const gatewayCalls = []
     const store = {
         createRun(frozen, options) {
@@ -156,7 +158,10 @@ function fixture() {
         runner,
         operatorGateway: gateway,
         artifactStore,
-        readArtifact: () => null,
+        readArtifact: (artifactId, maximumBytes) => {
+            artifactReadLimits.push({artifactId, maximumBytes})
+            return artifactBodies.get(artifactId) ?? null
+        },
         async resolvePreflight(input) {
             preflightCalls.push(structuredClone(input))
             return {trustedRevision}
@@ -178,11 +183,20 @@ function fixture() {
         operatorCalls,
         runnerCalls,
         artifactCalls,
+        artifactBodies,
+        artifactReadLimits,
         setTrustedRevision(value) { trustedRevision = value },
         setRunState(state, checkpoint = {}) {
             const run = runs.get("optimization-run-1")
             run.state = state
             Object.assign(run.checkpoint, structuredClone(checkpoint))
+        },
+        setRunEpochs(epochs, checkpoint = {}) {
+            const run = runs.get("optimization-run-1")
+            run.epochs = structuredClone(epochs)
+            Object.assign(run.checkpoint, structuredClone(checkpoint))
+            run.currentEpoch = epochs.at(-1)?.number ?? 0
+            run.revision += 1
         },
     }
 }
@@ -197,6 +211,9 @@ describe("Optimization control service", () => {
         const started = await context.service.start({...config(), idempotencyKey: "start-1"})
 
         assert.equal(started.run.snapshotDigest, digest("8"))
+        assert.deepEqual(started.run.limits, config().limits)
+        assert.deepEqual(started.run.operator, config().operator)
+        assert.deepEqual(started.run.judge, config().judge)
         assert.equal(context.preflightCalls.length, 2)
         assert.equal(context.store.createOptions.idempotencyKey, "start-1")
         assert.equal(context.workspaceCalls.length, 1)
@@ -258,6 +275,99 @@ describe("Optimization control service", () => {
         assert.equal(context.runner.paused, "optimization-run-1")
         assert.equal(context.runner.resumed, "optimization-run-1")
         assert.equal(context.runner.stopped, "optimization-run-1")
+    })
+
+    it("hydrates only bounded Epoch, installation, and recovery summaries from Artifacts", async () => {
+        const context = fixture()
+        await context.service.start({...config(), idempotencyKey: "start-summary"})
+        context.artifactBodies.set("candidate-1", Buffer.from(JSON.stringify({
+            id: "version-candidate-1",
+            commit: "b".repeat(40),
+            contentDigest: digest("b"),
+            workspacePath: "/must/not/reach-renderer",
+        })))
+        context.artifactBodies.set("installations-1", JSON.stringify({
+            operation: "experiment_install",
+            jobs: [{
+                id: "install-job-1",
+                status: "succeeded",
+                runtime: {runtimeId: "codex:target"},
+                parsedResult: {result: {actualDigest: digest("b")}},
+                rawResult: "must not reach Renderer",
+            }],
+        }))
+        context.artifactBodies.set("analysis-1", {
+            body: JSON.stringify({
+                score: 91,
+                scoreDelta: 7,
+                passRate: 0.9,
+                regressed: [{caseId: "case-1", runtimeId: "codex:target"}],
+                improved: [{caseId: "case-2", runtimeId: "codex:target"}],
+            }),
+        })
+        context.artifactBodies.set("decision-1", JSON.stringify({
+            action: "continue",
+            rationale: "继续处理回归",
+            observations: [{kind: "private", summary: "must stay lazy"}],
+        }))
+        context.setRunEpochs([{
+            id: "epoch-1",
+            number: 1,
+            status: "completed",
+            candidateArtifactId: "candidate-1",
+            installArtifactIds: ["installations-1"],
+            evaluationArtifactIds: ["evaluation-1"],
+            analysisArtifactId: "analysis-1",
+            decisionArtifactId: "decision-1",
+        }], {
+            telemetry: {elapsedMs: 1_000, turnsUsed: 2, tokens: null, costMicros: null},
+            recoveryTargets: [{
+                runtimeId: "codex:target",
+                status: "needs_recovery",
+                installationJobId: "restore-job-1",
+                lastVerifiedDigest: digest("c"),
+                workspacePath: "/must/not/reach-renderer",
+            }],
+        })
+
+        const output = await context.service.get("optimization-run-1")
+
+        assert.deepEqual(output.run.epochs[0].candidate, {
+            versionId: "version-candidate-1",
+            commit: "b".repeat(40),
+            contentDigest: digest("b"),
+        })
+        assert.deepEqual(output.run.epochs[0].installations, [{
+            runtimeId: "codex:target",
+            status: "succeeded",
+            installationJobId: "install-job-1",
+            lastVerifiedDigest: digest("b"),
+        }])
+        assert.deepEqual(output.run.epochs[0].analysis, {
+            score: 91,
+            scoreDelta: 7,
+            passRate: 0.9,
+            regressionCount: 1,
+        })
+        assert.deepEqual(output.run.epochs[0].decision, {
+            action: "continue",
+            rationale: "继续处理回归",
+        })
+        assert.deepEqual(output.run.checkpoint.recoveryTargets, [{
+            runtimeId: "codex:target",
+            status: "needs_recovery",
+            installationJobId: "restore-job-1",
+            lastVerifiedDigest: digest("c"),
+        }])
+        assert.deepEqual(output.run.checkpoint.telemetry, {
+            elapsedMs: 1_000,
+            turnsUsed: 2,
+            tokens: null,
+            costMicros: null,
+        })
+        assert.ok(context.artifactReadLimits.length >= 4)
+        assert.ok(context.artifactReadLimits.every(({maximumBytes}) => maximumBytes === 1024 * 1024))
+        assert.doesNotMatch(JSON.stringify(output), /workspacePath|rawResult|observations/u)
     })
 
     it("adopts persisted workspaces before enabling resume", async () => {

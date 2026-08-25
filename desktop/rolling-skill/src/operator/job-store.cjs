@@ -1059,6 +1059,9 @@ function publicJobSummary(job) {
         artifactIds: job.artifactIds,
         approvalIds: job.approvalIds,
         eventSequence: job.eventSequence,
+        optimizationRunId: typeof job.checkpoint?.optimizationRunId === "string"
+            ? job.checkpoint.optimizationRunId
+            : null,
         error: job.error,
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
@@ -1446,7 +1449,9 @@ class OperatorJobStore {
             artifactIds: [],
             approvalIds: [],
             eventSequence: 0,
-            checkpoint: null,
+            checkpoint: input.checkpoint === undefined
+                ? null
+                : cloneJson(input.checkpoint, "Operator Job initial checkpoint"),
             result: null,
             error: null,
             terminalSnapshot: null,
