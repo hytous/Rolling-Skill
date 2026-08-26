@@ -3,6 +3,9 @@ import {useEffect, useState, useSyncExternalStore} from "react"
 
 import {requestRollingSkill} from "../api"
 import type {Translate, TranslationKey} from "../locale"
+import {CasesPanel} from "./CasesPanel"
+import {DatasetsPanel} from "./DatasetsPanel"
+import {RawCasesPanel} from "./RawCasesPanel"
 
 interface DashboardSnapshot {
     counts: {
@@ -65,6 +68,7 @@ export function Workbench({locale, t}: WorkbenchProps) {
     )
     const [activeTab, setActiveTab] = useState<TabId>("overview")
     const [reloadRevision, setReloadRevision] = useState(0)
+    const [dataRevision, setDataRevision] = useState(0)
     const [state, setState] = useState<
         {status: "loading"} |
         {status: "error"; message: string} |
@@ -121,6 +125,12 @@ export function Workbench({locale, t}: WorkbenchProps) {
                     <strong>{t("loadError")}</strong>
                     <span>{state.message}</span>
                     <Button variant="outline" size="sm" onClick={reload}>{t("retry")}</Button>
+                </div>
+            ) : activeTab === "cases" ? (
+                <div className="rolling-skill-data-stack">
+                    <DatasetsPanel t={t} onChanged={() => setDataRevision((value) => value + 1)}/>
+                    <CasesPanel t={t} revision={dataRevision} onChanged={() => setDataRevision((value) => value + 1)}/>
+                    <RawCasesPanel t={t} revision={dataRevision} onChanged={() => setDataRevision((value) => value + 1)}/>
                 </div>
             ) : activeTab !== "overview" ? (
                 <div className="rolling-skill-panel">

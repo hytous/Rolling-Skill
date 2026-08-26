@@ -26,8 +26,8 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 
 // src/client/workbench/Workbench.tsx
-var import_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react = require("react");
+var import_dsh_client_ui_primitives4 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react4 = require("react");
 
 // src/client/api.ts
 var ROLLING_SKILL_API_PATH = "/rolling-skill/api";
@@ -70,8 +70,372 @@ async function requestRollingSkill(method, input = {}, signal) {
   return envelope.value;
 }
 
-// src/client/workbench/Workbench.tsx
+// src/client/workbench/CasesPanel.tsx
+var import_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react = require("react");
 var import_jsx_runtime = require("react/jsx-runtime");
+function CasesPanel({ t, revision, onChanged }) {
+  const [datasets, setDatasets] = (0, import_react.useState)([]);
+  const [datasetId, setDatasetId] = (0, import_react.useState)("");
+  const [entries, setEntries] = (0, import_react.useState)([]);
+  const [deleting, setDeleting] = (0, import_react.useState)(null);
+  const [recoverQuestions, setRecoverQuestions] = (0, import_react.useState)(true);
+  const [busy, setBusy] = (0, import_react.useState)(false);
+  const [error, setError] = (0, import_react.useState)(null);
+  (0, import_react.useEffect)(() => {
+    const controller = new AbortController();
+    requestRollingSkill("datasets.list", {}, controller.signal).then((value) => {
+      setDatasets(value);
+      setDatasetId((current) => current && value.some((entry) => entry.id === current) ? current : value[0]?.id ?? "");
+    }).catch((reason) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
+    });
+    return () => controller.abort();
+  }, [revision]);
+  (0, import_react.useEffect)(() => {
+    if (!datasetId) {
+      setEntries([]);
+      return;
+    }
+    const controller = new AbortController();
+    requestRollingSkill("cases.list", { datasetId, pageSize: 200 }, controller.signal).then((page) => setEntries(page.items)).catch((reason) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
+    });
+    return () => controller.abort();
+  }, [datasetId, revision]);
+  const mutate = async (operation) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await operation();
+      onChanged();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("loadError"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const refreshOne = (entry) => mutate(() => requestRollingSkill("cases.refresh", {
+    datasetId,
+    caseId: entry.id,
+    expectedUpdatedAt: entry.updatedAt,
+    idempotencyKey: crypto.randomUUID()
+  }));
+  const refreshBatch = (scope) => mutate(() => requestRollingSkill("cases.refreshBatch", {
+    datasetId,
+    scope,
+    idempotencyKey: crypto.randomUUID()
+  }));
+  const remove = () => {
+    const entry = deleting;
+    if (!entry) return;
+    void mutate(async () => {
+      await requestRollingSkill("cases.delete", {
+        datasetId,
+        caseId: entry.id,
+        expectedUpdatedAt: entry.updatedAt,
+        recoverQuestions,
+        idempotencyKey: crypto.randomUUID()
+      });
+      setDeleting(null);
+    });
+  };
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "rolling-skill-panel rolling-skill-data-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: t("casesTitle") }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: t("casesDescription") })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "rolling-skill-actions", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", size: "sm", disabled: !datasetId || busy, onClick: () => void refreshBatch("goodcase"), children: t("refreshGoodCases") }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", size: "sm", disabled: !datasetId || busy, onClick: () => void refreshBatch("all"), children: t("refreshAllCases") })
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("select", { className: "rolling-skill-select", "aria-label": t("selectDataset"), value: datasetId, onChange: (event) => setDatasetId(event.target.value), children: datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: dataset.id, children: dataset.name }, dataset.id)) }),
+    error ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "rolling-skill-list", children: [
+      entries.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", { className: "rolling-skill-case-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "rolling-skill-case-copy", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "rolling-skill-badge", children: entry.caseType === "goodcase" ? t("goodcase") : t("badcase") }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: entry.question }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: entry.answer })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "rolling-skill-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void refreshOne(entry), children: t("refreshCase") }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => setDeleting(entry), children: t("delete") })
+        ] })
+      ] }, entry.id)),
+      entries.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: t("emptyCases") }) : null
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+      import_dsh_client_ui_primitives.Modal,
+      {
+        open: deleting !== null,
+        onClose: () => setDeleting(null),
+        title: t("deleteCaseTitle"),
+        closeLabel: t("cancel"),
+        footer: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", onClick: () => setDeleting(null), children: t("cancel") }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", disabled: busy, onClick: remove, children: t("confirmDelete") })
+        ] }),
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: t("deleteRecoveryPrompt") }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { className: "rolling-skill-check", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", { type: "checkbox", checked: recoverQuestions, onChange: (event) => setRecoverQuestions(event.target.checked) }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: t("recoverToRawCases") })
+          ] })
+        ]
+      }
+    )
+  ] });
+}
+
+// src/client/workbench/DatasetsPanel.tsx
+var import_dsh_client_ui_primitives2 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react2 = require("react");
+var import_jsx_runtime2 = require("react/jsx-runtime");
+function DatasetsPanel({ t, onChanged }) {
+  const [datasets, setDatasets] = (0, import_react2.useState)([]);
+  const [name, setName] = (0, import_react2.useState)("");
+  const [deleting, setDeleting] = (0, import_react2.useState)(null);
+  const [recoverQuestions, setRecoverQuestions] = (0, import_react2.useState)(true);
+  const [busy, setBusy] = (0, import_react2.useState)(false);
+  const [error, setError] = (0, import_react2.useState)(null);
+  const [revision, setRevision] = (0, import_react2.useState)(0);
+  (0, import_react2.useEffect)(() => {
+    const controller = new AbortController();
+    requestRollingSkill("datasets.list", {}, controller.signal).then(setDatasets).catch((reason) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
+    });
+    return () => controller.abort();
+  }, [revision]);
+  const reload = () => setRevision((value) => value + 1);
+  const mutate = async (operation) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await operation();
+      reload();
+      onChanged();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("loadError"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const create = () => mutate(async () => {
+    await requestRollingSkill("datasets.create", { name });
+    setName("");
+  });
+  const remove = () => {
+    const dataset = deleting;
+    if (!dataset) return;
+    void mutate(async () => {
+      await requestRollingSkill("datasets.delete", {
+        datasetId: dataset.id,
+        expectedCreatedAt: dataset.createdAt,
+        recoverQuestions,
+        idempotencyKey: crypto.randomUUID()
+      });
+      setDeleting(null);
+    });
+  };
+  const exportCsv = async (datasetId) => {
+    setError(null);
+    try {
+      const exported = await requestRollingSkill("datasets.exportCsv", { datasetId });
+      const url = URL.createObjectURL(new Blob([exported.content], { type: "text/csv;charset=utf-8" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = exported.filename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("loadError"));
+    }
+  };
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("section", { className: "rolling-skill-panel rolling-skill-data-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h3", { children: t("datasetsTitle") }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { children: t("datasetsDescription") })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "ghost", size: "sm", onClick: reload, children: t("refresh") })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-form-row", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+        import_dsh_client_ui_primitives2.Input,
+        {
+          value: name,
+          placeholder: t("datasetName"),
+          "aria-label": t("datasetName"),
+          onChange: (event) => setName(event.target.value)
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "outline", size: "sm", disabled: busy || !name.trim(), onClick: create, children: t("createDataset") })
+    ] }),
+    error ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-list", children: [
+      datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("article", { className: "rolling-skill-list-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("strong", { children: dataset.name }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: t("caseBreakdown").replace("{all}", String(dataset.caseCount)).replace("{good}", String(dataset.goodcaseCount)).replace("{bad}", String(dataset.badcaseCount)) })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "ghost", size: "sm", onClick: () => void exportCsv(dataset.id), children: t("exportCsv") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "ghost", size: "sm", onClick: () => setDeleting(dataset), children: t("delete") })
+        ] })
+      ] }, dataset.id)),
+      datasets.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { children: t("emptyDatasets") }) : null
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
+      import_dsh_client_ui_primitives2.Modal,
+      {
+        open: deleting !== null,
+        onClose: () => setDeleting(null),
+        title: t("deleteDatasetTitle"),
+        closeLabel: t("cancel"),
+        footer: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "outline", onClick: () => setDeleting(null), children: t("cancel") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "outline", disabled: busy, onClick: remove, children: t("confirmDelete") })
+        ] }),
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { children: t("deleteRecoveryPrompt") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { className: "rolling-skill-check", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { type: "checkbox", checked: recoverQuestions, onChange: (event) => setRecoverQuestions(event.target.checked) }),
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: t("recoverToRawCases") })
+          ] })
+        ]
+      }
+    )
+  ] });
+}
+
+// src/client/workbench/RawCasesPanel.tsx
+var import_dsh_client_ui_primitives3 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react3 = require("react");
+var import_jsx_runtime3 = require("react/jsx-runtime");
+function RawCasesPanel({ t, revision, onChanged }) {
+  const [entries, setEntries] = (0, import_react3.useState)([]);
+  const [editing, setEditing] = (0, import_react3.useState)(null);
+  const [question, setQuestion] = (0, import_react3.useState)("");
+  const [note, setNote] = (0, import_react3.useState)("");
+  const [deleting, setDeleting] = (0, import_react3.useState)(null);
+  const [busy, setBusy] = (0, import_react3.useState)(false);
+  const [error, setError] = (0, import_react3.useState)(null);
+  (0, import_react3.useEffect)(() => {
+    const controller = new AbortController();
+    requestRollingSkill("rawCases.list", {}, controller.signal).then(setEntries).catch((reason) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
+    });
+    return () => controller.abort();
+  }, [revision]);
+  const mutate = async (operation) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await operation();
+      onChanged();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("loadError"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const beginEdit = (entry) => {
+    setEditing(entry);
+    setQuestion(entry.question);
+    setNote(entry.note ?? "");
+  };
+  const save = () => {
+    const entry = editing;
+    if (!entry) return;
+    void mutate(async () => {
+      await requestRollingSkill("rawCases.update", {
+        id: entry.id,
+        expectedRevision: entry.revision,
+        expectedSkillName: entry.skill.name,
+        changes: { question, note },
+        idempotencyKey: crypto.randomUUID()
+      });
+      setEditing(null);
+    });
+  };
+  const recycle = () => {
+    const entry = deleting;
+    if (!entry) return;
+    void mutate(async () => {
+      await requestRollingSkill("rawCases.recycle", {
+        id: entry.id,
+        idempotencyKey: crypto.randomUUID()
+      });
+      setDeleting(null);
+    });
+  };
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("section", { className: "rolling-skill-panel rolling-skill-data-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("h3", { children: t("rawCasesTitle") }),
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { children: t("rawCasesDescription") })
+    ] }) }),
+    error ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "rolling-skill-list", children: [
+      entries.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("article", { className: "rolling-skill-list-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { children: entry.question }),
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { children: [
+            entry.skill.name,
+            entry.note ? ` \xB7 ${entry.note}` : ""
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "rolling-skill-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "ghost", size: "sm", onClick: () => beginEdit(entry), children: t("edit") }),
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "ghost", size: "sm", onClick: () => setDeleting(entry), children: t("delete") })
+        ] })
+      ] }, entry.id)),
+      entries.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { children: t("emptyRawCases") }) : null
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+      import_dsh_client_ui_primitives3.Modal,
+      {
+        open: editing !== null,
+        onClose: () => setEditing(null),
+        title: t("editRawCaseTitle"),
+        closeLabel: t("cancel"),
+        footer: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_jsx_runtime3.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "outline", onClick: () => setEditing(null), children: t("cancel") }),
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "outline", disabled: busy || !question.trim(), onClick: save, children: t("save") })
+        ] }),
+        children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "rolling-skill-form-stack", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("label", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: t("question") }),
+            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("textarea", { value: question, onChange: (event) => setQuestion(event.target.value) })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("label", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: t("note") }),
+            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives3.Input, { value: note, onChange: (event) => setNote(event.target.value) })
+          ] })
+        ] })
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+      import_dsh_client_ui_primitives3.Modal,
+      {
+        open: deleting !== null,
+        onClose: () => setDeleting(null),
+        title: t("deleteRawCaseTitle"),
+        closeLabel: t("cancel"),
+        footer: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_jsx_runtime3.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "outline", onClick: () => setDeleting(null), children: t("cancel") }),
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "outline", disabled: busy, onClick: recycle, children: t("confirmDelete") })
+        ] }),
+        children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { children: t("deleteRawCasePrompt") })
+      }
+    )
+  ] });
+}
+
+// src/client/workbench/Workbench.tsx
+var import_jsx_runtime4 = require("react/jsx-runtime");
 var TABS = [
   { id: "overview", label: "overview" },
   { id: "cases", label: "cases" },
@@ -87,15 +451,16 @@ function dateTime(value, fallback) {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : fallback;
 }
 function Workbench({ locale, t }) {
-  (0, import_react.useSyncExternalStore)(
+  (0, import_react4.useSyncExternalStore)(
     (listener) => locale.subscribe(listener),
     () => locale.getSnapshot().revision,
     () => 0
   );
-  const [activeTab, setActiveTab] = (0, import_react.useState)("overview");
-  const [reloadRevision, setReloadRevision] = (0, import_react.useState)(0);
-  const [state, setState] = (0, import_react.useState)({ status: "loading" });
-  (0, import_react.useEffect)(() => {
+  const [activeTab, setActiveTab] = (0, import_react4.useState)("overview");
+  const [reloadRevision, setReloadRevision] = (0, import_react4.useState)(0);
+  const [dataRevision, setDataRevision] = (0, import_react4.useState)(0);
+  const [state, setState] = (0, import_react4.useState)({ status: "loading" });
+  (0, import_react4.useEffect)(() => {
     const controller = new AbortController();
     setState({ status: "loading" });
     requestRollingSkill("dashboard.get", {}, controller.signal).then((dashboard) => setState({ status: "ready", dashboard })).catch((error) => {
@@ -108,16 +473,16 @@ function Workbench({ locale, t }) {
     return () => controller.abort();
   }, [reloadRevision]);
   const reload = () => setReloadRevision((revision) => revision + 1);
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "rolling-skill-workbench", "aria-labelledby": "rolling-skill-title", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { className: "rolling-skill-header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { id: "rolling-skill-title", children: t("title") }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: t("subtitle") })
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { className: "rolling-skill-workbench", "aria-labelledby": "rolling-skill-title", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("header", { className: "rolling-skill-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h2", { id: "rolling-skill-title", children: t("title") }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { children: t("subtitle") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", size: "sm", onClick: reload, disabled: state.status === "loading", children: t("refresh") })
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "outline", size: "sm", onClick: reload, disabled: state.status === "loading", children: t("refresh") })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("nav", { className: "rolling-skill-tabs", "aria-label": t("title"), children: TABS.map((tab) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-      import_dsh_client_ui_primitives.Button,
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("nav", { className: "rolling-skill-tabs", "aria-label": t("title"), children: TABS.map((tab) => /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+      import_dsh_client_ui_primitives4.Button,
       {
         variant: activeTab === tab.id ? "outline" : "ghost",
         size: "sm",
@@ -127,14 +492,18 @@ function Workbench({ locale, t }) {
       },
       tab.id
     )) }),
-    state.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") }) : state.status === "error" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: t("loadError") }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: state.message }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", size: "sm", onClick: reload, children: t("retry") })
-    ] }) : activeTab !== "overview" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "rolling-skill-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: t(TABS.find((tab) => tab.id === activeTab)?.label ?? "overview") }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: t("comingSoon") })
-    ] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Overview, { dashboard: state.dashboard, t })
+    state.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") }) : state.status === "error" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: t("loadError") }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: state.message }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "outline", size: "sm", onClick: reload, children: t("retry") })
+    ] }) : activeTab === "cases" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-data-stack", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(DatasetsPanel, { t, onChanged: () => setDataRevision((value) => value + 1) }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(CasesPanel, { t, revision: dataRevision, onChanged: () => setDataRevision((value) => value + 1) }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(RawCasesPanel, { t, revision: dataRevision, onChanged: () => setDataRevision((value) => value + 1) })
+    ] }) : activeTab !== "overview" ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h3", { children: t(TABS.find((tab) => tab.id === activeTab)?.label ?? "overview") }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { children: t("comingSoon") })
+    ] }) : /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(Overview, { dashboard: state.dashboard, t })
   ] });
 }
 function Overview({ dashboard, t }) {
@@ -146,46 +515,46 @@ function Overview({ dashboard, t }) {
     { key: "managedSkills", label: "managedSkillsCount" }
   ];
   const runtime = dashboard.settings.plugin.runtime;
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "rolling-skill-overview", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "rolling-skill-counts", children: counts.map((count) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "rolling-skill-count", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: dashboard.counts[count.key] }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: t(count.label) })
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-overview", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "rolling-skill-counts", children: counts.map((count) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-count", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: dashboard.counts[count.key] }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: t(count.label) })
     ] }, count.key)) }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "rolling-skill-grid", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "rolling-skill-panel", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: t("automaticStatus") }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("dl", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("dt", { children: t("nextRun") }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("dd", { children: t("notAvailable") })
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-grid", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { className: "rolling-skill-panel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h3", { children: t("automaticStatus") }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("dl", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("dt", { children: t("nextRun") }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("dd", { children: t("notAvailable") })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("dt", { children: t("lastSuccess") }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("dd", { children: dateTime(dashboard.automaticCapture.lastSuccessAt, t("notAvailable")) })
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("dt", { children: t("lastSuccess") }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("dd", { children: dateTime(dashboard.automaticCapture.lastSuccessAt, t("notAvailable")) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("dt", { children: t("lastError") }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("dd", { children: dashboard.automaticCapture.lastError?.message ?? t("noError") })
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("dt", { children: t("lastError") }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("dd", { children: dashboard.automaticCapture.lastError?.message ?? t("noError") })
           ] })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "rolling-skill-panel", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: t("runtime") }),
-        runtime ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "rolling-skill-runtime", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: [runtime.displayName ?? runtime.runtimeId, runtime.version].filter(Boolean).join(" ") }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("code", { children: runtime.executablePath })
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: t("noRuntime") })
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { className: "rolling-skill-panel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h3", { children: t("runtime") }),
+        runtime ? /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-runtime", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: [runtime.displayName ?? runtime.runtimeId, runtime.version].filter(Boolean).join(" ") }),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("code", { children: runtime.executablePath })
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { children: t("noRuntime") })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "rolling-skill-panel rolling-skill-path", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: t("dataDirectory") }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("code", { children: dashboard.dataRoot })
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { className: "rolling-skill-panel rolling-skill-path", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h3", { children: t("dataDirectory") }),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("code", { children: dashboard.dataRoot })
     ] })
   ] });
 }
 
 // src/client/workbench/workbench.css
-var workbench_default = ".rolling-skill-workbench {\n    box-sizing: border-box;\n    color: var(--dsw-alias-label-primary);\n    display: grid;\n    gap: 20px;\n    min-width: 0;\n    padding: 4px 0 24px;\n}\n\n.rolling-skill-header {\n    align-items: flex-start;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n}\n\n.rolling-skill-header h2,\n.rolling-skill-panel h3 {\n    margin: 0;\n}\n\n.rolling-skill-header p,\n.rolling-skill-panel p {\n    color: var(--dsw-alias-label-secondary);\n    margin: 6px 0 0;\n}\n\n.rolling-skill-tabs {\n    align-items: center;\n    border-bottom: 1px solid var(--dsw-alias-border-l2);\n    display: flex;\n    flex-wrap: wrap;\n    gap: 4px;\n    padding-bottom: 10px;\n}\n\n.rolling-skill-counts {\n    display: grid;\n    gap: 10px;\n    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));\n}\n\n.rolling-skill-count,\n.rolling-skill-panel,\n.rolling-skill-state {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 10px;\n}\n\n.rolling-skill-count {\n    display: grid;\n    gap: 4px;\n    padding: 14px;\n}\n\n.rolling-skill-count strong {\n    font-size: 22px;\n    line-height: 28px;\n}\n\n.rolling-skill-count span,\n.rolling-skill-panel dt {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-overview {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-grid {\n    display: grid;\n    gap: 12px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-panel,\n.rolling-skill-state {\n    min-width: 0;\n    padding: 16px;\n}\n\n.rolling-skill-panel dl {\n    display: grid;\n    gap: 10px;\n    margin: 14px 0 0;\n}\n\n.rolling-skill-panel dl > div {\n    align-items: baseline;\n    display: flex;\n    gap: 12px;\n    justify-content: space-between;\n}\n\n.rolling-skill-panel dd {\n    margin: 0;\n    max-width: 68%;\n    overflow-wrap: anywhere;\n    text-align: right;\n}\n\n.rolling-skill-runtime,\n.rolling-skill-state {\n    display: grid;\n    gap: 8px;\n}\n\n.rolling-skill-runtime {\n    margin-top: 14px;\n}\n\n.rolling-skill-runtime code,\n.rolling-skill-path code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-path code {\n    display: block;\n    margin-top: 10px;\n}\n\n.rolling-skill-error {\n    border-color: var(--dsw-alias-state-error-primary);\n    color: var(--dsw-alias-label-error);\n}\n\n@media (max-width: 640px) {\n    .rolling-skill-header {\n        align-items: stretch;\n        flex-direction: column;\n    }\n}\n";
+var workbench_default = ".rolling-skill-workbench {\n    box-sizing: border-box;\n    color: var(--dsw-alias-label-primary);\n    display: grid;\n    gap: 20px;\n    min-width: 0;\n    padding: 4px 0 24px;\n}\n\n.rolling-skill-header {\n    align-items: flex-start;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n}\n\n.rolling-skill-header h2,\n.rolling-skill-panel h3 {\n    margin: 0;\n}\n\n.rolling-skill-header p,\n.rolling-skill-panel p {\n    color: var(--dsw-alias-label-secondary);\n    margin: 6px 0 0;\n}\n\n.rolling-skill-tabs {\n    align-items: center;\n    border-bottom: 1px solid var(--dsw-alias-border-l2);\n    display: flex;\n    flex-wrap: wrap;\n    gap: 4px;\n    padding-bottom: 10px;\n}\n\n.rolling-skill-counts {\n    display: grid;\n    gap: 10px;\n    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));\n}\n\n.rolling-skill-count,\n.rolling-skill-panel,\n.rolling-skill-state {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 10px;\n}\n\n.rolling-skill-count {\n    display: grid;\n    gap: 4px;\n    padding: 14px;\n}\n\n.rolling-skill-count strong {\n    font-size: 22px;\n    line-height: 28px;\n}\n\n.rolling-skill-count span,\n.rolling-skill-panel dt {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-overview {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-grid {\n    display: grid;\n    gap: 12px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-panel,\n.rolling-skill-state {\n    min-width: 0;\n    padding: 16px;\n}\n\n.rolling-skill-panel dl {\n    display: grid;\n    gap: 10px;\n    margin: 14px 0 0;\n}\n\n.rolling-skill-panel dl > div {\n    align-items: baseline;\n    display: flex;\n    gap: 12px;\n    justify-content: space-between;\n}\n\n.rolling-skill-panel dd {\n    margin: 0;\n    max-width: 68%;\n    overflow-wrap: anywhere;\n    text-align: right;\n}\n\n.rolling-skill-runtime,\n.rolling-skill-state {\n    display: grid;\n    gap: 8px;\n}\n\n.rolling-skill-runtime {\n    margin-top: 14px;\n}\n\n.rolling-skill-runtime code,\n.rolling-skill-path code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-path code {\n    display: block;\n    margin-top: 10px;\n}\n\n.rolling-skill-error {\n    border-color: var(--dsw-alias-state-error-primary);\n    color: var(--dsw-alias-label-error);\n}\n\n.rolling-skill-data-stack,\n.rolling-skill-form-stack,\n.rolling-skill-list {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row,\n.rolling-skill-form-row,\n.rolling-skill-actions {\n    align-items: center;\n    display: flex;\n    gap: 10px;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    justify-content: space-between;\n}\n\n.rolling-skill-form-row,\n.rolling-skill-list {\n    margin-top: 14px;\n}\n\n.rolling-skill-form-row > :first-child {\n    flex: 1;\n}\n\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-list-row > div:first-child,\n.rolling-skill-case-copy {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-list-row span,\n.rolling-skill-case-copy p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-case-copy p {\n    margin: 0;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-select,\n.rolling-skill-form-stack textarea {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 7px;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    padding: 8px 10px;\n}\n\n.rolling-skill-select {\n    margin-top: 14px;\n    max-width: 360px;\n    width: 100%;\n}\n\n.rolling-skill-form-stack label {\n    display: grid;\n    gap: 6px;\n}\n\n.rolling-skill-form-stack textarea {\n    min-height: 120px;\n    resize: vertical;\n}\n\n.rolling-skill-check {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    margin-top: 12px;\n}\n\n.rolling-skill-badge {\n    color: var(--dsw-alias-state-business-primary);\n    font-size: 11px;\n    font-weight: 600;\n}\n\n.rolling-skill-inline-error {\n    color: var(--dsw-alias-label-error) !important;\n}\n\n@media (max-width: 760px) {\n    .rolling-skill-panel-header,\n    .rolling-skill-list-row,\n    .rolling-skill-case-row,\n    .rolling-skill-form-row {\n        align-items: stretch;\n        flex-direction: column;\n    }\n}\n\n@media (max-width: 640px) {\n    .rolling-skill-header {\n        align-items: stretch;\n        flex-direction: column;\n    }\n}\n";
 
 // src/client/locale.ts
 var LOCALE_NAMESPACE = "rolling-skill";
@@ -218,7 +587,40 @@ var zh = {
   runtime: "\u76EE\u6807 Runtime",
   noRuntime: "\u5C1A\u672A\u9009\u62E9 Runtime",
   dataDirectory: "\u6570\u636E\u76EE\u5F55",
-  comingSoon: "\u6B64\u6A21\u5757\u5C06\u5728\u63A5\u4E0B\u6765\u7684\u63D2\u4EF6\u5316\u6B65\u9AA4\u4E2D\u63A5\u5165\u5171\u4EAB Core\u3002"
+  comingSoon: "\u6B64\u6A21\u5757\u5C06\u5728\u63A5\u4E0B\u6765\u7684\u63D2\u4EF6\u5316\u6B65\u9AA4\u4E2D\u63A5\u5165\u5171\u4EAB Core\u3002",
+  datasetsTitle: "\u6570\u636E\u96C6",
+  datasetsDescription: "\u7EC4\u7EC7 Case\uFF0C\u5E76\u5BFC\u51FA\u53EF\u79FB\u690D\u7684 CSV \u6570\u636E\u3002",
+  datasetName: "\u6570\u636E\u96C6\u540D\u79F0",
+  createDataset: "\u65B0\u5EFA\u6570\u636E\u96C6",
+  caseBreakdown: "\u5171 {all} \xB7 Good {good} \xB7 Bad {bad}",
+  exportCsv: "\u5BFC\u51FA CSV",
+  delete: "\u5220\u9664",
+  emptyDatasets: "\u6682\u65E0\u6570\u636E\u96C6",
+  deleteDatasetTitle: "\u5220\u9664\u6570\u636E\u96C6",
+  deleteCaseTitle: "\u5220\u9664 Case",
+  deleteRecoveryPrompt: "\u5220\u9664\u524D\u53EF\u4EE5\u628A\u6709\u4EF7\u503C\u7684\u95EE\u9898\u653E\u56DE Raw Case\uFF0C\u4E4B\u540E\u4ECD\u53EF\u91CD\u65B0\u6C89\u6DC0\u3002",
+  recoverToRawCases: "\u5C06\u95EE\u9898\u4FDD\u5B58\u5230 Raw Case",
+  cancel: "\u53D6\u6D88",
+  confirmDelete: "\u786E\u8BA4\u5220\u9664",
+  casesTitle: "Case",
+  casesDescription: "\u67E5\u770B\u5F53\u524D\u7B54\u6848\uFF0C\u5355\u4E2A\u66F4\u65B0\u6216\u6309\u8303\u56F4\u6279\u91CF\u66F4\u65B0\u3002",
+  selectDataset: "\u9009\u62E9\u6570\u636E\u96C6",
+  refreshGoodCases: "\u66F4\u65B0 Good Case",
+  refreshAllCases: "\u66F4\u65B0\u5168\u90E8",
+  refreshCase: "\u66F4\u65B0",
+  goodcase: "Good Case",
+  badcase: "Bad Case",
+  emptyCases: "\u6B64\u6570\u636E\u96C6\u6682\u65E0 Case",
+  rawCasesTitle: "Raw Case",
+  rawCasesDescription: "\u7F16\u8F91\u5F85\u6C89\u6DC0\u7684\u95EE\u9898\uFF0C\u6216\u79FB\u9664\u4E0D\u518D\u9700\u8981\u7684\u6761\u76EE\u3002",
+  edit: "\u7F16\u8F91",
+  save: "\u4FDD\u5B58",
+  question: "\u95EE\u9898",
+  note: "\u5907\u6CE8",
+  emptyRawCases: "\u6682\u65E0 Raw Case",
+  editRawCaseTitle: "\u7F16\u8F91 Raw Case",
+  deleteRawCaseTitle: "\u5220\u9664 Raw Case",
+  deleteRawCasePrompt: "\u6B64\u64CD\u4F5C\u4F1A\u4ECE\u5F85\u5904\u7406\u5217\u8868\u4E2D\u79FB\u9664\u8BE5\u95EE\u9898\u3002"
 };
 var en = {
   nav: "Rolling Skill",
@@ -249,12 +651,45 @@ var en = {
   runtime: "Target Runtime",
   noRuntime: "No Runtime selected",
   dataDirectory: "Data Directory",
-  comingSoon: "This module will connect to the shared Core in the next pluginization steps."
+  comingSoon: "This module will connect to the shared Core in the next pluginization steps.",
+  datasetsTitle: "Datasets",
+  datasetsDescription: "Organize Cases and export portable CSV data.",
+  datasetName: "Dataset name",
+  createDataset: "Create Dataset",
+  caseBreakdown: "{all} total \xB7 {good} Good \xB7 {bad} Bad",
+  exportCsv: "Export CSV",
+  delete: "Delete",
+  emptyDatasets: "No datasets yet",
+  deleteDatasetTitle: "Delete Dataset",
+  deleteCaseTitle: "Delete Case",
+  deleteRecoveryPrompt: "Before deletion, valuable questions can be returned to Raw Cases for later curation.",
+  recoverToRawCases: "Save questions to Raw Cases",
+  cancel: "Cancel",
+  confirmDelete: "Confirm Delete",
+  casesTitle: "Cases",
+  casesDescription: "Review current answers, refresh one Case, or refresh a selected scope.",
+  selectDataset: "Select Dataset",
+  refreshGoodCases: "Refresh Good Cases",
+  refreshAllCases: "Refresh All",
+  refreshCase: "Refresh",
+  goodcase: "Good Case",
+  badcase: "Bad Case",
+  emptyCases: "This dataset has no Cases",
+  rawCasesTitle: "Raw Cases",
+  rawCasesDescription: "Edit pending questions or remove entries that are no longer useful.",
+  edit: "Edit",
+  save: "Save",
+  question: "Question",
+  note: "Note",
+  emptyRawCases: "No Raw Cases",
+  editRawCaseTitle: "Edit Raw Case",
+  deleteRawCaseTitle: "Delete Raw Case",
+  deleteRawCasePrompt: "This removes the question from the pending list."
 };
 var DICTIONARIES = { zh, en };
 
 // src/client/index.tsx
-var import_jsx_runtime2 = require("react/jsx-runtime");
+var import_jsx_runtime5 = require("react/jsx-runtime");
 var inject = ["slots", "locale"];
 function apply(ctx) {
   ctx.effect(
@@ -269,7 +704,7 @@ function apply(ctx) {
     document.head.appendChild(style);
     return () => style.remove();
   }, "rolling-skill: workbench styles");
-  const RollingSkillSection = () => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Workbench, { locale: ctx.locale, t });
+  const RollingSkillSection = () => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(Workbench, { locale: ctx.locale, t });
   ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "rolling-skill",

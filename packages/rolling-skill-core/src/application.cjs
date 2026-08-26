@@ -12,6 +12,10 @@ const {
 const {
     RawCaseStore,
 } = require("../../../desktop/rolling-skill/src/raw-case-store.cjs")
+const {
+    CaseRecycleService,
+} = require("../../../desktop/rolling-skill/src/case-recycle-service.cjs")
+const {createCaseServices} = require("./case-services.cjs")
 const {RollingSkillConfigStore} = require("./config-store.cjs")
 const {ensureDataLayout, resolveDataPaths} = require("./data-root.cjs")
 
@@ -98,6 +102,13 @@ function createRollingSkillApplication(options = {}) {
     )
     const managedSkillStore = new ManagedSkillStore(paths.managedSkillRegistry)
     const configStore = new RollingSkillConfigStore(paths.config)
+    const recycleService = new CaseRecycleService({store, rawCaseStore})
+    const caseServices = createCaseServices({
+        store,
+        rawCaseStore,
+        recycleService,
+        refreshManager: options.caseRefreshManager ?? null,
+    })
     const subscribers = new Set()
     let closed = false
 
@@ -142,7 +153,6 @@ function createRollingSkillApplication(options = {}) {
         }),
         "rawCases.list": () => rawCaseStore.list(),
         "rawCases.add": (input) => rawCaseStore.add(input),
-        "rawCases.update": ({id, changes}) => rawCaseStore.update(id, changes),
         "evaluations.list": ({datasetId = null}) =>
             store.listEvaluationRunSummaries(datasetId),
         "settings.get": () => settingsSnapshot(),
@@ -151,12 +161,14 @@ function createRollingSkillApplication(options = {}) {
             if (Object.keys(plugin).length > 0) configStore.update(plugin)
             return settingsSnapshot()
         },
+        ...caseServices.methods,
     }
     const mutations = new Set([
         "datasets.create",
         "rawCases.add",
         "rawCases.update",
         "settings.update",
+        ...caseServices.mutations,
     ])
 
     async function snapshot() {

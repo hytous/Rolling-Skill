@@ -5079,6 +5079,331 @@ var require_raw_case_store = __commonJS({
   }
 });
 
+// ../../desktop/rolling-skill/src/case-recycle-service.cjs
+var require_case_recycle_service = __commonJS({
+  "../../desktop/rolling-skill/src/case-recycle-service.cjs"(exports, module) {
+    var { MAX_BATCH_SIZE } = require_raw_case_store();
+    function recoverySkill(dataset, entry) {
+      const reference = entry.skillReference ?? dataset.skillReference ?? {};
+      return {
+        ...reference.id ? { id: reference.id } : {},
+        name: reference.name,
+        ...reference.path ? { path: reference.path } : {}
+      };
+    }
+    function recoveryInput(dataset, entry, recoveredAt) {
+      const caseType = entry.caseType === "badcase" ? "Badcase" : "Goodcase";
+      return {
+        question: entry.question,
+        skill: recoverySkill(dataset, entry),
+        note: `${dataset.name} \xB7 ${caseType} \xB7 recovered before deletion`,
+        source: {
+          kind: "deleted_case",
+          datasetId: dataset.id,
+          caseId: entry.id,
+          caseType: entry.caseType,
+          recoveredAt
+        }
+      };
+    }
+    var CaseRecycleService = class {
+      constructor({ store, rawCaseStore, now = () => (/* @__PURE__ */ new Date()).toISOString() }) {
+        this.store = store;
+        this.rawCaseStore = rawCaseStore;
+        this.now = now;
+      }
+      recover(snapshot) {
+        const recoveredAt = this.now();
+        const inputs = snapshot.cases.map(
+          (entry) => recoveryInput(snapshot.dataset, entry, recoveredAt)
+        );
+        for (let offset = 0; offset < inputs.length; offset += MAX_BATCH_SIZE) {
+          const result = this.rawCaseStore.addMany(inputs.slice(offset, offset + MAX_BATCH_SIZE));
+          if (result.rejected.length) {
+            throw new Error(`Raw Case recovery failed: ${result.rejected[0].error}`);
+          }
+        }
+      }
+      deleteCase({ datasetId, caseId, recoverQuestions = true }) {
+        const snapshot = this.store.prepareCaseDeletion(datasetId, caseId);
+        if (recoverQuestions) this.recover(snapshot);
+        return this.store.deleteCase(datasetId, caseId);
+      }
+      deleteDataset({ datasetId, recoverQuestions = true }) {
+        const snapshot = this.store.prepareDatasetDeletion(datasetId);
+        if (recoverQuestions) this.recover(snapshot);
+        return this.store.deleteDataset(datasetId);
+      }
+    };
+    module.exports = { CaseRecycleService, recoveryInput };
+  }
+});
+
+// ../../desktop/rolling-skill/src/dataset-csv-export.cjs
+var require_dataset_csv_export = __commonJS({
+  "../../desktop/rolling-skill/src/dataset-csv-export.cjs"(exports, module) {
+    function csvCell(value) {
+      const text = String(value ?? "");
+      return /[",\r\n]/u.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+    }
+    function messageArray(role, content) {
+      return JSON.stringify([{ role, content: String(content ?? "") }]);
+    }
+    function normalizeExportOptions(options = {}) {
+      const caseScope = options.caseScope ?? "all";
+      const outputMode = options.outputMode ?? "curated";
+      if (caseScope !== "all" && caseScope !== "goodcase") {
+        throw new Error("Dataset export case scope is unsupported");
+      }
+      if (outputMode !== "curated" && outputMode !== "original") {
+        throw new Error("Dataset export output mode is unsupported");
+      }
+      return { caseScope, outputMode };
+    }
+    function originalFinalAssistantMessages(entry) {
+      if (!Array.isArray(entry?.source?.originalAssistantMessages)) return [];
+      for (let index = entry.source.originalAssistantMessages.length - 1; index >= 0; index -= 1) {
+        const message = entry.source.originalAssistantMessages[index];
+        if (message?.role === "assistant" && typeof message.content === "string") {
+          return [{ role: "assistant", content: message.content }];
+        }
+      }
+      return [];
+    }
+    function buildDatasetCsv(cases = [], options = {}) {
+      if (!Array.isArray(cases)) throw new Error("Dataset Cases must be an array");
+      const { caseScope, outputMode } = normalizeExportOptions(options);
+      const rows = [["input", "output"]];
+      const selectedCases = caseScope === "goodcase" ? cases.filter((entry) => entry?.caseType === "goodcase") : cases;
+      for (const entry of selectedCases) {
+        const question = entry?.source?.originalQuestion || entry?.question || "";
+        const answer = entry?.answer || entry?.curated?.referenceAnswer?.summary || "";
+        rows.push([
+          messageArray("user", question),
+          outputMode === "original" ? JSON.stringify(originalFinalAssistantMessages(entry)) : messageArray("assistant", answer)
+        ]);
+      }
+      return `${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}\r
+`;
+    }
+    function datasetExportFilename(name, options = {}) {
+      const { caseScope, outputMode } = normalizeExportOptions(options);
+      const safe = String(name ?? "").trim().replace(/[\\/:：*?"<>|]+/gu, "-").replace(/\s+/gu, "-").replace(/-+/gu, "-").replace(/^-|-$/gu, "");
+      const suffix = [
+        caseScope === "goodcase" ? "goodcases" : null,
+        outputMode === "original" ? "original" : null
+      ].filter(Boolean);
+      return `${safe || "rolling-skill-dataset"}${suffix.length ? `-${suffix.join("-")}` : ""}.csv`;
+    }
+    module.exports = { buildDatasetCsv, datasetExportFilename, originalFinalAssistantMessages };
+  }
+});
+
+// ../rolling-skill-core/src/case-services.cjs
+var require_case_services = __commonJS({
+  "../rolling-skill-core/src/case-services.cjs"(exports, module) {
+    var {
+      buildDatasetCsv,
+      datasetExportFilename,
+      originalFinalAssistantMessages
+    } = require_dataset_csv_export();
+    var MUTATIONS = /* @__PURE__ */ new Set([
+      "cases.delete",
+      "cases.refresh",
+      "cases.refreshBatch",
+      "datasets.delete",
+      "rawCases.dispatch",
+      "rawCases.recycle",
+      "rawCases.update"
+    ]);
+    function copy(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+    function requiredText(value, label, maximum = 4096) {
+      const text = typeof value === "string" ? value.trim() : "";
+      if (!text || text.length > maximum) throw new Error(`${label} is required`);
+      return text;
+    }
+    function pageNumber(value, fallback, label, maximum) {
+      const number = value === void 0 ? fallback : Number(value);
+      if (!Number.isSafeInteger(number) || number < 1 || number > maximum) {
+        throw new Error(`${label} is invalid`);
+      }
+      return number;
+    }
+    function currentCase(store, datasetId, caseId) {
+      const entry = store.listCases(datasetId).find((candidate) => candidate.id === caseId);
+      if (!entry) throw new Error("Unknown Case");
+      return entry;
+    }
+    function assertExpected(value, expected, label) {
+      if (expected === void 0 || expected === null) return;
+      if (String(value ?? "") !== String(expected)) {
+        throw new Error(`${label} changed since it was loaded`);
+      }
+    }
+    function fingerprint(method, input) {
+      return JSON.stringify({ method, input });
+    }
+    function createCaseServices({ store, rawCaseStore, recycleService, refreshManager = null }) {
+      if (!store || !rawCaseStore || !recycleService) {
+        throw new Error("Rolling Skill Case service dependencies are required");
+      }
+      const completed = /* @__PURE__ */ new Map();
+      async function once(method, input, operation) {
+        const idempotencyKey = requiredText(input.idempotencyKey, "Idempotency key", 500);
+        const key = `${method}\0${idempotencyKey}`;
+        const signature = fingerprint(method, input);
+        const previous = completed.get(key);
+        if (previous) {
+          if (previous.signature !== signature) {
+            throw new Error("Idempotency key was already used with different input");
+          }
+          return copy(await previous.value);
+        }
+        const pending = Promise.resolve().then(operation);
+        completed.set(key, { signature, value: pending });
+        try {
+          return copy(await pending);
+        } catch (error) {
+          completed.delete(key);
+          throw error;
+        }
+      }
+      function requireRefreshManager() {
+        if (!refreshManager || typeof refreshManager.createSession !== "function") {
+          throw new Error("Case refresh Runtime is unavailable");
+        }
+        return refreshManager;
+      }
+      const methods = {
+        "cases.list": ({ datasetId, page = 1, pageSize = 50, caseScope = "all" }) => {
+          const normalizedDatasetId = requiredText(datasetId, "Dataset id", 200);
+          const normalizedPage = pageNumber(page, 1, "Case page", 1e6);
+          const normalizedPageSize = pageNumber(pageSize, 50, "Case page size", 200);
+          if (caseScope !== "all" && caseScope !== "goodcase" && caseScope !== "badcase") {
+            throw new Error("Case scope is unsupported");
+          }
+          const selected = store.listCases(normalizedDatasetId).filter((entry) => caseScope === "all" || entry.caseType === caseScope);
+          const total = selected.length;
+          const offset = (normalizedPage - 1) * normalizedPageSize;
+          return {
+            items: selected.slice(offset, offset + normalizedPageSize),
+            page: normalizedPage,
+            pageSize: normalizedPageSize,
+            total,
+            pageCount: Math.ceil(total / normalizedPageSize)
+          };
+        },
+        "cases.get": ({ datasetId, caseId }) => currentCase(
+          store,
+          requiredText(datasetId, "Dataset id", 200),
+          requiredText(caseId, "Case id", 200)
+        ),
+        "cases.delete": (input) => once("cases.delete", input, () => {
+          const datasetId = requiredText(input.datasetId, "Dataset id", 200);
+          const caseId = requiredText(input.caseId, "Case id", 200);
+          const entry = currentCase(store, datasetId, caseId);
+          assertExpected(entry.updatedAt, input.expectedUpdatedAt, "Case");
+          return recycleService.deleteCase({
+            datasetId,
+            caseId,
+            recoverQuestions: input.recoverQuestions !== false
+          });
+        }),
+        "cases.refresh": (input) => once("cases.refresh", input, () => {
+          const datasetId = requiredText(input.datasetId, "Dataset id", 200);
+          const caseId = requiredText(input.caseId, "Case id", 200);
+          const entry = currentCase(store, datasetId, caseId);
+          assertExpected(entry.updatedAt, input.expectedUpdatedAt, "Case");
+          return requireRefreshManager().createSession({ datasetId, caseId });
+        }),
+        "cases.refreshBatch": (input) => once("cases.refreshBatch", input, async () => {
+          const datasetId = requiredText(input.datasetId, "Dataset id", 200);
+          const scope = input.scope ?? "goodcase";
+          if (scope !== "goodcase" && scope !== "all") {
+            throw new Error("Case refresh scope is unsupported");
+          }
+          const active = new Set(store.listCurationSessions().filter(
+            (session) => session.operation === "refresh" && session.status !== "archived" && session.status !== "cancelled"
+          ).map((session) => session.targetCaseId));
+          const skipped = [];
+          const eligible = [];
+          for (const entry of store.listCases(datasetId)) {
+            if (scope === "goodcase" && entry.caseType !== "goodcase") continue;
+            if (active.has(entry.id)) {
+              skipped.push({ caseId: entry.id, reason: "refresh-in-progress" });
+            } else {
+              eligible.push(entry);
+            }
+          }
+          const sessions = [];
+          for (const entry of eligible) {
+            sessions.push(await requireRefreshManager().createSession({
+              datasetId,
+              caseId: entry.id
+            }));
+          }
+          return { scope, eligibleCount: eligible.length, skipped, sessions };
+        }),
+        "datasets.delete": (input) => once("datasets.delete", input, () => {
+          const datasetId = requiredText(input.datasetId, "Dataset id", 200);
+          const dataset = store.getDataset(datasetId);
+          assertExpected(dataset.createdAt, input.expectedCreatedAt, "Dataset");
+          return recycleService.deleteDataset({
+            datasetId,
+            recoverQuestions: input.recoverQuestions !== false
+          });
+        }),
+        "datasets.exportCsv": ({ datasetId, caseScope = "all", outputMode = "curated" }) => {
+          const normalizedDatasetId = requiredText(datasetId, "Dataset id", 200);
+          const dataset = store.getDataset(normalizedDatasetId);
+          const allCases = store.listCases(normalizedDatasetId);
+          const selected = caseScope === "goodcase" ? allCases.filter((entry) => entry.caseType === "goodcase") : allCases;
+          const options = { caseScope, outputMode };
+          return {
+            filename: datasetExportFilename(dataset.name, options),
+            content: buildDatasetCsv(allCases, options),
+            caseCount: selected.length,
+            missingOriginalCount: outputMode === "original" ? selected.filter((entry) => !originalFinalAssistantMessages(entry).length).length : 0
+          };
+        },
+        "rawCases.dispatch": (input) => once(
+          "rawCases.dispatch",
+          input,
+          () => rawCaseStore.markDispatched(
+            requiredText(input.id, "Raw Case id", 200),
+            input.dispatch ?? {}
+          )
+        ),
+        "rawCases.update": (input) => once(
+          "rawCases.update",
+          input,
+          () => rawCaseStore.updateIfCurrent(
+            requiredText(input.id, "Raw Case id", 200),
+            {
+              expectedRevision: input.expectedRevision,
+              expectedSkillName: requiredText(input.expectedSkillName, "Raw Case Skill name", 200)
+            },
+            input.changes ?? {}
+          )
+        ),
+        "rawCases.recycle": (input) => once(
+          "rawCases.recycle",
+          input,
+          () => rawCaseStore.delete(requiredText(input.id, "Raw Case id", 200))
+        )
+      };
+      async function dispatch(method, input = {}) {
+        if (!Object.hasOwn(methods, method)) throw new Error(`Unknown Case service method: ${method}`);
+        return copy(await methods[method](copy(input)));
+      }
+      return Object.freeze({ dispatch, methods: Object.freeze(methods), mutations: MUTATIONS });
+    }
+    module.exports = { createCaseServices };
+  }
+});
+
 // ../rolling-skill-core/src/config-store.cjs
 var require_config_store = __commonJS({
   "../rolling-skill-core/src/config-store.cjs"(exports, module) {
@@ -5331,6 +5656,10 @@ var require_application = __commonJS({
     var {
       RawCaseStore
     } = require_raw_case_store();
+    var {
+      CaseRecycleService
+    } = require_case_recycle_service();
+    var { createCaseServices } = require_case_services();
     var { RollingSkillConfigStore } = require_config_store();
     var { ensureDataLayout, resolveDataPaths } = require_data_root();
     var MAX_DISPATCH_BYTES = 1024 * 1024;
@@ -5405,6 +5734,13 @@ var require_application = __commonJS({
       );
       const managedSkillStore = new ManagedSkillStore(paths.managedSkillRegistry);
       const configStore = new RollingSkillConfigStore(paths.config);
+      const recycleService = new CaseRecycleService({ store, rawCaseStore });
+      const caseServices = createCaseServices({
+        store,
+        rawCaseStore,
+        recycleService,
+        refreshManager: options.caseRefreshManager ?? null
+      });
       const subscribers = /* @__PURE__ */ new Set();
       let closed = false;
       function dashboardSnapshot() {
@@ -5446,20 +5782,21 @@ var require_application = __commonJS({
         }),
         "rawCases.list": () => rawCaseStore.list(),
         "rawCases.add": (input) => rawCaseStore.add(input),
-        "rawCases.update": ({ id, changes }) => rawCaseStore.update(id, changes),
         "evaluations.list": ({ datasetId = null }) => store.listEvaluationRunSummaries(datasetId),
         "settings.get": () => settingsSnapshot(),
         "settings.update": ({ rollingSkill = {}, plugin = {} }) => {
           if (Object.keys(rollingSkill).length > 0) store.updateSettings(rollingSkill);
           if (Object.keys(plugin).length > 0) configStore.update(plugin);
           return settingsSnapshot();
-        }
+        },
+        ...caseServices.methods
       };
       const mutations = /* @__PURE__ */ new Set([
         "datasets.create",
         "rawCases.add",
         "rawCases.update",
-        "settings.update"
+        "settings.update",
+        ...caseServices.mutations
       ]);
       async function snapshot() {
         if (closed) throw new Error("Rolling Skill application is closed");
@@ -5511,10 +5848,12 @@ var require_application = __commonJS({
 var require_src = __commonJS({
   "../rolling-skill-core/src/index.cjs"(exports, module) {
     var { createRollingSkillApplication: createRollingSkillApplication2 } = require_application();
+    var { createCaseServices } = require_case_services();
     var { RollingSkillConfigStore } = require_config_store();
     var { ensureDataLayout, resolveDataPaths } = require_data_root();
     module.exports = {
       RollingSkillConfigStore,
+      createCaseServices,
       createRollingSkillApplication: createRollingSkillApplication2,
       ensureDataLayout,
       resolveDataPaths

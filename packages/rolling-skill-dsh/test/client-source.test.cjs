@@ -46,4 +46,23 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(css, /var\(--dsw-alias-label-primary\)/u)
         assert.doesNotMatch(css, /#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/iu)
     })
+
+    it("ships native Dataset, Case, and Raw Case panels with refresh and recovery actions", () => {
+        const datasets = source("workbench/DatasetsPanel.tsx")
+        const cases = source("workbench/CasesPanel.tsx")
+        const rawCases = source("workbench/RawCasesPanel.tsx")
+        const workbench = source("workbench/Workbench.tsx")
+
+        assert.match(datasets, /datasets\.create/u)
+        assert.match(datasets, /datasets\.delete/u)
+        assert.match(datasets, /datasets\.exportCsv/u)
+        assert.match(cases, /cases\.refreshBatch/u)
+        assert.match(cases, /cases\.delete/u)
+        assert.match(rawCases, /rawCases\.update/u)
+        assert.match(rawCases, /rawCases\.recycle/u)
+        assert.match(`${datasets}\n${cases}`, /recoverQuestions/u)
+        assert.match(workbench, /<DatasetsPanel/u)
+        assert.match(workbench, /<CasesPanel/u)
+        assert.match(workbench, /<RawCasesPanel/u)
+    })
 })

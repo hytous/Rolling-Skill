@@ -130,6 +130,119 @@
     color: var(--dsw-alias-label-error);
 }
 
+.rolling-skill-data-stack,
+.rolling-skill-form-stack,
+.rolling-skill-list {
+    display: grid;
+    gap: 12px;
+}
+
+.rolling-skill-panel-header,
+.rolling-skill-list-row,
+.rolling-skill-case-row,
+.rolling-skill-form-row,
+.rolling-skill-actions {
+    align-items: center;
+    display: flex;
+    gap: 10px;
+}
+
+.rolling-skill-panel-header,
+.rolling-skill-list-row,
+.rolling-skill-case-row {
+    justify-content: space-between;
+}
+
+.rolling-skill-form-row,
+.rolling-skill-list {
+    margin-top: 14px;
+}
+
+.rolling-skill-form-row > :first-child {
+    flex: 1;
+}
+
+.rolling-skill-list-row,
+.rolling-skill-case-row {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    min-width: 0;
+    padding: 12px;
+}
+
+.rolling-skill-list-row > div:first-child,
+.rolling-skill-case-copy {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+}
+
+.rolling-skill-list-row span,
+.rolling-skill-case-copy p {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.rolling-skill-case-copy p {
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+.rolling-skill-select,
+.rolling-skill-form-stack textarea {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: 7px;
+    color: var(--dsw-alias-label-primary);
+    font: inherit;
+    padding: 8px 10px;
+}
+
+.rolling-skill-select {
+    margin-top: 14px;
+    max-width: 360px;
+    width: 100%;
+}
+
+.rolling-skill-form-stack label {
+    display: grid;
+    gap: 6px;
+}
+
+.rolling-skill-form-stack textarea {
+    min-height: 120px;
+    resize: vertical;
+}
+
+.rolling-skill-check {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.rolling-skill-badge {
+    color: var(--dsw-alias-state-business-primary);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.rolling-skill-inline-error {
+    color: var(--dsw-alias-label-error) !important;
+}
+
+@media (max-width: 760px) {
+    .rolling-skill-panel-header,
+    .rolling-skill-list-row,
+    .rolling-skill-case-row,
+    .rolling-skill-form-row {
+        align-items: stretch;
+        flex-direction: column;
+    }
+}
+
 @media (max-width: 640px) {
     .rolling-skill-header {
         align-items: stretch;
