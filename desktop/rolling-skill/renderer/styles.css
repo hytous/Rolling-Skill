@@ -2040,6 +2040,11 @@ kbd {
     gap: 2px;
 }
 
+.evaluation-panel-head > .evaluation-panel-head-actions {
+    align-items: flex-end;
+    gap: 5px;
+}
+
 .evaluation-panel-head strong {
     color: var(--text);
     font-size: 16px;
@@ -4637,6 +4642,65 @@ kbd {
     padding: 0 9px;
 }
 
+.refresh-batch-panel {
+    display: flex;
+    margin: 0 0 10px;
+    padding: 9px 10px;
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+    border-radius: 9px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+
+.refresh-batch-panel.failed {
+    border-color: color-mix(in srgb, var(--danger) 24%, var(--border));
+    background: color-mix(in srgb, var(--danger) 4%, var(--surface));
+}
+
+.refresh-batch-panel.completed {
+    border-color: color-mix(in srgb, var(--success) 24%, var(--border));
+}
+
+.refresh-batch-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.refresh-batch-copy strong {
+    color: var(--text);
+    font-size: 10px;
+}
+
+.refresh-batch-copy small {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 8.5px;
+    line-height: 1.4;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.refresh-batch-current {
+    color: var(--faint);
+}
+
+.refresh-batch-stop {
+    flex: 0 0 auto;
+    min-height: 27px;
+    padding: 0 9px;
+    border-color: color-mix(in srgb, var(--danger) 25%, var(--border));
+    background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+    color: var(--danger);
+}
+
+.refresh-batch-stop:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger) 13%, var(--surface));
+}
+
 .frozen-question {
     padding: 10px;
     border: 1px solid var(--border);
@@ -5239,6 +5303,63 @@ kbd {
 .case-type-field small {
     color: var(--faint);
     font-size: 9px;
+}
+
+.refresh-scope-options {
+    display: grid;
+    margin: 15px 0 0;
+    padding: 0;
+    border: 0;
+    grid-template-columns: 1fr 1fr;
+    gap: 7px;
+}
+
+.refresh-scope-options legend {
+    margin-bottom: 7px;
+}
+
+.refresh-scope-options label {
+    display: flex;
+    min-height: 64px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.refresh-scope-options label:has(input:checked) {
+    border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+    background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+
+.refresh-scope-options input {
+    margin-top: 2px;
+    accent-color: var(--accent);
+}
+
+.refresh-scope-options span {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.refresh-scope-options strong {
+    color: var(--text);
+    font-size: 10.5px;
+    font-weight: 620;
+}
+
+.refresh-scope-options small,
+.refresh-batch-selection {
+    color: var(--faint);
+    font-size: 9px;
+    line-height: 1.45;
+}
+
+.refresh-batch-selection {
+    margin: 10px 1px 0;
 }
 
 .dialog-footer {

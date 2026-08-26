@@ -229,6 +229,45 @@ describe("local-first desktop surface", () => {
         assert.match(styles, /\.refresh-baseline-card/u)
     })
 
+    it("offers bilingual Goodcase-only or all-Case automatic refresh batches", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        assert.match(html, /id="open-case-refresh-batch"[^>]*data-i18n="refreshCases"/u)
+        assert.match(html, /id="case-refresh-batch-dialog"/u)
+        assert.match(html, /name="case-refresh-scope" value="goodcase" checked/u)
+        assert.match(html, /name="case-refresh-scope" value="all"/u)
+        assert.match(html, /id="case-refresh-batch-status"/u)
+
+        assert.match(renderer, /refreshCases:\s*"Refresh Cases"/u)
+        assert.match(renderer, /refreshCases:\s*"批量更新 Case"/u)
+        assert.match(renderer, /refreshBatchProgress:\s*"Batch refresh · \{completed\}\/\{total\} saved"/u)
+        assert.match(renderer, /refreshBatchProgress:\s*"批量更新 · 已保存 \{completed\}\/\{total\}"/u)
+        assert.match(renderer, /refreshBatchSaving:\s*"Valid draft ready · saving automatically…"/u)
+        assert.match(renderer, /refreshBatchSaving:\s*"草稿校验通过 · 正在自动保存…"/u)
+        assert.match(renderer, /refreshBatchComplete:\s*"All selected Cases were refreshed and saved"/u)
+        assert.match(renderer, /refreshBatchComplete:\s*"所选 Case 已全部更新并保存"/u)
+        assert.match(renderer, /refreshBatchStopped:\s*"Automatic Case refresh stopped"/u)
+        assert.match(renderer, /refreshBatchStopped:\s*"已停止批量更新"/u)
+        assert.match(renderer, /refreshBatchFailed:\s*"Automatic Case refresh paused: \{message\}"/u)
+        assert.match(renderer, /refreshBatchFailed:\s*"批量更新已暂停：\{message\}"/u)
+
+        assert.match(renderer, /function openCaseRefreshBatchDialog\(/u)
+        assert.match(renderer, /function startCaseRefreshBatch\(/u)
+        assert.match(renderer, /async function advanceCaseRefreshBatch\(/u)
+        assert.match(renderer, /function maybeAutoArchiveRefresh\(/u)
+        assert.match(renderer, /async function stopCaseRefreshBatch\(/u)
+        assert.match(
+            renderer,
+            /\.filter\(\(entry\) => scope === "all" \|\| entry\.caseType === "goodcase"\)/u,
+        )
+        assert.match(renderer, /archiveCuration\(session\.id, \{automatic: true\}\)/u)
+        assert.match(renderer, /batch\.snapshot\(\)\.status !== "running"\) return/u)
+        assert.match(styles, /\.refresh-batch-panel/u)
+        assert.match(styles, /\.refresh-scope-options/u)
+    })
+
     it("offers bilingual Raw Case recovery before Case and dataset deletion", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")

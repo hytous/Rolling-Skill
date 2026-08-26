@@ -165,8 +165,12 @@
                                     <span class="panel-kicker" data-i18n="cases">Cases</span>
                                     <strong id="evaluation-case-count">0</strong>
                                 </div>
-                                <span data-i18n="verbatimQuestions">Questions stay verbatim</span>
+                                <div class="evaluation-panel-head-actions">
+                                    <span data-i18n="verbatimQuestions">Questions stay verbatim</span>
+                                    <button id="open-case-refresh-batch" class="evaluation-panel-action" type="button" data-i18n="refreshCases">Refresh Cases</button>
+                                </div>
                             </div>
+                            <div id="case-refresh-batch-status" class="refresh-batch-panel hidden" role="status"></div>
                             <div id="evaluation-case-list" class="evaluation-case-list"></div>
                         </section>
 
@@ -832,6 +836,36 @@
                     <span></span>
                     <button id="cancel-export-dataset" type="button" data-i18n="cancel">Cancel</button>
                     <button id="confirm-export-dataset" class="primary" type="submit" data-i18n="exportCsv">Export CSV</button>
+                </div>
+            </form>
+        </dialog>
+
+        <dialog id="case-refresh-batch-dialog" class="case-dialog confirm-dialog">
+            <form id="case-refresh-batch-form" class="confirm-dialog-body">
+                <div class="dialog-header">
+                    <div>
+                        <div class="drawer-eyebrow" data-i18n="caseRefresh">CASE REFRESH</div>
+                        <h2 data-i18n="refreshBatchTitle">Refresh saved Cases?</h2>
+                    </div>
+                    <button id="close-case-refresh-batch-dialog" class="icon-button large" type="button" data-i18n-title="close" data-i18n-aria-label="close" title="Close" aria-label="Close">×</button>
+                </div>
+                <p data-i18n="refreshBatchHelp">Each selected Case is rerun in order with the current Skill and tools, then saved automatically after the refreshed draft passes validation.</p>
+                <fieldset class="refresh-scope-options">
+                    <legend data-i18n="refreshScope">Cases to refresh</legend>
+                    <label>
+                        <input type="radio" name="case-refresh-scope" value="goodcase" checked />
+                        <span><strong data-i18n="goodCasesOnly">Good Cases only</strong><small data-i18n="refreshGoodcaseHelp">Refresh trusted reference Cases and leave Badcases unchanged.</small></span>
+                    </label>
+                    <label>
+                        <input type="radio" name="case-refresh-scope" value="all" />
+                        <span><strong data-i18n="allCases">All Cases</strong><small data-i18n="refreshAllHelp">Refresh both Goodcases and Badcases.</small></span>
+                    </label>
+                </fieldset>
+                <p id="case-refresh-batch-count" class="refresh-batch-selection"></p>
+                <div class="dialog-footer">
+                    <span></span>
+                    <button id="cancel-case-refresh-batch" type="button" data-i18n="cancel">Cancel</button>
+                    <button id="confirm-case-refresh-batch" class="primary" type="submit" data-i18n="startRefreshBatch">Start refresh</button>
                 </div>
             </form>
         </dialog>

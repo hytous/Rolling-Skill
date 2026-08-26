@@ -1,6 +1,7 @@
 const commandActivity = globalThis.RollingSkillCommandActivity
 const {formatEvaluationDuration} = globalThis.RollingSkillEvaluationFormat
 const {CaseCalibrationBatch} = globalThis.RollingSkillCalibrationBatch
+const {CaseRefreshBatch} = globalThis.RollingSkillRefreshBatch
 const UNIFIED_SCORING_MODEL = "unified-100/v1"
 
 const translations = {
@@ -118,7 +119,22 @@ const translations = {
         doneRefresh: "Done · update Case",
         refreshTargetChanged: "The Case changed during refresh. Start again.",
         refreshFailed: "Case refresh failed: {message}",
+        refreshCases: "Refresh Cases",
+        refreshBatchTitle: "Refresh saved Cases?",
+        refreshBatchHelp: "Each selected Case is rerun in order with the current Skill and tools, then saved automatically after the refreshed draft passes validation.",
+        refreshScope: "Cases to refresh",
+        refreshGoodcaseHelp: "Refresh trusted reference Cases and leave Badcases unchanged.",
+        refreshAllHelp: "Refresh both Goodcases and Badcases.",
+        refreshBatchSelection: "{count} Cases selected",
+        startRefreshBatch: "Start refresh",
+        stopRefreshBatch: "Stop",
+        refreshBatchProgress: "Batch refresh · {completed}/{total} saved",
+        refreshBatchCurrent: "Current: {case}",
+        refreshBatchSaving: "Valid draft ready · saving automatically…",
+        refreshBatchComplete: "All selected Cases were refreshed and saved",
         refreshBatchStopped: "Automatic Case refresh stopped",
+        refreshBatchFailed: "Automatic Case refresh paused: {message}",
+        refreshBatchContextChanged: "The dataset or Case changed during automatic refresh.",
         datasetSkillRequired: "Select an enabled Skill for this dataset.",
         autoCaptureDatasetRequired: "Automatic capture requires a Skill-bound dataset that is available in the active runtime.",
         changeDatasetSkillCopy: "Change the Skill bound to “{name}”. Future capture and evaluation use the new binding.",
@@ -813,7 +829,22 @@ const translations = {
         doneRefresh: "完成并更新 Case",
         refreshTargetChanged: "更新期间 Case 已发生变化，请重新开始。",
         refreshFailed: "Case 更新失败：{message}",
+        refreshCases: "批量更新 Case",
+        refreshBatchTitle: "更新已保存的 Case？",
+        refreshBatchHelp: "所选 Case 会按顺序使用当前 Skill 和工具重新执行；更新草稿校验通过后将自动保存。",
+        refreshScope: "要更新的 Case",
+        refreshGoodcaseHelp: "只更新可信参考 Case，Badcase 保持不变。",
+        refreshAllHelp: "同时更新 Goodcase 和 Badcase。",
+        refreshBatchSelection: "已选择 {count} 个 Case",
+        startRefreshBatch: "开始更新",
+        stopRefreshBatch: "停止",
+        refreshBatchProgress: "批量更新 · 已保存 {completed}/{total}",
+        refreshBatchCurrent: "当前：{case}",
+        refreshBatchSaving: "草稿校验通过 · 正在自动保存…",
+        refreshBatchComplete: "所选 Case 已全部更新并保存",
         refreshBatchStopped: "已停止批量更新",
+        refreshBatchFailed: "批量更新已暂停：{message}",
+        refreshBatchContextChanged: "批量更新期间数据集或 Case 已发生变化。",
         datasetSkillRequired: "请为这个数据集选择当前运行时中已启用的 Skill。",
         autoCaptureDatasetRequired: "自动沉淀必须选择一个已绑定 Skill 且该 Skill 在当前运行时可用的数据集。",
         changeDatasetSkillCopy: "更换数据集“{name}”绑定的 Skill；之后的新沉淀和评测会使用新绑定。",
@@ -1613,6 +1644,14 @@ const elements = {
     closeExportDatasetDialog: document.querySelector("#close-export-dataset-dialog"),
     cancelExportDataset: document.querySelector("#cancel-export-dataset"),
     confirmExportDataset: document.querySelector("#confirm-export-dataset"),
+    openCaseRefreshBatch: document.querySelector("#open-case-refresh-batch"),
+    caseRefreshBatchStatus: document.querySelector("#case-refresh-batch-status"),
+    caseRefreshBatchDialog: document.querySelector("#case-refresh-batch-dialog"),
+    caseRefreshBatchForm: document.querySelector("#case-refresh-batch-form"),
+    caseRefreshBatchCount: document.querySelector("#case-refresh-batch-count"),
+    closeCaseRefreshBatchDialog: document.querySelector("#close-case-refresh-batch-dialog"),
+    cancelCaseRefreshBatch: document.querySelector("#cancel-case-refresh-batch"),
+    confirmCaseRefreshBatch: document.querySelector("#confirm-case-refresh-batch"),
     evaluationCaseCount: document.querySelector("#evaluation-case-count"),
     evaluationCaseList: document.querySelector("#evaluation-case-list"),
     evaluationDatasetSkillStatus: document.querySelector("#evaluation-dataset-skill-status"),
@@ -3515,6 +3554,65 @@ function calibrationBatchSnapshot() {
     return state.calibrationBatch?.snapshot?.() ?? null
 }
 
+function refreshBatchSnapshot() {
+    return state.refreshBatch?.snapshot?.() ?? null
+}
+
+function refreshBatchStatusText(snapshot) {
+    if (!snapshot) return ""
+    if (snapshot.status === "completed") return t("refreshBatchComplete")
+    if (snapshot.status === "stopped") return t("refreshBatchStopped")
+    if (snapshot.status === "failed") {
+        return formatMessage("refreshBatchFailed", {message: snapshot.error || t("failed")})
+    }
+    if (snapshot.archiving) return t("refreshBatchSaving")
+    return formatMessage("refreshBatchProgress", {
+        completed: snapshot.completed,
+        total: snapshot.total,
+    })
+}
+
+function refreshBatchCaseTitle(caseId) {
+    const entry = state.evaluationCases.find((candidate) => candidate.id === caseId)
+    return entry?.title || entry?.inputSummary || entry?.question || caseId || t("none")
+}
+
+function fillRefreshBatchPanel(container, snapshot) {
+    container.replaceChildren()
+    container.className = `refresh-batch-panel ${snapshot.status}`
+    const copy = node("span", "refresh-batch-copy")
+    copy.append(
+        node("strong", "", formatMessage("refreshBatchProgress", {
+            completed: snapshot.completed,
+            total: snapshot.total,
+        })),
+        node("small", "", refreshBatchStatusText(snapshot)),
+    )
+    if (snapshot.currentCaseId) {
+        copy.append(node("small", "refresh-batch-current", formatMessage("refreshBatchCurrent", {
+            case: refreshBatchCaseTitle(snapshot.currentCaseId),
+        })))
+    }
+    container.append(copy)
+    if (snapshot.status === "running") {
+        const stop = node("button", "refresh-batch-stop", t("stopRefreshBatch"))
+        stop.type = "button"
+        stop.dataset.stopRefreshBatch = "true"
+        container.append(stop)
+    }
+    return container
+}
+
+function renderCaseRefreshBatchStatus() {
+    const snapshot = refreshBatchSnapshot()
+    if (!snapshot || snapshot.datasetId !== state.evaluationDatasetId) {
+        elements.caseRefreshBatchStatus.replaceChildren()
+        elements.caseRefreshBatchStatus.className = "refresh-batch-panel hidden"
+        return
+    }
+    fillRefreshBatchPanel(elements.caseRefreshBatchStatus, snapshot)
+}
+
 function calibrationBatchForSession(sessionId) {
     const batch = state.calibrationBatch
     const snapshot = batch?.snapshot?.()
@@ -3847,6 +3945,16 @@ function renderCurations() {
             batchPanel.append(stop)
         }
         scroll.append(batchPanel)
+    }
+    const refreshSnapshot = refreshBatchSnapshot()
+    if (
+        session.operation === "refresh" &&
+        refreshSnapshot?.currentSessionId === session.id
+    ) {
+        scroll.append(fillRefreshBatchPanel(
+            node("section", "refresh-batch-panel"),
+            refreshSnapshot,
+        ))
     }
     scroll.append(sourceQuestion)
     scroll.append(provenance)
@@ -5412,6 +5520,10 @@ function renderEvaluationWorkbench() {
     }
 
     elements.evaluationCaseCount.textContent = String(state.evaluationCases.length)
+    const refreshBatchRunning = refreshBatchSnapshot()?.status === "running"
+    elements.openCaseRefreshBatch.disabled =
+        !state.evaluationDatasetId || !state.evaluationCases.length || refreshBatchRunning
+    renderCaseRefreshBatchStatus()
     elements.evaluationCaseList.replaceChildren()
     if (state.evaluationLoading) {
         elements.evaluationCaseList.append(node("div", "sidebar-placeholder", t("loadingTask")))
@@ -6425,6 +6537,7 @@ async function loadEvaluationWorkbench(forceReload = false) {
 
 async function selectEvaluationDataset(datasetId) {
     if (!datasetId || datasetId === state.evaluationDatasetId) return
+    await stopCaseRefreshBatch({discardCurrent: true, feedback: false})
     state.evaluationDatasetId = datasetId
     state.evaluationCaseId = null
     await loadEvaluationWorkbench(false)
@@ -7760,6 +7873,155 @@ async function createCaseRefresh(caseId, {automatic = false, throwOnError = fals
     }
 }
 
+function assertCaseRefreshBatchContext(batch, caseId = null) {
+    const snapshot = batch.snapshot()
+    if (state.evaluationDatasetId !== snapshot.datasetId) {
+        throw new Error(t("refreshBatchContextChanged"))
+    }
+    if (!caseId) return
+    const caseEntry = state.evaluationCases.find((entry) => entry.id === caseId)
+    const activeRefresh = activeRefreshForCase(caseId)
+    if (
+        !caseEntry ||
+        caseEntry.datasetId !== snapshot.datasetId ||
+        activeCalibrationForCase(caseId) ||
+        (activeRefresh && activeRefresh.id !== snapshot.currentSessionId)
+    ) {
+        throw new Error(t("refreshBatchContextChanged"))
+    }
+}
+
+function failCaseRefreshBatch(batch, error) {
+    if (state.refreshBatch !== batch) return
+    const snapshot = batch.fail(error)
+    renderEvaluationWorkbench()
+    renderCurations()
+    showToast(refreshBatchStatusText(snapshot))
+}
+
+async function stopCaseRefreshBatch({discardCurrent = true, feedback = true} = {}) {
+    const batch = state.refreshBatch
+    const before = batch?.snapshot?.()
+    if (!batch || before?.status !== "running") return false
+    const wasArchiving = before.archiving
+    batch.stop()
+    renderEvaluationWorkbench()
+    renderCurations()
+    if (discardCurrent && before.currentSessionId && !wasArchiving) {
+        try {
+            await discardCurationImmediately(before.currentSessionId)
+        } catch (error) {
+            showError(error)
+        }
+    }
+    if (feedback) showToast(t("refreshBatchStopped"))
+    return true
+}
+
+async function archiveAutomaticRefresh(session, batch) {
+    try {
+        assertCaseRefreshBatchContext(batch, session.targetCaseId)
+        renderEvaluationWorkbench()
+        renderCurations()
+        await archiveCuration(session.id, {automatic: true})
+        if (state.refreshBatch !== batch || batch.snapshot().status !== "running") return
+        const snapshot = batch.completeAutoArchive(session.id)
+        renderEvaluationWorkbench()
+        renderCurations()
+        if (snapshot.status === "completed") {
+            showToast(t("refreshBatchComplete"))
+            return
+        }
+        await advanceCaseRefreshBatch(batch)
+    } catch (error) {
+        failCaseRefreshBatch(batch, error)
+    }
+}
+
+function maybeAutoArchiveRefresh(session) {
+    const batch = state.refreshBatch
+    if (!batch || !batch.beginAutoArchive(session)) return false
+    void archiveAutomaticRefresh(session, batch)
+    return true
+}
+
+function handleRefreshBatchSessionUpdate(session) {
+    const batch = refreshBatchForSession(session.id)
+    if (!batch) return
+    if (session.status === "failed") {
+        failCaseRefreshBatch(batch, new Error(session.error || t("failed")))
+        return
+    }
+    maybeAutoArchiveRefresh(session)
+}
+
+async function advanceCaseRefreshBatch(batch = state.refreshBatch) {
+    if (!batch || state.refreshBatch !== batch || batch.snapshot().status !== "running") return
+    let session = null
+    try {
+        assertCaseRefreshBatchContext(batch)
+        const caseId = batch.nextCase()
+        renderEvaluationWorkbench()
+        renderCurations()
+        if (!caseId) {
+            if (batch.snapshot().status === "completed") showToast(t("refreshBatchComplete"))
+            return
+        }
+        assertCaseRefreshBatchContext(batch, caseId)
+        session = await createCaseRefresh(caseId, {
+            automatic: true,
+            throwOnError: true,
+        })
+        if (!session) throw new Error(t("refreshBatchContextChanged"))
+        if (
+            state.refreshBatch !== batch ||
+            batch.snapshot().status !== "running" ||
+            !batch.attachSession(caseId, session.id)
+        ) {
+            if (session.status !== "archived" && session.status !== "cancelled") {
+                await discardCurationImmediately(session.id)
+            }
+            return
+        }
+        renderEvaluationWorkbench()
+        renderCurations()
+        const latest = state.curationSessions.find((entry) => entry.id === session.id) ?? session
+        handleRefreshBatchSessionUpdate(latest)
+    } catch (error) {
+        failCaseRefreshBatch(batch, error)
+    }
+}
+
+function updateCaseRefreshBatchSelection() {
+    const scope = new FormData(elements.caseRefreshBatchForm).get("case-refresh-scope") ?? "goodcase"
+    const count = state.evaluationCases.filter(
+        (entry) => scope === "all" || entry.caseType === "goodcase",
+    ).length
+    elements.caseRefreshBatchCount.textContent = formatMessage("refreshBatchSelection", {count})
+    elements.confirmCaseRefreshBatch.disabled = count === 0
+    return count
+}
+
+function openCaseRefreshBatchDialog() {
+    if (!state.evaluationDatasetId || !state.evaluationCases.length) return
+    elements.caseRefreshBatchForm.reset()
+    updateCaseRefreshBatchSelection()
+    elements.caseRefreshBatchDialog.showModal()
+}
+
+function startCaseRefreshBatch() {
+    const datasetId = state.evaluationDatasetId
+    const scope = new FormData(elements.caseRefreshBatchForm).get("case-refresh-scope") ?? "goodcase"
+    const caseIds = state.evaluationCases
+        .filter((entry) => scope === "all" || entry.caseType === "goodcase")
+        .map((entry) => entry.id)
+    if (!datasetId || !caseIds.length || refreshBatchSnapshot()?.status === "running") return
+    state.refreshBatch = new CaseRefreshBatch({datasetId, caseIds})
+    elements.caseRefreshBatchDialog.close()
+    renderEvaluationWorkbench()
+    void advanceCaseRefreshBatch(state.refreshBatch)
+}
+
 async function loadTrace() {
     elements.traceEvents.replaceChildren(node("div", "sidebar-placeholder", t("readingTrace")))
     try {
@@ -8391,6 +8653,11 @@ elements.evaluationWorkbench.addEventListener("click", (event) => {
         void stopAutomaticCalibrationBatch()
         return
     }
+    const stopRefreshBatch = event.target.closest("[data-stop-refresh-batch]")
+    if (stopRefreshBatch) {
+        void stopCaseRefreshBatch()
+        return
+    }
     const startBatch = event.target.closest("[data-start-calibration-batch]")
     if (startBatch) {
         startAutomaticCalibrationBatch()
@@ -8528,6 +8795,18 @@ elements.cancelExportDataset.addEventListener("click", () => elements.exportData
 elements.exportDatasetForm.addEventListener("submit", (event) => {
     event.preventDefault()
     void exportEvaluationDataset()
+})
+elements.openCaseRefreshBatch.addEventListener("click", openCaseRefreshBatchDialog)
+elements.closeCaseRefreshBatchDialog.addEventListener("click", () =>
+    elements.caseRefreshBatchDialog.close(),
+)
+elements.cancelCaseRefreshBatch.addEventListener("click", () =>
+    elements.caseRefreshBatchDialog.close(),
+)
+elements.caseRefreshBatchForm.addEventListener("change", updateCaseRefreshBatchSelection)
+elements.caseRefreshBatchForm.addEventListener("submit", (event) => {
+    event.preventDefault()
+    startCaseRefreshBatch()
 })
 elements.changeEvaluationDatasetSkill.addEventListener("click", () =>
     openDatasetSkillDialog(state.evaluationDatasetId),
@@ -8702,6 +8981,11 @@ elements.curationDetail.addEventListener("click", (event) => {
         void stopAutomaticCalibrationBatch()
         return
     }
+    const stopRefreshBatch = event.target.closest("[data-stop-refresh-batch]")
+    if (stopRefreshBatch) {
+        void stopCaseRefreshBatch()
+        return
+    }
     const retry = event.target.closest("[data-retry-curation]")
     if (retry) void retryCuration(retry.dataset.retryCuration)
     const archive = event.target.closest("[data-archive-curation]")
@@ -8860,6 +9144,7 @@ window.rollingSkill.onCurationChanged((session) => {
     if (!state.activeCurationId) state.activeCurationId = session.id
     renderCurations()
     handleCalibrationBatchSessionUpdate(session)
+    handleRefreshBatchSessionUpdate(session)
     if (
         state.surface === "evaluation" &&
         (session.operation === "calibration" || session.operation === "refresh")

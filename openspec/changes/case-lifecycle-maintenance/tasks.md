@@ -7,16 +7,16 @@
 
 ## 2. Case Refresh Domain
 
-- [ ] 2.1 Add Case refresh history migration, refresh Curation Session creation, frozen target checks, and atomic in-place archival tests
-- [ ] 2.2 Extend Curator prompt and lifecycle behavior for refresh baseline review, retries, Discard, Done, and valid-Draft preservation
-- [ ] 2.3 Implement CaseRefreshManager replay with current Skill, current Task profile, read-only safety guidance, evidence capture, and hidden task tracking
-- [ ] 2.4 Wire refresh manager lifecycle, main IPC, preload methods, notifications, and Runtime-change safeguards
+- [x] 2.1 Add Case refresh history migration, refresh Curation Session creation, frozen target checks, and atomic in-place archival tests
+- [x] 2.2 Extend Curator prompt and lifecycle behavior for refresh baseline review, retries, Discard, Done, and valid-Draft preservation
+- [x] 2.3 Implement CaseRefreshManager replay with current Skill, current Task profile, read-only safety guidance, evidence capture, and hidden task tracking
+- [x] 2.4 Wire refresh manager lifecycle, main IPC, preload methods, notifications, and Runtime-change safeguards
 
 ## 3. Case Refresh UI and Batch
 
-- [ ] 3.1 Add a focused CaseRefreshBatch state machine and tests for Goodcase/all ordering, automatic Done, stop, failure, and stale Session rejection
-- [ ] 3.2 Add localized single refresh actions, refresh Draft baseline/status rendering, and manual takeover behavior to Case Drafts
-- [ ] 3.3 Add the localized batch scope dialog, progress/status panel, sequential orchestration, and stop/error behavior to the evaluation workbench
+- [x] 3.1 Add a focused CaseRefreshBatch state machine and tests for Goodcase/all ordering, automatic Done, stop, failure, and stale Session rejection
+- [x] 3.2 Add localized single refresh actions, refresh Draft baseline/status rendering, and manual takeover behavior to Case Drafts
+- [x] 3.3 Add the localized batch scope dialog, progress/status panel, sequential orchestration, and stop/error behavior to the evaluation workbench
 
 ## 4. Scheduled Discovery Foundation
 
