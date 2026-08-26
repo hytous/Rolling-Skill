@@ -1,0 +1,147 @@
+const assert = require("node:assert/strict")
+const {createServer} = require("node:http")
+const {once} = require("node:events")
+const {afterEach, describe, it} = require("node:test")
+
+const servers = new Set()
+
+async function serve(handler) {
+    const server = createServer(handler)
+    servers.add(server)
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    return `http://127.0.0.1:${server.address().port}`
+}
+
+async function request(handler, {method = "POST", headers = {}, body = ""} = {}) {
+    const origin = await serve(handler)
+    const response = await fetch(`${origin}/rolling-skill/api`, {
+        method,
+        headers,
+        ...(method === "GET" || method === "HEAD" ? {} : {body}),
+    })
+    return {
+        status: response.status,
+        headers: response.headers,
+        text: await response.text(),
+    }
+}
+
+afterEach(async () => {
+    await Promise.all([...servers].map((server) => new Promise((resolve) =>
+        server.close(resolve),
+    )))
+    servers.clear()
+})
+
+describe("Rolling Skill Host JSON API", () => {
+    it("dispatches bounded JSON requests and returns a no-store envelope", async () => {
+        const {createRollingSkillApiHandler} = require("../src/host/api.cjs")
+        const calls = []
+        const handler = createRollingSkillApiHandler({
+            dispatch: async (method, input) => {
+                calls.push({method, input})
+                return {datasets: 2}
+            },
+        })
+
+        const response = await request(handler, {
+            headers: {"content-type": "application/json; charset=utf-8"},
+            body: JSON.stringify({method: "dashboard.get", input: {}}),
+        })
+
+        assert.equal(response.status, 200)
+        assert.equal(response.headers.get("cache-control"), "no-store")
+        assert.deepEqual(JSON.parse(response.text), {ok: true, value: {datasets: 2}})
+        assert.deepEqual(calls, [{method: "dashboard.get", input: {}}])
+    })
+
+    it("rejects wrong methods, media types, malformed JSON, and oversized bodies", async () => {
+        const {createRollingSkillApiHandler} = require("../src/host/api.cjs")
+        const handler = createRollingSkillApiHandler({dispatch: async () => ({})})
+
+        const wrongMethod = await request(handler, {method: "GET"})
+        assert.equal(wrongMethod.status, 405)
+        assert.equal(wrongMethod.headers.get("allow"), "POST")
+
+        const wrongType = await request(handler, {
+            headers: {"content-type": "text/plain"},
+            body: "{}",
+        })
+        assert.equal(wrongType.status, 415)
+
+        const malformed = await request(handler, {
+            headers: {"content-type": "application/json"},
+            body: "{",
+        })
+        assert.equal(malformed.status, 400)
+        assert.deepEqual(JSON.parse(malformed.text), {
+            ok: false,
+            error: {code: "INVALID_REQUEST", message: "Request is invalid"},
+        })
+
+        const oversized = await request(handler, {
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({method: "dashboard.get", input: {text: "x".repeat(1024 * 1024)}}),
+        })
+        assert.equal(oversized.status, 413)
+        assert.equal(JSON.parse(oversized.text).error.code, "REQUEST_TOO_LARGE")
+    })
+
+    it("refuses cross-origin requests and projects internal failures safely", async () => {
+        const {createRollingSkillApiHandler} = require("../src/host/api.cjs")
+        const handler = createRollingSkillApiHandler({
+            dispatch: async () => {
+                throw new Error("token=secret at /private/rolling-skill/config.json")
+            },
+        })
+
+        const crossOrigin = await request(handler, {
+            headers: {
+                "content-type": "application/json",
+                origin: "https://attacker.example",
+            },
+            body: JSON.stringify({method: "dashboard.get", input: {}}),
+        })
+        assert.equal(crossOrigin.status, 403)
+        assert.equal(JSON.parse(crossOrigin.text).error.code, "FORBIDDEN")
+
+        const failed = await request(handler, {
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({method: "dashboard.get", input: {}}),
+        })
+        assert.equal(failed.status, 500)
+        assert.deepEqual(JSON.parse(failed.text), {
+            ok: false,
+            error: {code: "INTERNAL_ERROR", message: "Rolling Skill request failed"},
+        })
+        assert.doesNotMatch(failed.text, /secret|private|config\.json/u)
+    })
+
+    it("does not dispatch an already-aborted request", async () => {
+        const {PassThrough} = require("node:stream")
+        const {createRollingSkillApiHandler} = require("../src/host/api.cjs")
+        let calls = 0
+        const handler = createRollingSkillApiHandler({
+            dispatch: async () => {
+                calls += 1
+                return {}
+            },
+        })
+        const requestStream = new PassThrough()
+        requestStream.method = "POST"
+        requestStream.headers = {"content-type": "application/json", host: "127.0.0.1"}
+        requestStream.aborted = true
+        const response = {
+            destroyed: false,
+            headersSent: false,
+            setHeader() {},
+            end() {
+                throw new Error("An aborted request must not write a response")
+            },
+        }
+
+        await handler(requestStream, response)
+        assert.equal(calls, 0)
+    })
+})
