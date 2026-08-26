@@ -53,8 +53,233 @@ function dueCaptureSlot({now = new Date(), schedule, lastScheduledSlot = null} =
     return satisfied >= due ? null : due
 }
 
+function requiredText(value, label, maximum = 4_000) {
+    const normalized = String(value ?? "").trim()
+    if (!normalized) throw new Error(`${label} is required`)
+    if (normalized.length > maximum) throw new Error(`${label} is too long`)
+    return normalized
+}
+
+function exactKeys(value, expected, label) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} JSON schema is invalid`)
+    }
+    const actual = Object.keys(value).sort()
+    const wanted = [...expected].sort()
+    if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
+        throw new Error(`${label} JSON contains unsupported fields`)
+    }
+}
+
+function firstJsonObject(text) {
+    const source = String(text ?? "")
+    const start = source.indexOf("{")
+    if (start < 0) throw new Error("Analysis did not return a JSON object")
+    let depth = 0
+    let inString = false
+    let escaped = false
+    for (let index = start; index < source.length; index += 1) {
+        const character = source[index]
+        if (inString) {
+            if (escaped) escaped = false
+            else if (character === "\\") escaped = true
+            else if (character === '"') inString = false
+            continue
+        }
+        if (character === '"') {
+            inString = true
+            continue
+        }
+        if (character === "{") depth += 1
+        if (character === "}") {
+            depth -= 1
+            if (depth === 0) {
+                try {
+                    return JSON.parse(source.slice(start, index + 1))
+                } catch (error) {
+                    throw new Error(`Analysis returned invalid JSON: ${error.message}`)
+                }
+            }
+        }
+    }
+    throw new Error("Analysis returned incomplete JSON")
+}
+
+function boundaryMessages(userMessages = []) {
+    return userMessages.map((message) => ({
+        id: requiredText(message?.id, "User Item id"),
+        turnId: requiredText(message?.turnId, "User turn id"),
+        text: String(message?.text ?? ""),
+    }))
+}
+
+function buildBoundaryPrompt({threadId, userMessages} = {}) {
+    const input = {
+        threadId: requiredText(threadId, "Thread id"),
+        userMessages: boundaryMessages(userMessages),
+    }
+    return `Identify complete user problem ranges from incremental user messages only.
+Keep follow-ups, corrections, and clarifications for the same problem in one range. Close a range
+when a new intent begins. Leave the final unfinished problem in pendingStartUserItemId. Use only
+the supplied stable IDs. Return JSON only with this exact schema:
+{"segments":[{"startUserItemId":"id","endUserItemId":"id","summary":"short text"}],"pendingStartUserItemId":"id-or-null"}
+<incremental-user-messages>${JSON.stringify(input)}</incremental-user-messages>`
+}
+
+function parseBoundaryResult(text, {userMessageIds = []} = {}) {
+    const value = firstJsonObject(text)
+    exactKeys(value, ["segments", "pendingStartUserItemId"], "Boundary result")
+    if (!Array.isArray(value.segments)) throw new Error("Boundary result segments are invalid")
+    const ids = userMessageIds.map((id) => requiredText(id, "User Item id"))
+    const positions = new Map(ids.map((id, index) => [id, index]))
+    let previousEnd = -1
+    const segments = value.segments.map((segment) => {
+        exactKeys(segment, ["startUserItemId", "endUserItemId", "summary"], "Boundary segment")
+        const startUserItemId = requiredText(segment.startUserItemId, "Boundary start user Item id")
+        const endUserItemId = requiredText(segment.endUserItemId, "Boundary end user Item id")
+        const start = positions.get(startUserItemId)
+        const end = positions.get(endUserItemId)
+        if (start === undefined || end === undefined) {
+            throw new Error("Boundary segment references an unknown user Item id")
+        }
+        if (start > end || start <= previousEnd) {
+            throw new Error("Boundary segments overlap or are out of order")
+        }
+        previousEnd = end
+        return {
+            startUserItemId,
+            endUserItemId,
+            summary: requiredText(segment.summary, "Boundary summary", 500),
+        }
+    })
+    const pendingStartUserItemId = value.pendingStartUserItemId === null
+        ? null
+        : requiredText(value.pendingStartUserItemId, "Pending start user Item id")
+    if (pendingStartUserItemId !== null) {
+        const pending = positions.get(pendingStartUserItemId)
+        if (pending === undefined) throw new Error("Pending range references an unknown user Item id")
+        if (pending <= previousEnd) throw new Error("Pending range overlaps a completed segment")
+    }
+    return {segments, pendingStartUserItemId}
+}
+
+function compactEpisodeItem(item = {}) {
+    return {
+        id: String(item.id ?? ""),
+        turnId: String(item.turnId ?? ""),
+        type: String(item.type ?? ""),
+        text: String(item.text ?? ""),
+    }
+}
+
+function compactActivity(activity = {}) {
+    const fields = ["type", "status", "server", "tool", "command", "name", "skillName"]
+    return Object.fromEntries(
+        fields
+            .filter((field) => activity[field] !== undefined && activity[field] !== null)
+            .map((field) => [field, String(activity[field]).slice(0, 4_000)]),
+    )
+}
+
+function buildOutcomePrompt({threadId, episode = {}, skills = [], datasets = []} = {}) {
+    const input = {
+        threadId: requiredText(threadId, "Thread id"),
+        episode: {
+            originalQuestion: String(episode.originalQuestion ?? ""),
+            items: (episode.items ?? []).map(compactEpisodeItem),
+            activity: (episode.toolActivity ?? []).map(compactActivity),
+        },
+        enabledSkills: skills.map((skill) => ({
+            name: String(skill?.name ?? ""),
+            path: skill?.path ? String(skill.path) : null,
+            runtimeId: skill?.runtimeId ? String(skill.runtimeId) : null,
+        })),
+        datasetBindings: datasets.map((dataset) => ({
+            id: String(dataset?.id ?? ""),
+            name: String(dataset?.name ?? ""),
+            skill: dataset?.skillReference
+                ? {
+                    name: String(dataset.skillReference.name ?? ""),
+                    path: dataset.skillReference.path ? String(dataset.skillReference.path) : null,
+                }
+                : null,
+        })),
+    }
+    return `Classify only this completed problem episode. Identify the principal enabled Skill,
+whether the problem was resolved, the recommended Case type, and the final Assistant Item. Return
+JSON only with this exact schema:
+{"skillName":"name-or-null","outcome":"resolved|unresolved|uncertain","caseType":"goodcase|badcase","finalAssistantItemId":"id-or-null","confidence":0.8,"reason":"short text"}
+<candidate-episode>${JSON.stringify(input)}</candidate-episode>`
+}
+
+function parseOutcomeResult(text, {skillNames = [], assistantItemIds = []} = {}) {
+    const value = firstJsonObject(text)
+    exactKeys(
+        value,
+        ["skillName", "outcome", "caseType", "finalAssistantItemId", "confidence", "reason"],
+        "Outcome result",
+    )
+    const skillName = value.skillName === null ? null : requiredText(value.skillName, "Outcome Skill name")
+    if (skillName !== null && !skillNames.includes(skillName)) {
+        throw new Error("Outcome result references an unknown Skill")
+    }
+    if (!new Set(["resolved", "unresolved", "uncertain"]).has(value.outcome)) {
+        throw new Error("Outcome result status is invalid")
+    }
+    if (!new Set(["goodcase", "badcase"]).has(value.caseType)) {
+        throw new Error("Outcome result Case type is invalid")
+    }
+    const finalAssistantItemId = value.finalAssistantItemId === null
+        ? null
+        : requiredText(value.finalAssistantItemId, "Final Assistant Item id")
+    if (finalAssistantItemId !== null && !assistantItemIds.includes(finalAssistantItemId)) {
+        throw new Error("Outcome result references an unknown Assistant Item id")
+    }
+    if (typeof value.confidence !== "number" || !Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1) {
+        throw new Error("Outcome confidence must be between 0 and 1")
+    }
+    return {
+        skillName,
+        outcome: value.outcome,
+        caseType: value.caseType,
+        finalAssistantItemId,
+        confidence: value.confidence,
+        reason: requiredText(value.reason, "Outcome reason", 1_000),
+    }
+}
+
+function partitionUserMessages(messages = [], {maxMessages = 40, maxCharacters = 24_000} = {}) {
+    if (!Number.isInteger(maxMessages) || maxMessages < 1) throw new Error("Message budget is invalid")
+    if (!Number.isInteger(maxCharacters) || maxCharacters < 1) throw new Error("Character budget is invalid")
+    const batches = []
+    let batch = []
+    let characters = 0
+    for (const message of messages) {
+        const length = String(message?.text ?? "").length
+        if (batch.length && (batch.length >= maxMessages || characters + length > maxCharacters)) {
+            batches.push(batch)
+            batch = []
+            characters = 0
+        }
+        batch.push(message)
+        characters += length
+        if (batch.length >= maxMessages || characters >= maxCharacters) {
+            batches.push(batch)
+            batch = []
+            characters = 0
+        }
+    }
+    if (batch.length) batches.push(batch)
+    return batches
+}
+
 module.exports = {
+    buildBoundaryPrompt,
+    buildOutcomePrompt,
     dueCaptureSlot,
     nextScheduledSlot,
+    parseBoundaryResult,
+    parseOutcomeResult,
+    partitionUserMessages,
     previousScheduledSlot,
 }

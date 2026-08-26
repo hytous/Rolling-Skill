@@ -2,8 +2,13 @@ const assert = require("node:assert/strict")
 const {describe, it} = require("node:test")
 
 const {
+    buildBoundaryPrompt,
+    buildOutcomePrompt,
     dueCaptureSlot,
     nextScheduledSlot,
+    parseBoundaryResult,
+    parseOutcomeResult,
+    partitionUserMessages,
     previousScheduledSlot,
 } = require("../src/conversation-discovery.cjs")
 
@@ -78,5 +83,99 @@ describe("scheduled conversation discovery helpers", () => {
         assert.equal(slot.getHours(), 2)
         assert.equal(slot.getMinutes(), 15)
         assert.equal(slot.getDate(), 8)
+    })
+
+    it("builds a boundary prompt from user messages only", () => {
+        const prompt = buildBoundaryPrompt({
+            threadId: "thread-1",
+            userMessages: [
+                {id: "user-1", turnId: "turn-1", text: "查本月账单", assistantText: "assistant secret"},
+                {id: "user-2", turnId: "turn-2", text: "再按产品拆分", toolOutput: "tool secret"},
+            ],
+        })
+
+        assert.match(prompt, /"id":"user-1"/u)
+        assert.match(prompt, /查本月账单/u)
+        assert.doesNotMatch(prompt, /assistant secret|tool secret|reasoning|command output/iu)
+        assert.match(prompt, /pendingStartUserItemId/u)
+    })
+
+    it("parses ordered boundary segments and rejects unknown or overlapping IDs", () => {
+        const context = {userMessageIds: ["user-1", "user-2", "user-3", "user-4"]}
+        assert.deepEqual(parseBoundaryResult(
+            'prefix ```json\n{"segments":[{"startUserItemId":"user-1","endUserItemId":"user-2","summary":"billing"}],"pendingStartUserItemId":"user-3"}\n```',
+            context,
+        ), {
+            segments: [{startUserItemId: "user-1", endUserItemId: "user-2", summary: "billing"}],
+            pendingStartUserItemId: "user-3",
+        })
+        assert.throws(() => parseBoundaryResult(
+            '{"segments":[{"startUserItemId":"unknown","endUserItemId":"user-2","summary":"x"}],"pendingStartUserItemId":null}',
+            context,
+        ), /unknown|membership/i)
+        assert.throws(() => parseBoundaryResult(
+            '{"segments":[{"startUserItemId":"user-1","endUserItemId":"user-3","summary":"x"},{"startUserItemId":"user-2","endUserItemId":"user-4","summary":"y"}],"pendingStartUserItemId":null}',
+            context,
+        ), /overlap|order/i)
+        assert.throws(() => parseBoundaryResult('{"segments":[]}', context), /schema|pending|field/i)
+    })
+
+    it("builds a bounded outcome prompt from only the selected Episode and compact identities", () => {
+        const prompt = buildOutcomePrompt({
+            threadId: "thread-1",
+            episode: {
+                originalQuestion: "查账单",
+                items: [
+                    {id: "user-1", turnId: "turn-1", type: "userMessage", text: "查账单", secret: "item secret"},
+                    {id: "agent-1", turnId: "turn-1", type: "agentMessage", text: "结果 100 元", reasoning: "reasoning secret"},
+                ],
+                toolActivity: [{type: "mcpToolCall", server: "billing", tool: "query", output: "tool output secret"}],
+                unrelatedHistory: "outside episode",
+            },
+            skills: [{name: "billing-cost-management", path: "/skills/billing/SKILL.md", instructions: "skill secret"}],
+            datasets: [{id: "dataset-1", name: "Billing", skillReference: {name: "billing-cost-management", path: "/skills/billing/SKILL.md"}, cases: "dataset secret"}],
+        })
+
+        assert.match(prompt, /结果 100 元/u)
+        assert.match(prompt, /billing-cost-management/u)
+        assert.match(prompt, /dataset-1/u)
+        assert.doesNotMatch(prompt, /reasoning secret|tool output secret|outside episode|skill secret|dataset secret/u)
+    })
+
+    it("strictly parses outcome classification and confidence", () => {
+        const context = {
+            skillNames: ["billing-cost-management"],
+            assistantItemIds: ["agent-1"],
+        }
+        const valid = {
+            skillName: "billing-cost-management",
+            outcome: "resolved",
+            caseType: "goodcase",
+            finalAssistantItemId: "agent-1",
+            confidence: 0.86,
+            reason: "The answer contains queried values.",
+        }
+        assert.deepEqual(parseOutcomeResult(JSON.stringify(valid), context), valid)
+        assert.throws(() => parseOutcomeResult(JSON.stringify({...valid, skillName: "unknown"}), context), /skill/i)
+        assert.throws(() => parseOutcomeResult(JSON.stringify({...valid, confidence: 1.1}), context), /confidence/i)
+        assert.throws(() => parseOutcomeResult(JSON.stringify({...valid, finalAssistantItemId: "agent-2"}), context), /assistant/i)
+        assert.throws(() => parseOutcomeResult(JSON.stringify({...valid, extra: true}), context), /schema|field/i)
+        assert.throws(() => parseOutcomeResult("not json", context), /JSON/i)
+    })
+
+    it("partitions user messages without splitting one message", () => {
+        const messages = [
+            {id: "user-1", text: "12345"},
+            {id: "user-2", text: "67890"},
+            {id: "user-3", text: "a".repeat(30)},
+            {id: "user-4", text: "last"},
+        ]
+        assert.deepEqual(
+            partitionUserMessages(messages, {maxMessages: 2, maxCharacters: 8}).map(
+                (batch) => batch.map((message) => message.id),
+            ),
+            [["user-1"], ["user-2"], ["user-3"], ["user-4"]],
+        )
+        assert.equal(partitionUserMessages(messages, {maxMessages: 2, maxCharacters: 100})[0].length, 2)
     })
 })
