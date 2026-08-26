@@ -84,6 +84,26 @@ function skillReference(path = "/skills/billing/SKILL.md", name = "billing-cost-
     }
 }
 
+function managedSkillReference({
+    id = "skill-1",
+    repositoryId = "repository-1",
+    name = "billing-cost-management",
+} = {}) {
+    return {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        evidencePrecision: "managed",
+        id,
+        repositoryId,
+        name,
+        path: null,
+        scope: "managed",
+        description: "Managed billing Skill",
+        runtimeId: null,
+        providerId: null,
+        confirmedAt: "2026-08-26T00:00:00.000Z",
+    }
+}
+
 function saveCuratedCase(store, datasetId, question) {
     const session = store.createCurationSession({
         datasetId,
@@ -176,6 +196,104 @@ describe("local evaluation store", () => {
         assert.deepEqual(
             new LocalEvaluationStore(path).getDataset(created.id).skillReference,
             managedReference,
+        )
+    })
+
+    it("persists a stable managed Skill identity without deployment fields", () => {
+        const {path, store} = fixture()
+        const reference = managedSkillReference()
+
+        const created = store.createDataset({
+            name: "Managed billing regression",
+            skillReference: reference,
+        })
+
+        assert.deepEqual(created.skillReference, reference)
+        assert.deepEqual(
+            new LocalEvaluationStore(path).getDataset(created.id).skillReference,
+            reference,
+        )
+
+        for (const changes of [
+            {id: null},
+            {repositoryId: null},
+            {path: "/skills/billing/SKILL.md"},
+            {runtimeId: "codex:local"},
+            {providerId: "codex"},
+            {workspaceRoot: "/workspace"},
+        ]) {
+            assert.throws(
+                () => store.createDataset({
+                    name: "Invalid managed binding",
+                    skillReference: {...reference, ...changes},
+                }),
+                /managed.*identity|deployment.*fields/i,
+            )
+        }
+    })
+
+    it("treats managed IDs as stable identity and preserves the active Rubric on rename", () => {
+        const {store} = fixture()
+        const created = store.createDataset({
+            name: "Managed billing regression",
+            skillReference: managedSkillReference(),
+        })
+        store.load().datasets.find((dataset) => dataset.id === created.id).activeRubricVersionId =
+            "published-rubric"
+        store.persist()
+
+        const rebound = store.bindDatasetSkill(created.id, managedSkillReference({
+            name: "billing-cost-management-renamed",
+        }))
+
+        assert.equal(rebound.activeRubricVersionId, "published-rubric")
+        assert.equal(rebound.skillReference.name, "billing-cost-management-renamed")
+    })
+
+    it("migrates a uniquely proven legacy Dataset binding without rewriting children", () => {
+        const {store} = fixture()
+        const legacy = skillReference()
+        const managed = managedSkillReference()
+        const created = store.createDataset({
+            name: "Legacy billing regression",
+            skillReference: legacy,
+        })
+        const state = store.load()
+        state.datasets.find((dataset) => dataset.id === created.id).activeRubricVersionId =
+            "published-rubric"
+        state.cases.push({id: "case-history", datasetId: created.id, skillReference: legacy})
+        state.curationSessions.push({
+            id: "curator-history",
+            datasetId: created.id,
+            status: "archived",
+            skillReference: legacy,
+        })
+        state.evaluationRuns.push({
+            id: "run-history",
+            datasetId: created.id,
+            status: "completed",
+            skillReference: legacy,
+        })
+        store.persist()
+        const before = store.read()
+
+        const migrated = store.migrateDatasetSkillReference(created.id, {
+            expectedLegacyReference: legacy,
+            managedSkillReference: managed,
+        })
+        const after = store.read()
+
+        assert.deepEqual(migrated.skillReference, managed)
+        assert.equal(migrated.activeRubricVersionId, "published-rubric")
+        assert.deepEqual(after.cases, before.cases)
+        assert.deepEqual(after.curationSessions, before.curationSessions)
+        assert.deepEqual(after.evaluationRuns, before.evaluationRuns)
+        assert.throws(
+            () => store.migrateDatasetSkillReference(created.id, {
+                expectedLegacyReference: skillReference("/skills/other/SKILL.md"),
+                managedSkillReference: managedSkillReference({id: "skill-2"}),
+            }),
+            /legacy.*changed|legacy.*binding/i,
         )
     })
 

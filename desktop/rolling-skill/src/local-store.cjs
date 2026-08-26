@@ -854,6 +854,30 @@ function normalizeSkillReference(value) {
     if (!name) {
         throw new Error("A valid runtime Skill name is required")
     }
+    if (evidencePrecision === "managed") {
+        const providerId = skillIdentity(value.providerId, "Skill provider id")
+        const runtimeId = skillIdentity(value.runtimeId, "Skill runtime id")
+        const workspaceRoot = skillIdentity(value.workspaceRoot, "Skill workspace root")
+        if (!id || !repositoryId) {
+            throw new Error("A complete managed Skill identity is required")
+        }
+        if (path || providerId || runtimeId || workspaceRoot) {
+            throw new Error("Managed Skill identity cannot include deployment fields")
+        }
+        return {
+            schemaVersion: value.schemaVersion,
+            evidencePrecision,
+            id,
+            repositoryId,
+            name,
+            path: null,
+            scope: skillIdentity(value.scope, "Skill scope"),
+            description: skillIdentity(value.description, "Skill description"),
+            runtimeId: null,
+            providerId: null,
+            confirmedAt: skillIdentity(value.confirmedAt, "Skill confirmation time"),
+        }
+    }
     if (evidencePrecision === "name-only") {
         const providerId = skillIdentity(value.providerId, "Skill provider id")
         const runtimeId = skillIdentity(value.runtimeId, "Skill runtime id")
@@ -899,7 +923,18 @@ function normalizeSkillReference(value) {
 }
 
 function sameSkillReferenceIdentity(left, right) {
-    if (!left || !right || left.name !== right.name) return false
+    if (!left || !right) return false
+    const managed =
+        left.evidencePrecision === "managed" || right.evidencePrecision === "managed"
+    if (managed) {
+        return (
+            left.evidencePrecision === "managed" &&
+            right.evidencePrecision === "managed" &&
+            left.repositoryId === right.repositoryId &&
+            left.id === right.id
+        )
+    }
+    if (left.name !== right.name) return false
     const nameOnly =
         left.evidencePrecision === "name-only" || right.evidencePrecision === "name-only"
     if (nameOnly) {
@@ -1014,6 +1049,34 @@ class LocalEvaluationStore {
         }
         dataset.skillReference = skillReference
         dataset.activeRubricVersionId = null
+        this.persist()
+        return copy(dataset)
+    }
+
+    migrateDatasetSkillReference(datasetId, input = {}) {
+        const state = this.load()
+        const dataset = requireDataset(state, datasetId)
+        const expectedLegacyReference = normalizeSkillReference(input.expectedLegacyReference)
+        const managedSkillReference = normalizeSkillReference(input.managedSkillReference)
+        if (
+            !expectedLegacyReference ||
+            expectedLegacyReference.evidencePrecision === "managed" ||
+            expectedLegacyReference.evidencePrecision === "name-only" ||
+            !expectedLegacyReference.path
+        ) {
+            throw new Error("A legacy path Skill binding is required for migration")
+        }
+        if (!managedSkillReference || managedSkillReference.evidencePrecision !== "managed") {
+            throw new Error("A complete managed Skill identity is required for migration")
+        }
+        if (
+            !dataset.skillReference ||
+            dataset.skillReference.evidencePrecision === "managed" ||
+            !sameSkillReferenceIdentity(dataset.skillReference, expectedLegacyReference)
+        ) {
+            throw new Error("Legacy Dataset Skill binding changed before migration")
+        }
+        dataset.skillReference = managedSkillReference
         this.persist()
         return copy(dataset)
     }

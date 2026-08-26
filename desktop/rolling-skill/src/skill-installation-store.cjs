@@ -12,7 +12,7 @@ const {
     unlinkSync,
     writeFileSync,
 } = require("node:fs")
-const {dirname, resolve} = require("node:path")
+const {dirname, isAbsolute, resolve, win32} = require("node:path")
 
 const SKILL_INSTALLATION_STORE_SCHEMA = "rolling-skill-installations/v1"
 const MAX_STORE_BYTES = 24 * 1024 * 1024
@@ -243,6 +243,21 @@ function canTransition(from, to) {
     return TRANSITIONS.get(from)?.has(to) ?? false
 }
 
+function normalizedSkillRoot(value) {
+    const path = typeof value === "string" ? value.trim() : ""
+    if (!path || (!isAbsolute(path) && !win32.isAbsolute(path))) return null
+    const windows = win32.isAbsolute(path)
+    const absolute = windows ? win32.resolve(path) : resolve(path)
+    const normalized = absolute.replace(/\\/gu, "/").replace(/\/+$/gu, "")
+    return /\/SKILL\.md$/iu.test(normalized)
+        ? normalized.slice(0, -"/SKILL.md".length)
+        : normalized
+}
+
+function frozen(value) {
+    return Object.freeze(copy(value))
+}
+
 class SkillInstallationStore {
     constructor(path) {
         this.path = resolve(requiredText(path, "Skill installation store path"))
@@ -346,6 +361,116 @@ class SkillInstallationStore {
 
     read() {
         return copy(this.state)
+    }
+
+    listVerifiedInstallations(filters = {}) {
+        const normalizedFilters = {}
+        for (const [field, label] of [
+            ["repositoryId", "Repository id"],
+            ["skillId", "Skill id"],
+            ["versionId", "Version id"],
+            ["runtimeId", "Runtime id"],
+            ["providerId", "Provider id"],
+        ]) {
+            if (filters[field] !== undefined && filters[field] !== null && filters[field] !== "") {
+                normalizedFilters[field] = requiredText(filters[field], label, 300)
+            }
+        }
+        const records = []
+        for (const installation of this.state.installations) {
+            const job = this.state.jobs.find((entry) => entry.id === installation.jobId)
+            if (
+                !job ||
+                job.status !== "succeeded" ||
+                job.request.purpose !== "managed-installation" ||
+                job.operation !== "install" ||
+                job.parsedResult?.trusted !== true ||
+                !installation.repositoryId ||
+                !installation.skillId ||
+                !installation.versionId ||
+                !installation.runtimeId ||
+                !installation.providerId ||
+                !installation.commit ||
+                !installation.contentDigest ||
+                !normalizedSkillRoot(installation.destination) ||
+                !installation.installedAt ||
+                !installation.verification ||
+                installation.verification === "none" ||
+                job.request.source.repositoryId !== installation.repositoryId ||
+                job.request.source.skillId !== installation.skillId ||
+                job.request.source.versionId !== installation.versionId ||
+                job.request.source.commit !== installation.commit ||
+                job.request.source.expectedDigest !== installation.contentDigest ||
+                job.runtime.runtimeId !== installation.runtimeId ||
+                job.runtime.providerId !== installation.providerId ||
+                job.parsedResult.destination !== installation.destination ||
+                job.parsedResult.verification !== installation.verification
+            ) {
+                continue
+            }
+            if (Object.entries(normalizedFilters).some(([field, value]) => installation[field] !== value)) {
+                continue
+            }
+            records.push({
+                ...copy(installation),
+                installationId: installation.id,
+                skillName: job.request.skillName,
+                runtime: copy(job.runtime),
+            })
+        }
+        records.sort(
+            (left, right) =>
+                right.installedAt.localeCompare(left.installedAt) || right.id.localeCompare(left.id),
+        )
+        return Object.freeze(records.map((entry) => frozen(entry)))
+    }
+
+    resolveVerifiedInstallation(input = {}) {
+        const filters = {
+            repositoryId: requiredText(input.repositoryId, "Repository id", 200),
+            skillId: requiredText(input.skillId, "Skill id", 200),
+            versionId: requiredText(input.versionId, "Version id", 200),
+            runtimeId: requiredText(input.runtimeId, "Runtime id", 300),
+            providerId: requiredText(input.providerId, "Provider id", 100),
+        }
+        const candidates = this.listVerifiedInstallations(filters)
+        if (!candidates.length) throw new Error("A verified Skill installation is required")
+        const newestInstalledAt = candidates[0].installedAt
+        const newest = candidates.filter((entry) => entry.installedAt === newestInstalledAt)
+        const signatures = new Set(newest.map((entry) => JSON.stringify({
+            repositoryId: entry.repositoryId,
+            skillId: entry.skillId,
+            versionId: entry.versionId,
+            runtimeId: entry.runtimeId,
+            providerId: entry.providerId,
+            commit: entry.commit,
+            contentDigest: entry.contentDigest,
+            destination: normalizedSkillRoot(entry.destination),
+            verification: entry.verification,
+        })))
+        if (signatures.size > 1) {
+            throw new Error("Conflicting newest verified Skill installations are ambiguous")
+        }
+        return frozen(newest[0])
+    }
+
+    resolveManagedInstallationForLegacyReference(input = {}) {
+        const name = requiredText(input.name, "Legacy Skill name", 200)
+        const root = normalizedSkillRoot(requiredText(input.path, "Legacy Skill path", 8_192))
+        if (!root) throw new Error("Legacy Skill path must be absolute")
+        const runtimeId = requiredText(input.runtimeId, "Legacy Runtime id", 300)
+        const providerId = nullableText(input.providerId, "Legacy provider id", 100)
+        const candidates = this.listVerifiedInstallations({runtimeId, ...(providerId ? {providerId} : {})})
+            .filter((entry) => entry.skillName === name)
+            .filter((entry) => normalizedSkillRoot(entry.destination) === root)
+        if (!candidates.length) return null
+        const identities = new Set(candidates.map(
+            (entry) => `${entry.repositoryId}\u0000${entry.skillId}`,
+        ))
+        if (identities.size > 1) {
+            throw new Error("Legacy Skill path matches ambiguous managed installations")
+        }
+        return frozen(candidates[0])
     }
 
     createJob(input = {}) {

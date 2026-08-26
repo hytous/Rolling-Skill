@@ -88,6 +88,22 @@ function createJob(store, request_ = request(), runtime_ = runtime()) {
     })
 }
 
+function completeSuccessfulJob(store, {
+    request: request_ = request(),
+    runtime: runtime_ = runtime(),
+    destination,
+} = {}) {
+    const job = createJob(store, request_, runtime_)
+    store.updateJob(job.id, {status: "running"})
+    store.completeJob(job.id, {
+        status: "succeeded",
+        parsedResult: parsedResult(request_, {
+            ...(destination ? {destination} : {}),
+        }),
+    })
+    return job
+}
+
 describe("Skill installation store", () => {
     it("creates a private atomic registry and persists immutable job inputs", () => {
         const {path, store} = fixture()
@@ -187,6 +203,98 @@ describe("Skill installation store", () => {
         assert.equal(matrix[0].versionId, null)
         assert.equal(matrix[0].trustedJobId, null)
         assert.equal(matrix[0].lastJobStatus, "running")
+    })
+
+    it("resolves one exact verified normal installation with complete frozen evidence", () => {
+        const {store} = fixture()
+        const requested = request()
+        const job = completeSuccessfulJob(store, {
+            request: requested,
+            destination: "/installed/billing-codex",
+        })
+
+        const installation = store.resolveVerifiedInstallation({
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            versionId: "version-1",
+            runtimeId: "codex:one",
+            providerId: "codex",
+        })
+
+        assert.equal(installation.jobId, job.id)
+        assert.equal(installation.installationId, installation.id)
+        assert.equal(installation.destination, "/installed/billing-codex")
+        assert.equal(installation.commit, "a".repeat(40))
+        assert.equal(installation.contentDigest, `sha256:${"b".repeat(64)}`)
+        assert.equal(installation.verification, "runtime-inventory")
+        assert.equal(Object.isFrozen(installation), true)
+        assert.throws(
+            () => store.resolveVerifiedInstallation({
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                versionId: "version-2",
+                runtimeId: "codex:one",
+                providerId: "codex",
+            }),
+            /verified.*installation|installation.*required/i,
+        )
+    })
+
+    it("uses the newest verified installation and fails closed on conflicting newest records", () => {
+        const {store} = fixture()
+        completeSuccessfulJob(store, {destination: "/installed/billing-old"})
+        const newestJob = completeSuccessfulJob(store, {destination: "/installed/billing-new"})
+        store.state.installations[0].installedAt = "2026-08-26T01:00:00.000Z"
+        store.state.installations[1].installedAt = "2026-08-26T02:00:00.000Z"
+        store.persist()
+
+        const newest = store.resolveVerifiedInstallation({
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            versionId: "version-1",
+            runtimeId: "codex:one",
+            providerId: "codex",
+        })
+        assert.equal(newest.jobId, newestJob.id)
+        assert.equal(newest.destination, "/installed/billing-new")
+
+        store.state.installations[0].installedAt = "2026-08-26T02:00:00.000Z"
+        store.persist()
+        assert.throws(
+            () => store.resolveVerifiedInstallation({
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                versionId: "version-1",
+                runtimeId: "codex:one",
+                providerId: "codex",
+            }),
+            /conflicting.*installation|ambiguous/i,
+        )
+    })
+
+    it("matches a legacy SKILL.md path only to one trustworthy managed identity", () => {
+        const {store} = fixture()
+        completeSuccessfulJob(store, {destination: "/installed/billing"})
+
+        const resolved = store.resolveManagedInstallationForLegacyReference({
+            name: "billing",
+            path: "/installed/billing/SKILL.md",
+            runtimeId: "codex:one",
+            providerId: "codex",
+        })
+
+        assert.equal(resolved.repositoryId, "repository-1")
+        assert.equal(resolved.skillId, "skill-1")
+        assert.equal(resolved.destination, "/installed/billing")
+        assert.equal(
+            store.resolveManagedInstallationForLegacyReference({
+                name: "billing",
+                path: "/installed/other/SKILL.md",
+                runtimeId: "codex:one",
+                providerId: "codex",
+            }),
+            null,
+        )
     })
 
     it("turns persisted nonterminal tasks into unverified recovery records on restart", () => {
