@@ -39,7 +39,7 @@
 
 ## 7. Integration and Delivery
 
-- [ ] 7.1 Run only the focused Node test files for deletion recovery, refresh, discovery, store migration, preload/IPC, and batch state; fix observed regressions
-- [ ] 7.2 Validate the OpenSpec change and mark completed implementation tasks
-- [ ] 7.3 Launch the local App once to inspect Chinese/English refresh, Automatic Capture, Raw Case, and delete dialogs without opening a browser
-- [ ] 7.4 Rebuild and replace repository-root Rolling Skill.app and rolling-skill-tool, then record the final focused verification result
+- [x] 7.1 Run only the focused Node test files for deletion recovery, refresh, discovery, store migration, preload/IPC, and batch state; fix observed regressions
+- [x] 7.2 Validate the OpenSpec change and mark completed implementation tasks
+- [x] 7.3 Launch the local App once to inspect Chinese/English refresh, Automatic Capture, Raw Case, and delete dialogs without opening a browser
+- [x] 7.4 Rebuild and replace repository-root Rolling Skill.app and rolling-skill-tool, then record the final focused verification result
