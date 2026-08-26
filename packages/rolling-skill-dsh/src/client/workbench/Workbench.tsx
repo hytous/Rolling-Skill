@@ -3,6 +3,7 @@ import {useEffect, useState, useSyncExternalStore} from "react"
 
 import {requestRollingSkill} from "../api"
 import type {Translate, TranslationKey} from "../locale"
+import {AutomaticCapturePanel} from "./AutomaticCapturePanel"
 import {CasesPanel} from "./CasesPanel"
 import {DatasetsPanel} from "./DatasetsPanel"
 import {EvaluationsPanel} from "./EvaluationsPanel"
@@ -23,8 +24,9 @@ interface DashboardSnapshot {
     }
     dataRoot: string
     automaticCapture: {
+        nextRunAt: string | null
         lastSuccessAt: string | null
-        lastError: {message: string; at: string} | null
+        error: string | null
     }
     settings: {
         plugin: {
@@ -142,6 +144,8 @@ export function Workbench({locale, t}: WorkbenchProps) {
                 <EvaluationsPanel t={t}/>
             ) : activeTab === "skills" ? (
                 <SkillsPanel t={t}/>
+            ) : activeTab === "automatic" ? (
+                <AutomaticCapturePanel t={t}/>
             ) : activeTab === "operator" ? (
                 <div className="rolling-skill-data-stack">
                     <OperatorPanel t={t}/>
@@ -185,14 +189,17 @@ function Overview({dashboard, t}: {dashboard: DashboardSnapshot; t: Translate}) 
                 <section className="rolling-skill-panel">
                     <h3>{t("automaticStatus")}</h3>
                     <dl>
-                        <div><dt>{t("nextRun")}</dt><dd>{t("notAvailable")}</dd></div>
+                        <div>
+                            <dt>{t("nextRun")}</dt>
+                            <dd>{dateTime(dashboard.automaticCapture.nextRunAt, t("notAvailable"))}</dd>
+                        </div>
                         <div>
                             <dt>{t("lastSuccess")}</dt>
                             <dd>{dateTime(dashboard.automaticCapture.lastSuccessAt, t("notAvailable"))}</dd>
                         </div>
                         <div>
                             <dt>{t("lastError")}</dt>
-                            <dd>{dashboard.automaticCapture.lastError?.message ?? t("noError")}</dd>
+                            <dd>{dashboard.automaticCapture.error ?? t("noError")}</dd>
                         </div>
                     </dl>
                 </section>

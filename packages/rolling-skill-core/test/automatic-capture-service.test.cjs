@@ -1,0 +1,172 @@
+const assert = require("node:assert/strict")
+const {mkdtempSync, rmSync} = require("node:fs")
+const {tmpdir} = require("node:os")
+const {join} = require("node:path")
+const {afterEach, describe, it} = require("node:test")
+
+const {createAutomaticCaptureService} = require("../src/automatic-capture-service.cjs")
+const {RollingSkillConfigStore} = require("../src/config-store.cjs")
+
+const directories = []
+afterEach(() => {
+    for (const directory of directories.splice(0)) rmSync(directory, {recursive: true, force: true})
+})
+
+function fixture({mode = "off", executionLocation = "while-harness-running"} = {}) {
+    const root = mkdtempSync(join(tmpdir(), "rolling-skill-automatic-service-"))
+    directories.push(root)
+    const configStore = new RollingSkillConfigStore(join(root, "config.json"))
+    const settings = {
+        autoCaptureProfile: {
+            runtimePolicy: "active",
+            mode,
+            schedule: {cadence: "daily", time: "09:00", weekday: 1},
+            modelId: null,
+            effort: null,
+            datasetId: null,
+        },
+    }
+    const settingUpdates = []
+    const store = {
+        read: () => ({settings: structuredClone(settings)}),
+        updateSettings(input) {
+            settingUpdates.push(structuredClone(input))
+            settings.autoCaptureProfile = {
+                ...settings.autoCaptureProfile,
+                mode: input.autoCaptureMode ?? settings.autoCaptureProfile.mode,
+                schedule: {
+                    ...settings.autoCaptureProfile.schedule,
+                    cadence: input.autoCaptureCadence ?? settings.autoCaptureProfile.schedule.cadence,
+                    time: input.autoCaptureTime ?? settings.autoCaptureProfile.schedule.time,
+                    weekday: input.autoCaptureWeekday ?? settings.autoCaptureProfile.schedule.weekday,
+                },
+                modelId: input.autoCaptureModelId ?? settings.autoCaptureProfile.modelId,
+                effort: input.autoCaptureEffort ?? settings.autoCaptureProfile.effort,
+                datasetId: input.autoCaptureDatasetId ?? settings.autoCaptureProfile.datasetId,
+            }
+            return structuredClone(settings)
+        },
+    }
+    const runtime = {
+        providerId: "deepseek-harness",
+        runtimeId: "deepseek-harness:/opt/dsh",
+        displayName: "DeepSeek Harness",
+        version: "0.1.1-rc.1",
+        executablePath: "/opt/dsh",
+    }
+    const runtimeServices = {
+        descriptor(id) {
+            if (id !== runtime.runtimeId) throw new Error("Runtime unavailable")
+            return structuredClone(runtime)
+        },
+    }
+    const calls = []
+    const manager = {
+        start: () => calls.push(["start"]),
+        stop: () => calls.push(["stop"]),
+        reschedule: () => calls.push(["reschedule"]),
+        status: () => ({mode: settings.autoCaptureProfile.mode, nextRunAt: null, running: false, pendingCount: 0, lastSuccessAt: null, error: null}),
+        async runSlot(slot, profile) {
+            calls.push(["runSlot", slot.toISOString?.() ?? slot, profile.mode])
+        },
+        async handleCurationChanged(session) {
+            calls.push(["curation", session.id])
+            return true
+        },
+    }
+    if (executionLocation === "always") {
+        configStore.update({
+            executionLocation,
+            runtime,
+            worker: {enabled: true},
+        })
+    }
+    const service = createAutomaticCaptureService({
+        store,
+        configStore,
+        runtimeServices,
+        manager,
+        now: () => new Date("2026-08-26T09:05:00.000Z"),
+    })
+    return {calls, configStore, runtime, service, settingUpdates, settings}
+}
+
+describe("Rolling Skill automatic capture composition", () => {
+    it("updates scheduled daily and weekly profiles with a Host-owned full Runtime identity", () => {
+        const {configStore, runtime, service, settingUpdates} = fixture()
+        const daily = service.update({
+            mode: "scheduled",
+            executionLocation: "while-harness-running",
+            runtimeId: runtime.runtimeId,
+            cadence: "daily",
+            time: "08:30",
+            weekday: 1,
+            modelId: "small-model",
+            effort: "low",
+            datasetId: null,
+        })
+        assert.equal(daily.mode, "scheduled")
+        assert.equal(daily.schedule.time, "08:30")
+        assert.deepEqual(configStore.read().runtime, runtime)
+
+        const weekly = service.update({
+            mode: daily.mode,
+            executionLocation: daily.executionLocation,
+            runtimeId: runtime.runtimeId,
+            cadence: "weekly",
+            time: daily.schedule.time,
+            weekday: 5,
+            modelId: daily.modelId,
+            effort: daily.effort,
+            datasetId: daily.datasetId,
+        })
+        assert.equal(weekly.schedule.cadence, "weekly")
+        assert.equal(weekly.schedule.weekday, 5)
+        assert.equal(settingUpdates.at(-1).autoCaptureCadence, "weekly")
+    })
+
+    it("keeps off disabled, runs one explicit slot, and delegates automatic Case completion", async () => {
+        const {calls, runtime, service} = fixture()
+        assert.equal((await service.runOnce({slot: "2026-08-26T09:00:00.000Z"})).status, "disabled")
+        service.update({
+            mode: "automatic",
+            executionLocation: "while-harness-running",
+            runtimeId: runtime.runtimeId,
+            cadence: "daily",
+            time: "09:00",
+            weekday: 1,
+            modelId: null,
+            effort: null,
+            datasetId: null,
+        })
+        assert.equal((await service.runOnce({slot: "2026-08-26T09:00:00.000Z"})).status, "completed")
+        assert.equal(await service.handleCurationChanged({id: "curation-1"}), true)
+        assert.deepEqual(calls.filter(([kind]) => ["runSlot", "curation"].includes(kind)).map(([kind]) => kind), ["runSlot", "curation"])
+    })
+
+    it("starts Host timers only while Harness owns execution", () => {
+        const host = fixture({mode: "scheduled"})
+        host.service.startHostSchedule()
+        assert.equal(host.calls.some(([kind]) => kind === "start"), true)
+
+        const worker = fixture({mode: "scheduled", executionLocation: "always"})
+        worker.service.startHostSchedule()
+        assert.deepEqual(worker.calls, [["stop"]])
+    })
+
+    it("fails closed before changing settings when the selected Runtime is unavailable", () => {
+        const {service, settingUpdates} = fixture()
+        assert.throws(() => service.update({
+            mode: "automatic",
+            executionLocation: "always",
+            runtimeId: "deepseek-harness:/missing",
+            cadence: "daily",
+            time: "09:00",
+            weekday: 1,
+            modelId: null,
+            effort: null,
+            datasetId: null,
+        }), /Runtime unavailable/u)
+        assert.equal(settingUpdates.length, 0)
+    })
+})

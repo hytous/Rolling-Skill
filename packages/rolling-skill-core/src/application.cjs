@@ -42,6 +42,7 @@ const {
     SkillInstallationStore,
 } = require("../../../desktop/rolling-skill/src/skill-installation-store.cjs")
 const {createCaseServices} = require("./case-services.cjs")
+const {createAutomaticCaptureService} = require("./automatic-capture-service.cjs")
 const {RollingSkillConfigStore} = require("./config-store.cjs")
 const {ensureDataLayout, resolveDataPaths} = require("./data-root.cjs")
 const {createEvaluationServices} = require("./evaluation-services.cjs")
@@ -170,6 +171,7 @@ function createRollingSkillApplication(options = {}) {
     )
     const managedSkillStore = new ManagedSkillStore(paths.managedSkillRegistry)
     const configStore = new RollingSkillConfigStore(paths.config)
+    let automaticCaptureService = null
     const workspaceRoot = options.workspaceRoot ?? process.cwd()
     const runtimeServices = createRuntimeServices({
         registry: options.runtimeRegistry,
@@ -219,12 +221,29 @@ function createRollingSkillApplication(options = {}) {
         store,
         getRuntime: getSelectedRuntime,
         getRuntimeDescriptor: selectedRuntimeDescriptor,
-        onChanged: () => publish(),
+        onChanged: (session) => {
+            void automaticCaptureService?.handleCurationChanged(session)
+            publish()
+        },
     })
     const rubricManager = options.rubricManager ?? new RubricManager({
         store,
         getRuntime: getSelectedRuntime,
         getRuntimeDescriptor: selectedRuntimeDescriptor,
+        onChanged: () => publish(),
+    })
+    automaticCaptureService = createAutomaticCaptureService({
+        store,
+        configStore,
+        runtimeServices,
+        stateStore: automaticCaptureStateStore,
+        rawCaseStore,
+        curationManager,
+        listDatasets: () => store.listDatasets(),
+        getHiddenThreadIds: () => new Set([
+            ...curationManager.hiddenThreadIds(),
+            ...rubricManager.hiddenThreadIds(),
+        ]),
         onChanged: () => publish(),
     })
     const refreshManager = options.caseRefreshManager ?? {
@@ -315,7 +334,7 @@ function createRollingSkillApplication(options = {}) {
                 optimizations: operatorServices.optimizationList().length,
             },
             dataRoot: paths.root,
-            automaticCapture: automaticCaptureStateStore.read(),
+            automaticCapture: automaticCaptureService.status(),
             settings: {
                 rollingSkill: state.settings,
                 plugin: configStore.read(),
@@ -373,6 +392,9 @@ function createRollingSkillApplication(options = {}) {
         "installations.cancel": (input) => skillServices.cancelInstallation(input),
         "installations.inspect": (input) => skillServices.inspectInstallation(input),
         "installations.send": (input) => skillServices.sendInstallation(input),
+        "automatic.status": () => automaticCaptureService.status(),
+        "automatic.update": (input) => automaticCaptureService.update(input),
+        "automatic.runOnce": (input) => automaticCaptureService.runOnce(input),
         "operators.summary": (input) => operatorServices.operatorSummary(input),
         "operators.get": (input) => operatorServices.operatorGet(input),
         "operators.start": (input) => operatorServices.operatorStart(input),
@@ -408,6 +430,8 @@ function createRollingSkillApplication(options = {}) {
         "installations.cancel",
         "installations.inspect",
         "installations.send",
+        "automatic.update",
+        "automatic.runOnce",
         "operators.start",
         "operators.pause",
         "operators.resume",
@@ -461,12 +485,14 @@ function createRollingSkillApplication(options = {}) {
         closed = true
         subscribers.clear()
         rawCaseStore.close()
+        automaticCaptureService.stopHostSchedule()
         await evaluationRunner.stopAll?.()
         await installationManager.stopAll?.()
         await operatorRuntime.close()
         await runtimeServices.close()
     }
 
+    if (!options.workerMode) automaticCaptureService.startHostSchedule()
     return Object.freeze({close, dispatch, snapshot, subscribe})
 }
 

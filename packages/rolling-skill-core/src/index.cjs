@@ -1,4 +1,5 @@
 const {createRollingSkillApplication} = require("./application.cjs")
+const {createAutomaticCaptureService} = require("./automatic-capture-service.cjs")
 const {createCaseServices} = require("./case-services.cjs")
 const {createEvaluationServices} = require("./evaluation-services.cjs")
 const {createOperatorRuntime, createOperatorServices} = require("./operator-services.cjs")
@@ -11,6 +12,7 @@ const {ensureDataLayout, resolveDataPaths} = require("./data-root.cjs")
 module.exports = {
     RollingSkillConfigStore,
     acquireRunLease,
+    createAutomaticCaptureService,
     createCaseServices,
     createEvaluationServices,
     createOperatorRuntime,

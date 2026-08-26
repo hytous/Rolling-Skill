@@ -20597,6 +20597,747 @@ var require_case_services = __commonJS({
   }
 });
 
+// ../../desktop/rolling-skill/src/conversation-discovery.cjs
+var require_conversation_discovery = __commonJS({
+  "../../desktop/rolling-skill/src/conversation-discovery.cjs"(exports, module) {
+    var CAPTURE_CADENCES = /* @__PURE__ */ new Set(["daily", "weekly"]);
+    function scheduleParts(schedule = {}) {
+      if (!CAPTURE_CADENCES.has(schedule.cadence)) {
+        throw new Error("Automatic capture cadence is invalid");
+      }
+      const match = /^(?:([01]\d|2[0-3])):([0-5]\d)$/u.exec(String(schedule.time ?? ""));
+      if (!match) throw new Error("Automatic capture time is invalid");
+      const weekday = Number(schedule.weekday);
+      if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+        throw new Error("Automatic capture weekday is invalid");
+      }
+      return { cadence: schedule.cadence, hour: Number(match[1]), minute: Number(match[2]), weekday };
+    }
+    function localSlot(year, month, day, hour, minute) {
+      return new Date(year, month, day, hour, minute, 0, 0);
+    }
+    function previousScheduledSlot(nowInput, schedule) {
+      const now = new Date(nowInput);
+      if (!Number.isFinite(now.getTime())) throw new Error("Automatic capture current time is invalid");
+      const { cadence, hour, minute, weekday } = scheduleParts(schedule);
+      const candidate = localSlot(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute);
+      if (cadence === "daily") {
+        if (candidate > now) candidate.setDate(candidate.getDate() - 1);
+        return candidate;
+      }
+      candidate.setDate(candidate.getDate() + weekday - candidate.getDay());
+      if (candidate > now) candidate.setDate(candidate.getDate() - 7);
+      return candidate;
+    }
+    function nextScheduledSlot(nowInput, schedule) {
+      const now = new Date(nowInput);
+      if (!Number.isFinite(now.getTime())) throw new Error("Automatic capture current time is invalid");
+      const { cadence, hour, minute, weekday } = scheduleParts(schedule);
+      const candidate = localSlot(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute);
+      if (cadence === "daily") {
+        if (candidate <= now) candidate.setDate(candidate.getDate() + 1);
+        return candidate;
+      }
+      candidate.setDate(candidate.getDate() + weekday - candidate.getDay());
+      if (candidate <= now) candidate.setDate(candidate.getDate() + 7);
+      return candidate;
+    }
+    function dueCaptureSlot({ now = /* @__PURE__ */ new Date(), schedule, lastScheduledSlot = null } = {}) {
+      const due = previousScheduledSlot(now, schedule);
+      if (!lastScheduledSlot) return due;
+      const satisfied = new Date(lastScheduledSlot);
+      if (!Number.isFinite(satisfied.getTime())) return due;
+      return satisfied >= due ? null : due;
+    }
+    function requiredText(value, label, maximum = 4e3) {
+      const normalized = String(value ?? "").trim();
+      if (!normalized) throw new Error(`${label} is required`);
+      if (normalized.length > maximum) throw new Error(`${label} is too long`);
+      return normalized;
+    }
+    function exactKeys2(value, expected, label) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} JSON schema is invalid`);
+      }
+      const actual = Object.keys(value).sort();
+      const wanted = [...expected].sort();
+      if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
+        throw new Error(`${label} JSON contains unsupported fields`);
+      }
+    }
+    function firstJsonObject(text2) {
+      const source = String(text2 ?? "");
+      const start = source.indexOf("{");
+      if (start < 0) throw new Error("Analysis did not return a JSON object");
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let index = start; index < source.length; index += 1) {
+        const character = source[index];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (character === "\\") escaped = true;
+          else if (character === '"') inString = false;
+          continue;
+        }
+        if (character === '"') {
+          inString = true;
+          continue;
+        }
+        if (character === "{") depth += 1;
+        if (character === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            try {
+              return JSON.parse(source.slice(start, index + 1));
+            } catch (error) {
+              throw new Error(`Analysis returned invalid JSON: ${error.message}`);
+            }
+          }
+        }
+      }
+      throw new Error("Analysis returned incomplete JSON");
+    }
+    function boundaryMessages(userMessages = []) {
+      return userMessages.map((message) => ({
+        id: requiredText(message?.id, "User Item id"),
+        turnId: requiredText(message?.turnId, "User turn id"),
+        text: String(message?.text ?? "")
+      }));
+    }
+    function buildBoundaryPrompt({ threadId, userMessages } = {}) {
+      const input = {
+        threadId: requiredText(threadId, "Thread id"),
+        userMessages: boundaryMessages(userMessages)
+      };
+      return `Identify complete user problem ranges from incremental user messages only.
+Keep follow-ups, corrections, and clarifications for the same problem in one range. Close a range
+when a new intent begins. Leave the final unfinished problem in pendingStartUserItemId. Use only
+the supplied stable IDs. Return JSON only with this exact schema:
+{"segments":[{"startUserItemId":"id","endUserItemId":"id","summary":"short text"}],"pendingStartUserItemId":"id-or-null"}
+<incremental-user-messages>${JSON.stringify(input)}</incremental-user-messages>`;
+    }
+    function parseBoundaryResult(text2, { userMessageIds = [] } = {}) {
+      const value = firstJsonObject(text2);
+      exactKeys2(value, ["segments", "pendingStartUserItemId"], "Boundary result");
+      if (!Array.isArray(value.segments)) throw new Error("Boundary result segments are invalid");
+      const ids = userMessageIds.map((id) => requiredText(id, "User Item id"));
+      const positions = new Map(ids.map((id, index) => [id, index]));
+      let previousEnd = -1;
+      const segments = value.segments.map((segment) => {
+        exactKeys2(segment, ["startUserItemId", "endUserItemId", "summary"], "Boundary segment");
+        const startUserItemId = requiredText(segment.startUserItemId, "Boundary start user Item id");
+        const endUserItemId = requiredText(segment.endUserItemId, "Boundary end user Item id");
+        const start = positions.get(startUserItemId);
+        const end = positions.get(endUserItemId);
+        if (start === void 0 || end === void 0) {
+          throw new Error("Boundary segment references an unknown user Item id");
+        }
+        if (start > end || start <= previousEnd) {
+          throw new Error("Boundary segments overlap or are out of order");
+        }
+        previousEnd = end;
+        return {
+          startUserItemId,
+          endUserItemId,
+          summary: requiredText(segment.summary, "Boundary summary", 500)
+        };
+      });
+      const pendingStartUserItemId = value.pendingStartUserItemId === null ? null : requiredText(value.pendingStartUserItemId, "Pending start user Item id");
+      if (pendingStartUserItemId !== null) {
+        const pending = positions.get(pendingStartUserItemId);
+        if (pending === void 0) throw new Error("Pending range references an unknown user Item id");
+        if (pending <= previousEnd) throw new Error("Pending range overlaps a completed segment");
+      }
+      return { segments, pendingStartUserItemId };
+    }
+    function compactEpisodeItem(item = {}) {
+      return {
+        id: String(item.id ?? ""),
+        turnId: String(item.turnId ?? ""),
+        type: String(item.type ?? ""),
+        text: String(item.text ?? "")
+      };
+    }
+    function compactActivity(activity = {}) {
+      const fields = ["type", "status", "server", "tool", "command", "name", "skillName"];
+      return Object.fromEntries(
+        fields.filter((field) => activity[field] !== void 0 && activity[field] !== null).map((field) => [field, String(activity[field]).slice(0, 4e3)])
+      );
+    }
+    function buildOutcomePrompt({ threadId, episode = {}, skills = [], datasets = [] } = {}) {
+      const input = {
+        threadId: requiredText(threadId, "Thread id"),
+        episode: {
+          originalQuestion: String(episode.originalQuestion ?? ""),
+          items: (episode.items ?? []).map(compactEpisodeItem),
+          activity: (episode.toolActivity ?? []).map(compactActivity)
+        },
+        enabledSkills: skills.map((skill) => ({
+          name: String(skill?.name ?? ""),
+          path: skill?.path ? String(skill.path) : null,
+          runtimeId: skill?.runtimeId ? String(skill.runtimeId) : null
+        })),
+        datasetBindings: datasets.map((dataset) => ({
+          id: String(dataset?.id ?? ""),
+          name: String(dataset?.name ?? ""),
+          skill: dataset?.skillReference ? {
+            name: String(dataset.skillReference.name ?? ""),
+            path: dataset.skillReference.path ? String(dataset.skillReference.path) : null
+          } : null
+        }))
+      };
+      return `Classify only this completed problem episode. Identify the principal enabled Skill,
+whether the problem was resolved, the recommended Case type, and the final Assistant Item. Return
+JSON only with this exact schema:
+{"skillName":"name-or-null","outcome":"resolved|unresolved|uncertain","caseType":"goodcase|badcase","finalAssistantItemId":"id-or-null","confidence":0.8,"reason":"short text"}
+<candidate-episode>${JSON.stringify(input)}</candidate-episode>`;
+    }
+    function parseOutcomeResult(text2, { skillNames = [], assistantItemIds = [] } = {}) {
+      const value = firstJsonObject(text2);
+      exactKeys2(
+        value,
+        ["skillName", "outcome", "caseType", "finalAssistantItemId", "confidence", "reason"],
+        "Outcome result"
+      );
+      const skillName = value.skillName === null ? null : requiredText(value.skillName, "Outcome Skill name");
+      if (skillName !== null && !skillNames.includes(skillName)) {
+        throw new Error("Outcome result references an unknown Skill");
+      }
+      if (!(/* @__PURE__ */ new Set(["resolved", "unresolved", "uncertain"])).has(value.outcome)) {
+        throw new Error("Outcome result status is invalid");
+      }
+      if (!(/* @__PURE__ */ new Set(["goodcase", "badcase"])).has(value.caseType)) {
+        throw new Error("Outcome result Case type is invalid");
+      }
+      const finalAssistantItemId = value.finalAssistantItemId === null ? null : requiredText(value.finalAssistantItemId, "Final Assistant Item id");
+      if (finalAssistantItemId !== null && !assistantItemIds.includes(finalAssistantItemId)) {
+        throw new Error("Outcome result references an unknown Assistant Item id");
+      }
+      if (typeof value.confidence !== "number" || !Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1) {
+        throw new Error("Outcome confidence must be between 0 and 1");
+      }
+      return {
+        skillName,
+        outcome: value.outcome,
+        caseType: value.caseType,
+        finalAssistantItemId,
+        confidence: value.confidence,
+        reason: requiredText(value.reason, "Outcome reason", 1e3)
+      };
+    }
+    function partitionUserMessages(messages = [], { maxMessages = 40, maxCharacters = 24e3 } = {}) {
+      if (!Number.isInteger(maxMessages) || maxMessages < 1) throw new Error("Message budget is invalid");
+      if (!Number.isInteger(maxCharacters) || maxCharacters < 1) throw new Error("Character budget is invalid");
+      const batches = [];
+      let batch = [];
+      let characters = 0;
+      for (const message of messages) {
+        const length = String(message?.text ?? "").length;
+        if (batch.length && (batch.length >= maxMessages || characters + length > maxCharacters)) {
+          batches.push(batch);
+          batch = [];
+          characters = 0;
+        }
+        batch.push(message);
+        characters += length;
+        if (batch.length >= maxMessages || characters >= maxCharacters) {
+          batches.push(batch);
+          batch = [];
+          characters = 0;
+        }
+      }
+      if (batch.length) batches.push(batch);
+      return batches;
+    }
+    module.exports = {
+      buildBoundaryPrompt,
+      buildOutcomePrompt,
+      dueCaptureSlot,
+      nextScheduledSlot,
+      parseBoundaryResult,
+      parseOutcomeResult,
+      partitionUserMessages,
+      previousScheduledSlot
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/automatic-capture.cjs
+var require_automatic_capture = __commonJS({
+  "../../desktop/rolling-skill/src/automatic-capture.cjs"(exports, module) {
+    var {
+      buildBoundaryPrompt,
+      buildOutcomePrompt,
+      dueCaptureSlot,
+      nextScheduledSlot,
+      parseBoundaryResult,
+      parseOutcomeResult,
+      partitionUserMessages
+    } = require_conversation_discovery();
+    var {
+      buildEpisodeSnapshot,
+      flattenThread,
+      userMessageText
+    } = require_episode_curation();
+    var MAX_TIMER_DELAY = 2147e6;
+    var AUTOMATIC_CONFIDENCE_THRESHOLD = 0.8;
+    function copy(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+    function messageText(item) {
+      if (typeof item?.text === "string") return item.text;
+      return userMessageText(item?.content);
+    }
+    function runtimeIdFrom(descriptor) {
+      const value = descriptor?.runtimeId ?? descriptor?.runtime?.runtimeId;
+      const normalized = String(value ?? "").trim();
+      if (!normalized) throw new Error("Automatic capture requires an active Runtime identity");
+      return normalized;
+    }
+    function responseText(value) {
+      if (typeof value === "string") return value;
+      for (const field of ["response", "text", "output"]) {
+        if (typeof value?.[field] === "string") return value[field];
+      }
+      throw new Error("Automatic capture analysis returned no text");
+    }
+    function arrays(value) {
+      return Array.isArray(value) ? value : Array.isArray(value?.data) ? value.data : [];
+    }
+    function normalizedSkillName(value) {
+      return String(value ?? "").trim().toLocaleLowerCase("en-US");
+    }
+    function sameAutomaticSkill(left, right) {
+      if (!left || !right) return false;
+      const leftId = String(left.id ?? "").trim();
+      const rightId = String(right.id ?? "").trim();
+      if (leftId && rightId) return leftId === rightId;
+      if (!normalizedSkillName(left.name) || normalizedSkillName(left.name) !== normalizedSkillName(right.name)) {
+        return false;
+      }
+      const leftPath = String(left.path ?? "").trim();
+      const rightPath = String(right.path ?? "").trim();
+      return !leftPath || !rightPath || leftPath === rightPath;
+    }
+    function automaticDatasetFor(candidate, datasets, preferredDatasetId = null) {
+      const confidence = Number(candidate?.confidence);
+      if (!Number.isFinite(confidence) || confidence < AUTOMATIC_CONFIDENCE_THRESHOLD || candidate?.outcome === "uncertain" || !candidate?.skill) return null;
+      const matches = arrays(datasets).filter((dataset) => sameAutomaticSkill(dataset?.skillReference, candidate.skill));
+      const preferred = matches.find((dataset) => dataset.id === preferredDatasetId);
+      if (preferred) return preferred;
+      return matches.length === 1 ? matches[0] : null;
+    }
+    var ConversationDiscoveryManager = class {
+      constructor({
+        store,
+        stateStore,
+        rawCaseStore,
+        getRuntime,
+        getRuntimeDescriptor,
+        curationManager = null,
+        listDatasets = () => store.listDatasets(),
+        listSkills = async () => [],
+        runAnalysis,
+        getHiddenThreadIds = () => /* @__PURE__ */ new Set(),
+        now = () => /* @__PURE__ */ new Date(),
+        setTimer = (callback, delay) => setTimeout(callback, delay),
+        clearTimer = (timer) => clearTimeout(timer),
+        onStatus = () => {
+        },
+        onError = () => {
+        }
+      }) {
+        this.store = store;
+        this.stateStore = stateStore;
+        this.rawCaseStore = rawCaseStore;
+        this.getRuntime = getRuntime;
+        this.getRuntimeDescriptor = getRuntimeDescriptor;
+        this.curationManager = curationManager;
+        this.listDatasets = listDatasets;
+        this.listSkills = listSkills;
+        this.runAnalysis = runAnalysis;
+        this.getHiddenThreadIds = getHiddenThreadIds;
+        this.now = now;
+        this.setTimer = setTimer;
+        this.clearTimer = clearTimer;
+        this.onStatus = onStatus;
+        this.onError = onError;
+        this.analysisThreadIds = /* @__PURE__ */ new Set();
+        this.automaticSessions = /* @__PURE__ */ new Map();
+        this.automaticArchiveAttempts = /* @__PURE__ */ new Set();
+        this.runningPromise = null;
+        this.timer = null;
+        this.started = false;
+      }
+      profile() {
+        return this.store.read().settings.autoCaptureProfile;
+      }
+      hiddenThreadIds() {
+        return new Set(this.analysisThreadIds);
+      }
+      allHiddenThreadIds() {
+        return /* @__PURE__ */ new Set([
+          ...this.analysisThreadIds,
+          ...this.getHiddenThreadIds?.() ?? [],
+          ...this.curationManager?.hiddenThreadIds?.() ?? []
+        ]);
+      }
+      pendingCount() {
+        return (this.rawCaseStore.list?.() ?? []).filter(
+          (entry) => entry.source?.kind === "automatic_capture" || Array.isArray(entry.source?.observations)
+        ).length;
+      }
+      status() {
+        const profile = this.profile();
+        const persisted = this.stateStore.read();
+        let nextRunAt = null;
+        if (profile.mode !== "off") {
+          nextRunAt = nextScheduledSlot(this.now(), profile.schedule).toISOString();
+        }
+        return {
+          mode: profile.mode,
+          nextRunAt,
+          running: Boolean(this.runningPromise),
+          pendingCount: this.pendingCount(),
+          lastSuccessAt: persisted.lastSuccessAt,
+          error: persisted.lastError?.message ?? null
+        };
+      }
+      emitStatus() {
+        const status = this.status();
+        this.onStatus(copy(status));
+        return status;
+      }
+      start() {
+        if (this.started) return;
+        this.started = true;
+        this.reschedule();
+        void this.runDueScan();
+      }
+      stop() {
+        this.started = false;
+        if (this.timer !== null) {
+          this.clearTimer(this.timer);
+          this.timer = null;
+        }
+        this.emitStatus();
+      }
+      reschedule() {
+        if (this.timer !== null) {
+          this.clearTimer(this.timer);
+          this.timer = null;
+        }
+        const profile = this.profile();
+        if (profile.mode === "off") {
+          this.emitStatus();
+          return null;
+        }
+        const next = nextScheduledSlot(this.now(), profile.schedule);
+        const delay = Math.max(1, Math.min(MAX_TIMER_DELAY, next.getTime() - this.now().getTime()));
+        this.timer = this.setTimer(() => {
+          this.timer = null;
+          void this.runDueScan().finally(() => {
+            if (this.started) this.reschedule();
+          });
+        }, delay);
+        this.emitStatus();
+        return next;
+      }
+      async handleNotification() {
+        return false;
+      }
+      async handleCurationChanged(session) {
+        const tracked = this.automaticSessions.get(session?.id);
+        if (!tracked || session.status !== "needs_review" || !session.draft || this.automaticArchiveAttempts.has(session.id)) return false;
+        this.automaticArchiveAttempts.add(session.id);
+        try {
+          const savedCase = await this.curationManager.archive(session.id);
+          this.rawCaseStore.markDispatched(tracked.rawCaseId, {
+            mode: "automatic",
+            caseId: savedCase.id
+          });
+          this.automaticSessions.delete(session.id);
+          this.emitStatus();
+          return true;
+        } catch (error) {
+          this.onError(error);
+          this.emitStatus();
+          return false;
+        }
+      }
+      async runDueScan() {
+        const profile = this.profile();
+        if (profile.mode === "off") {
+          this.emitStatus();
+          return false;
+        }
+        if (this.runningPromise) return false;
+        const slot = dueCaptureSlot({
+          now: this.now(),
+          schedule: profile.schedule,
+          lastScheduledSlot: this.stateStore.read().lastScheduledSlot
+        });
+        if (!slot) {
+          this.emitStatus();
+          return false;
+        }
+        const operation = this.runSlot(slot, profile);
+        this.runningPromise = operation;
+        this.emitStatus();
+        try {
+          await operation;
+          return true;
+        } catch (error) {
+          this.stateStore.failSlot(error, this.now());
+          this.onError(error);
+          return false;
+        } finally {
+          if (this.runningPromise === operation) this.runningPromise = null;
+          this.emitStatus();
+        }
+      }
+      async runSlot(slot, profile = this.profile()) {
+        this.stateStore.beginSlot(slot, this.now());
+        const runtime = await this.getRuntime();
+        const runtimeId = runtimeIdFrom(this.getRuntimeDescriptor());
+        const [threads, skillsValue, datasetsValue] = await Promise.all([
+          this.listAllThreads(runtime),
+          this.listSkills(runtime),
+          Promise.resolve(this.listDatasets())
+        ]);
+        const skills = arrays(skillsValue);
+        const datasets = arrays(datasetsValue);
+        const hidden = this.allHiddenThreadIds();
+        for (const summary of threads) {
+          if (!summary?.id || hidden.has(summary.id)) continue;
+          await this.scanThread({
+            runtime,
+            runtimeId,
+            threadId: summary.id,
+            skills,
+            datasets,
+            profile
+          });
+        }
+        this.stateStore.completeSlot(slot, this.now());
+      }
+      async listAllThreads(runtime) {
+        const found = /* @__PURE__ */ new Map();
+        for (const archived of [false, true]) {
+          let cursor = null;
+          const seenCursors = /* @__PURE__ */ new Set();
+          for (let page = 0; page < 100; page += 1) {
+            const response = await runtime.listThreads({
+              archived,
+              ...cursor ? { cursor } : {},
+              limit: 100
+            });
+            for (const entry of response?.data ?? []) {
+              if (entry?.id && !found.has(entry.id)) found.set(entry.id, entry);
+            }
+            const next = response?.nextCursor ?? null;
+            if (!next || seenCursors.has(next)) break;
+            seenCursors.add(next);
+            cursor = next;
+          }
+        }
+        return [...found.values()];
+      }
+      userMessages(thread) {
+        return flattenThread(thread).filter(({ item }) => item?.type === "userMessage").map(({ turnId, item }) => ({
+          id: String(item.id ?? ""),
+          turnId: String(turnId ?? ""),
+          text: messageText(item)
+        })).filter((message) => message.id && message.turnId && message.text.trim());
+      }
+      async analyze(stage, prompt, profile) {
+        if (typeof this.runAnalysis !== "function") {
+          throw new Error("Automatic capture analysis Runtime is not configured");
+        }
+        const result = await this.runAnalysis({
+          stage,
+          prompt,
+          modelId: profile.modelId,
+          effort: profile.effort,
+          onThreadStarted: (threadId) => {
+            if (threadId) this.analysisThreadIds.add(threadId);
+          }
+        });
+        if (result?.threadId) this.analysisThreadIds.add(result.threadId);
+        return responseText(result);
+      }
+      episodeForSegment(thread, segment, runtimeId) {
+        const flattened = flattenThread(thread);
+        const startIndex = flattened.findIndex(
+          ({ item }) => item.type === "userMessage" && item.id === segment.startUserItemId
+        );
+        const endUserIndex = flattened.findIndex(
+          ({ item }) => item.type === "userMessage" && item.id === segment.endUserItemId
+        );
+        if (startIndex < 0 || endUserIndex < startIndex) {
+          throw new Error("Automatic capture boundary no longer exists in the source task");
+        }
+        let nextUserIndex = flattened.findIndex(
+          ({ item }, index) => index > endUserIndex && item.type === "userMessage"
+        );
+        if (nextUserIndex < 0) nextUserIndex = flattened.length;
+        let endIndex = -1;
+        for (let index = endUserIndex + 1; index < nextUserIndex; index += 1) {
+          if (flattened[index].item.type === "agentMessage") endIndex = index;
+        }
+        if (endIndex < 0) {
+          throw new Error("Automatic capture candidate has no final Assistant response");
+        }
+        return buildEpisodeSnapshot(thread, {
+          startItemId: flattened[startIndex].item.id,
+          startTurnId: flattened[startIndex].turnId,
+          endItemId: flattened[endIndex].item.id,
+          endTurnId: flattened[endIndex].turnId,
+          runtimeId
+        });
+      }
+      async classifySegment({ thread, threadId, runtimeId, segment, skills, datasets, profile }) {
+        const episode = this.episodeForSegment(thread, segment, runtimeId);
+        const prompt = buildOutcomePrompt({ threadId, episode, skills, datasets });
+        const result = parseOutcomeResult(await this.analyze("outcome", prompt, profile), {
+          skillNames: skills.map((skill2) => skill2.name).filter(Boolean),
+          assistantItemIds: episode.items.filter((item) => item.type === "agentMessage").map((item) => item.id)
+        });
+        const skill = skills.find((entry) => entry.name === result.skillName) ?? null;
+        if (!skill) return { irrelevant: true, episode, result };
+        const finalItem = result.finalAssistantItemId ? episode.items.find((item) => item.id === result.finalAssistantItemId) : null;
+        const endItemId = finalItem?.id ?? episode.source.endItemId;
+        const endTurnId = finalItem?.turnId ?? episode.source.endTurnId;
+        const source = {
+          kind: "automatic_capture",
+          runtimeId,
+          threadId,
+          startTurnId: episode.source.startTurnId,
+          startItemId: episode.source.startItemId,
+          endTurnId,
+          endItemId,
+          outcome: result.outcome,
+          caseType: result.caseType,
+          confidence: result.confidence,
+          summary: segment.summary,
+          reason: result.reason,
+          inspectedAt: this.now().toISOString()
+        };
+        const candidateSkill = {
+          ...skill.id ? { id: skill.id } : {},
+          name: skill.name,
+          ...skill.path ? { path: skill.path } : {}
+        };
+        const saved = this.rawCaseStore.addAutomaticCandidate({
+          question: episode.originalQuestion,
+          skill: candidateSkill,
+          note: result.reason || segment.summary,
+          source
+        });
+        await this.createAutomaticCuration({
+          saved,
+          source,
+          skill: candidateSkill,
+          datasets,
+          profile
+        });
+        return { irrelevant: false, episode, result, saved };
+      }
+      async createAutomaticCuration({ saved, source, skill, datasets, profile }) {
+        if (profile.mode !== "automatic" || !this.curationManager?.createSession) return null;
+        const dataset = automaticDatasetFor({
+          confidence: source.confidence,
+          outcome: source.outcome,
+          skill
+        }, datasets, profile.datasetId);
+        if (!dataset?.activeRubricVersionId || !saved?.rawCase?.id) return null;
+        const curatorProfile = this.store.read().settings.curatorProfile ?? {};
+        try {
+          const session = await this.curationManager.createSession({
+            datasetId: dataset.id,
+            caseType: source.caseType,
+            sourceThreadId: source.threadId,
+            startItemId: source.startItemId,
+            startTurnId: source.startTurnId,
+            endItemId: source.endItemId,
+            endTurnId: source.endTurnId,
+            issueDescription: source.reason ?? "",
+            modelId: curatorProfile.modelId ?? null,
+            effort: curatorProfile.effort ?? null
+          });
+          this.automaticSessions.set(session.id, { rawCaseId: saved.rawCase.id });
+          if (session.status === "needs_review" && session.draft) {
+            await this.handleCurationChanged(session);
+          }
+          return session;
+        } catch (error) {
+          this.onError(error);
+          this.emitStatus();
+          return null;
+        }
+      }
+      async scanThread({ runtime, runtimeId, threadId, skills, datasets, profile }) {
+        const response = await runtime.readThread(threadId);
+        const thread = response?.thread;
+        if (!thread) throw new Error(`Automatic capture could not read task ${threadId}`);
+        const messages = this.userMessages(thread);
+        if (!messages.length) return false;
+        const cursor = this.stateStore.thread(runtimeId, threadId);
+        const cursorIndex = cursor.lastInspectedUserItemId ? messages.findIndex((message) => message.id === cursor.lastInspectedUserItemId) : -1;
+        const hasNewMessages = cursorIndex < messages.length - 1;
+        if (cursor.lastInspectedUserItemId && !hasNewMessages) return false;
+        const pendingIndex = cursor.pendingStartUserItemId ? messages.findIndex((message) => message.id === cursor.pendingStartUserItemId) : -1;
+        const startIndex = pendingIndex >= 0 ? pendingIndex : cursorIndex + 1;
+        const incremental = messages.slice(Math.max(0, startIndex));
+        if (!incremental.length) return false;
+        const checkedRanges = [...cursor.checkedRanges ?? []];
+        for (const batch of partitionUserMessages(incremental, {
+          maxMessages: 40,
+          maxCharacters: 24e3
+        })) {
+          const boundaryPrompt = buildBoundaryPrompt({ threadId, userMessages: batch });
+          const boundary = parseBoundaryResult(
+            await this.analyze("boundary", boundaryPrompt, profile),
+            { userMessageIds: batch.map((message) => message.id) }
+          );
+          for (const segment of boundary.segments) {
+            const classified = await this.classifySegment({
+              thread,
+              threadId,
+              runtimeId,
+              segment,
+              skills,
+              datasets,
+              profile
+            });
+            if (classified.irrelevant) {
+              checkedRanges.push({
+                startUserItemId: segment.startUserItemId,
+                endUserItemId: segment.endUserItemId,
+                reason: "no_identifiable_skill",
+                checkedAt: this.now().toISOString()
+              });
+            }
+          }
+          this.stateStore.commitThread(runtimeId, threadId, {
+            lastInspectedUserItemId: batch.at(-1).id,
+            pendingStartUserItemId: boundary.pendingStartUserItemId,
+            checkedRanges: checkedRanges.slice(-200)
+          }, this.now());
+        }
+        return true;
+      }
+    };
+    module.exports = {
+      AutomaticCaptureManager: ConversationDiscoveryManager,
+      ConversationDiscoveryManager,
+      automaticDatasetFor,
+      sameAutomaticSkill
+    };
+  }
+});
+
 // ../rolling-skill-core/src/config-store.cjs
 var require_config_store = __commonJS({
   "../rolling-skill-core/src/config-store.cjs"(exports, module) {
@@ -20762,6 +21503,207 @@ var require_config_store = __commonJS({
       initialConfig,
       normalizeConfig
     };
+  }
+});
+
+// ../rolling-skill-core/src/automatic-capture-service.cjs
+var require_automatic_capture_service = __commonJS({
+  "../rolling-skill-core/src/automatic-capture-service.cjs"(exports, module) {
+    var {
+      ConversationDiscoveryManager
+    } = require_automatic_capture();
+    var { normalizeConfig } = require_config_store();
+    var MODES = /* @__PURE__ */ new Set(["off", "scheduled", "automatic"]);
+    var LOCATIONS = /* @__PURE__ */ new Set(["while-harness-running", "always"]);
+    var CADENCES = /* @__PURE__ */ new Set(["daily", "weekly"]);
+    function requiredText(value, label, maximum = 4096) {
+      const text2 = typeof value === "string" ? value.trim() : "";
+      if (!text2 || text2.length > maximum) throw new Error(`${label} is required`);
+      return text2;
+    }
+    function optionalText(value, label, maximum = 4096) {
+      if (value === null || value === void 0 || value === "") return null;
+      return requiredText(value, label, maximum);
+    }
+    function createAutomaticCaptureService({
+      store,
+      configStore,
+      runtimeServices,
+      stateStore = null,
+      rawCaseStore = null,
+      curationManager = null,
+      listDatasets = () => store.listDatasets(),
+      getHiddenThreadIds = () => /* @__PURE__ */ new Set(),
+      manager = null,
+      now = () => /* @__PURE__ */ new Date(),
+      setTimer,
+      clearTimer,
+      onChanged = () => {
+      },
+      onError = () => {
+      }
+    } = {}) {
+      if (!store || !configStore || !runtimeServices) {
+        throw new Error("Automatic capture service dependencies are required");
+      }
+      function runtimeDescriptor() {
+        const selected = configStore.read().runtime;
+        if (!selected?.runtimeId) {
+          throw new Error("Select a Runtime before running automatic capture");
+        }
+        return runtimeServices.descriptor(selected.runtimeId);
+      }
+      async function runtimeClient() {
+        const descriptor = runtimeDescriptor();
+        return runtimeServices.getClient(descriptor.runtimeId, { nonInteractive: true });
+      }
+      const captureManager = manager ?? new ConversationDiscoveryManager({
+        store,
+        stateStore,
+        rawCaseStore,
+        curationManager,
+        getRuntime: runtimeClient,
+        getRuntimeDescriptor: runtimeDescriptor,
+        listDatasets,
+        listSkills: async (runtime) => {
+          if (typeof runtime.listSkills !== "function") return [];
+          const response = await runtime.listSkills({ forceReload: true });
+          return (response?.data ?? []).flatMap((entry) => entry.skills ?? []).filter((skill) => skill.enabled !== false);
+        },
+        runAnalysis: async (input) => {
+          const runtime = await runtimeClient();
+          if (typeof runtime.runEvaluationJudge !== "function") {
+            throw new Error("Selected Runtime cannot run automatic capture analysis");
+          }
+          return runtime.runEvaluationJudge(input);
+        },
+        getHiddenThreadIds,
+        now,
+        ...setTimer ? { setTimer } : {},
+        ...clearTimer ? { clearTimer } : {},
+        onStatus: onChanged,
+        onError
+      });
+      let hostStarted = false;
+      let running = null;
+      function status() {
+        const profile = store.read().settings.autoCaptureProfile;
+        const plugin = configStore.read();
+        return {
+          ...captureManager.status(),
+          mode: profile.mode,
+          schedule: structuredClone(profile.schedule),
+          modelId: profile.modelId,
+          effort: profile.effort,
+          datasetId: profile.datasetId,
+          executionLocation: plugin.executionLocation,
+          runtime: plugin.runtime,
+          worker: plugin.worker
+        };
+      }
+      function update(input = {}) {
+        const mode = requiredText(input.mode, "Automatic capture mode", 40);
+        if (!MODES.has(mode)) throw new Error("Automatic capture mode is invalid");
+        const executionLocation = requiredText(
+          input.executionLocation,
+          "Automatic capture execution location",
+          80
+        );
+        if (!LOCATIONS.has(executionLocation)) {
+          throw new Error("Automatic capture execution location is invalid");
+        }
+        const cadence = requiredText(input.cadence, "Automatic capture cadence", 20);
+        if (!CADENCES.has(cadence)) throw new Error("Automatic capture cadence is invalid");
+        const time = requiredText(input.time, "Automatic capture time", 5);
+        if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(time)) {
+          throw new Error("Automatic capture time is invalid");
+        }
+        const weekday = Number(input.weekday);
+        if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+          throw new Error("Automatic capture weekday is invalid");
+        }
+        const runtimeId = optionalText(input.runtimeId, "Automatic capture Runtime id", 500);
+        const current = configStore.read();
+        const runtime = runtimeId ? runtimeServices.descriptor(runtimeId) : current.runtime;
+        if (mode !== "off" && !runtime) {
+          throw new Error("Select a Runtime before enabling automatic capture");
+        }
+        if (executionLocation === "always" && !runtime) {
+          throw new Error("Always-on automatic capture requires a Runtime");
+        }
+        const worker = {
+          ...current.worker,
+          enabled: mode !== "off" && executionLocation === "always"
+        };
+        normalizeConfig({ ...current, executionLocation, runtime, worker });
+        const settings = store.updateSettings({
+          autoCaptureMode: mode,
+          autoCaptureCadence: cadence,
+          autoCaptureTime: time,
+          autoCaptureWeekday: weekday,
+          autoCaptureModelId: optionalText(input.modelId, "Automatic capture model id", 300),
+          autoCaptureEffort: optionalText(input.effort, "Automatic capture effort", 100),
+          autoCaptureDatasetId: optionalText(input.datasetId, "Automatic capture Dataset id", 200)
+        });
+        configStore.update({ executionLocation, runtime, worker });
+        if (hostStarted) {
+          if (executionLocation === "always") captureManager.stop();
+          else captureManager.reschedule();
+        }
+        onChanged(status());
+        return {
+          ...status(),
+          mode: settings.autoCaptureProfile.mode,
+          schedule: settings.autoCaptureProfile.schedule
+        };
+      }
+      async function runOnce({ slot = "manual" } = {}) {
+        const profile = store.read().settings.autoCaptureProfile;
+        if (profile.mode === "off") return { status: "disabled", slot: null };
+        runtimeDescriptor();
+        if (running) return { status: "busy", slot: null };
+        const selectedSlot = slot === "manual" ? now() : new Date(slot);
+        if (!Number.isFinite(selectedSlot.getTime())) {
+          throw new Error("Automatic capture slot is invalid");
+        }
+        const operation = captureManager.runSlot(selectedSlot, profile);
+        running = operation;
+        onChanged(status());
+        try {
+          await operation;
+          return { status: "completed", slot: selectedSlot.toISOString() };
+        } catch (error) {
+          stateStore?.failSlot?.(error, now());
+          onError(error);
+          throw error;
+        } finally {
+          if (running === operation) running = null;
+          onChanged(status());
+        }
+      }
+      function startHostSchedule() {
+        hostStarted = true;
+        if (configStore.read().executionLocation === "always") captureManager.stop();
+        else captureManager.start();
+        return status();
+      }
+      function stopHostSchedule() {
+        hostStarted = false;
+        captureManager.stop();
+        return status();
+      }
+      return Object.freeze({
+        handleCurationChanged: (session) => captureManager.handleCurationChanged(session),
+        manager: captureManager,
+        runDueAutomaticCapture: runOnce,
+        runOnce,
+        startHostSchedule,
+        status,
+        stopHostSchedule,
+        update
+      });
+    }
+    module.exports = { createAutomaticCaptureService };
   }
 });
 
@@ -59384,6 +60326,7 @@ var require_application = __commonJS({
       SkillInstallationStore
     } = require_skill_installation_store();
     var { createCaseServices } = require_case_services();
+    var { createAutomaticCaptureService } = require_automatic_capture_service();
     var { RollingSkillConfigStore } = require_config_store();
     var { ensureDataLayout, resolveDataPaths } = require_data_root();
     var { createEvaluationServices } = require_evaluation_services();
@@ -59500,6 +60443,7 @@ var require_application = __commonJS({
       );
       const managedSkillStore = new ManagedSkillStore(paths.managedSkillRegistry);
       const configStore = new RollingSkillConfigStore(paths.config);
+      let automaticCaptureService = null;
       const workspaceRoot = options2.workspaceRoot ?? process.cwd();
       const runtimeServices = createRuntimeServices({
         registry: options2.runtimeRegistry,
@@ -59547,12 +60491,29 @@ var require_application = __commonJS({
         store,
         getRuntime: getSelectedRuntime,
         getRuntimeDescriptor: selectedRuntimeDescriptor,
-        onChanged: () => publish()
+        onChanged: (session) => {
+          void automaticCaptureService?.handleCurationChanged(session);
+          publish();
+        }
       });
       const rubricManager = options2.rubricManager ?? new RubricManager({
         store,
         getRuntime: getSelectedRuntime,
         getRuntimeDescriptor: selectedRuntimeDescriptor,
+        onChanged: () => publish()
+      });
+      automaticCaptureService = createAutomaticCaptureService({
+        store,
+        configStore,
+        runtimeServices,
+        stateStore: automaticCaptureStateStore,
+        rawCaseStore,
+        curationManager,
+        listDatasets: () => store.listDatasets(),
+        getHiddenThreadIds: () => /* @__PURE__ */ new Set([
+          ...curationManager.hiddenThreadIds(),
+          ...rubricManager.hiddenThreadIds()
+        ]),
         onChanged: () => publish()
       });
       const refreshManager = options2.caseRefreshManager ?? {
@@ -59639,7 +60600,7 @@ var require_application = __commonJS({
             optimizations: operatorServices.optimizationList().length
           },
           dataRoot: paths.root,
-          automaticCapture: automaticCaptureStateStore.read(),
+          automaticCapture: automaticCaptureService.status(),
           settings: {
             rollingSkill: state.settings,
             plugin: configStore.read()
@@ -59693,6 +60654,9 @@ var require_application = __commonJS({
         "installations.cancel": (input) => skillServices.cancelInstallation(input),
         "installations.inspect": (input) => skillServices.inspectInstallation(input),
         "installations.send": (input) => skillServices.sendInstallation(input),
+        "automatic.status": () => automaticCaptureService.status(),
+        "automatic.update": (input) => automaticCaptureService.update(input),
+        "automatic.runOnce": (input) => automaticCaptureService.runOnce(input),
         "operators.summary": (input) => operatorServices.operatorSummary(input),
         "operators.get": (input) => operatorServices.operatorGet(input),
         "operators.start": (input) => operatorServices.operatorStart(input),
@@ -59728,6 +60692,8 @@ var require_application = __commonJS({
         "installations.cancel",
         "installations.inspect",
         "installations.send",
+        "automatic.update",
+        "automatic.runOnce",
         "operators.start",
         "operators.pause",
         "operators.resume",
@@ -59777,11 +60743,13 @@ var require_application = __commonJS({
         closed = true;
         subscribers.clear();
         rawCaseStore.close();
+        automaticCaptureService.stopHostSchedule();
         await evaluationRunner.stopAll?.();
         await installationManager.stopAll?.();
         await operatorRuntime.close();
         await runtimeServices.close();
       }
+      if (!options2.workerMode) automaticCaptureService.startHostSchedule();
       return Object.freeze({ close, dispatch: dispatch2, snapshot, subscribe });
     }
     module.exports = {
@@ -59939,6 +60907,7 @@ var require_run_lease = __commonJS({
 var require_src = __commonJS({
   "../rolling-skill-core/src/index.cjs"(exports, module) {
     var { createRollingSkillApplication: createRollingSkillApplication2 } = require_application();
+    var { createAutomaticCaptureService } = require_automatic_capture_service();
     var { createCaseServices } = require_case_services();
     var { createEvaluationServices } = require_evaluation_services();
     var { createOperatorRuntime, createOperatorServices } = require_operator_services();
@@ -59950,6 +60919,7 @@ var require_src = __commonJS({
     module.exports = {
       RollingSkillConfigStore,
       acquireRunLease,
+      createAutomaticCaptureService,
       createCaseServices,
       createEvaluationServices,
       createOperatorRuntime,

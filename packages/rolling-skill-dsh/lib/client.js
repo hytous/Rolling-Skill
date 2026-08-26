@@ -26,8 +26,8 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 
 // src/client/workbench/Workbench.tsx
-var import_dsh_client_ui_primitives8 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react8 = require("react");
+var import_dsh_client_ui_primitives9 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react9 = require("react");
 
 // src/client/api.ts
 var ROLLING_SKILL_API_PATH = "/rolling-skill/api";
@@ -70,7 +70,7 @@ async function requestRollingSkill(method, input = {}, signal) {
   return envelope.value;
 }
 
-// src/client/workbench/CasesPanel.tsx
+// src/client/workbench/AutomaticCapturePanel.tsx
 var import_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 var import_react = require("react");
 
@@ -111,19 +111,213 @@ function RuntimeSelect({
   ] });
 }
 
-// src/client/workbench/CasesPanel.tsx
+// src/client/workbench/AutomaticCapturePanel.tsx
 var import_jsx_runtime2 = require("react/jsx-runtime");
-function CasesPanel({ t, revision, onChanged }) {
-  const [datasets, setDatasets] = (0, import_react.useState)([]);
+var WEEKDAY_KEYS = [
+  "weekday0",
+  "weekday1",
+  "weekday2",
+  "weekday3",
+  "weekday4",
+  "weekday5",
+  "weekday6"
+];
+function displayTime(value, fallback) {
+  if (!value) return fallback;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString() : fallback;
+}
+function AutomaticCapturePanel({ t }) {
+  const [status, setStatus] = (0, import_react.useState)(null);
   const [runtimes, setRuntimes] = (0, import_react.useState)([]);
+  const [datasets, setDatasets] = (0, import_react.useState)([]);
+  const [models, setModels] = (0, import_react.useState)([]);
+  const [mode, setMode] = (0, import_react.useState)("off");
+  const [executionLocation, setExecutionLocation] = (0, import_react.useState)("while-harness-running");
+  const [cadence, setCadence] = (0, import_react.useState)("daily");
+  const [time, setTime] = (0, import_react.useState)("09:00");
+  const [weekday, setWeekday] = (0, import_react.useState)(1);
   const [runtimeId, setRuntimeId] = (0, import_react.useState)("");
+  const [modelId, setModelId] = (0, import_react.useState)("");
+  const [effort, setEffort] = (0, import_react.useState)("low");
   const [datasetId, setDatasetId] = (0, import_react.useState)("");
-  const [entries, setEntries] = (0, import_react.useState)([]);
-  const [deleting, setDeleting] = (0, import_react.useState)(null);
-  const [recoverQuestions, setRecoverQuestions] = (0, import_react.useState)(true);
   const [busy, setBusy] = (0, import_react.useState)(false);
   const [error, setError] = (0, import_react.useState)(null);
+  const [revision, setRevision] = (0, import_react.useState)(0);
   (0, import_react.useEffect)(() => {
+    const controller = new AbortController();
+    Promise.all([
+      requestRollingSkill("automatic.status", {}, controller.signal),
+      requestRollingSkill("runtimes.list", {}, controller.signal),
+      requestRollingSkill("datasets.list", {}, controller.signal)
+    ]).then(([nextStatus, runtimeItems, datasetItems]) => {
+      setStatus(nextStatus);
+      setRuntimes(runtimeItems);
+      setDatasets(datasetItems);
+      setMode(nextStatus.mode);
+      setExecutionLocation(nextStatus.executionLocation);
+      setCadence(nextStatus.schedule.cadence);
+      setTime(nextStatus.schedule.time);
+      setWeekday(nextStatus.schedule.weekday);
+      setRuntimeId(nextStatus.runtime?.runtimeId || runtimeItems[0]?.runtimeId || "");
+      setModelId(nextStatus.modelId || "");
+      setEffort(nextStatus.effort || "low");
+      setDatasetId(nextStatus.datasetId || "");
+    }).catch((reason) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
+    });
+    return () => controller.abort();
+  }, [revision]);
+  (0, import_react.useEffect)(() => {
+    if (!runtimeId) return;
+    const controller = new AbortController();
+    requestRollingSkill("runtimes.models", { runtimeId }, controller.signal).then((items) => {
+      setModels(items);
+      setModelId((current) => current || items[0]?.id || items[0]?.model || "");
+    }).catch((reason) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
+    });
+    return () => controller.abort();
+  }, [runtimeId]);
+  const mutate = async (operation) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await operation();
+      setRevision((value) => value + 1);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("loadError"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const save = () => mutate(() => requestRollingSkill("automatic.update", {
+    mode,
+    executionLocation,
+    cadence,
+    time,
+    weekday,
+    runtimeId: runtimeId || null,
+    modelId: modelId || null,
+    effort: effort || null,
+    datasetId: datasetId || null
+  }));
+  const runOnce = () => mutate(() => requestRollingSkill("automatic.runOnce", { slot: "manual" }));
+  const requiresRuntime = mode !== "off";
+  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-data-stack", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h3", { children: t("automaticTitle") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { children: t("automaticDescription") })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "ghost", size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-grid", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: t("automaticMode") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("select", { className: "rolling-skill-select", value: mode, onChange: (event) => setMode(event.target.value), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "off", children: t("automaticOff") }),
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "scheduled", children: t("automaticScheduled") }),
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "automatic", children: t("automaticFull") })
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: t("executionLocation") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("select", { className: "rolling-skill-select", value: executionLocation, onChange: (event) => setExecutionLocation(event.target.value), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "while-harness-running", children: t("whileHarnessRunning") }),
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "always", children: t("alwaysRunning") })
+          ] })
+        ] })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-grid", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: t("cadence") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("select", { className: "rolling-skill-select", value: cadence, onChange: (event) => setCadence(event.target.value), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "daily", children: t("daily") }),
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "weekly", children: t("weekly") })
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: t("captureTime") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { className: "rolling-skill-select", type: "time", value: time, onChange: (event) => setTime(event.target.value) })
+        ] }),
+        cadence === "weekly" ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: t("weekday") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("select", { className: "rolling-skill-select", value: weekday, onChange: (event) => setWeekday(Number(event.target.value)), children: WEEKDAY_KEYS.map((key, day) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: day, children: t(key) }, key)) })
+        ] }) : null
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(RuntimeSelect, { t, runtimes, value: runtimeId, onChange: setRuntimeId, label: t("automaticRuntime") }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-grid", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: t("model") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("select", { className: "rolling-skill-select", value: modelId, onChange: (event) => setModelId(event.target.value), children: models.map((model) => {
+            const id = model.id ?? model.model ?? "";
+            return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: id, children: model.displayName ?? id }, id);
+          }) })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: t("effort") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("select", { className: "rolling-skill-select", value: effort, onChange: (event) => setEffort(event.target.value), children: ["low", "medium", "high", "xhigh", "max"].map((item) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: item, children: item }, item)) })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: t("automaticDataset") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("select", { className: "rolling-skill-select", value: datasetId, onChange: (event) => setDatasetId(event.target.value), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "", children: t("automaticDatasetMatch") }),
+            datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: dataset.id, children: dataset.name }, dataset.id))
+          ] })
+        ] })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { className: "rolling-skill-help", children: mode === "scheduled" ? t("scheduledBehavior") : mode === "automatic" ? t("automaticBehavior") : t("offBehavior") }),
+      error ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-actions", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", disabled: busy || requiresRuntime && !runtimeId, onClick: () => void save(), children: t("saveAutomatic") }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "ghost", disabled: busy || mode === "off" || !runtimeId, onClick: () => void runOnce(), children: t("runOnce") })
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h3", { children: t("automaticStatus") }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("dl", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dt", { children: t("nextRun") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dd", { children: displayTime(status?.nextRunAt ?? null, t("notAvailable")) })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dt", { children: t("lastSuccess") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dd", { children: displayTime(status?.lastSuccessAt ?? null, t("notAvailable")) })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dt", { children: t("pendingRawCases") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dd", { children: status?.pendingCount ?? 0 })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dt", { children: t("schedulerStatus") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dd", { children: executionLocation === "always" ? status?.worker.installed ? t("installed") : t("notInstalled") : t("harnessTimer") })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dt", { children: t("lastError") }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dd", { children: status?.error || status?.worker.lastRegistrationError || t("noError") })
+        ] })
+      ] })
+    ] })
+  ] });
+}
+
+// src/client/workbench/CasesPanel.tsx
+var import_dsh_client_ui_primitives2 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react2 = require("react");
+var import_jsx_runtime3 = require("react/jsx-runtime");
+function CasesPanel({ t, revision, onChanged }) {
+  const [datasets, setDatasets] = (0, import_react2.useState)([]);
+  const [runtimes, setRuntimes] = (0, import_react2.useState)([]);
+  const [runtimeId, setRuntimeId] = (0, import_react2.useState)("");
+  const [datasetId, setDatasetId] = (0, import_react2.useState)("");
+  const [entries, setEntries] = (0, import_react2.useState)([]);
+  const [deleting, setDeleting] = (0, import_react2.useState)(null);
+  const [recoverQuestions, setRecoverQuestions] = (0, import_react2.useState)(true);
+  const [busy, setBusy] = (0, import_react2.useState)(false);
+  const [error, setError] = (0, import_react2.useState)(null);
+  (0, import_react2.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
       requestRollingSkill("datasets.list", {}, controller.signal),
@@ -138,7 +332,7 @@ function CasesPanel({ t, revision, onChanged }) {
     });
     return () => controller.abort();
   }, [revision]);
-  (0, import_react.useEffect)(() => {
+  (0, import_react2.useEffect)(() => {
     if (!datasetId) {
       setEntries([]);
       return;
@@ -188,50 +382,50 @@ function CasesPanel({ t, revision, onChanged }) {
       setDeleting(null);
     });
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("section", { className: "rolling-skill-panel rolling-skill-data-panel", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-panel-header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h3", { children: t("casesTitle") }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { children: t("casesDescription") })
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("section", { className: "rolling-skill-panel rolling-skill-data-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("h3", { children: t("casesTitle") }),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { children: t("casesDescription") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-actions", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", size: "sm", disabled: !datasetId || busy, onClick: () => void refreshBatch("goodcase"), children: t("refreshGoodCases") }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", size: "sm", disabled: !datasetId || busy, onClick: () => void refreshBatch("all"), children: t("refreshAllCases") })
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "rolling-skill-actions", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "outline", size: "sm", disabled: !datasetId || busy, onClick: () => void refreshBatch("goodcase"), children: t("refreshGoodCases") }),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "outline", size: "sm", disabled: !datasetId || busy, onClick: () => void refreshBatch("all"), children: t("refreshAllCases") })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("select", { className: "rolling-skill-select", "aria-label": t("selectDataset"), value: datasetId, onChange: (event) => setDatasetId(event.target.value), children: datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: dataset.id, children: dataset.name }, dataset.id)) }),
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(RuntimeSelect, { t, runtimes, value: runtimeId, onChange: setRuntimeId, label: t("refreshRuntime") }),
-    error ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-list", children: [
-      entries.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("article", { className: "rolling-skill-case-row", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-case-copy", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "rolling-skill-badge", children: entry.caseType === "goodcase" ? t("goodcase") : t("badcase") }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("strong", { children: entry.question }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { children: entry.answer })
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("select", { className: "rolling-skill-select", "aria-label": t("selectDataset"), value: datasetId, onChange: (event) => setDatasetId(event.target.value), children: datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("option", { value: dataset.id, children: dataset.name }, dataset.id)) }),
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(RuntimeSelect, { t, runtimes, value: runtimeId, onChange: setRuntimeId, label: t("refreshRuntime") }),
+    error ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "rolling-skill-list", children: [
+      entries.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("article", { className: "rolling-skill-case-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "rolling-skill-case-copy", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "rolling-skill-badge", children: entry.caseType === "goodcase" ? t("goodcase") : t("badcase") }),
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { children: entry.question }),
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { children: entry.answer })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void refreshOne(entry), children: t("refreshCase") }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => setDeleting(entry), children: t("delete") })
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "rolling-skill-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void refreshOne(entry), children: t("refreshCase") }),
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => setDeleting(entry), children: t("delete") })
         ] })
       ] }, entry.id)),
-      entries.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { children: t("emptyCases") }) : null
+      entries.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { children: t("emptyCases") }) : null
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
-      import_dsh_client_ui_primitives.Modal,
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+      import_dsh_client_ui_primitives2.Modal,
       {
         open: deleting !== null,
         onClose: () => setDeleting(null),
         title: t("deleteCaseTitle"),
         closeLabel: t("cancel"),
-        footer: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_jsx_runtime2.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", onClick: () => setDeleting(null), children: t("cancel") }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", disabled: busy, onClick: remove, children: t("confirmDelete") })
+        footer: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_jsx_runtime3.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "outline", onClick: () => setDeleting(null), children: t("cancel") }),
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "outline", disabled: busy, onClick: remove, children: t("confirmDelete") })
         ] }),
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { children: t("deleteRecoveryPrompt") }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("label", { className: "rolling-skill-check", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("input", { type: "checkbox", checked: recoverQuestions, onChange: (event) => setRecoverQuestions(event.target.checked) }),
-            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { children: t("recoverToRawCases") })
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { children: t("deleteRecoveryPrompt") }),
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("label", { className: "rolling-skill-check", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("input", { type: "checkbox", checked: recoverQuestions, onChange: (event) => setRecoverQuestions(event.target.checked) }),
+            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: t("recoverToRawCases") })
           ] })
         ]
       }
@@ -240,18 +434,18 @@ function CasesPanel({ t, revision, onChanged }) {
 }
 
 // src/client/workbench/DatasetsPanel.tsx
-var import_dsh_client_ui_primitives2 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react2 = require("react");
-var import_jsx_runtime3 = require("react/jsx-runtime");
+var import_dsh_client_ui_primitives3 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react3 = require("react");
+var import_jsx_runtime4 = require("react/jsx-runtime");
 function DatasetsPanel({ t, onChanged }) {
-  const [datasets, setDatasets] = (0, import_react2.useState)([]);
-  const [name, setName] = (0, import_react2.useState)("");
-  const [deleting, setDeleting] = (0, import_react2.useState)(null);
-  const [recoverQuestions, setRecoverQuestions] = (0, import_react2.useState)(true);
-  const [busy, setBusy] = (0, import_react2.useState)(false);
-  const [error, setError] = (0, import_react2.useState)(null);
-  const [revision, setRevision] = (0, import_react2.useState)(0);
-  (0, import_react2.useEffect)(() => {
+  const [datasets, setDatasets] = (0, import_react3.useState)([]);
+  const [name, setName] = (0, import_react3.useState)("");
+  const [deleting, setDeleting] = (0, import_react3.useState)(null);
+  const [recoverQuestions, setRecoverQuestions] = (0, import_react3.useState)(true);
+  const [busy, setBusy] = (0, import_react3.useState)(false);
+  const [error, setError] = (0, import_react3.useState)(null);
+  const [revision, setRevision] = (0, import_react3.useState)(0);
+  (0, import_react3.useEffect)(() => {
     const controller = new AbortController();
     requestRollingSkill("datasets.list", {}, controller.signal).then(setDatasets).catch((reason) => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
@@ -303,17 +497,17 @@ function DatasetsPanel({ t, onChanged }) {
       setError(reason instanceof Error ? reason.message : t("loadError"));
     }
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("section", { className: "rolling-skill-panel rolling-skill-data-panel", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "rolling-skill-panel-header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("h3", { children: t("datasetsTitle") }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { children: t("datasetsDescription") })
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { className: "rolling-skill-panel rolling-skill-data-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h3", { children: t("datasetsTitle") }),
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { children: t("datasetsDescription") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "ghost", size: "sm", onClick: reload, children: t("refresh") })
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "ghost", size: "sm", onClick: reload, children: t("refresh") })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "rolling-skill-form-row", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
-        import_dsh_client_ui_primitives2.Input,
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-form-row", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+        import_dsh_client_ui_primitives3.Input,
         {
           value: name,
           placeholder: t("datasetName"),
@@ -321,38 +515,38 @@ function DatasetsPanel({ t, onChanged }) {
           onChange: (event) => setName(event.target.value)
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "outline", size: "sm", disabled: busy || !name.trim(), onClick: create, children: t("createDataset") })
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "outline", size: "sm", disabled: busy || !name.trim(), onClick: create, children: t("createDataset") })
     ] }),
-    error ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "rolling-skill-list", children: [
-      datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("article", { className: "rolling-skill-list-row", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("strong", { children: dataset.name }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: t("caseBreakdown").replace("{all}", String(dataset.caseCount)).replace("{good}", String(dataset.goodcaseCount)).replace("{bad}", String(dataset.badcaseCount)) })
+    error ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-list", children: [
+      datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("article", { className: "rolling-skill-list-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: dataset.name }),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: t("caseBreakdown").replace("{all}", String(dataset.caseCount)).replace("{good}", String(dataset.goodcaseCount)).replace("{bad}", String(dataset.badcaseCount)) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "rolling-skill-actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "ghost", size: "sm", onClick: () => void exportCsv(dataset.id), children: t("exportCsv") }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "ghost", size: "sm", onClick: () => setDeleting(dataset), children: t("delete") })
+        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "ghost", size: "sm", onClick: () => void exportCsv(dataset.id), children: t("exportCsv") }),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "ghost", size: "sm", onClick: () => setDeleting(dataset), children: t("delete") })
         ] })
       ] }, dataset.id)),
-      datasets.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { children: t("emptyDatasets") }) : null
+      datasets.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { children: t("emptyDatasets") }) : null
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
-      import_dsh_client_ui_primitives2.Modal,
+    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(
+      import_dsh_client_ui_primitives3.Modal,
       {
         open: deleting !== null,
         onClose: () => setDeleting(null),
         title: t("deleteDatasetTitle"),
         closeLabel: t("cancel"),
-        footer: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_jsx_runtime3.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "outline", onClick: () => setDeleting(null), children: t("cancel") }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(import_dsh_client_ui_primitives2.Button, { variant: "outline", disabled: busy, onClick: remove, children: t("confirmDelete") })
+        footer: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)(import_jsx_runtime4.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "outline", onClick: () => setDeleting(null), children: t("cancel") }),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "outline", disabled: busy, onClick: remove, children: t("confirmDelete") })
         ] }),
         children: [
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { children: t("deleteRecoveryPrompt") }),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("label", { className: "rolling-skill-check", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("input", { type: "checkbox", checked: recoverQuestions, onChange: (event) => setRecoverQuestions(event.target.checked) }),
-            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: t("recoverToRawCases") })
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { children: t("deleteRecoveryPrompt") }),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("label", { className: "rolling-skill-check", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("input", { type: "checkbox", checked: recoverQuestions, onChange: (event) => setRecoverQuestions(event.target.checked) }),
+            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: t("recoverToRawCases") })
           ] })
         ]
       }
@@ -361,26 +555,26 @@ function DatasetsPanel({ t, onChanged }) {
 }
 
 // src/client/workbench/EvaluationsPanel.tsx
-var import_dsh_client_ui_primitives3 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react3 = require("react");
-var import_jsx_runtime4 = require("react/jsx-runtime");
+var import_dsh_client_ui_primitives4 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react4 = require("react");
+var import_jsx_runtime5 = require("react/jsx-runtime");
 function EvaluationsPanel({ t }) {
-  const [runtimes, setRuntimes] = (0, import_react3.useState)([]);
-  const [datasets, setDatasets] = (0, import_react3.useState)([]);
-  const [runs, setRuns] = (0, import_react3.useState)([]);
-  const [targetRuntimeId, setTargetRuntimeId] = (0, import_react3.useState)("");
-  const [judgeRuntimeId, setJudgeRuntimeId] = (0, import_react3.useState)("");
-  const [datasetId, setDatasetId] = (0, import_react3.useState)("");
-  const [targetModels, setTargetModels] = (0, import_react3.useState)([]);
-  const [judgeModels, setJudgeModels] = (0, import_react3.useState)([]);
-  const [targetModelId, setTargetModelId] = (0, import_react3.useState)("");
-  const [judgeModelId, setJudgeModelId] = (0, import_react3.useState)("");
-  const [effort, setEffort] = (0, import_react3.useState)("high");
-  const [detail, setDetail] = (0, import_react3.useState)(null);
-  const [busy, setBusy] = (0, import_react3.useState)(false);
-  const [error, setError] = (0, import_react3.useState)(null);
-  const [revision, setRevision] = (0, import_react3.useState)(0);
-  (0, import_react3.useEffect)(() => {
+  const [runtimes, setRuntimes] = (0, import_react4.useState)([]);
+  const [datasets, setDatasets] = (0, import_react4.useState)([]);
+  const [runs, setRuns] = (0, import_react4.useState)([]);
+  const [targetRuntimeId, setTargetRuntimeId] = (0, import_react4.useState)("");
+  const [judgeRuntimeId, setJudgeRuntimeId] = (0, import_react4.useState)("");
+  const [datasetId, setDatasetId] = (0, import_react4.useState)("");
+  const [targetModels, setTargetModels] = (0, import_react4.useState)([]);
+  const [judgeModels, setJudgeModels] = (0, import_react4.useState)([]);
+  const [targetModelId, setTargetModelId] = (0, import_react4.useState)("");
+  const [judgeModelId, setJudgeModelId] = (0, import_react4.useState)("");
+  const [effort, setEffort] = (0, import_react4.useState)("high");
+  const [detail, setDetail] = (0, import_react4.useState)(null);
+  const [busy, setBusy] = (0, import_react4.useState)(false);
+  const [error, setError] = (0, import_react4.useState)(null);
+  const [revision, setRevision] = (0, import_react4.useState)(0);
+  (0, import_react4.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
       requestRollingSkill("runtimes.list", {}, controller.signal),
@@ -398,7 +592,7 @@ function EvaluationsPanel({ t }) {
     });
     return () => controller.abort();
   }, [revision]);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     if (!targetRuntimeId) return;
     const controller = new AbortController();
     requestRollingSkill("runtimes.models", { runtimeId: targetRuntimeId }, controller.signal).then((models) => {
@@ -409,7 +603,7 @@ function EvaluationsPanel({ t }) {
     });
     return () => controller.abort();
   }, [targetRuntimeId]);
-  (0, import_react3.useEffect)(() => {
+  (0, import_react4.useEffect)(() => {
     if (!judgeRuntimeId) return;
     const controller = new AbortController();
     requestRollingSkill("runtimes.models", { runtimeId: judgeRuntimeId }, controller.signal).then((models) => {
@@ -447,55 +641,55 @@ function EvaluationsPanel({ t }) {
       setError(reason instanceof Error ? reason.message : t("loadError"));
     }
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-data-stack", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { className: "rolling-skill-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h3", { children: t("evaluationStartTitle") }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { children: t("evaluationStartDescription") })
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-data-stack", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("h3", { children: t("evaluationStartTitle") }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { children: t("evaluationStartDescription") })
       ] }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("label", { className: "rolling-skill-field", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: t("selectDataset") }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("select", { className: "rolling-skill-select", value: datasetId, onChange: (event) => setDatasetId(event.target.value), children: datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("option", { value: dataset.id, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: t("selectDataset") }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("select", { className: "rolling-skill-select", value: datasetId, onChange: (event) => setDatasetId(event.target.value), children: datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("option", { value: dataset.id, children: [
           dataset.name,
           " \xB7 ",
           dataset.caseCount
         ] }, dataset.id)) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(RuntimeSelect, { t, runtimes, value: targetRuntimeId, onChange: setTargetRuntimeId, label: t("evaluationRuntime") }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-grid", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("label", { className: "rolling-skill-field", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: t("model") }),
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("select", { className: "rolling-skill-select", value: targetModelId, onChange: (event) => setTargetModelId(event.target.value), children: targetModels.map((model) => {
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(RuntimeSelect, { t, runtimes, value: targetRuntimeId, onChange: setTargetRuntimeId, label: t("evaluationRuntime") }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-grid", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: t("model") }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("select", { className: "rolling-skill-select", value: targetModelId, onChange: (event) => setTargetModelId(event.target.value), children: targetModels.map((model) => {
             const id = model.id ?? model.model ?? "";
-            return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("option", { value: id, children: model.displayName ?? id }, id);
+            return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: id, children: model.displayName ?? id }, id);
           }) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("label", { className: "rolling-skill-field", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: t("effort") }),
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("select", { className: "rolling-skill-select", value: effort, onChange: (event) => setEffort(event.target.value), children: ["low", "medium", "high", "xhigh", "max"].map((item) => /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("option", { value: item, children: item }, item)) })
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: t("effort") }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("select", { className: "rolling-skill-select", value: effort, onChange: (event) => setEffort(event.target.value), children: ["low", "medium", "high", "xhigh", "max"].map((item) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: item, children: item }, item)) })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(RuntimeSelect, { t, runtimes, value: judgeRuntimeId, onChange: setJudgeRuntimeId, label: t("judgeRuntime") }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("label", { className: "rolling-skill-field", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: t("judgeModel") }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("select", { className: "rolling-skill-select", value: judgeModelId, onChange: (event) => setJudgeModelId(event.target.value), children: judgeModels.map((model) => {
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(RuntimeSelect, { t, runtimes, value: judgeRuntimeId, onChange: setJudgeRuntimeId, label: t("judgeRuntime") }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: t("judgeModel") }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("select", { className: "rolling-skill-select", value: judgeModelId, onChange: (event) => setJudgeModelId(event.target.value), children: judgeModels.map((model) => {
           const id = model.id ?? model.model ?? "";
-          return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("option", { value: id, children: model.displayName ?? id }, id);
+          return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: id, children: model.displayName ?? id }, id);
         }) })
       ] }),
-      error ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "outline", disabled: busy || !datasetId || !targetRuntimeId || !judgeRuntimeId, onClick: () => void start(), children: t("startEvaluation") })
+      error ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "outline", disabled: busy || !datasetId || !targetRuntimeId || !judgeRuntimeId, onClick: () => void start(), children: t("startEvaluation") })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("section", { className: "rolling-skill-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-panel-header", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("h3", { children: t("evaluationRuns") }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "ghost", size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("h3", { children: t("evaluationRuns") }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "ghost", size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-list", children: [
-        runs.map((run) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("article", { className: "rolling-skill-list-row", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: run.status }),
-            /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("span", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-list", children: [
+        runs.map((run) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("article", { className: "rolling-skill-list-row", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { children: run.status }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { children: [
               run.id,
               " \xB7 ",
               run.caseCount ?? 0,
@@ -504,44 +698,44 @@ function EvaluationsPanel({ t }) {
               " Runtimes"
             ] })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-actions", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "ghost", size: "sm", onClick: () => void inspect(run.id), children: t("details") }),
-            ["queued", "running"].includes(run.status) ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("evaluations.cancel", { runId: run.id })), children: t("cancelRun") }) : null
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-actions", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "ghost", size: "sm", onClick: () => void inspect(run.id), children: t("details") }),
+            ["queued", "running"].includes(run.status) ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("evaluations.cancel", { runId: run.id })), children: t("cancelRun") }) : null
           ] })
         ] }, run.id)),
-        runs.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { children: t("emptyEvaluations") }) : null
+        runs.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { children: t("emptyEvaluations") }) : null
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Modal, { open: detail !== null, onClose: () => setDetail(null), title: t("evaluationDetail"), closeLabel: t("cancel"), footer: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "outline", onClick: () => setDetail(null), children: t("close") }), children: /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("div", { className: "rolling-skill-list", children: detail?.results.map((result) => /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("article", { className: "rolling-skill-list-row", children: /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: result.status }),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: result.response || result.error || result.id })
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Modal, { open: detail !== null, onClose: () => setDetail(null), title: t("evaluationDetail"), closeLabel: t("cancel"), footer: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "outline", onClick: () => setDetail(null), children: t("close") }), children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "rolling-skill-list", children: detail?.results.map((result) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("article", { className: "rolling-skill-list-row", children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { children: result.status }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: result.response || result.error || result.id })
     ] }) }, result.id)) }) })
   ] });
 }
 
 // src/client/workbench/OperatorPanel.tsx
-var import_dsh_client_ui_primitives4 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react4 = require("react");
-var import_jsx_runtime5 = require("react/jsx-runtime");
+var import_dsh_client_ui_primitives5 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react5 = require("react");
+var import_jsx_runtime6 = require("react/jsx-runtime");
 function OperatorPanel({ t }) {
-  const [runtimes, setRuntimes] = (0, import_react4.useState)([]);
-  const [runtimeId, setRuntimeId] = (0, import_react4.useState)("");
-  const [models, setModels] = (0, import_react4.useState)([]);
-  const [modelId, setModelId] = (0, import_react4.useState)("");
-  const [effort, setEffort] = (0, import_react4.useState)("high");
-  const [objective, setObjective] = (0, import_react4.useState)("");
-  const [datasets, setDatasets] = (0, import_react4.useState)([]);
-  const [catalog, setCatalog] = (0, import_react4.useState)({ skills: [], repositories: [] });
-  const [summary, setSummary] = (0, import_react4.useState)({
+  const [runtimes, setRuntimes] = (0, import_react5.useState)([]);
+  const [runtimeId, setRuntimeId] = (0, import_react5.useState)("");
+  const [models, setModels] = (0, import_react5.useState)([]);
+  const [modelId, setModelId] = (0, import_react5.useState)("");
+  const [effort, setEffort] = (0, import_react5.useState)("high");
+  const [objective, setObjective] = (0, import_react5.useState)("");
+  const [datasets, setDatasets] = (0, import_react5.useState)([]);
+  const [catalog, setCatalog] = (0, import_react5.useState)({ skills: [], repositories: [] });
+  const [summary, setSummary] = (0, import_react5.useState)({
     sessions: [],
     jobs: [],
     approvals: [],
     totals: { sessions: 0, jobs: 0, approvals: 0 }
   });
-  const [busy, setBusy] = (0, import_react4.useState)(false);
-  const [error, setError] = (0, import_react4.useState)(null);
-  const [revision, setRevision] = (0, import_react4.useState)(0);
-  (0, import_react4.useEffect)(() => {
+  const [busy, setBusy] = (0, import_react5.useState)(false);
+  const [error, setError] = (0, import_react5.useState)(null);
+  const [revision, setRevision] = (0, import_react5.useState)(0);
+  (0, import_react5.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
       requestRollingSkill("runtimes.list", {}, controller.signal),
@@ -559,7 +753,7 @@ function OperatorPanel({ t }) {
     });
     return () => controller.abort();
   }, [revision]);
-  (0, import_react4.useEffect)(() => {
+  (0, import_react5.useEffect)(() => {
     if (!runtimeId) return;
     const controller = new AbortController();
     requestRollingSkill("runtimes.models", { runtimeId }, controller.signal).then((items) => {
@@ -618,70 +812,70 @@ function OperatorPanel({ t }) {
   }));
   const parentJob = (sessionId) => summary.jobs.find((job) => job.sessionId === sessionId);
   const pendingApprovals = summary.approvals.filter((approval) => approval.status === "pending");
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: "rolling-skill-panel", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-panel-header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("h3", { children: t("operatorTitle") }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { children: t("operatorDescription") })
+  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: "rolling-skill-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h3", { children: t("operatorTitle") }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { children: t("operatorDescription") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "ghost", size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "ghost", size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(RuntimeSelect, { t, runtimes, value: runtimeId, onChange: setRuntimeId, label: t("operatorRuntime") }),
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-grid", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { className: "rolling-skill-field", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: t("model") }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("select", { className: "rolling-skill-select", value: modelId, onChange: (event) => setModelId(event.target.value), children: models.map((model) => {
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(RuntimeSelect, { t, runtimes, value: runtimeId, onChange: setRuntimeId, label: t("operatorRuntime") }),
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-grid", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: t("model") }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("select", { className: "rolling-skill-select", value: modelId, onChange: (event) => setModelId(event.target.value), children: models.map((model) => {
           const id = model.id ?? model.model ?? "";
-          return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: id, children: model.displayName ?? id }, id);
+          return /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("option", { value: id, children: model.displayName ?? id }, id);
         }) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { className: "rolling-skill-field", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: t("effort") }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("select", { className: "rolling-skill-select", value: effort, onChange: (event) => setEffort(event.target.value), children: ["low", "medium", "high", "xhigh", "max"].map((item) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: item, children: item }, item)) })
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: t("effort") }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("select", { className: "rolling-skill-select", value: effort, onChange: (event) => setEffort(event.target.value), children: ["low", "medium", "high", "xhigh", "max"].map((item) => /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("option", { value: item, children: item }, item)) })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { className: "rolling-skill-field", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: t("operatorObjective") }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Input, { value: objective, placeholder: t("operatorObjectivePlaceholder"), onChange: (event) => setObjective(event.target.value) })
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("label", { className: "rolling-skill-field", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: t("operatorObjective") }),
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Input, { value: objective, placeholder: t("operatorObjectivePlaceholder"), onChange: (event) => setObjective(event.target.value) })
     ] }),
-    error ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "outline", disabled: busy || !runtimeId || !objective.trim(), onClick: () => void start(), children: t("startOperator") }),
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-list rolling-skill-section-gap", children: [
+    error ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "outline", disabled: busy || !runtimeId || !objective.trim(), onClick: () => void start(), children: t("startOperator") }),
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-list rolling-skill-section-gap", children: [
       summary.sessions.map((session) => {
         const job = parentJob(session.id);
-        return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("article", { className: "rolling-skill-list-row", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { children: job?.status ?? t("notAvailable") }),
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { children: [
+        return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("article", { className: "rolling-skill-list-row", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: job?.status ?? t("notAvailable") }),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("span", { children: [
               session.runtime.displayName,
               " ",
               session.runtime.version || "",
               " \xB7 ",
               session.modelId || session.id
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("small", { children: job?.objective })
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("small", { children: job?.objective })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-actions", children: [
-            job?.status === "running" ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("operators.pause", { sessionId: session.id })), children: t("pause") }) : null,
-            ["paused", "needs_recovery"].includes(job?.status ?? "") ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("operators.resume", { sessionId: session.id })), children: t("resume") }) : null,
-            !["cancelled", "failed", "succeeded"].includes(job?.status ?? "") ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("operators.cancel", { sessionId: session.id })), children: t("cancelRun") }) : null
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-actions", children: [
+            job?.status === "running" ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("operators.pause", { sessionId: session.id })), children: t("pause") }) : null,
+            ["paused", "needs_recovery"].includes(job?.status ?? "") ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("operators.resume", { sessionId: session.id })), children: t("resume") }) : null,
+            !["cancelled", "failed", "succeeded"].includes(job?.status ?? "") ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("operators.cancel", { sessionId: session.id })), children: t("cancelRun") }) : null
           ] })
         ] }, session.id);
       }),
-      summary.sessions.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { children: t("emptyOperators") }) : null
+      summary.sessions.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { children: t("emptyOperators") }) : null
     ] }),
-    pendingApprovals.length ? /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-subpanel rolling-skill-section-gap", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("h4", { children: t("pendingApprovals") }),
+    pendingApprovals.length ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-subpanel rolling-skill-section-gap", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h4", { children: t("pendingApprovals") }),
       pendingApprovals.map((approval) => {
         const job = summary.jobs.find((item) => item.id === approval.jobId);
-        return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("article", { className: "rolling-skill-list-row", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("strong", { children: approval.action }),
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: approval.risk })
+        return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("article", { className: "rolling-skill-list-row", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: approval.action }),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: approval.risk })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-actions", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "outline", size: "sm", disabled: busy || !job, onClick: () => void mutate(() => requestRollingSkill("operators.approve", { sessionId: job?.sessionId, approvalId: approval.id, decision: "approve", scope: "once" })), children: t("approve") }),
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "ghost", size: "sm", disabled: busy || !job, onClick: () => void mutate(() => requestRollingSkill("operators.approve", { sessionId: job?.sessionId, approvalId: approval.id, decision: "reject", scope: "once" })), children: t("reject") })
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-actions", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "outline", size: "sm", disabled: busy || !job, onClick: () => void mutate(() => requestRollingSkill("operators.approve", { sessionId: job?.sessionId, approvalId: approval.id, decision: "approve", scope: "once" })), children: t("approve") }),
+            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "ghost", size: "sm", disabled: busy || !job, onClick: () => void mutate(() => requestRollingSkill("operators.approve", { sessionId: job?.sessionId, approvalId: approval.id, decision: "reject", scope: "once" })), children: t("reject") })
           ] })
         ] }, approval.id);
       })
@@ -690,26 +884,26 @@ function OperatorPanel({ t }) {
 }
 
 // src/client/workbench/OptimizationPanel.tsx
-var import_dsh_client_ui_primitives5 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react5 = require("react");
-var import_jsx_runtime6 = require("react/jsx-runtime");
+var import_dsh_client_ui_primitives6 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react6 = require("react");
+var import_jsx_runtime7 = require("react/jsx-runtime");
 function OptimizationPanel({ t }) {
-  const [runtimes, setRuntimes] = (0, import_react5.useState)([]);
-  const [datasets, setDatasets] = (0, import_react5.useState)([]);
-  const [catalog, setCatalog] = (0, import_react5.useState)({ skills: [] });
-  const [detail, setDetail] = (0, import_react5.useState)(null);
-  const [runs, setRuns] = (0, import_react5.useState)([]);
-  const [skillId, setSkillId] = (0, import_react5.useState)("");
-  const [versionId, setVersionId] = (0, import_react5.useState)("");
-  const [datasetId, setDatasetId] = (0, import_react5.useState)("");
-  const [operatorRuntimeId, setOperatorRuntimeId] = (0, import_react5.useState)("");
-  const [targetRuntimeId, setTargetRuntimeId] = (0, import_react5.useState)("");
-  const [judgeRuntimeId, setJudgeRuntimeId] = (0, import_react5.useState)("");
-  const [preflightReady, setPreflightReady] = (0, import_react5.useState)(false);
-  const [busy, setBusy] = (0, import_react5.useState)(false);
-  const [error, setError] = (0, import_react5.useState)(null);
-  const [revision, setRevision] = (0, import_react5.useState)(0);
-  (0, import_react5.useEffect)(() => {
+  const [runtimes, setRuntimes] = (0, import_react6.useState)([]);
+  const [datasets, setDatasets] = (0, import_react6.useState)([]);
+  const [catalog, setCatalog] = (0, import_react6.useState)({ skills: [] });
+  const [detail, setDetail] = (0, import_react6.useState)(null);
+  const [runs, setRuns] = (0, import_react6.useState)([]);
+  const [skillId, setSkillId] = (0, import_react6.useState)("");
+  const [versionId, setVersionId] = (0, import_react6.useState)("");
+  const [datasetId, setDatasetId] = (0, import_react6.useState)("");
+  const [operatorRuntimeId, setOperatorRuntimeId] = (0, import_react6.useState)("");
+  const [targetRuntimeId, setTargetRuntimeId] = (0, import_react6.useState)("");
+  const [judgeRuntimeId, setJudgeRuntimeId] = (0, import_react6.useState)("");
+  const [preflightReady, setPreflightReady] = (0, import_react6.useState)(false);
+  const [busy, setBusy] = (0, import_react6.useState)(false);
+  const [error, setError] = (0, import_react6.useState)(null);
+  const [revision, setRevision] = (0, import_react6.useState)(0);
+  (0, import_react6.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
       requestRollingSkill("runtimes.list", {}, controller.signal),
@@ -730,7 +924,7 @@ function OptimizationPanel({ t }) {
     });
     return () => controller.abort();
   }, [revision]);
-  (0, import_react5.useEffect)(() => {
+  (0, import_react6.useEffect)(() => {
     if (!skillId) {
       setDetail(null);
       return;
@@ -748,8 +942,8 @@ function OptimizationPanel({ t }) {
     });
     return () => controller.abort();
   }, [skillId, datasets]);
-  const released = (0, import_react5.useMemo)(() => detail?.versions.filter((version) => version.state === "released") ?? [], [detail]);
-  const compatibleDatasets = (0, import_react5.useMemo)(() => datasets.filter((dataset) => dataset.skillReference?.id === detail?.skill.id && dataset.skillReference?.repositoryId === detail?.skill.repositoryId && Boolean(dataset.activeRubricVersionId)), [datasets, detail]);
+  const released = (0, import_react6.useMemo)(() => detail?.versions.filter((version) => version.state === "released") ?? [], [detail]);
+  const compatibleDatasets = (0, import_react6.useMemo)(() => datasets.filter((dataset) => dataset.skillReference?.id === detail?.skill.id && dataset.skillReference?.repositoryId === detail?.skill.repositoryId && Boolean(dataset.activeRubricVersionId)), [datasets, detail]);
   const configuration = () => ({
     skillId,
     baselineVersionId: versionId,
@@ -797,86 +991,86 @@ function OptimizationPanel({ t }) {
   const ready = Boolean(
     skillId && versionId && datasetId && operatorRuntimeId && targetRuntimeId && judgeRuntimeId
   );
-  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: "rolling-skill-panel", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-panel-header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h3", { children: t("optimizationTitle") }),
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { children: t("optimizationDescription") })
+  return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "rolling-skill-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: t("optimizationTitle") }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: t("optimizationDescription") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "ghost", size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "ghost", size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-grid", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("label", { className: "rolling-skill-field", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: t("optimizationSkill") }),
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("select", { className: "rolling-skill-select", value: skillId, onChange: (event) => setSkillId(event.target.value), children: catalog.skills.map((skill) => /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("option", { value: skill.id, children: skill.name }, skill.id)) })
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-grid", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { children: t("optimizationSkill") }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("select", { className: "rolling-skill-select", value: skillId, onChange: (event) => setSkillId(event.target.value), children: catalog.skills.map((skill) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: skill.id, children: skill.name }, skill.id)) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("label", { className: "rolling-skill-field", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: t("optimizationBaseline") }),
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("select", { className: "rolling-skill-select", value: versionId, onChange: (event) => {
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { children: t("optimizationBaseline") }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("select", { className: "rolling-skill-select", value: versionId, onChange: (event) => {
           setVersionId(event.target.value);
           setPreflightReady(false);
-        }, children: released.map((version) => /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("option", { value: version.id, children: version.versionLabel || version.id }, version.id)) })
+        }, children: released.map((version) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: version.id, children: version.versionLabel || version.id }, version.id)) })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("label", { className: "rolling-skill-field", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: t("selectDataset") }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("select", { className: "rolling-skill-select", value: datasetId, onChange: (event) => {
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("label", { className: "rolling-skill-field", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { children: t("selectDataset") }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("select", { className: "rolling-skill-select", value: datasetId, onChange: (event) => {
         setDatasetId(event.target.value);
         setPreflightReady(false);
-      }, children: compatibleDatasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("option", { value: dataset.id, children: dataset.name }, dataset.id)) })
+      }, children: compatibleDatasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("option", { value: dataset.id, children: dataset.name }, dataset.id)) })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(RuntimeSelect, { t, runtimes, value: operatorRuntimeId, onChange: (value) => {
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(RuntimeSelect, { t, runtimes, value: operatorRuntimeId, onChange: (value) => {
       setOperatorRuntimeId(value);
       setPreflightReady(false);
     }, label: t("operatorRuntime") }),
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(RuntimeSelect, { t, runtimes, value: targetRuntimeId, onChange: (value) => {
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(RuntimeSelect, { t, runtimes, value: targetRuntimeId, onChange: (value) => {
       setTargetRuntimeId(value);
       setPreflightReady(false);
     }, label: t("optimizationTargetRuntime") }),
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(RuntimeSelect, { t, runtimes, value: judgeRuntimeId, onChange: (value) => {
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(RuntimeSelect, { t, runtimes, value: judgeRuntimeId, onChange: (value) => {
       setJudgeRuntimeId(value);
       setPreflightReady(false);
     }, label: t("judgeRuntime") }),
-    error ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-actions", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "outline", disabled: busy || !ready, onClick: () => void preflight(), children: t("optimizationPreflight") }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "outline", disabled: busy || !preflightReady, onClick: () => void start(), children: t("startOptimization") })
+    error ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-actions", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "outline", disabled: busy || !ready, onClick: () => void preflight(), children: t("optimizationPreflight") }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "outline", disabled: busy || !preflightReady, onClick: () => void start(), children: t("startOptimization") })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-list rolling-skill-section-gap", children: [
-      runs.map((run) => /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("article", { className: "rolling-skill-list-row", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: run.state }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("span", { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-list rolling-skill-section-gap", children: [
+      runs.map((run) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("article", { className: "rolling-skill-list-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: run.state }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { children: [
             run.id,
             " \xB7 Epoch ",
             run.currentEpoch ?? 0
           ] }),
-          run.error?.message ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("small", { children: run.error.message }) : null
+          run.error?.message ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("small", { children: run.error.message }) : null
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-actions", children: [
-          !["paused", "completed", "failed", "cancelled"].includes(run.state) ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("optimizations.pause", { runId: run.id })), children: t("pause") }) : null,
-          ["paused", "needs_recovery"].includes(run.state) ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("optimizations.resume", { runId: run.id })), children: t("resume") }) : null,
-          !["completed", "failed", "cancelled"].includes(run.state) ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("optimizations.cancel", { runId: run.id })), children: t("cancelRun") }) : null
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-actions", children: [
+          !["paused", "completed", "failed", "cancelled"].includes(run.state) ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("optimizations.pause", { runId: run.id })), children: t("pause") }) : null,
+          ["paused", "needs_recovery"].includes(run.state) ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("optimizations.resume", { runId: run.id })), children: t("resume") }) : null,
+          !["completed", "failed", "cancelled"].includes(run.state) ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("optimizations.cancel", { runId: run.id })), children: t("cancelRun") }) : null
         ] })
       ] }, run.id)),
-      runs.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { children: t("emptyOptimizations") }) : null
+      runs.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: t("emptyOptimizations") }) : null
     ] })
   ] });
 }
 
 // src/client/workbench/RawCasesPanel.tsx
-var import_dsh_client_ui_primitives6 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react6 = require("react");
-var import_jsx_runtime7 = require("react/jsx-runtime");
+var import_dsh_client_ui_primitives7 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react7 = require("react");
+var import_jsx_runtime8 = require("react/jsx-runtime");
 function RawCasesPanel({ t, revision, onChanged }) {
-  const [entries, setEntries] = (0, import_react6.useState)([]);
-  const [editing, setEditing] = (0, import_react6.useState)(null);
-  const [question, setQuestion] = (0, import_react6.useState)("");
-  const [note, setNote] = (0, import_react6.useState)("");
-  const [deleting, setDeleting] = (0, import_react6.useState)(null);
-  const [busy, setBusy] = (0, import_react6.useState)(false);
-  const [error, setError] = (0, import_react6.useState)(null);
-  (0, import_react6.useEffect)(() => {
+  const [entries, setEntries] = (0, import_react7.useState)([]);
+  const [editing, setEditing] = (0, import_react7.useState)(null);
+  const [question, setQuestion] = (0, import_react7.useState)("");
+  const [note, setNote] = (0, import_react7.useState)("");
+  const [deleting, setDeleting] = (0, import_react7.useState)(null);
+  const [busy, setBusy] = (0, import_react7.useState)(false);
+  const [error, setError] = (0, import_react7.useState)(null);
+  (0, import_react7.useEffect)(() => {
     const controller = new AbortController();
     requestRollingSkill("rawCases.list", {}, controller.signal).then(setEntries).catch((reason) => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
@@ -925,86 +1119,86 @@ function RawCasesPanel({ t, revision, onChanged }) {
       setDeleting(null);
     });
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "rolling-skill-panel rolling-skill-data-panel", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: t("rawCasesTitle") }),
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: t("rawCasesDescription") })
+  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("section", { className: "rolling-skill-panel rolling-skill-data-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h3", { children: t("rawCasesTitle") }),
+      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { children: t("rawCasesDescription") })
     ] }) }),
-    error ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-list", children: [
-      entries.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("article", { className: "rolling-skill-list-row", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: entry.question }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("span", { children: [
+    error ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "rolling-skill-list", children: [
+      entries.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("article", { className: "rolling-skill-list-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("strong", { children: entry.question }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("span", { children: [
             entry.skill.name,
             entry.note ? ` \xB7 ${entry.note}` : ""
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "ghost", size: "sm", onClick: () => beginEdit(entry), children: t("edit") }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "ghost", size: "sm", onClick: () => setDeleting(entry), children: t("delete") })
+        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "rolling-skill-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "ghost", size: "sm", onClick: () => beginEdit(entry), children: t("edit") }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "ghost", size: "sm", onClick: () => setDeleting(entry), children: t("delete") })
         ] })
       ] }, entry.id)),
-      entries.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: t("emptyRawCases") }) : null
+      entries.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { children: t("emptyRawCases") }) : null
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
-      import_dsh_client_ui_primitives6.Modal,
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
+      import_dsh_client_ui_primitives7.Modal,
       {
         open: editing !== null,
         onClose: () => setEditing(null),
         title: t("editRawCaseTitle"),
         closeLabel: t("cancel"),
-        footer: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "outline", onClick: () => setEditing(null), children: t("cancel") }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "outline", disabled: busy || !question.trim(), onClick: save, children: t("save") })
+        footer: /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "outline", onClick: () => setEditing(null), children: t("cancel") }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "outline", disabled: busy || !question.trim(), onClick: save, children: t("save") })
         ] }),
-        children: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-form-stack", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("label", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { children: t("question") }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("textarea", { value: question, onChange: (event) => setQuestion(event.target.value) })
+        children: /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "rolling-skill-form-stack", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("label", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { children: t("question") }),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("textarea", { value: question, onChange: (event) => setQuestion(event.target.value) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("label", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { children: t("note") }),
-            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Input, { value: note, onChange: (event) => setNote(event.target.value) })
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("label", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { children: t("note") }),
+            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Input, { value: note, onChange: (event) => setNote(event.target.value) })
           ] })
         ] })
       }
     ),
-    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
-      import_dsh_client_ui_primitives6.Modal,
+    /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
+      import_dsh_client_ui_primitives7.Modal,
       {
         open: deleting !== null,
         onClose: () => setDeleting(null),
         title: t("deleteRawCaseTitle"),
         closeLabel: t("cancel"),
-        footer: /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_jsx_runtime7.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "outline", onClick: () => setDeleting(null), children: t("cancel") }),
-          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "outline", disabled: busy, onClick: recycle, children: t("confirmDelete") })
+        footer: /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(import_jsx_runtime8.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "outline", onClick: () => setDeleting(null), children: t("cancel") }),
+          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "outline", disabled: busy, onClick: recycle, children: t("confirmDelete") })
         ] }),
-        children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: t("deleteRawCasePrompt") })
+        children: /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { children: t("deleteRawCasePrompt") })
       }
     )
   ] });
 }
 
 // src/client/workbench/SkillsPanel.tsx
-var import_dsh_client_ui_primitives7 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react7 = require("react");
-var import_jsx_runtime8 = require("react/jsx-runtime");
+var import_dsh_client_ui_primitives8 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react8 = require("react");
+var import_jsx_runtime9 = require("react/jsx-runtime");
 function SkillsPanel({ t }) {
-  const [catalog, setCatalog] = (0, import_react7.useState)({ repositories: [], skills: [] });
-  const [detail, setDetail] = (0, import_react7.useState)(null);
-  const [runtimes, setRuntimes] = (0, import_react7.useState)([]);
-  const [runtimeId, setRuntimeId] = (0, import_react7.useState)("");
-  const [sourceKind, setSourceKind] = (0, import_react7.useState)("folder");
-  const [sourceLocation, setSourceLocation] = (0, import_react7.useState)("");
-  const [candidateMessage, setCandidateMessage] = (0, import_react7.useState)("Update Skill workflow");
-  const [releaseLabel, setReleaseLabel] = (0, import_react7.useState)("");
-  const [installations, setInstallations] = (0, import_react7.useState)({ jobs: [] });
-  const [busy, setBusy] = (0, import_react7.useState)(false);
-  const [error, setError] = (0, import_react7.useState)(null);
-  const [revision, setRevision] = (0, import_react7.useState)(0);
-  (0, import_react7.useEffect)(() => {
+  const [catalog, setCatalog] = (0, import_react8.useState)({ repositories: [], skills: [] });
+  const [detail, setDetail] = (0, import_react8.useState)(null);
+  const [runtimes, setRuntimes] = (0, import_react8.useState)([]);
+  const [runtimeId, setRuntimeId] = (0, import_react8.useState)("");
+  const [sourceKind, setSourceKind] = (0, import_react8.useState)("folder");
+  const [sourceLocation, setSourceLocation] = (0, import_react8.useState)("");
+  const [candidateMessage, setCandidateMessage] = (0, import_react8.useState)("Update Skill workflow");
+  const [releaseLabel, setReleaseLabel] = (0, import_react8.useState)("");
+  const [installations, setInstallations] = (0, import_react8.useState)({ jobs: [] });
+  const [busy, setBusy] = (0, import_react8.useState)(false);
+  const [error, setError] = (0, import_react8.useState)(null);
+  const [revision, setRevision] = (0, import_react8.useState)(0);
+  (0, import_react8.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
       requestRollingSkill("skills.catalog", {}, controller.signal),
@@ -1039,7 +1233,7 @@ function SkillsPanel({ t }) {
     }
   };
   const candidate = detail?.versions.find((version) => version.state === "candidate") ?? null;
-  const released = (0, import_react7.useMemo)(() => detail?.versions.find((version) => version.state === "released" && !version.versionLabel?.startsWith("deprecated")) ?? null, [detail]);
+  const released = (0, import_react8.useMemo)(() => detail?.versions.find((version) => version.state === "released" && !version.versionLabel?.startsWith("deprecated")) ?? null, [detail]);
   const createCandidate = () => mutate(async () => {
     if (!detail) return;
     const expectedBase = await requestRollingSkill("skills.candidateBase", { skillId: detail.skill.id });
@@ -1060,61 +1254,61 @@ function SkillsPanel({ t }) {
     versionId: released?.id,
     targets: [{ runtimeId, modelId: null, effort: "high", permissionMode: null }]
   }));
-  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "rolling-skill-data-stack", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("section", { className: "rolling-skill-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "rolling-skill-panel-header", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h3", { children: t("skillRepositories") }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { children: t("skillRepositoriesDescription") })
+  return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-data-stack", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h3", { children: t("skillRepositories") }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: t("skillRepositoriesDescription") })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("skills.rescan", {})), children: t("rescan") })
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_dsh_client_ui_primitives8.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("skills.rescan", {})), children: t("rescan") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "rolling-skill-form-row", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("select", { className: "rolling-skill-select", value: sourceKind, onChange: (event) => setSourceKind(event.target.value), children: [
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "folder", children: "folder" }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "local-git", children: "local-git" }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "git-url", children: "git-url" }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("option", { value: "zip", children: "zip" })
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-form-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("select", { className: "rolling-skill-select", value: sourceKind, onChange: (event) => setSourceKind(event.target.value), children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("option", { value: "folder", children: "folder" }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("option", { value: "local-git", children: "local-git" }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("option", { value: "git-url", children: "git-url" }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("option", { value: "zip", children: "zip" })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Input, { value: sourceLocation, placeholder: t("skillSourceLocation"), onChange: (event) => setSourceLocation(event.target.value) }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "outline", size: "sm", disabled: busy || !sourceLocation.trim(), onClick: () => void mutate(() => requestRollingSkill("skills.import", { kind: sourceKind, location: sourceLocation })), children: t("importSkill") })
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_dsh_client_ui_primitives8.Input, { value: sourceLocation, placeholder: t("skillSourceLocation"), onChange: (event) => setSourceLocation(event.target.value) }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_dsh_client_ui_primitives8.Button, { variant: "outline", size: "sm", disabled: busy || !sourceLocation.trim(), onClick: () => void mutate(() => requestRollingSkill("skills.import", { kind: sourceKind, location: sourceLocation })), children: t("importSkill") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "rolling-skill-list", children: [
-        catalog.skills.map((skill) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("button", { type: "button", className: "rolling-skill-skill-row", onClick: () => void loadSkill(skill.id), children: [
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("strong", { children: skill.name }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { children: skill.description || skill.status })
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-list", children: [
+        catalog.skills.map((skill) => /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("button", { type: "button", className: "rolling-skill-skill-row", onClick: () => void loadSkill(skill.id), children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: skill.name }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { children: skill.description || skill.status })
         ] }, skill.id)),
-        catalog.skills.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { children: t("emptySkills") }) : null
+        catalog.skills.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: t("emptySkills") }) : null
       ] })
     ] }),
-    detail ? /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("section", { className: "rolling-skill-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h3", { children: detail.skill.name }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { children: detail.skill.description || detail.skill.status })
+    detail ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h3", { children: detail.skill.name }),
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: detail.skill.description || detail.skill.status })
       ] }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("pre", { className: "rolling-skill-manifest", children: detail.manifest }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "rolling-skill-grid", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "rolling-skill-subpanel", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h4", { children: t("candidateVersion") }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Input, { value: candidateMessage, onChange: (event) => setCandidateMessage(event.target.value) }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "outline", size: "sm", disabled: busy, onClick: () => void createCandidate(), children: t("createCandidate") })
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("pre", { className: "rolling-skill-manifest", children: detail.manifest }),
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-grid", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-subpanel", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h4", { children: t("candidateVersion") }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_dsh_client_ui_primitives8.Input, { value: candidateMessage, onChange: (event) => setCandidateMessage(event.target.value) }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_dsh_client_ui_primitives8.Button, { variant: "outline", size: "sm", disabled: busy, onClick: () => void createCandidate(), children: t("createCandidate") })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "rolling-skill-subpanel", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h4", { children: t("releaseVersion") }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Input, { value: releaseLabel, placeholder: "1.0.0", onChange: (event) => setReleaseLabel(event.target.value) }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "outline", size: "sm", disabled: busy || !candidate || !releaseLabel.trim(), onClick: () => void release(), children: t("release") })
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-subpanel", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h4", { children: t("releaseVersion") }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_dsh_client_ui_primitives8.Input, { value: releaseLabel, placeholder: "1.0.0", onChange: (event) => setReleaseLabel(event.target.value) }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_dsh_client_ui_primitives8.Button, { variant: "outline", size: "sm", disabled: busy || !candidate || !releaseLabel.trim(), onClick: () => void release(), children: t("release") })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(RuntimeSelect, { t, runtimes, value: runtimeId, onChange: setRuntimeId, label: t("installationRuntime") }),
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "outline", disabled: busy || !released || !runtimeId, onClick: () => void install(), children: t("installReleased") })
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(RuntimeSelect, { t, runtimes, value: runtimeId, onChange: setRuntimeId, label: t("installationRuntime") }),
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_dsh_client_ui_primitives8.Button, { variant: "outline", disabled: busy || !released || !runtimeId, onClick: () => void install(), children: t("installReleased") })
     ] }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("section", { className: "rolling-skill-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("h3", { children: t("installationJobs") }),
-      error ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "rolling-skill-list", children: installations.jobs.map((job) => /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("article", { className: "rolling-skill-list-row", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("strong", { children: job.status }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("span", { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h3", { children: t("installationJobs") }),
+      error ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "rolling-skill-list", children: installations.jobs.map((job) => /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("article", { className: "rolling-skill-list-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: job.status }),
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { children: [
             job.runtime.displayName,
             " ",
             job.runtime.version || "",
@@ -1122,9 +1316,9 @@ function SkillsPanel({ t }) {
             job.id
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "rolling-skill-actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("installations.inspect", { jobId: job.id })), children: t("inspect") }),
-          ["queued", "running", "awaiting_permission", "awaiting_confirmation"].includes(job.status) ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_dsh_client_ui_primitives7.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("installations.cancel", { jobId: job.id })), children: t("cancelRun") }) : null
+        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_dsh_client_ui_primitives8.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("installations.inspect", { jobId: job.id })), children: t("inspect") }),
+          ["queued", "running", "awaiting_permission", "awaiting_confirmation"].includes(job.status) ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_dsh_client_ui_primitives8.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("installations.cancel", { jobId: job.id })), children: t("cancelRun") }) : null
         ] })
       ] }, job.id)) })
     ] })
@@ -1132,7 +1326,7 @@ function SkillsPanel({ t }) {
 }
 
 // src/client/workbench/Workbench.tsx
-var import_jsx_runtime9 = require("react/jsx-runtime");
+var import_jsx_runtime10 = require("react/jsx-runtime");
 var TABS = [
   { id: "overview", label: "overview" },
   { id: "cases", label: "cases" },
@@ -1148,16 +1342,16 @@ function dateTime(value, fallback) {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : fallback;
 }
 function Workbench({ locale, t }) {
-  (0, import_react8.useSyncExternalStore)(
+  (0, import_react9.useSyncExternalStore)(
     (listener) => locale.subscribe(listener),
     () => locale.getSnapshot().revision,
     () => 0
   );
-  const [activeTab, setActiveTab] = (0, import_react8.useState)("overview");
-  const [reloadRevision, setReloadRevision] = (0, import_react8.useState)(0);
-  const [dataRevision, setDataRevision] = (0, import_react8.useState)(0);
-  const [state, setState] = (0, import_react8.useState)({ status: "loading" });
-  (0, import_react8.useEffect)(() => {
+  const [activeTab, setActiveTab] = (0, import_react9.useState)("overview");
+  const [reloadRevision, setReloadRevision] = (0, import_react9.useState)(0);
+  const [dataRevision, setDataRevision] = (0, import_react9.useState)(0);
+  const [state, setState] = (0, import_react9.useState)({ status: "loading" });
+  (0, import_react9.useEffect)(() => {
     const controller = new AbortController();
     setState({ status: "loading" });
     requestRollingSkill("dashboard.get", {}, controller.signal).then((dashboard) => setState({ status: "ready", dashboard })).catch((error) => {
@@ -1170,16 +1364,16 @@ function Workbench({ locale, t }) {
     return () => controller.abort();
   }, [reloadRevision]);
   const reload = () => setReloadRevision((revision) => revision + 1);
-  return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "rolling-skill-workbench", "aria-labelledby": "rolling-skill-title", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("header", { className: "rolling-skill-header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h2", { id: "rolling-skill-title", children: t("title") }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: t("subtitle") })
+  return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("section", { className: "rolling-skill-workbench", "aria-labelledby": "rolling-skill-title", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("header", { className: "rolling-skill-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("h2", { id: "rolling-skill-title", children: t("title") }),
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("p", { children: t("subtitle") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_dsh_client_ui_primitives8.Button, { variant: "outline", size: "sm", onClick: reload, disabled: state.status === "loading", children: t("refresh") })
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(import_dsh_client_ui_primitives9.Button, { variant: "outline", size: "sm", onClick: reload, disabled: state.status === "loading", children: t("refresh") })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("nav", { className: "rolling-skill-tabs", "aria-label": t("title"), children: TABS.map((tab) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
-      import_dsh_client_ui_primitives8.Button,
+    /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("nav", { className: "rolling-skill-tabs", "aria-label": t("title"), children: TABS.map((tab) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
+      import_dsh_client_ui_primitives9.Button,
       {
         variant: activeTab === tab.id ? "outline" : "ghost",
         size: "sm",
@@ -1189,21 +1383,21 @@ function Workbench({ locale, t }) {
       },
       tab.id
     )) }),
-    state.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") }) : state.status === "error" ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: t("loadError") }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { children: state.message }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(import_dsh_client_ui_primitives8.Button, { variant: "outline", size: "sm", onClick: reload, children: t("retry") })
-    ] }) : activeTab === "cases" ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-data-stack", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(DatasetsPanel, { t, onChanged: () => setDataRevision((value) => value + 1) }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(CasesPanel, { t, revision: dataRevision, onChanged: () => setDataRevision((value) => value + 1) }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(RawCasesPanel, { t, revision: dataRevision, onChanged: () => setDataRevision((value) => value + 1) })
-    ] }) : activeTab === "evaluations" ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(EvaluationsPanel, { t }) : activeTab === "skills" ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(SkillsPanel, { t }) : activeTab === "operator" ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-data-stack", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(OperatorPanel, { t }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(OptimizationPanel, { t })
-    ] }) : activeTab !== "overview" ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h3", { children: t(TABS.find((tab) => tab.id === activeTab)?.label ?? "overview") }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: t("comingSoon") })
-    ] }) : /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(Overview, { dashboard: state.dashboard, t })
+    state.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") }) : state.status === "error" ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("strong", { children: t("loadError") }),
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { children: state.message }),
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(import_dsh_client_ui_primitives9.Button, { variant: "outline", size: "sm", onClick: reload, children: t("retry") })
+    ] }) : activeTab === "cases" ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "rolling-skill-data-stack", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(DatasetsPanel, { t, onChanged: () => setDataRevision((value) => value + 1) }),
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(CasesPanel, { t, revision: dataRevision, onChanged: () => setDataRevision((value) => value + 1) }),
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(RawCasesPanel, { t, revision: dataRevision, onChanged: () => setDataRevision((value) => value + 1) })
+    ] }) : activeTab === "evaluations" ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(EvaluationsPanel, { t }) : activeTab === "skills" ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(SkillsPanel, { t }) : activeTab === "automatic" ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(AutomaticCapturePanel, { t }) : activeTab === "operator" ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "rolling-skill-data-stack", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(OperatorPanel, { t }),
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(OptimizationPanel, { t })
+    ] }) : activeTab !== "overview" ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("h3", { children: t(TABS.find((tab) => tab.id === activeTab)?.label ?? "overview") }),
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("p", { children: t("comingSoon") })
+    ] }) : /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(Overview, { dashboard: state.dashboard, t })
   ] });
 }
 function Overview({ dashboard, t }) {
@@ -1217,40 +1411,40 @@ function Overview({ dashboard, t }) {
     { key: "optimizations", label: "optimizationsCount" }
   ];
   const runtime = dashboard.settings.plugin.runtime;
-  return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-overview", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "rolling-skill-counts", children: counts.map((count) => /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-count", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: dashboard.counts[count.key] }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { children: t(count.label) })
+  return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "rolling-skill-overview", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("div", { className: "rolling-skill-counts", children: counts.map((count) => /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "rolling-skill-count", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("strong", { children: dashboard.counts[count.key] }),
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("span", { children: t(count.label) })
     ] }, count.key)) }),
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-grid", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "rolling-skill-panel", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h3", { children: t("automaticStatus") }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("dl", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: t("nextRun") }),
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { children: t("notAvailable") })
+    /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "rolling-skill-grid", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("section", { className: "rolling-skill-panel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("h3", { children: t("automaticStatus") }),
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("dl", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("dt", { children: t("nextRun") }),
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("dd", { children: dateTime(dashboard.automaticCapture.nextRunAt, t("notAvailable")) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: t("lastSuccess") }),
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { children: dateTime(dashboard.automaticCapture.lastSuccessAt, t("notAvailable")) })
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("dt", { children: t("lastSuccess") }),
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("dd", { children: dateTime(dashboard.automaticCapture.lastSuccessAt, t("notAvailable")) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dt", { children: t("lastError") }),
-            /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("dd", { children: dashboard.automaticCapture.lastError?.message ?? t("noError") })
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("dt", { children: t("lastError") }),
+            /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("dd", { children: dashboard.automaticCapture.error ?? t("noError") })
           ] })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "rolling-skill-panel", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h3", { children: t("runtime") }),
-        runtime ? /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "rolling-skill-runtime", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("strong", { children: [runtime.displayName ?? runtime.runtimeId, runtime.version].filter(Boolean).join(" ") }),
-          /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("code", { children: runtime.executablePath })
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("p", { children: t("noRuntime") })
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("section", { className: "rolling-skill-panel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("h3", { children: t("runtime") }),
+        runtime ? /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: "rolling-skill-runtime", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("strong", { children: [runtime.displayName ?? runtime.runtimeId, runtime.version].filter(Boolean).join(" ") }),
+          /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("code", { children: runtime.executablePath })
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("p", { children: t("noRuntime") })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "rolling-skill-panel rolling-skill-path", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("h3", { children: t("dataDirectory") }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("code", { children: dashboard.dataRoot })
+    /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("section", { className: "rolling-skill-panel rolling-skill-path", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("h3", { children: t("dataDirectory") }),
+      /* @__PURE__ */ (0, import_jsx_runtime10.jsx)("code", { children: dashboard.dataRoot })
     ] })
   ] });
 }
@@ -1273,6 +1467,40 @@ var zh = {
   skills: "Skill \u7BA1\u7406",
   evaluations: "Skill \u8BC4\u6D4B",
   automatic: "\u81EA\u52A8\u6C89\u6DC0",
+  automaticTitle: "\u81EA\u52A8\u6C89\u6DC0",
+  automaticDescription: "\u5B9A\u65F6\u68C0\u67E5\u65B0\u5BF9\u8BDD\uFF0C\u8BC6\u522B\u5B8C\u6574\u95EE\u9898\uFF0C\u5E76\u6309\u6A21\u5F0F\u751F\u6210 Raw Case \u6216\u81EA\u52A8\u4FDD\u5B58 Case\u3002",
+  automaticMode: "\u6C89\u6DC0\u6A21\u5F0F",
+  automaticOff: "\u5173\u95ED",
+  automaticScheduled: "\u5B9A\u65F6\u63D0\u53D6",
+  automaticFull: "\u5B8C\u5168\u81EA\u52A8",
+  executionLocation: "\u8FD0\u884C\u4F4D\u7F6E",
+  whileHarnessRunning: "\u4EC5\u5728 Harness \u8FD0\u884C\u65F6",
+  alwaysRunning: "Harness \u5173\u95ED\u540E\u4ECD\u8FD0\u884C",
+  cadence: "\u6267\u884C\u5468\u671F",
+  daily: "\u6BCF\u5929",
+  weekly: "\u6BCF\u5468",
+  captureTime: "\u6267\u884C\u65F6\u95F4",
+  weekday: "\u661F\u671F",
+  weekday0: "\u661F\u671F\u65E5",
+  weekday1: "\u661F\u671F\u4E00",
+  weekday2: "\u661F\u671F\u4E8C",
+  weekday3: "\u661F\u671F\u4E09",
+  weekday4: "\u661F\u671F\u56DB",
+  weekday5: "\u661F\u671F\u4E94",
+  weekday6: "\u661F\u671F\u516D",
+  automaticRuntime: "\u81EA\u52A8\u6C89\u6DC0 Runtime",
+  automaticDataset: "\u76EE\u6807\u6570\u636E\u96C6",
+  automaticDatasetMatch: "\u7531 Skill \u81EA\u52A8\u5339\u914D",
+  scheduledBehavior: "\u53EA\u63D0\u53D6\u5019\u9009\u95EE\u9898\u5E76\u4FDD\u5B58\u4E3A\u5F85\u5BA1\u6838 Raw Case\uFF0C\u4E0D\u4F1A\u81EA\u52A8\u5199\u5165\u6570\u636E\u96C6\u3002",
+  automaticBehavior: "\u5019\u9009\u901A\u8FC7\u7F6E\u4FE1\u5EA6\u3001Skill\u3001\u6570\u636E\u96C6\u3001Rubric \u548C Draft \u95F8\u95E8\u540E\u81EA\u52A8\u4FDD\u5B58\u4E3A Case\u3002",
+  offBehavior: "\u5173\u95ED\u540E\u4E0D\u4F1A\u626B\u63CF\u65B0\u5BF9\u8BDD\u6216\u521B\u5EFA\u5019\u9009\u3002",
+  saveAutomatic: "\u4FDD\u5B58\u81EA\u52A8\u6C89\u6DC0\u8BBE\u7F6E",
+  runOnce: "\u7ACB\u5373\u8FD0\u884C\u4E00\u6B21",
+  pendingRawCases: "\u5F85\u5BA1\u6838 Raw Case",
+  schedulerStatus: "\u8C03\u5EA6\u72B6\u6001",
+  installed: "\u7CFB\u7EDF\u8C03\u5EA6\u5668\u5DF2\u5B89\u88C5",
+  notInstalled: "\u7CFB\u7EDF\u8C03\u5EA6\u5668\u672A\u5B89\u88C5",
+  harnessTimer: "\u7531 Harness \u5185\u7F6E\u5B9A\u65F6\u5668\u8FD0\u884C",
   operator: "\u81EA\u64CD\u4F5C\u4E0E\u4F18\u5316",
   settings: "\u63D2\u4EF6\u8BBE\u7F6E",
   datasetsCount: "\u6570\u636E\u96C6",
@@ -1389,6 +1617,40 @@ var en = {
   skills: "Skill Management",
   evaluations: "Skill Evaluations",
   automatic: "Automatic Capture",
+  automaticTitle: "Automatic Capture",
+  automaticDescription: "Inspect new conversations on schedule, identify complete problems, and create Raw Cases or save Cases according to the selected mode.",
+  automaticMode: "Capture Mode",
+  automaticOff: "Off",
+  automaticScheduled: "Scheduled Discovery",
+  automaticFull: "Fully Automatic",
+  executionLocation: "Execution Location",
+  whileHarnessRunning: "Only while Harness is running",
+  alwaysRunning: "Keep running after Harness closes",
+  cadence: "Cadence",
+  daily: "Daily",
+  weekly: "Weekly",
+  captureTime: "Capture Time",
+  weekday: "Weekday",
+  weekday0: "Sunday",
+  weekday1: "Monday",
+  weekday2: "Tuesday",
+  weekday3: "Wednesday",
+  weekday4: "Thursday",
+  weekday5: "Friday",
+  weekday6: "Saturday",
+  automaticRuntime: "Automatic Capture Runtime",
+  automaticDataset: "Target Dataset",
+  automaticDatasetMatch: "Match automatically from the Skill",
+  scheduledBehavior: "Only discovers candidates and stores reviewable Raw Cases; it does not write to a Dataset automatically.",
+  automaticBehavior: "Candidates are saved as Cases only after confidence, Skill, Dataset, Rubric, and Draft gates pass.",
+  offBehavior: "No conversations are scanned and no candidates are created while capture is off.",
+  saveAutomatic: "Save Automatic Capture",
+  runOnce: "Run Once Now",
+  pendingRawCases: "Pending Raw Cases",
+  schedulerStatus: "Scheduler Status",
+  installed: "System scheduler installed",
+  notInstalled: "System scheduler not installed",
+  harnessTimer: "Runs from the Harness timer",
   operator: "Operator & Optimization",
   settings: "Plugin Settings",
   datasetsCount: "Datasets",
@@ -1495,7 +1757,7 @@ var en = {
 var DICTIONARIES = { zh, en };
 
 // src/client/index.tsx
-var import_jsx_runtime10 = require("react/jsx-runtime");
+var import_jsx_runtime11 = require("react/jsx-runtime");
 var inject = ["slots", "locale"];
 function apply(ctx) {
   ctx.effect(
@@ -1510,7 +1772,7 @@ function apply(ctx) {
     document.head.appendChild(style);
     return () => style.remove();
   }, "rolling-skill: workbench styles");
-  const RollingSkillSection = () => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(Workbench, { locale: ctx.locale, t });
+  const RollingSkillSection = () => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(Workbench, { locale: ctx.locale, t });
   ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "rolling-skill",

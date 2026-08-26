@@ -116,4 +116,20 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(workbench, /<OptimizationPanel/u)
         assert.doesNotMatch(`${operator}\n${optimization}`, /capabilityId|socketPath|childEnvironment|executablePath\s*:/u)
     })
+
+    it("ships the complete automatic capture settings and status panel", () => {
+        const automatic = source("workbench/AutomaticCapturePanel.tsx")
+        const workbench = source("workbench/Workbench.tsx")
+
+        assert.match(automatic, /automatic\.status/u)
+        assert.match(automatic, /automatic\.update/u)
+        assert.match(automatic, /automatic\.runOnce/u)
+        assert.match(automatic, /scheduled/u)
+        assert.match(automatic, /automatic/u)
+        assert.match(automatic, /while-harness-running/u)
+        assert.match(automatic, /always/u)
+        assert.match(automatic, /weekly/u)
+        assert.match(automatic, /<RuntimeSelect/u)
+        assert.match(workbench, /<AutomaticCapturePanel/u)
+    })
 })
