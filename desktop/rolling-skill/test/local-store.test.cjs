@@ -489,6 +489,8 @@ describe("local evaluation store", () => {
         assert.deepEqual(migrated.cases[0].source.originalAssistantMessages, [
             {role: "assistant", content: "a"},
         ])
+        assert.deepEqual(migrated.cases[0].refreshHistory, [])
+        assert.equal(migrated.cases[0].lastRefresh, null)
         assert.deepEqual(migrated.curationSessions, [])
         assert.equal(migrated.settings.curatorProfile.runtimePolicy, "active")
     })
@@ -758,6 +760,122 @@ describe("local evaluation store", () => {
 
         assert.throws(() => store.archiveCurationSession(session.id), /valid.*draft|review/i)
         assert.equal(store.read().cases.length, 0)
+    })
+
+    it("refreshes a Case in place while preserving its identity, question, and prior revision", () => {
+        const {store} = fixture()
+        const dataset = store.bindDatasetSkill(store.listDatasets()[0].id, skillReference())
+        const saved = saveCuratedCase(store, dataset.id, "原问题  \n不要改字节")
+        const refreshedEpisode = episode(saved.question)
+        refreshedEpisode.source = {
+            ...refreshedEpisode.source,
+            threadId: "thread-refresh",
+            runtimeId: "codex:current",
+            traceReference: "trace://refresh.jsonl#L20",
+        }
+        refreshedEpisode.items[1].text = "最新查询结果"
+        refreshedEpisode.toolActivity = [{type: "tool", name: "billing.current"}]
+
+        const session = store.createCaseRefreshSession({
+            datasetId: dataset.id,
+            caseId: saved.id,
+            episode: refreshedEpisode,
+            curator: {modelId: "gpt-refresh", effort: "high"},
+        })
+
+        assert.equal(session.operation, "refresh")
+        assert.equal(session.targetCaseId, saved.id)
+        assert.equal(session.targetCaseUpdatedAt, saved.updatedAt)
+        assert.equal(session.baselineCaseSnapshot.question, saved.question)
+        assert.deepEqual(session.skillReference, dataset.skillReference)
+        assert.throws(() => store.createCaseRefreshSession({
+            datasetId: dataset.id,
+            caseId: saved.id,
+            episode: refreshedEpisode,
+            curator: {},
+        }), /already.*progress|maintenance/i)
+        assert.throws(() => store.deleteCase(dataset.id, saved.id), /refresh|maintenance/i)
+
+        const refreshedDraft = curatedDraft()
+        refreshedDraft.referenceAnswer.summary = "使用最新数据给出新结论。"
+        store.recordCurationRevision(session.id, {
+            draft: refreshedDraft,
+            assistantText: "complete refresh replacement",
+            turnId: "turn-refresh-curator",
+        })
+        const updated = store.archiveCurationSession(session.id)
+
+        assert.equal(updated.id, saved.id)
+        assert.equal(updated.datasetId, saved.datasetId)
+        assert.equal(updated.caseType, saved.caseType)
+        assert.equal(updated.question, saved.question)
+        assert.equal(updated.createdAt, saved.createdAt)
+        assert.match(updated.answer, /使用最新数据给出新结论/u)
+        assert.equal(updated.source.threadId, "thread-refresh")
+        assert.equal(updated.source.runtimeId, "codex:current")
+        assert.deepEqual(updated.evidence.toolActivity, refreshedEpisode.toolActivity)
+        assert.equal(updated.refreshHistory.length, 1)
+        assert.equal(updated.refreshHistory[0].answer, saved.answer)
+        assert.deepEqual(updated.refreshHistory[0].curated, saved.curated)
+        assert.deepEqual(updated.refreshHistory[0].source, saved.source)
+        assert.deepEqual(updated.refreshHistory[0].evidence, saved.evidence)
+        assert.equal(updated.lastRefresh.sessionId, session.id)
+        assert.equal(store.listCases(dataset.id).length, 1)
+    })
+
+    it("rejects refresh Done when the target Case changed", () => {
+        const {path, store} = fixture()
+        const dataset = store.bindDatasetSkill(store.listDatasets()[0].id, skillReference())
+        const saved = saveCuratedCase(store, dataset.id, "保持原问题")
+        const session = store.createCaseRefreshSession({
+            datasetId: dataset.id,
+            caseId: saved.id,
+            episode: episode(saved.question),
+            curator: {},
+        })
+        store.recordCurationRevision(session.id, {
+            draft: curatedDraft(),
+            assistantText: "replacement",
+        })
+        const changed = JSON.parse(readFileSync(path, "utf8"))
+        changed.cases[0].updatedAt = "2026-08-26T12:00:00.000Z"
+        writeFileSync(path, `${JSON.stringify(changed, null, 2)}\n`)
+        const concurrentStore = new LocalEvaluationStore(path)
+
+        assert.throws(() => concurrentStore.archiveCurationSession(session.id), /Case changed|restart refresh/i)
+        assert.equal(concurrentStore.listCases(dataset.id)[0].answer, saved.answer)
+    })
+
+    it("rejects refresh Done when the frozen Skill or Rubric changed", () => {
+        for (const drift of ["skill", "rubric"]) {
+            const {path, store} = fixture()
+            const dataset = store.bindDatasetSkill(store.listDatasets()[0].id, skillReference())
+            const saved = saveCuratedCase(store, dataset.id, `保持原问题 · ${drift}`)
+            const session = store.createCaseRefreshSession({
+                datasetId: dataset.id,
+                caseId: saved.id,
+                episode: episode(saved.question),
+                curator: {},
+            })
+            store.recordCurationRevision(session.id, {
+                draft: curatedDraft(),
+                assistantText: "replacement",
+            })
+            const changed = JSON.parse(readFileSync(path, "utf8"))
+            if (drift === "skill") {
+                changed.datasets[0].skillReference.path = "/skills/billing-v2/SKILL.md"
+            } else {
+                changed.datasets[0].activeRubricVersionId = "rubric-v2"
+            }
+            writeFileSync(path, `${JSON.stringify(changed, null, 2)}\n`)
+            const concurrentStore = new LocalEvaluationStore(path)
+
+            assert.throws(
+                () => concurrentStore.archiveCurationSession(session.id),
+                drift === "skill" ? /Skill changed|restart refresh/i : /Rubric changed|restart refresh/i,
+            )
+            assert.equal(concurrentStore.listCases(dataset.id)[0].answer, saved.answer)
+        }
     })
 
     it("changes an editable Curator model and cancels a discarded draft without saving a case", () => {

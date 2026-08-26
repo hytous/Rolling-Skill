@@ -277,6 +277,10 @@ function migrateState(input) {
             session.baselineCaseSnapshot = null
             changed = true
         }
+        if (!("targetCaseUpdatedAt" in session)) {
+            session.targetCaseUpdatedAt = session.baselineCaseSnapshot?.updatedAt ?? null
+            changed = true
+        }
         if (!("issueDescription" in session)) {
             const legacyQuestion = typeof session.datasetQuestion === "string"
                 ? session.datasetQuestion
@@ -361,6 +365,14 @@ function migrateState(input) {
         }
         if (!Array.isArray(entry.calibrationHistory)) {
             entry.calibrationHistory = []
+            changed = true
+        }
+        if (!Array.isArray(entry.refreshHistory)) {
+            entry.refreshHistory = []
+            changed = true
+        }
+        if (!("lastRefresh" in entry)) {
+            entry.lastRefresh = null
             changed = true
         }
         if (!("updatedAt" in entry)) {
@@ -451,17 +463,24 @@ function requireCase(state, datasetId, caseId) {
     return entry
 }
 
-function assertCaseDeletable(state, datasetId, caseId) {
-    const unfinishedCalibration = state.curationSessions.some(
+function activeCaseMaintenance(state, datasetId, caseId) {
+    return state.curationSessions.find(
         (entry) =>
             entry.datasetId === datasetId &&
-            entry.operation === "calibration" &&
+            (entry.operation === "calibration" || entry.operation === "refresh") &&
             entry.targetCaseId === caseId &&
             entry.status !== "archived" &&
             entry.status !== "cancelled",
     )
-    if (unfinishedCalibration) {
+}
+
+function assertCaseDeletable(state, datasetId, caseId) {
+    const active = activeCaseMaintenance(state, datasetId, caseId)
+    if (active?.operation === "calibration") {
         throw new Error("Discard or finish the active Case calibration before deleting it")
+    }
+    if (active?.operation === "refresh") {
+        throw new Error("Discard or finish the active Case refresh before deleting it")
     }
 }
 
@@ -568,6 +587,22 @@ function caseCalibrationBaseline(entry) {
         sourceCurationSessionId: entry.source?.curationSessionId ?? null,
         sourceCurationRevisionId: entry.source?.curationRevisionId ?? null,
     }
+}
+
+function caseRefreshBaseline(entry) {
+    return copy({
+        id: entry.id,
+        updatedAt: entry.updatedAt,
+        question: entry.question,
+        answer: entry.answer,
+        curated: entry.curated ?? null,
+        issueDescription: entry.issueDescription ?? "",
+        skillReference: entry.skillReference ?? null,
+        rubricVersionId: entry.rubricVersionId ?? null,
+        rubricCalibration: entry.rubricCalibration ?? null,
+        source: entry.source ?? null,
+        evidence: entry.evidence ?? null,
+    })
 }
 
 function newCurationSession({dataset, input, episode, operation = "capture", targetCaseId = null, baselineCaseSnapshot = null}) {
@@ -1393,15 +1428,15 @@ class LocalEvaluationStore {
         if (activeEvaluation) {
             throw new Error("Finish or stop the active evaluation before upgrading the dataset rubric")
         }
-        const activeCalibration = state.curationSessions.some(
+        const activeCaseMaintenance = state.curationSessions.some(
             (entry) =>
                 entry.datasetId === dataset.id &&
-                entry.operation === "calibration" &&
+                (entry.operation === "calibration" || entry.operation === "refresh") &&
                 entry.status !== "archived" &&
                 entry.status !== "cancelled",
         )
-        if (activeCalibration) {
-            throw new Error("Finish or discard the active Case calibration before upgrading the dataset rubric")
+        if (activeCaseMaintenance) {
+            throw new Error("Finish or discard the active Case calibration or refresh before upgrading the dataset rubric")
         }
         const activeRubricSession = state.rubricSessions.some(
             (entry) =>
@@ -1468,6 +1503,7 @@ class LocalEvaluationStore {
         const skillReference = copy(requireDatasetSkill(dataset))
         if (!question) throw new Error("Case question is required")
         if (!answer) throw new Error("Case answer is required")
+        const now = new Date().toISOString()
         const entry = {
             id: randomUUID(),
             datasetId: input.datasetId,
@@ -1483,7 +1519,10 @@ class LocalEvaluationStore {
                 traceReference: input.traceReference ?? null,
                 originalAssistantMessages: [{role: "assistant", content: answer}],
             },
-            createdAt: new Date().toISOString(),
+            refreshHistory: [],
+            lastRefresh: null,
+            createdAt: now,
+            updatedAt: now,
         }
         state.cases.push(entry)
         this.persist()
@@ -1554,14 +1593,11 @@ class LocalEvaluationStore {
         ) {
             throw new Error("This Case is already calibrated for the active dataset rubric")
         }
-        const existing = state.curationSessions.find(
-            (entry) =>
-                entry.operation === "calibration" &&
-                entry.targetCaseId === target.id &&
-                entry.status !== "archived" &&
-                entry.status !== "cancelled",
-        )
-        if (existing) throw new Error("Case calibration is already in progress")
+        const existing = activeCaseMaintenance(state, dataset.id, target.id)
+        if (existing?.operation === "calibration") {
+            throw new Error("Case calibration is already in progress")
+        }
+        if (existing) throw new Error("Case maintenance is already in progress")
         const sourceSession = state.curationSessions.find(
             (entry) =>
                 entry.id === target.source?.curationSessionId ||
@@ -1586,6 +1622,35 @@ class LocalEvaluationStore {
                 rubricVersionSnapshot,
             },
         })
+        state.curationSessions.push(session)
+        this.persist()
+        return copy(session)
+    }
+
+    createCaseRefreshSession(input) {
+        const state = this.load()
+        const dataset = requireDataset(state, input.datasetId)
+        const target = requireCase(state, dataset.id, input.caseId)
+        if (activeCaseMaintenance(state, dataset.id, target.id)) {
+            throw new Error("Case refresh or calibration is already in progress")
+        }
+        const rubricVersionSnapshot = dataset.activeRubricVersionId
+            ? copy(requireDatasetRubricVersion(state, dataset.activeRubricVersionId))
+            : null
+        const session = newCurationSession({
+            dataset,
+            operation: "refresh",
+            targetCaseId: target.id,
+            baselineCaseSnapshot: caseRefreshBaseline(target),
+            episode: input.episode,
+            input: {
+                caseType: target.caseType,
+                issueDescription: target.issueDescription ?? "",
+                curator: input.curator ?? {},
+                rubricVersionSnapshot,
+            },
+        })
+        session.targetCaseUpdatedAt = target.updatedAt
         state.curationSessions.push(session)
         this.persist()
         return copy(session)
@@ -1738,6 +1803,84 @@ class LocalEvaluationStore {
                       previousRubricVersionId: frozenRubricVersionId,
                   }
             : null
+        if (session.operation === "refresh") {
+            if (!session.targetCaseId) throw new Error("Case refresh target is missing")
+            const target = requireCase(state, session.datasetId, session.targetCaseId)
+            if (target.updatedAt !== session.targetCaseUpdatedAt) {
+                throw new Error("The Case changed during refresh; restart refresh from the latest Case")
+            }
+            if (!sameSkillReferenceIdentity(dataset.skillReference, session.skillReference)) {
+                throw new Error("The dataset Skill changed during refresh; restart refresh with the current Skill")
+            }
+            if (activeRubricVersionId !== frozenRubricVersionId) {
+                throw new Error("The dataset Rubric changed during refresh; restart refresh with the current Rubric")
+            }
+            if (!Array.isArray(target.refreshHistory)) target.refreshHistory = []
+            target.refreshHistory.push({
+                id: randomUUID(),
+                answer: target.answer,
+                curated: copy(target.curated ?? null),
+                issueDescription: target.issueDescription ?? "",
+                skillReference: copy(target.skillReference ?? null),
+                rubricVersionId: target.rubricVersionId ?? null,
+                rubricCalibration: copy(target.rubricCalibration ?? null),
+                source: copy(target.source ?? null),
+                evidence: copy(target.evidence ?? null),
+                archivedAt: now,
+            })
+            target.answer = formatCuratedAnswer(draft)
+            target.curated = draft
+            target.issueDescription = session.issueDescription
+            target.skillReference = copy(session.skillReference)
+            target.rubricVersionId = frozenRubricVersionId
+            target.rubricCalibration = rubricCalibration
+            target.source = {
+                threadId: session.episode.source.threadId,
+                turnId: session.episode.source.endTurnId,
+                itemId: session.episode.source.endItemId,
+                startTurnId: session.episode.source.startTurnId,
+                startItemId: session.episode.source.startItemId,
+                endTurnId: session.episode.source.endTurnId,
+                endItemId: session.episode.source.endItemId,
+                runtimeId: session.episode.source.runtimeId,
+                modelProvider: session.episode.source.modelProvider,
+                modelId: session.episode.source.modelId,
+                traceReference: session.episode.source.traceReference,
+                curationSessionId: session.id,
+                curationRevisionId: latestRevision?.id ?? null,
+                curatorThreadId: session.curator.threadId,
+                curatorRuntimeId: session.curator.runtimeId,
+                curatorModelProvider: session.curator.modelProvider,
+                curatorModelId: session.curator.modelId,
+                curatorEffort: session.curator.effort,
+                curatorEffectiveModelId: session.curator.effectiveModelId,
+                curatorEffectiveEffort: session.curator.effectiveEffort,
+                curatorPromptVersion: session.curator.promptVersion,
+                skillName: session.skillReference?.name ?? null,
+                skillPath: session.skillReference?.path ?? null,
+                skillRuntimeId: session.skillReference?.runtimeId ?? null,
+                originalQuestion: target.question,
+                originalAssistantMessages: originalAssistantMessagesFromEpisode(session.episode),
+                skillConfirmedAt: session.skillReference?.confirmedAt ?? null,
+            }
+            target.evidence = {
+                episodeSchemaVersion: session.episode.schemaVersion,
+                toolActivity: copy(session.episode.toolActivity),
+            }
+            target.updatedAt = now
+            target.lastRefresh = {
+                sessionId: session.id,
+                revisionId: latestRevision?.id ?? null,
+                threadId: session.episode.source.threadId,
+                runtimeId: session.episode.source.runtimeId,
+                refreshedAt: now,
+            }
+            session.status = "archived"
+            session.caseId = target.id
+            session.updatedAt = now
+            this.persist()
+            return copy(target)
+        }
         if (session.operation === "calibration") {
             if (!session.targetCaseId) throw new Error("Case calibration target is missing")
             if (!frozenRubricVersionId || activeRubricVersionId !== frozenRubricVersionId) {
@@ -1845,6 +1988,8 @@ class LocalEvaluationStore {
                 toolActivity: copy(session.episode.toolActivity),
             },
             calibrationHistory: [],
+            refreshHistory: [],
+            lastRefresh: null,
             createdAt: now,
             updatedAt: now,
         }

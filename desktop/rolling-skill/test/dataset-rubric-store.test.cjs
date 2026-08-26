@@ -428,6 +428,38 @@ describe("dataset rubric lifecycle", () => {
         assert.deepEqual(store.listDatasetRubricVersions(dataset.id).map((entry) => entry.id), [first.id])
     })
 
+    it("rejects a legacy contract upgrade while Case refresh is active", () => {
+        const {store, dataset, skillEvidence} = fixture()
+        const session = startSession(store, dataset, skillEvidence)
+        const legacy = rubric("legacy")
+        delete legacy.scoringModel
+        store.recordRubricRevision(session.id, {rubric: legacy, assistantText: "legacy"})
+        const first = store.publishRubricSession(session.id)
+        const curation = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            episode: episode(),
+            curator: {},
+        })
+        store.recordCurationRevision(curation.id, {
+            draft: curatedV2Draft(),
+            assistantText: "legacy Case",
+        })
+        const savedCase = store.archiveCurationSession(curation.id)
+        store.createCaseRefreshSession({
+            datasetId: dataset.id,
+            caseId: savedCase.id,
+            episode: episode(),
+            curator: {},
+        })
+
+        assert.throws(
+            () => store.migrateActiveDatasetRubricToUnified(dataset.id),
+            /active Case maintenance|refresh/i,
+        )
+        assert.equal(store.getDataset(dataset.id).activeRubricVersionId, first.id)
+    })
+
     it("rejects a legacy contract upgrade while Rubric Agent editing is active", () => {
         const {store, dataset, skillEvidence} = fixture()
         const session = startSession(store, dataset, skillEvidence)
