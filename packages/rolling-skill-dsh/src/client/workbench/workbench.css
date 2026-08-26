@@ -325,6 +325,15 @@
     margin: 0;
 }
 
+.rolling-skill-section-gap {
+    margin-top: 14px;
+}
+
+.rolling-skill-list-row small {
+    color: var(--dsw-alias-label-secondary);
+    overflow-wrap: anywhere;
+}
+
 @media (max-width: 760px) {
     .rolling-skill-panel-header,
     .rolling-skill-list-row,

@@ -6,6 +6,8 @@ import type {Translate, TranslationKey} from "../locale"
 import {CasesPanel} from "./CasesPanel"
 import {DatasetsPanel} from "./DatasetsPanel"
 import {EvaluationsPanel} from "./EvaluationsPanel"
+import {OperatorPanel} from "./OperatorPanel"
+import {OptimizationPanel} from "./OptimizationPanel"
 import {RawCasesPanel} from "./RawCasesPanel"
 import {SkillsPanel} from "./SkillsPanel"
 
@@ -16,6 +18,8 @@ interface DashboardSnapshot {
         rawCases: number
         evaluations: number
         managedSkills: number
+        operatorSessions: number
+        optimizations: number
     }
     dataRoot: string
     automaticCapture: {
@@ -138,6 +142,11 @@ export function Workbench({locale, t}: WorkbenchProps) {
                 <EvaluationsPanel t={t}/>
             ) : activeTab === "skills" ? (
                 <SkillsPanel t={t}/>
+            ) : activeTab === "operator" ? (
+                <div className="rolling-skill-data-stack">
+                    <OperatorPanel t={t}/>
+                    <OptimizationPanel t={t}/>
+                </div>
             ) : activeTab !== "overview" ? (
                 <div className="rolling-skill-panel">
                     <h3>{t(TABS.find((tab) => tab.id === activeTab)?.label ?? "overview")}</h3>
@@ -157,6 +166,8 @@ function Overview({dashboard, t}: {dashboard: DashboardSnapshot; t: Translate}) 
         {key: "rawCases", label: "rawCasesCount"},
         {key: "evaluations", label: "evaluationsCount"},
         {key: "managedSkills", label: "managedSkillsCount"},
+        {key: "operatorSessions", label: "operatorSessionsCount"},
+        {key: "optimizations", label: "optimizationsCount"},
     ]
     const runtime = dashboard.settings.plugin.runtime
     return (

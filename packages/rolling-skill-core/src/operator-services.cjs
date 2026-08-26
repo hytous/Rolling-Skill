@@ -1,0 +1,672 @@
+const PRIVATE_OUTPUT_KEY = /(?:capability|token|secret|socket|environment|executablePath|(?:^|_)path$|reasoning|(?:^|_)body$)/iu
+const MAX_TEXT = 32 * 1024
+const MAX_ARRAY = 10_000
+
+function requiredText(value, label, maximum = 300) {
+    const text = typeof value === "string" ? value.trim() : ""
+    if (!text || text.length > maximum) throw new Error(`${label} is required`)
+    return text
+}
+
+function exactKeys(value, allowed, label) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} must be an object`)
+    }
+    const unsupported = Object.keys(value).find((key) => !allowed.has(key))
+    if (unsupported) throw new Error(`${label} contains an unsupported field: ${unsupported}`)
+    return value
+}
+
+function publicValue(value, depth = 0) {
+    if (value === null || typeof value === "boolean") return value
+    if (typeof value === "number") return Number.isFinite(value) ? value : null
+    if (typeof value === "string") {
+        return value.length <= MAX_TEXT ? value : `${value.slice(0, MAX_TEXT - 1)}…`
+    }
+    if (!value || typeof value !== "object" || depth >= 8) return null
+    if (Array.isArray(value)) {
+        return value.slice(0, MAX_ARRAY).map((entry) => publicValue(entry, depth + 1))
+    }
+    const output = {}
+    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+        if (!Object.hasOwn(descriptor, "value") || PRIVATE_OUTPUT_KEY.test(key)) continue
+        output[key] = publicValue(descriptor.value, depth + 1)
+    }
+    return output
+}
+
+function sessionId(input) {
+    exactKeys(input, new Set(["sessionId"]), "Operator session request")
+    return requiredText(input.sessionId, "Operator session id", 200)
+}
+
+function runId(input) {
+    exactKeys(input, new Set(["runId"]), "Optimization request")
+    return requiredText(input.runId, "Optimization Run id", 200)
+}
+
+function createOperatorServices({
+    jobStore,
+    jobEngine,
+    sessionManager,
+    optimizationStore,
+    optimizationControl,
+    ready = null,
+} = {}) {
+    if (!jobStore || typeof jobStore.readSummaryPage !== "function") {
+        throw new Error("Operator Job store is required")
+    }
+    if (!jobEngine || typeof jobEngine.resolveApproval !== "function") {
+        throw new Error("Operator Job engine is required")
+    }
+    for (const method of ["create", "get", "pause", "resume", "stop", "sendMessage"]) {
+        if (typeof sessionManager?.[method] !== "function") {
+            throw new Error(`Operator session manager with ${method}() is required`)
+        }
+    }
+    if (!optimizationStore || typeof optimizationStore.listPublicSummaries !== "function") {
+        throw new Error("Optimization store is required")
+    }
+    for (const method of ["get", "preflight", "start", "pause", "resume", "stop", "report"]) {
+        if (typeof optimizationControl?.[method] !== "function") {
+            throw new Error(`Optimization control service with ${method}() is required`)
+        }
+    }
+
+    return Object.freeze({
+        operatorSummary(input = {}) {
+            exactKeys(input, new Set(["cursor", "limit"]), "Operator summary request")
+            const limit = input.limit === undefined ? 100 : Number(input.limit)
+            if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+                throw new Error("Operator summary limit is invalid")
+            }
+            return publicValue(jobStore.readSummaryPage({
+                cursor: input.cursor ?? null,
+                limit,
+            }))
+        },
+        operatorArtifacts(input = {}) {
+            exactKeys(input, new Set(["jobId"]), "Operator artifact request")
+            return publicValue(jobStore.listArtifacts(
+                requiredText(input.jobId, "Operator Job id", 200),
+            ))
+        },
+        async operatorStart(input = {}) {
+            exactKeys(input, new Set([
+                "runtimeId",
+                "modelId",
+                "effort",
+                "objective",
+                "actions",
+                "scopes",
+                "budget",
+                "expiresInMs",
+                "managedSkillBinding",
+            ]), "Operator start request")
+            await ready
+            return publicValue(await sessionManager.create(structuredClone(input)))
+        },
+        operatorGet(input = {}) {
+            return publicValue(sessionManager.get(sessionId(input)))
+        },
+        operatorPause(input = {}) {
+            return Promise.resolve(sessionManager.pause(sessionId(input))).then(publicValue)
+        },
+        operatorResume(input = {}) {
+            return Promise.resolve(sessionManager.resume(sessionId(input))).then(publicValue)
+        },
+        operatorCancel(input = {}) {
+            return Promise.resolve(sessionManager.stop(sessionId(input))).then(publicValue)
+        },
+        operatorSend(input = {}) {
+            exactKeys(input, new Set(["sessionId", "text"]), "Operator message request")
+            return Promise.resolve(sessionManager.sendMessage(
+                requiredText(input.sessionId, "Operator session id", 200),
+                requiredText(input.text, "Operator message", 32_000),
+            )).then(publicValue)
+        },
+        async operatorApprove(input = {}) {
+            exactKeys(
+                input,
+                new Set(["sessionId", "approvalId", "decision", "scope"]),
+                "Operator approval request",
+            )
+            const selectedSessionId = requiredText(input.sessionId, "Operator session id", 200)
+            const decision = input.decision === "approve" || input.decision === "reject"
+                ? input.decision
+                : null
+            if (!decision) throw new Error("Operator approval decision is invalid")
+            const result = await jobEngine.resolveApproval(
+                requiredText(input.approvalId, "Operator approval id", 200),
+                {
+                    decision,
+                    scope: requiredText(input.scope, "Operator approval scope", 300),
+                    decidedBy: "dsh-user",
+                },
+            )
+            if (decision === "approve" && typeof sessionManager.resumeAfterApproval === "function") {
+                await sessionManager.resumeAfterApproval(selectedSessionId)
+            }
+            return publicValue(result)
+        },
+        optimizationList() {
+            return publicValue(optimizationStore.listPublicSummaries())
+        },
+        optimizationGet(input = {}) {
+            return publicValue(optimizationControl.get(runId(input)))
+        },
+        optimizationPreflight(input = {}) {
+            return Promise.resolve(optimizationControl.preflight(structuredClone(input))).then(publicValue)
+        },
+        optimizationStart(input = {}) {
+            return Promise.resolve(optimizationControl.start(structuredClone(input))).then(publicValue)
+        },
+        optimizationPause(input = {}) {
+            return Promise.resolve(optimizationControl.pause(runId(input))).then(publicValue)
+        },
+        optimizationResume(input = {}) {
+            return Promise.resolve(optimizationControl.resume(runId(input))).then(publicValue)
+        },
+        optimizationCancel(input = {}) {
+            return Promise.resolve(optimizationControl.stop(runId(input))).then(publicValue)
+        },
+        optimizationReport(input = {}) {
+            return publicValue(optimizationControl.report(runId(input)))
+        },
+    })
+}
+
+function canonicalJson(value) {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`
+    if (value && typeof value === "object") {
+        return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort().map((key) => (
+            `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+        )).join(",")}}`
+    }
+    return JSON.stringify(value)
+}
+
+function digest(value) {
+    return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`
+}
+
+function revision(value) {
+    return Number.parseInt(
+        createHash("sha256").update(canonicalJson(value)).digest("hex").slice(0, 12),
+        16,
+    ) + 1
+}
+
+function createOperatorRuntime({
+    paths,
+    store,
+    rawCaseStore,
+    managedSkillStore,
+    managedSkillManager,
+    installationStore,
+    installationManager,
+    runtimeServices,
+    evaluationRunner,
+    evaluationServices,
+    curationManager,
+    rubricManager,
+    workspaceRoot,
+    requestPermission = null,
+    requestQuestion = null,
+    operatorToolPath = null,
+    onChanged = () => {},
+} = {}) {
+    if (!paths || !store || !runtimeServices || !evaluationRunner) {
+        throw new Error("Operator runtime dependencies are required")
+    }
+    const jobStore = new OperatorJobStore(paths.operatorJobs)
+    const optimizationStore = new OptimizationStore(paths.optimizationRuns)
+    let sessionManager = null
+    let optimizationControl = null
+
+    const optimizationFacade = Object.freeze({
+        preflight: (input) => optimizationControl.preflight(input),
+        start: (input) => optimizationControl.start(input),
+        get: (runId) => optimizationControl.get(runId),
+        pause: (runId) => optimizationControl.pause(runId),
+        resume: (runId) => optimizationControl.resume(runId),
+        stop: (runId) => optimizationControl.stop(runId),
+        submitCandidate: (input, context) => optimizationControl.submitCandidate(input, context),
+        submitDecision: (input, context) => optimizationControl.submitDecision(input, context),
+        report: (runId) => optimizationControl.report(runId),
+    })
+    let domainServices = null
+    const handlers = Object.fromEntries(CONTROL_METHODS
+        .filter((method) => controlDefinition(method).operatorExposed === true)
+        .map((method) => [method, ({params, controlContext}) => (
+            domainServices[method](params, controlContext)
+        )]))
+    const jobEngine = new OperatorJobEngine({
+        store: jobStore,
+        handlers,
+        runtimeTelemetry: () => runtimeServices.list().map((runtime) => ({
+            runtimeId: runtime.runtimeId,
+            tokens: runtime.capabilities?.includes("token-usage") === true,
+            cost: runtime.capabilities?.includes("cost-usage") === true,
+        })),
+        resolveEvaluationCaseCount: ({datasetId}) => {
+            const cases = store.listCases(datasetId).sort((left, right) => (
+                String(left.id).localeCompare(String(right.id))
+            ))
+            return {caseIds: cases.map((entry) => entry.id), datasetRevision: digest(cases)}
+        },
+        resolveTrustedFacts: (request) => domainServices.resolveTrustedFacts(request),
+    })
+    const capabilityStore = new CapabilityStore()
+    const capabilityIssuer = createTrustedCapabilityIssuer(capabilityStore)
+    const sessionFacade = Object.freeze({
+        pause: (sessionId_) => sessionManager.pause(sessionId_),
+        resume: (sessionId_) => sessionManager.resume(sessionId_),
+        resumeAfterApproval: (sessionId_) => sessionManager.resumeAfterApproval(sessionId_),
+        stop: (sessionId_) => sessionManager.stop(sessionId_),
+    })
+    domainServices = createDomainServices({
+        rawCaseStore,
+        evaluationStore: store,
+        evaluationRunner,
+        managedSkillManager,
+        managedSkillStore,
+        operatorJobStore: jobStore,
+        operatorJobEngine: jobEngine,
+        operatorSessionManager: sessionFacade,
+        curationManager,
+        rubricManager,
+        skillInstallationStore: installationStore,
+        skillInstallationManager: installationManager,
+        optimizationControlService: optimizationFacade,
+        listDatasets: () => store.listDatasets(),
+        listRawCaseSkills: () => ({skills: managedSkillManager.catalog().skills}),
+        listRuntimes: () => runtimeServices.list(),
+        listModelsForRuntime: (runtimeId_) => runtimeServices.models(runtimeId_),
+        startEvaluation: (input) => evaluationServices.start(input),
+        workspaceRoot: () => workspaceRoot,
+    })
+    const controlPlane = new ControlPlane({
+        capabilities: capabilityStore,
+        policy: createControlPolicy(),
+        services: domainServices,
+    })
+    const controlSocket = new ControlSocketServer({userData: paths.root, controlPlane})
+    const controlSocketPath = join(paths.root, "control", "control.sock")
+    const runtimeRegistry = {
+        discover: async () => runtimeServices.list(),
+        createClient: (descriptor, options) => runtimeServices.createClient(
+            descriptor.runtimeId,
+            options,
+        ),
+    }
+    const workspaceManager = new OptimizationWorkspaceManager({
+        applicationSupportDirectory: paths.root,
+        store: managedSkillStore,
+    })
+    const resolveManagedWorkspace = (binding = {}) => {
+        if (binding.optimizationRunId) {
+            const selected = workspaceManager.get(binding.optimizationRunId)
+            if (selected.repositoryId !== binding.repositoryId || selected.skillId !== binding.skillId) {
+                throw new Error("Optimization workspace does not match the managed Skill binding")
+            }
+            return {
+                repositoryId: selected.repositoryId,
+                skillId: selected.skillId,
+                optimizationRunId: selected.runId,
+                workspaceRoot: selected.workspacePath,
+            }
+        }
+        const skill = managedSkillStore.getSkill(binding.skillId)
+        if (skill.repositoryId !== binding.repositoryId) {
+            throw new Error("Managed Skill does not belong to the selected repository")
+        }
+        return {
+            repositoryId: binding.repositoryId,
+            skillId: binding.skillId,
+            workspaceRoot: managedSkillManager.repositoryPath(binding.repositoryId),
+        }
+    }
+    sessionManager = new OperatorSessionManager({
+        store: jobStore,
+        engine: jobEngine,
+        controlPlane,
+        runtimeRegistry,
+        capabilities: {
+            issue: (request) => capabilityIssuer.issue(request),
+            revoke: (id) => capabilityStore.revoke(id),
+        },
+        controlSocketPath,
+        operatorToolPath,
+        transportSupport: (runtime) => ({
+            dynamicToolsReady: runtime?.providerId === "codex",
+            mcpServersReady: runtime?.providerId === "codebuddy" && Boolean(operatorToolPath),
+        }),
+        requestPermission,
+        requestQuestion,
+        workspaceRoot,
+        resolveManagedSkillWorkspace: resolveManagedWorkspace,
+        traceDirectory: join(paths.traces, "operator"),
+    })
+
+    function datasetSnapshot(datasetId) {
+        const dataset = store.getDataset(requiredText(datasetId, "Optimization Dataset id", 200))
+        const cases = store.listCases(dataset.id).sort((left, right) => (
+            String(left.id).localeCompare(String(right.id))
+        ))
+        const rubric = store.getActiveDatasetRubric(dataset.id)
+        if (!rubric) throw new Error("Optimization requires an active published Dataset Rubric")
+        const binding = dataset.skillReference ?? {}
+        const repositoryId = requiredText(binding.repositoryId, "Dataset repository id", 200)
+        const skillId = requiredText(binding.id, "Dataset Skill id", 200)
+        const body = {dataset, cases}
+        return {
+            dataset,
+            rubric,
+            snapshot: {
+                id: dataset.id,
+                revision: revision(body),
+                caseRevisions: cases.map((entry) => ({
+                    caseId: entry.id,
+                    revision: Number.isSafeInteger(entry.revision) && entry.revision > 0
+                        ? entry.revision
+                        : revision(entry),
+                    rubricVersionId: entry.rubricVersionId,
+                    calibrationStatus: entry.rubricCalibration?.status === "current"
+                        ? "current"
+                        : "needed",
+                })),
+                digest: digest(body),
+                repositoryId,
+                skillId,
+            },
+        }
+    }
+
+    async function resolvePreflight(config) {
+        const skill = managedSkillStore.getSkill(requiredText(
+            config.skillId,
+            "Optimization Skill id",
+            200,
+        ))
+        const version = managedSkillStore.getVersion(requiredText(
+            config.baselineVersionId,
+            "Optimization baseline version id",
+            200,
+        ))
+        const repository = managedSkillStore.getRepository(skill.repositoryId)
+        if (version.state !== "released" || version.skillId !== skill.id ||
+            version.repositoryId !== repository.id) {
+            throw new Error("Optimization baseline must be the selected Skill's Released version")
+        }
+        const frozenDataset = datasetSnapshot(config.datasetId)
+        const requestedRuntimeIds = [...new Set([
+            config.operator.runtimeId,
+            config.judge.runtimeId,
+            ...config.targets.map((target) => target.runtimeId),
+        ])]
+        const runtimes = requestedRuntimeIds.map((runtimeId_) => runtimeServices.descriptor(runtimeId_))
+        if (config.telemetry.tokens && runtimes.some((entry) => !entry.capabilities?.includes("token-usage"))) {
+            throw new Error("Optimization token telemetry is unavailable on one or more Runtimes")
+        }
+        if (config.telemetry.cost && runtimes.some((entry) => !entry.capabilities?.includes("cost-usage"))) {
+            throw new Error("Optimization cost telemetry is unavailable on one or more Runtimes")
+        }
+        const skillEvidence = await snapshotManagedSkillEvidence({
+            name: skill.name,
+            repositoryId: repository.id,
+            skillId: skill.id,
+            versionId: version.id,
+            repositoryPath: repository.managedPath,
+            commit: version.commit,
+            skillRoot: version.skillRoot,
+            contentDigest: version.contentDigest,
+        }, {git: managedSkillManager.git})
+        return {
+            baseline: {
+                repositoryId: repository.id,
+                skillId: skill.id,
+                versionId: version.id,
+                commit: version.commit,
+                skillRoot: version.skillRoot,
+                contentDigest: version.contentDigest,
+                state: version.state,
+            },
+            dataset: frozenDataset.snapshot,
+            rubric: {
+                id: frozenDataset.rubric.id,
+                version: frozenDataset.rubric.version,
+                scoringModel: frozenDataset.rubric.rubric?.scoringModel,
+                digest: frozenDataset.rubric.rubricDigest,
+                datasetId: frozenDataset.dataset.id,
+                publishedAt: frozenDataset.rubric.publishedAt,
+            },
+            skillEvidence,
+        }
+    }
+
+    function runtimeConfiguration(requested) {
+        const descriptor = runtimeServices.descriptor(requested.runtimeId)
+        return {
+            ...descriptor,
+            modelId: requested.modelId ?? null,
+            effort: requested.effort ?? null,
+            skillEvidenceBinding: "verified",
+        }
+    }
+
+    async function runEvaluation(input) {
+        const snapshot = input.optimizationRun.snapshot
+        const frozenDataset = datasetSnapshot(snapshot.dataset.id)
+        if (frozenDataset.snapshot.digest !== snapshot.dataset.digest ||
+            frozenDataset.rubric.id !== snapshot.rubric.id ||
+            frozenDataset.rubric.rubricDigest !== snapshot.rubric.digest) {
+            throw Object.assign(new Error("Frozen Optimization Dataset or Rubric changed"), {
+                code: "RESOURCE_CHANGED",
+            })
+        }
+        const candidate = input.candidate
+        const skill = managedSkillStore.getSkill(candidate.skillId)
+        const repository = managedSkillStore.getRepository(candidate.repositoryId)
+        const skillEvidence = await snapshotManagedSkillEvidence({
+            name: skill.name,
+            repositoryId: repository.id,
+            skillId: skill.id,
+            versionId: candidate.id,
+            repositoryPath: repository.managedPath,
+            commit: candidate.commit,
+            skillRoot: candidate.skillRoot,
+            contentDigest: candidate.contentDigest,
+        }, {git: managedSkillManager.git})
+        const installationJobIdsByRuntime = Object.fromEntries(
+            (input.installationJobs ?? []).map((job) => [job.runtime.runtimeId, job.id]),
+        )
+        const run = store.createEvaluationRun({
+            datasetId: snapshot.dataset.id,
+            caseIds: snapshot.dataset.caseRevisions.map((entry) => entry.caseId),
+            selectionMode: "selected",
+            activationMode: snapshot.activationMode,
+            skillEvidence,
+            managedVersionSnapshot: {
+                repositoryId: repository.id,
+                skillId: skill.id,
+                versionId: candidate.id,
+                commit: candidate.commit,
+                skillRoot: candidate.skillRoot,
+                contentDigest: candidate.contentDigest,
+                installationJobIdsByRuntime,
+            },
+            judgeProfile: {
+                runtimePolicy: "active",
+                modelId: snapshot.judge.modelId,
+                effort: snapshot.judge.effort,
+            },
+            judgeConfiguration: runtimeConfiguration(snapshot.judge),
+            runtimeConfigurations: input.targets.map(runtimeConfiguration),
+        }, {optimizationAuthorized: true})
+        await evaluationRunner.run(run)
+        return store.getEvaluationRun(run.id)
+    }
+
+    const operatorGateway = new OptimizationOperatorGateway({
+        onRequest: ({runId: runId_, kind, epoch, operatorSessionId}) => sessionManager.sendMessage(
+            operatorSessionId,
+            `Optimization Run ${runId_} is waiting for Epoch ${epoch} ${kind} submission.`,
+        ),
+    })
+    const runner = new OptimizationRunner({
+        store: optimizationStore,
+        artifactStore: jobStore,
+        childJobs: {run: (input, operation) => jobEngine.runChild(input, operation)},
+        workspaceManager,
+        installationManager,
+        evaluationManager: {run: runEvaluation},
+        operatorGateway,
+        approvals: {request: async (input) => {
+            const approval = await jobEngine.requestApproval(input.parentJobId, {
+                action: `optimization.${input.kind}`,
+                risk: `Approve Optimization ${input.kind}`,
+                scope: {
+                    runId: input.runId,
+                    epoch: input.epoch,
+                    kind: input.kind,
+                },
+                proposedMutation: {kind: input.kind, runId: input.runId},
+                idempotencyKey: `${input.runId}:${input.kind}:${input.epoch}`,
+            })
+            return {
+                ...approval,
+                ...(input.kind === "release"
+                    ? {versionLabel: `opt-${input.runId.slice(-40)}-e${input.epoch}`.slice(0, 64)}
+                    : {}),
+            }
+        }},
+        releaseManager: {release: (input) => managedSkillManager.releaseVersion({
+            versionId: input.candidate.id,
+            versionLabel: input.approval.versionLabel,
+            expectedCandidate: {
+                commit: input.candidate.commit,
+                contentDigest: input.candidate.contentDigest,
+                state: input.candidate.state,
+                versionLabel: input.approval.versionLabel,
+            },
+        })},
+        telemetry: ({runId: runId_}) => {
+            const run = optimizationStore.getRun(runId_)
+            return {
+                elapsedMs: Math.max(0, Date.now() - Date.parse(run.createdAt)),
+                turnsUsed: 0,
+                tokensUsed: run.snapshot.telemetry.tokens ? 0 : null,
+                costMicros: run.snapshot.telemetry.cost ? 0 : null,
+            }
+        },
+        onChanged,
+    })
+    optimizationControl = new OptimizationControlService({
+        store: optimizationStore,
+        workspaceManager,
+        operatorSessionManager: sessionManager,
+        runner,
+        operatorGateway,
+        artifactStore: jobStore,
+        readArtifact: (artifactId, maximumBytes) => {
+            const artifact = jobStore.getArtifact(artifactId)
+            if (artifact.byteLength > maximumBytes) return null
+            return jobStore.readArtifactBody(artifactId)
+        },
+        resolvePreflight,
+    })
+    const ready = Promise.all([
+        controlSocket.start().catch(() => null),
+        optimizationControl.recoverStartup(),
+    ])
+    const services = createOperatorServices({
+        jobStore,
+        jobEngine,
+        sessionManager,
+        optimizationStore,
+        optimizationControl,
+        ready,
+    })
+
+    async function close() {
+        await Promise.allSettled([
+            sessionManager.stopAll(),
+            runner.checkpointAndStop?.(),
+        ])
+        await Promise.allSettled([
+            runner.waitForIdle?.(),
+            controlSocket.close(),
+        ])
+        optimizationStore.close()
+        jobStore.close()
+    }
+
+    return Object.freeze({
+        close,
+        controlPlane,
+        jobEngine,
+        jobStore,
+        optimizationControl,
+        optimizationStore,
+        ready,
+        services,
+        sessionManager,
+    })
+}
+
+module.exports = {
+    createOperatorRuntime,
+    createOperatorServices,
+    publicOperatorValue: publicValue,
+}
+const {createHash} = require("node:crypto")
+const {join} = require("node:path")
+
+const {
+    snapshotManagedSkillEvidence,
+} = require("../../../desktop/rolling-skill/src/evaluation-skill-evidence.cjs")
+const {
+    CapabilityStore,
+    createTrustedCapabilityIssuer,
+} = require("../../../desktop/rolling-skill/src/control-plane/capability-store.cjs")
+const {
+    ControlPlane,
+} = require("../../../desktop/rolling-skill/src/control-plane/control-plane.cjs")
+const {
+    CONTROL_METHODS,
+    controlDefinition,
+} = require("../../../desktop/rolling-skill/src/control-plane/contracts.cjs")
+const {
+    createDomainServices,
+} = require("../../../desktop/rolling-skill/src/control-plane/domain-services.cjs")
+const {
+    createControlPolicy,
+} = require("../../../desktop/rolling-skill/src/control-plane/policy.cjs")
+const {
+    ControlSocketServer,
+} = require("../../../desktop/rolling-skill/src/control-plane/socket-server.cjs")
+const {
+    OperatorJobEngine,
+} = require("../../../desktop/rolling-skill/src/operator/job-engine.cjs")
+const {
+    OperatorJobStore,
+} = require("../../../desktop/rolling-skill/src/operator/job-store.cjs")
+const {
+    OperatorSessionManager,
+} = require("../../../desktop/rolling-skill/src/operator/operator-session-manager.cjs")
+const {
+    OptimizationControlService,
+} = require("../../../desktop/rolling-skill/src/optimization/optimization-control-service.cjs")
+const {
+    OptimizationOperatorGateway,
+} = require("../../../desktop/rolling-skill/src/optimization/optimization-operator-gateway.cjs")
+const {
+    OptimizationRunner,
+} = require("../../../desktop/rolling-skill/src/optimization/optimization-runner.cjs")
+const {
+    OptimizationStore,
+} = require("../../../desktop/rolling-skill/src/optimization/optimization-store.cjs")
+const {
+    OptimizationWorkspaceManager,
+} = require("../../../desktop/rolling-skill/src/optimization/optimization-workspace.cjs")

@@ -97,4 +97,23 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(skills, /<RuntimeSelect/u)
         assert.match(workbench, /<SkillsPanel/u)
     })
+
+    it("ships native Operator and Optimization panels without private control fields", () => {
+        const operator = source("workbench/OperatorPanel.tsx")
+        const optimization = source("workbench/OptimizationPanel.tsx")
+        const workbench = source("workbench/Workbench.tsx")
+
+        assert.match(operator, /operators\.start/u)
+        assert.match(operator, /operators\.pause/u)
+        assert.match(operator, /operators\.resume/u)
+        assert.match(operator, /operators\.approve/u)
+        assert.match(operator, /<RuntimeSelect/u)
+        assert.match(optimization, /optimizations\.start/u)
+        assert.match(optimization, /optimizations\.pause/u)
+        assert.match(optimization, /optimizations\.resume/u)
+        assert.match(optimization, /optimizations\.cancel/u)
+        assert.match(workbench, /<OperatorPanel/u)
+        assert.match(workbench, /<OptimizationPanel/u)
+        assert.doesNotMatch(`${operator}\n${optimization}`, /capabilityId|socketPath|childEnvironment|executablePath\s*:/u)
+    })
 })

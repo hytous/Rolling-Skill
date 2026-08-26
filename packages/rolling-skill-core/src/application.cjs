@@ -26,6 +26,9 @@ const {
     CurationManager,
 } = require("../../../desktop/rolling-skill/src/curation-manager.cjs")
 const {
+    RubricManager,
+} = require("../../../desktop/rolling-skill/src/rubric-manager.cjs")
+const {
     EvaluationRunner,
 } = require("../../../desktop/rolling-skill/src/evaluation-runner.cjs")
 const {
@@ -42,6 +45,7 @@ const {createCaseServices} = require("./case-services.cjs")
 const {RollingSkillConfigStore} = require("./config-store.cjs")
 const {ensureDataLayout, resolveDataPaths} = require("./data-root.cjs")
 const {createEvaluationServices} = require("./evaluation-services.cjs")
+const {createOperatorRuntime} = require("./operator-services.cjs")
 const {createRuntimeServices} = require("./runtime-services.cjs")
 const {createSkillServices} = require("./skill-services.cjs")
 
@@ -163,6 +167,28 @@ function createRollingSkillApplication(options = {}) {
         installationStore,
         runtimeServices,
     })
+    const selectedRuntimeId = () => configStore.read().runtime?.runtimeId ?? null
+    const selectedRuntimeDescriptor = () => {
+        const runtimeId = selectedRuntimeId()
+        return runtimeId ? runtimeServices.descriptor(runtimeId) : null
+    }
+    const getSelectedRuntime = () => {
+        const runtimeId = selectedRuntimeId()
+        if (!runtimeId) throw new Error("Select a Runtime before starting an Agent task")
+        return runtimeServices.getClient(runtimeId, {nonInteractive: false})
+    }
+    const curationManager = options.curationManager ?? new CurationManager({
+        store,
+        getRuntime: getSelectedRuntime,
+        getRuntimeDescriptor: selectedRuntimeDescriptor,
+        onChanged: () => publish(),
+    })
+    const rubricManager = options.rubricManager ?? new RubricManager({
+        store,
+        getRuntime: getSelectedRuntime,
+        getRuntimeDescriptor: selectedRuntimeDescriptor,
+        onChanged: () => publish(),
+    })
     const refreshManager = options.caseRefreshManager ?? {
         async createSession({runtimeId, datasetId, caseId}) {
             const selectedRuntimeId = runtimeId ?? configStore.read().runtime?.runtimeId
@@ -211,6 +237,26 @@ function createRollingSkillApplication(options = {}) {
         onChanged: () => publish(),
         ...(options.snapshotSkill ? {snapshotSkill: options.snapshotSkill} : {}),
     })
+    const operatorRuntime = options.operatorRuntime ?? createOperatorRuntime({
+        paths,
+        store,
+        rawCaseStore,
+        managedSkillStore,
+        managedSkillManager,
+        installationStore,
+        installationManager,
+        runtimeServices,
+        evaluationRunner,
+        evaluationServices,
+        curationManager,
+        rubricManager,
+        workspaceRoot,
+        requestPermission: options.requestRuntimePermission ?? null,
+        requestQuestion: options.requestRuntimeQuestion ?? null,
+        operatorToolPath: options.operatorToolPath ?? null,
+        onChanged: () => publish(),
+    })
+    const operatorServices = operatorRuntime.services
     const subscribers = new Set()
     let closed = false
 
@@ -225,6 +271,8 @@ function createRollingSkillApplication(options = {}) {
                 rawCases: rawCases.length,
                 evaluations: state.evaluationRuns.length,
                 managedSkills: managedSkills.skills.length,
+                operatorSessions: operatorServices.operatorSummary({limit: 1}).totals.sessions,
+                optimizations: operatorServices.optimizationList().length,
             },
             dataRoot: paths.root,
             automaticCapture: automaticCaptureStateStore.read(),
@@ -285,6 +333,23 @@ function createRollingSkillApplication(options = {}) {
         "installations.cancel": (input) => skillServices.cancelInstallation(input),
         "installations.inspect": (input) => skillServices.inspectInstallation(input),
         "installations.send": (input) => skillServices.sendInstallation(input),
+        "operators.summary": (input) => operatorServices.operatorSummary(input),
+        "operators.get": (input) => operatorServices.operatorGet(input),
+        "operators.start": (input) => operatorServices.operatorStart(input),
+        "operators.pause": (input) => operatorServices.operatorPause(input),
+        "operators.resume": (input) => operatorServices.operatorResume(input),
+        "operators.cancel": (input) => operatorServices.operatorCancel(input),
+        "operators.approve": (input) => operatorServices.operatorApprove(input),
+        "operators.artifacts": (input) => operatorServices.operatorArtifacts(input),
+        "operators.send": (input) => operatorServices.operatorSend(input),
+        "optimizations.list": () => operatorServices.optimizationList(),
+        "optimizations.get": (input) => operatorServices.optimizationGet(input),
+        "optimizations.preflight": (input) => operatorServices.optimizationPreflight(input),
+        "optimizations.start": (input) => operatorServices.optimizationStart(input),
+        "optimizations.pause": (input) => operatorServices.optimizationPause(input),
+        "optimizations.resume": (input) => operatorServices.optimizationResume(input),
+        "optimizations.cancel": (input) => operatorServices.optimizationCancel(input),
+        "optimizations.report": (input) => operatorServices.optimizationReport(input),
         ...caseServices.methods,
     }
     const mutations = new Set([
@@ -303,6 +368,17 @@ function createRollingSkillApplication(options = {}) {
         "installations.cancel",
         "installations.inspect",
         "installations.send",
+        "operators.start",
+        "operators.pause",
+        "operators.resume",
+        "operators.cancel",
+        "operators.approve",
+        "operators.send",
+        "optimizations.start",
+        "optimizations.pause",
+        "optimizations.resume",
+        "optimizations.cancel",
+        "optimizations.report",
         ...caseServices.mutations,
     ])
 
@@ -347,6 +423,7 @@ function createRollingSkillApplication(options = {}) {
         rawCaseStore.close()
         await evaluationRunner.stopAll?.()
         await installationManager.stopAll?.()
+        await operatorRuntime.close()
         await runtimeServices.close()
     }
 

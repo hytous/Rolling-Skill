@@ -16134,6 +16134,399 @@ ${session.issueDescription}` : ""}`;
   }
 });
 
+// ../../desktop/rolling-skill/src/rubric-manager.cjs
+var require_rubric_manager = __commonJS({
+  "../../desktop/rolling-skill/src/rubric-manager.cjs"(exports, module) {
+    var {
+      RUBRIC_PROMPT_VERSION,
+      UNIFIED_SCORING_MODEL,
+      buildDatasetRubricPrompt,
+      buildRubricFollowUpPrompt,
+      parseDatasetRubric
+    } = require_dataset_rubric();
+    var { LiveActivityCoalescer } = require_live_activity_coalescer();
+    var RUBRIC_NOTIFICATION_METHODS = /* @__PURE__ */ new Set([
+      "thread/settings/updated",
+      "turn/started",
+      "item/started",
+      "turn/completed",
+      "error"
+    ]);
+    function assistantTextFromTurn(turn) {
+      return (turn?.items ?? []).filter((item) => item.type === "agentMessage" && String(item.text ?? "").trim()).map((item) => String(item.text).trim()).join("\n\n");
+    }
+    function compact(value, limit = 240) {
+      const text = String(value ?? "").replace(/\s+/gu, " ").trim();
+      return text.length <= limit ? text : `${text.slice(0, limit - 1)}\u2026`;
+    }
+    function failureState(session) {
+      return session.draft ? "needs_review" : "failed";
+    }
+    var RubricManager = class {
+      constructor({
+        store,
+        getRuntime,
+        getRuntimeDescriptor = () => null,
+        onChanged = () => {
+        },
+        onActivity = () => {
+        },
+        schedule = (task) => Promise.resolve().then(task),
+        activityIntervalMs,
+        scheduleActivity = setTimeout,
+        cancelActivity = clearTimeout
+      }) {
+        this.store = store;
+        this.getRuntime = getRuntime;
+        this.getRuntimeDescriptor = getRuntimeDescriptor;
+        this.onChanged = onChanged;
+        this.onActivity = onActivity;
+        this.activityCoalescer = new LiveActivityCoalescer({
+          emit: onActivity,
+          intervalMs: activityIntervalMs,
+          schedule: scheduleActivity,
+          cancel: cancelActivity
+        });
+        this.schedule = schedule;
+        this.tasks = /* @__PURE__ */ new Map();
+        this.threadSessions = /* @__PURE__ */ new Map();
+        this.activities = /* @__PURE__ */ new Map();
+        for (const session of this.store.listRubricSessions()) {
+          if (session.rubricAgent.threadId) {
+            this.threadSessions.set(session.rubricAgent.threadId, session.id);
+          }
+          if (session.status === "queued" || session.status === "running") {
+            this.store.updateRubricSession(session.id, {
+              status: failureState(session),
+              error: "The Rubric Agent task was interrupted when Rolling Skill stopped. Retry to continue.",
+              rubricAgent: { currentTurnId: null }
+            });
+          }
+        }
+      }
+      emitChanged(sessionOrId) {
+        const session = typeof sessionOrId === "string" ? this.store.getRubricSession(sessionOrId) : sessionOrId;
+        this.onChanged(session);
+        return session;
+      }
+      emitActivity(sessionOrId, patch = {}) {
+        const session = typeof sessionOrId === "string" ? this.store.getRubricSession(sessionOrId) : sessionOrId;
+        const now = Date.now();
+        const previous = this.activities.get(session.id);
+        const activity = {
+          sessionId: session.id,
+          stage: patch.stage ?? previous?.stage ?? "starting",
+          summary: compact(patch.summary ?? previous?.summary ?? ""),
+          startedAt: previous?.startedAt ?? now,
+          lastActivityAt: now,
+          terminal: Boolean(patch.terminal)
+        };
+        if (activity.terminal) this.activities.delete(session.id);
+        else this.activities.set(session.id, activity);
+        this.activityCoalescer.publish(activity);
+        return activity;
+      }
+      queue(sessionId, operation) {
+        const task = Promise.resolve(this.schedule(operation));
+        this.tasks.set(sessionId, task);
+        void task.finally(() => {
+          if (this.tasks.get(sessionId) === task) this.tasks.delete(sessionId);
+        });
+        return task;
+      }
+      async waitForIdle(sessionId) {
+        await this.tasks.get(sessionId);
+      }
+      async createSession(input = {}) {
+        const dataset = this.store.getDataset(input.datasetId);
+        const baseVersionId = input.baseVersionId ?? dataset.activeRubricVersionId ?? null;
+        const descriptor = this.getRuntimeDescriptor();
+        const session = this.store.createRubricSession({
+          datasetId: dataset.id,
+          baseVersionId,
+          skillEvidence: input.skillEvidence,
+          rubricAgent: {
+            runtimeId: descriptor?.runtimeId ?? null,
+            modelProvider: descriptor?.providerId ?? null,
+            modelId: input.modelId ?? null,
+            effort: input.effort ?? null,
+            promptVersion: RUBRIC_PROMPT_VERSION
+          }
+        });
+        this.emitChanged(session);
+        this.queue(session.id, () => this.startInitialTurn(session.id));
+        return session;
+      }
+      async startInitialTurn(sessionId) {
+        try {
+          let session = this.store.getRubricSession(sessionId);
+          if (session.status === "cancelled") return session;
+          this.emitActivity(session, { stage: "starting", summary: "Reading frozen Skill evidence" });
+          const runtime = await this.getRuntime();
+          const response = await runtime.startThread({
+            sandbox: "read-only",
+            approvalPolicy: "never",
+            ephemeral: false,
+            threadSource: "subagent",
+            ...session.rubricAgent.modelId ? { model: session.rubricAgent.modelId } : {},
+            ...session.rubricAgent.effort ? { effort: session.rubricAgent.effort } : {}
+          });
+          this.threadSessions.set(response.thread.id, sessionId);
+          session = this.store.updateRubricSession(sessionId, {
+            status: "running",
+            error: null,
+            rubricAgent: {
+              threadId: response.thread.id,
+              modelProvider: response.thread.modelProvider ?? session.rubricAgent.modelProvider ?? null,
+              effectiveModelId: response.model ?? response.thread.model ?? session.rubricAgent.modelId ?? null,
+              effectiveEffort: response.reasoningEffort ?? response.thread.reasoningEffort ?? response.thread.effort ?? session.rubricAgent.effort ?? null,
+              promptVersion: RUBRIC_PROMPT_VERSION
+            }
+          });
+          const dataset = this.store.getDataset(session.datasetId);
+          const baseVersion = session.baseVersionId ? this.store.getDatasetRubricVersion(session.baseVersionId) : null;
+          const kickoff = baseVersion ? `Revise dataset rubric v${baseVersion.version} for ${dataset.name}.` : `Create the first dataset rubric for ${dataset.name}.`;
+          session = this.store.appendRubricMessage(sessionId, { role: "user", text: kickoff });
+          this.emitChanged(session);
+          const prompt = buildDatasetRubricPrompt({
+            datasetName: dataset.name,
+            skillReference: session.skillReference,
+            skillEvidence: session.skillEvidence,
+            baseVersion
+          });
+          const turnInput = [
+            {
+              type: "skill",
+              name: session.skillReference.name,
+              path: session.skillReference.path
+            },
+            { type: "text", text: prompt, text_elements: [] }
+          ];
+          const turnResponse = await runtime.startTurn(response.thread.id, turnInput, {
+            ...session.rubricAgent.modelId ? { model: session.rubricAgent.modelId } : {},
+            ...session.rubricAgent.effort ? { effort: session.rubricAgent.effort } : {}
+          });
+          session = this.store.updateRubricSession(sessionId, {
+            status: "running",
+            rubricAgent: { currentTurnId: turnResponse.turn.id }
+          });
+          this.emitChanged(session);
+          this.emitActivity(session, { stage: "analyzing", summary: "Deriving dataset criteria" });
+          return session;
+        } catch (error) {
+          const current = this.store.getRubricSession(sessionId);
+          if (current.status === "cancelled") return current;
+          const failed = this.store.updateRubricSession(sessionId, {
+            status: failureState(current),
+            error: error.message,
+            rubricAgent: { currentTurnId: null }
+          });
+          this.emitChanged(failed);
+          this.emitActivity(failed, { stage: "failed", summary: error.message, terminal: true });
+          return failed;
+        }
+      }
+      sessionForThread(threadId) {
+        const id = this.threadSessions.get(threadId);
+        return id ? this.store.getRubricSession(id) : null;
+      }
+      async handleNotification(message) {
+        const { method, params = {} } = message ?? {};
+        if (!params.threadId || !RUBRIC_NOTIFICATION_METHODS.has(method)) return false;
+        const session = this.sessionForThread(params.threadId);
+        if (!session || session.status === "archived" || session.status === "cancelled") return false;
+        if (method === "thread/settings/updated") {
+          const settings = params.threadSettings ?? params.settings ?? {};
+          const rubricAgent = {};
+          if ("model" in settings) rubricAgent.effectiveModelId = settings.model ?? null;
+          if ("effort" in settings || "reasoningEffort" in settings) {
+            rubricAgent.effectiveEffort = settings.effort ?? settings.reasoningEffort ?? null;
+          }
+          if (Object.keys(rubricAgent).length) {
+            this.emitChanged(this.store.updateRubricSession(session.id, { rubricAgent }));
+          }
+          return true;
+        }
+        if (method === "turn/started" || method === "item/started") {
+          const item = params.item ?? {};
+          const summary = item.type === "commandExecution" ? item.command ?? item.commandActions?.[0]?.command ?? "" : item.tool ?? item.name ?? "";
+          this.emitActivity(session, {
+            stage: item.type === "commandExecution" ? "command" : "analyzing",
+            summary
+          });
+          return true;
+        }
+        if (method === "turn/completed") {
+          const turn = params.turn;
+          if (!turn?.id || turn.id !== session.rubricAgent.currentTurnId) return false;
+          if (turn.status && turn.status !== "completed") {
+            const error = turn.error?.message ?? `Rubric Agent turn ended with ${turn.status}`;
+            const failed = this.store.updateRubricSession(session.id, {
+              status: failureState(session),
+              error,
+              rubricAgent: { currentTurnId: null }
+            });
+            this.emitChanged(failed);
+            this.emitActivity(failed, { stage: "failed", summary: error, terminal: true });
+            return true;
+          }
+          const assistantText = assistantTextFromTurn(turn);
+          try {
+            if (!assistantText) throw new Error("Rubric Agent completed without a response");
+            const rubric = parseDatasetRubric(assistantText);
+            if (rubric.scoringModel !== UNIFIED_SCORING_MODEL) {
+              throw new Error(
+                `Rubric Agent draft must use scoringModel ${UNIFIED_SCORING_MODEL}`
+              );
+            }
+            const reviewed = this.store.recordRubricRevision(session.id, {
+              rubric,
+              assistantText,
+              turnId: turn.id
+            });
+            this.emitChanged(reviewed);
+            this.emitActivity(reviewed, { stage: "completed", summary: "Draft ready", terminal: true });
+          } catch (error) {
+            let next = session;
+            if (assistantText) {
+              next = this.store.appendRubricMessage(session.id, {
+                role: "assistant",
+                text: assistantText,
+                turnId: turn.id
+              });
+            }
+            const hasDraft = Boolean(session.draft);
+            next = this.store.updateRubricSession(session.id, {
+              status: hasDraft ? "needs_review" : "failed",
+              error: hasDraft && !/```json|schemaVersion|criteria/iu.test(assistantText) ? null : error.message,
+              rubricAgent: { currentTurnId: null }
+            });
+            this.emitChanged(next);
+            this.emitActivity(next, {
+              stage: hasDraft ? "completed" : "failed",
+              summary: hasDraft ? "" : error.message,
+              terminal: true
+            });
+          }
+          return true;
+        }
+        if (method === "error" && !params.willRetry) {
+          if (params.turnId && params.turnId !== session.rubricAgent.currentTurnId) return false;
+          const error = params.error?.message ?? "Rubric Agent runtime failed";
+          const failed = this.store.updateRubricSession(session.id, {
+            status: failureState(session),
+            error,
+            rubricAgent: { currentTurnId: null }
+          });
+          this.emitChanged(failed);
+          this.emitActivity(failed, { stage: "failed", summary: error, terminal: true });
+          return true;
+        }
+        return false;
+      }
+      async sendMessage(sessionId, text) {
+        let session = this.store.getRubricSession(sessionId);
+        if (session.status === "archived" || session.status === "cancelled") {
+          throw new Error("This rubric session is no longer editable");
+        }
+        if (!session.rubricAgent.threadId) throw new Error("The Rubric Agent thread has not started");
+        if (session.rubricAgent.currentTurnId) throw new Error("The Rubric Agent is already working");
+        session = this.store.appendRubricMessage(sessionId, { role: "user", text });
+        session = this.store.updateRubricSession(sessionId, { status: "running", error: null });
+        this.emitChanged(session);
+        this.emitActivity(session, { stage: "starting", summary: "Applying review message" });
+        try {
+          const runtime = await this.getRuntime();
+          await runtime.resumeThread(session.rubricAgent.threadId, {
+            approvalPolicy: "never",
+            sandbox: "read-only",
+            ...session.rubricAgent.modelId ? { model: session.rubricAgent.modelId } : {}
+          });
+          const response = await runtime.startTurn(
+            session.rubricAgent.threadId,
+            buildRubricFollowUpPrompt(text),
+            {
+              ...session.rubricAgent.modelId ? { model: session.rubricAgent.modelId } : {},
+              ...session.rubricAgent.effort ? { effort: session.rubricAgent.effort } : {}
+            }
+          );
+          session = this.store.updateRubricSession(sessionId, {
+            status: "running",
+            rubricAgent: { currentTurnId: response.turn.id }
+          });
+          return this.emitChanged(session);
+        } catch (error) {
+          const current = this.store.getRubricSession(sessionId);
+          const failed = this.store.updateRubricSession(sessionId, {
+            status: failureState(current),
+            error: error.message,
+            rubricAgent: { currentTurnId: null }
+          });
+          this.emitChanged(failed);
+          this.emitActivity(failed, { stage: "failed", summary: error.message, terminal: true });
+          return failed;
+        }
+      }
+      async retry(sessionId) {
+        const session = this.store.getRubricSession(sessionId);
+        if (session.status !== "failed") throw new Error("Only a failed rubric session can be retried");
+        if (!session.rubricAgent.threadId) {
+          this.queue(sessionId, () => this.startInitialTurn(sessionId));
+          await this.waitForIdle(sessionId);
+          return this.store.getRubricSession(sessionId);
+        }
+        return this.sendMessage(
+          sessionId,
+          "Return a corrected complete rubric JSON contract that satisfies every required field."
+        );
+      }
+      updateModel(sessionId, modelId) {
+        return this.emitChanged(this.store.updateRubricModel(sessionId, modelId));
+      }
+      updateEffort(sessionId, effort) {
+        return this.emitChanged(this.store.updateRubricEffort(sessionId, effort));
+      }
+      async discard(sessionId) {
+        const current = this.store.getRubricSession(sessionId);
+        const discarded = this.store.cancelRubricSession(sessionId);
+        this.emitChanged(discarded);
+        this.emitActivity(discarded, { stage: "cancelled", terminal: true });
+        if (current.rubricAgent.threadId) {
+          try {
+            const runtime = await this.getRuntime();
+            if (current.rubricAgent.currentTurnId) {
+              await runtime.interruptTurn(
+                current.rubricAgent.threadId,
+                current.rubricAgent.currentTurnId
+              );
+            }
+            await runtime.archiveThread(current.rubricAgent.threadId);
+          } catch {
+          }
+        }
+        return discarded;
+      }
+      async publish(sessionId) {
+        const version = this.store.publishRubricSession(sessionId);
+        const session = this.store.getRubricSession(sessionId);
+        this.emitChanged(session);
+        if (session.rubricAgent.threadId) {
+          try {
+            const runtime = await this.getRuntime();
+            await runtime.archiveThread(session.rubricAgent.threadId);
+          } catch {
+          }
+        }
+        return version;
+      }
+      hiddenThreadIds() {
+        return new Set(this.threadSessions.keys());
+      }
+    };
+    module.exports = { RubricManager, assistantTextFromTurn };
+  }
+});
+
 // ../../desktop/rolling-skill/src/evaluation-grading.cjs
 var require_evaluation_grading = __commonJS({
   "../../desktop/rolling-skill/src/evaluation-grading.cjs"(exports, module) {
@@ -20532,195 +20925,6 @@ var require_evaluation_services = __commonJS({
       return Object.freeze({ cancel, get, list, start });
     }
     module.exports = { createEvaluationServices };
-  }
-});
-
-// ../../desktop/rolling-skill/package.json
-var require_package = __commonJS({
-  "../../desktop/rolling-skill/package.json"(exports, module) {
-    module.exports = {
-      name: "rolling-skill-desktop",
-      version: "0.9.3",
-      private: true,
-      author: "Rolling Skill",
-      description: "Native-window macOS client for the Rolling Skill evaluation workbench",
-      main: "src/main.cjs",
-      scripts: {
-        start: "electron .",
-        "render:icon": "electron scripts/render-icon.cjs assets/icon-s-keycap-orange.svg assets/icon-s-keycap-orange.png",
-        test: "node --test test/*.test.cjs",
-        "smoke:renderer": "electron scripts/renderer-smoke.cjs",
-        "build:tool": "node scripts/build-external-tool.mjs",
-        "pack:mac": "npm run render:icon && npm run build:tool && electron-builder --mac dir --arm64",
-        "dist:mac": "npm run render:icon && electron-builder --mac dmg zip --arm64"
-      },
-      devDependencies: {
-        "@modelcontextprotocol/client": "^2.0.0",
-        electron: "^43.3.0",
-        "electron-builder": "^26.0.12",
-        esbuild: "^0.25.12",
-        yazl: "^3.3.1"
-      },
-      build: {
-        appId: "com.rolling-skill.desktop",
-        productName: "Rolling Skill",
-        asar: true,
-        files: [
-          "src/**/*",
-          "renderer/**/*",
-          "package.json"
-        ],
-        directories: {
-          output: "dist",
-          buildResources: "assets"
-        },
-        mac: {
-          target: [
-            "dir"
-          ],
-          category: "public.app-category.developer-tools",
-          minimumSystemVersion: "13.0",
-          darkModeSupport: true,
-          icon: "assets/icon-s-keycap-orange.png",
-          identity: null
-        }
-      },
-      dependencies: {
-        "@modelcontextprotocol/server": "^2.0.0",
-        he: "^1.2.0",
-        marked: "^15.0.12",
-        yaml: "^2.9.0",
-        yauzl: "^3.4.0",
-        zod: "^4.4.3"
-      }
-    };
-  }
-});
-
-// ../../desktop/rolling-skill/src/json-rpc.cjs
-var require_json_rpc = __commonJS({
-  "../../desktop/rolling-skill/src/json-rpc.cjs"(exports, module) {
-    var { TextDecoder: TextDecoder2 } = __require("node:util");
-    var JsonLineDecoder = class {
-      constructor(onMessage, onError = () => {
-      }, { maximumBufferBytes = Infinity } = {}) {
-        this.onMessage = onMessage;
-        this.onError = onError;
-        this.maximumBufferBytes = maximumBufferBytes;
-        this.buffer = Buffer.alloc(0);
-        this.terminated = false;
-        this.paused = false;
-        this.textDecoder = new TextDecoder2("utf-8", { fatal: true });
-      }
-      push(chunk) {
-        if (this.terminated) return false;
-        const incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        if (incoming.length === 0) return true;
-        this.buffer = this.buffer.length === 0 ? Buffer.from(incoming) : Buffer.concat([this.buffer, incoming]);
-        if (this.paused) {
-          if (this.buffer.length > this.maximumBufferBytes) return this.#overflow();
-          return false;
-        }
-        return this.#drain();
-      }
-      resume() {
-        if (this.terminated) return false;
-        if (!this.paused) return true;
-        this.paused = false;
-        return this.#drain();
-      }
-      #drain() {
-        let newline = this.buffer.indexOf(10);
-        while (newline >= 0) {
-          if (newline > this.maximumBufferBytes) return this.#overflow();
-          const lineBytes = this.buffer.subarray(0, newline);
-          this.buffer = this.buffer.slice(newline + 1);
-          const delivered = this.#decode(lineBytes);
-          if (this.terminated) return false;
-          if (delivered === false) {
-            this.paused = true;
-            if (this.buffer.length > this.maximumBufferBytes) return this.#overflow();
-            return false;
-          }
-          newline = this.buffer.indexOf(10);
-        }
-        if (this.buffer.length > this.maximumBufferBytes) return this.#overflow();
-        return true;
-      }
-      end(chunk) {
-        if (chunk !== void 0 && !this.push(chunk)) return false;
-        if (this.terminated) return false;
-        if (this.buffer.length > this.maximumBufferBytes) return this.#overflow();
-        const line = this.buffer;
-        this.buffer = Buffer.alloc(0);
-        const delivered = this.#decode(line);
-        if (delivered === false) this.paused = true;
-        return !this.terminated && !this.paused;
-      }
-      #decode(lineBytes) {
-        let line;
-        try {
-          line = this.textDecoder.decode(lineBytes).trim();
-        } catch (error) {
-          this.buffer = Buffer.alloc(0);
-          this.terminated = true;
-          this.onError(error, null);
-          return false;
-        }
-        if (!line) return true;
-        try {
-          return this.onMessage(JSON.parse(line));
-        } catch (error) {
-          this.onError(error, line);
-          return true;
-        }
-      }
-      #overflow() {
-        this.buffer = Buffer.alloc(0);
-        this.terminated = true;
-        this.onError(new RangeError("JSON line exceeded the maximum buffer bytes"), null);
-        return false;
-      }
-    };
-    var RpcRequestTracker = class {
-      constructor() {
-        this.nextId = 1;
-        this.pending = /* @__PURE__ */ new Map();
-      }
-      create(method, params) {
-        const id = this.nextId;
-        this.nextId += 1;
-        const message = { id, method, params };
-        let resolvePromise;
-        let rejectPromise;
-        const promise = new Promise((resolve, reject) => {
-          resolvePromise = resolve;
-          rejectPromise = reject;
-        });
-        this.pending.set(id, { resolve: resolvePromise, reject: rejectPromise });
-        return { message, promise };
-      }
-      settle(message) {
-        if (message?.id === void 0 || message?.id === null) return false;
-        const pending = this.pending.get(message.id);
-        if (!pending) return false;
-        this.pending.delete(message.id);
-        if (message.error) {
-          const error = new Error(message.error.message || "Codex app-server request failed");
-          error.code = message.error.code;
-          error.data = message.error.data;
-          pending.reject(error);
-        } else {
-          pending.resolve(message.result);
-        }
-        return true;
-      }
-      rejectAll(error) {
-        for (const pending of this.pending.values()) pending.reject(error);
-        this.pending.clear();
-      }
-    };
-    module.exports = { JsonLineDecoder, RpcRequestTracker };
   }
 });
 
@@ -38811,6 +39015,16131 @@ var require_contracts = __commonJS({
   }
 });
 
+// ../../desktop/rolling-skill/src/control-plane/capability-store.cjs
+var require_capability_store = __commonJS({
+  "../../desktop/rolling-skill/src/control-plane/capability-store.cjs"(exports, module) {
+    var crypto = __require("node:crypto");
+    var { METHOD_DEFINITIONS } = require_contracts();
+    var MAX_CAPABILITY_LIFETIME_MS = 24 * 60 * 60 * 1e3;
+    var MAX_IDENTIFIER_LENGTH = 200;
+    var MAX_SCOPE_IDS = 256;
+    var MAX_TRUSTED_SCOPE_IDS = 4096;
+    var TOKEN_BYTES = 32;
+    var CAPABILITY_ID_BYTES = 16;
+    var TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+    var CAPABILITY_ACTIONS = Object.freeze([
+      ...new Set(Object.values(METHOD_DEFINITIONS).map(({ action }) => action))
+    ]);
+    var CAPABILITY_ACTION_SET = new Set(CAPABILITY_ACTIONS);
+    var REQUEST_KEYS = /* @__PURE__ */ new Set([
+      "sessionId",
+      "actions",
+      "scopes",
+      "expiresInMs",
+      "budget"
+    ]);
+    var SCOPE_KEYS = Object.freeze([
+      "skillIds",
+      "datasetIds",
+      "runtimeIds",
+      "repositoryIds"
+    ]);
+    var SCOPE_KEY_SET = new Set(SCOPE_KEYS);
+    var BUDGET_KEYS = Object.freeze(["maxRuntimeTurns", "maxEvaluations"]);
+    var BUDGET_KEY_SET = new Set(BUDGET_KEYS);
+    var trustedIssueByStore = /* @__PURE__ */ new WeakMap();
+    var scopeLimitByGrant = /* @__PURE__ */ new WeakMap();
+    var humanControlGrants = /* @__PURE__ */ new WeakSet();
+    var CapabilityError = class extends Error {
+      constructor(code, message) {
+        super(message);
+        this.name = "CapabilityError";
+        this.code = code;
+      }
+    };
+    function capabilityRequestError(message) {
+      return new CapabilityError("INVALID_CAPABILITY_REQUEST", message);
+    }
+    function dataDescriptor(descriptor) {
+      return descriptor !== void 0 && Object.hasOwn(descriptor, "value");
+    }
+    function snapshotRecord(value, label) {
+      try {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw capabilityRequestError(`${label} must be a safe plain data record`);
+        }
+        const prototype = Object.getPrototypeOf(value);
+        if (prototype !== Object.prototype && prototype !== null) {
+          throw capabilityRequestError(`${label} must be a safe plain data record`);
+        }
+        const descriptors = Object.getOwnPropertyDescriptors(value);
+        const snapshot = /* @__PURE__ */ new Map();
+        for (const key of Reflect.ownKeys(descriptors)) {
+          const descriptor = descriptors[key];
+          if (typeof key !== "string" || !dataDescriptor(descriptor)) {
+            throw capabilityRequestError(`${label} must contain only own data properties`);
+          }
+          snapshot.set(key, descriptor.value);
+        }
+        return snapshot;
+      } catch (error) {
+        if (error instanceof CapabilityError && error.code === "INVALID_CAPABILITY_REQUEST") {
+          throw error;
+        }
+        throw capabilityRequestError(`${label} must be a safe plain data record`);
+      }
+    }
+    function snapshotArray(value, label, maximum) {
+      try {
+        if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+          throw capabilityRequestError(`${label} must be a safe dense data array`);
+        }
+        const descriptors = Object.getOwnPropertyDescriptors(value);
+        const keys = Reflect.ownKeys(descriptors);
+        const lengthDescriptor = descriptors.length;
+        if (!dataDescriptor(lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > maximum || keys.length !== lengthDescriptor.value + 1 || keys.some((key) => typeof key !== "string")) {
+          throw capabilityRequestError(`${label} must be a safe dense data array`);
+        }
+        const snapshot = [];
+        for (let index = 0; index < lengthDescriptor.value; index += 1) {
+          const descriptor = descriptors[String(index)];
+          if (!dataDescriptor(descriptor)) {
+            throw capabilityRequestError(`${label} must be a safe dense data array`);
+          }
+          defineOwnData(snapshot, snapshot.length, descriptor.value);
+        }
+        return snapshot;
+      } catch (error) {
+        if (error instanceof CapabilityError && error.code === "INVALID_CAPABILITY_REQUEST") {
+          throw error;
+        }
+        throw capabilityRequestError(`${label} must be a safe dense data array`);
+      }
+    }
+    function assertKnownKeys(snapshot, allowedKeys, message) {
+      for (const key of snapshot.keys()) {
+        if (!allowedKeys.has(key)) throw capabilityRequestError(message);
+      }
+    }
+    function defineOwnData(target, key, value) {
+      Object.defineProperty(target, key, {
+        configurable: true,
+        enumerable: true,
+        value,
+        writable: true
+      });
+    }
+    function normalizeIdentifier(value, label) {
+      if (typeof value !== "string" || value.length < 1 || value.length > MAX_IDENTIFIER_LENGTH || value.trim() !== value || !/\S/u.test(value) || /[\u0000-\u001f\u007f]/u.test(value)) {
+        throw capabilityRequestError(
+          `${label} must be a non-empty identifier of at most ${MAX_IDENTIFIER_LENGTH} characters`
+        );
+      }
+      return value;
+    }
+    function normalizeActions(actions) {
+      const source = snapshotArray(actions, "Capability actions", CAPABILITY_ACTIONS.length);
+      if (source.length < 1) {
+        throw capabilityRequestError("Capability actions must be a non-empty bounded array");
+      }
+      const normalized = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const action of source) {
+        if (typeof action !== "string" || !CAPABILITY_ACTION_SET.has(action)) {
+          throw capabilityRequestError("Unknown capability action");
+        }
+        if (!seen.has(action)) {
+          seen.add(action);
+          defineOwnData(normalized, normalized.length, action);
+        }
+      }
+      return Object.freeze(normalized);
+    }
+    function normalizeScopeIds(value, key, maximum) {
+      const source = snapshotArray(value, key, maximum);
+      const normalized = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const id of source) {
+        const normalizedId = normalizeIdentifier(id, key);
+        if (!seen.has(normalizedId)) {
+          seen.add(normalizedId);
+          defineOwnData(normalized, normalized.length, normalizedId);
+        }
+      }
+      return Object.freeze(normalized);
+    }
+    function normalizeScopes(scopes, present, maximum) {
+      const snapshot = present ? snapshotRecord(scopes, "Capability scopes") : /* @__PURE__ */ new Map();
+      assertKnownKeys(snapshot, SCOPE_KEY_SET, "Unknown capability scope");
+      const normalized = {};
+      for (const key of SCOPE_KEYS) {
+        defineOwnData(
+          normalized,
+          key,
+          normalizeScopeIds(snapshot.has(key) ? snapshot.get(key) : [], key, maximum)
+        );
+      }
+      return Object.freeze(normalized);
+    }
+    function normalizeBudgetLimit(value, key) {
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw capabilityRequestError(`${key} must be a non-negative safe integer`);
+      }
+      return value;
+    }
+    function normalizeBudget(budget, present) {
+      const snapshot = present ? snapshotRecord(budget, "Capability budget") : /* @__PURE__ */ new Map();
+      assertKnownKeys(snapshot, BUDGET_KEY_SET, "Unknown capability budget");
+      const normalized = {};
+      for (const key of BUDGET_KEYS) {
+        defineOwnData(
+          normalized,
+          key,
+          normalizeBudgetLimit(snapshot.has(key) ? snapshot.get(key) : 0, key)
+        );
+      }
+      return Object.freeze(normalized);
+    }
+    function normalizeLifetime(expiresInMs) {
+      if (!Number.isFinite(expiresInMs) || !Number.isInteger(expiresInMs) || expiresInMs <= 0) {
+        throw capabilityRequestError("expiresInMs must be a positive finite integer");
+      }
+      if (expiresInMs > MAX_CAPABILITY_LIFETIME_MS) {
+        throw capabilityRequestError("expiresInMs cannot exceed 24 hours");
+      }
+      return expiresInMs;
+    }
+    var CapabilityStore = class {
+      #clock;
+      #randomBytes;
+      #recordObserver;
+      #timingSafeEqual;
+      #records = /* @__PURE__ */ new Map();
+      constructor({
+        clock = Date.now,
+        randomBytes = crypto.randomBytes,
+        recordObserver = null,
+        timingSafeEqual = crypto.timingSafeEqual
+      } = {}) {
+        if (typeof clock !== "function") throw new TypeError("clock must be a function");
+        if (typeof randomBytes !== "function") throw new TypeError("randomBytes must be a function");
+        if (typeof timingSafeEqual !== "function") {
+          throw new TypeError("timingSafeEqual must be a function");
+        }
+        if (recordObserver !== null && typeof recordObserver !== "function") {
+          throw new TypeError("recordObserver must be a function or null");
+        }
+        this.#clock = clock;
+        this.#randomBytes = randomBytes;
+        this.#recordObserver = recordObserver;
+        this.#timingSafeEqual = timingSafeEqual;
+        trustedIssueByStore.set(this, (request, maximum, humanControl = false) => this.#issue(request, maximum, humanControl));
+      }
+      #now() {
+        const value = this.#clock();
+        const timestamp = value instanceof Date ? value.getTime() : value;
+        if (!Number.isFinite(timestamp)) throw new TypeError("clock must return a finite timestamp");
+        return timestamp;
+      }
+      #random(size) {
+        const value = this.#randomBytes(size);
+        if (!Buffer.isBuffer(value) || value.byteLength !== size) {
+          throw new TypeError(`randomBytes must return exactly ${size} bytes`);
+        }
+        return Buffer.from(value);
+      }
+      #digest(token) {
+        return crypto.createHash("sha256").update(token, "utf8").digest();
+      }
+      #findByDigest(digest) {
+        let matched = null;
+        for (const record of this.#records.values()) {
+          if (this.#timingSafeEqual(digest, record.tokenHash)) matched = record;
+        }
+        return matched;
+      }
+      issue(request) {
+        return this.#issue(request, MAX_SCOPE_IDS);
+      }
+      #issue(request, maximumScopeIds, humanControl = false) {
+        const snapshot = snapshotRecord(request, "Capability request");
+        assertKnownKeys(snapshot, REQUEST_KEYS, "Unknown capability request field");
+        const sessionId = normalizeIdentifier(snapshot.get("sessionId"), "sessionId");
+        const actions = normalizeActions(snapshot.get("actions"));
+        const scopes = normalizeScopes(
+          snapshot.get("scopes"),
+          snapshot.has("scopes"),
+          maximumScopeIds
+        );
+        const budget = normalizeBudget(snapshot.get("budget"), snapshot.has("budget"));
+        const expiresInMs = normalizeLifetime(snapshot.get("expiresInMs"));
+        const issuedAt = this.#now();
+        let token;
+        let tokenHash;
+        do {
+          token = this.#random(TOKEN_BYTES).toString("base64url");
+          tokenHash = this.#digest(token);
+        } while (this.#findByDigest(tokenHash) !== null);
+        let id;
+        do {
+          id = `cap_${this.#random(CAPABILITY_ID_BYTES).toString("base64url")}`;
+        } while (this.#records.has(id));
+        const grant = Object.freeze({
+          id,
+          sessionId,
+          actions,
+          scopes,
+          budget,
+          issuedAt,
+          expiresAt: issuedAt + expiresInMs
+        });
+        scopeLimitByGrant.set(grant, maximumScopeIds);
+        if (humanControl) humanControlGrants.add(grant);
+        const record = { grant, tokenHash, revokedAt: null };
+        if (this.#recordObserver !== null) {
+          this.#recordObserver(Object.freeze({
+            id,
+            storedFields: Object.freeze(Object.keys(record)),
+            tokenHashByteLength: tokenHash.byteLength
+          }));
+        }
+        this.#records.set(id, record);
+        return Object.freeze({ ...grant, token });
+      }
+      authorize(token, action, expectedSessionId) {
+        let record = null;
+        if (typeof token === "string" && TOKEN_PATTERN.test(token)) {
+          record = this.#findByDigest(this.#digest(token));
+        }
+        if (record === null) {
+          throw new CapabilityError("CAPABILITY_INVALID", "Capability token is not recognized");
+        }
+        if (record.revokedAt !== null) {
+          throw new CapabilityError("CAPABILITY_REVOKED", "Capability has been revoked");
+        }
+        if (record.grant.expiresAt <= this.#now()) {
+          throw new CapabilityError("CAPABILITY_EXPIRED", "Capability has expired");
+        }
+        if (expectedSessionId !== void 0 && expectedSessionId !== record.grant.sessionId) {
+          throw new CapabilityError(
+            "CAPABILITY_SESSION_MISMATCH",
+            "Capability belongs to a different Operator session"
+          );
+        }
+        if (typeof action !== "string" || !record.grant.actions.includes(action)) {
+          throw new CapabilityError(
+            "CAPABILITY_ACTION_NOT_GRANTED",
+            "Capability action is not granted"
+          );
+        }
+        return record.grant;
+      }
+      revoke(id) {
+        const record = this.#records.get(id);
+        if (record === void 0 || record.revokedAt !== null) return false;
+        record.revokedAt = this.#now();
+        return true;
+      }
+      revokeSession(sessionId) {
+        const normalizedSessionId = normalizeIdentifier(sessionId, "sessionId");
+        const revokedAt = this.#now();
+        let revoked = 0;
+        for (const record of this.#records.values()) {
+          if (record.grant.sessionId === normalizedSessionId && record.revokedAt === null) {
+            record.revokedAt = revokedAt;
+            revoked += 1;
+          }
+        }
+        return revoked;
+      }
+      sweepExpired() {
+        const now = this.#now();
+        let swept = 0;
+        for (const [id, record] of this.#records) {
+          if (record.grant.expiresAt <= now) {
+            this.#records.delete(id);
+            swept += 1;
+          }
+        }
+        return swept;
+      }
+    };
+    function createTrustedCapabilityIssuer(store, { maxScopeIds = MAX_TRUSTED_SCOPE_IDS } = {}) {
+      const issue = trustedIssueByStore.get(store);
+      if (typeof issue !== "function") throw new TypeError("A CapabilityStore is required");
+      if (!Number.isSafeInteger(maxScopeIds) || maxScopeIds < MAX_SCOPE_IDS || maxScopeIds > MAX_TRUSTED_SCOPE_IDS) throw new TypeError("Trusted capability scope limit is invalid");
+      return Object.freeze({
+        issue(request) {
+          return issue(request, maxScopeIds);
+        }
+      });
+    }
+    function createTrustedHumanCapabilityIssuer(store, options2 = {}) {
+      const issue = trustedIssueByStore.get(store);
+      if (typeof issue !== "function") throw new TypeError("A CapabilityStore is required");
+      const { maxScopeIds = MAX_TRUSTED_SCOPE_IDS } = options2;
+      if (!Number.isSafeInteger(maxScopeIds) || maxScopeIds < MAX_SCOPE_IDS || maxScopeIds > MAX_TRUSTED_SCOPE_IDS) throw new TypeError("Trusted capability scope limit is invalid");
+      return Object.freeze({
+        issue(request) {
+          return issue(request, maxScopeIds, true);
+        }
+      });
+    }
+    function isTrustedHumanCapability(grant) {
+      return humanControlGrants.has(grant);
+    }
+    function capabilityScopeLimit(grant) {
+      return scopeLimitByGrant.get(grant) ?? MAX_SCOPE_IDS;
+    }
+    module.exports = {
+      CAPABILITY_ACTIONS,
+      CapabilityError,
+      CapabilityStore,
+      capabilityScopeLimit,
+      createTrustedCapabilityIssuer,
+      createTrustedHumanCapabilityIssuer,
+      isTrustedHumanCapability,
+      MAX_CAPABILITY_LIFETIME_MS,
+      MAX_SCOPE_IDS,
+      MAX_TRUSTED_SCOPE_IDS
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/control-plane/policy.cjs
+var require_policy = __commonJS({
+  "../../desktop/rolling-skill/src/control-plane/policy.cjs"(exports, module) {
+    var { METHOD_DEFINITIONS, controlDefinition } = require_contracts();
+    var { MAX_SCOPE_IDS, MAX_TRUSTED_SCOPE_IDS } = require_capability_store();
+    var PHASE_ONE_ACTIONS = new Set(
+      Object.values(METHOD_DEFINITIONS).map(({ action }) => action)
+    );
+    var SCOPE_DEFINITIONS = Object.freeze([
+      Object.freeze({ key: "skillIds", singular: "Skill", direct: "skillId" }),
+      Object.freeze({ key: "datasetIds", singular: "Dataset", direct: "datasetId" }),
+      Object.freeze({ key: "runtimeIds", singular: "Runtime", direct: "runtimeId" }),
+      Object.freeze({ key: "repositoryIds", singular: "Repository", direct: "repositoryId" })
+    ]);
+    var ALLOW_WITHOUT_RESERVATION = Object.freeze({ decision: "allow", reservation: null });
+    var budgetSnapshotBrands = /* @__PURE__ */ new WeakMap();
+    var resolvedScopeBrands = /* @__PURE__ */ new WeakMap();
+    var SCOPE_REQUIREMENTS = Object.freeze({
+      "context.get": Object.freeze({ mode: "filter", keys: Object.freeze(["runtimeIds"]) }),
+      "raw_cases.list": Object.freeze({ mode: "filter", keys: Object.freeze(["skillIds"]) }),
+      "raw_cases.enqueue": Object.freeze({ mode: "access", keys: Object.freeze(["skillIds"]) }),
+      "raw_cases.update": Object.freeze({ mode: "access", keys: Object.freeze(["skillIds"]) }),
+      "raw_cases.dispatch": Object.freeze({ mode: "access", keys: Object.freeze(["skillIds"]) }),
+      "runtimes.list": Object.freeze({ mode: "filter", keys: Object.freeze(["runtimeIds"]) }),
+      "datasets.list": Object.freeze({ mode: "filter", keys: Object.freeze(["datasetIds"]) }),
+      "datasets.create": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "repositoryIds"])
+      }),
+      "evaluations.get": Object.freeze({ mode: "access", keys: Object.freeze(["datasetIds"]) }),
+      "evaluations.cancel": Object.freeze({ mode: "access", keys: Object.freeze(["datasetIds"]) }),
+      "skill_repositories.list": Object.freeze({ mode: "filter", keys: Object.freeze(["repositoryIds"]) }),
+      "skills.list": Object.freeze({ mode: "filter", keys: Object.freeze(["skillIds"]) }),
+      "skill_versions.list": Object.freeze({ mode: "filter", keys: Object.freeze(["skillIds"]) }),
+      "skills.diff": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "repositoryIds"])
+      }),
+      "skills.create_candidate": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "repositoryIds"])
+      }),
+      "skills.release": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "repositoryIds"])
+      }),
+      "curation.message": Object.freeze({ mode: "access", keys: Object.freeze(["datasetIds"]) }),
+      "curation.save": Object.freeze({ mode: "access", keys: Object.freeze(["datasetIds"]) }),
+      "curation.discard": Object.freeze({ mode: "access", keys: Object.freeze(["datasetIds"]) }),
+      "rubrics.publish": Object.freeze({ mode: "access", keys: Object.freeze(["datasetIds"]) }),
+      "installations.start": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "repositoryIds"])
+      }),
+      "installations.get": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "runtimeIds", "repositoryIds"])
+      }),
+      "installations.cancel": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "runtimeIds", "repositoryIds"])
+      }),
+      "installations.inspect": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "runtimeIds", "repositoryIds"])
+      }),
+      "optimization.preflight": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"])
+      }),
+      "optimization.start": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"])
+      }),
+      "optimization.get": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"])
+      }),
+      "optimization.pause": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"])
+      }),
+      "optimization.resume": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"])
+      }),
+      "optimization.stop": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"])
+      }),
+      "optimization.submit_candidate": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"])
+      }),
+      "optimization.submit_decision": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"])
+      }),
+      "optimization.report": Object.freeze({
+        mode: "access",
+        keys: Object.freeze(["skillIds", "datasetIds", "runtimeIds", "repositoryIds"])
+      })
+    });
+    var RESOLVED_SCOPE_KEYS = Object.freeze([
+      "skillIds",
+      "datasetIds",
+      "runtimeIds",
+      "repositoryIds"
+    ]);
+    var RESOLVED_SCOPE_SOURCE_KEYS = /* @__PURE__ */ new Set(["method", "mode", "subject", ...RESOLVED_SCOPE_KEYS]);
+    var RESOLVED_SCOPE_SUBJECT_KEYS = /* @__PURE__ */ new Set(["kind", "id"]);
+    var ACCESS_SCOPE_SUBJECTS = Object.freeze({
+      "raw_cases.update": Object.freeze({ kind: "raw_case", inputKey: "id" }),
+      "raw_cases.dispatch": Object.freeze({ kind: "raw_case", inputKey: "id" }),
+      "evaluations.get": Object.freeze({ kind: "evaluation_run", inputKey: "runId" }),
+      "evaluations.cancel": Object.freeze({ kind: "evaluation_run", inputKey: "runId" }),
+      "datasets.create": Object.freeze({ kind: "skill", inputKey: "skillId" }),
+      "skills.diff": Object.freeze({ kind: "skill", inputKey: "skillId" }),
+      "skills.create_candidate": Object.freeze({ kind: "skill", inputKey: "skillId" }),
+      "skills.release": Object.freeze({ kind: "skill", inputKey: "skillId" }),
+      "curation.message": Object.freeze({ kind: "curation_session", inputKey: "sessionId" }),
+      "curation.save": Object.freeze({ kind: "curation_session", inputKey: "sessionId" }),
+      "curation.discard": Object.freeze({ kind: "curation_session", inputKey: "sessionId" }),
+      "rubrics.publish": Object.freeze({ kind: "rubric_session", inputKey: "sessionId" }),
+      "installations.start": Object.freeze({ kind: "skill", inputKey: "skillId" }),
+      "installations.get": Object.freeze({ kind: "installation", inputKey: "installationId" }),
+      "installations.cancel": Object.freeze({ kind: "installation", inputKey: "installationId" }),
+      "installations.inspect": Object.freeze({ kind: "installation", inputKey: "installationId" })
+    });
+    var APPROVAL_METHOD_DEFINITIONS = Object.freeze({
+      "datasets.delete": Object.freeze({ action: "datasets.delete", reason: "destructive_action" }),
+      "datasets.delete_case": Object.freeze({
+        action: "datasets.delete",
+        reason: "destructive_action"
+      }),
+      "raw_cases.delete": Object.freeze({
+        action: "raw_cases.delete",
+        reason: "destructive_action"
+      }),
+      "evaluations.delete": Object.freeze({
+        action: "evaluations.delete",
+        reason: "destructive_action"
+      }),
+      "skills.delete": Object.freeze({ action: "skills.delete", reason: "destructive_action" }),
+      "skills.release": Object.freeze({ action: "skills.release", reason: "release" }),
+      "skills.install": Object.freeze({ action: "skills.install", reason: "installation" }),
+      "installations.start": Object.freeze({
+        action: "installations.execute",
+        reason: "installation"
+      }),
+      "installations.cancel": Object.freeze({
+        action: "installations.execute",
+        reason: "installation"
+      }),
+      "rubrics.publish": Object.freeze({ action: "rubrics.publish", reason: "rubric_publish" }),
+      "budget.expand": Object.freeze({ action: "budget.expand", reason: "budget_expansion" }),
+      "budgets.expand": Object.freeze({ action: "budget.expand", reason: "budget_expansion" })
+    });
+    function deepFreeze(value) {
+      if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
+      for (const child of Object.values(value)) deepFreeze(child);
+      return Object.freeze(value);
+    }
+    function defineOwnData(target, key, value) {
+      Object.defineProperty(target, key, {
+        configurable: true,
+        enumerable: true,
+        value,
+        writable: true
+      });
+    }
+    function snapshotPolicyRecord(value, allowedKeys) {
+      try {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          throw new TypeError("Invalid resolved scope source data");
+        }
+        const prototype = Object.getPrototypeOf(value);
+        if (prototype !== Object.prototype && prototype !== null) {
+          throw new TypeError("Invalid resolved scope source data");
+        }
+        const descriptors = Object.getOwnPropertyDescriptors(value);
+        const snapshot = /* @__PURE__ */ new Map();
+        for (const key of Reflect.ownKeys(descriptors)) {
+          const descriptor = descriptors[key];
+          if (typeof key !== "string" || !allowedKeys.has(key) || descriptor === void 0 || !Object.hasOwn(descriptor, "value")) {
+            throw new TypeError("Invalid resolved scope source data");
+          }
+          snapshot.set(key, descriptor.value);
+        }
+        return snapshot;
+      } catch {
+        throw new TypeError("Invalid resolved scope source data");
+      }
+    }
+    function policyIdentifier(value) {
+      return typeof value === "string" && value.length > 0 && value.length <= 200 && value.trim() === value && /\S/u.test(value) && !/[\u0000-\u001f\u007f]/u.test(value) ? value : null;
+    }
+    function normalizedPolicyIds(value, maximum) {
+      if (!Array.isArray(value) || value.length > maximum) return null;
+      const ids = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const candidate of value) {
+        const id = policyIdentifier(candidate);
+        if (id === null) return null;
+        if (!seen.has(id)) {
+          seen.add(id);
+          defineOwnData(ids, ids.length, id);
+        }
+      }
+      return Object.freeze(ids);
+    }
+    function createBudgetSnapshot({ capabilityId, sessionId, usage, revision } = {}) {
+      const normalizedCapabilityId = policyIdentifier(capabilityId);
+      const normalizedSessionId = policyIdentifier(sessionId);
+      if (normalizedCapabilityId === null || normalizedSessionId === null || typeof usage !== "object" || usage === null || !Number.isSafeInteger(usage.runtimeTurns) || usage.runtimeTurns < 0 || !Number.isSafeInteger(usage.evaluations) || usage.evaluations < 0 || !Number.isSafeInteger(revision) || revision < 0) {
+        throw new TypeError("Invalid budget snapshot source data");
+      }
+      const snapshot = deepFreeze({
+        capabilityId: normalizedCapabilityId,
+        sessionId: normalizedSessionId,
+        usage: {
+          runtimeTurns: usage.runtimeTurns,
+          evaluations: usage.evaluations
+        },
+        revision
+      });
+      budgetSnapshotBrands.set(snapshot, snapshot);
+      return snapshot;
+    }
+    function createResolvedScope(source = {}, { maxScopeIds = MAX_SCOPE_IDS } = {}) {
+      if (!Number.isSafeInteger(maxScopeIds) || maxScopeIds < MAX_SCOPE_IDS || maxScopeIds > MAX_TRUSTED_SCOPE_IDS) throw new TypeError("Invalid resolved scope limit");
+      const sourceSnapshot = snapshotPolicyRecord(source, RESOLVED_SCOPE_SOURCE_KEYS);
+      const method = policyIdentifier(sourceSnapshot.get("method"));
+      const mode = sourceSnapshot.get("mode");
+      if (method === null || mode !== "access" && mode !== "filter") {
+        throw new TypeError("Invalid resolved scope source data");
+      }
+      const subjectDefinition = Object.hasOwn(ACCESS_SCOPE_SUBJECTS, method) ? ACCESS_SCOPE_SUBJECTS[method] : null;
+      let subject = null;
+      if (mode === "filter" || subjectDefinition === null) {
+        if (sourceSnapshot.has("subject")) {
+          throw new TypeError("Invalid resolved scope source data");
+        }
+      } else {
+        if (!sourceSnapshot.has("subject")) {
+          throw new TypeError("Invalid resolved scope source data");
+        }
+        const subjectSnapshot = snapshotPolicyRecord(
+          sourceSnapshot.get("subject"),
+          RESOLVED_SCOPE_SUBJECT_KEYS
+        );
+        const kind = subjectSnapshot.get("kind");
+        const id = policyIdentifier(subjectSnapshot.get("id"));
+        if (subjectSnapshot.size !== RESOLVED_SCOPE_SUBJECT_KEYS.size || kind !== subjectDefinition.kind || id === null) {
+          throw new TypeError("Invalid resolved scope source data");
+        }
+        subject = deepFreeze({ kind, id });
+      }
+      const ids = {};
+      const provided = [];
+      for (const key of RESOLVED_SCOPE_KEYS) {
+        if (sourceSnapshot.has(key)) {
+          const normalized = normalizedPolicyIds(sourceSnapshot.get(key), maxScopeIds);
+          if (normalized === null) throw new TypeError("Invalid resolved scope source data");
+          defineOwnData(ids, key, normalized);
+          defineOwnData(provided, provided.length, key);
+        } else {
+          defineOwnData(ids, key, Object.freeze([]));
+        }
+      }
+      const scope = { method, mode };
+      for (const key of RESOLVED_SCOPE_KEYS) defineOwnData(scope, key, ids[key]);
+      if (subject !== null) defineOwnData(scope, "subject", subject);
+      deepFreeze(scope);
+      resolvedScopeBrands.set(scope, Object.freeze({
+        scope,
+        provided: Object.freeze(provided)
+      }));
+      return scope;
+    }
+    function uniqueStrings(values) {
+      return [...new Set(values.filter((value) => typeof value === "string"))];
+    }
+    function canonicalObjectIds(input) {
+      const request = typeof input === "object" && input !== null ? input : {};
+      const skillIds = uniqueStrings([
+        request.skillId,
+        ...Array.isArray(request.skillIds) ? request.skillIds : []
+      ]);
+      const datasetIds = uniqueStrings([
+        request.datasetId,
+        ...Array.isArray(request.datasetIds) ? request.datasetIds : []
+      ]);
+      const runtimeIds = uniqueStrings([
+        request.runtimeId,
+        ...Array.isArray(request.runtimeIds) ? request.runtimeIds : [],
+        request.runtime?.runtimeId,
+        ...Array.isArray(request.targets) ? request.targets.map((target) => target?.runtimeId) : [],
+        ...Array.isArray(request.runtimeConfigurations) ? request.runtimeConfigurations.map((runtime) => runtime?.runtimeId) : [],
+        request.judgeConfiguration?.runtimeId,
+        request.operator?.runtimeId,
+        request.judge?.runtimeId
+      ]);
+      const repositoryIds = uniqueStrings([
+        request.repositoryId,
+        ...Array.isArray(request.repositoryIds) ? request.repositoryIds : []
+      ]);
+      return { skillIds, datasetIds, runtimeIds, repositoryIds };
+    }
+    function canonicalBudget(value) {
+      const source = typeof value === "object" && value !== null ? value : {};
+      const budget = {};
+      for (const key of [
+        "maxDurationMs",
+        "maxRuntimeTurns",
+        "maxEvaluations",
+        "maxTargetExecutions",
+        "maxJudgeExecutions",
+        "maxTokens"
+      ]) {
+        if (Number.isSafeInteger(source[key]) && source[key] >= 0) budget[key] = source[key];
+      }
+      if (Number.isFinite(source.maxReportedCost) && source.maxReportedCost >= 0) {
+        budget.maxReportedCost = source.maxReportedCost;
+      }
+      return budget;
+    }
+    function requestedScope(input, { budget } = {}) {
+      const objectIds = canonicalObjectIds(input);
+      const scope = {};
+      for (const { key } of SCOPE_DEFINITIONS) {
+        if (objectIds[key].length > 0) scope[key] = objectIds[key];
+      }
+      if (budget !== void 0) scope.budget = canonicalBudget(budget);
+      return deepFreeze(scope);
+    }
+    function policyMethodDefinition(method) {
+      let contract;
+      try {
+        contract = controlDefinition(method);
+      } catch {
+        contract = null;
+      }
+      let approval = null;
+      try {
+        if (Object.hasOwn(APPROVAL_METHOD_DEFINITIONS, method)) {
+          approval = APPROVAL_METHOD_DEFINITIONS[method];
+        }
+      } catch {
+        return null;
+      }
+      if (contract !== null) {
+        return { action: contract.action, reason: approval?.reason ?? null };
+      }
+      return approval;
+    }
+    function approvalDecision(reason, input) {
+      const options2 = reason === "budget_expansion" ? { budget: input?.budget } : void 0;
+      return deepFreeze({
+        decision: "approval_required",
+        reason,
+        requestedScope: requestedScope(input, options2)
+      });
+    }
+    function operatorApprovalRequirement(method, input = {}) {
+      const definition = policyMethodDefinition(method);
+      if (definition?.reason === null || definition === null) return null;
+      return deepFreeze({
+        ...approvalDecision(definition.reason, input),
+        action: definition.action
+      });
+    }
+    var OPERATOR_METHOD_BUDGET_MINIMUMS = Object.freeze({
+      "raw_cases.dispatch": Object.freeze({ runtimeTurns: 1 }),
+      "evaluations.start": Object.freeze({ evaluations: 1 })
+    });
+    function operatorMethodBudgetMinimum(method) {
+      if (typeof method !== "string") return Object.freeze({});
+      return OPERATOR_METHOD_BUDGET_MINIMUMS[method] ?? Object.freeze({});
+    }
+    function deny(code, message) {
+      return Object.freeze({ decision: "deny", code, message });
+    }
+    function checkIdsWithinGrant(grant, referenced) {
+      for (const { key, singular } of SCOPE_DEFINITIONS) {
+        const granted = new Set(Array.isArray(grant?.scopes?.[key]) ? grant.scopes[key] : []);
+        if (referenced[key].some((id) => !granted.has(id))) {
+          return deny(
+            "OBJECT_OUT_OF_SCOPE",
+            `${singular} is outside this Operator session`
+          );
+        }
+      }
+      return null;
+    }
+    function scopeRequirement(method, input) {
+      if (method === "evaluations.list" && input?.datasetId === null) {
+        return { mode: "filter", keys: ["datasetIds"] };
+      }
+      return Object.hasOwn(SCOPE_REQUIREMENTS, method) ? SCOPE_REQUIREMENTS[method] : null;
+    }
+    function unresolvedScope() {
+      return deny(
+        "OBJECT_SCOPE_UNRESOLVED",
+        "Object scope could not be resolved for this control method"
+      );
+    }
+    function mismatchedScopeSubject() {
+      return deny(
+        "OBJECT_SCOPE_SUBJECT_MISMATCH",
+        "Resolved object scope belongs to a different request subject"
+      );
+    }
+    function checkObjectScope(grant, method, input, resolvedScope) {
+      const directDenial = checkIdsWithinGrant(grant, canonicalObjectIds(input));
+      if (directDenial !== null) return { denial: directDenial, scopeFilter: null };
+      const requirement = scopeRequirement(method, input);
+      if (requirement === null) return { denial: null, scopeFilter: null };
+      const branded = typeof resolvedScope === "object" && resolvedScope !== null ? resolvedScopeBrands.get(resolvedScope) : null;
+      if (branded === void 0 || branded === null || branded.scope.method !== method || branded.scope.mode !== requirement.mode || requirement.keys.some(
+        (key) => !branded.provided.includes(key) || requirement.mode === "access" && branded.scope[key].length === 0
+      )) {
+        return { denial: unresolvedScope(), scopeFilter: null };
+      }
+      const subjectDefinition = Object.hasOwn(ACCESS_SCOPE_SUBJECTS, method) ? ACCESS_SCOPE_SUBJECTS[method] : null;
+      if (subjectDefinition !== null) {
+        const requestedId = policyIdentifier(input?.[subjectDefinition.inputKey]);
+        if (requestedId === null || branded.scope.subject?.kind !== subjectDefinition.kind || branded.scope.subject.id !== requestedId) {
+          return { denial: mismatchedScopeSubject(), scopeFilter: null };
+        }
+      }
+      const resolvedDenial = checkIdsWithinGrant(grant, branded.scope);
+      if (resolvedDenial !== null) return { denial: resolvedDenial, scopeFilter: null };
+      if (requirement.mode !== "filter") return { denial: null, scopeFilter: null };
+      const scopeFilter = {};
+      for (const key of requirement.keys) scopeFilter[key] = branded.scope[key];
+      return { denial: null, scopeFilter: deepFreeze(scopeFilter) };
+    }
+    function allowWithoutReservation(scopeFilter) {
+      if (scopeFilter === null) return ALLOW_WITHOUT_RESERVATION;
+      return deepFreeze({ decision: "allow", reservation: null, scopeFilter });
+    }
+    function trustedBudgetSnapshot(grant, budgetSnapshot) {
+      const snapshot = typeof budgetSnapshot === "object" && budgetSnapshot !== null ? budgetSnapshotBrands.get(budgetSnapshot) : null;
+      if (snapshot === void 0 || snapshot === null) {
+        return {
+          denial: deny("BUDGET_SNAPSHOT_INVALID", "A trusted budget snapshot is required"),
+          snapshot: null
+        };
+      }
+      if (snapshot.capabilityId !== grant?.id || snapshot.sessionId !== grant?.sessionId) {
+        return {
+          denial: deny(
+            "BUDGET_SNAPSHOT_MISMATCH",
+            "Budget snapshot belongs to a different capability session"
+          ),
+          snapshot: null
+        };
+      }
+      return { denial: null, snapshot };
+    }
+    function reserveBudget(grant, snapshot, { budgetKey, usageKey, amount }) {
+      const used = snapshot.usage[usageKey];
+      const limit = grant?.budget?.[budgetKey];
+      if (!Number.isSafeInteger(limit) || limit < 0) {
+        return deny("INVALID_BUDGET_USAGE", "Budget usage is not valid");
+      }
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        return deny("INVALID_BUDGET_USAGE", "Budget reservation is not valid");
+      }
+      const requested = used + amount;
+      const nextRevision = snapshot.revision + 1;
+      if (!Number.isSafeInteger(requested) || !Number.isSafeInteger(nextRevision)) {
+        return deny(
+          "BUDGET_ARITHMETIC_OVERFLOW",
+          "Budget reservation would exceed safe integer bounds"
+        );
+      }
+      if (requested > limit) {
+        return deepFreeze({
+          decision: "approval_required",
+          reason: "budget_expansion",
+          requestedScope: {
+            budget: { [budgetKey]: requested }
+          }
+        });
+      }
+      return deepFreeze({
+        decision: "allow",
+        reservation: {
+          capabilityId: snapshot.capabilityId,
+          sessionId: snapshot.sessionId,
+          budgetKey,
+          usageKey,
+          amount,
+          expectedUsed: used,
+          expectedRevision: snapshot.revision,
+          limit
+        }
+      });
+    }
+    function decideControlPolicy({
+      grant,
+      method,
+      action,
+      input,
+      budgetSnapshot,
+      resolvedScope
+    } = {}) {
+      const definition = policyMethodDefinition(method);
+      if (definition === null) {
+        return deny("UNKNOWN_CONTROL_METHOD", "Unknown control method");
+      }
+      const canonicalAction = definition.action;
+      if (action !== void 0 && action !== canonicalAction) {
+        return deny("METHOD_ACTION_MISMATCH", "Action does not match the control method");
+      }
+      const scopeState = checkObjectScope(grant, method, input, resolvedScope);
+      if (scopeState.denial !== null) return scopeState.denial;
+      if (definition.reason !== null) return approvalDecision(definition.reason, input);
+      if (!Array.isArray(grant?.actions) || !grant.actions.includes(canonicalAction)) {
+        return deny(
+          "ACTION_NOT_GRANTED",
+          "Action is not granted for this Operator session"
+        );
+      }
+      if (!PHASE_ONE_ACTIONS.has(canonicalAction)) {
+        return deny(
+          "ACTION_NOT_ALLOWED",
+          "Action is not available in control-plane phase one"
+        );
+      }
+      let budgetState = null;
+      if (canonicalAction === "runtime.execute" || canonicalAction === "evaluations.execute") {
+        const trusted = trustedBudgetSnapshot(grant, budgetSnapshot);
+        if (trusted.denial !== null) return trusted.denial;
+        budgetState = trusted.snapshot;
+      }
+      if (canonicalAction === "runtime.execute") {
+        if (method !== "raw_cases.dispatch") {
+          return deny(
+            "ACTION_NOT_ALLOWED",
+            "Action is not available in control-plane phase one"
+          );
+        }
+        return reserveBudget(grant, budgetState, {
+          budgetKey: "maxRuntimeTurns",
+          usageKey: "runtimeTurns",
+          amount: operatorMethodBudgetMinimum(method).runtimeTurns
+        });
+      }
+      if (canonicalAction === "evaluations.execute") {
+        if (method === "evaluations.cancel") {
+          return allowWithoutReservation(scopeState.scopeFilter);
+        }
+        if (method === "evaluations.start") {
+          return reserveBudget(grant, budgetState, {
+            budgetKey: "maxEvaluations",
+            usageKey: "evaluations",
+            amount: operatorMethodBudgetMinimum(method).evaluations
+          });
+        }
+        return deny(
+          "ACTION_NOT_ALLOWED",
+          "Action is not available in control-plane phase one"
+        );
+      }
+      return allowWithoutReservation(scopeState.scopeFilter);
+    }
+    var ControlPolicy = class {
+      decide(request) {
+        return decideControlPolicy(request);
+      }
+    };
+    function createControlPolicy() {
+      return Object.freeze(new ControlPolicy());
+    }
+    module.exports = {
+      ControlPolicy,
+      createBudgetSnapshot,
+      createControlPolicy,
+      createResolvedScope,
+      decide: decideControlPolicy,
+      decideControlPolicy,
+      operatorApprovalRequirement,
+      operatorMethodBudgetMinimum
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/control-plane/control-plane.cjs
+var require_control_plane = __commonJS({
+  "../../desktop/rolling-skill/src/control-plane/control-plane.cjs"(exports, module) {
+    var { createHash, randomUUID } = __require("node:crypto");
+    var { isAbsolute, resolve } = __require("node:path");
+    var intrinsicPromiseResolve = Promise.resolve.bind(Promise);
+    var intrinsicPromiseThen = Promise.prototype.then;
+    var { CapabilityError, capabilityScopeLimit } = require_capability_store();
+    var {
+      CONTROL_METHODS,
+      PUBLIC_CONTROL_ERROR_CODES,
+      controlDefinition,
+      createPublicControlError,
+      parseControlInput,
+      parseControlOutput,
+      publicControlError
+    } = require_contracts();
+    var { createBudgetSnapshot, createResolvedScope } = require_policy();
+    var IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1e3;
+    var DEFAULT_IDEMPOTENCY_LIMIT = 1e3;
+    var MAX_BUDGET_CAS_ATTEMPTS = 4;
+    var MAX_OPERATOR_EXECUTOR_RECORDS = 1024;
+    var OPERATOR_EXECUTOR_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1e3;
+    var stateByControlPlane = /* @__PURE__ */ new WeakMap();
+    var serviceDiagnosticStates = /* @__PURE__ */ new WeakMap();
+    var operatorExecutorLeaseStates = /* @__PURE__ */ new WeakMap();
+    var SAFE_CONTROL_MESSAGES = Object.freeze({
+      CONTROL_ERROR: "Control operation failed"
+    });
+    var CAPABILITY_PUBLIC_CODES = /* @__PURE__ */ new Set([
+      "CAPABILITY_INVALID",
+      "CAPABILITY_REVOKED",
+      "CAPABILITY_EXPIRED",
+      "CAPABILITY_SESSION_MISMATCH",
+      "CAPABILITY_ACTION_NOT_GRANTED"
+    ]);
+    var PUBLIC_CONTROL_ERROR_CODE_SET = new Set(PUBLIC_CONTROL_ERROR_CODES);
+    function stableError(code) {
+      const error = new Error(SAFE_CONTROL_MESSAGES[code] ?? SAFE_CONTROL_MESSAGES.CONTROL_ERROR);
+      error.code = code;
+      error.retryable = false;
+      error.details = null;
+      return error;
+    }
+    function invalidEnvelope(method, path) {
+      return createPublicControlError("INVALID_ARGUMENT", {
+        details: { method, issues: [{ path: [path] }] },
+        internalMessage: "Invalid control invocation envelope"
+      });
+    }
+    function decisionError(decision, action) {
+      if (decision?.decision === "approval_required") {
+        return createPublicControlError("APPROVAL_REQUIRED", {
+          details: { action, reason: decision.reason }
+        });
+      }
+      const error = createPublicControlError("FORBIDDEN", { details: { action } });
+      error.decision = "deny";
+      if (typeof decision?.code === "string") error.decisionCode = decision.code;
+      return error;
+    }
+    function safeControlError(error) {
+      try {
+        if (publicControlError(error).code !== "CONTROL_ERROR") return error;
+      } catch {
+      }
+      return stableError("CONTROL_ERROR");
+    }
+    function authorizationError(error) {
+      let capabilityError = false;
+      try {
+        capabilityError = error instanceof CapabilityError;
+      } catch {
+        return stableError("CONTROL_ERROR");
+      }
+      if (!capabilityError) return stableError("CONTROL_ERROR");
+      let code;
+      try {
+        code = error.code;
+      } catch {
+        return stableError("CONTROL_ERROR");
+      }
+      return CAPABILITY_PUBLIC_CODES.has(code) ? createPublicControlError(code) : stableError("CONTROL_ERROR");
+    }
+    function terminalErrorSnapshot(error) {
+      const published = publicControlError(error);
+      return immutableSnapshot(published);
+    }
+    function terminalError(snapshot) {
+      if (snapshot.code === "CONTROL_ERROR") return stableError("CONTROL_ERROR");
+      if (!PUBLIC_CONTROL_ERROR_CODE_SET.has(snapshot.code)) return stableError("CONTROL_ERROR");
+      return createPublicControlError(snapshot.code, { details: snapshot.details });
+    }
+    function canonicalValue(value) {
+      if (Array.isArray(value)) return value.map(canonicalValue);
+      if (value && typeof value === "object") {
+        const result = {};
+        for (const key of Object.keys(value).sort()) {
+          if (value[key] !== void 0) result[key] = canonicalValue(value[key]);
+        }
+        return result;
+      }
+      return value;
+    }
+    function canonicalDigest(value) {
+      return createHash("sha256").update(JSON.stringify(canonicalValue(value)), "utf8").digest("hex");
+    }
+    function immutableSnapshot(value) {
+      const snapshot = JSON.parse(JSON.stringify(value));
+      const freeze = (candidate) => {
+        if (!candidate || typeof candidate !== "object" || Object.isFrozen(candidate)) {
+          return candidate;
+        }
+        for (const child of Object.values(candidate)) freeze(child);
+        return Object.freeze(candidate);
+      };
+      return freeze(snapshot);
+    }
+    function replayCopy(value) {
+      return structuredClone(value);
+    }
+    function createServiceErrorDiagnosticChannel({ maxMessageLength = 1e3 } = {}) {
+      if (!Number.isSafeInteger(maxMessageLength) || maxMessageLength < 1 || maxMessageLength > 4096) throw new TypeError("Service diagnostic message limit is invalid");
+      const diagnostics = /* @__PURE__ */ new WeakMap();
+      const channel = Object.freeze({
+        capture(publicError, serviceError) {
+          if (!publicError || typeof publicError !== "object" && typeof publicError !== "function") {
+            return;
+          }
+          let message = "";
+          try {
+            message = typeof serviceError?.message === "string" ? serviceError.message : String(serviceError ?? "");
+          } catch {
+          }
+          message = message.slice(0, maxMessageLength);
+          if (message) diagnostics.set(publicError, Object.freeze({ message }));
+        },
+        consume(publicError) {
+          if (!publicError || typeof publicError !== "object" && typeof publicError !== "function") {
+            return null;
+          }
+          const diagnostic = diagnostics.get(publicError) ?? null;
+          diagnostics.delete(publicError);
+          return diagnostic;
+        }
+      });
+      serviceDiagnosticStates.set(channel, true);
+      return channel;
+    }
+    var IdempotencyCache = class {
+      constructor({ clock, limit, ttlMs }) {
+        this.clock = clock;
+        this.limit = limit;
+        this.ttlMs = ttlMs;
+        this.entries = /* @__PURE__ */ new Map();
+      }
+      sweep(now) {
+        for (const [key, entry] of this.entries) {
+          if (entry.state === "terminal" && entry.expiresAt <= now) this.entries.delete(key);
+        }
+      }
+      makeRoom() {
+        if (this.entries.size < this.limit) return;
+        throw createPublicControlError("IDEMPOTENCY_CAPACITY");
+      }
+      prepare(capabilityId, method, input) {
+        const idempotencyKey = input?.idempotencyKey;
+        if (typeof idempotencyKey !== "string") return { kind: "none" };
+        const now = this.clock();
+        this.sweep(now);
+        const key = `${capabilityId}\0${method}\0${idempotencyKey}`;
+        const inputDigest = canonicalDigest(input);
+        const existing = this.entries.get(key);
+        if (existing) {
+          if (existing.inputDigest !== inputDigest) {
+            throw createPublicControlError("IDEMPOTENCY_CONFLICT", {
+              details: { method }
+            });
+          }
+          if (existing.state === "terminal") {
+            if (existing.terminalKind === "error") {
+              return { kind: "error", error: terminalError(existing.error) };
+            }
+            return { kind: "replay", result: replayCopy(existing.result) };
+          }
+          return {
+            kind: "pending",
+            result: new Promise((resolve2, reject) => existing.waiters.push({ resolve: resolve2, reject }))
+          };
+        }
+        this.makeRoom();
+        const entry = {
+          key,
+          inputDigest,
+          state: "pending",
+          waiters: []
+        };
+        this.entries.set(key, entry);
+        return { kind: "owner", entry };
+      }
+      complete(entry, value) {
+        if (!entry || this.entries.get(entry.key) !== entry) return replayCopy(value);
+        const result = immutableSnapshot(value);
+        const completedAt = this.clock();
+        entry.state = "terminal";
+        entry.terminalKind = "result";
+        entry.result = result;
+        entry.resultDigest = canonicalDigest(result);
+        entry.completedAt = completedAt;
+        entry.expiresAt = completedAt + this.ttlMs;
+        const waiters = entry.waiters.splice(0);
+        for (const waiter of waiters) waiter.resolve(replayCopy(result));
+        return replayCopy(result);
+      }
+      completeError(entry, error) {
+        if (!entry || this.entries.get(entry.key) !== entry) return;
+        const snapshot = terminalErrorSnapshot(error);
+        const completedAt = this.clock();
+        entry.state = "terminal";
+        entry.terminalKind = "error";
+        entry.error = snapshot;
+        entry.resultDigest = canonicalDigest(snapshot);
+        entry.completedAt = completedAt;
+        entry.expiresAt = completedAt + this.ttlMs;
+        const waiters = entry.waiters.splice(0);
+        for (const waiter of waiters) waiter.reject(terminalError(snapshot));
+      }
+      fail(entry, error) {
+        if (!entry || this.entries.get(entry.key) !== entry) return;
+        this.entries.delete(entry.key);
+        for (const waiter of entry.waiters.splice(0)) waiter.reject(error);
+      }
+    };
+    var BudgetLedger = class {
+      constructor() {
+        this.records = /* @__PURE__ */ new Map();
+      }
+      key(capabilityId, sessionId) {
+        return `${capabilityId}\0${sessionId}`;
+      }
+      read(grant) {
+        const key = this.key(grant.id, grant.sessionId);
+        const current = this.records.get(key) ?? {
+          usage: { runtimeTurns: 0, evaluations: 0 },
+          revision: 0
+        };
+        return {
+          usage: {
+            runtimeTurns: current.usage.runtimeTurns,
+            evaluations: current.usage.evaluations
+          },
+          revision: current.revision
+        };
+      }
+      commit(reservation, grant) {
+        if (reservation?.capabilityId !== grant.id || reservation?.sessionId !== grant.sessionId || reservation?.amount !== 1 || !["runtimeTurns", "evaluations"].includes(reservation?.usageKey) || !["maxRuntimeTurns", "maxEvaluations"].includes(reservation?.budgetKey) || reservation.usageKey === "runtimeTurns" && reservation.budgetKey !== "maxRuntimeTurns" || reservation.usageKey === "evaluations" && reservation.budgetKey !== "maxEvaluations" || !Number.isSafeInteger(reservation.expectedUsed) || reservation.expectedUsed < 0 || !Number.isSafeInteger(reservation.expectedRevision) || reservation.expectedRevision < 0 || !Number.isSafeInteger(reservation.limit) || reservation.limit < 0) return false;
+        const key = this.key(reservation.capabilityId, reservation.sessionId);
+        const current = this.records.get(key) ?? {
+          usage: { runtimeTurns: 0, evaluations: 0 },
+          revision: 0
+        };
+        if (current.revision !== reservation.expectedRevision || current.usage[reservation.usageKey] !== reservation.expectedUsed) return false;
+        const nextUsed = reservation.expectedUsed + reservation.amount;
+        const nextRevision = reservation.expectedRevision + 1;
+        if (!Number.isSafeInteger(nextUsed) || !Number.isSafeInteger(nextRevision) || nextUsed > reservation.limit) return false;
+        this.records.set(key, {
+          usage: {
+            runtimeTurns: reservation.usageKey === "runtimeTurns" ? nextUsed : current.usage.runtimeTurns,
+            evaluations: reservation.usageKey === "evaluations" ? nextUsed : current.usage.evaluations
+          },
+          revision: nextRevision
+        });
+        return true;
+      }
+    };
+    function containsAuditSecret(value, bearerSecret) {
+      return typeof value === "string" && typeof bearerSecret === "string" && bearerSecret.length > 0 && value.includes(bearerSecret);
+    }
+    function boundedAuditId(value, bearerSecret = null) {
+      if (typeof value !== "string" || value.length === 0) return null;
+      if (containsAuditSecret(value, bearerSecret)) return "[redacted]";
+      if (value.length <= 200 && !/[\\/\u0000-\u001f\u007f]/u.test(value)) return value;
+      return `sha256:${createHash("sha256").update(value, "utf8").digest("hex").slice(0, 24)}`;
+    }
+    function auditObjectIds(input, resolvedScope, bearerSecret) {
+      const candidates = {
+        rawCaseIds: [input?.id],
+        datasetIds: [input?.datasetId, ...resolvedScope?.datasetIds ?? []],
+        caseIds: Array.isArray(input?.caseIds) ? input.caseIds : [],
+        runIds: [input?.runId],
+        skillIds: [input?.skillId, ...resolvedScope?.skillIds ?? []],
+        runtimeIds: [
+          input?.runtimeId,
+          input?.runtime?.runtimeId,
+          ...Array.isArray(input?.runtimeConfigurations) ? input.runtimeConfigurations.map((entry) => entry?.runtimeId) : [],
+          input?.judgeConfiguration?.runtimeId,
+          ...resolvedScope?.runtimeIds ?? []
+        ]
+      };
+      const result = {};
+      for (const [key, values] of Object.entries(candidates)) {
+        const normalized = [...new Set(values.map((value) => boundedAuditId(value, bearerSecret)).filter(Boolean))].slice(0, 20);
+        if (normalized.length > 0) result[key] = normalized;
+      }
+      return result;
+    }
+    function boundedAuditMethod(value, bearerSecret = null) {
+      if (containsAuditSecret(value, bearerSecret)) return "[redacted]";
+      if (typeof value === "string" && value.length <= 200 && /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/u.test(value)) return value;
+      const source = typeof value === "string" ? value : String(value);
+      return `sha256:${createHash("sha256").update(source, "utf8").digest("hex").slice(0, 24)}`;
+    }
+    function snapshotControlRequest(value) {
+      try {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          throw new TypeError("Invalid control invocation envelope");
+        }
+        const prototype = Object.getPrototypeOf(value);
+        if (prototype !== Object.prototype && prototype !== null) {
+          throw new TypeError("Invalid control invocation envelope");
+        }
+        const descriptors = Object.getOwnPropertyDescriptors(value);
+        const snapshot = {};
+        for (const key of Reflect.ownKeys(descriptors)) {
+          const descriptor = descriptors[key];
+          if (typeof key !== "string" || !Object.hasOwn(descriptor, "value")) {
+            throw new TypeError("Invalid control invocation envelope");
+          }
+          if (["method", "params", "sessionId", "token"].includes(key)) {
+            snapshot[key] = descriptor.value;
+          }
+        }
+        return snapshot;
+      } catch {
+        throw new TypeError("Invalid control invocation envelope");
+      }
+    }
+    function observeWithoutThrow(value, onRejected = null) {
+      const reject = () => {
+        if (onRejected === null) return;
+        try {
+          onRejected();
+        } catch {
+        }
+      };
+      try {
+        intrinsicPromiseThen.call(value, void 0, reject);
+        return;
+      } catch (error) {
+        if (!(error instanceof TypeError)) {
+          reject();
+          return;
+        }
+      }
+      let assimilated;
+      try {
+        assimilated = intrinsicPromiseResolve(value);
+      } catch {
+        reject();
+        return;
+      }
+      try {
+        intrinsicPromiseThen.call(assimilated, void 0, reject);
+      } catch {
+        reject();
+      }
+    }
+    function auditFailure(state) {
+      let diagnostic;
+      try {
+        diagnostic = state.onAuditError?.(Object.freeze({ code: "AUDIT_SINK_FAILED" }));
+      } catch {
+        return;
+      }
+      observeWithoutThrow(diagnostic);
+    }
+    function sanitizeAuditValue(value, bearerSecret) {
+      if (typeof value === "string") {
+        return containsAuditSecret(value, bearerSecret) ? "[redacted]" : value;
+      }
+      if (Array.isArray(value)) {
+        return value.map((entry) => sanitizeAuditValue(entry, bearerSecret));
+      }
+      if (value && typeof value === "object") {
+        const sanitized = {};
+        for (const [key, entry] of Object.entries(value)) {
+          sanitized[key] = sanitizeAuditValue(entry, bearerSecret);
+        }
+        return sanitized;
+      }
+      return value;
+    }
+    function writeAudit(state, event, bearerSecret) {
+      if (!state.auditSink) return;
+      let operation;
+      try {
+        const frozen = immutableSnapshot(sanitizeAuditValue(event, bearerSecret));
+        operation = typeof state.auditSink === "function" ? state.auditSink(frozen) : state.auditSink.record(frozen);
+      } catch {
+        auditFailure(state);
+        return;
+      }
+      observeWithoutThrow(operation, () => auditFailure(state));
+    }
+    function auditTimestamp(state) {
+      try {
+        const value = state.clock();
+        return Number.isFinite(value) ? value : null;
+      } catch {
+        return null;
+      }
+    }
+    function finalizeAudit(state, {
+      bearerSecret,
+      capabilityId,
+      errorCode,
+      input,
+      method,
+      outcome,
+      resolvedScope,
+      sessionId,
+      startedAt
+    }) {
+      if (!state.auditSink) return;
+      try {
+        const finishedAt = auditTimestamp(state);
+        if (finishedAt === null || startedAt === null) {
+          auditFailure(state);
+          return;
+        }
+        const elapsed = finishedAt - startedAt;
+        const durationMs = Number.isFinite(elapsed) ? Math.max(0, Math.trunc(elapsed)) : 0;
+        writeAudit(state, {
+          capabilityId,
+          sessionId,
+          method,
+          objectIds: auditObjectIds(input, resolvedScope, bearerSecret),
+          durationMs,
+          outcome,
+          errorCode
+        }, bearerSecret);
+      } catch {
+        auditFailure(state);
+      }
+    }
+    function trustedResolution(services, method, input, grant) {
+      return typeof services.resolveScope === "function" ? services.resolveScope(method, input, grant) : null;
+    }
+    async function trustedFactsResolution(services, method, input, context) {
+      if (typeof services.resolveTrustedFacts !== "function") return null;
+      const facts = await services.resolveTrustedFacts({ method, params: input, controlContext: context });
+      if (facts === null || facts === void 0) return null;
+      const snapshot = immutableSnapshot(facts);
+      if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+        throw new Error("Control trusted facts must be a plain object");
+      }
+      return snapshot;
+    }
+    function operatorExecutorInput(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new TypeError("Operator executor registration is invalid");
+      }
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new TypeError("Operator executor registration is invalid");
+      }
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      const allowed = /* @__PURE__ */ new Set([
+        "sessionId",
+        "capabilityId",
+        "budgetSnapshot",
+        "assertLive",
+        "contextSnapshot",
+        "execute",
+        "enabled",
+        "replace"
+      ]);
+      const input = {};
+      for (const key of Reflect.ownKeys(descriptors)) {
+        const descriptor = descriptors[key];
+        if (typeof key !== "string" || !allowed.has(key) || !Object.hasOwn(descriptor, "value")) throw new TypeError("Operator executor registration is invalid");
+        input[key] = descriptor.value;
+      }
+      if (identifier(input.sessionId) === null || identifier(input.capabilityId) === null || typeof input.budgetSnapshot !== "function" || typeof input.assertLive !== "function" || input.contextSnapshot !== void 0 && typeof input.contextSnapshot !== "function" || typeof input.execute !== "function" || input.enabled !== void 0 && typeof input.enabled !== "boolean") throw new TypeError("Operator executor registration is invalid");
+      return input;
+    }
+    function operatorSessionContext(route) {
+      if (route.contextSnapshot === null) return null;
+      const value = route.contextSnapshot();
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Operator session context is invalid");
+      }
+      const prototype = Object.getPrototypeOf(value);
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      if (prototype !== Object.prototype && prototype !== null || Reflect.ownKeys(descriptors).length !== 2 || !Object.hasOwn(descriptors, "workspaceRoot") || !Object.hasOwn(descriptors, "runtimeId") || Object.values(descriptors).some((descriptor) => !Object.hasOwn(descriptor, "value")) || identifier(descriptors.runtimeId.value) === null || typeof descriptors.workspaceRoot.value !== "string" || descriptors.workspaceRoot.value.length === 0 || descriptors.workspaceRoot.value.length > 8192 || !isAbsolute(descriptors.workspaceRoot.value)) throw new Error("Operator session context is invalid");
+      return Object.freeze({
+        workspaceRoot: resolve(descriptors.workspaceRoot.value),
+        runtimeId: descriptors.runtimeId.value
+      });
+    }
+    function sweepOperatorExecutors(state) {
+      if (state.operatorExecutors.size === 0) return;
+      let now = null;
+      try {
+        const candidate = state.clock();
+        if (Number.isFinite(candidate) && candidate >= 0) now = candidate;
+      } catch {
+      }
+      if (now === null) return;
+      for (const [sessionId, record] of state.operatorExecutors) {
+        if (record.tombstone === true && record.expiresAt <= now) {
+          state.operatorExecutors.delete(sessionId);
+        }
+      }
+    }
+    function retireOperatorExecutor(state, record) {
+      record.enabled = false;
+      record.registered = false;
+      record.budgetSnapshot = null;
+      record.assertLive = null;
+      record.contextSnapshot = null;
+      record.execute = null;
+      if (state.operatorExecutors.get(record.sessionId) === record) {
+        let now = null;
+        try {
+          const candidate = state.clock();
+          if (Number.isFinite(candidate) && candidate >= 0) now = candidate;
+        } catch {
+        }
+        state.operatorExecutors.set(record.sessionId, Object.freeze({
+          tombstone: true,
+          sessionId: record.sessionId,
+          capabilityId: record.capabilityId,
+          expiresAt: now === null ? Number.MAX_SAFE_INTEGER : Math.min(Number.MAX_SAFE_INTEGER, now + OPERATOR_EXECUTOR_TOMBSTONE_TTL_MS)
+        }));
+      }
+    }
+    function operatorRouteForGrant(state, grant) {
+      sweepOperatorExecutors(state);
+      const route = state.operatorExecutors.get(grant.sessionId);
+      if (route === void 0) return null;
+      if (route.capabilityId !== grant.id) {
+        throw createPublicControlError("CAPABILITY_REVOKED");
+      }
+      if (route.tombstone === true) throw createPublicControlError("CONTROL_BUSY");
+      return route;
+    }
+    function assertOperatorRouteLive(state, route) {
+      if (state.operatorExecutors.get(route.sessionId) !== route || !route.registered || !route.enabled) throw createPublicControlError("CONTROL_BUSY");
+      if (route.assertLive() !== true) throw createPublicControlError("CONTROL_BUSY");
+    }
+    function validateConstructor({ services, capabilities, policy }) {
+      if (!services || typeof services !== "object") throw new TypeError("Control services are required");
+      for (const method of CONTROL_METHODS) {
+        if (typeof services[method] !== "function") {
+          throw new TypeError(`Control service is missing: ${method}`);
+        }
+      }
+      if (typeof capabilities?.authorize !== "function") {
+        throw new TypeError("Capability store is required");
+      }
+      if (typeof policy?.decide !== "function") throw new TypeError("Control policy is required");
+    }
+    var ControlPlane = class {
+      constructor(options2 = {}) {
+        const capabilities = options2.capabilities ?? options2.capabilityStore;
+        validateConstructor({ services: options2.services, capabilities, policy: options2.policy });
+        const clock = typeof options2.clock === "function" ? options2.clock : Date.now;
+        const idempotencyLimit = Number.isSafeInteger(options2.idempotencyLimit) && options2.idempotencyLimit > 0 ? options2.idempotencyLimit : DEFAULT_IDEMPOTENCY_LIMIT;
+        stateByControlPlane.set(this, {
+          services: options2.services,
+          capabilities,
+          policy: options2.policy,
+          clock,
+          budgetLedger: new BudgetLedger(),
+          idempotency: new IdempotencyCache({
+            clock,
+            limit: idempotencyLimit,
+            ttlMs: IDEMPOTENCY_TTL_MS
+          }),
+          auditSink: options2.auditSink ?? null,
+          onAuditError: typeof options2.onAuditError === "function" ? options2.onAuditError : null,
+          serviceErrorDiagnostics: serviceDiagnosticStates.has(options2.serviceErrorDiagnostics) ? options2.serviceErrorDiagnostics : null,
+          operatorExecutors: /* @__PURE__ */ new Map()
+        });
+        Object.freeze(this);
+      }
+      registerOperatorExecutor(registration = {}) {
+        const state = stateByControlPlane.get(this);
+        const input = operatorExecutorInput(registration);
+        sweepOperatorExecutors(state);
+        const current = state.operatorExecutors.get(input.sessionId) ?? null;
+        const replacement = input.replace === void 0 ? null : operatorExecutorLeaseStates.get(input.replace) ?? null;
+        if (current !== null && current.tombstone !== true && current.registered && replacement !== current) {
+          throw new Error("Operator executor replacement lease is required");
+        }
+        if (current === null && input.replace !== void 0 || current !== null && input.replace !== void 0 && replacement !== current) {
+          throw new Error("Operator executor replacement lease is stale");
+        }
+        if (current === null && state.operatorExecutors.size >= MAX_OPERATOR_EXECUTOR_RECORDS) {
+          throw new Error("Operator executor registry capacity is exhausted");
+        }
+        const record = {
+          sessionId: input.sessionId,
+          capabilityId: input.capabilityId,
+          budgetSnapshot: input.budgetSnapshot,
+          assertLive: input.assertLive,
+          contextSnapshot: input.contextSnapshot ?? null,
+          execute: input.execute,
+          enabled: input.enabled !== false,
+          registered: true
+        };
+        const lease = Object.freeze({
+          disable() {
+            if (state.operatorExecutors.get(record.sessionId) !== record || !record.registered) {
+              return false;
+            }
+            record.enabled = false;
+            return true;
+          },
+          enable() {
+            if (state.operatorExecutors.get(record.sessionId) !== record || !record.registered) {
+              return false;
+            }
+            record.enabled = true;
+            return true;
+          },
+          unregister() {
+            if (state.operatorExecutors.get(record.sessionId) !== record || !record.registered) {
+              return false;
+            }
+            retireOperatorExecutor(state, record);
+            return true;
+          }
+        });
+        operatorExecutorLeaseStates.set(lease, record);
+        state.operatorExecutors.set(record.sessionId, record);
+        if (current !== null && current.tombstone !== true) {
+          current.enabled = false;
+          current.registered = false;
+          current.budgetSnapshot = null;
+          current.assertLive = null;
+          current.contextSnapshot = null;
+          current.execute = null;
+        }
+        return lease;
+      }
+      operatorExecutorRegistryStats() {
+        const state = stateByControlPlane.get(this);
+        sweepOperatorExecutors(state);
+        let live = 0;
+        let tombstones = 0;
+        let retainedCallbacks = 0;
+        for (const record of state.operatorExecutors.values()) {
+          if (record.tombstone === true) {
+            tombstones += 1;
+            continue;
+          }
+          live += 1;
+          for (const key of ["budgetSnapshot", "assertLive", "contextSnapshot", "execute"]) {
+            if (typeof record[key] === "function") retainedCallbacks += 1;
+          }
+        }
+        return Object.freeze({
+          live,
+          tombstones,
+          retainedCallbacks,
+          total: state.operatorExecutors.size
+        });
+      }
+      async invoke(request = {}) {
+        const state = stateByControlPlane.get(this);
+        const startedAt = state.auditSink ? auditTimestamp(state) : null;
+        let method = boundedAuditMethod(void 0);
+        let envelope = null;
+        let bearerSecret = null;
+        let input = null;
+        let grant = null;
+        let auditCapabilityId = null;
+        let auditSessionId = null;
+        let resolution = null;
+        let resolvedScope;
+        let executionContext = null;
+        let outcome = "error";
+        let errorCode = null;
+        let idempotencyOwner = null;
+        let executionStarted = false;
+        let serviceFailure = null;
+        let operatorRoute = null;
+        let operatorExecution = false;
+        try {
+          envelope = snapshotControlRequest(request);
+          bearerSecret = typeof envelope.token === "string" ? envelope.token : null;
+          method = boundedAuditMethod(envelope.method, bearerSecret);
+          const definition = controlDefinition(envelope.method);
+          method = envelope.method;
+          input = parseControlInput(method, envelope.params);
+          if (identifier(envelope.sessionId) === null) throw invalidEnvelope(method, "sessionId");
+          try {
+            grant = state.capabilities.authorize(
+              envelope.token,
+              definition.action,
+              envelope.sessionId
+            );
+          } catch (error) {
+            throw authorizationError(error);
+          }
+          auditCapabilityId = boundedAuditId(grant.id, bearerSecret);
+          auditSessionId = boundedAuditId(grant.sessionId, bearerSecret);
+          operatorRoute = operatorRouteForGrant(state, grant);
+          if (operatorRoute !== null) assertOperatorRouteLive(state, operatorRoute);
+          if (operatorRoute !== null && definition.operatorExposed !== true) {
+            throw decisionError({ decision: "deny", code: "OPERATOR_METHOD_NOT_EXPOSED" }, definition.action);
+          }
+          const idempotency = state.idempotency.prepare(grant.id, method, input);
+          if (idempotency.kind === "replay") {
+            outcome = "success";
+            return parseControlOutput(method, idempotency.result);
+          }
+          if (idempotency.kind === "pending") {
+            const repeated = await idempotency.result;
+            outcome = "success";
+            return parseControlOutput(method, repeated);
+          }
+          if (idempotency.kind === "error") throw idempotency.error;
+          if (idempotency.kind === "owner") idempotencyOwner = idempotency.entry;
+          const source = await trustedResolution(state.services, method, input, grant);
+          if (source !== null && source !== void 0) {
+            if (Object.hasOwn(source, "scope") && Object.hasOwn(source, "executionContext")) {
+              resolution = source.scope;
+              executionContext = source.executionContext;
+              if (executionContext !== null && (!executionContext || typeof executionContext !== "object" || !Object.isFrozen(executionContext))) {
+                throw new Error("Control execution context must be immutable");
+              }
+            } else {
+              resolution = source;
+            }
+          }
+          resolvedScope = resolution === null ? void 0 : createResolvedScope(resolution, {
+            maxScopeIds: capabilityScopeLimit(grant)
+          });
+          let decision = null;
+          for (let attempt = 0; attempt < MAX_BUDGET_CAS_ATTEMPTS; attempt += 1) {
+            let budgetSnapshot;
+            if (definition.action === "runtime.execute" || definition.action === "evaluations.execute") {
+              const budget = operatorRoute === null ? state.budgetLedger.read(grant) : operatorRoute.budgetSnapshot();
+              budgetSnapshot = createBudgetSnapshot({
+                capabilityId: grant.id,
+                sessionId: grant.sessionId,
+                usage: budget.usage,
+                revision: budget.revision
+              });
+            }
+            decision = state.policy.decide({
+              grant,
+              method,
+              action: definition.action,
+              input,
+              resolvedScope,
+              budgetSnapshot
+            });
+            if (!decision || typeof decision.then === "function") {
+              throw new Error("Control policy must return a synchronous decision");
+            }
+            if (decision.decision !== "allow") {
+              if (decision.decision === "approval_required" && operatorRoute !== null) break;
+              throw decisionError(decision, definition.action);
+            }
+            if (operatorRoute !== null) break;
+            if (decision.reservation === null) break;
+            if (state.budgetLedger.commit(decision.reservation, grant)) break;
+            decision = null;
+          }
+          if (decision === null) throw createPublicControlError("CONTROL_BUSY");
+          const operatorSession = operatorRoute === null ? null : operatorSessionContext(operatorRoute);
+          if (operatorRoute !== null) assertOperatorRouteLive(state, operatorRoute);
+          const context = Object.freeze({
+            capabilityId: grant.id,
+            sessionId: grant.sessionId,
+            grant,
+            scopeFilter: decision.scopeFilter ?? null,
+            executionContext,
+            operatorSession
+          });
+          executionStarted = true;
+          let rawResult;
+          if (operatorRoute !== null) {
+            assertOperatorRouteLive(state, operatorRoute);
+            operatorExecution = true;
+            const trustedFacts = await trustedFactsResolution(
+              state.services,
+              method,
+              input,
+              context
+            );
+            assertOperatorRouteLive(state, operatorRoute);
+            rawResult = await operatorRoute.execute(Object.freeze({
+              invocationId: randomUUID(),
+              method,
+              input,
+              policyDecision: decision,
+              context,
+              ...trustedFacts === null ? {} : { trustedFacts }
+            }));
+          } else {
+            try {
+              rawResult = await state.services[method](input, context);
+            } catch (error) {
+              serviceFailure = error;
+              throw error;
+            }
+          }
+          const parsed = parseControlOutput(method, rawResult);
+          const result = idempotencyOwner ? state.idempotency.complete(idempotencyOwner, parsed) : parsed;
+          idempotencyOwner = null;
+          outcome = "success";
+          return result;
+        } catch (error) {
+          const safe = safeControlError(error, method);
+          if (serviceFailure !== null) {
+            state.serviceErrorDiagnostics?.capture(safe, serviceFailure);
+          }
+          if (idempotencyOwner) {
+            if (executionStarted && safe.code !== "CONTROL_BUSY" && !(operatorExecution && safe.code === "APPROVAL_REQUIRED")) {
+              state.idempotency.completeError(idempotencyOwner, safe);
+            } else state.idempotency.fail(idempotencyOwner, safe);
+            idempotencyOwner = null;
+          }
+          errorCode = safe.code ?? "CONTROL_ERROR";
+          throw safe;
+        } finally {
+          if (state.auditSink) {
+            finalizeAudit(state, {
+              bearerSecret,
+              capabilityId: auditCapabilityId,
+              sessionId: auditSessionId,
+              method,
+              input,
+              resolvedScope,
+              startedAt,
+              outcome,
+              errorCode
+            });
+          }
+        }
+      }
+    };
+    function identifier(value) {
+      return typeof value === "string" && value.length > 0 && value.length <= 200 && value.trim() === value && /\S/u.test(value) && !/[\u0000-\u001f\u007f]/u.test(value) ? value : null;
+    }
+    module.exports = {
+      ControlPlane,
+      createServiceErrorDiagnosticChannel,
+      DEFAULT_IDEMPOTENCY_LIMIT,
+      IDEMPOTENCY_TTL_MS,
+      MAX_OPERATOR_EXECUTOR_RECORDS,
+      OPERATOR_EXECUTOR_TOMBSTONE_TTL_MS
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/control-plane/domain-services.cjs
+var require_domain_services = __commonJS({
+  "../../desktop/rolling-skill/src/control-plane/domain-services.cjs"(exports, module) {
+    var {
+      CONTROL_METHODS,
+      createPublicControlError,
+      decodeCursor,
+      encodeCursor
+    } = require_contracts();
+    var {
+      normalizedSkillName,
+      RawCaseConflictError
+    } = require_raw_case_store();
+    var { isTrustedHumanCapability } = require_capability_store();
+    var { createHash } = __require("node:crypto");
+    var { isAbsolute, relative, resolve, sep } = __require("node:path");
+    var TRUSTED_MUTATION_METHODS = /* @__PURE__ */ new Set([
+      "datasets.delete",
+      "datasets.delete_case",
+      "curation.save",
+      "curation.discard",
+      "rubrics.publish",
+      "skills.create_candidate",
+      "skills.release",
+      "installations.start",
+      "installations.cancel"
+    ]);
+    var FILTER_METHODS = Object.freeze({
+      "context.get": "runtimeIds",
+      "raw_cases.list": "skillIds",
+      "runtimes.list": "runtimeIds",
+      "datasets.list": "datasetIds",
+      "skill_repositories.list": "repositoryIds",
+      "skills.list": "skillIds",
+      "skill_versions.list": "skillIds"
+    });
+    function invalidArgument(method, path, internalMessage = "Invalid control domain input") {
+      return createPublicControlError("INVALID_ARGUMENT", {
+        details: { method, issues: [{ path }] },
+        internalMessage
+      });
+    }
+    function notFound(resource) {
+      return createPublicControlError("NOT_FOUND", { details: { resource } });
+    }
+    function resourceChanged(resource) {
+      return createPublicControlError("RESOURCE_CHANGED", { details: { resource } });
+    }
+    function clone(value) {
+      return value === void 0 ? void 0 : structuredClone(value);
+    }
+    function stableJson(value) {
+      if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+      if (value !== null && typeof value === "object") {
+        return `{${Object.keys(value).sort().filter((key) => value[key] !== void 0).map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+      }
+      return JSON.stringify(value);
+    }
+    function snapshotDigest(value) {
+      return `sha256:${createHash("sha256").update(stableJson(value), "utf8").digest("hex")}`;
+    }
+    function immutableSnapshot(value) {
+      const snapshot = clone(value);
+      const freeze = (candidate) => {
+        if (!candidate || typeof candidate !== "object" || Object.isFrozen(candidate)) {
+          return candidate;
+        }
+        for (const child of Object.values(candidate)) freeze(child);
+        return Object.freeze(candidate);
+      };
+      return freeze(snapshot);
+    }
+    function scopeResolution(scope, executionContext = null) {
+      return Object.freeze({
+        scope: scope === null ? null : immutableSnapshot(scope),
+        executionContext: executionContext === null ? null : immutableSnapshot(executionContext)
+      });
+    }
+    function trustedExecution(context, method) {
+      const execution = context?.executionContext;
+      return execution?.method === method && Object.isFrozen(execution) ? execution : null;
+    }
+    function identifier(value) {
+      return typeof value === "string" && value.length > 0 && value.length <= 200 ? value : null;
+    }
+    function arrayFromInventory(value, keys = []) {
+      if (Array.isArray(value)) return value;
+      for (const key of keys) {
+        if (Array.isArray(value?.[key])) return value[key];
+      }
+      return [];
+    }
+    function unique(values) {
+      return [...new Set(values)];
+    }
+    function scopeIds(context, key) {
+      const value = context?.scopeFilter?.[key];
+      return new Set(Array.isArray(value) ? value : []);
+    }
+    function paginate(items, { cursor, limit }) {
+      const sequence = cursor === null ? 0 : decodeCursor(cursor);
+      const page = items.slice(sequence, sequence + limit);
+      const nextSequence = sequence + page.length;
+      return {
+        items: page,
+        nextCursor: nextSequence < items.length ? encodeCursor(nextSequence) : null
+      };
+    }
+    function sanitizedSkillDetail(detail) {
+      if (!detail || typeof detail !== "object") return detail;
+      const result = clone(detail);
+      if (result.repository && typeof result.repository === "object") {
+        delete result.repository.managedPath;
+      }
+      if (Array.isArray(result.skill?.warnings)) {
+        result.skill.warnings = result.skill.warnings.map(sanitizedWarningMessage);
+      }
+      delete result.versions;
+      return result;
+    }
+    function sanitizedWarningMessage(warning) {
+      const message = String(warning ?? "");
+      const matches = [
+        /file:\/\/\/[^\s]*/iu.exec(message),
+        /(^|[\s(<:='"])[A-Za-z]:[\\/]/u.exec(message),
+        /(^|[\s(<:='"])\/(?!\/)/u.exec(message)
+      ].filter(Boolean);
+      if (matches.length === 0) return message;
+      const pathStart = Math.min(...matches.map(
+        (match) => match.index + (match[1]?.length ?? 0)
+      ));
+      return `${message.slice(0, pathStart)}[absolute path omitted]`.trim();
+    }
+    function publicSkillReference(skill) {
+      const stableId = identifier(skill?.id) ?? identifier(skill?.skillId);
+      const repositoryId = identifier(skill?.repositoryId);
+      return {
+        ...stableId === null ? {} : { id: stableId },
+        ...repositoryId === null ? {} : { repositoryId },
+        name: String(skill?.name ?? "")
+      };
+    }
+    function sanitizedRawCasePublicValue(value, seen = /* @__PURE__ */ new WeakMap()) {
+      if (!value || typeof value !== "object") return value;
+      if (seen.has(value)) return seen.get(value);
+      const result = Array.isArray(value) ? [] : {};
+      seen.set(value, result);
+      for (const [key, child] of Object.entries(value)) {
+        result[key] = key === "skill" && child && typeof child === "object" ? publicSkillReference(child) : sanitizedRawCasePublicValue(child, seen);
+      }
+      return result;
+    }
+    function sanitizedRepository(repository) {
+      if (!repository || typeof repository !== "object") return repository;
+      const result = clone(repository);
+      delete result.managedPath;
+      return result;
+    }
+    function ownFields(value, keys) {
+      const result = {};
+      for (const key of keys) {
+        if (Object.hasOwn(value ?? {}, key)) result[key] = clone(value[key]);
+      }
+      return result;
+    }
+    function managedRepositorySummary(repository) {
+      const summary = ownFields(repository, ["id", "displayName", "defaultBranch"]);
+      if (typeof repository?.source?.kind === "string") {
+        summary.source = ownFields(repository.source, ["kind", "importedAt"]);
+      }
+      return { ...summary, ...ownFields(repository, ["createdAt", "updatedAt"]) };
+    }
+    function managedSkillSummary(skill) {
+      const warnings = Array.isArray(skill?.warnings) ? skill.warnings.slice(0, 1e3).map((warning) => sanitizedWarningMessage(warning).slice(0, 1024)) : [];
+      return {
+        ...ownFields(skill, [
+          "id",
+          "repositoryId",
+          "name",
+          "description",
+          "skillRoot",
+          "manifestPath",
+          "status",
+          "executableFiles",
+          "createdAt",
+          "updatedAt"
+        ]),
+        warnings,
+        warningCount: Array.isArray(skill?.warnings) ? skill.warnings.length : 0
+      };
+    }
+    function managedVersionSummary(version) {
+      return ownFields(version, [
+        "id",
+        "repositoryId",
+        "skillId",
+        "commit",
+        "contentDigest",
+        "state",
+        "versionLabel",
+        "createdBy",
+        "optimizationRoundId",
+        "createdAt",
+        "releasedAt",
+        "deprecatedAt"
+      ]);
+    }
+    function boundedError(value) {
+      if (!value || typeof value !== "object") return null;
+      const code = identifier(value.code);
+      if (code === null) return null;
+      return {
+        code,
+        message: safeDiagnosticText(value.message)
+      };
+    }
+    function safeDiagnosticText(value) {
+      return sanitizedWarningMessage(String(value ?? "")).replace(/\b(token|secret|password|socket)\s*[:=]\s*[^\s,;]+/giu, "$1=[redacted]").slice(0, 4096);
+    }
+    function publicApprovalScope(scope) {
+      if (!scope || typeof scope !== "object") return void 0;
+      const result = {};
+      for (const key of ["skillIds", "datasetIds", "runtimeIds", "repositoryIds"]) {
+        if (!Array.isArray(scope[key])) continue;
+        result[key] = unique(scope[key].map(identifier).filter(Boolean)).slice(0, 4096);
+      }
+      if (scope.budget && typeof scope.budget === "object") {
+        const budget = ownFields(scope.budget, [
+          "maxDurationMs",
+          "maxRuntimeTurns",
+          "maxEvaluations",
+          "maxTargetExecutions",
+          "maxJudgeExecutions",
+          "maxTokens",
+          "maxReportedCost"
+        ]);
+        if (Object.keys(budget).length > 0) result.budget = budget;
+      }
+      return result;
+    }
+    function publicApprovalMutation(mutation) {
+      if (!mutation || typeof mutation !== "object") return void 0;
+      const params = mutation.params && typeof mutation.params === "object" ? mutation.params : {};
+      const resourceIds = ownFields(params, [
+        "datasetId",
+        "caseId",
+        "repositoryId",
+        "skillId",
+        "versionId",
+        "sessionId",
+        "installationId",
+        "runId"
+      ]);
+      if (Array.isArray(params.targets)) {
+        resourceIds.targetRuntimeIds = unique(params.targets.map((target) => identifier(target?.runtimeId)).filter(Boolean)).slice(0, 4096);
+      }
+      const result = {};
+      const method = identifier(mutation.method);
+      if (method !== null) result.method = method;
+      if (Object.keys(resourceIds).length > 0) result.resourceIds = resourceIds;
+      return result;
+    }
+    function publicApprovalExecution(result, approval) {
+      const execution = ownFields(result, ["status", "jobId", "stepId", "approvalId"]);
+      if (!Object.hasOwn(execution, "jobId")) execution.jobId = approval.jobId;
+      if (result?.error) execution.error = boundedError(result.error);
+      return execution;
+    }
+    function publicOperatorJob(job) {
+      return {
+        id: job.id,
+        sessionId: job.sessionId,
+        parentJobId: job.parentJobId ?? null,
+        ...ownFields(job, ["type", "objective", "status"]),
+        childJobIds: clone(Array.isArray(job.children) ? job.children : []),
+        artifactIds: clone(Array.isArray(job.artifactIds) ? job.artifactIds : []),
+        approvalIds: clone(Array.isArray(job.approvalIds) ? job.approvalIds : []),
+        ...ownFields(job, ["createdAt", "updatedAt", "startedAt", "completedAt"]),
+        ...Object.hasOwn(job, "error") ? { error: boundedError(job.error) } : {}
+      };
+    }
+    function publicApproval(approval) {
+      return {
+        ...ownFields(approval, [
+          "id",
+          "jobId",
+          "sessionId",
+          "stepId",
+          "action",
+          "expiresAt",
+          "status",
+          "decision",
+          "decisionScope",
+          "decidedBy",
+          "createdAt",
+          "resolvedAt"
+        ]),
+        ...Object.hasOwn(approval ?? {}, "risk") ? { risk: safeDiagnosticText(approval.risk) } : {},
+        ...Object.hasOwn(approval ?? {}, "scope") ? { scope: publicApprovalScope(approval.scope) } : {},
+        ...Object.hasOwn(approval ?? {}, "proposedMutation") ? { proposedMutation: publicApprovalMutation(approval.proposedMutation) } : {}
+      };
+    }
+    function publicCurationSession(session) {
+      const error = session?.error;
+      return {
+        ...ownFields(session, [
+          "id",
+          "datasetId",
+          "caseType",
+          "status",
+          "caseId",
+          "createdAt",
+          "updatedAt"
+        ]),
+        ...Object.hasOwn(session ?? {}, "error") ? { error: error === null ? null : safeDiagnosticText(typeof error === "object" ? error?.message ?? "" : error) } : {}
+      };
+    }
+    function publicDataset(dataset) {
+      return {
+        ...ownFields(dataset, [
+          "id",
+          "name",
+          "status",
+          "activeRubricVersionId",
+          "caseCount",
+          "goodcaseCount",
+          "badcaseCount",
+          "createdAt"
+        ]),
+        ...Object.hasOwn(dataset ?? {}, "skillReference") ? { skillReference: dataset.skillReference === null ? null : publicSkillReference(dataset.skillReference) } : {}
+      };
+    }
+    function publicArtifactReferences(value) {
+      const references = [];
+      const seen = /* @__PURE__ */ new Set();
+      const inputs = [
+        ...Array.isArray(value?.artifactRefs) ? value.artifactRefs : [],
+        ...Array.isArray(value?.artifactIds) ? value.artifactIds : []
+      ];
+      for (const input of inputs) {
+        const artifact = typeof input === "string" ? { id: input } : input;
+        const artifactId = identifier(artifact?.id);
+        if (artifactId === null || seen.has(artifactId)) continue;
+        const summary = { id: artifactId };
+        for (const [key, limit] of [["kind", 200], ["mediaType", 200], ["sha256", 200]]) {
+          if (typeof artifact?.[key] === "string" && artifact[key].trim()) {
+            summary[key] = safeDiagnosticText(artifact[key]).slice(0, limit);
+          }
+        }
+        if (Number.isSafeInteger(artifact?.sizeBytes) && artifact.sizeBytes >= 0 && artifact.sizeBytes <= 64 * 1024 * 1024) summary.sizeBytes = artifact.sizeBytes;
+        references.push(summary);
+        seen.add(artifactId);
+        if (references.length === 100) break;
+      }
+      return references;
+    }
+    function publicSummaryText(value, limit = 4096) {
+      if (typeof value !== "string" || value.length === 0) return null;
+      return safeDiagnosticText(value).slice(0, limit);
+    }
+    function publicCase(entry) {
+      const title = publicSummaryText(entry?.title ?? entry?.question, 500);
+      const caseType = ["goodcase", "badcase"].includes(entry?.caseType) ? entry.caseType : null;
+      const label = identifier(entry?.label) ?? identifier(entry?.caseType);
+      const inputSummary = publicSummaryText(entry?.inputSummary ?? entry?.question);
+      const outputSummary = publicSummaryText(
+        entry?.outputSummary ?? entry?.curated?.referenceAnswer?.summary ?? entry?.answer
+      );
+      const artifactRefs = publicArtifactReferences(entry);
+      return {
+        ...ownFields(entry, ["id", "datasetId"]),
+        ...caseType === null ? {} : { caseType },
+        ...title === null ? {} : { title },
+        ...identifier(entry?.status ?? entry?.rubricCalibration?.status) === null ? {} : { status: identifier(entry?.status ?? entry?.rubricCalibration?.status) },
+        ...label === null ? {} : { label },
+        ...inputSummary === null ? {} : { inputSummary },
+        ...outputSummary === null ? {} : { outputSummary },
+        ...artifactRefs.length === 0 ? {} : { artifactRefs },
+        ...ownFields(entry, ["createdAt", "updatedAt"])
+      };
+    }
+    function publicEvaluationScore(score) {
+      if (!score || typeof score !== "object") return null;
+      const result = {};
+      if (Number.isFinite(score.totalScore)) result.totalScore = score.totalScore;
+      else if (Number.isFinite(score.aScore) && Number.isFinite(score.bScore)) {
+        result.totalScore = Math.round((score.aScore + score.bScore + Number.EPSILON) * 10) / 10;
+      }
+      for (const key of ["outcomeTier", "overallVerdict"]) {
+        const value = identifier(score[key]);
+        if (value !== null) result[key] = value;
+      }
+      return Object.keys(result).length === 0 ? null : result;
+    }
+    function publicEvaluationRuntime(configuration) {
+      const runtimeId = identifier(configuration?.runtimeId);
+      if (runtimeId === null) return null;
+      const result = { runtimeId };
+      const displayName = publicSummaryText(configuration?.displayName, 500);
+      if (displayName !== null) result.displayName = displayName;
+      if (Object.hasOwn(configuration ?? {}, "modelId")) {
+        result.modelId = configuration.modelId === null ? null : identifier(configuration.modelId);
+      }
+      if (Object.hasOwn(configuration ?? {}, "effort")) {
+        result.effort = PUBLIC_REASONING_EFFORTS.has(configuration.effort) ? configuration.effort : null;
+      }
+      return result;
+    }
+    function publicEvaluationResult(result) {
+      const score = publicEvaluationScore(result?.computedScore);
+      const title = publicSummaryText(result?.title ?? result?.caseSnapshot?.question, 500);
+      const reasonSummary = publicSummaryText(
+        result?.reasonSummary ?? result?.judgment?.summary ?? result?.judgment?.reason ?? result?.gradingError
+      );
+      const error = result?.error === null || result?.error === void 0 ? result?.error ?? null : publicSummaryText(
+        typeof result.error === "object" ? result.error?.message ?? "" : result.error
+      );
+      const artifactRefs = publicArtifactReferences(result);
+      return {
+        id: result.id,
+        caseId: result.caseId,
+        runtimeId: result.runtimeId ?? result?.runtimeConfiguration?.runtimeId,
+        ...title === null ? {} : { title },
+        status: String(result.status ?? "queued").slice(0, 80),
+        ...identifier(result?.gradingStatus) === null ? {} : { gradingStatus: identifier(result.gradingStatus) },
+        ...Object.hasOwn(result ?? {}, "durationMs") && (result.durationMs === null || Number.isSafeInteger(result.durationMs) && result.durationMs >= 0) ? { durationMs: result.durationMs } : {},
+        ...score === null ? {} : { computedScore: score },
+        ...reasonSummary === null ? {} : { reasonSummary },
+        ...artifactRefs.length === 0 ? {} : { artifactRefs },
+        ...Object.hasOwn(result ?? {}, "error") ? { error } : {},
+        ...ownFields(result, ["startedAt", "completedAt"])
+      };
+    }
+    function publicEvaluationRun(run, { includeResults = false } = {}) {
+      const results = Array.isArray(run?.results) ? run.results : [];
+      const publicResults = includeResults ? results.slice(0, 1e3).map(publicEvaluationResult) : null;
+      const runtimeConfigurations = (Array.isArray(run?.runtimeConfigurations) ? run.runtimeConfigurations : []).map(publicEvaluationRuntime).filter(Boolean).slice(0, 32);
+      const counts = { queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0 };
+      for (const result of results) {
+        const status = Object.hasOwn(counts, result?.status) ? result.status : "failed";
+        counts[status] += 1;
+      }
+      const datasetId = run?.datasetId ?? run?.datasetSnapshot?.id;
+      const datasetName = publicSummaryText(run?.datasetSnapshot?.name, 500);
+      const skillReference = run?.skillReference && typeof run.skillReference === "object" ? publicSkillReference(run.skillReference) : null;
+      const artifactRefs = publicArtifactReferences(run);
+      const error = Object.hasOwn(run ?? {}, "error") ? run.error === null ? null : publicSummaryText(typeof run.error === "object" ? run.error?.message ?? "" : run.error) : void 0;
+      return {
+        id: run.id,
+        datasetId,
+        ...run?.datasetSnapshot?.id ? { datasetSnapshot: {
+          id: run.datasetSnapshot.id,
+          ...datasetName === null ? {} : { name: datasetName }
+        } } : {},
+        ...ownFields(run, ["selectionMode", "activationMode"]),
+        ...skillReference === null ? {} : { skillReference },
+        status: String(run?.status ?? "queued").slice(0, 80),
+        caseCount: Number.isSafeInteger(run?.caseCount) ? run.caseCount : Array.isArray(run?.caseSnapshots) ? run.caseSnapshots.length : 0,
+        runtimeCount: Number.isSafeInteger(run?.runtimeCount) ? run.runtimeCount : runtimeConfigurations.length,
+        resultCount: results.length,
+        progress: { total: results.length, ...counts },
+        ...runtimeConfigurations.length === 0 ? {} : { runtimeConfigurations },
+        ...publicResults === null ? {} : {
+          results: publicResults,
+          resultsTruncated: publicResults.length < results.length
+        },
+        ...artifactRefs.length === 0 ? {} : { artifactRefs },
+        ...error === void 0 ? {} : { error },
+        ...ownFields(run, ["createdAt", "startedAt", "completedAt"])
+      };
+    }
+    function publicRubricVersion(version) {
+      return ownFields(version, ["id", "datasetId", "version", "createdAt", "publishedAt"]);
+    }
+    var PUBLIC_REASONING_EFFORTS = /* @__PURE__ */ new Set([
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ]);
+    function publicInstallation(job) {
+      const source = job?.request?.source ?? {};
+      return {
+        id: job.id,
+        parentJobId: job.parentJobId ?? null,
+        ...ownFields(job, ["operation", "status"]),
+        repositoryId: source.repositoryId,
+        skillId: source.skillId,
+        ...ownFields(source, ["versionId"]),
+        runtimeId: job?.runtime?.runtimeId,
+        ...ownFields(job.runtime, ["providerId"]),
+        modelId: job.modelId ?? null,
+        effort: PUBLIC_REASONING_EFFORTS.has(job.effort) ? job.effort : null,
+        ...Object.hasOwn(job, "error") ? { error: boundedError(job.error) } : {},
+        ...ownFields(job, ["createdAt", "updatedAt", "completedAt"])
+      };
+    }
+    function assertCurationIdentity(session, { sessionId = null, datasetId }) {
+      if (identifier(session?.id) === null || sessionId !== null && session.id !== sessionId || session?.datasetId !== datasetId) throw new Error("Curation session identity did not match its Dataset");
+      return session;
+    }
+    function assertInstallationIdentity(job, expected, { inspection = false } = {}) {
+      const source = job?.request?.source ?? {};
+      const expectedSource = expected?.request?.source ?? {};
+      if (identifier(job?.id) === null || (inspection ? job?.parentJobId !== expected?.id : job?.id !== expected?.id) || job?.operation !== (inspection ? "inspect" : expected?.operation) || job?.runtime?.runtimeId !== expected?.runtime?.runtimeId || source.repositoryId !== expectedSource.repositoryId || source.skillId !== expectedSource.skillId || source.versionId !== expectedSource.versionId) throw new Error("Skill installation identity did not match its resolved request");
+      return job;
+    }
+    function createDomainServices(dependencies = {}) {
+      const {
+        rawCaseStore,
+        evaluationStore,
+        evaluationRunner,
+        managedSkillManager,
+        managedSkillStore,
+        operatorJobStore,
+        operatorJobEngine,
+        operatorSessionManager,
+        curationManager,
+        rubricManager,
+        skillInstallationStore,
+        skillInstallationManager,
+        optimizationControlService,
+        listDatasets,
+        listRawCaseSkills,
+        listRuntimes,
+        listModelsForRuntime,
+        dispatchRawCase,
+        startEvaluation
+      } = dependencies;
+      async function runtimeInventory() {
+        const inventory = typeof listRuntimes === "function" ? await listRuntimes() : [];
+        return clone(arrayFromInventory(inventory, ["available", "runtimes", "data"]));
+      }
+      async function requireRuntime(runtimeId) {
+        const runtime = (await runtimeInventory()).find((entry) => entry?.runtimeId === runtimeId);
+        if (!runtime) throw notFound("runtime");
+        return runtime;
+      }
+      function requireRuntimeFrom(inventory, runtimeId) {
+        const runtime = inventory.find((entry) => entry?.runtimeId === runtimeId);
+        if (!runtime) throw notFound("runtime");
+        return runtime;
+      }
+      async function managedSkillCatalog() {
+        const catalog = typeof managedSkillManager?.catalog === "function" ? await managedSkillManager.catalog() : typeof managedSkillManager?.overview === "function" ? await managedSkillManager.overview() : {};
+        return {
+          repositories: clone(arrayFromInventory(catalog, ["repositories"])).map(sanitizedRepository),
+          skills: clone(arrayFromInventory(catalog, ["skills"]))
+        };
+      }
+      async function managedSkillInventory() {
+        return (await managedSkillCatalog()).skills;
+      }
+      async function managedSkillVersionPage(input, skillIds) {
+        if (typeof managedSkillManager?.listVersionPage !== "function") {
+          throw new Error("Managed Skill version paging is unavailable");
+        }
+        let page;
+        try {
+          page = await managedSkillManager.listVersionPage({
+            skillIds: [...skillIds],
+            skillId: input.skillId,
+            cursor: input.cursor,
+            limit: input.limit
+          });
+        } catch (error) {
+          if (error?.code === "MANAGED_SKILL_VERSION_CURSOR_INVALID" || error?.code === "MANAGED_SKILL_VERSION_CURSOR_STALE") {
+            throw invalidArgument(
+              "skill_versions.list",
+              ["cursor"],
+              "Managed Skill version cursor is invalid or stale"
+            );
+          }
+          throw error;
+        }
+        const versions = arrayFromInventory(page, ["versions"]);
+        if (versions.length > input.limit || versions.length > 100) {
+          throw new Error("Managed Skill version page exceeded its requested limit");
+        }
+        return {
+          versions: clone(versions),
+          nextCursor: page?.nextCursor ?? null
+        };
+      }
+      async function rawCaseSkillInventory() {
+        if (typeof listRawCaseSkills !== "function") return managedSkillInventory();
+        const inventory = await listRawCaseSkills();
+        return clone(arrayFromInventory(inventory, ["skills", "available", "data"]));
+      }
+      function resolveSkillReferenceFrom(reference, inventory, {
+        grant = null,
+        method = null,
+        path = [],
+        toolSupplied = false
+      } = {}) {
+        if (!reference || typeof reference !== "object") throw notFound("skill");
+        if (toolSupplied && typeof reference.path === "string") {
+          throw invalidArgument(
+            method,
+            [...path, "path"],
+            "Tool-supplied Skill paths are not accepted"
+          );
+        }
+        const stableId = identifier(reference.skillId) ?? identifier(reference.id);
+        let candidates = matchingSkillReferences(reference, inventory);
+        if (grant !== null) {
+          const grantedIds = new Set(
+            Array.isArray(grant?.scopes?.skillIds) ? grant.scopes.skillIds : []
+          );
+          candidates = candidates.filter((skill) => grantedIds.has(skill?.id));
+        }
+        if (candidates.length === 0) throw notFound("skill");
+        if (candidates.length > 1) {
+          throw invalidArgument(
+            method,
+            stableId === null ? [...path, "name"] : [...path, "skillId"],
+            "Skill reference is ambiguous inside the capability scope"
+          );
+        }
+        return candidates[0];
+      }
+      function matchingSkillReferences(reference, inventory) {
+        const stableId = identifier(reference?.skillId) ?? identifier(reference?.id);
+        if (stableId !== null) {
+          return inventory.filter((skill) => skill?.id === stableId);
+        }
+        const name = identifier(reference?.name);
+        if (name === null) return [];
+        const normalizedName = normalizedSkillName(name);
+        return inventory.filter(
+          (skill) => normalizedSkillName(skill?.name) === normalizedName
+        );
+      }
+      async function resolveSkillReference(reference, options2) {
+        return resolveSkillReferenceFrom(reference, await rawCaseSkillInventory(), options2);
+      }
+      function canonicalSkillReference(skill) {
+        return { id: skill.id, name: skill.name };
+      }
+      async function rawCaseInventory(skillName = null) {
+        if (typeof rawCaseStore?.list !== "function") return [];
+        return clone(await rawCaseStore.list({ skillName }));
+      }
+      async function requireRawCase(id) {
+        let rawCase = null;
+        if (typeof rawCaseStore?.get === "function") rawCase = await rawCaseStore.get(id);
+        else rawCase = (await rawCaseInventory()).find((entry) => entry?.id === id) ?? null;
+        if (!rawCase || rawCase.id !== id) throw notFound("raw_case");
+        return clone(rawCase);
+      }
+      async function datasetInventory() {
+        if (typeof listDatasets === "function") return clone(await listDatasets());
+        if (typeof evaluationStore?.listDatasets !== "function") return [];
+        return clone(await evaluationStore.listDatasets());
+      }
+      async function requireDataset(datasetId) {
+        const summary = (await datasetInventory()).find((entry) => entry?.id === datasetId);
+        if (!summary) throw notFound("dataset");
+        if (typeof evaluationStore?.getDataset !== "function") return summary;
+        try {
+          const dataset = await evaluationStore.getDataset(datasetId);
+          if (!dataset || dataset.id !== datasetId) throw notFound("dataset");
+          return clone(dataset);
+        } catch (error) {
+          throw notFound("dataset");
+        }
+      }
+      async function casesForDataset(datasetId) {
+        if (typeof evaluationStore?.listCases !== "function") return [];
+        return clone(await evaluationStore.listCases(datasetId)).filter((entry) => entry?.datasetId === datasetId);
+      }
+      async function evaluationStartSnapshot(input) {
+        const dataset = await requireDataset(input.datasetId);
+        const cases = await casesForDataset(input.datasetId);
+        const caseIds = new Set(cases.map((entry) => entry.id));
+        if (input.caseIds.some((caseId) => !caseIds.has(caseId))) {
+          throw notFound("case");
+        }
+        const inventory = await runtimeInventory();
+        const runtimes = input.runtimeConfigurations.map(
+          (profile) => requireRuntimeFrom(inventory, profile.runtimeId)
+        );
+        const judgeRuntime = requireRuntimeFrom(
+          inventory,
+          input.judgeConfiguration.runtimeId
+        );
+        return { dataset, cases, runtimes, judgeRuntime };
+      }
+      async function runInventory(datasetId = null) {
+        const list = evaluationStore?.listEvaluationRunSummaries ?? evaluationStore?.listEvaluationRuns;
+        if (typeof list !== "function") return [];
+        const runs = clone(await list.call(evaluationStore, datasetId));
+        return Array.isArray(runs) ? runs.filter((entry) => datasetId === null || entry?.datasetId === datasetId) : [];
+      }
+      async function requireEvaluationRun(runId) {
+        const summary = (await runInventory(null)).find((entry) => entry?.id === runId);
+        if (!summary) throw notFound("evaluation_run");
+        if (typeof evaluationStore?.getEvaluationRun !== "function") return summary;
+        try {
+          const run = await evaluationStore.getEvaluationRun(runId);
+          if (!run || run.id !== runId) throw notFound("evaluation_run");
+          return clone(run);
+        } catch (error) {
+          throw notFound("evaluation_run");
+        }
+      }
+      async function requireSkill(skillId) {
+        const skill = (await managedSkillInventory()).find((entry) => entry?.id === skillId);
+        if (!skill) throw notFound("skill");
+        return skill;
+      }
+      async function requireManagedSkillSelection(skillId, repositoryId) {
+        const skill = await requireSkill(skillId);
+        if (skill.repositoryId !== repositoryId) throw notFound("skill");
+        return skill;
+      }
+      function requireManagedVersion(versionId, { skillId, repositoryId }) {
+        if (typeof managedSkillStore?.getVersion !== "function") {
+          throw new Error("Managed Skill version store unavailable");
+        }
+        let version;
+        try {
+          version = managedSkillStore.getVersion(versionId);
+        } catch {
+          throw notFound("version");
+        }
+        if (version?.id !== versionId || version.skillId !== skillId || version.repositoryId !== repositoryId) throw notFound("version");
+        return clone(version);
+      }
+      function requireOperatorJob(jobId, sessionId, grant = null) {
+        if (typeof operatorJobStore?.getJob !== "function") throw new Error("Operator Job store unavailable");
+        let job;
+        try {
+          job = operatorJobStore.getJob(jobId);
+        } catch {
+          throw notFound("job");
+        }
+        if (job?.id !== jobId || job.sessionId !== sessionId && !isTrustedHumanCapability(grant)) throw notFound("job");
+        return clone(job);
+      }
+      function operatorJobs(sessionId) {
+        if (typeof operatorJobStore?.listJobs !== "function") return [];
+        return clone(operatorJobStore.listJobs({ sessionId })).filter(
+          (job) => job?.sessionId === sessionId
+        );
+      }
+      function requireOperatorApproval(approvalId, sessionId, grant = null) {
+        if (typeof operatorJobStore?.getApproval !== "function") {
+          throw new Error("Operator approval store unavailable");
+        }
+        let approval;
+        try {
+          approval = operatorJobStore.getApproval(approvalId);
+        } catch {
+          throw notFound("approval");
+        }
+        if (approval?.id !== approvalId || approval.sessionId !== sessionId && !isTrustedHumanCapability(grant)) {
+          throw notFound("approval");
+        }
+        requireOperatorJob(approval.jobId, sessionId, grant);
+        return clone(approval);
+      }
+      function approvalsForSession(sessionId, jobId = null) {
+        const jobs = jobId === null ? operatorJobs(sessionId) : [requireOperatorJob(jobId, sessionId)];
+        if (typeof operatorJobStore?.listApprovals !== "function") return [];
+        return jobs.flatMap((job) => clone(operatorJobStore.listApprovals(job.id))).filter((approval) => approval?.jobId === jobId || jobId === null).filter((approval) => approval?.sessionId === sessionId);
+      }
+      function requireCurationSession(sessionId) {
+        if (typeof evaluationStore?.getCurationSession !== "function") {
+          throw new Error("Curation store unavailable");
+        }
+        let session;
+        try {
+          session = evaluationStore.getCurationSession(sessionId);
+        } catch {
+          throw notFound("curation_session");
+        }
+        if (!session || session.id !== sessionId) throw notFound("curation_session");
+        return clone(session);
+      }
+      function requireRubricSession(sessionId) {
+        if (typeof evaluationStore?.getRubricSession !== "function") {
+          throw new Error("Rubric store unavailable");
+        }
+        let session;
+        try {
+          session = evaluationStore.getRubricSession(sessionId);
+        } catch {
+          throw notFound("rubric_session");
+        }
+        if (!session || session.id !== sessionId) throw notFound("rubric_session");
+        return clone(session);
+      }
+      function requireInstallation(installationId) {
+        if (typeof skillInstallationStore?.getJob !== "function") {
+          throw new Error("Skill installation store unavailable");
+        }
+        let installation;
+        try {
+          installation = skillInstallationStore.getJob(installationId);
+        } catch {
+          throw notFound("installation");
+        }
+        if (!installation || installation.id !== installationId) throw notFound("installation");
+        return clone(installation);
+      }
+      async function candidateBase(skill) {
+        if (typeof managedSkillManager?.candidateBase === "function") {
+          const base = await managedSkillManager.candidateBase(skill.id);
+          if (base?.skillId !== skill.id || base?.repositoryId !== skill.repositoryId) {
+            throw new Error("Managed Skill Candidate base identity did not match");
+          }
+          return ownFields(base, [
+            "repositoryId",
+            "skillId",
+            "commit",
+            "contentDigest",
+            "dirty"
+          ]);
+        }
+        const versions = typeof managedSkillStore?.listVersions === "function" ? managedSkillStore.listVersions(skill.id) : [];
+        const latest = versions.at(-1) ?? null;
+        return {
+          repositoryId: skill.repositoryId,
+          skillId: skill.id,
+          commit: latest?.commit ?? null,
+          contentDigest: latest?.contentDigest ?? null,
+          dirty: null
+        };
+      }
+      async function mutationFactsFromExecution(method, input, execution) {
+        if (!TRUSTED_MUTATION_METHODS.has(method)) return null;
+        if (!execution || execution.method !== method) {
+          throw new Error("Trusted mutation execution snapshot is missing");
+        }
+        if (method === "datasets.delete") {
+          const cases = execution.cases ?? await casesForDataset(input.datasetId);
+          const runs = execution.runs ?? await runInventory(input.datasetId);
+          return {
+            method,
+            datasetId: input.datasetId,
+            datasetRevision: execution.dataset?.revision ?? execution.dataset?.updatedAt ?? null,
+            caseIds: cases.map((entry) => entry.id).sort(),
+            runIds: runs.map((entry) => entry.id).sort(),
+            resourceDigest: snapshotDigest({ dataset: execution.dataset, cases, runs })
+          };
+        }
+        if (method === "datasets.delete_case") {
+          const runs = execution.runs ?? await runInventory(input.datasetId);
+          return {
+            method,
+            datasetId: input.datasetId,
+            caseId: input.caseId,
+            datasetRevision: execution.dataset?.revision ?? execution.dataset?.updatedAt ?? null,
+            caseRevision: execution.case?.revision ?? execution.case?.updatedAt ?? null,
+            runIds: runs.map((entry) => entry.id).sort(),
+            resourceDigest: snapshotDigest({
+              dataset: execution.dataset,
+              case: execution.case,
+              runs
+            })
+          };
+        }
+        if (method === "curation.save" || method === "curation.discard") {
+          return {
+            method,
+            sessionId: input.sessionId,
+            datasetId: execution.session.datasetId,
+            sessionRevision: execution.session.revision ?? execution.session.updatedAt ?? null,
+            resourceDigest: snapshotDigest(execution.session)
+          };
+        }
+        if (method === "rubrics.publish") {
+          return {
+            method,
+            sessionId: input.sessionId,
+            datasetId: input.datasetId,
+            sessionRevision: execution.session.revision ?? execution.session.updatedAt ?? null,
+            resourceDigest: snapshotDigest(execution.session)
+          };
+        }
+        if (method === "skills.create_candidate") {
+          const base = execution.candidateBase ?? await candidateBase(execution.skill);
+          return {
+            method,
+            repositoryId: input.repositoryId,
+            skillId: input.skillId,
+            baseCommit: base.commit ?? null,
+            baseContentDigest: base.contentDigest ?? null,
+            dirty: base.dirty ?? null,
+            resourceDigest: snapshotDigest({ skill: execution.skill, base })
+          };
+        }
+        if (method === "skills.release") {
+          return {
+            method,
+            repositoryId: input.repositoryId,
+            skillId: input.skillId,
+            versionId: input.versionId,
+            candidateCommit: execution.version.commit,
+            candidateDigest: execution.version.contentDigest,
+            candidateState: execution.version.state,
+            versionLabel: input.versionLabel,
+            resourceDigest: snapshotDigest(execution.version)
+          };
+        }
+        if (method === "installations.start") {
+          const targets = execution.runtimes.map((runtime) => ({
+            runtimeId: runtime.runtimeId,
+            providerId: runtime.providerId,
+            descriptorDigest: snapshotDigest(runtime)
+          })).sort((left, right) => left.runtimeId.localeCompare(right.runtimeId));
+          return {
+            method,
+            repositoryId: input.repositoryId,
+            skillId: input.skillId,
+            versionId: input.versionId,
+            versionCommit: execution.version.commit,
+            versionDigest: execution.version.contentDigest,
+            targets,
+            resourceDigest: snapshotDigest({ version: execution.version, targets })
+          };
+        }
+        const installation = execution.installation;
+        const source = installation.request?.source ?? {};
+        return {
+          method,
+          installationId: input.installationId,
+          repositoryId: source.repositoryId,
+          skillId: source.skillId,
+          versionId: source.versionId ?? null,
+          runtimeId: installation.runtime?.runtimeId,
+          observedState: installation.status,
+          resourceDigest: snapshotDigest(installation)
+        };
+      }
+      async function resolveTrustedFacts({ method, params, controlContext }) {
+        if (!TRUSTED_MUTATION_METHODS.has(method)) return null;
+        let execution = trustedExecution(controlContext, method);
+        if (execution === null) {
+          execution = (await resolveScope(method, params, controlContext?.grant)).executionContext;
+        }
+        return immutableSnapshot(await mutationFactsFromExecution(method, params, execution));
+      }
+      async function assertMutationCurrent(method, input, context) {
+        const expected = context?.trustedFacts?.methodFacts;
+        if (expected === void 0) return;
+        if (!expected || expected.method !== method) throw resourceChanged("dataset");
+        const currentResolution = await resolveScope(method, input, context?.grant);
+        const current = await mutationFactsFromExecution(
+          method,
+          input,
+          currentResolution.executionContext
+        );
+        if (stableJson(current) !== stableJson(expected)) {
+          const resource = method.startsWith("datasets.delete_case") ? "case" : method.startsWith("datasets.") ? "dataset" : method.startsWith("curation.") ? "curation_session" : method.startsWith("rubrics.") ? "rubric_session" : method === "skills.create_candidate" ? "skill" : method.startsWith("skills.") ? "version" : "installation";
+          throw resourceChanged(resource);
+        }
+      }
+      async function requireSkillDetail(skillId) {
+        const skill = await requireSkill(skillId);
+        if (typeof managedSkillManager?.readSkill !== "function") throw notFound("skill");
+        let detail;
+        try {
+          detail = sanitizedSkillDetail(await managedSkillManager.readSkill(skillId, {
+            includeVersions: false
+          }));
+        } catch {
+          throw notFound("skill");
+        }
+        if (detail?.skill?.id !== skill.id) throw notFound("skill");
+        return { detail, skill };
+      }
+      async function filteredRawCases(input, context, execution = null) {
+        const allowed = scopeIds(context, "skillIds");
+        if (allowed.size === 0) return [];
+        const records = execution?.rawCases ?? await rawCaseInventory(input.skillName);
+        const skills = execution?.skills ?? await rawCaseSkillInventory();
+        const visible = [];
+        for (const record of records) {
+          const stableId = identifier(record?.skill?.skillId) ?? identifier(record?.skill?.id);
+          const candidates = stableId === null ? skills.filter((skill) => normalizedSkillName(skill?.name) === normalizedSkillName(record?.skill?.name)) : skills.filter((skill) => skill?.id === stableId);
+          if (candidates.length > 0 && candidates.every((candidate) => allowed.has(candidate?.id))) visible.push(record);
+        }
+        return visible;
+      }
+      async function filterResolution(method, input, grant) {
+        const key = FILTER_METHODS[method];
+        const granted = new Set(Array.isArray(grant?.scopes?.[key]) ? grant.scopes[key] : []);
+        if (method === "skill_versions.list") {
+          const catalog = await managedSkillCatalog();
+          const skillIds = unique(catalog.skills.map((entry) => entry?.id).filter((id) => granted.has(id)));
+          const versionPage = await managedSkillVersionPage(input, skillIds);
+          return scopeResolution({
+            method,
+            mode: "filter",
+            skillIds
+          }, { method, versionPage });
+        }
+        let inventoryIds = [];
+        let executionContext;
+        if (key === "runtimeIds") {
+          const runtimes = await runtimeInventory();
+          inventoryIds = runtimes.map((entry) => entry?.runtimeId);
+          executionContext = { method, runtimes };
+        } else if (key === "datasetIds") {
+          const datasets = await datasetInventory();
+          inventoryIds = datasets.map((entry) => entry?.id);
+          executionContext = { method, datasets };
+        } else if (key === "repositoryIds") {
+          const catalog = await managedSkillCatalog();
+          inventoryIds = catalog.repositories.map((entry) => entry?.id);
+          executionContext = { method, catalog };
+        } else {
+          const catalog = method === "skills.list" ? await managedSkillCatalog() : null;
+          const skills = catalog?.skills ?? await rawCaseSkillInventory();
+          inventoryIds = skills.map((entry) => entry?.id);
+          executionContext = {
+            method,
+            skills,
+            catalog,
+            rawCases: method === "raw_cases.list" ? await rawCaseInventory(input.skillName) : null
+          };
+        }
+        return scopeResolution({
+          method,
+          mode: "filter",
+          [key]: unique(inventoryIds.filter((id) => granted.has(id)))
+        }, executionContext);
+      }
+      async function resolveScope(method, input, grant) {
+        if (Object.hasOwn(FILTER_METHODS, method)) {
+          return filterResolution(method, input, grant);
+        }
+        if (["jobs.get", "jobs.pause", "jobs.resume", "jobs.stop"].includes(method)) {
+          return scopeResolution(null, {
+            method,
+            job: requireOperatorJob(input.jobId, grant?.sessionId, grant)
+          });
+        }
+        if (method === "jobs.list") {
+          return scopeResolution(null, {
+            method,
+            jobs: operatorJobs(grant?.sessionId)
+          });
+        }
+        if (method === "approvals.list") {
+          return scopeResolution(null, {
+            method,
+            approvals: approvalsForSession(grant?.sessionId, input.jobId)
+          });
+        }
+        if (method === "approvals.resolve") {
+          return scopeResolution(null, {
+            method,
+            approval: requireOperatorApproval(input.approvalId, grant?.sessionId, grant)
+          });
+        }
+        if (["datasets.create", "skills.diff", "skills.create_candidate", "skills.release", "installations.start"].includes(method)) {
+          const skill = await requireManagedSkillSelection(input.skillId, input.repositoryId);
+          const execution = { method, skill };
+          if (method === "skills.diff") {
+            execution.baseVersion = requireManagedVersion(input.baseVersionId, input);
+            execution.candidateVersion = requireManagedVersion(input.candidateVersionId, input);
+          } else if (method === "skills.release" || method === "installations.start") {
+            execution.version = requireManagedVersion(input.versionId, input);
+          }
+          if (method === "skills.create_candidate") {
+            execution.candidateBase = await candidateBase(skill);
+          }
+          if (method === "installations.start") {
+            const runtimes = await runtimeInventory();
+            execution.runtimes = input.targets.map((target) => requireRuntimeFrom(runtimes, target.runtimeId));
+          }
+          return scopeResolution({
+            method,
+            mode: "access",
+            subject: { kind: "skill", id: skill.id },
+            skillIds: [skill.id],
+            repositoryIds: [skill.repositoryId]
+          }, execution);
+        }
+        if (method === "curation.start") {
+          return scopeResolution(null, { method, dataset: await requireDataset(input.datasetId) });
+        }
+        if (["curation.message", "curation.save", "curation.discard"].includes(method)) {
+          const session = requireCurationSession(input.sessionId);
+          await requireDataset(session.datasetId);
+          return scopeResolution({
+            method,
+            mode: "access",
+            subject: { kind: "curation_session", id: session.id },
+            datasetIds: [session.datasetId]
+          }, { method, session });
+        }
+        if (method === "rubrics.publish") {
+          const session = requireRubricSession(input.sessionId);
+          if (session.datasetId !== input.datasetId) throw notFound("rubric_session");
+          await requireDataset(session.datasetId);
+          return scopeResolution({
+            method,
+            mode: "access",
+            subject: { kind: "rubric_session", id: session.id },
+            datasetIds: [session.datasetId]
+          }, { method, session });
+        }
+        if (["installations.get", "installations.cancel", "installations.inspect"].includes(method)) {
+          const installation = requireInstallation(input.installationId);
+          const source = installation.request?.source ?? {};
+          await requireManagedSkillSelection(source.skillId, source.repositoryId);
+          await requireRuntime(installation.runtime?.runtimeId);
+          return scopeResolution({
+            method,
+            mode: "access",
+            subject: { kind: "installation", id: installation.id },
+            skillIds: [source.skillId],
+            repositoryIds: [source.repositoryId],
+            runtimeIds: [installation.runtime.runtimeId]
+          }, { method, installation });
+        }
+        if (method === "optimization.preflight" || method === "optimization.start") {
+          if (typeof optimizationControlService?.preflight !== "function") {
+            throw new Error("Optimization control service unavailable");
+          }
+          const { idempotencyKey: _idempotencyKey, ...config } = input;
+          const preflight = await optimizationControlService.preflight(config);
+          return scopeResolution({
+            method,
+            mode: "access",
+            skillIds: [preflight.baseline.skillId],
+            datasetIds: [preflight.dataset.id],
+            runtimeIds: unique([
+              input.operator.runtimeId,
+              input.judge.runtimeId,
+              ...input.targets.map((target) => target.runtimeId)
+            ]),
+            repositoryIds: [preflight.baseline.repositoryId]
+          }, { method, preflight });
+        }
+        if (method.startsWith("optimization.")) {
+          if (typeof optimizationControlService?.scope !== "function") {
+            throw new Error("Optimization control service unavailable");
+          }
+          return scopeResolution({
+            method,
+            mode: "access",
+            ...optimizationControlService.scope(input.runId)
+          }, { method, runId: input.runId });
+        }
+        if (method === "datasets.delete") {
+          return scopeResolution(null, {
+            method,
+            dataset: await requireDataset(input.datasetId),
+            cases: await casesForDataset(input.datasetId),
+            runs: await runInventory(input.datasetId)
+          });
+        }
+        if (method === "datasets.delete_case") {
+          const dataset = await requireDataset(input.datasetId);
+          const selectedCase = (await casesForDataset(dataset.id)).find((entry) => entry.id === input.caseId);
+          if (!selectedCase) throw notFound("case");
+          return scopeResolution(null, {
+            method,
+            dataset,
+            case: selectedCase,
+            runs: await runInventory(input.datasetId)
+          });
+        }
+        if (method === "evaluations.list" && input.datasetId === null) {
+          const granted = new Set(Array.isArray(grant?.scopes?.datasetIds) ? grant.scopes.datasetIds : []);
+          const datasets = await datasetInventory();
+          const runs = await runInventory(null);
+          return scopeResolution({
+            method,
+            mode: "filter",
+            datasetIds: datasets.map((entry) => entry?.id).filter((id) => granted.has(id))
+          }, { method, datasets, runs });
+        }
+        if (method === "raw_cases.enqueue") {
+          const inventory = await rawCaseSkillInventory();
+          const skills = [];
+          for (let index = 0; index < input.cases.length; index += 1) {
+            skills.push(resolveSkillReferenceFrom(input.cases[index].skill, inventory, {
+              grant,
+              method,
+              path: ["cases", index, "skill"],
+              toolSupplied: true
+            }));
+          }
+          return scopeResolution(
+            { method, mode: "access", skillIds: unique(skills.map((skill) => skill.id)) },
+            { method, skills }
+          );
+        }
+        if (method === "raw_cases.update" || method === "raw_cases.dispatch") {
+          const rawCase = await requireRawCase(input.id);
+          const inventory = await rawCaseSkillInventory();
+          const legacyOwner = identifier(rawCase.skill?.skillId) === null && identifier(rawCase.skill?.id) === null;
+          const ownerCandidates = matchingSkillReferences(rawCase.skill, inventory);
+          if (ownerCandidates.length === 0) throw notFound("skill");
+          const explicitTargetId = method === "raw_cases.update" ? identifier(input.changes.skill?.id) : null;
+          const ambiguousOwners = legacyOwner && ownerCandidates.length > 1 ? ownerCandidates : [];
+          const explicitRebind = ambiguousOwners.length > 1 && explicitTargetId !== null;
+          if (ambiguousOwners.length > 1 && !explicitRebind) {
+            throw invalidArgument(
+              method,
+              ["id", "skill", "name"],
+              "Stored legacy Skill owner is ambiguous"
+            );
+          }
+          const skill = explicitRebind ? null : resolveSkillReferenceFrom(rawCase.skill, inventory, { method });
+          const skillIds = explicitRebind ? ambiguousOwners.map((candidate) => candidate?.id) : [skill.id];
+          if (skillIds.some((skillId) => identifier(skillId) === null)) {
+            throw invalidArgument(method, ["id"], "Legacy Skill owners require stable IDs");
+          }
+          let targetSkill = null;
+          if (method === "raw_cases.update" && input.changes.skill) {
+            targetSkill = resolveSkillReferenceFrom(
+              input.changes.skill,
+              inventory,
+              {
+                method,
+                path: ["changes", "skill"],
+                toolSupplied: true
+              }
+            );
+            skillIds.push(targetSkill.id);
+          }
+          let runtime = null;
+          if (method === "raw_cases.dispatch") {
+            runtime = await requireRuntime(input.runtime.runtimeId);
+          }
+          return scopeResolution({
+            method,
+            mode: "access",
+            subject: { kind: "raw_case", id: rawCase.id },
+            skillIds: unique(skillIds)
+          }, { method, rawCase, runtime, skill, ownerSkills: ambiguousOwners, targetSkill });
+        }
+        if (method === "evaluations.get" || method === "evaluations.cancel") {
+          const run = await requireEvaluationRun(input.runId);
+          return scopeResolution({
+            method,
+            mode: "access",
+            subject: { kind: "evaluation_run", id: run.id },
+            datasetIds: [run.datasetId]
+          }, { method, run });
+        }
+        if (method === "evaluations.start") {
+          return scopeResolution(null, {
+            method,
+            ...await evaluationStartSnapshot(input)
+          });
+        }
+        if (method === "runtimes.models") {
+          return scopeResolution(null, {
+            method,
+            runtime: await requireRuntime(input.runtimeId)
+          });
+        }
+        if (method === "datasets.get") {
+          const dataset = await requireDataset(input.datasetId);
+          return scopeResolution(null, {
+            method,
+            dataset,
+            cases: input.includeCases ? await casesForDataset(dataset.id) : null
+          });
+        }
+        if (method === "evaluations.list" && input.datasetId !== null) {
+          const dataset = await requireDataset(input.datasetId);
+          return scopeResolution(null, {
+            method,
+            dataset,
+            runs: await runInventory(dataset.id)
+          });
+        }
+        if (method === "skills.get") {
+          return scopeResolution(null, {
+            method,
+            ...await requireSkillDetail(input.skillId)
+          });
+        }
+        return scopeResolution(null);
+      }
+      async function controlOperatorJob(operation, input, context) {
+        const method = `jobs.${operation}`;
+        const execution = trustedExecution(context, method);
+        const job = execution?.job ?? requireOperatorJob(input.jobId, context?.sessionId);
+        if (job.parentJobId !== null && job.parentJobId !== void 0) {
+          if (operation !== "stop") {
+            throw invalidArgument(
+              method,
+              ["jobId"],
+              `Child Operator Jobs do not support ${operation}`
+            );
+          }
+          if (typeof operatorJobEngine?.cancel !== "function") {
+            throw new Error("Operator child Job cancellation unavailable");
+          }
+          await operatorJobEngine.cancel(job.id);
+          return { job: publicOperatorJob(requireOperatorJob(
+            job.id,
+            context.sessionId,
+            context.grant
+          )) };
+        }
+        if (typeof operatorSessionManager?.[operation] !== "function") {
+          throw new Error("Operator session control unavailable");
+        }
+        await operatorSessionManager[operation](job.sessionId);
+        return { job: publicOperatorJob(requireOperatorJob(
+          job.id,
+          context.sessionId,
+          context.grant
+        )) };
+      }
+      const handlers = {
+        async "context.get"(_input, context) {
+          const allowed = scopeIds(context, "runtimeIds");
+          const execution = trustedExecution(context, "context.get");
+          const inventory = execution?.runtimes ?? await runtimeInventory();
+          const operatorRuntimeId = identifier(context?.operatorSession?.runtimeId);
+          const runtimes = inventory.filter((entry) => allowed.has(entry.runtimeId)).filter((entry) => operatorRuntimeId === null || entry.runtimeId === operatorRuntimeId);
+          const workspaceRoot = context?.operatorSession?.workspaceRoot ?? (typeof dependencies.workspaceRoot === "function" ? await dependencies.workspaceRoot() : dependencies.workspaceRoot);
+          return { workspaceRoot: String(workspaceRoot ?? ""), runtimes };
+        },
+        async "raw_cases.list"(input, context) {
+          const execution = trustedExecution(context, "raw_cases.list");
+          const page = paginate(await filteredRawCases(input, context, execution), input);
+          return {
+            rawCases: page.items.map((record) => sanitizedRawCasePublicValue(record)),
+            nextCursor: page.nextCursor
+          };
+        },
+        async "raw_cases.enqueue"(input, context) {
+          const execution = trustedExecution(context, "raw_cases.enqueue");
+          const cases = [];
+          for (let index = 0; index < input.cases.length; index += 1) {
+            const rawCase = input.cases[index];
+            const skill = execution?.skills[index] ?? await resolveSkillReference(rawCase.skill, {
+              grant: context?.grant,
+              method: "raw_cases.enqueue",
+              path: ["cases", index, "skill"],
+              toolSupplied: true
+            });
+            cases.push({
+              ...clone(rawCase),
+              question: rawCase.question,
+              skill: canonicalSkillReference(skill)
+            });
+          }
+          if (typeof rawCaseStore?.addMany !== "function") throw new Error("Raw Case store unavailable");
+          return sanitizedRawCasePublicValue(await rawCaseStore.addMany(cases));
+        },
+        async "raw_cases.update"(input, context) {
+          const execution = trustedExecution(context, "raw_cases.update");
+          const rawCase = execution?.rawCase ?? await requireRawCase(input.id);
+          const changes = clone(input.changes);
+          if (changes.skill) {
+            const skill = execution?.targetSkill ?? await resolveSkillReference(changes.skill, {
+              grant: context?.grant,
+              method: "raw_cases.update",
+              path: ["changes", "skill"],
+              toolSupplied: true
+            });
+            changes.skill = canonicalSkillReference(skill);
+          }
+          if (typeof rawCaseStore?.updateIfCurrent !== "function") {
+            throw new Error("Raw Case store unavailable");
+          }
+          try {
+            return { rawCase: sanitizedRawCasePublicValue(await rawCaseStore.updateIfCurrent(input.id, {
+              expectedRevision: rawCase.revision,
+              expectedSkillName: rawCase.skill?.name
+            }, changes)) };
+          } catch (error) {
+            let conflict = false;
+            try {
+              conflict = error instanceof RawCaseConflictError;
+            } catch {
+            }
+            if (conflict) throw createPublicControlError("CONTROL_BUSY");
+            throw error;
+          }
+        },
+        async "raw_cases.dispatch"(input, context) {
+          const execution = trustedExecution(context, "raw_cases.dispatch");
+          const rawCase = execution?.rawCase ?? await requireRawCase(input.id);
+          const skill = execution?.skill ?? await resolveSkillReference(rawCase.skill, {
+            grant: context?.grant,
+            method: "raw_cases.dispatch"
+          });
+          const descriptor = execution?.runtime ?? await requireRuntime(input.runtime.runtimeId);
+          if (typeof dispatchRawCase !== "function") throw new Error("Runtime dispatch unavailable");
+          const result = await dispatchRawCase({
+            rawCase,
+            skill: clone(skill),
+            mode: input.mode,
+            runtime: {
+              ...descriptor,
+              modelId: input.runtime.modelId,
+              effort: input.runtime.effort
+            }
+          });
+          return { threadId: result.threadId, turnId: result.turnId ?? null };
+        },
+        async "runtimes.list"(_input, context) {
+          const allowed = scopeIds(context, "runtimeIds");
+          const execution = trustedExecution(context, "runtimes.list");
+          const runtimes = execution?.runtimes ?? await runtimeInventory();
+          return {
+            runtimes: runtimes.filter((entry) => allowed.has(entry.runtimeId))
+          };
+        },
+        async "runtimes.models"(input, context) {
+          const execution = trustedExecution(context, "runtimes.models");
+          const runtime = execution?.runtime ?? await requireRuntime(input.runtimeId);
+          if (typeof listModelsForRuntime !== "function") return { models: [] };
+          const result = await listModelsForRuntime(runtime.runtimeId, clone(runtime));
+          return { models: clone(arrayFromInventory(result, ["models", "data"])) };
+        },
+        async "datasets.list"(input, context) {
+          const allowed = scopeIds(context, "datasetIds");
+          const execution = trustedExecution(context, "datasets.list");
+          const inventory = execution?.datasets ?? await datasetInventory();
+          const datasets = inventory.filter((entry) => allowed.has(entry.id));
+          const page = paginate(datasets, input);
+          return { datasets: page.items.map(publicDataset), nextCursor: page.nextCursor };
+        },
+        async "datasets.get"(input, context) {
+          const execution = trustedExecution(context, "datasets.get");
+          const dataset = execution?.dataset ?? await requireDataset(input.datasetId);
+          const result = { dataset: publicDataset(dataset) };
+          if (input.includeCases) {
+            result.cases = (execution?.cases ?? await casesForDataset(dataset.id)).map(publicCase);
+          }
+          return result;
+        },
+        async "datasets.create"(input, context) {
+          const execution = trustedExecution(context, "datasets.create");
+          const skill = execution?.skill ?? await requireManagedSkillSelection(input.skillId, input.repositoryId);
+          if (typeof dependencies.resolveManagedSkillBinding !== "function") {
+            throw new Error("Managed Skill binding resolution unavailable");
+          }
+          const binding = await dependencies.resolveManagedSkillBinding(Object.freeze({
+            repositoryId: input.repositoryId,
+            skillId: input.skillId
+          }));
+          if (!binding || typeof binding !== "object" || binding.repositoryId !== input.repositoryId || binding.skillId !== input.skillId || binding.name !== skill.name || !isAbsolute(binding.skillPath) || identifier(binding.providerId) === null || identifier(binding.runtimeId) === null) throw new Error("Managed Skill binding resolution is invalid");
+          if (typeof evaluationStore?.createDataset !== "function") {
+            throw new Error("Dataset store unavailable");
+          }
+          const dataset = await evaluationStore.createDataset({
+            name: input.name,
+            skillReference: {
+              schemaVersion: "rolling-skill-skill-reference/v1",
+              id: skill.id,
+              name: binding.name,
+              path: binding.skillPath,
+              scope: null,
+              description: skill.description ?? null,
+              providerId: binding.providerId,
+              runtimeId: binding.runtimeId,
+              repositoryId: binding.repositoryId,
+              confirmedAt: (/* @__PURE__ */ new Date()).toISOString()
+            }
+          });
+          return { dataset: publicDataset(dataset) };
+        },
+        async "datasets.delete"(input, context) {
+          const execution = trustedExecution(context, "datasets.delete");
+          if (execution === null) await requireDataset(input.datasetId);
+          await assertMutationCurrent("datasets.delete", input, context);
+          if (typeof evaluationStore?.deleteDataset !== "function") {
+            throw new Error("Dataset store unavailable");
+          }
+          const deleted = await evaluationStore.deleteDataset(input.datasetId);
+          return { dataset: publicDataset(deleted?.dataset ?? deleted) };
+        },
+        async "datasets.delete_case"(input, context) {
+          const execution = trustedExecution(context, "datasets.delete_case");
+          if (execution === null) {
+            const dataset = await requireDataset(input.datasetId);
+            const selectedCase = (await casesForDataset(dataset.id)).find((entry) => entry.id === input.caseId);
+            if (!selectedCase) throw notFound("case");
+          }
+          await assertMutationCurrent("datasets.delete_case", input, context);
+          if (typeof evaluationStore?.deleteCase !== "function") {
+            throw new Error("Dataset Case store unavailable");
+          }
+          return { case: publicCase(await evaluationStore.deleteCase(input.datasetId, input.caseId)) };
+        },
+        async "evaluations.list"(input, context) {
+          const execution = trustedExecution(context, "evaluations.list");
+          let runs = execution?.runs ?? await runInventory(input.datasetId);
+          if (input.datasetId === null) {
+            const allowed = scopeIds(context, "datasetIds");
+            runs = runs.filter((entry) => allowed.has(entry.datasetId));
+          } else {
+            const execution2 = trustedExecution(context, "evaluations.list");
+            if (execution2 === null) await requireDataset(input.datasetId);
+          }
+          const page = paginate(runs, input);
+          return {
+            runs: page.items.map((run) => publicEvaluationRun(run)),
+            nextCursor: page.nextCursor
+          };
+        },
+        async "evaluations.get"(input, context) {
+          const execution = trustedExecution(context, "evaluations.get");
+          return {
+            run: publicEvaluationRun(
+              execution?.run ?? await requireEvaluationRun(input.runId),
+              { includeResults: true }
+            )
+          };
+        },
+        async "evaluations.start"(input, context) {
+          const execution = trustedExecution(context, "evaluations.start") ?? immutableSnapshot({
+            method: "evaluations.start",
+            ...await evaluationStartSnapshot(input)
+          });
+          if (typeof startEvaluation !== "function") throw new Error("Evaluation start unavailable");
+          return {
+            run: publicEvaluationRun(
+              clone(await startEvaluation(clone(input), execution)),
+              { includeResults: true }
+            )
+          };
+        },
+        async "evaluations.cancel"(input, context) {
+          const execution = trustedExecution(context, "evaluations.cancel");
+          if (execution === null) await requireEvaluationRun(input.runId);
+          if (typeof evaluationRunner?.cancel !== "function") {
+            throw new Error("Evaluation cancellation unavailable");
+          }
+          return {
+            run: publicEvaluationRun(
+              clone(await evaluationRunner.cancel(input.runId)),
+              { includeResults: true }
+            )
+          };
+        },
+        async "skill_repositories.list"(input, context) {
+          const allowed = scopeIds(context, "repositoryIds");
+          const execution = trustedExecution(context, "skill_repositories.list");
+          const catalog = execution?.catalog ?? await managedSkillCatalog();
+          const repositories = catalog.repositories.filter((entry) => allowed.has(entry.id));
+          const page = paginate(repositories, input);
+          return {
+            repositories: page.items.map(managedRepositorySummary),
+            nextCursor: page.nextCursor
+          };
+        },
+        async "skills.list"(input, context) {
+          const allowed = scopeIds(context, "skillIds");
+          const execution = trustedExecution(context, "skills.list");
+          const catalog = execution?.catalog ?? await managedSkillCatalog();
+          const skills = catalog.skills.filter((entry) => allowed.has(entry.id));
+          const page = paginate(skills, input);
+          const repositoryIds = new Set(page.items.map((entry) => entry.repositoryId));
+          return {
+            repositories: catalog.repositories.filter((entry) => repositoryIds.has(entry?.id)).map(managedRepositorySummary),
+            skills: page.items.map(managedSkillSummary),
+            nextCursor: page.nextCursor
+          };
+        },
+        async "skill_versions.list"(input, context) {
+          const allowed = scopeIds(context, "skillIds");
+          const execution = trustedExecution(context, "skill_versions.list");
+          const page = execution?.versionPage ?? await managedSkillVersionPage(input, allowed);
+          return {
+            versions: page.versions.map(managedVersionSummary),
+            nextCursor: page.nextCursor
+          };
+        },
+        async "skills.get"(input, context) {
+          const execution = trustedExecution(context, "skills.get");
+          const detail = execution?.detail ?? (await requireSkillDetail(input.skillId)).detail;
+          return { skill: detail };
+        },
+        async "skills.diff"(input, context) {
+          const execution = trustedExecution(context, "skills.diff");
+          if (execution === null) {
+            await requireManagedSkillSelection(input.skillId, input.repositoryId);
+          }
+          const baseVersion = execution?.baseVersion ?? requireManagedVersion(input.baseVersionId, input);
+          const candidateVersion = execution?.candidateVersion ?? requireManagedVersion(input.candidateVersionId, input);
+          return { diff: {
+            skillId: input.skillId,
+            repositoryId: input.repositoryId,
+            baseVersionId: baseVersion.id,
+            candidateVersionId: candidateVersion.id,
+            changed: baseVersion.contentDigest !== candidateVersion.contentDigest
+          } };
+        },
+        async "skills.create_candidate"(input, context) {
+          const execution = trustedExecution(context, "skills.create_candidate");
+          if (execution === null) {
+            await requireManagedSkillSelection(input.skillId, input.repositoryId);
+          }
+          if (typeof managedSkillManager?.repositoryPath !== "function" || typeof managedSkillManager?.createCandidate !== "function") {
+            throw new Error("Managed Skill Candidate creation unavailable");
+          }
+          await assertMutationCurrent("skills.create_candidate", input, context);
+          await managedSkillManager.repositoryPath(input.repositoryId);
+          const approvedFacts = context?.trustedFacts?.methodFacts;
+          const version = await managedSkillManager.createCandidate({
+            skillId: input.skillId,
+            message: input.message,
+            createdBy: "operator",
+            ...approvedFacts?.method === "skills.create_candidate" ? {
+              expectedBase: {
+                commit: approvedFacts.baseCommit,
+                contentDigest: approvedFacts.baseContentDigest,
+                dirty: approvedFacts.dirty
+              }
+            } : {}
+          });
+          if (version?.repositoryId !== input.repositoryId || version?.skillId !== input.skillId || version?.createdBy !== "operator") {
+            throw new Error("Managed Skill Candidate identity did not match its repository");
+          }
+          const persisted = requireManagedVersion(version.id, input);
+          if (persisted.commit !== version.commit || persisted.createdBy !== "operator") {
+            throw new Error("Managed Skill Candidate commit was not persisted by its repository");
+          }
+          return { version: managedVersionSummary(version) };
+        },
+        async "skills.release"(input, context) {
+          const execution = trustedExecution(context, "skills.release");
+          const version = execution?.version ?? requireManagedVersion(input.versionId, input);
+          if (version.skillId !== input.skillId || version.repositoryId !== input.repositoryId) {
+            throw notFound("version");
+          }
+          if (typeof managedSkillManager?.releaseVersion !== "function") {
+            throw new Error("Managed Skill release unavailable");
+          }
+          await assertMutationCurrent("skills.release", input, context);
+          const approvedFacts = context?.trustedFacts?.methodFacts;
+          const released = await managedSkillManager.releaseVersion({
+            versionId: version.id,
+            versionLabel: input.versionLabel,
+            ...approvedFacts?.method === "skills.release" ? {
+              expectedCandidate: {
+                commit: approvedFacts.candidateCommit,
+                contentDigest: approvedFacts.candidateDigest,
+                state: approvedFacts.candidateState,
+                versionLabel: approvedFacts.versionLabel
+              }
+            } : {}
+          });
+          if (released?.id !== version.id || released.skillId !== input.skillId || released.repositoryId !== input.repositoryId) {
+            throw new Error("Managed Skill release identity did not match its repository");
+          }
+          return { version: managedVersionSummary(released) };
+        },
+        async "jobs.get"(input, context) {
+          const execution = trustedExecution(context, "jobs.get");
+          return { job: publicOperatorJob(
+            execution?.job ?? requireOperatorJob(input.jobId, context?.sessionId, context?.grant)
+          ) };
+        },
+        async "jobs.list"(input, context) {
+          const execution = trustedExecution(context, "jobs.list");
+          let jobs = execution?.jobs ?? operatorJobs(context?.sessionId);
+          if (input.status !== null) jobs = jobs.filter((job) => job.status === input.status);
+          const page = paginate(jobs, input);
+          return { jobs: page.items.map(publicOperatorJob), nextCursor: page.nextCursor };
+        },
+        async "jobs.pause"(input, context) {
+          return controlOperatorJob("pause", input, context);
+        },
+        async "jobs.resume"(input, context) {
+          return controlOperatorJob("resume", input, context);
+        },
+        async "jobs.stop"(input, context) {
+          return controlOperatorJob("stop", input, context);
+        },
+        async "approvals.list"(input, context) {
+          const execution = trustedExecution(context, "approvals.list");
+          let approvals = execution?.approvals ?? approvalsForSession(context?.sessionId, input.jobId);
+          if (input.status !== null) {
+            approvals = approvals.filter((approval) => approval.status === input.status);
+          }
+          const page = paginate(approvals, input);
+          return {
+            approvals: page.items.map(publicApproval),
+            nextCursor: page.nextCursor
+          };
+        },
+        async "approvals.resolve"(input, context) {
+          if (!isTrustedHumanCapability(context?.grant)) {
+            throw createPublicControlError("FORBIDDEN", {
+              details: { action: "approvals.resolve" }
+            });
+          }
+          const execution = trustedExecution(context, "approvals.resolve");
+          const approval = execution?.approval ?? requireOperatorApproval(input.approvalId, context?.sessionId, context?.grant);
+          if (typeof operatorJobEngine?.resolveApproval !== "function") {
+            throw new Error("Operator approval engine unavailable");
+          }
+          const expectedStatus = input.decision === "approve" ? "approved" : "rejected";
+          let result;
+          if (approval.status === "pending") {
+            try {
+              result = await operatorJobEngine.resolveApproval(approval.id, {
+                decision: input.decision,
+                scope: "action",
+                decidedBy: "user"
+              });
+            } catch (error) {
+              const current = requireOperatorApproval(
+                approval.id,
+                context.sessionId,
+                context.grant
+              );
+              if (current.status !== expectedStatus) throw error;
+            }
+          } else if (approval.status !== expectedStatus) {
+            throw resourceChanged("approval");
+          }
+          const currentApproval = requireOperatorApproval(
+            approval.id,
+            context.sessionId,
+            context.grant
+          );
+          if (currentApproval.status !== expectedStatus) throw resourceChanged("approval");
+          if (result === void 0) {
+            if (typeof operatorJobStore?.getStep !== "function" || currentApproval.stepId === null) {
+              throw new Error("Operator approval Step unavailable");
+            }
+            const step = operatorJobStore.getStep(currentApproval.stepId);
+            result = {
+              status: step.status,
+              jobId: step.jobId,
+              stepId: step.id,
+              approvalId: currentApproval.id,
+              ...step.error === null ? {} : { error: step.error }
+            };
+          }
+          if (typeof operatorSessionManager?.resumeAfterApproval !== "function") {
+            throw new Error("Operator approval recovery unavailable");
+          }
+          try {
+            await operatorSessionManager.resumeAfterApproval(currentApproval.sessionId);
+          } catch (cause) {
+            throw createPublicControlError("CONTROL_BUSY", { cause });
+          }
+          return {
+            approval: publicApproval(currentApproval),
+            execution: publicApprovalExecution(result, currentApproval)
+          };
+        },
+        async "curation.start"(input, context) {
+          const execution = trustedExecution(context, "curation.start");
+          if (execution === null) await requireDataset(input.datasetId);
+          if (typeof curationManager?.createSession !== "function") {
+            throw new Error("Curator unavailable");
+          }
+          const { idempotencyKey: _idempotencyKey, ...request } = input;
+          const session = await curationManager.createSession(request);
+          return { session: publicCurationSession(assertCurationIdentity(session, {
+            datasetId: input.datasetId
+          })) };
+        },
+        async "curation.message"(input, context) {
+          const execution = trustedExecution(context, "curation.message");
+          const existing = execution?.session ?? requireCurationSession(input.sessionId);
+          if (typeof curationManager?.sendMessage !== "function") throw new Error("Curator unavailable");
+          const session = await curationManager.sendMessage(input.sessionId, input.message);
+          return { session: publicCurationSession(assertCurationIdentity(session, {
+            sessionId: existing.id,
+            datasetId: existing.datasetId
+          })) };
+        },
+        async "curation.save"(input, context) {
+          const execution = trustedExecution(context, "curation.save");
+          const session = execution?.session ?? requireCurationSession(input.sessionId);
+          await assertMutationCurrent("curation.save", input, context);
+          if (typeof curationManager?.archive !== "function") throw new Error("Curator unavailable");
+          const entry = await curationManager.archive(session.id);
+          return {
+            session: publicCurationSession({ ...session, status: "archived", caseId: entry.id }),
+            case: publicCase(entry)
+          };
+        },
+        async "curation.discard"(input, context) {
+          const execution = trustedExecution(context, "curation.discard");
+          const existing = execution?.session ?? requireCurationSession(input.sessionId);
+          await assertMutationCurrent("curation.discard", input, context);
+          if (typeof curationManager?.discard !== "function") throw new Error("Curator unavailable");
+          const session = await curationManager.discard(input.sessionId);
+          return { session: publicCurationSession(assertCurationIdentity(session, {
+            sessionId: existing.id,
+            datasetId: existing.datasetId
+          })) };
+        },
+        async "rubrics.publish"(input, context) {
+          const execution = trustedExecution(context, "rubrics.publish");
+          const session = execution?.session ?? requireRubricSession(input.sessionId);
+          if (session.datasetId !== input.datasetId) throw notFound("rubric_session");
+          await assertMutationCurrent("rubrics.publish", input, context);
+          if (typeof rubricManager?.publish !== "function") throw new Error("Rubric Agent unavailable");
+          return { version: publicRubricVersion(await rubricManager.publish(session.id)) };
+        },
+        async "installations.start"(input, context) {
+          const execution = trustedExecution(context, "installations.start");
+          const skill = execution?.skill ?? await requireManagedSkillSelection(input.skillId, input.repositoryId);
+          const version = execution?.version ?? requireManagedVersion(input.versionId, input);
+          if (skill.repositoryId !== version.repositoryId || skill.id !== version.skillId) {
+            throw notFound("version");
+          }
+          await assertMutationCurrent("installations.start", input, context);
+          if (typeof skillInstallationManager?.start !== "function") {
+            throw new Error("Skill installation unavailable");
+          }
+          const installations = await skillInstallationManager.start({
+            skillId: skill.id,
+            versionId: version.id,
+            targets: clone(input.targets)
+          });
+          const jobs = clone(installations);
+          const targetRuntimeIds = new Set(input.targets.map((target) => target.runtimeId));
+          const returnedRuntimeIds = /* @__PURE__ */ new Set();
+          if (!Array.isArray(jobs) || jobs.length !== input.targets.length) {
+            throw new Error("Skill installation target identity did not match its request");
+          }
+          for (const job of jobs) {
+            const source = job?.request?.source ?? {};
+            const runtimeId = job?.runtime?.runtimeId;
+            if (job?.operation !== "install" || source.repositoryId !== input.repositoryId || source.skillId !== input.skillId || source.versionId !== input.versionId || !targetRuntimeIds.has(runtimeId) || returnedRuntimeIds.has(runtimeId)) {
+              throw new Error("Skill installation target identity did not match its request");
+            }
+            returnedRuntimeIds.add(runtimeId);
+          }
+          return { installations: jobs.map(publicInstallation) };
+        },
+        async "installations.get"(input, context) {
+          const execution = trustedExecution(context, "installations.get");
+          return { installation: publicInstallation(
+            execution?.installation ?? requireInstallation(input.installationId)
+          ) };
+        },
+        async "installations.cancel"(input, context) {
+          const execution = trustedExecution(context, "installations.cancel");
+          const existing = execution?.installation ?? requireInstallation(input.installationId);
+          await assertMutationCurrent("installations.cancel", input, context);
+          if (typeof skillInstallationManager?.cancel !== "function") {
+            throw new Error("Skill installation cancellation unavailable");
+          }
+          return { installation: publicInstallation(
+            assertInstallationIdentity(
+              await skillInstallationManager.cancel(input.installationId),
+              existing
+            )
+          ) };
+        },
+        async "installations.inspect"(input, context) {
+          const execution = trustedExecution(context, "installations.inspect");
+          const existing = execution?.installation ?? requireInstallation(input.installationId);
+          if (typeof skillInstallationManager?.inspect !== "function") {
+            throw new Error("Skill installation inspection unavailable");
+          }
+          return { installation: publicInstallation(
+            assertInstallationIdentity(
+              await skillInstallationManager.inspect(input.installationId),
+              existing,
+              { inspection: true }
+            )
+          ) };
+        },
+        async "optimization.preflight"(input, context) {
+          if (typeof optimizationControlService?.preflight !== "function") {
+            throw new Error("Optimization control service unavailable");
+          }
+          const execution = trustedExecution(context, "optimization.preflight");
+          if (execution?.preflight) return clone(execution.preflight);
+          const { idempotencyKey: _idempotencyKey, ...config } = input;
+          return optimizationControlService.preflight(config);
+        },
+        async "optimization.start"(input) {
+          if (typeof optimizationControlService?.start !== "function") {
+            throw new Error("Optimization control service unavailable");
+          }
+          return optimizationControlService.start(input);
+        },
+        async "optimization.get"(input) {
+          if (typeof optimizationControlService?.get !== "function") {
+            throw new Error("Optimization control service unavailable");
+          }
+          return optimizationControlService.get(input.runId);
+        },
+        async "optimization.pause"(input) {
+          if (typeof optimizationControlService?.pause !== "function") {
+            throw new Error("Optimization control service unavailable");
+          }
+          return optimizationControlService.pause(input.runId);
+        },
+        async "optimization.resume"(input) {
+          if (typeof optimizationControlService?.resume !== "function") {
+            throw new Error("Optimization control service unavailable");
+          }
+          return optimizationControlService.resume(input.runId);
+        },
+        async "optimization.stop"(input) {
+          if (typeof optimizationControlService?.stop !== "function") {
+            throw new Error("Optimization control service unavailable");
+          }
+          return optimizationControlService.stop(input.runId);
+        },
+        async "optimization.submit_candidate"(input, context) {
+          if (typeof optimizationControlService?.submitCandidate !== "function") {
+            throw new Error("Optimization control service unavailable");
+          }
+          const { idempotencyKey: _idempotencyKey, ...submission } = input;
+          return optimizationControlService.submitCandidate(submission, context);
+        },
+        async "optimization.submit_decision"(input, context) {
+          if (typeof optimizationControlService?.submitDecision !== "function") {
+            throw new Error("Optimization control service unavailable");
+          }
+          const { idempotencyKey: _idempotencyKey, ...submission } = input;
+          return optimizationControlService.submitDecision(submission, context);
+        },
+        async "optimization.report"(input) {
+          if (typeof optimizationControlService?.report !== "function") {
+            throw new Error("Optimization control service unavailable");
+          }
+          return optimizationControlService.report(input.runId);
+        }
+      };
+      for (const method of CONTROL_METHODS) {
+        if (typeof handlers[method] !== "function") throw new Error(`Missing domain handler: ${method}`);
+      }
+      Object.defineProperty(handlers, "resolveScope", {
+        configurable: false,
+        enumerable: false,
+        value: resolveScope,
+        writable: false
+      });
+      Object.defineProperty(handlers, "resolveTrustedFacts", {
+        configurable: false,
+        enumerable: false,
+        value: resolveTrustedFacts,
+        writable: false
+      });
+      return Object.freeze(handlers);
+    }
+    module.exports = { createDomainServices };
+  }
+});
+
+// ../../desktop/rolling-skill/src/json-rpc.cjs
+var require_json_rpc = __commonJS({
+  "../../desktop/rolling-skill/src/json-rpc.cjs"(exports, module) {
+    var { TextDecoder: TextDecoder2 } = __require("node:util");
+    var JsonLineDecoder = class {
+      constructor(onMessage, onError = () => {
+      }, { maximumBufferBytes = Infinity } = {}) {
+        this.onMessage = onMessage;
+        this.onError = onError;
+        this.maximumBufferBytes = maximumBufferBytes;
+        this.buffer = Buffer.alloc(0);
+        this.terminated = false;
+        this.paused = false;
+        this.textDecoder = new TextDecoder2("utf-8", { fatal: true });
+      }
+      push(chunk) {
+        if (this.terminated) return false;
+        const incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        if (incoming.length === 0) return true;
+        this.buffer = this.buffer.length === 0 ? Buffer.from(incoming) : Buffer.concat([this.buffer, incoming]);
+        if (this.paused) {
+          if (this.buffer.length > this.maximumBufferBytes) return this.#overflow();
+          return false;
+        }
+        return this.#drain();
+      }
+      resume() {
+        if (this.terminated) return false;
+        if (!this.paused) return true;
+        this.paused = false;
+        return this.#drain();
+      }
+      #drain() {
+        let newline = this.buffer.indexOf(10);
+        while (newline >= 0) {
+          if (newline > this.maximumBufferBytes) return this.#overflow();
+          const lineBytes = this.buffer.subarray(0, newline);
+          this.buffer = this.buffer.slice(newline + 1);
+          const delivered = this.#decode(lineBytes);
+          if (this.terminated) return false;
+          if (delivered === false) {
+            this.paused = true;
+            if (this.buffer.length > this.maximumBufferBytes) return this.#overflow();
+            return false;
+          }
+          newline = this.buffer.indexOf(10);
+        }
+        if (this.buffer.length > this.maximumBufferBytes) return this.#overflow();
+        return true;
+      }
+      end(chunk) {
+        if (chunk !== void 0 && !this.push(chunk)) return false;
+        if (this.terminated) return false;
+        if (this.buffer.length > this.maximumBufferBytes) return this.#overflow();
+        const line = this.buffer;
+        this.buffer = Buffer.alloc(0);
+        const delivered = this.#decode(line);
+        if (delivered === false) this.paused = true;
+        return !this.terminated && !this.paused;
+      }
+      #decode(lineBytes) {
+        let line;
+        try {
+          line = this.textDecoder.decode(lineBytes).trim();
+        } catch (error) {
+          this.buffer = Buffer.alloc(0);
+          this.terminated = true;
+          this.onError(error, null);
+          return false;
+        }
+        if (!line) return true;
+        try {
+          return this.onMessage(JSON.parse(line));
+        } catch (error) {
+          this.onError(error, line);
+          return true;
+        }
+      }
+      #overflow() {
+        this.buffer = Buffer.alloc(0);
+        this.terminated = true;
+        this.onError(new RangeError("JSON line exceeded the maximum buffer bytes"), null);
+        return false;
+      }
+    };
+    var RpcRequestTracker = class {
+      constructor() {
+        this.nextId = 1;
+        this.pending = /* @__PURE__ */ new Map();
+      }
+      create(method, params) {
+        const id = this.nextId;
+        this.nextId += 1;
+        const message = { id, method, params };
+        let resolvePromise;
+        let rejectPromise;
+        const promise = new Promise((resolve, reject) => {
+          resolvePromise = resolve;
+          rejectPromise = reject;
+        });
+        this.pending.set(id, { resolve: resolvePromise, reject: rejectPromise });
+        return { message, promise };
+      }
+      settle(message) {
+        if (message?.id === void 0 || message?.id === null) return false;
+        const pending = this.pending.get(message.id);
+        if (!pending) return false;
+        this.pending.delete(message.id);
+        if (message.error) {
+          const error = new Error(message.error.message || "Codex app-server request failed");
+          error.code = message.error.code;
+          error.data = message.error.data;
+          pending.reject(error);
+        } else {
+          pending.resolve(message.result);
+        }
+        return true;
+      }
+      rejectAll(error) {
+        for (const pending of this.pending.values()) pending.reject(error);
+        this.pending.clear();
+      }
+    };
+    module.exports = { JsonLineDecoder, RpcRequestTracker };
+  }
+});
+
+// ../../desktop/rolling-skill/src/control-plane/socket-server.cjs
+var require_socket_server = __commonJS({
+  "../../desktop/rolling-skill/src/control-plane/socket-server.cjs"(exports, module) {
+    var fs = __require("node:fs");
+    var net = __require("node:net");
+    var path = __require("node:path");
+    var { createHash, randomBytes, randomUUID, timingSafeEqual } = __require("node:crypto");
+    var { JsonLineDecoder } = require_json_rpc();
+    var { createPublicControlError, publicControlError } = require_contracts();
+    var CONTROL_SOCKET_DIRECTORY = "control";
+    var CONTROL_SOCKET_NAME = "control.sock";
+    var CONTROL_SOCKET_QUARANTINE_PREFIX = ".control.sock.stale-";
+    var CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX = ".control.sock.close-";
+    var CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX = ".p-";
+    var CONTROL_SOCKET_BIND_DIRECTORY_PREFIX = ".b-";
+    var CONTROL_SOCKET_BIND_RECOVERY_PREFIX = ".r-";
+    var CONTROL_SOCKET_BIND_NAME = "s";
+    var MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS = 8;
+    var MAX_CONTROL_SOCKET_PATH_BYTES = process.platform === "linux" ? 107 : 103;
+    var MAX_CONTROL_MESSAGE_BYTES = 1048576;
+    var MAX_CONTROL_REQUEST_ID_LENGTH = 200;
+    var MAX_CONTROL_METHOD_LENGTH = 200;
+    var MAX_CONTROL_TOKEN_LENGTH = 4096;
+    var MAX_CONTROL_SESSION_ID_LENGTH = 200;
+    var DEFAULT_MAX_IN_FLIGHT_REQUESTS = 32;
+    var DEFAULT_MAX_QUEUED_RESPONSES = 32;
+    var DEFAULT_MAX_QUEUED_RESPONSE_BYTES = 4 * MAX_CONTROL_MESSAGE_BYTES;
+    var CONTROL_SOCKET_BIND_DIRECTORY_PATTERN = /^\.b-[A-Za-z0-9_-]{11}$/;
+    var CONTROL_SOCKET_BIND_RECOVERY_PATTERN = /^\.r-[A-Za-z0-9_-]{11}$/;
+    var CONTROL_SOCKET_PUBLIC_RECOVERY_PATTERN = /^\.p-([A-Za-z0-9_-]{12})$/;
+    var CONTROL_SOCKET_PUBLIC_RECOVERY_FINGERPRINT_BYTES = 9;
+    var CONTROL_SOCKET_PUBLIC_RECOVERY_STAGES = 2;
+    var FORBIDDEN_OBJECT_KEYS = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
+    var stateByServer = /* @__PURE__ */ new WeakMap();
+    function isPlainObject(value) {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+      return Object.getPrototypeOf(value) === Object.prototype;
+    }
+    function ownDataValue(object, key) {
+      const descriptor = Object.getOwnPropertyDescriptor(object, key);
+      return descriptor && Object.hasOwn(descriptor, "value") ? { present: true, value: descriptor.value } : { present: false, value: void 0 };
+    }
+    function isBoundedString(value, maximum) {
+      return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= maximum;
+    }
+    function containsForbiddenObjectKey(root) {
+      const pending = [root];
+      let visited = 0;
+      while (pending.length > 0) {
+        const value = pending.pop();
+        if (typeof value !== "object" || value === null) continue;
+        visited += 1;
+        if (visited > MAX_CONTROL_MESSAGE_BYTES) return true;
+        if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype) return true;
+        const descriptors = Object.getOwnPropertyDescriptors(value);
+        for (const [key, descriptor] of Object.entries(descriptors)) {
+          if (FORBIDDEN_OBJECT_KEYS.has(key)) return true;
+          if (!Object.hasOwn(descriptor, "value")) return true;
+          if (typeof descriptor.value === "object" && descriptor.value !== null) {
+            pending.push(descriptor.value);
+          }
+        }
+      }
+      return false;
+    }
+    function parseRequest(message) {
+      if (!isPlainObject(message) || containsForbiddenObjectKey(message)) return null;
+      const id = ownDataValue(message, "id");
+      const method = ownDataValue(message, "method");
+      const params = ownDataValue(message, "params");
+      const token = ownDataValue(message, "token");
+      const sessionId = ownDataValue(message, "sessionId");
+      if (!id.present || !isBoundedString(id.value, MAX_CONTROL_REQUEST_ID_LENGTH) || !method.present || !isBoundedString(method.value, MAX_CONTROL_METHOD_LENGTH) || !params.present || !isPlainObject(params.value) || !token.present || !isBoundedString(token.value, MAX_CONTROL_TOKEN_LENGTH) || !sessionId.present || !isBoundedString(sessionId.value, MAX_CONTROL_SESSION_ID_LENGTH)) return null;
+      return {
+        id: id.value,
+        invocation: {
+          token: token.value,
+          sessionId: sessionId.value,
+          method: method.value,
+          params: params.value
+        }
+      };
+    }
+    function checkOwner(stat, label) {
+      if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+        throw new Error(`${label} must be owned by the current user`);
+      }
+    }
+    async function existingLstat(candidate) {
+      try {
+        return await fs.promises.lstat(candidate);
+      } catch (error) {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      }
+    }
+    async function prepareControlDirectory(userData, configuredControlDir, ensureOpen = () => {
+    }) {
+      if (typeof userData !== "string" || !path.isAbsolute(userData) || path.resolve(userData) !== userData) {
+        throw new Error("userData must be an exact absolute directory");
+      }
+      const expectedControlDir = path.join(userData, CONTROL_SOCKET_DIRECTORY);
+      const controlDir = configuredControlDir ?? expectedControlDir;
+      if (controlDir !== expectedControlDir) {
+        throw new Error("Control directory must be the exact configured child");
+      }
+      ensureOpen();
+      const userDataStat = await fs.promises.lstat(userData);
+      ensureOpen();
+      if (userDataStat.isSymbolicLink() || !userDataStat.isDirectory()) {
+        throw new Error("userData must be a real directory");
+      }
+      checkOwner(userDataStat, "userData");
+      const realUserData = await fs.promises.realpath(userData);
+      ensureOpen();
+      try {
+        ensureOpen();
+        await fs.promises.mkdir(controlDir, { mode: 448 });
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+      }
+      ensureOpen();
+      const controlStat = await fs.promises.lstat(controlDir);
+      ensureOpen();
+      if (controlStat.isSymbolicLink() || !controlStat.isDirectory()) {
+        throw new Error("Control directory must be a real directory, not a symlink");
+      }
+      checkOwner(controlStat, "Control directory");
+      const realControlDir = await fs.promises.realpath(controlDir);
+      ensureOpen();
+      if (realControlDir !== path.join(realUserData, CONTROL_SOCKET_DIRECTORY)) {
+        throw new Error("Control directory must be the exact configured child");
+      }
+      ensureOpen();
+      await fs.promises.chmod(controlDir, 448);
+      ensureOpen();
+      const securedStat = await fs.promises.lstat(controlDir);
+      ensureOpen();
+      checkOwner(securedStat, "Control directory");
+      if ((securedStat.mode & 511) !== 448) {
+        throw new Error("Control directory permissions are not private");
+      }
+      return { controlDir, socketPath: path.join(controlDir, CONTROL_SOCKET_NAME) };
+    }
+    function probeSocket(socketPath) {
+      return new Promise((resolve, reject) => {
+        const socket = net.createConnection(socketPath);
+        let settled = false;
+        const finish = (callback, value) => {
+          if (settled) return;
+          settled = true;
+          socket.removeAllListeners();
+          socket.destroy();
+          callback(value);
+        };
+        socket.once("connect", () => finish(resolve, "active"));
+        socket.once("error", (error) => {
+          if (error?.code === "ECONNREFUSED" || error?.code === "ENOENT") {
+            finish(resolve, "stale");
+            return;
+          }
+          finish(reject, error);
+        });
+      });
+    }
+    function sameFile(left, right) {
+      return left.dev === right.dev && left.ino === right.ino;
+    }
+    async function removeStaleSocketAtPath(socketPath, {
+      label,
+      quarantinePrefix,
+      validatePath,
+      ensureOpen = () => {
+      }
+    }) {
+      validatePath(socketPath);
+      ensureOpen();
+      const initial = await existingLstat(socketPath);
+      ensureOpen();
+      if (!initial) return;
+      if (initial.isSymbolicLink() || !initial.isSocket()) {
+        throw new Error(`Refusing to replace a non-socket ${label} path`);
+      }
+      checkOwner(initial, label);
+      const socketState = await probeSocket(socketPath);
+      ensureOpen();
+      if (socketState === "active") {
+        throw new Error(`${label} is active or already in use`);
+      }
+      const current = await existingLstat(socketPath);
+      ensureOpen();
+      if (!current) return;
+      if (!current.isSocket() || !sameFile(initial, current)) {
+        throw new Error("Control socket path changed while checking stale state");
+      }
+      const quarantinePath = controlledSibling(socketPath, quarantinePrefix);
+      ensureOpen();
+      fs.renameSync(socketPath, quarantinePath);
+      const quarantined = await fs.promises.lstat(quarantinePath);
+      if (quarantined.isSocket() && sameFile(current, quarantined)) {
+        fs.unlinkSync(quarantinePath);
+        return;
+      }
+      let restored = false;
+      if (!await existingLstat(socketPath)) {
+        try {
+          fs.linkSync(quarantinePath, socketPath);
+          const linked = await fs.promises.lstat(socketPath);
+          if (!sameFile(linked, quarantined)) {
+            throw new Error("Restored control socket replacement changed identity");
+          }
+          fs.unlinkSync(quarantinePath);
+          restored = true;
+        } catch (error) {
+          if (error?.code !== "EEXIST") {
+            throw new Error("Control socket quarantine restore failed", { cause: error });
+          }
+        }
+      }
+      throw new Error(restored ? "Stale control socket changed before quarantine and was restored" : "Stale control socket changed before quarantine; replacement remains quarantined");
+    }
+    async function removeStaleSocket(socketPath, ensureOpen) {
+      return removeStaleSocketAtPath(socketPath, {
+        label: "Control socket",
+        quarantinePrefix: CONTROL_SOCKET_QUARANTINE_PREFIX,
+        ensureOpen,
+        validatePath(candidate) {
+          if (path.basename(candidate) !== CONTROL_SOCKET_NAME) {
+            throw new Error("Control socket path is not the exact configured child");
+          }
+        }
+      });
+    }
+    function controlledSibling(candidate, prefix) {
+      const directory = path.dirname(candidate);
+      const sibling = path.join(directory, `${prefix}${process.pid}-${randomUUID()}`);
+      if (path.dirname(sibling) !== directory || !path.basename(sibling).startsWith(prefix)) throw new Error("Control socket generated path is invalid");
+      return sibling;
+    }
+    function assertSocketPathWithinBudget(candidate, label) {
+      if (Buffer.byteLength(candidate, "utf8") > MAX_CONTROL_SOCKET_PATH_BYTES) {
+        throw new Error(`${label} is too long for the Unix socket path budget`);
+      }
+    }
+    function assertControlSocketLayoutWithinBudget(controlDir, socketPath) {
+      const bindSuffix = "A".repeat(11);
+      const candidates = [
+        [socketPath, "Control socket path"],
+        [
+          path.join(
+            controlDir,
+            `${CONTROL_SOCKET_BIND_DIRECTORY_PREFIX}${bindSuffix}`,
+            CONTROL_SOCKET_BIND_NAME
+          ),
+          "Control bind socket path"
+        ],
+        [
+          path.join(
+            controlDir,
+            `${CONTROL_SOCKET_BIND_RECOVERY_PREFIX}${bindSuffix}`,
+            CONTROL_SOCKET_BIND_NAME
+          ),
+          "Control bind recovery socket path"
+        ],
+        [
+          path.join(
+            controlDir,
+            `${CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX}${"A".repeat(12)}`
+          ),
+          "Control public recovery socket path"
+        ]
+      ];
+      for (const [candidate, label] of candidates) {
+        assertSocketPathWithinBudget(candidate, label);
+      }
+    }
+    function randomBindSuffix() {
+      return randomBytes(8).toString("base64url");
+    }
+    function publicRecoveryFingerprints(identity) {
+      const digest = createHash("sha256").update(`${identity.dev}:${identity.ino}`).digest();
+      return Array.from({ length: CONTROL_SOCKET_PUBLIC_RECOVERY_STAGES }, (_, stage) => digest.subarray(
+        stage * CONTROL_SOCKET_PUBLIC_RECOVERY_FINGERPRINT_BYTES,
+        (stage + 1) * CONTROL_SOCKET_PUBLIC_RECOVERY_FINGERPRINT_BYTES
+      ));
+    }
+    function publicRecoveryName(identity, stage = 0) {
+      const fingerprints = publicRecoveryFingerprints(identity);
+      if (!Number.isInteger(stage) || stage < 0 || stage >= fingerprints.length) {
+        throw new Error("Control public recovery stage is invalid");
+      }
+      return `${CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX}${fingerprints[stage].toString("base64url")}`;
+    }
+    function publicRecoveryStage(name, identity) {
+      const match = CONTROL_SOCKET_PUBLIC_RECOVERY_PATTERN.exec(name);
+      if (!match) return -1;
+      const actual = Buffer.from(match[1], "base64url");
+      let matchingStage = -1;
+      for (const [stage, expected] of publicRecoveryFingerprints(identity).entries()) {
+        const matches = actual.length === expected.length && timingSafeEqual(actual, expected);
+        if (matches) matchingStage = stage;
+      }
+      return matchingStage;
+    }
+    function createPublicRecoveryPath(socketPath, identity, stage = 0) {
+      const controlDir = path.dirname(socketPath);
+      const candidate = path.join(controlDir, publicRecoveryName(identity, stage));
+      try {
+        const existing = fs.lstatSync(candidate);
+        throw new Error(sameFile(existing, identity) ? "Control public recovery fingerprint is already occupied" : "Control public recovery fingerprint is occupied by a different identity");
+      } catch (error) {
+        if (error?.code === "ENOENT") return candidate;
+        throw error;
+      }
+    }
+    function validatePublicRecoveryPath(candidate, controlDir) {
+      if (path.dirname(candidate) !== controlDir || !CONTROL_SOCKET_PUBLIC_RECOVERY_PATTERN.test(path.basename(candidate))) throw new Error("Control public recovery path is invalid");
+    }
+    async function recoverPublicSocket(candidate, ensureOpen = () => {
+    }) {
+      const controlDir = path.dirname(candidate);
+      validatePublicRecoveryPath(candidate, controlDir);
+      assertSocketPathWithinBudget(candidate, "Control public recovery socket path");
+      ensureOpen();
+      const initial = await existingLstat(candidate);
+      ensureOpen();
+      if (!initial) return;
+      if (initial.isSymbolicLink() || !initial.isSocket()) {
+        throw new Error("Refusing non-socket control public recovery evidence");
+      }
+      checkOwner(initial, "Control public recovery socket");
+      const initialStage = publicRecoveryStage(path.basename(candidate), initial);
+      if (initialStage < 0) {
+        throw new Error("Control public recovery socket identity does not match its name");
+      }
+      const socketState = await probeSocket(candidate);
+      ensureOpen();
+      if (socketState === "active") {
+        throw new Error("Control public recovery socket is active or already in use");
+      }
+      const current = await existingLstat(candidate);
+      ensureOpen();
+      if (!current) return;
+      if (current.isSymbolicLink() || !current.isSocket() || !sameFile(current, initial) || publicRecoveryStage(path.basename(candidate), current) !== initialStage) throw new Error("Control public recovery changed while checking stale state");
+      checkOwner(current, "Control public recovery socket");
+      const cleanupStage = (initialStage + 1) % CONTROL_SOCKET_PUBLIC_RECOVERY_STAGES;
+      const cleanupPath = createPublicRecoveryPath(candidate, current, cleanupStage);
+      ensureOpen();
+      try {
+        fs.renameSync(candidate, cleanupPath);
+      } catch (error) {
+        if (error?.code === "ENOENT") return;
+        throw new Error("Control public recovery cleanup rename failed", { cause: error });
+      }
+      const cleanup = fs.lstatSync(cleanupPath);
+      if (cleanup.isSymbolicLink() || !cleanup.isSocket() || !sameFile(cleanup, current) || publicRecoveryStage(path.basename(cleanupPath), cleanup) !== cleanupStage) {
+        throw new Error("Control public recovery changed after cleanup rename");
+      }
+      checkOwner(cleanup, "Control public recovery socket");
+      fs.unlinkSync(cleanupPath);
+    }
+    async function recoverPublicSockets(controlDir, ensureOpen = () => {
+    }) {
+      ensureOpen();
+      const names = await fs.promises.readdir(controlDir);
+      ensureOpen();
+      const candidates = names.filter((name) => name.startsWith(CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX)).sort();
+      for (const name of candidates) {
+        ensureOpen();
+        await recoverPublicSocket(path.join(controlDir, name), ensureOpen);
+        ensureOpen();
+      }
+    }
+    function validateBindNamespacePath(candidate, controlDir, { allowRecovery = false } = {}) {
+      if (path.dirname(candidate) !== controlDir) {
+        throw new Error("Control bind namespace must be an exact control-directory child");
+      }
+      const name = path.basename(candidate);
+      if (!CONTROL_SOCKET_BIND_DIRECTORY_PATTERN.test(name) && !(allowRecovery && CONTROL_SOCKET_BIND_RECOVERY_PATTERN.test(name))) throw new Error("Control bind namespace name is invalid");
+    }
+    function createBindNamespace(controlDir, ensureOpen = () => {
+    }) {
+      assertSocketPathWithinBudget(
+        path.join(
+          controlDir,
+          `${CONTROL_SOCKET_BIND_RECOVERY_PREFIX}${"A".repeat(11)}`,
+          CONTROL_SOCKET_BIND_NAME
+        ),
+        "Control bind recovery socket path"
+      );
+      let collision = null;
+      for (let attempt = 0; attempt < MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS; attempt += 1) {
+        ensureOpen();
+        const bindDir = path.join(
+          controlDir,
+          `${CONTROL_SOCKET_BIND_DIRECTORY_PREFIX}${randomBindSuffix()}`
+        );
+        validateBindNamespacePath(bindDir, controlDir);
+        const bindPath = path.join(bindDir, CONTROL_SOCKET_BIND_NAME);
+        assertSocketPathWithinBudget(bindPath, "Control bind socket path");
+        try {
+          fs.mkdirSync(bindDir, { mode: 448 });
+        } catch (error) {
+          if (error?.code !== "EEXIST") throw error;
+          collision = error;
+          continue;
+        }
+        try {
+          const bindDirectoryIdentity = fs.lstatSync(bindDir);
+          if (bindDirectoryIdentity.isSymbolicLink() || !bindDirectoryIdentity.isDirectory()) {
+            throw new Error("Control bind namespace must be a real directory");
+          }
+          checkOwner(bindDirectoryIdentity, "Control bind namespace");
+          fs.chmodSync(bindDir, 448);
+          const secured = fs.lstatSync(bindDir);
+          if (!secured.isDirectory() || !sameFile(secured, bindDirectoryIdentity)) {
+            throw new Error("Control bind namespace changed while securing permissions");
+          }
+          checkOwner(secured, "Control bind namespace");
+          if ((secured.mode & 511) !== 448) {
+            throw new Error("Control bind namespace permissions are not private");
+          }
+          return { bindDir, bindPath, bindDirectoryIdentity: secured };
+        } catch (error) {
+          try {
+            const current = fs.lstatSync(bindDir);
+            if (current.isDirectory() && fs.readdirSync(bindDir).length === 0) fs.rmdirSync(bindDir);
+          } catch {
+          }
+          throw error;
+        }
+      }
+      throw new Error("Control bind namespace collisions exhausted the creation limit", {
+        cause: collision
+      });
+    }
+    function reserveBindRecoveryDirectory(controlDir) {
+      let collision = null;
+      for (let attempt = 0; attempt < MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS; attempt += 1) {
+        const recoveryPath = path.join(
+          controlDir,
+          `${CONTROL_SOCKET_BIND_RECOVERY_PREFIX}${randomBindSuffix()}`
+        );
+        validateBindNamespacePath(recoveryPath, controlDir, { allowRecovery: true });
+        try {
+          fs.mkdirSync(recoveryPath, { mode: 448 });
+          const identity = fs.lstatSync(recoveryPath);
+          if (!identity.isDirectory() || identity.isSymbolicLink()) {
+            throw new Error("Control bind recovery reservation is invalid");
+          }
+          checkOwner(identity, "Control bind recovery directory");
+          return { recoveryPath, reservationIdentity: identity };
+        } catch (error) {
+          if (error?.code !== "EEXIST") throw error;
+          collision = error;
+        }
+      }
+      throw new Error("Control bind recovery collisions exhausted the creation limit", {
+        cause: collision
+      });
+    }
+    function createVacantBindRecoveryPath(controlDir) {
+      for (let attempt = 0; attempt < MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS; attempt += 1) {
+        const recoveryPath = path.join(
+          controlDir,
+          `${CONTROL_SOCKET_BIND_RECOVERY_PREFIX}${randomBindSuffix()}`
+        );
+        validateBindNamespacePath(recoveryPath, controlDir, { allowRecovery: true });
+        try {
+          fs.lstatSync(recoveryPath);
+        } catch (error) {
+          if (error?.code === "ENOENT") return recoveryPath;
+          throw error;
+        }
+      }
+      throw new Error("Control bind recovery collisions exhausted the creation limit");
+    }
+    function moveBindSymlinkToRecovery(bindDir, identity) {
+      const recoveryPath = createVacantBindRecoveryPath(path.dirname(bindDir));
+      try {
+        fs.renameSync(bindDir, recoveryPath);
+      } catch (error) {
+        throw new Error("Control bind symlink recovery failed", { cause: error });
+      }
+      const recovered = fs.lstatSync(recoveryPath);
+      if (!recovered.isSymbolicLink() || !sameFile(recovered, identity)) {
+        throw new Error("Control bind symlink changed while moving to recovery");
+      }
+      return recoveryPath;
+    }
+    function removeRecoveryReservation(recoveryPath, reservationIdentity) {
+      try {
+        const current = fs.lstatSync(recoveryPath);
+        if (current.isDirectory() && sameFile(current, reservationIdentity) && fs.readdirSync(recoveryPath).length === 0) fs.rmdirSync(recoveryPath);
+      } catch {
+      }
+    }
+    function moveBindNamespaceToRecovery(bindDir, bindDirectoryIdentity) {
+      const controlDir = path.dirname(bindDir);
+      validateBindNamespacePath(bindDir, controlDir, { allowRecovery: true });
+      const { recoveryPath, reservationIdentity } = reserveBindRecoveryDirectory(controlDir);
+      try {
+        fs.renameSync(bindDir, recoveryPath);
+      } catch (error) {
+        removeRecoveryReservation(recoveryPath, reservationIdentity);
+        throw new Error("Control bind namespace quarantine failed", { cause: error });
+      }
+      const recoveredDirectory = fs.lstatSync(recoveryPath);
+      return {
+        recoveryPath,
+        directoryMatches: recoveredDirectory.isDirectory() && !recoveredDirectory.isSymbolicLink() && sameFile(recoveredDirectory, bindDirectoryIdentity)
+      };
+    }
+    function listenAtPath(server, socketPath) {
+      return new Promise((resolve, reject) => {
+        const onError = (error) => {
+          server.off("listening", onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          server.off("error", onError);
+          resolve();
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(socketPath);
+      });
+    }
+    function validateCleanupCandidate(candidate, kind) {
+      const name = path.basename(candidate);
+      if (kind === "public" && name !== CONTROL_SOCKET_NAME) {
+        throw new Error("Control socket path is not the exact configured child");
+      }
+    }
+    function tryRestoreQuarantinedPath(socketPath, quarantinePath, identity) {
+      try {
+        fs.linkSync(quarantinePath, socketPath);
+      } catch (error) {
+        if (error?.code === "EEXIST") return false;
+        throw new Error("Control socket quarantine restore failed", { cause: error });
+      }
+      const restored = fs.lstatSync(socketPath);
+      if (!sameFile(restored, identity)) {
+        throw new Error("Restored control socket replacement changed identity");
+      }
+      fs.unlinkSync(quarantinePath);
+      return true;
+    }
+    async function cleanupSocketPath(socketPath, serverIdentity, kind) {
+      if (!socketPath || !serverIdentity) return;
+      validateCleanupCandidate(socketPath, kind);
+      if (!await existingLstat(socketPath)) return;
+      const quarantinedPath = createPublicRecoveryPath(socketPath, serverIdentity);
+      try {
+        fs.renameSync(socketPath, quarantinedPath);
+      } catch (error) {
+        if (error?.code === "ENOENT") return;
+        throw new Error("Control socket cleanup quarantine failed", { cause: error });
+      }
+      const quarantined = await fs.promises.lstat(quarantinedPath);
+      if (quarantined.isSocket() && sameFile(quarantined, serverIdentity)) {
+        fs.unlinkSync(quarantinedPath);
+        return;
+      }
+      if (tryRestoreQuarantinedPath(
+        socketPath,
+        quarantinedPath,
+        quarantined
+      )) return;
+      throw new Error(
+        "Control socket cleanup quarantine is occupied; replacement remains quarantined"
+      );
+    }
+    function preserveBindRecovery(recoveryPath) {
+      try {
+        const stat = fs.lstatSync(recoveryPath);
+        if (stat.isDirectory() && !stat.isSymbolicLink()) fs.chmodSync(recoveryPath, 320);
+      } catch {
+      }
+    }
+    function bindRecoveryError(recoveryPath) {
+      preserveBindRecovery(recoveryPath);
+      return new Error("Control bind namespace mismatch; recovery evidence was retained");
+    }
+    function finishBindNamespaceCleanup(recoveryPath, directoryMatches, expectedSocketIdentity) {
+      try {
+        if (!directoryMatches) throw bindRecoveryError(recoveryPath);
+        const entries = fs.readdirSync(recoveryPath);
+        if (entries.length === 0) {
+          fs.rmdirSync(recoveryPath);
+          return;
+        }
+        if (entries.length !== 1 || entries[0] !== CONTROL_SOCKET_BIND_NAME) {
+          throw bindRecoveryError(recoveryPath);
+        }
+        const recoveredSocketPath = path.join(recoveryPath, CONTROL_SOCKET_BIND_NAME);
+        const recoveredSocket = fs.lstatSync(recoveredSocketPath);
+        if (!expectedSocketIdentity || recoveredSocket.isSymbolicLink() || !recoveredSocket.isSocket() || !sameFile(recoveredSocket, expectedSocketIdentity)) throw bindRecoveryError(recoveryPath);
+        checkOwner(recoveredSocket, "Control bind socket");
+        fs.unlinkSync(recoveredSocketPath);
+        fs.rmdirSync(recoveryPath);
+      } catch (error) {
+        preserveBindRecovery(recoveryPath);
+        throw error;
+      }
+    }
+    async function cleanupBindNamespace(bindDir, bindDirectoryIdentity, socketIdentity) {
+      if (!bindDir || !bindDirectoryIdentity) return;
+      const controlDir = path.dirname(bindDir);
+      validateBindNamespacePath(bindDir, controlDir, { allowRecovery: true });
+      const initial = await existingLstat(bindDir);
+      if (!initial) return;
+      if (initial.isSymbolicLink()) {
+        throw bindRecoveryError(moveBindSymlinkToRecovery(bindDir, initial));
+      }
+      if (!initial.isDirectory()) {
+        throw new Error("Control bind namespace identity changed; evidence was retained");
+      }
+      checkOwner(initial, "Control bind namespace");
+      await fs.promises.chmod(bindDir, 448);
+      const writable = fs.lstatSync(bindDir);
+      if (writable.isSymbolicLink() || !writable.isDirectory() || !sameFile(writable, initial)) {
+        throw new Error("Control bind namespace changed while opening cleanup");
+      }
+      checkOwner(writable, "Control bind namespace");
+      if ((writable.mode & 511) !== 448) {
+        throw new Error("Control bind namespace cleanup permissions are invalid");
+      }
+      const { recoveryPath, directoryMatches } = moveBindNamespaceToRecovery(
+        bindDir,
+        bindDirectoryIdentity
+      );
+      finishBindNamespaceCleanup(recoveryPath, directoryMatches, socketIdentity);
+    }
+    async function recoverBindNamespace(candidate, ensureOpen = () => {
+    }) {
+      const controlDir = path.dirname(candidate);
+      validateBindNamespacePath(candidate, controlDir, { allowRecovery: true });
+      ensureOpen();
+      const directoryIdentity = await fs.promises.lstat(candidate);
+      ensureOpen();
+      if (directoryIdentity.isSymbolicLink() || !directoryIdentity.isDirectory()) {
+        throw new Error("Refusing non-directory control bind recovery evidence");
+      }
+      checkOwner(directoryIdentity, "Control bind recovery directory");
+      const entries = await fs.promises.readdir(candidate);
+      ensureOpen();
+      if (entries.length === 0) {
+        await cleanupBindNamespace(candidate, directoryIdentity, null);
+        return;
+      }
+      if (entries.length !== 1 || entries[0] !== CONTROL_SOCKET_BIND_NAME) {
+        throw new Error("Control bind recovery directory has unexpected entries");
+      }
+      const socketPath = path.join(candidate, CONTROL_SOCKET_BIND_NAME);
+      assertSocketPathWithinBudget(socketPath, "Control bind recovery socket path");
+      const socketIdentity = await fs.promises.lstat(socketPath);
+      ensureOpen();
+      if (socketIdentity.isSymbolicLink() || !socketIdentity.isSocket()) {
+        throw new Error("Refusing non-socket control bind recovery entry");
+      }
+      checkOwner(socketIdentity, "Control bind recovery socket");
+      const socketState = await probeSocket(socketPath);
+      ensureOpen();
+      if (socketState === "active") {
+        throw new Error("Control bind socket is active or already in use");
+      }
+      const currentDirectory = fs.lstatSync(candidate);
+      const currentSocket = fs.lstatSync(socketPath);
+      if (!currentDirectory.isDirectory() || currentDirectory.isSymbolicLink() || !sameFile(currentDirectory, directoryIdentity) || !currentSocket.isSocket() || currentSocket.isSymbolicLink() || !sameFile(currentSocket, socketIdentity)) throw new Error("Control bind recovery changed while checking stale state");
+      await cleanupBindNamespace(candidate, directoryIdentity, socketIdentity);
+    }
+    async function recoverBindNamespaces(controlDir, ensureOpen = () => {
+    }) {
+      ensureOpen();
+      const names = await fs.promises.readdir(controlDir);
+      ensureOpen();
+      const candidates = names.filter(
+        (name) => CONTROL_SOCKET_BIND_DIRECTORY_PATTERN.test(name) || CONTROL_SOCKET_BIND_RECOVERY_PATTERN.test(name)
+      ).sort((left, right) => {
+        const leftRecovery = CONTROL_SOCKET_BIND_RECOVERY_PATTERN.test(left);
+        const rightRecovery = CONTROL_SOCKET_BIND_RECOVERY_PATTERN.test(right);
+        return Number(rightRecovery) - Number(leftRecovery) || left.localeCompare(right);
+      });
+      for (const name of candidates) {
+        ensureOpen();
+        await recoverBindNamespace(path.join(controlDir, name), ensureOpen);
+        ensureOpen();
+      }
+    }
+    async function closeListeningServer(server) {
+      if (!server?.listening) return;
+      await new Promise((resolve, reject) => {
+        try {
+          server.close((error) => error ? reject(error) : resolve());
+        } catch (error) {
+          reject(error);
+        }
+      });
+    }
+    function protectBindNamespaceForNativeClose(state) {
+      if (!state.server?.listening || !state.bindDir || !state.bindDirectoryIdentity) return;
+      let current = null;
+      for (let attempt = 0; attempt < MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS; attempt += 1) {
+        try {
+          current = fs.lstatSync(state.bindDir);
+          break;
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+        try {
+          fs.mkdirSync(state.bindDir, { mode: 448 });
+          current = fs.lstatSync(state.bindDir);
+          state.bindDirectoryIdentity = current;
+          break;
+        } catch (error) {
+          if (error?.code !== "EEXIST") throw error;
+        }
+      }
+      if (!current) throw new Error("Control bind namespace guard collisions were exhausted");
+      if (current.isSymbolicLink()) {
+        const recoveryPath = moveBindSymlinkToRecovery(state.bindDir, current);
+        fs.mkdirSync(state.bindDir, { mode: 448 });
+        current = fs.lstatSync(state.bindDir);
+        if (current.isSymbolicLink() || !current.isDirectory()) {
+          throw new Error("Control bind namespace guard is invalid");
+        }
+        checkOwner(current, "Control bind namespace");
+        state.bindDirectoryIdentity = current;
+        fs.chmodSync(state.bindDir, 320);
+        const protectedDirectory2 = fs.lstatSync(state.bindDir);
+        if (protectedDirectory2.isSymbolicLink() || !protectedDirectory2.isDirectory() || !sameFile(protectedDirectory2, current) || (protectedDirectory2.mode & 511) !== 320) throw new Error("Control bind namespace changed while protecting native close");
+        checkOwner(protectedDirectory2, "Control bind namespace");
+        throw bindRecoveryError(recoveryPath);
+      }
+      if (!current.isDirectory()) {
+        throw new Error("Control bind namespace is unsafe for native close");
+      }
+      checkOwner(current, "Control bind namespace");
+      fs.chmodSync(state.bindDir, 320);
+      const protectedDirectory = fs.lstatSync(state.bindDir);
+      if (protectedDirectory.isSymbolicLink() || !protectedDirectory.isDirectory() || !sameFile(protectedDirectory, current) || (protectedDirectory.mode & 511) !== 320) throw new Error("Control bind namespace changed while protecting native close");
+      checkOwner(protectedDirectory, "Control bind namespace");
+    }
+    async function cleanupServerSocketPaths({
+      bindDir,
+      bindDirectoryIdentity,
+      socketPath,
+      socketIdentity,
+      publicPublished
+    }) {
+      const errors = [];
+      if (publicPublished && socketPath && socketIdentity) {
+        try {
+          await cleanupSocketPath(socketPath, socketIdentity, "public");
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (bindDir && bindDirectoryIdentity) {
+        try {
+          await cleanupBindNamespace(bindDir, bindDirectoryIdentity, socketIdentity);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(errors, "Control socket path cleanup failed");
+      }
+    }
+    function ensureServerIsOpen(state) {
+      if (state.closed) throw new Error("Control socket server is closed");
+    }
+    async function stopAndCleanupServer(state) {
+      const errors = [];
+      for (const socket of state.connections) socket.destroy();
+      state.connections.clear();
+      try {
+        protectBindNamespaceForNativeClose(state);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await closeListeningServer(state.server);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await cleanupServerSocketPaths(state);
+      } catch (error) {
+        if (error instanceof AggregateError) errors.push(...error.errors);
+        else errors.push(error);
+      }
+      if (errors.length > 0) {
+        throw new AggregateError(
+          errors,
+          errors.map((error) => error?.message ?? String(error)).join("; ")
+        );
+      }
+    }
+    function serializeResponse(response, method) {
+      let line;
+      try {
+        line = `${JSON.stringify(response)}
+`;
+      } catch {
+        line = `${JSON.stringify({
+          id: response.id,
+          error: publicControlError(null)
+        })}
+`;
+      }
+      if (Buffer.byteLength(line, "utf8") - 1 <= MAX_CONTROL_MESSAGE_BYTES) {
+        return { line, bytes: Buffer.byteLength(line, "utf8") };
+      }
+      if (!Object.hasOwn(response, "result")) return null;
+      let boundedError;
+      try {
+        boundedError = publicControlError(createPublicControlError("INVALID_RESULT", {
+          details: { method, issues: [{ path: ["limit"] }] }
+        }));
+      } catch {
+        boundedError = publicControlError(null);
+      }
+      line = `${JSON.stringify({ id: response.id, error: boundedError })}
+`;
+      const bytes = Buffer.byteLength(line, "utf8");
+      if (bytes - 1 > MAX_CONTROL_MESSAGE_BYTES) return null;
+      return { line, bytes };
+    }
+    function attachControlSocketConnection(socket, controlPlane, {
+      maxInFlightRequests = DEFAULT_MAX_IN_FLIGHT_REQUESTS,
+      maxQueuedResponses = DEFAULT_MAX_QUEUED_RESPONSES,
+      maxQueuedResponseBytes = DEFAULT_MAX_QUEUED_RESPONSE_BYTES
+    } = {}) {
+      if (!Number.isSafeInteger(maxInFlightRequests) || maxInFlightRequests < 1 || !Number.isSafeInteger(maxQueuedResponses) || maxQueuedResponses < 1 || !Number.isSafeInteger(maxQueuedResponseBytes) || maxQueuedResponseBytes < 1) throw new TypeError("Control socket connection limits must be positive integers");
+      const state = {
+        inFlight: 0,
+        paused: false,
+        outputBackpressured: false,
+        responseQueue: [],
+        responseQueueBytes: 0,
+        closed: false
+      };
+      const pause = () => {
+        if (state.closed || state.paused) return;
+        state.paused = true;
+        socket.pause();
+      };
+      const close = () => {
+        if (state.closed) return;
+        state.closed = true;
+        state.responseQueue.length = 0;
+        state.responseQueueBytes = 0;
+        if (!socket.destroyed) socket.destroy();
+      };
+      const maybeResume = () => {
+        if (state.closed || socket.destroyed || !state.paused || state.inFlight >= maxInFlightRequests || state.outputBackpressured || state.responseQueue.length > 0) return;
+        if (!decoder.resume()) return;
+        state.paused = false;
+        socket.resume();
+      };
+      const writeLine = (line) => {
+        if (state.closed || socket.destroyed || !socket.writable) return false;
+        try {
+          const accepted = socket.write(line, (error) => {
+            if (error) close();
+          });
+          if (!accepted) {
+            state.outputBackpressured = true;
+            pause();
+          }
+          return true;
+        } catch {
+          close();
+          return false;
+        }
+      };
+      const send = (response, method) => {
+        if (state.closed || socket.destroyed) return;
+        const serialized = serializeResponse(response, method);
+        if (!serialized) {
+          close();
+          return;
+        }
+        const { line, bytes } = serialized;
+        if (state.outputBackpressured || state.responseQueue.length > 0) {
+          if (state.responseQueue.length >= maxQueuedResponses || state.responseQueueBytes + bytes > maxQueuedResponseBytes) {
+            close();
+            return;
+          }
+          state.responseQueue.push(serialized);
+          state.responseQueueBytes += bytes;
+          return;
+        }
+        writeLine(line);
+      };
+      const settle = (response, method) => {
+        if (state.closed) return;
+        state.inFlight -= 1;
+        send(response, method);
+        maybeResume();
+      };
+      const decoder = new JsonLineDecoder(
+        (message) => {
+          if (state.closed || socket.destroyed) return;
+          const request = parseRequest(message);
+          if (!request) {
+            close();
+            return;
+          }
+          state.inFlight += 1;
+          Promise.resolve().then(() => controlPlane.invoke(request.invocation)).then(
+            (result) => settle(
+              { id: request.id, result },
+              request.invocation.method
+            ),
+            (error) => settle(
+              { id: request.id, error: publicControlError(error) },
+              request.invocation.method
+            )
+          ).catch(close);
+          if (state.inFlight >= maxInFlightRequests) {
+            pause();
+            return false;
+          }
+          return true;
+        },
+        close,
+        { maximumBufferBytes: MAX_CONTROL_MESSAGE_BYTES }
+      );
+      const onData = (chunk) => {
+        if (!decoder.push(chunk)) pause();
+      };
+      const onDrain = () => {
+        if (state.closed) return;
+        state.outputBackpressured = false;
+        while (!state.outputBackpressured && state.responseQueue.length > 0) {
+          const { line, bytes } = state.responseQueue.shift();
+          state.responseQueueBytes -= bytes;
+          if (!writeLine(line)) return;
+        }
+        maybeResume();
+      };
+      const onClose = () => {
+        state.closed = true;
+        state.responseQueue.length = 0;
+        state.responseQueueBytes = 0;
+      };
+      socket.on("data", onData);
+      socket.on("drain", onDrain);
+      socket.on("error", close);
+      socket.once("close", onClose);
+      return { close };
+    }
+    var ControlSocketServer = class {
+      constructor({ userData, controlDir, controlPlane } = {}) {
+        stateByServer.set(this, {
+          userData,
+          configuredControlDir: controlDir,
+          controlPlane,
+          server: null,
+          socketPath: null,
+          bindDir: null,
+          bindPath: null,
+          bindDirectoryIdentity: null,
+          socketIdentity: null,
+          publicPublished: false,
+          connections: /* @__PURE__ */ new Set(),
+          startPromise: null,
+          closePromise: null,
+          closed: false
+        });
+      }
+      get socketPath() {
+        return stateByServer.get(this).socketPath;
+      }
+      get connectionCount() {
+        return stateByServer.get(this).connections.size;
+      }
+      start() {
+        const state = stateByServer.get(this);
+        if (state.closed) return Promise.reject(new Error("Control socket server is closed"));
+        if (state.startPromise) return state.startPromise;
+        state.startPromise = this.#start(state);
+        return state.startPromise;
+      }
+      async #start(state) {
+        ensureServerIsOpen(state);
+        if (!state.controlPlane || typeof state.controlPlane.invoke !== "function") {
+          throw new Error("A control plane is required");
+        }
+        const layout = await prepareControlDirectory(
+          state.userData,
+          state.configuredControlDir,
+          () => ensureServerIsOpen(state)
+        );
+        ensureServerIsOpen(state);
+        state.socketPath = layout.socketPath;
+        assertControlSocketLayoutWithinBudget(layout.controlDir, state.socketPath);
+        ensureServerIsOpen(state);
+        await recoverPublicSockets(layout.controlDir, () => ensureServerIsOpen(state));
+        ensureServerIsOpen(state);
+        await recoverBindNamespaces(layout.controlDir, () => ensureServerIsOpen(state));
+        ensureServerIsOpen(state);
+        await removeStaleSocket(state.socketPath, () => ensureServerIsOpen(state));
+        ensureServerIsOpen(state);
+        try {
+          ensureServerIsOpen(state);
+          const namespace = createBindNamespace(
+            layout.controlDir,
+            () => ensureServerIsOpen(state)
+          );
+          state.bindDir = namespace.bindDir;
+          state.bindPath = namespace.bindPath;
+          state.bindDirectoryIdentity = namespace.bindDirectoryIdentity;
+          ensureServerIsOpen(state);
+          const server = net.createServer((socket) => this.#accept(state, socket));
+          state.server = server;
+          server.on("error", () => {
+          });
+          await listenAtPath(server, state.bindPath);
+          const boundStat = fs.lstatSync(state.bindPath);
+          if (!boundStat.isSocket()) throw new Error("Control bind path is not a socket");
+          checkOwner(boundStat, "Control bind socket");
+          state.socketIdentity = boundStat;
+          ensureServerIsOpen(state);
+          fs.chmodSync(state.bindDir, 320);
+          const protectedDirectory = fs.lstatSync(state.bindDir);
+          if (protectedDirectory.isSymbolicLink() || !protectedDirectory.isDirectory() || !sameFile(protectedDirectory, state.bindDirectoryIdentity)) {
+            throw new Error("Control bind namespace changed while becoming read-only");
+          }
+          checkOwner(protectedDirectory, "Control bind namespace");
+          if ((protectedDirectory.mode & 511) !== 320) {
+            throw new Error("Control bind namespace must remain read-only while listening");
+          }
+          ensureServerIsOpen(state);
+          await fs.promises.chmod(state.bindPath, 384);
+          ensureServerIsOpen(state);
+          const securedStat = await fs.promises.lstat(state.bindPath);
+          ensureServerIsOpen(state);
+          if (!securedStat.isSocket() || !sameFile(securedStat, boundStat)) {
+            throw new Error("Control bind socket changed while securing permissions");
+          }
+          checkOwner(securedStat, "Control bind socket");
+          if ((securedStat.mode & 511) !== 384) {
+            throw new Error("Control bind socket permissions are not private");
+          }
+          state.socketIdentity = securedStat;
+          ensureServerIsOpen(state);
+          try {
+            fs.linkSync(state.bindPath, state.socketPath);
+          } catch (error) {
+            throw new Error("Control socket publish failed without replacing its path", {
+              cause: error
+            });
+          }
+          state.publicPublished = true;
+          ensureServerIsOpen(state);
+          const publicStat = await fs.promises.lstat(state.socketPath);
+          ensureServerIsOpen(state);
+          if (!publicStat.isSocket() || !sameFile(publicStat, securedStat)) {
+            throw new Error("Published control socket changed identity");
+          }
+          checkOwner(publicStat, "Published control socket");
+          if ((publicStat.mode & 511) !== 384) {
+            throw new Error("Published control socket permissions are not private");
+          }
+          const retainedSocket = await fs.promises.lstat(state.bindPath);
+          ensureServerIsOpen(state);
+          if (!retainedSocket.isSocket() || !sameFile(retainedSocket, securedStat)) {
+            throw new Error("Control bind socket changed after publication");
+          }
+          const retainedDirectory = await fs.promises.lstat(state.bindDir);
+          ensureServerIsOpen(state);
+          if (retainedDirectory.isSymbolicLink() || !retainedDirectory.isDirectory() || !sameFile(retainedDirectory, state.bindDirectoryIdentity)) {
+            throw new Error("Control bind namespace changed after publication");
+          }
+          checkOwner(retainedDirectory, "Control bind namespace");
+          if ((retainedDirectory.mode & 511) !== 320) {
+            throw new Error("Control bind namespace must remain read-only while listening");
+          }
+          ensureServerIsOpen(state);
+          return this;
+        } catch (error) {
+          let cleanupError = null;
+          try {
+            await stopAndCleanupServer(state);
+          } catch (caught) {
+            cleanupError = caught;
+          }
+          if (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              "Control socket startup and cleanup failed"
+            );
+          }
+          throw error;
+        }
+      }
+      #accept(state, socket) {
+        if (state.closed) {
+          socket.destroy();
+          return;
+        }
+        state.connections.add(socket);
+        socket.once("close", () => state.connections.delete(socket));
+        attachControlSocketConnection(socket, state.controlPlane);
+      }
+      close() {
+        const state = stateByServer.get(this);
+        if (state.closePromise) return state.closePromise;
+        state.closed = true;
+        state.closePromise = this.#close(state);
+        return state.closePromise;
+      }
+      async #close(state) {
+        if (state.startPromise) {
+          try {
+            await state.startPromise;
+          } catch {
+          }
+        }
+        await stopAndCleanupServer(state);
+      }
+    };
+    module.exports = {
+      CONTROL_SOCKET_BIND_DIRECTORY_PREFIX,
+      CONTROL_SOCKET_BIND_NAME,
+      CONTROL_SOCKET_BIND_RECOVERY_PREFIX,
+      CONTROL_SOCKET_DIRECTORY,
+      CONTROL_SOCKET_NAME,
+      CONTROL_SOCKET_CLOSE_QUARANTINE_PREFIX,
+      CONTROL_SOCKET_PUBLIC_RECOVERY_PREFIX,
+      CONTROL_SOCKET_QUARANTINE_PREFIX,
+      DEFAULT_MAX_IN_FLIGHT_REQUESTS,
+      DEFAULT_MAX_QUEUED_RESPONSES,
+      DEFAULT_MAX_QUEUED_RESPONSE_BYTES,
+      MAX_CONTROL_BIND_DIRECTORY_ATTEMPTS,
+      MAX_CONTROL_MESSAGE_BYTES,
+      MAX_CONTROL_REQUEST_ID_LENGTH,
+      MAX_CONTROL_SOCKET_PATH_BYTES,
+      ControlSocketServer,
+      attachControlSocketConnection
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/operator/job-engine.cjs
+var require_job_engine = __commonJS({
+  "../../desktop/rolling-skill/src/operator/job-engine.cjs"(exports, module) {
+    var {
+      operatorApprovalRequirement,
+      operatorMethodBudgetMinimum
+    } = require_policy();
+    var TERMINAL_JOB_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
+    var TERMINAL_STEP_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
+    var RESERVATION_FIELDS = Object.freeze([
+      "runtimeTurns",
+      "evaluations",
+      "targetExecutions",
+      "judgeExecutions",
+      "tokens",
+      "reportedCost"
+    ]);
+    var BUDGET_FIELDS = Object.freeze([
+      "maxDurationMs",
+      "maxRuntimeTurns",
+      "maxEvaluations",
+      "maxTargetExecutions",
+      "maxJudgeExecutions",
+      "maxTokens",
+      "maxReportedCost"
+    ]);
+    var RESERVATION_LIMITS = Object.freeze({
+      runtimeTurns: "maxRuntimeTurns",
+      evaluations: "maxEvaluations",
+      targetExecutions: "maxTargetExecutions",
+      judgeExecutions: "maxJudgeExecutions",
+      tokens: "maxTokens",
+      reportedCost: "maxReportedCost"
+    });
+    var COST_SCALE = 1e6;
+    var MAX_TIMER_DELAY_MS = 2147483647;
+    var OPERATOR_ARTIFACT_ID_PROJECTIONS = Object.freeze({
+      "datasets.read": {
+        datasetId: [["result", "dataset", "id"]],
+        repositoryId: [["result", "dataset", "repositoryId"]],
+        skillId: [["result", "dataset", "skillId"]]
+      },
+      "datasets.get": {
+        datasetId: [["result", "dataset", "id"]],
+        repositoryId: [["result", "dataset", "repositoryId"]],
+        skillId: [["result", "dataset", "skillId"]]
+      },
+      "datasets.create": {
+        datasetId: [["result", "dataset", "id"]],
+        repositoryId: [["result", "dataset", "repositoryId"]],
+        skillId: [["result", "dataset", "skillId"]]
+      },
+      "datasets.delete": {
+        datasetId: [["result", "dataset", "id"], ["facts", "datasetId"]],
+        repositoryId: [["result", "dataset", "repositoryId"]],
+        skillId: [["result", "dataset", "skillId"]]
+      },
+      "datasets.delete_case": {
+        datasetId: [["result", "case", "datasetId"], ["facts", "datasetId"]],
+        caseId: [["result", "case", "id"], ["facts", "caseId"]]
+      },
+      "evaluations.get": {
+        datasetId: [["result", "run", "datasetId"]],
+        evaluationId: [["result", "run", "id"], ["result", "runId"]]
+      },
+      "evaluations.start": {
+        datasetId: [["result", "run", "datasetId"], ["selection", "datasetId"]],
+        evaluationId: [["result", "run", "id"], ["result", "runId"]]
+      },
+      "evaluations.cancel": {
+        datasetId: [["result", "run", "datasetId"]],
+        evaluationId: [["result", "run", "id"], ["result", "runId"]]
+      },
+      "curation.start": {
+        datasetId: [["result", "session", "datasetId"]]
+      },
+      "curation.message": {
+        datasetId: [["result", "session", "datasetId"]]
+      },
+      "curation.save": {
+        datasetId: [["result", "case", "datasetId"], ["result", "session", "datasetId"], ["facts", "datasetId"]],
+        caseId: [["result", "case", "id"]]
+      },
+      "curation.discard": {
+        datasetId: [["result", "session", "datasetId"], ["facts", "datasetId"]]
+      },
+      "rubrics.publish": {
+        datasetId: [["facts", "datasetId"]]
+      },
+      "skills.get": {
+        repositoryId: [["result", "skill", "repositoryId"]],
+        skillId: [["result", "skill", "id"]]
+      },
+      "skills.diff": {
+        repositoryId: [["result", "diff", "repositoryId"]],
+        skillId: [["result", "diff", "skillId"]],
+        candidateId: [["result", "diff", "candidateVersionId"]]
+      },
+      "skills.create_candidate": {
+        repositoryId: [["result", "version", "repositoryId"], ["facts", "repositoryId"]],
+        skillId: [["result", "version", "skillId"], ["facts", "skillId"]],
+        candidateId: [["result", "version", "id"], ["result", "versionId"]]
+      },
+      "skills.release": {
+        repositoryId: [["result", "version", "repositoryId"], ["facts", "repositoryId"]],
+        skillId: [["result", "version", "skillId"], ["facts", "skillId"]],
+        candidateId: [["result", "version", "id"], ["result", "versionId"], ["facts", "versionId"]]
+      },
+      "installations.start": {
+        installationId: [["singleInstallation", "id"], ["result", "installationId"]],
+        repositoryId: [["singleInstallation", "request", "source", "repositoryId"], ["facts", "repositoryId"]],
+        skillId: [["singleInstallation", "request", "source", "skillId"], ["facts", "skillId"]]
+      },
+      "skills.install": {
+        installationId: [["result", "installationId"]],
+        repositoryId: [["facts", "repositoryId"]],
+        skillId: [["facts", "skillId"]]
+      },
+      "installations.get": {
+        installationId: [["result", "installation", "id"], ["facts", "installationId"]],
+        repositoryId: [["result", "installation", "request", "source", "repositoryId"], ["facts", "repositoryId"]],
+        skillId: [["result", "installation", "request", "source", "skillId"], ["facts", "skillId"]]
+      },
+      "installations.cancel": {
+        installationId: [["result", "installation", "id"], ["facts", "installationId"]],
+        repositoryId: [["result", "installation", "request", "source", "repositoryId"], ["facts", "repositoryId"]],
+        skillId: [["result", "installation", "request", "source", "skillId"], ["facts", "skillId"]]
+      },
+      "installations.inspect": {
+        installationId: [["result", "installation", "id"], ["facts", "installationId"]],
+        repositoryId: [["result", "installation", "request", "source", "repositoryId"], ["facts", "repositoryId"]],
+        skillId: [["result", "installation", "request", "source", "skillId"], ["facts", "skillId"]]
+      }
+    });
+    function isPlainObject(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      const prototype = Object.getPrototypeOf(value);
+      return prototype === Object.prototype || prototype === null;
+    }
+    function ownDataProperty(value, key) {
+      if (typeof value !== "object" || value === null || !Object.hasOwn(value, key)) return void 0;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : void 0;
+    }
+    function valueAtPath(source, path) {
+      let value = source;
+      for (const key of path) {
+        value = ownDataProperty(value, key);
+        if (value === void 0) return void 0;
+      }
+      return value;
+    }
+    function stableArtifactId(value) {
+      if (typeof value !== "string") return null;
+      const normalized = value.trim();
+      if (!normalized || normalized.length > 300 || /[\u0000-\u001f\u007f\\/]/u.test(normalized)) return null;
+      return normalized;
+    }
+    function operatorArtifactMetadata(method, result, trustedFacts = {}) {
+      const projections = OPERATOR_ARTIFACT_ID_PROJECTIONS[method];
+      if (!projections) return null;
+      const methodFacts = isPlainObject(trustedFacts?.methodFacts) && trustedFacts.methodFacts.method === method ? trustedFacts.methodFacts : null;
+      const evaluationSelection = method === "evaluations.start" && isPlainObject(trustedFacts?.evaluationSelection) ? trustedFacts.evaluationSelection : null;
+      const installations = isPlainObject(result) ? ownDataProperty(result, "installations") : null;
+      const source = {
+        result: isPlainObject(result) ? result : null,
+        facts: methodFacts,
+        selection: evaluationSelection,
+        singleInstallation: Array.isArray(installations) && installations.length === 1 ? installations[0] : null
+      };
+      const metadata = {};
+      if (method === "installations.start" && Array.isArray(installations)) {
+        const installationIds = [...new Set(installations.slice(0, 100).map((installation) => stableArtifactId(ownDataProperty(installation, "id"))).filter((id) => id !== null))];
+        if (installationIds.length > 1) metadata.installationIds = installationIds;
+      }
+      for (const [key, paths] of Object.entries(projections)) {
+        for (const path of paths) {
+          const id = stableArtifactId(valueAtPath(source, path));
+          if (id === null) continue;
+          metadata[key] = id;
+          break;
+        }
+      }
+      return Object.keys(metadata).length > 0 ? metadata : null;
+    }
+    function requireObject(value, label) {
+      if (!isPlainObject(value)) throw new Error(`${label} must be a plain object`);
+      return value;
+    }
+    function requiredText(value, label, maximum = 4096) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized || normalized.length > maximum) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function cloneJson(value, label = "Value", seen = /* @__PURE__ */ new Set()) {
+      if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+      if (typeof value === "number") {
+        if (!Number.isFinite(value)) throw new Error(`${label} is not finite JSON`);
+        return value;
+      }
+      if (typeof value !== "object" || value === void 0) throw new Error(`${label} is not JSON`);
+      if (seen.has(value)) throw new Error(`${label} is cyclic`);
+      seen.add(value);
+      let cloned;
+      if (Array.isArray(value)) {
+        const keys = Object.keys(value);
+        if (keys.length !== value.length || keys.some((key, index) => key !== String(index))) {
+          throw new Error(`${label} must be a dense array`);
+        }
+        cloned = value.map((entry) => cloneJson(entry, label, seen));
+      } else {
+        requireObject(value, label);
+        cloned = {};
+        for (const key of Object.keys(value)) cloned[key] = cloneJson(value[key], label, seen);
+      }
+      seen.delete(value);
+      return cloned;
+    }
+    function stableJson(value) {
+      if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+      if (value !== null && typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+      }
+      return JSON.stringify(value);
+    }
+    function normalizeReservation(value = {}) {
+      const source = requireObject(value, "Operator budget reservation");
+      const reservation = {};
+      for (const field of Object.keys(source)) {
+        if (!RESERVATION_FIELDS.includes(field)) {
+          throw new Error(`Operator budget reservation ${field} is unsupported`);
+        }
+      }
+      for (const field of RESERVATION_FIELDS) {
+        if (!Object.hasOwn(source, field)) continue;
+        const amount = source[field];
+        const valid = field === "reportedCost" ? Number.isFinite(amount) && amount >= 0 : Number.isSafeInteger(amount) && amount >= 0;
+        if (!valid) throw new Error(`Operator budget reservation ${field} is invalid`);
+        reservation[field] = amount;
+      }
+      return reservation;
+    }
+    function normalizeTelemetry(value) {
+      if (!Array.isArray(value)) throw new Error("Operator Runtime telemetry must be an array");
+      const normalized = value.map((entry) => {
+        const telemetry = requireObject(entry, "Operator Runtime telemetry entry");
+        return {
+          runtimeId: requiredText(telemetry.runtimeId, "Operator Runtime telemetry id", 300),
+          tokens: telemetry.tokens === true,
+          cost: telemetry.cost === true
+        };
+      });
+      if (new Set(normalized.map((entry) => entry.runtimeId)).size !== normalized.length) {
+        throw new Error("Operator Runtime telemetry ids must be unique");
+      }
+      return normalized;
+    }
+    function preflightOperatorBudget(budget, runtimeTelemetry = [], involvedRuntimeIds2 = null) {
+      const limits = requireObject(budget, "Operator Job budget");
+      const telemetry = normalizeTelemetry(runtimeTelemetry);
+      const involved = involvedRuntimeIds2 === null ? telemetry.map((entry) => entry.runtimeId) : [...new Set(involvedRuntimeIds2.map((runtimeId) => requiredText(runtimeId, "Involved Operator Runtime id", 300)))];
+      const byRuntimeId = new Map(telemetry.map((entry) => [entry.runtimeId, entry]));
+      const tokenTelemetry = involved.length > 0 && involved.every((runtimeId) => byRuntimeId.get(runtimeId)?.tokens);
+      const costTelemetry = involved.length > 0 && involved.every((runtimeId) => byRuntimeId.get(runtimeId)?.cost);
+      const fields = {};
+      for (const field of BUDGET_FIELDS) {
+        const optionalTelemetry = field === "maxTokens" || field === "maxReportedCost";
+        const supported = !optionalTelemetry || (field === "maxTokens" ? tokenTelemetry : costTelemetry);
+        fields[field] = {
+          value: limits[field],
+          status: supported ? "supported" : "unsupported"
+        };
+      }
+      const selectedUnsupported = ["maxTokens", "maxReportedCost"].some((field) => limits[field] !== null && fields[field].status === "unsupported");
+      return { valid: !selectedUnsupported, fields };
+    }
+    function involvedRuntimeIds(params) {
+      const source = requireObject(params, "Operator Step params");
+      const candidates = [
+        source.runtimeId,
+        ...Array.isArray(source.runtimeIds) ? source.runtimeIds : [],
+        ...Array.isArray(source.runtimeConfigurations) ? source.runtimeConfigurations.map((entry) => entry?.runtimeId) : [],
+        source.judgeConfiguration?.runtimeId
+      ];
+      return [...new Set(candidates.filter((entry) => typeof entry === "string" && entry.trim()).map((entry) => entry.trim()))];
+    }
+    function errorRecord(error, fallbackCode = "OPERATOR_STEP_FAILED") {
+      const code = typeof error?.code === "string" && error.code.trim() ? error.code.trim().slice(0, 200) : fallbackCode;
+      const message = typeof error?.message === "string" && error.message.trim() ? error.message.trim().slice(0, 16384) : "Operator Step failed";
+      return { code, message };
+    }
+    function requestForExecution(input) {
+      const request = requireObject(input, "Operator Step execution");
+      const requestedReservation = normalizeReservation(request.reservation ?? {});
+      const normalized = {
+        method: requiredText(request.method, "Operator Step method", 300),
+        params: cloneJson(requireObject(request.params ?? {}, "Operator Step params"), "Operator Step params"),
+        idempotencyKey: requiredText(request.idempotencyKey, "Operator Step idempotency key", 500),
+        reservation: cloneJson(requestedReservation),
+        requestedReservation
+      };
+      if (Object.hasOwn(request, "policyApproval") && request.policyApproval !== null) {
+        const approval = requireObject(request.policyApproval, "Operator control approval gate");
+        normalized.policyApproval = {
+          decision: "approval_required",
+          reason: requiredText(approval.reason, "Operator control approval reason", 300),
+          action: requiredText(approval.action, "Operator control approval action", 300),
+          requestedScope: cloneJson(
+            requireObject(approval.requestedScope ?? {}, "Operator control approval scope"),
+            "Operator control approval scope"
+          )
+        };
+      }
+      if (Object.hasOwn(request, "assertRunnable")) {
+        if (typeof request.assertRunnable !== "function") {
+          throw new Error("Operator execution guard must be a function");
+        }
+        normalized.assertRunnable = request.assertRunnable;
+      }
+      if (Object.hasOwn(request, "handlerContext")) {
+        if (!isPlainObject(request.handlerContext) || !Object.isFrozen(request.handlerContext)) {
+          throw new Error("Operator handler context must be an immutable plain object");
+        }
+        normalized.handlerContext = request.handlerContext;
+      }
+      if (Object.hasOwn(request, "trustedFacts")) {
+        normalized.trustedFacts = cloneJson(
+          requireObject(request.trustedFacts, "Pre-resolved Operator trusted facts"),
+          "Pre-resolved Operator trusted facts"
+        );
+      }
+      return normalized;
+    }
+    function frozenStepRequest(request) {
+      return {
+        method: request.method,
+        params: cloneJson(request.params),
+        reservation: cloneJson(request.reservation),
+        policyApproval: request.policyApproval ? cloneJson(request.policyApproval) : null
+      };
+    }
+    function approvalMutation(request) {
+      return {
+        method: request.method,
+        params: cloneJson(request.params),
+        idempotencyKey: request.idempotencyKey,
+        reservation: cloneJson(request.reservation)
+      };
+    }
+    function isReadMethod(method) {
+      return /\.(?:get|list|read|inspect)$/u.test(method);
+    }
+    function isDeleteMethod(method) {
+      return /\.(?:delete|delete_case)$/u.test(method);
+    }
+    function safeProduct(left, right, label) {
+      const value = left * right;
+      if (!Number.isSafeInteger(value)) throw new Error(`${label} is too large`);
+      return value;
+    }
+    function resolvedEvaluationSelection(value, datasetId) {
+      const fail = (message) => Object.assign(new Error(message), {
+        code: "BUDGET_SELECTION_UNRESOLVED"
+      });
+      let selection;
+      try {
+        selection = requireObject(value, "Resolved Dataset evaluation selection");
+        const fields = Object.keys(selection).sort();
+        if (fields.length !== 2 || fields[0] !== "caseIds" || fields[1] !== "datasetRevision") {
+          throw new Error("must freeze exactly caseIds and datasetRevision");
+        }
+        if (!Array.isArray(selection.caseIds) || selection.caseIds.length === 0) {
+          throw new Error("must contain at least one Case");
+        }
+        const caseIds = cloneJson(selection.caseIds, "Resolved Dataset evaluation Case ids").map((caseId) => requiredText(caseId, "Resolved Dataset evaluation Case id", 300));
+        if (new Set(caseIds).size !== caseIds.length) throw new Error("has duplicate Cases");
+        return {
+          datasetId: requiredText(datasetId, "Evaluation Dataset id", 300),
+          caseIds,
+          datasetRevision: requiredText(
+            selection.datasetRevision,
+            "Resolved Dataset evaluation revision",
+            500
+          )
+        };
+      } catch (error) {
+        throw fail(`Dataset evaluation selection is invalid: ${error.message}`);
+      }
+    }
+    function selectedParamsFromFacts(params, trustedFacts) {
+      const source = cloneJson(params, "Operator Step params");
+      if (source.selectionMode !== "dataset") return source;
+      const facts = requireObject(trustedFacts, "Operator Step trusted facts");
+      const persisted = requireObject(
+        facts.evaluationSelection,
+        "Frozen Dataset evaluation selection"
+      );
+      const fields = Object.keys(persisted).sort();
+      if (fields.length !== 3 || fields[0] !== "caseIds" || fields[1] !== "datasetId" || fields[2] !== "datasetRevision") {
+        throw Object.assign(new Error("Frozen Dataset evaluation selection has invalid fields"), {
+          code: "BUDGET_SELECTION_UNRESOLVED"
+        });
+      }
+      const selection = resolvedEvaluationSelection({
+        caseIds: persisted.caseIds,
+        datasetRevision: persisted.datasetRevision
+      }, source.datasetId);
+      if (persisted.datasetId !== source.datasetId) {
+        throw Object.assign(new Error("Frozen Dataset evaluation selection does not match the request"), {
+          code: "BUDGET_SELECTION_UNRESOLVED"
+        });
+      }
+      return {
+        ...source,
+        selectionMode: "selected",
+        caseIds: cloneJson(selection.caseIds),
+        expectedDatasetRevision: selection.datasetRevision
+      };
+    }
+    function costUnits(value) {
+      return Math.round(value * COST_SCALE);
+    }
+    function segmentedTimeout(callback, totalMs) {
+      if (!Number.isSafeInteger(totalMs) || totalMs < 0) {
+        throw new Error("Operator timeout must be a non-negative safe integer");
+      }
+      let remainingMs = totalMs;
+      let handle = null;
+      let cancelled = false;
+      const arm = () => {
+        if (cancelled) return;
+        if (remainingMs === 0) {
+          callback();
+          return;
+        }
+        const delay = Math.min(remainingMs, MAX_TIMER_DELAY_MS);
+        handle = setTimeout(() => {
+          handle = null;
+          remainingMs -= delay;
+          arm();
+        }, delay);
+      };
+      arm();
+      return () => {
+        cancelled = true;
+        if (handle !== null) clearTimeout(handle);
+      };
+    }
+    function operatorCancellationError() {
+      return Object.assign(new Error("Operator Job was cancelled"), { code: "OPERATOR_CANCELLED" });
+    }
+    var ENGINE_COORDINATION = /* @__PURE__ */ new WeakMap();
+    function engineCoordination(store) {
+      const key = store.coordinationKey;
+      let coordination = ENGINE_COORDINATION.get(key);
+      if (!coordination) {
+        coordination = {
+          activeSteps: /* @__PURE__ */ new Map(),
+          jobQueues: /* @__PURE__ */ new Map(),
+          operations: /* @__PURE__ */ new Map()
+        };
+        ENGINE_COORDINATION.set(key, coordination);
+      }
+      return coordination;
+    }
+    var OperatorJobEngine = class {
+      #store;
+      #handlers;
+      #approvalDecider;
+      #reconcilers;
+      #runtimeTelemetry;
+      #resolveEvaluationCaseCount;
+      #resolveTrustedFacts;
+      #externalAwaitTimeoutMs;
+      #now;
+      #approvalTtlMs;
+      #coordination;
+      #activeSteps;
+      #manualApprovalWaiters;
+      constructor({
+        store,
+        handlers = {},
+        approvalDecider = null,
+        reconcilers = {},
+        runtimeTelemetry = [],
+        resolveEvaluationCaseCount = null,
+        resolveTrustedFacts = null,
+        externalAwaitTimeoutMs = 3e4,
+        now = Date.now,
+        approvalTtlMs = 15 * 60 * 1e3
+      } = {}) {
+        if (!store || typeof store.createStep !== "function") {
+          throw new Error("Operator Job store with Step support is required");
+        }
+        if (!isPlainObject(handlers) || !isPlainObject(reconcilers)) {
+          throw new Error("Operator handlers and reconcilers must be plain objects");
+        }
+        if (approvalDecider !== null && typeof approvalDecider !== "function") {
+          throw new Error("Operator approval decider must be a function");
+        }
+        if (typeof runtimeTelemetry !== "function") normalizeTelemetry(runtimeTelemetry);
+        if (resolveEvaluationCaseCount !== null && typeof resolveEvaluationCaseCount !== "function") {
+          throw new Error("Operator evaluation case resolver must be a function");
+        }
+        if (resolveTrustedFacts !== null && typeof resolveTrustedFacts !== "function") {
+          throw new Error("Operator trusted facts resolver must be a function");
+        }
+        if (typeof now !== "function" || !Number.isSafeInteger(approvalTtlMs) || approvalTtlMs <= 0 || !Number.isSafeInteger(externalAwaitTimeoutMs) || externalAwaitTimeoutMs <= 0) {
+          throw new Error("Operator engine clock or approval TTL is invalid");
+        }
+        this.#store = store;
+        this.#handlers = { ...handlers };
+        this.#approvalDecider = approvalDecider;
+        this.#reconcilers = { ...reconcilers };
+        this.#runtimeTelemetry = runtimeTelemetry;
+        this.#resolveEvaluationCaseCount = resolveEvaluationCaseCount;
+        this.#resolveTrustedFacts = resolveTrustedFacts;
+        this.#externalAwaitTimeoutMs = externalAwaitTimeoutMs;
+        this.#now = now;
+        this.#approvalTtlMs = approvalTtlMs;
+        this.#coordination = engineCoordination(store);
+        this.#activeSteps = this.#coordination.activeSteps;
+        this.#manualApprovalWaiters = /* @__PURE__ */ new Map();
+      }
+      scheduleChild(parentJobId, input = {}) {
+        const child = requireObject(input, "Child Operator Job");
+        return this.#enqueue(parentJobId, () => {
+          const parent = this.#store.getJob(parentJobId);
+          return this.#store.createJob({
+            sessionId: parent.sessionId,
+            parentJobId: parent.id,
+            type: child.type,
+            objective: child.objective,
+            budget: child.budget
+          });
+        });
+      }
+      async runChild(input = {}, operation) {
+        const request = requireObject(input, "Internal child Operator Job");
+        if (typeof operation !== "function") {
+          throw new Error("Internal child Operator Job operation is required");
+        }
+        const child = await this.scheduleChild(
+          requiredText(request.parentJobId, "Parent Operator Job id", 200),
+          {
+            type: requiredText(request.type, "Child Operator Job type", 200),
+            objective: requiredText(request.objective, "Child Operator Job objective", 32768),
+            budget: request.budget
+          }
+        );
+        return this.#enqueue(child.id, () => this.#withJobOperation(child.id, async (signal) => {
+          this.#store.transitionJob(child.id, "running");
+          try {
+            const result = await operation({
+              jobId: child.id,
+              signal,
+              createArtifact: (artifact) => this.#store.createArtifact(child.id, artifact)
+            });
+            if (signal.aborted) {
+              this.#store.beginCancellation(child.id);
+              this.#store.transitionJob(child.id, "cancelled", {
+                error: { code: "OPERATOR_CHILD_CANCELLED", message: "Internal child Job was cancelled" }
+              });
+              return result;
+            }
+            this.#store.transitionJob(child.id, "succeeded", {
+              result: { internal: true }
+            });
+            return result;
+          } catch (error) {
+            const current = this.#store.getJob(child.id);
+            if (current.status === "cancelling" || signal.aborted) {
+              if (current.status !== "cancelling") this.#store.beginCancellation(child.id);
+              this.#store.transitionJob(child.id, "cancelled", {
+                error: {
+                  code: "OPERATOR_CHILD_CANCELLED",
+                  message: error?.message ?? "Internal child Job was cancelled"
+                }
+              });
+            } else if (error?.code === "OPTIMIZATION_INSTALL_NEEDS_RECOVERY") {
+              this.#store.transitionJob(child.id, "needs_recovery", {
+                error: { code: error.code, message: error.message }
+              });
+            } else {
+              this.#store.transitionJob(child.id, "failed", {
+                error: {
+                  code: typeof error?.code === "string" && error.code ? error.code : "OPERATOR_CHILD_FAILED",
+                  message: error?.message ?? String(error)
+                }
+              });
+            }
+            throw error;
+          }
+        }));
+      }
+      requestApproval(jobId, input = {}) {
+        const request = requireObject(input, "Internal Operator approval");
+        const action = requiredText(request.action, "Internal approval action", 300);
+        const risk = requiredText(request.risk, "Internal approval risk", 16384);
+        const scope = cloneJson(requireObject(request.scope, "Internal approval scope"));
+        const proposedMutation = cloneJson(requireObject(
+          request.proposedMutation,
+          "Internal approval mutation"
+        ));
+        const idempotencyKey = requiredText(
+          request.idempotencyKey,
+          "Internal approval idempotency key",
+          300
+        );
+        return this.#enqueue(jobId, () => {
+          let job = this.#store.getJob(jobId);
+          const existing = this.#store.listSteps({ jobId }).find((step2) => step2.idempotencyKey === idempotencyKey);
+          if (existing) {
+            if (existing.method !== "optimization.approval") {
+              throw new Error("Internal approval idempotency conflict");
+            }
+            const approval = this.#store.listApprovals(jobId).find(
+              (entry) => entry.stepId === existing.id
+            );
+            if (!approval) throw new Error("Internal approval evidence is incomplete");
+            if (approval.action !== action || approval.risk !== risk || stableJson(approval.scope) !== stableJson(scope) || stableJson(approval.proposedMutation.params?.proposedMutation) !== stableJson(proposedMutation)) {
+              throw new Error("Internal approval idempotency conflict");
+            }
+            return approval;
+          }
+          if (job.status === "queued") job = this.#store.transitionJob(job.id, "running");
+          if (job.status !== "running") {
+            throw new Error(`Operator Job cannot request approval while ${job.status}`);
+          }
+          let step = this.#store.createStep(job.id, {
+            method: "optimization.approval",
+            params: { action, risk, scope, proposedMutation },
+            idempotencyKey,
+            reservation: {}
+          });
+          step = this.#store.transitionStep(step.id, "waiting_approval");
+          this.#store.transitionJob(job.id, "waiting_approval");
+          return this.#store.createApproval(job.id, {
+            stepId: step.id,
+            action,
+            scope,
+            proposedMutation: {
+              method: "optimization.approval",
+              params: { action, risk, scope, proposedMutation },
+              idempotencyKey,
+              reservation: {}
+            },
+            risk,
+            expiresAt: new Date(this.#now() + this.#approvalTtlMs).toISOString()
+          });
+        }).then((approval) => this.#waitForManualApproval(approval));
+      }
+      #manualApprovalResult(approval) {
+        if (approval.status === "pending") return null;
+        return {
+          approved: approval.status === "approved",
+          approvalId: approval.id,
+          decisionScope: approval.decisionScope
+        };
+      }
+      #waitForManualApproval(approval) {
+        const settled = this.#manualApprovalResult(approval);
+        if (settled) return settled;
+        const existing = this.#manualApprovalWaiters.get(approval.id);
+        if (existing) return existing.promise;
+        let resolveWaiter;
+        const promise = new Promise((resolve_) => {
+          resolveWaiter = resolve_;
+        });
+        this.#manualApprovalWaiters.set(approval.id, { promise, resolve: resolveWaiter });
+        return promise;
+      }
+      #settleManualApproval(approval) {
+        const waiter = this.#manualApprovalWaiters.get(approval.id);
+        if (!waiter) return;
+        this.#manualApprovalWaiters.delete(approval.id);
+        waiter.resolve(this.#manualApprovalResult(approval));
+      }
+      execute(jobId, input = {}) {
+        return this.#enqueue(jobId, () => this.#withJobOperation(
+          jobId,
+          (signal) => this.#execute(jobId, requestForExecution(input), signal)
+        ));
+      }
+      async #effectiveRequest(request, signal) {
+        const minimum = { ...operatorMethodBudgetMinimum(request.method) };
+        const trustedFacts = {
+          ...request.policyApproval ? {
+            controlPolicyApproval: cloneJson(request.policyApproval)
+          } : {},
+          ...request.trustedFacts ? {
+            methodFacts: cloneJson(request.trustedFacts)
+          } : {}
+        };
+        if (!request.trustedFacts && this.#resolveTrustedFacts !== null) {
+          const resolved = await this.#boundedAwait(
+            (hookSignal) => this.#resolveTrustedFacts({
+              method: request.method,
+              params: cloneJson(request.params),
+              controlContext: request.handlerContext ?? null,
+              signal: hookSignal
+            }),
+            { signal, label: "Operator trusted facts resolution" }
+          );
+          if (resolved !== null && resolved !== void 0) {
+            trustedFacts.methodFacts = cloneJson(
+              requireObject(resolved, "Operator method-specific trusted facts"),
+              "Operator method-specific trusted facts"
+            );
+          }
+        }
+        if (request.method === "evaluations.start") {
+          const params = request.params;
+          let caseCount = 0;
+          if (params.selectionMode === "selected") {
+            if (!Array.isArray(params.caseIds) || params.caseIds.length === 0) {
+              throw Object.assign(new Error("Selected evaluation cases are required"), {
+                code: "BUDGET_SELECTION_UNRESOLVED"
+              });
+            }
+            caseCount = params.caseIds.length;
+          } else if (params.selectionMode === "dataset") {
+            if (this.#resolveEvaluationCaseCount === null) {
+              throw Object.assign(new Error("Dataset evaluation size must be resolved before execution"), {
+                code: "BUDGET_SELECTION_UNRESOLVED"
+              });
+            }
+            const selection = resolvedEvaluationSelection(await this.#boundedAwait(
+              (hookSignal) => this.#resolveEvaluationCaseCount(
+                cloneJson(params),
+                { signal: hookSignal }
+              ),
+              { signal, label: "Operator evaluation case resolution" }
+            ), params.datasetId);
+            caseCount = selection.caseIds.length;
+            trustedFacts.evaluationSelection = selection;
+          }
+          if (caseCount > 0) {
+            if (!Array.isArray(params.runtimeConfigurations) || params.runtimeConfigurations.length === 0) {
+              throw Object.assign(new Error("Evaluation Runtime selection is required"), {
+                code: "BUDGET_SELECTION_UNRESOLVED"
+              });
+            }
+            const executions = safeProduct(
+              caseCount,
+              params.runtimeConfigurations.length,
+              "Operator evaluation execution reservation"
+            );
+            minimum.targetExecutions = executions;
+            if (isPlainObject(params.judgeConfiguration)) minimum.judgeExecutions = executions;
+          }
+        }
+        const reservation = { ...request.reservation };
+        for (const [field, amount] of Object.entries(minimum)) {
+          reservation[field] = Math.max(reservation[field] ?? 0, amount);
+        }
+        return {
+          ...request,
+          ...request.params.selectionMode === "dataset" ? { requestedParams: request.params } : {},
+          params: selectedParamsFromFacts(request.params, trustedFacts),
+          reservation,
+          trustedFacts
+        };
+      }
+      async #execute(jobId, request, signal) {
+        if (request.assertRunnable && request.assertRunnable() !== true) {
+          throw Object.assign(new Error("Operator session is not accepting new Steps"), {
+            code: "CONTROL_BUSY"
+          });
+        }
+        let job = this.#store.getJob(jobId);
+        const existing = this.#store.listSteps({ jobId }).find((step2) => step2.idempotencyKey === request.idempotencyKey);
+        if (existing) return this.#existingResult(existing, request, signal);
+        if (job.status === "queued") job = this.#store.transitionJob(job.id, "running");
+        if (job.status !== "running") {
+          throw new Error(`Operator Job cannot execute a new Step while ${job.status}`);
+        }
+        request = await this.#effectiveRequest(request, signal);
+        if (request.assertRunnable && request.assertRunnable() !== true) {
+          throw Object.assign(new Error("Operator session is not accepting new Steps"), {
+            code: "CONTROL_BUSY"
+          });
+        }
+        const step = this.#store.createStep(job.id, {
+          method: request.method,
+          params: request.params,
+          ...request.requestedParams ? { requestedParams: request.requestedParams } : {},
+          reservation: request.reservation,
+          requestedReservation: request.requestedReservation,
+          trustedFacts: request.trustedFacts,
+          idempotencyKey: request.idempotencyKey
+        });
+        const telemetry = await this.#telemetry(request, signal);
+        const policyDecision = await this.#preInvokeDecision(job, step, request, telemetry, signal);
+        if (policyDecision?.decision === "deny") {
+          const error = {
+            code: policyDecision.code ?? "OPERATOR_POLICY_DENIED",
+            message: policyDecision.message ?? "Operator policy denied the Step"
+          };
+          this.#store.transitionStep(step.id, "failed", { error });
+          return this.#failedResult(this.#store.getStep(step.id));
+        }
+        if (policyDecision?.decision === "approval_required") {
+          return this.#createApproval(job, step, request, policyDecision);
+        }
+        return this.#runStep(job, step, request, { telemetry, signal });
+      }
+      async #existingResult(step, request, signal) {
+        const creation = this.#stepCreation(step);
+        const requestedReservation = creation.requestedReservation ?? creation.request.reservation ?? {};
+        if (stableJson({
+          method: creation.request.method,
+          params: creation.requestedParams ?? creation.request.params,
+          reservation: requestedReservation,
+          policyApproval: creation.trustedFacts?.controlPolicyApproval ?? null
+        }) !== stableJson(frozenStepRequest(request))) {
+          throw new Error("Operator Step idempotency conflict: the key was used for a different request");
+        }
+        const approvals = this.#store.listApprovals(step.jobId).filter((entry) => entry.stepId === step.id);
+        const resolvedApproval = approvals.find((entry) => entry.status !== "pending");
+        let job = this.#store.getJob(step.jobId);
+        if (resolvedApproval && job.status === "waiting_approval" && step.status !== "waiting_approval") {
+          job = this.#store.transitionJob(job.id, "running");
+          if (step.status === "running") job = this.#store.transitionJob(job.id, "needs_recovery");
+        }
+        if (step.status === "succeeded") {
+          return this.#succeededResult(step, { cached: true });
+        }
+        if (step.status === "failed") return this.#failedResult(step);
+        if (step.status === "cancelled") {
+          return { status: "cancelled", jobId: step.jobId, stepId: step.id };
+        }
+        const frozenRequest = this.#executionFromStep(step);
+        if (request.handlerContext) frozenRequest.handlerContext = request.handlerContext;
+        if (request.assertRunnable) frozenRequest.assertRunnable = request.assertRunnable;
+        if (step.status === "pending") return this.#resumePreInvokeStep(step, frozenRequest, signal);
+        if (step.status === "waiting_approval") {
+          const rejectedApproval = approvals.findLast((entry) => entry.status === "rejected");
+          if (rejectedApproval) return this.#resumeResolvedApproval(step, rejectedApproval, signal);
+          const approval = approvals.find((entry) => entry.status === "pending");
+          if (approval) {
+            return {
+              status: "waiting_approval",
+              approvalId: approval.id,
+              jobId: step.jobId,
+              stepId: step.id
+            };
+          }
+          const latestResolved = approvals.findLast((entry) => entry.status !== "pending");
+          if (latestResolved) return this.#resumeResolvedApproval(step, latestResolved, signal);
+          return this.#resumePreInvokeStep(step, frozenRequest, signal);
+        }
+        return { status: "needs_recovery", jobId: step.jobId, stepId: step.id };
+      }
+      async #resumePreInvokeStep(step, request, signal) {
+        let job = this.#store.getJob(step.jobId);
+        if (job.status === "needs_recovery") job = this.#store.transitionJob(job.id, "running");
+        if (job.status !== "running" && job.status !== "waiting_approval") {
+          return { status: "needs_recovery", jobId: step.jobId, stepId: step.id };
+        }
+        const telemetry = await this.#telemetry(request, signal);
+        const decision = await this.#preInvokeDecision(job, step, request, telemetry, signal);
+        if (decision?.decision === "approval_required") {
+          return this.#createApproval(job, step, request, decision);
+        }
+        if (decision?.decision === "deny") {
+          if (job.status === "waiting_approval") this.#store.transitionJob(job.id, "running");
+          const failed = this.#store.transitionStep(step.id, "failed", { error: {
+            code: decision.code ?? "OPERATOR_POLICY_DENIED",
+            message: decision.message ?? "Operator policy denied the Step"
+          } });
+          return this.#failedResult(failed);
+        }
+        if (job.status === "waiting_approval") job = this.#store.transitionJob(job.id, "running");
+        return this.#runStep(job, step, request, { telemetry, signal });
+      }
+      async #resumeResolvedApproval(step, approval, signal) {
+        let job = this.#store.getJob(step.jobId);
+        if (job.status === "waiting_approval") {
+          job = this.#store.transitionJob(job.id, "running");
+        }
+        if (approval.status === "rejected") {
+          const failed = this.#store.transitionStep(step.id, "failed", {
+            error: { code: "APPROVAL_REJECTED", message: "Operator approval was rejected" }
+          });
+          this.#restoreJobAfterRecovery(step.jobId);
+          return this.#failedResult(failed);
+        }
+        if (approval.status !== "approved") {
+          throw new Error("Resolved Operator approval status is invalid");
+        }
+        const request = this.#executionFromStep(step);
+        const result = await this.#resumePreInvokeStep(step, request, signal);
+        this.#restoreJobAfterRecovery(step.jobId);
+        return result;
+      }
+      #restoreJobAfterRecovery(jobId) {
+        const job = this.#store.getJob(jobId);
+        if (job.status !== "needs_recovery") return job;
+        const unknown = this.#store.listSteps({ jobId }).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
+        return unknown ? job : this.#store.transitionJob(job.id, "running");
+      }
+      async #customApprovalDecision(request, job, signal) {
+        if (this.#approvalDecider) {
+          return this.#boundedAwait(
+            (hookSignal) => this.#approvalDecider({
+              method: request.method,
+              params: cloneJson(request.params),
+              job: cloneJson(job),
+              signal: hookSignal
+            }),
+            { signal, label: "Operator approval policy" }
+          );
+        }
+        return { decision: "allow" };
+      }
+      #hasApprovedGate(step, decision) {
+        return this.#store.listApprovals(step.jobId).some((approval) => approval.stepId === step.id && approval.status === "approved" && approval.action === (decision.action ?? decision.requestedAction ?? step.method) && approval.risk === decision.reason && stableJson(approval.scope) === stableJson(decision.requestedScope ?? {}));
+      }
+      async #preInvokeDecision(job, step, request, telemetry, signal) {
+        const custom = requireObject(
+          await this.#customApprovalDecision(request, job, signal),
+          "Operator approval decision"
+        );
+        if (custom.decision === "deny") return custom;
+        const mandatory = operatorApprovalRequirement(request.method, request.params);
+        if (mandatory && !this.#hasApprovedGate(step, mandatory)) return mandatory;
+        const controlGate = request.trustedFacts?.controlPolicyApproval ?? null;
+        if (controlGate && !this.#hasApprovedGate(step, controlGate)) return controlGate;
+        if (custom.decision === "approval_required" && !this.#hasApprovedGate(step, custom)) return custom;
+        if (custom.decision !== "allow" && custom.decision !== "approval_required") {
+          throw new Error("Operator approval decision is invalid");
+        }
+        const budget = this.#budgetAssessment(
+          job,
+          request.reservation,
+          telemetry,
+          involvedRuntimeIds(request.params),
+          this.#budgetLimits(job, step.id)
+        );
+        if (!budget.preflight.valid) {
+          return {
+            decision: "deny",
+            code: "BUDGET_TELEMETRY_UNSUPPORTED",
+            message: "Token or reported-cost budget requires telemetry from every involved Runtime"
+          };
+        }
+        if (budget.overages.length > 0) {
+          return {
+            decision: "approval_required",
+            reason: "budget_expansion",
+            action: "budget.expand",
+            requestedScope: { budget: this.#requestedBudgetScope(
+              job,
+              request.reservation,
+              this.#budgetLimits(job, step.id)
+            ) }
+          };
+        }
+        return { decision: "allow" };
+      }
+      #createApproval(job, step, request, decision) {
+        let currentJob = this.#store.getJob(job.id);
+        let currentStep = this.#store.getStep(step.id);
+        if (currentJob.status === "needs_recovery") {
+          currentJob = this.#store.transitionJob(currentJob.id, "running");
+        }
+        const existing = this.#store.listApprovals(currentJob.id).find((approval2) => approval2.stepId === currentStep.id && approval2.status === "pending" && approval2.action === (decision.action ?? request.method) && approval2.risk === decision.reason && stableJson(approval2.scope) === stableJson(decision.requestedScope ?? {}));
+        if (existing) {
+          return {
+            status: "waiting_approval",
+            approvalId: existing.id,
+            jobId: currentJob.id,
+            stepId: currentStep.id
+          };
+        }
+        if (currentStep.status === "pending") {
+          currentStep = this.#store.transitionStep(currentStep.id, "waiting_approval");
+        }
+        if (currentStep.status !== "waiting_approval") {
+          throw new Error("Operator Step cannot enter approval from its current status");
+        }
+        if (currentJob.status === "running") {
+          currentJob = this.#store.transitionJob(currentJob.id, "waiting_approval");
+        }
+        if (currentJob.status !== "waiting_approval") {
+          throw new Error("Operator Job cannot enter approval from its current status");
+        }
+        const approval = this.#store.createApproval(currentJob.id, {
+          stepId: step.id,
+          action: decision.action ?? request.method,
+          scope: cloneJson(decision.requestedScope ?? {}),
+          proposedMutation: approvalMutation(request),
+          risk: requiredText(decision.reason, "Operator approval risk", 16384),
+          expiresAt: new Date(this.#now() + this.#approvalTtlMs).toISOString()
+        });
+        return {
+          status: "waiting_approval",
+          approvalId: approval.id,
+          jobId: currentJob.id,
+          stepId: step.id
+        };
+      }
+      resolveApproval(approvalId, input = {}) {
+        const approval = this.#store.getApproval(approvalId);
+        return this.#enqueue(approval.jobId, () => this.#withJobOperation(
+          approval.jobId,
+          (signal) => this.#resolveApproval(approvalId, input, null, signal)
+        ));
+      }
+      async #resolveApproval(approvalId, input = {}, errorOverride = null, signal = null) {
+        const decision = requireObject(input, "Operator approval decision");
+        if (decision.decision !== "approve" && decision.decision !== "reject") {
+          throw new Error("Operator approval decision must be approve or reject");
+        }
+        const resolved = this.#store.resolveApproval(approvalId, {
+          decision: decision.decision,
+          scope: requiredText(decision.scope, "Operator approval decision scope", 300),
+          decidedBy: typeof decision.decidedBy === "string" ? decision.decidedBy : null
+        });
+        const step = this.#store.getStep(resolved.stepId);
+        if (this.#store.getJob(resolved.jobId).status === "waiting_approval") {
+          this.#store.transitionJob(resolved.jobId, "running");
+        }
+        if (step.method === "optimization.approval") {
+          if (decision.decision === "approve") {
+            this.#store.transitionStep(step.id, "running");
+            const artifact = this.#store.createArtifact(resolved.jobId, {
+              kind: "optimization-approval",
+              name: `optimization-approval-${resolved.id}.json`,
+              mediaType: "application/json",
+              body: `${JSON.stringify({
+                approvalId: resolved.id,
+                approved: true,
+                decisionScope: resolved.decisionScope
+              })}
+`,
+              metadata: null
+            });
+            this.#store.transitionStep(step.id, "succeeded", {
+              outputArtifactIds: [artifact.id]
+            });
+          } else {
+            this.#store.transitionStep(step.id, "failed", { error: errorOverride ?? {
+              code: "APPROVAL_REJECTED",
+              message: "Operator approval was rejected"
+            } });
+          }
+          this.#settleManualApproval(resolved);
+          return decision.decision === "approve" ? this.#succeededResult(this.#store.getStep(step.id)) : this.#failedResult(this.#store.getStep(step.id));
+        }
+        if (decision.decision === "reject") {
+          const error = errorOverride ?? {
+            code: "APPROVAL_REJECTED",
+            message: "Operator approval was rejected"
+          };
+          const failed = this.#store.transitionStep(step.id, "failed", { error });
+          return this.#failedResult(failed);
+        }
+        const request = this.#executionFromStep(step);
+        return this.#resumePreInvokeStep(step, request, signal);
+      }
+      async expireApprovals(jobId = null) {
+        const jobs = jobId === null ? this.#store.listJobs() : [this.#store.getJob(jobId)];
+        const expired = [];
+        for (const job of jobs) {
+          const approvals = this.#store.listApprovals(job.id).filter((approval) => approval.status === "pending" && Date.parse(approval.expiresAt) <= this.#now());
+          for (const approval of approvals) {
+            const result = await this.#enqueue(approval.jobId, () => this.#withJobOperation(
+              approval.jobId,
+              (signal) => this.#resolveApproval(
+                approval.id,
+                {
+                  decision: "reject",
+                  scope: "expired",
+                  decidedBy: "job-engine"
+                },
+                {
+                  code: "APPROVAL_EXPIRED",
+                  message: "Operator approval expired"
+                },
+                signal
+              )
+            ));
+            expired.push({ approvalId: approval.id, jobId: approval.jobId, stepId: result.stepId });
+          }
+        }
+        return expired;
+      }
+      async #runStep(job, initialStep, request, { telemetry = [], signal = null } = {}) {
+        let step = this.#store.getStep(initialStep.id);
+        try {
+          this.#reserveBudget(job, step, request, telemetry);
+          if (step.status === "running") {
+            return { status: "needs_recovery", jobId: job.id, stepId: step.id };
+          }
+          try {
+            step = this.#store.transitionStep(step.id, "running");
+          } catch (error) {
+            const current2 = this.#store.getStep(step.id);
+            if (current2.status === "running" || TERMINAL_STEP_STATUSES.has(current2.status)) {
+              return current2.status === "succeeded" ? this.#succeededResult(current2, { cached: true }) : {
+                status: current2.status === "running" ? "needs_recovery" : current2.status,
+                jobId: job.id,
+                stepId: current2.id
+              };
+            }
+            throw error;
+          }
+          const handler = this.#handlers[request.method];
+          if (typeof handler !== "function") {
+            throw Object.assign(new Error(`No Operator handler is registered for ${request.method}`), {
+              code: "OPERATOR_HANDLER_MISSING"
+            });
+          }
+          const controller = new AbortController();
+          const abortFromOperation = () => controller.abort(signal?.reason ?? operatorCancellationError());
+          if (signal?.aborted) abortFromOperation();
+          else signal?.addEventListener("abort", abortFromOperation, { once: true });
+          this.#activeSteps.set(step.id, controller);
+          let result;
+          const timeoutError = Object.assign(new Error("Operator Job duration budget was exceeded"), {
+            code: "BUDGET_DURATION_EXCEEDED"
+          });
+          try {
+            const limits = this.#budgetLimits(job, step.id);
+            const remainingMs = limits.maxDurationMs - Math.max(0, this.#now() - Date.parse(job.createdAt));
+            if (remainingMs <= 0) throw timeoutError;
+            const handlerTrustedFacts = cloneJson(request.trustedFacts ?? {});
+            const handlerControlContext = Object.hasOwn(handlerTrustedFacts, "methodFacts") ? Object.freeze({
+              ...request.handlerContext ?? {},
+              trustedFacts: handlerTrustedFacts
+            }) : request.handlerContext ?? null;
+            result = await this.#boundedAwait((hookSignal) => handler({
+              method: request.method,
+              params: cloneJson(request.params),
+              trustedFacts: handlerTrustedFacts,
+              idempotencyKey: request.idempotencyKey,
+              jobId: job.id,
+              stepId: step.id,
+              signal: hookSignal,
+              controlContext: handlerControlContext
+            }), {
+              signal: controller.signal,
+              label: "Operator handler",
+              timeoutMs: remainingMs,
+              timeoutError
+            });
+          } finally {
+            signal?.removeEventListener("abort", abortFromOperation);
+            this.#activeSteps.delete(step.id);
+          }
+          const current = this.#store.getStep(step.id);
+          if (current.status === "cancelled") {
+            return { status: "cancelled", jobId: job.id, stepId: step.id };
+          }
+          return this.#persistStepResult(current, result ?? null, {
+            method: request.method,
+            trustedFacts: request.trustedFacts
+          });
+        } catch (error) {
+          const current = this.#store.getStep(step.id);
+          if (current.status === "needs_recovery" || this.#store.getJob(job.id).status === "needs_recovery") {
+            return { status: "needs_recovery", jobId: job.id, stepId: current.id };
+          }
+          if (current.status === "cancelled") {
+            return { status: "cancelled", jobId: job.id, stepId: step.id };
+          }
+          if (this.#store.getJob(job.id).status === "cancelling") {
+            return { status: "cancelled", jobId: job.id, stepId: step.id };
+          }
+          if (!TERMINAL_STEP_STATUSES.has(current.status)) {
+            step = this.#store.transitionStep(current.id, "failed", { error: errorRecord(error) });
+          } else {
+            step = current;
+          }
+          return this.#failedResult(step);
+        }
+      }
+      #persistStepResult(step, result, { method = step.method, trustedFacts = {} } = {}) {
+        const metadata = operatorArtifactMetadata(method, result, trustedFacts);
+        const artifact = this.#store.createArtifact(step.jobId, {
+          kind: "operator-step-result",
+          name: `step-${step.id}.json`,
+          mediaType: "application/json",
+          body: JSON.stringify(result),
+          ...metadata === null ? {} : { metadata }
+        });
+        const succeeded = this.#store.transitionStep(step.id, "succeeded", {
+          outputArtifactIds: [artifact.id]
+        });
+        return this.#succeededResult(succeeded, { result });
+      }
+      #succeededResult(step, { result = void 0, cached = false } = {}) {
+        const restored = result === void 0 ? this.#readStepResult(step) : cloneJson(result);
+        return {
+          status: "succeeded",
+          jobId: step.jobId,
+          stepId: step.id,
+          result: restored,
+          cached
+        };
+      }
+      #failedResult(step) {
+        return {
+          status: "failed",
+          jobId: step.jobId,
+          stepId: step.id,
+          error: cloneJson(step.error)
+        };
+      }
+      #readStepResult(step) {
+        if (step.outputArtifactIds.length !== 1) throw new Error("Operator Step result artifact is missing");
+        const body = this.#store.readArtifactBody(step.outputArtifactIds[0]);
+        return JSON.parse(body.toString("utf8"));
+      }
+      async #boundedAwait(invoke, {
+        signal = null,
+        label,
+        timeoutMs = this.#externalAwaitTimeoutMs,
+        timeoutError = Object.assign(new Error(`${label} timed out`), { code: "OPERATOR_EXTERNAL_TIMEOUT" })
+      }) {
+        if (typeof invoke !== "function") throw new Error(`${label} hook must be a function`);
+        if (signal?.aborted) throw signal.reason ?? operatorCancellationError();
+        const controller = new AbortController();
+        const abortChild = () => controller.abort(signal?.reason ?? operatorCancellationError());
+        signal?.addEventListener("abort", abortChild, { once: true });
+        let rejectAbort;
+        const abortPromise = new Promise((_resolve, reject) => {
+          rejectAbort = reject;
+        });
+        const onAbort = () => rejectAbort(controller.signal.reason ?? operatorCancellationError());
+        controller.signal.addEventListener("abort", onAbort, { once: true });
+        const cancelTimeout = segmentedTimeout(() => {
+          controller.abort(timeoutError);
+        }, timeoutMs);
+        try {
+          if (controller.signal.aborted) throw controller.signal.reason ?? operatorCancellationError();
+          const value = invoke(controller.signal);
+          return await Promise.race([Promise.resolve(value), abortPromise]);
+        } finally {
+          cancelTimeout();
+          signal?.removeEventListener("abort", abortChild);
+          controller.signal.removeEventListener("abort", onAbort);
+        }
+      }
+      async #telemetry(request, signal) {
+        const value = typeof this.#runtimeTelemetry === "function" ? await this.#boundedAwait(
+          (hookSignal) => this.#runtimeTelemetry({
+            method: request.method,
+            params: cloneJson(request.params),
+            signal: hookSignal
+          }),
+          { signal, label: "Operator Runtime telemetry" }
+        ) : this.#runtimeTelemetry;
+        return normalizeTelemetry(value);
+      }
+      #budgetUsage(jobId) {
+        const usage = Object.fromEntries(RESERVATION_FIELDS.map((field) => [field, 0]));
+        for (const event of this.#store.listEvents(jobId)) {
+          if (event.kind !== "operator_budget_reserved") continue;
+          for (const field of RESERVATION_FIELDS) {
+            const amount = event.usage?.[field] ?? 0;
+            const valid = field === "reportedCost" ? Number.isFinite(amount) && amount >= 0 : Number.isSafeInteger(amount) && amount >= 0;
+            if (!valid) {
+              throw new Error("Persisted Operator budget reservation is invalid");
+            }
+            usage[field] += amount;
+          }
+        }
+        return usage;
+      }
+      #budgetLimits(job, stepId = null) {
+        const limits = { ...job.budget };
+        if (stepId === null) return limits;
+        for (const approval of this.#store.listApprovals(job.id)) {
+          if (approval.stepId !== stepId || approval.status !== "approved" || approval.action !== "budget.expand" || approval.risk !== "budget_expansion") {
+            continue;
+          }
+          const expansion = isPlainObject(approval.scope?.budget) ? approval.scope.budget : {};
+          for (const field of Object.keys(expansion)) {
+            if (!BUDGET_FIELDS.includes(field)) throw new Error("Operator budget expansion scope is invalid");
+          }
+          for (const field of BUDGET_FIELDS) {
+            const value = expansion[field];
+            if (value === void 0) continue;
+            const valid = field === "maxReportedCost" ? Number.isFinite(value) && value >= 0 : Number.isSafeInteger(value) && value >= 0;
+            if (!valid || limits[field] === null || value < limits[field]) {
+              throw new Error("Operator budget expansion scope is invalid");
+            }
+            limits[field] = value;
+          }
+        }
+        return limits;
+      }
+      #budgetAssessment(job, reservation, telemetry, runtimeIds = [], limits = job.budget) {
+        const preflight = preflightOperatorBudget(
+          limits,
+          telemetry,
+          runtimeIds.length > 0 ? runtimeIds : null
+        );
+        const usage = this.#budgetUsage(job.id);
+        const overages = [];
+        if (this.#now() - Date.parse(job.createdAt) > limits.maxDurationMs) {
+          overages.push("maxDurationMs");
+        }
+        for (const [usageField, budgetField] of Object.entries(RESERVATION_LIMITS)) {
+          const limit = limits[budgetField];
+          if (limit === null) continue;
+          const exceeds = usageField === "reportedCost" ? costUnits(usage[usageField]) + costUnits(reservation[usageField] ?? 0) > costUnits(limit) : usage[usageField] + (reservation[usageField] ?? 0) > limit;
+          if (exceeds) overages.push(budgetField);
+        }
+        return { preflight, usage, overages };
+      }
+      #reserveBudget(job, step, request, telemetry) {
+        const { reservation } = request;
+        if (this.#store.listEvents(job.id).some((event) => event.kind === "operator_budget_reserved" && event.stepId === step.id)) return;
+        const assessment = this.#budgetAssessment(
+          job,
+          reservation,
+          telemetry,
+          involvedRuntimeIds(request.params),
+          this.#budgetLimits(job, step.id)
+        );
+        if (!assessment.preflight.valid) {
+          throw Object.assign(new Error("Operator token or cost telemetry is unsupported"), {
+            code: "BUDGET_TELEMETRY_UNSUPPORTED"
+          });
+        }
+        if (assessment.overages.length > 0) {
+          throw Object.assign(new Error("Operator Job budget would be exceeded"), {
+            code: "BUDGET_EXCEEDED"
+          });
+        }
+        if (Object.keys(reservation).length > 0) {
+          this.#store.appendEvent(job.id, {
+            kind: "operator_budget_reserved",
+            stepId: step.id,
+            usage: cloneJson(reservation)
+          });
+        }
+      }
+      #requestedBudgetScope(job, reservation, limits = job.budget) {
+        const requested = {};
+        const usage = this.#budgetUsage(job.id);
+        const elapsed = Math.max(0, this.#now() - Date.parse(job.createdAt));
+        if (elapsed > limits.maxDurationMs) requested.maxDurationMs = elapsed + job.budget.maxDurationMs;
+        for (const [usageField, budgetField] of Object.entries(RESERVATION_LIMITS)) {
+          const required = usageField === "reportedCost" ? (costUnits(usage[usageField]) + costUnits(reservation[usageField] ?? 0)) / COST_SCALE : usage[usageField] + (reservation[usageField] ?? 0);
+          const limit = limits[budgetField];
+          if (limit !== null && required > limit) requested[budgetField] = required;
+        }
+        return requested;
+      }
+      #stepCreation(step) {
+        const event = this.#store.listEvents(step.jobId).find((candidate) => candidate.kind === "operator_step_created" && candidate.stepId === step.id);
+        if (!event || !isPlainObject(event.request)) {
+          throw new Error("Operator Step frozen request is missing");
+        }
+        return cloneJson(event);
+      }
+      #executionFromStep(step) {
+        const creation = this.#stepCreation(step);
+        const trustedFacts = cloneJson(creation.trustedFacts ?? {});
+        const requestedParams = creation.requestedParams ?? creation.request.params;
+        const params = selectedParamsFromFacts(requestedParams, trustedFacts);
+        if (stableJson(params) !== stableJson(creation.request.params)) {
+          throw new Error("Frozen Dataset evaluation selection does not match the Step request");
+        }
+        return {
+          method: creation.request.method,
+          params,
+          reservation: normalizeReservation(creation.request.reservation ?? {}),
+          requestedReservation: normalizeReservation(
+            creation.requestedReservation ?? creation.request.reservation ?? {}
+          ),
+          trustedFacts,
+          policyApproval: trustedFacts.controlPolicyApproval ?? null,
+          idempotencyKey: step.idempotencyKey
+        };
+      }
+      async cancel(jobId) {
+        const job = this.#store.beginCancellation(jobId);
+        if (TERMINAL_JOB_STATUSES.has(job.status)) return job;
+        this.#abortTree(jobId);
+        return this.#store.cancelJobTree(jobId).job;
+      }
+      interrupt(jobId, error = {}) {
+        requiredText(jobId, "Operator Job id", 200);
+        const record = errorRecord(error, "OPERATOR_RUNTIME_FAILED");
+        const interruption = Object.assign(new Error(record.message), {
+          code: record.code
+        });
+        for (const controller of this.#coordination.operations.get(jobId) ?? []) {
+          controller.abort(interruption);
+        }
+        const steps = this.#store.listSteps({ jobId });
+        for (const step of steps) {
+          this.#activeSteps.get(step.id)?.abort(interruption);
+        }
+        if (!steps.some((step) => step.status === "running")) {
+          return this.#store.getJob(jobId);
+        }
+        return this.#store.interruptJob(jobId, record);
+      }
+      #abortTree(jobId) {
+        const jobs = this.#store.listJobs();
+        const byId = new Map(jobs.map((job) => [job.id, job]));
+        const stepsByJob = /* @__PURE__ */ new Map();
+        for (const step of this.#store.listSteps()) {
+          if (!stepsByJob.has(step.jobId)) stepsByJob.set(step.jobId, []);
+          stepsByJob.get(step.jobId).push(step);
+        }
+        const stack = [jobId];
+        while (stack.length > 0) {
+          const current = byId.get(stack.pop());
+          if (!current) continue;
+          for (const controller of this.#coordination.operations.get(current.id) ?? []) {
+            controller.abort(operatorCancellationError());
+          }
+          for (const step of stepsByJob.get(current.id) ?? []) {
+            this.#activeSteps.get(step.id)?.abort(operatorCancellationError());
+          }
+          stack.push(...current.children);
+        }
+      }
+      completeJob(jobId, status, patch = {}) {
+        if (!TERMINAL_JOB_STATUSES.has(status)) {
+          return Promise.reject(new Error("Operator Job completion status is invalid"));
+        }
+        if (status === "cancelled") return this.cancel(jobId);
+        if (status === "failed") {
+          const current = this.#store.getJob(jobId);
+          if (TERMINAL_JOB_STATUSES.has(current.status)) {
+            if (current.status !== status) {
+              return Promise.reject(new Error("Operator Job already completed with another status"));
+            }
+            return Promise.resolve(current);
+          }
+          this.#store.beginCancellation(jobId);
+          this.#abortTree(jobId);
+          return Promise.resolve(this.#store.cancelJobTree(jobId, {
+            rootStatus: "failed",
+            rootPatch: patch
+          }).job);
+        }
+        return this.#enqueue(jobId, async () => {
+          let job = this.#store.getJob(jobId);
+          if (TERMINAL_JOB_STATUSES.has(job.status)) {
+            if (job.status !== status) throw new Error("Operator Job already completed with another status");
+            return job;
+          }
+          if (status === "succeeded") {
+            const children = job.children.map((childId) => this.#store.getJob(childId));
+            if (children.some((child) => child.status !== "succeeded")) {
+              throw new Error("Every child Operator Job must succeed before its parent");
+            }
+            const steps = this.#store.listSteps({ jobId });
+            if (steps.some((step) => step.status !== "succeeded")) {
+              throw new Error("Every Operator Step must succeed before its Job");
+            }
+          }
+          if (job.status === "queued") job = this.#store.transitionJob(job.id, "running");
+          return this.#store.transitionJob(job.id, status, patch);
+        });
+      }
+      reconcile(jobId) {
+        return this.#enqueue(jobId, () => this.#withJobOperation(
+          jobId,
+          (signal) => this.#reconcile(jobId, signal)
+        ));
+      }
+      async #reconcile(jobId, signal) {
+        let job = this.#store.getJob(jobId);
+        if (job.status !== "needs_recovery" && job.status !== "waiting_approval") {
+          return { status: job.status, jobId };
+        }
+        const recovery = this.#store.listEvents(jobId).findLast((event) => event.kind === "recovery_required");
+        if (recovery?.previousStatus === "cancelling") {
+          this.#store.beginCancellation(jobId);
+          this.#abortTree(jobId);
+          const cancelled = this.#store.cancelJobTree(jobId).job;
+          return { status: cancelled.status, jobId: cancelled.id };
+        }
+        const steps = this.#store.listSteps({ jobId });
+        for (let step of steps) {
+          if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
+          if (step.status === "waiting_approval") {
+            const approvals = this.#store.listApprovals(jobId).filter((entry) => entry.stepId === step.id && entry.status !== "pending");
+            const approval = approvals.findLast((entry) => entry.status === "rejected") ?? approvals.at(-1);
+            if (approval) await this.#resumeResolvedApproval(step, approval, signal);
+            continue;
+          }
+          if (step.status === "running" || step.status === "pending") {
+            step = this.#store.transitionStep(step.id, "needs_recovery", {
+              error: { code: "OPERATOR_INTERRUPTED", message: "Operator Step outcome is unknown after restart" }
+            });
+          }
+          await this.#reconcileStep(job, step, signal);
+        }
+        const unknown = this.#store.listSteps({ jobId }).some((step) => !TERMINAL_STEP_STATUSES.has(step.status) && step.status !== "waiting_approval");
+        job = this.#store.getJob(jobId);
+        if (!unknown && job.status === "needs_recovery") {
+          job = this.#store.transitionJob(job.id, "running");
+        }
+        return { status: job.status, jobId: job.id };
+      }
+      async #reconcileStep(job, step, signal) {
+        const priorArtifact = this.#store.read().artifacts.find((artifact) => artifact.jobId === job.id && artifact.kind === "operator-step-result" && artifact.name === `step-${step.id}.json`);
+        if (priorArtifact) {
+          this.#store.transitionStep(step.id, "succeeded", { outputArtifactIds: [priorArtifact.id] });
+          return true;
+        }
+        const execution = this.#executionFromStep(step);
+        if (isDeleteMethod(step.method)) return false;
+        if (isReadMethod(step.method)) {
+          const telemetry = await this.#telemetry(execution, signal);
+          const result = await this.#runStep(job, step, execution, { telemetry, signal });
+          return result.status === "succeeded" || result.status === "failed";
+        }
+        if (step.method === "evaluations.start") {
+          const runId = requiredText(execution.params.runId, "Evaluation recovery run id", 300);
+          const outcome = await this.#callReconciler(
+            "evaluation",
+            { ...execution.params, runId, jobId: job.id, stepId: step.id },
+            signal
+          );
+          if (["succeeded", "completed"].includes(outcome?.status) && outcome.result?.runId === runId) {
+            this.#persistStepResult(step, outcome.result);
+            return true;
+          }
+          return this.#finishReconcilerFailure(step, outcome);
+        }
+        if (step.method === "installations.start" || step.method === "skills.install") {
+          const installationId = requiredText(
+            execution.params.installationId,
+            "Installation recovery id",
+            300
+          );
+          const outcome = await this.#callReconciler("installation", {
+            ...execution.params,
+            installationId,
+            jobId: job.id,
+            stepId: step.id
+          }, signal);
+          const identityMatches = ["installationId", "runtimeId", "skillId", "versionId"].every((field) => {
+            if (!Object.hasOwn(execution.params, field)) return true;
+            const observations = [];
+            if (isPlainObject(outcome) && Object.hasOwn(outcome, field)) observations.push(outcome[field]);
+            if (isPlainObject(outcome?.result) && Object.hasOwn(outcome.result, field)) {
+              observations.push(outcome.result[field]);
+            }
+            return observations.length > 0 && observations.every((observed) => observed === execution.params[field]);
+          });
+          if (["installed", "succeeded"].includes(outcome?.status) && identityMatches) {
+            this.#persistStepResult(step, outcome.result ?? { installationId });
+            return true;
+          }
+          return this.#finishReconcilerFailure(step, outcome);
+        }
+        if (step.method === "skills.release") {
+          const versionId = requiredText(execution.params.versionId, "Release Candidate id", 300);
+          const versionLabel = requiredText(execution.params.versionLabel, "Release tag", 300);
+          const outcome = await this.#callReconciler("release", {
+            ...execution.params,
+            versionId,
+            versionLabel,
+            jobId: job.id,
+            stepId: step.id
+          }, signal);
+          if (outcome?.status === "released" && outcome.candidateId === versionId && outcome.tag === versionLabel) {
+            this.#persistStepResult(step, outcome.result ?? { versionId, versionLabel });
+            return true;
+          }
+          return this.#finishReconcilerFailure(step, outcome);
+        }
+        return false;
+      }
+      async #callReconciler(kind, input, signal) {
+        const reconciler = this.#reconcilers[kind];
+        if (typeof reconciler !== "function") return null;
+        return this.#boundedAwait(
+          (hookSignal) => reconciler(cloneJson(input), { signal: hookSignal }),
+          { signal, label: `Operator ${kind} reconciliation` }
+        );
+      }
+      #finishReconcilerFailure(step, outcome) {
+        if (outcome?.status !== "failed") return false;
+        this.#store.transitionStep(step.id, "failed", {
+          error: cloneJson(outcome.error ?? {
+            code: "OPERATOR_RECONCILE_FAILED",
+            message: "Operator Step reconciliation failed"
+          })
+        });
+        return true;
+      }
+      #enqueue(jobId, operation) {
+        requiredText(jobId, "Operator Job id", 200);
+        const queues = this.#coordination.jobQueues;
+        const prior = queues.get(jobId) ?? Promise.resolve();
+        const queued = prior.then(operation, operation);
+        queues.set(jobId, queued);
+        return queued.finally(() => {
+          if (queues.get(jobId) === queued) queues.delete(jobId);
+        });
+      }
+      async #withJobOperation(jobId, operation) {
+        const controller = new AbortController();
+        let operations = this.#coordination.operations.get(jobId);
+        if (!operations) {
+          operations = /* @__PURE__ */ new Set();
+          this.#coordination.operations.set(jobId, operations);
+        }
+        operations.add(controller);
+        try {
+          return await operation(controller.signal);
+        } catch (error) {
+          let job = null;
+          try {
+            job = this.#store.getJob(jobId);
+          } catch {
+          }
+          if (job?.status === "needs_recovery") {
+            const step = this.#store.listSteps({ jobId }).at(-1);
+            return { status: "needs_recovery", jobId, ...step ? { stepId: step.id } : {} };
+          }
+          if (controller.signal.aborted || job?.status === "cancelling" || job?.status === "cancelled") {
+            const step = this.#store.listSteps({ jobId }).at(-1);
+            return { status: "cancelled", jobId, ...step ? { stepId: step.id } : {} };
+          }
+          throw error;
+        } finally {
+          operations.delete(controller);
+          if (operations.size === 0) this.#coordination.operations.delete(jobId);
+        }
+      }
+    };
+    module.exports = {
+      OperatorJobEngine,
+      operatorArtifactMetadata,
+      preflightOperatorBudget
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/operator/job-store.cjs
+var require_job_store = __commonJS({
+  "../../desktop/rolling-skill/src/operator/job-store.cjs"(exports, module) {
+    var { createHash, randomUUID } = __require("node:crypto");
+    var {
+      constants,
+      closeSync,
+      fchmodSync,
+      fstatSync,
+      fsyncSync,
+      lstatSync,
+      mkdirSync,
+      openSync,
+      readSync,
+      realpathSync,
+      renameSync,
+      unlinkSync,
+      writeFileSync
+    } = __require("node:fs");
+    var { basename, dirname, isAbsolute, join, resolve } = __require("node:path");
+    var LEGACY_OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v1";
+    var OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v2";
+    var MAX_STORE_BYTES = 64 * 1024 * 1024;
+    var MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
+    var MAX_ENVELOPE_BYTES = 256 * 1024;
+    var MAX_INLINE_ARTIFACT_BYTES = 128 * 1024;
+    var MAX_JOB_EVENTS = 1e4;
+    var MAX_SESSION_TRANSCRIPT_ENTRIES = 1e4;
+    var MAX_BOOTSTRAP_SUMMARY_ITEMS = 1e3;
+    var NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+    var DIRECTORY = constants.O_DIRECTORY ?? 0;
+    var TERMINAL_JOB_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
+    var JOB_TRANSITIONS = /* @__PURE__ */ new Map([
+      ["queued", /* @__PURE__ */ new Set(["running", "cancelled", "failed"])],
+      ["running", /* @__PURE__ */ new Set([
+        "waiting_approval",
+        "paused",
+        "cancelling",
+        "succeeded",
+        "failed",
+        "needs_recovery"
+      ])],
+      ["waiting_approval", /* @__PURE__ */ new Set(["running", "paused", "cancelling", "failed"])],
+      ["paused", /* @__PURE__ */ new Set(["running", "cancelling"])],
+      ["cancelling", /* @__PURE__ */ new Set(["cancelled", "needs_recovery"])],
+      ["needs_recovery", /* @__PURE__ */ new Set(["running", "cancelled", "failed"])]
+    ]);
+    var ALL_JOB_STATUSES = /* @__PURE__ */ new Set([...JOB_TRANSITIONS.keys(), ...TERMINAL_JOB_STATUSES]);
+    var STEP_STATUSES = /* @__PURE__ */ new Set([
+      "pending",
+      "running",
+      "waiting_approval",
+      "succeeded",
+      "failed",
+      "cancelled",
+      "needs_recovery"
+    ]);
+    var STEP_TRANSITIONS = /* @__PURE__ */ new Map([
+      ["pending", /* @__PURE__ */ new Set(["running", "waiting_approval", "failed", "cancelled", "needs_recovery"])],
+      ["running", /* @__PURE__ */ new Set(["waiting_approval", "succeeded", "failed", "cancelled", "needs_recovery"])],
+      ["waiting_approval", /* @__PURE__ */ new Set(["running", "failed", "cancelled"])],
+      ["needs_recovery", /* @__PURE__ */ new Set(["running", "succeeded", "failed", "cancelled"])]
+    ]);
+    var BUDGET_FIELDS = [
+      "maxDurationMs",
+      "maxRuntimeTurns",
+      "maxEvaluations",
+      "maxTargetExecutions",
+      "maxJudgeExecutions",
+      "maxTokens",
+      "maxReportedCost"
+    ];
+    function isPlainObject(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      const prototype = Object.getPrototypeOf(value);
+      return prototype === Object.prototype || prototype === null;
+    }
+    function requireObject(value, label) {
+      if (!isPlainObject(value)) throw new Error(`${label} must be a plain object`);
+      return value;
+    }
+    function exactKeys(value, expected, label) {
+      requireObject(value, label);
+      const actual = Object.keys(value).sort();
+      const canonical = [...expected].sort();
+      if (actual.length !== canonical.length || actual.some((key, index) => key !== canonical[index])) {
+        throw new Error(`${label} has unknown or missing fields`);
+      }
+      return value;
+    }
+    function cloneJson(value, label = "Value", seen = /* @__PURE__ */ new Set()) {
+      if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+      if (typeof value === "number") {
+        if (!Number.isFinite(value)) throw new Error(`${label} is not finite JSON`);
+        return value;
+      }
+      if (typeof value !== "object" || value === void 0) throw new Error(`${label} is not JSON`);
+      if (seen.has(value)) throw new Error(`${label} is cyclic`);
+      seen.add(value);
+      let cloned;
+      if (Array.isArray(value)) {
+        const keys = Object.keys(value);
+        if (keys.length !== value.length || keys.some((key, index) => key !== String(index))) {
+          throw new Error(`${label} must be a dense array`);
+        }
+        cloned = value.map((entry) => cloneJson(entry, label, seen));
+      } else {
+        requireObject(value, label);
+        cloned = {};
+        for (const key of Object.keys(value)) cloned[key] = cloneJson(value[key], label, seen);
+      }
+      seen.delete(value);
+      return cloned;
+    }
+    function copy(value) {
+      return cloneJson(value);
+    }
+    function encodedBytes(value, label) {
+      try {
+        return Buffer.byteLength(JSON.stringify(value));
+      } catch {
+        throw new Error(`${label} is invalid`);
+      }
+    }
+    function boundedEnvelope(value, label) {
+      const cloned = cloneJson(value, label);
+      if (encodedBytes(cloned, label) > MAX_ENVELOPE_BYTES) {
+        throw new Error(`${label} exceeds the 256 KiB envelope limit`);
+      }
+      return cloned;
+    }
+    function requiredText(value, label, maxLength = 4096) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized || normalized.length > maxLength) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function canonicalText(value, label, maxLength = 4096) {
+      const normalized = requiredText(value, label, maxLength);
+      if (normalized !== value) throw new Error(`${label} is not canonical`);
+      return value;
+    }
+    function nullableText(value, label, maxLength = 4096) {
+      if (value === void 0 || value === null || value === "") return null;
+      return requiredText(value, label, maxLength);
+    }
+    function canonicalNullableText(value, label, maxLength = 4096) {
+      if (value === null) return null;
+      return canonicalText(value, label, maxLength);
+    }
+    function canonicalTimestamp(value, label) {
+      const timestamp = canonicalText(value, label, 100);
+      if (!Number.isFinite(Date.parse(timestamp)) || new Date(timestamp).toISOString() !== timestamp) {
+        throw new Error(`${label} is not a canonical timestamp`);
+      }
+      return timestamp;
+    }
+    function canonicalNullableTimestamp(value, label) {
+      return value === null ? null : canonicalTimestamp(value, label);
+    }
+    function assertTimestampOrder(earlier, later, label) {
+      if (Date.parse(later) < Date.parse(earlier)) throw new Error(`${label} is before creation`);
+    }
+    function integer(value, label, { minimum = 0, maximum = Number.MAX_SAFE_INTEGER } = {}) {
+      if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+        throw new Error(`${label} is invalid`);
+      }
+      return value;
+    }
+    function uniqueTextArray(value, label) {
+      if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+      const entries = value.map((entry) => canonicalText(entry, label, 200));
+      if (new Set(entries).size !== entries.length) throw new Error(`${label} has duplicate references`);
+      return entries;
+    }
+    function nowTimestamp() {
+      return (/* @__PURE__ */ new Date()).toISOString();
+    }
+    function sha256(body) {
+      return createHash("sha256").update(body).digest("hex");
+    }
+    function stableJson(value) {
+      if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+      if (value !== null && typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+      }
+      return JSON.stringify(value);
+    }
+    function digest(value, label) {
+      const normalized = canonicalText(value, label, 64);
+      if (!/^[a-f0-9]{64}$/u.test(normalized)) throw new Error(`${label} is invalid`);
+      return normalized;
+    }
+    function initialState() {
+      return {
+        schemaVersion: OPERATOR_JOB_STORE_SCHEMA,
+        sessions: [],
+        jobs: [],
+        steps: [],
+        approvals: [],
+        artifacts: [],
+        events: []
+      };
+    }
+    function normalizeRuntime(value) {
+      const runtime = requireObject(value, "Operator Runtime");
+      return {
+        runtimeId: requiredText(runtime.runtimeId, "Runtime id", 300),
+        providerId: requiredText(runtime.providerId, "Runtime provider id", 200),
+        displayName: requiredText(runtime.displayName ?? runtime.runtimeId, "Runtime name", 300),
+        version: nullableText(runtime.version, "Runtime version", 200),
+        executablePath: nullableText(runtime.executablePath, "Runtime executable", 8192)
+      };
+    }
+    function canonicalRuntime(value) {
+      exactKeys(value, ["runtimeId", "providerId", "displayName", "version", "executablePath"], "Operator Runtime");
+      return {
+        runtimeId: canonicalText(value.runtimeId, "Runtime id", 300),
+        providerId: canonicalText(value.providerId, "Runtime provider id", 200),
+        displayName: canonicalText(value.displayName, "Runtime name", 300),
+        version: canonicalNullableText(value.version, "Runtime version", 200),
+        executablePath: canonicalNullableText(value.executablePath, "Runtime executable", 8192)
+      };
+    }
+    function normalizeBudget(value) {
+      const budget = requireObject(value, "Job budget");
+      const normalized = {};
+      for (const field of BUDGET_FIELDS) {
+        const entry = budget[field];
+        if (entry === null && (field === "maxTokens" || field === "maxReportedCost")) {
+          normalized[field] = null;
+        } else {
+          const valid = field === "maxReportedCost" ? Number.isFinite(entry) && entry >= 0 : Number.isSafeInteger(entry) && entry >= 0;
+          if (!valid) throw new Error(`Job budget ${field} is invalid`);
+          normalized[field] = entry;
+        }
+      }
+      return normalized;
+    }
+    function canonicalBudget(value) {
+      exactKeys(value, BUDGET_FIELDS, "Operator Job budget");
+      return normalizeBudget(value);
+    }
+    function payloadFrom(input, reserved, label = "Envelope payload") {
+      const source = requireObject(input, "Envelope");
+      const payload = {};
+      for (const key of Object.keys(source)) {
+        if (!reserved.has(key)) payload[key] = cloneJson(source[key], label);
+      }
+      return boundedEnvelope(payload, label);
+    }
+    function canonicalTranscriptEntry(value) {
+      exactKeys(value, ["id", "sessionId", "sequence", "kind", "payload", "recordedAt"], "Operator transcript entry");
+      const entry = {
+        id: canonicalText(value.id, "Operator transcript id", 200),
+        sessionId: canonicalText(value.sessionId, "Operator transcript session id", 200),
+        sequence: integer(value.sequence, "Operator transcript sequence", { minimum: 1 }),
+        kind: canonicalText(value.kind, "Operator transcript kind", 300),
+        payload: boundedEnvelope(requireObject(value.payload, "Operator transcript payload"), "Operator transcript payload"),
+        recordedAt: canonicalTimestamp(value.recordedAt, "Operator transcript recordedAt")
+      };
+      boundedEnvelope(entry, "Operator transcript entry");
+      return entry;
+    }
+    function canonicalSession(value) {
+      exactKeys(value, [
+        "id",
+        "runtime",
+        "modelId",
+        "effort",
+        "protocol",
+        "capabilityId",
+        "transcript",
+        "transcriptSequence",
+        "createdAt",
+        "updatedAt",
+        "closedAt"
+      ], "Operator session");
+      if (!Array.isArray(value.transcript)) throw new Error("Operator transcript must be an array");
+      if (value.transcript.length > MAX_SESSION_TRANSCRIPT_ENTRIES) {
+        throw new Error("Operator transcript exceeds its entry limit");
+      }
+      const session = {
+        id: canonicalText(value.id, "Operator session id", 200),
+        runtime: canonicalRuntime(value.runtime),
+        modelId: canonicalNullableText(value.modelId, "Operator model id", 300),
+        effort: canonicalNullableText(value.effort, "Operator effort", 100),
+        protocol: canonicalText(value.protocol, "Operator protocol", 200),
+        capabilityId: canonicalText(value.capabilityId, "Operator capability id", 300),
+        transcript: value.transcript.map(canonicalTranscriptEntry),
+        transcriptSequence: integer(value.transcriptSequence, "Operator transcript sequence", {
+          maximum: MAX_SESSION_TRANSCRIPT_ENTRIES
+        }),
+        createdAt: canonicalTimestamp(value.createdAt, "Operator session createdAt"),
+        updatedAt: canonicalTimestamp(value.updatedAt, "Operator session updatedAt"),
+        closedAt: canonicalNullableTimestamp(value.closedAt, "Operator session closedAt")
+      };
+      if (session.transcriptSequence !== session.transcript.length) {
+        throw new Error("Operator transcript sequence is invalid");
+      }
+      session.transcript.forEach((entry, index) => {
+        if (entry.sessionId !== session.id || entry.sequence !== index + 1) {
+          throw new Error("Operator transcript sequence or session reference is invalid");
+        }
+      });
+      assertTimestampOrder(session.createdAt, session.updatedAt, "Operator session updatedAt");
+      if (session.closedAt !== null) {
+        assertTimestampOrder(session.createdAt, session.closedAt, "Operator session closedAt");
+        assertTimestampOrder(session.closedAt, session.updatedAt, "Operator session updatedAt");
+      }
+      return session;
+    }
+    function canonicalJob(value) {
+      exactKeys(value, [
+        "id",
+        "sessionId",
+        "parentJobId",
+        "type",
+        "objective",
+        "budget",
+        "status",
+        "children",
+        "artifactIds",
+        "approvalIds",
+        "eventSequence",
+        "checkpoint",
+        "result",
+        "error",
+        "terminalSnapshot",
+        "createdAt",
+        "updatedAt",
+        "startedAt",
+        "completedAt"
+      ], "Operator Job");
+      const status = canonicalText(value.status, "Operator Job status", 100);
+      if (!ALL_JOB_STATUSES.has(status)) throw new Error("Operator Job status is invalid");
+      const job = {
+        id: canonicalText(value.id, "Operator Job id", 200),
+        sessionId: canonicalText(value.sessionId, "Operator Job session id", 200),
+        parentJobId: canonicalNullableText(value.parentJobId, "Parent Operator Job id", 200),
+        type: canonicalText(value.type, "Operator Job type", 200),
+        objective: canonicalText(value.objective, "Operator Job objective", 32768),
+        budget: canonicalBudget(value.budget),
+        status,
+        children: uniqueTextArray(value.children, "Operator Job children"),
+        artifactIds: uniqueTextArray(value.artifactIds, "Operator Job artifact references"),
+        approvalIds: uniqueTextArray(value.approvalIds, "Operator Job approval references"),
+        eventSequence: integer(value.eventSequence, "Operator Job event sequence", { maximum: MAX_JOB_EVENTS }),
+        checkpoint: cloneJson(value.checkpoint, "Operator Job checkpoint"),
+        result: cloneJson(value.result, "Operator Job result"),
+        error: cloneJson(value.error, "Operator Job error"),
+        terminalSnapshot: cloneJson(value.terminalSnapshot, "Operator Job terminal snapshot"),
+        createdAt: canonicalTimestamp(value.createdAt, "Operator Job createdAt"),
+        updatedAt: canonicalTimestamp(value.updatedAt, "Operator Job updatedAt"),
+        startedAt: canonicalNullableTimestamp(value.startedAt, "Operator Job startedAt"),
+        completedAt: canonicalNullableTimestamp(value.completedAt, "Operator Job completedAt")
+      };
+      assertTimestampOrder(job.createdAt, job.updatedAt, "Operator Job updatedAt");
+      if (job.startedAt !== null) assertTimestampOrder(job.createdAt, job.startedAt, "Operator Job startedAt");
+      if (TERMINAL_JOB_STATUSES.has(job.status)) {
+        if (job.completedAt === null || job.terminalSnapshot === null) {
+          throw new Error("Terminal Operator Job must have a completion time and snapshot");
+        }
+        assertTimestampOrder(job.createdAt, job.completedAt, "Operator Job completedAt");
+      } else if (job.completedAt !== null || job.terminalSnapshot !== null) {
+        throw new Error("Nonterminal Operator Job cannot have a terminal snapshot");
+      }
+      return job;
+    }
+    function canonicalStep(value) {
+      exactKeys(value, [
+        "id",
+        "jobId",
+        "sessionId",
+        "method",
+        "idempotencyKey",
+        "status",
+        "inputDigest",
+        "outputArtifactIds",
+        "attempt",
+        "error",
+        "createdAt",
+        "updatedAt",
+        "startedAt",
+        "completedAt"
+      ], "Operator Step");
+      const status = canonicalText(value.status, "Operator Step status", 100);
+      if (!STEP_STATUSES.has(status)) throw new Error("Operator Step status is invalid");
+      const step = {
+        id: canonicalText(value.id, "Operator Step id", 200),
+        jobId: canonicalText(value.jobId, "Operator Step Job id", 200),
+        sessionId: canonicalText(value.sessionId, "Operator Step session id", 200),
+        method: canonicalText(value.method, "Operator Step method", 300),
+        idempotencyKey: canonicalText(value.idempotencyKey, "Operator Step idempotency key", 500),
+        status,
+        inputDigest: digest(value.inputDigest, "Operator Step input digest"),
+        outputArtifactIds: uniqueTextArray(value.outputArtifactIds, "Operator Step artifact references"),
+        attempt: integer(value.attempt, "Operator Step attempt"),
+        error: cloneJson(value.error, "Operator Step error"),
+        createdAt: canonicalTimestamp(value.createdAt, "Operator Step createdAt"),
+        updatedAt: canonicalTimestamp(value.updatedAt, "Operator Step updatedAt"),
+        startedAt: canonicalNullableTimestamp(value.startedAt, "Operator Step startedAt"),
+        completedAt: canonicalNullableTimestamp(value.completedAt, "Operator Step completedAt")
+      };
+      assertTimestampOrder(step.createdAt, step.updatedAt, "Operator Step updatedAt");
+      if (step.startedAt !== null) assertTimestampOrder(step.createdAt, step.startedAt, "Operator Step startedAt");
+      if (["succeeded", "failed", "cancelled"].includes(status) !== (step.completedAt !== null)) {
+        throw new Error("Operator Step completion fields are inconsistent");
+      }
+      if (status === "succeeded" && (step.error !== null || step.outputArtifactIds.length === 0)) {
+        throw new Error("A succeeded Operator Step requires output artifacts and no error");
+      }
+      if (status !== "succeeded" && step.outputArtifactIds.length > 0) {
+        throw new Error(`A ${status} Operator Step cannot have output artifacts`);
+      }
+      if (["pending", "running", "waiting_approval"].includes(status) && step.error !== null) {
+        throw new Error(`A ${status} Operator Step cannot have an error`);
+      }
+      if (status === "failed" && step.error === null) {
+        throw new Error("A failed Operator Step requires an error");
+      }
+      return step;
+    }
+    function canonicalStepRequest(value) {
+      const hasReservation = isPlainObject(value) && Object.hasOwn(value, "reservation");
+      exactKeys(
+        value,
+        hasReservation ? ["method", "params", "reservation"] : ["method", "params"],
+        "Operator Step frozen request"
+      );
+      const request = {
+        method: canonicalText(value.method, "Operator Step request method", 300),
+        params: boundedEnvelope(
+          requireObject(value.params, "Operator Step request params"),
+          "Operator Step request params"
+        )
+      };
+      if (hasReservation) {
+        request.reservation = boundedEnvelope(
+          requireObject(value.reservation, "Operator Step request reservation"),
+          "Operator Step request reservation"
+        );
+      }
+      return boundedEnvelope(request, "Operator Step frozen request");
+    }
+    function canonicalStepCreationPayload(value) {
+      const fields = ["stepId", "idempotencyKey", "inputDigest", "request"];
+      if (isPlainObject(value) && Object.hasOwn(value, "requestedParams")) fields.push("requestedParams");
+      if (isPlainObject(value) && Object.hasOwn(value, "requestedReservation")) fields.push("requestedReservation");
+      if (isPlainObject(value) && Object.hasOwn(value, "trustedFacts")) fields.push("trustedFacts");
+      exactKeys(
+        value,
+        fields,
+        "Operator Step creation event"
+      );
+      const creation = {
+        stepId: canonicalText(value.stepId, "Operator Step event id", 200),
+        idempotencyKey: canonicalText(value.idempotencyKey, "Operator Step event idempotency key", 500),
+        inputDigest: digest(value.inputDigest, "Operator Step event input digest"),
+        request: canonicalStepRequest(value.request)
+      };
+      if (Object.hasOwn(value, "requestedParams")) {
+        creation.requestedParams = boundedEnvelope(
+          requireObject(value.requestedParams, "Operator Step requested params"),
+          "Operator Step requested params"
+        );
+      }
+      if (Object.hasOwn(value, "requestedReservation")) {
+        creation.requestedReservation = boundedEnvelope(
+          requireObject(value.requestedReservation, "Operator Step requested reservation"),
+          "Operator Step requested reservation"
+        );
+      }
+      if (Object.hasOwn(value, "trustedFacts")) {
+        creation.trustedFacts = boundedEnvelope(
+          requireObject(value.trustedFacts, "Operator Step trusted facts"),
+          "Operator Step trusted facts"
+        );
+      }
+      return creation;
+    }
+    function stepCreationDigestSource(creation) {
+      if (!Object.hasOwn(creation, "requestedParams")) return creation.request;
+      const source = { request: creation.request, requestedParams: creation.requestedParams };
+      if (Object.hasOwn(creation, "requestedReservation")) {
+        source.requestedReservation = creation.requestedReservation;
+      }
+      if (Object.hasOwn(creation, "trustedFacts")) source.trustedFacts = creation.trustedFacts;
+      return source;
+    }
+    function canonicalApproval(value) {
+      exactKeys(value, [
+        "id",
+        "jobId",
+        "sessionId",
+        "stepId",
+        "action",
+        "scope",
+        "proposedMutation",
+        "risk",
+        "expiresAt",
+        "status",
+        "decision",
+        "decisionScope",
+        "decidedBy",
+        "createdAt",
+        "resolvedAt"
+      ], "Operator approval");
+      const status = canonicalText(value.status, "Operator approval status", 100);
+      if (!["pending", "approved", "rejected"].includes(status)) {
+        throw new Error("Operator approval status is invalid");
+      }
+      const approval = {
+        id: canonicalText(value.id, "Operator approval id", 200),
+        jobId: canonicalText(value.jobId, "Operator approval Job id", 200),
+        sessionId: canonicalText(value.sessionId, "Operator approval session id", 200),
+        stepId: canonicalNullableText(value.stepId, "Operator approval Step id", 200),
+        action: canonicalText(value.action, "Operator approval action", 300),
+        scope: boundedEnvelope(requireObject(value.scope, "Operator approval scope"), "Operator approval scope"),
+        proposedMutation: boundedEnvelope(requireObject(value.proposedMutation, "Operator approval mutation"), "Operator approval mutation"),
+        risk: canonicalText(value.risk, "Operator approval risk", 16384),
+        expiresAt: canonicalTimestamp(value.expiresAt, "Operator approval expiresAt"),
+        status,
+        decision: canonicalNullableText(value.decision, "Operator approval decision", 100),
+        decisionScope: canonicalNullableText(value.decisionScope, "Operator approval decision scope", 300),
+        decidedBy: canonicalNullableText(value.decidedBy, "Operator approval decider", 300),
+        createdAt: canonicalTimestamp(value.createdAt, "Operator approval createdAt"),
+        resolvedAt: canonicalNullableTimestamp(value.resolvedAt, "Operator approval resolvedAt")
+      };
+      if (status === "pending") {
+        if (approval.decision !== null || approval.decisionScope !== null || approval.decidedBy !== null || approval.resolvedAt !== null) {
+          throw new Error("Pending Operator approval has inconsistent decision fields");
+        }
+      } else {
+        const expectedDecision = status === "approved" ? "approve" : "reject";
+        if (approval.decision !== expectedDecision || approval.decisionScope === null || approval.resolvedAt === null) {
+          throw new Error("Operator approval decision and status are inconsistent");
+        }
+        assertTimestampOrder(approval.createdAt, approval.resolvedAt, "Operator approval resolvedAt");
+      }
+      boundedEnvelope(approval, "Operator approval");
+      return approval;
+    }
+    function artifactFileName(id, artifactDigest) {
+      return `${id}-${artifactDigest}.artifact`;
+    }
+    function decodeInlineArtifact(inline, label) {
+      exactKeys(inline, ["encoding", "body"], label);
+      const encoding = canonicalText(inline.encoding, `${label} encoding`, 20);
+      const body = typeof inline.body === "string" ? inline.body : null;
+      if (body === null || !["utf8", "base64"].includes(encoding)) throw new Error(`${label} is invalid`);
+      if (encoding === "base64" && Buffer.from(body, "base64").toString("base64") !== body) {
+        throw new Error(`${label} base64 body is invalid`);
+      }
+      return { canonical: { encoding, body }, bytes: Buffer.from(body, encoding) };
+    }
+    function canonicalArtifact(value) {
+      exactKeys(value, [
+        "id",
+        "jobId",
+        "kind",
+        "name",
+        "mediaType",
+        "byteLength",
+        "sha256",
+        "metadata",
+        "path",
+        "inline",
+        "createdAt"
+      ], "Operator artifact");
+      const artifact = {
+        id: canonicalText(value.id, "Operator artifact id", 200),
+        jobId: canonicalText(value.jobId, "Operator artifact Job id", 200),
+        kind: canonicalText(value.kind, "Operator artifact kind", 200),
+        name: canonicalText(value.name, "Operator artifact name", 1e3),
+        mediaType: canonicalText(value.mediaType, "Operator artifact media type", 300),
+        byteLength: integer(value.byteLength, "Operator artifact byte length", { maximum: MAX_ARTIFACT_BYTES }),
+        sha256: digest(value.sha256, "Operator artifact digest"),
+        metadata: cloneJson(value.metadata, "Operator artifact metadata"),
+        path: canonicalNullableText(value.path, "Operator artifact path", 500),
+        inline: cloneJson(value.inline, "Operator inline artifact"),
+        createdAt: canonicalTimestamp(value.createdAt, "Operator artifact createdAt")
+      };
+      if (artifact.path === null) {
+        if (artifact.inline === null) throw new Error("Operator inline artifact is missing");
+        const decoded = decodeInlineArtifact(artifact.inline, "Operator inline artifact");
+        artifact.inline = decoded.canonical;
+        if (decoded.bytes.byteLength !== artifact.byteLength || decoded.bytes.byteLength > MAX_INLINE_ARTIFACT_BYTES || sha256(decoded.bytes) !== artifact.sha256) {
+          throw new Error("Operator inline artifact integrity is invalid");
+        }
+      } else {
+        if (artifact.inline !== null || artifact.byteLength <= MAX_INLINE_ARTIFACT_BYTES) {
+          throw new Error("Operator external artifact shape is invalid");
+        }
+        if (artifact.path !== artifactFileName(artifact.id, artifact.sha256) || basename(artifact.path) !== artifact.path) {
+          throw new Error("Operator external artifact path is invalid");
+        }
+      }
+      boundedEnvelope(artifact, "Operator artifact");
+      return artifact;
+    }
+    function canonicalEvent(value) {
+      exactKeys(value, ["id", "jobId", "sequence", "kind", "payload", "occurredAt"], "Operator event");
+      const event = {
+        id: canonicalText(value.id, "Operator event id", 200),
+        jobId: canonicalText(value.jobId, "Operator event Job id", 200),
+        sequence: integer(value.sequence, "Operator event sequence", { minimum: 1, maximum: MAX_JOB_EVENTS }),
+        kind: canonicalText(value.kind, "Operator event kind", 300),
+        payload: boundedEnvelope(requireObject(value.payload, "Operator event payload"), "Operator event payload"),
+        occurredAt: canonicalTimestamp(value.occurredAt, "Operator event occurredAt")
+      };
+      boundedEnvelope(event, "Operator event");
+      return event;
+    }
+    function terminalSnapshotFrom(job) {
+      return copy({
+        jobId: job.id,
+        sessionId: job.sessionId,
+        parentJobId: job.parentJobId,
+        type: job.type,
+        objective: job.objective,
+        budget: job.budget,
+        status: job.status,
+        children: job.children,
+        artifactIds: job.artifactIds,
+        approvalIds: job.approvalIds,
+        eventSequence: job.eventSequence,
+        checkpoint: job.checkpoint,
+        result: job.result,
+        error: job.error,
+        createdAt: job.createdAt,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt
+      });
+    }
+    function closePendingApprovals(state, jobId, now, decisionScope, candidates = state.approvals) {
+      for (const approval of candidates) {
+        if (approval.jobId !== jobId || approval.status !== "pending") continue;
+        approval.status = "rejected";
+        approval.decision = "reject";
+        approval.decisionScope = decisionScope;
+        approval.decidedBy = "job-engine";
+        approval.resolvedAt = now;
+      }
+    }
+    function cancelActiveStep(step, now) {
+      if (["succeeded", "failed", "cancelled"].includes(step.status)) return;
+      step.status = "cancelled";
+      step.error = { code: "OPERATOR_CANCELLED", message: "Operator Step was cancelled" };
+      step.outputArtifactIds = [];
+      step.updatedAt = now;
+      step.completedAt = now;
+    }
+    function finishJob(job, status, now, patch = {}) {
+      job.status = status;
+      job.checkpoint = Object.hasOwn(patch, "checkpoint") ? patch.checkpoint : job.checkpoint;
+      job.result = Object.hasOwn(patch, "result") ? patch.result : job.result;
+      job.error = Object.hasOwn(patch, "error") ? patch.error : job.error;
+      job.updatedAt = now;
+      job.completedAt = now;
+      job.terminalSnapshot = terminalSnapshotFrom(job);
+    }
+    function equalJson(left, right) {
+      return JSON.stringify(left) === JSON.stringify(right);
+    }
+    function migrateLegacyEnvelope(value, baseFields, label) {
+      requireObject(value, label);
+      for (const field of baseFields) {
+        if (!Object.hasOwn(value, field)) throw new Error(`${label} legacy envelope is incomplete`);
+      }
+      const payload = {};
+      for (const key of Object.keys(value)) {
+        if (!baseFields.includes(key)) payload[key] = cloneJson(value[key], `${label} legacy payload`);
+      }
+      const migrated = { payload };
+      for (const field of baseFields) migrated[field] = cloneJson(value[field], label);
+      return migrated;
+    }
+    function migrateV1State(value, artifactDirectory) {
+      const stateFields = ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"];
+      exactKeys(value, stateFields, "Operator Job store");
+      if (value.schemaVersion !== LEGACY_OPERATOR_JOB_STORE_SCHEMA) {
+        return { state: value, migrated: false };
+      }
+      const state = cloneJson(value, "Operator Job store");
+      if (!Array.isArray(state.sessions) || !Array.isArray(state.events) || !Array.isArray(state.artifacts) || !Array.isArray(state.steps) || state.steps.length !== 0) {
+        throw new Error("Legacy Operator Job store does not match the v1 parent format");
+      }
+      const transcriptBase = ["id", "sessionId", "sequence", "kind", "recordedAt"];
+      for (const session of state.sessions) {
+        if (!isPlainObject(session) || !Array.isArray(session.transcript)) continue;
+        session.transcript = session.transcript.map((entry) => migrateLegacyEnvelope(
+          entry,
+          transcriptBase,
+          "Operator transcript entry"
+        ));
+      }
+      const eventBase = ["id", "jobId", "sequence", "kind", "occurredAt"];
+      state.events = state.events.map((event) => migrateLegacyEnvelope(
+        event,
+        eventBase,
+        "Operator event"
+      ));
+      for (const artifact of state.artifacts) {
+        if (!isPlainObject(artifact) || artifact.path === null) continue;
+        if (typeof artifact.path !== "string" || !isAbsolute(artifact.path)) {
+          throw new Error("Legacy Operator artifact path is not an absolute v1 path");
+        }
+        const expectedName = artifactFileName(
+          requiredText(artifact.id, "Legacy Operator artifact id", 200),
+          requiredText(artifact.sha256, "Legacy Operator artifact digest", 64)
+        );
+        const expectedPath = join(artifactDirectory, expectedName);
+        const legacyArtifact = secureFileMetadata(
+          artifact.path,
+          dirname(artifact.path),
+          MAX_ARTIFACT_BYTES,
+          "Legacy Operator artifact"
+        );
+        if (legacyArtifact.realPath !== resolve(expectedPath)) {
+          throw new Error("Legacy Operator artifact path escapes its private directory");
+        }
+        artifact.path = expectedName;
+      }
+      state.schemaVersion = OPERATOR_JOB_STORE_SCHEMA;
+      return { state, migrated: true };
+    }
+    function canonicalState(value) {
+      exactKeys(value, ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"], "Operator Job store");
+      if (value.schemaVersion !== OPERATOR_JOB_STORE_SCHEMA) throw new Error("Unsupported Operator Job store schema");
+      for (const field of ["sessions", "jobs", "steps", "approvals", "artifacts", "events"]) {
+        if (!Array.isArray(value[field])) throw new Error(`Operator Job store ${field} must be an array`);
+      }
+      const state = {
+        schemaVersion: OPERATOR_JOB_STORE_SCHEMA,
+        sessions: value.sessions.map(canonicalSession),
+        jobs: value.jobs.map(canonicalJob),
+        steps: value.steps.map(canonicalStep),
+        approvals: value.approvals.map(canonicalApproval),
+        artifacts: value.artifacts.map(canonicalArtifact),
+        events: value.events.map(canonicalEvent)
+      };
+      const uniqueById = (entries, label) => {
+        const ids = entries.map((entry) => entry.id);
+        if (new Set(ids).size !== ids.length) throw new Error(`Duplicate ${label} id`);
+        return new Map(entries.map((entry) => [entry.id, entry]));
+      };
+      const sessions = uniqueById(state.sessions, "Operator session");
+      const jobs = uniqueById(state.jobs, "Operator Job");
+      const steps = uniqueById(state.steps, "Operator Step");
+      const approvals = uniqueById(state.approvals, "Operator approval");
+      const artifacts = uniqueById(state.artifacts, "Operator artifact");
+      uniqueById(state.events, "Operator event");
+      const transcriptIds = state.sessions.flatMap((session) => session.transcript.map((entry) => entry.id));
+      if (new Set(transcriptIds).size !== transcriptIds.length) {
+        throw new Error("Operator transcript has duplicate identities");
+      }
+      const stepIdempotencyKeys = state.steps.map((step) => `${step.jobId}\0${step.idempotencyKey}`);
+      if (new Set(stepIdempotencyKeys).size !== stepIdempotencyKeys.length) {
+        throw new Error("Operator Step idempotency key must be unique within its Job");
+      }
+      const stepCreationEvents = /* @__PURE__ */ new Map();
+      for (const event of state.events) {
+        if (event.kind !== "operator_step_created") continue;
+        const creation = canonicalStepCreationPayload(event.payload);
+        const target = steps.get(creation.stepId);
+        if (!target) throw new Error("Operator Step creation event references an orphan Step");
+        if (target.jobId !== event.jobId) {
+          throw new Error("Operator Step creation event references a different Job");
+        }
+        if (stepCreationEvents.has(creation.stepId)) {
+          throw new Error("Operator Step has duplicate creation events");
+        }
+        stepCreationEvents.set(creation.stepId, creation);
+      }
+      for (const job of state.jobs) {
+        if (!sessions.has(job.sessionId)) throw new Error("Operator Job session reference is unknown");
+        if (job.parentJobId !== null) {
+          const parent = jobs.get(job.parentJobId);
+          if (!parent || parent.sessionId !== job.sessionId || !parent.children.includes(job.id)) {
+            throw new Error("Operator Job parent reference is invalid");
+          }
+        }
+        for (const childId of job.children) {
+          const child = jobs.get(childId);
+          if (!child || child.parentJobId !== job.id || child.sessionId !== job.sessionId) {
+            throw new Error("Operator Job child reference is invalid");
+          }
+        }
+        const expectedArtifacts = state.artifacts.filter((entry) => entry.jobId === job.id).map((entry) => entry.id);
+        const expectedApprovals = state.approvals.filter((entry) => entry.jobId === job.id).map((entry) => entry.id);
+        if (!equalJson(job.artifactIds, expectedArtifacts) || !equalJson(job.approvalIds, expectedApprovals)) {
+          throw new Error("Operator Job artifact or approval references are not bidirectional");
+        }
+        const sequences = state.events.filter((entry) => entry.jobId === job.id).map((entry) => entry.sequence).sort((left, right) => left - right);
+        if (sequences.length !== job.eventSequence || sequences.some((entry, index) => entry !== index + 1)) {
+          throw new Error("Operator Job event sequence is invalid");
+        }
+        if (TERMINAL_JOB_STATUSES.has(job.status)) {
+          exactKeys(job.terminalSnapshot, Object.keys(terminalSnapshotFrom(job)), "Operator Job terminal snapshot");
+          if (!equalJson(job.terminalSnapshot, terminalSnapshotFrom(job))) {
+            throw new Error("Operator Job terminal snapshot does not match the Job");
+          }
+        }
+      }
+      const jobVisitColors = /* @__PURE__ */ new Map();
+      for (const rootJobId of jobs.keys()) {
+        if ((jobVisitColors.get(rootJobId) ?? 0) === 2) continue;
+        jobVisitColors.set(rootJobId, 1);
+        const stack = [{ jobId: rootJobId, childIndex: 0 }];
+        while (stack.length > 0) {
+          const frame = stack.at(-1);
+          const children = jobs.get(frame.jobId).children;
+          if (frame.childIndex >= children.length) {
+            jobVisitColors.set(frame.jobId, 2);
+            stack.pop();
+            continue;
+          }
+          const childId = children[frame.childIndex];
+          frame.childIndex += 1;
+          const childColor = jobVisitColors.get(childId) ?? 0;
+          if (childColor === 1) throw new Error("Operator Job parent graph contains a cycle");
+          if (childColor === 2) continue;
+          jobVisitColors.set(childId, 1);
+          stack.push({ jobId: childId, childIndex: 0 });
+        }
+      }
+      for (const step of state.steps) {
+        const job = jobs.get(step.jobId);
+        if (!job || job.sessionId !== step.sessionId) throw new Error("Operator Step Job reference is invalid");
+        const creation = stepCreationEvents.get(step.id);
+        if (!creation || creation.request.method !== step.method || creation.idempotencyKey !== step.idempotencyKey || creation.inputDigest !== step.inputDigest || sha256(stableJson(stepCreationDigestSource(creation))) !== step.inputDigest) {
+          throw new Error("Operator Step creation event does not match its immutable identity");
+        }
+        for (const artifactId of step.outputArtifactIds) {
+          if (artifacts.get(artifactId)?.jobId !== step.jobId) {
+            throw new Error("Operator Step artifact reference is invalid");
+          }
+        }
+      }
+      for (const approval of state.approvals) {
+        const job = jobs.get(approval.jobId);
+        if (!job || job.sessionId !== approval.sessionId || !job.approvalIds.includes(approval.id)) {
+          throw new Error("Operator approval Job reference is invalid");
+        }
+        if (approval.status === "pending" && job.status !== "waiting_approval") {
+          throw new Error("Pending Operator approval requires a waiting_approval Job status");
+        }
+        if (approval.stepId !== null) {
+          const step = steps.get(approval.stepId);
+          if (!step || step.jobId !== approval.jobId || step.sessionId !== approval.sessionId) {
+            throw new Error("Operator approval Step reference is invalid");
+          }
+          if (approval.status === "pending" && step.status !== "waiting_approval") {
+            throw new Error("Pending Operator approval requires a waiting_approval Step status");
+          }
+          const creation = stepCreationEvents.get(step.id);
+          exactKeys(
+            approval.proposedMutation,
+            ["method", "params", "idempotencyKey", "reservation"],
+            "Operator approval frozen Step mutation"
+          );
+          const mutationRequest = canonicalStepRequest({
+            method: approval.proposedMutation.method,
+            params: approval.proposedMutation.params,
+            reservation: approval.proposedMutation.reservation
+          });
+          if (approval.proposedMutation.idempotencyKey !== step.idempotencyKey || stableJson(mutationRequest) !== stableJson(creation.request)) {
+            throw new Error("Operator approval mutation does not match its frozen Step request");
+          }
+        }
+      }
+      for (const artifact of state.artifacts) {
+        if (!jobs.has(artifact.jobId)) throw new Error("Operator artifact Job reference is invalid");
+      }
+      for (const event of state.events) {
+        if (!jobs.has(event.jobId)) throw new Error("Operator event Job reference is invalid");
+      }
+      return state;
+    }
+    function pathEntryExists(path) {
+      try {
+        lstatSync(path);
+        return true;
+      } catch (error) {
+        if (error?.code === "ENOENT") return false;
+        throw error;
+      }
+    }
+    function secureDirectory(path, { create = false } = {}) {
+      const directory = resolve(path);
+      if (create) mkdirSync(directory, { recursive: true, mode: 448 });
+      const status = lstatSync(directory);
+      if (status.isSymbolicLink() || !status.isDirectory()) {
+        throw new Error("Private directory must be a regular directory, not a symbolic link");
+      }
+      if ((status.mode & 511) !== 448) throw new Error("Private directory must use owner-only mode 0700");
+      return { path: directory, realPath: realpathSync(directory), status };
+    }
+    function secureFileMetadata(path, directory, maximumBytes, label) {
+      const filePath = resolve(path);
+      const parent = secureDirectory(directory);
+      if (dirname(filePath) !== parent.path) throw new Error(`${label} path escapes its private directory`);
+      const status = lstatSync(filePath);
+      if (status.isSymbolicLink() || !status.isFile()) throw new Error(`${label} must be a regular file, not a symbolic link`);
+      if (status.nlink !== 1) throw new Error(`${label} must have a single link`);
+      if ((status.mode & 511) !== 384) throw new Error(`${label} must use owner-only mode 0600`);
+      if (status.size > maximumBytes) throw new Error(`${label} exceeds its byte limit`);
+      const realPath = realpathSync(filePath);
+      if (dirname(realPath) !== parent.realPath) {
+        throw new Error(`${label} real path escapes its private directory`);
+      }
+      return { filePath, realPath, status };
+    }
+    function canonicalStorePath(value) {
+      const requestedPath = resolve(requiredText(value, "Operator Job store path", 8192));
+      const requestedDirectory = dirname(requestedPath);
+      const parent = secureDirectory(requestedDirectory, { create: true });
+      if (!pathEntryExists(requestedPath)) return join(parent.realPath, basename(requestedPath));
+      return secureFileMetadata(
+        requestedPath,
+        requestedDirectory,
+        MAX_STORE_BYTES,
+        "Operator Job store"
+      ).realPath;
+    }
+    function readSecureFile(path, directory, maximumBytes, label) {
+      const before = secureFileMetadata(path, directory, maximumBytes, label);
+      const descriptor = openSync(before.filePath, constants.O_RDONLY | NOFOLLOW);
+      try {
+        const opened = fstatSync(descriptor);
+        if (!opened.isFile() || opened.dev !== before.status.dev || opened.ino !== before.status.ino) {
+          throw new Error(`${label} changed while it was being opened`);
+        }
+        if (opened.nlink !== 1) throw new Error(`${label} must have a single link`);
+        if ((opened.mode & 511) !== 384) throw new Error(`${label} must use owner-only mode 0600`);
+        if (opened.size > maximumBytes) throw new Error(`${label} exceeds its byte limit`);
+        const body = Buffer.alloc(opened.size);
+        let offset = 0;
+        while (offset < body.byteLength) {
+          const count = readSync(descriptor, body, offset, body.byteLength - offset, offset);
+          if (count === 0) throw new Error(`${label} changed while it was being read`);
+          offset += count;
+        }
+        const extra = Buffer.alloc(1);
+        if (readSync(descriptor, extra, 0, 1, offset) !== 0) {
+          throw new Error(`${label} grew while it was being read`);
+        }
+        return body;
+      } finally {
+        closeSync(descriptor);
+      }
+    }
+    function fsyncDirectoryBestEffort(path) {
+      let descriptor = null;
+      try {
+        descriptor = openSync(path, constants.O_RDONLY | DIRECTORY | NOFOLLOW);
+        if (!fstatSync(descriptor).isDirectory()) return;
+        fsyncSync(descriptor);
+      } catch {
+      } finally {
+        if (descriptor !== null) {
+          try {
+            closeSync(descriptor);
+          } catch {
+          }
+        }
+      }
+    }
+    function writePrivateFile(path, body) {
+      const filePath = resolve(path);
+      const directory = dirname(filePath);
+      secureDirectory(directory, { create: true });
+      if (pathEntryExists(filePath)) secureFileMetadata(filePath, directory, Number.MAX_SAFE_INTEGER, "Private file");
+      const temporaryPath = join(directory, `.${basename(filePath)}.tmp-${process.pid}-${randomUUID()}`);
+      const descriptor = openSync(
+        temporaryPath,
+        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | NOFOLLOW,
+        384
+      );
+      let renamed = false;
+      try {
+        try {
+          const status = fstatSync(descriptor);
+          if (!status.isFile()) throw new Error("Atomic temporary path is not a regular file");
+          fchmodSync(descriptor, 384);
+          writeFileSync(descriptor, body);
+          fsyncSync(descriptor);
+        } finally {
+          closeSync(descriptor);
+        }
+        secureFileMetadata(temporaryPath, directory, Number.MAX_SAFE_INTEGER, "Atomic temporary file");
+        secureDirectory(directory);
+        renameSync(temporaryPath, filePath);
+        renamed = true;
+        fsyncDirectoryBestEffort(directory);
+      } catch (error) {
+        if (!renamed) {
+          try {
+            unlinkSync(temporaryPath);
+          } catch {
+          }
+        }
+        throw error;
+      }
+    }
+    function publicTranscriptEntry(entry) {
+      return copy({ ...entry.payload, id: entry.id, sessionId: entry.sessionId, sequence: entry.sequence, kind: entry.kind, recordedAt: entry.recordedAt });
+    }
+    function publicSession(session) {
+      return copy({ ...session, transcript: session.transcript.map(publicTranscriptEntry) });
+    }
+    function publicSessionSummary(session) {
+      return copy({
+        id: session.id,
+        runtime: {
+          runtimeId: session.runtime.runtimeId,
+          providerId: session.runtime.providerId,
+          displayName: session.runtime.displayName,
+          version: session.runtime.version
+        },
+        modelId: session.modelId,
+        effort: session.effort,
+        protocol: session.protocol,
+        transcriptSequence: session.transcriptSequence,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        closedAt: session.closedAt
+      });
+    }
+    function publicJobSummary(job) {
+      return copy({
+        id: job.id,
+        sessionId: job.sessionId,
+        parentJobId: job.parentJobId,
+        type: job.type,
+        objective: job.objective,
+        budget: job.budget,
+        status: job.status,
+        children: job.children,
+        artifactIds: job.artifactIds,
+        approvalIds: job.approvalIds,
+        eventSequence: job.eventSequence,
+        optimizationRunId: typeof job.checkpoint?.optimizationRunId === "string" ? job.checkpoint.optimizationRunId : null,
+        error: job.error,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+        startedAt: job.startedAt,
+        completedAt: job.completedAt
+      });
+    }
+    function publicStepSummary(step) {
+      return copy({
+        id: step.id,
+        jobId: step.jobId,
+        sessionId: step.sessionId,
+        method: step.method,
+        status: step.status,
+        outputArtifactIds: step.outputArtifactIds,
+        attempt: step.attempt,
+        error: step.error,
+        createdAt: step.createdAt,
+        updatedAt: step.updatedAt,
+        startedAt: step.startedAt,
+        completedAt: step.completedAt
+      });
+    }
+    function publicApprovalSummary(approval) {
+      return copy({
+        id: approval.id,
+        jobId: approval.jobId,
+        sessionId: approval.sessionId,
+        stepId: approval.stepId,
+        action: approval.action,
+        scope: approval.scope,
+        risk: approval.risk,
+        expiresAt: approval.expiresAt,
+        status: approval.status,
+        decision: approval.decision,
+        decisionScope: approval.decisionScope,
+        decidedBy: approval.decidedBy,
+        createdAt: approval.createdAt,
+        resolvedAt: approval.resolvedAt
+      });
+    }
+    function publicEvent(event) {
+      return copy({ ...event.payload, id: event.id, jobId: event.jobId, sequence: event.sequence, kind: event.kind, occurredAt: event.occurredAt });
+    }
+    function encodeSummaryCursor(generation, revision, offset) {
+      return Buffer.from(`v2:${generation}:${revision}:${offset}`, "utf8").toString("base64url");
+    }
+    function decodeSummaryCursor(cursor) {
+      const encoded = canonicalText(cursor, "Operator summary cursor", 200);
+      if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) throw new Error("Operator summary cursor is invalid");
+      const decoded = Buffer.from(encoded, "base64url").toString("utf8");
+      const match = /^v2:([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(0|[1-9]\d*):(0|[1-9]\d*)$/u.exec(decoded);
+      if (!match || encodeSummaryCursor(match[1], Number(match[2]), Number(match[3])) !== encoded) {
+        throw new Error("Operator summary cursor is invalid");
+      }
+      const generation = match[1];
+      const revision = Number(match[2]);
+      const offset = Number(match[3]);
+      if (!Number.isSafeInteger(revision) || !Number.isSafeInteger(offset)) {
+        throw new Error("Operator summary cursor is invalid");
+      }
+      return { generation, revision, offset };
+    }
+    function operatorSummaryRecords(state) {
+      const records = [];
+      const activeJobs = state.jobs.filter((job) => !TERMINAL_JOB_STATUSES.has(job.status));
+      const activeJobIds = new Set(activeJobs.map((job) => job.id));
+      const activeSessionIds = new Set(activeJobs.map((job) => job.sessionId));
+      const push = (kind, value) => records.push({ kind, value });
+      const recentFirst = (values, timestamp) => values.map((value, index) => ({ value, index })).sort((left, right) => String(timestamp(right.value)).localeCompare(String(timestamp(left.value))) || right.index - left.index).map(({ value }) => value);
+      for (const job of activeJobs) push("jobs", job);
+      for (const session of state.sessions) {
+        if (activeSessionIds.has(session.id)) push("sessions", session);
+      }
+      for (const approval of state.approvals) {
+        if (approval.status === "pending") push("approvals", approval);
+      }
+      for (const step of state.steps) {
+        if (activeJobIds.has(step.jobId)) push("steps", step);
+      }
+      for (const job of recentFirst(
+        state.jobs.filter((entry) => TERMINAL_JOB_STATUSES.has(entry.status)),
+        (entry) => entry.updatedAt
+      )) {
+        push("jobs", job);
+      }
+      for (const session of recentFirst(
+        state.sessions.filter((entry) => !activeSessionIds.has(entry.id)),
+        (entry) => entry.updatedAt
+      )) {
+        push("sessions", session);
+      }
+      for (const approval of recentFirst(
+        state.approvals.filter((entry) => entry.status !== "pending"),
+        (entry) => entry.resolvedAt ?? entry.createdAt
+      )) {
+        push("approvals", approval);
+      }
+      for (const step of recentFirst(
+        state.steps.filter((entry) => !activeJobIds.has(entry.jobId)),
+        (entry) => entry.updatedAt
+      )) {
+        push("steps", step);
+      }
+      return records;
+    }
+    var PATH_BACKENDS = /* @__PURE__ */ new Map();
+    var PATH_BACKEND_FINALIZER = new FinalizationRegistry(({ path, reference }) => {
+      if (PATH_BACKENDS.get(path) === reference) PATH_BACKENDS.delete(path);
+    });
+    function acquirePathBackend(path) {
+      const existingReference = PATH_BACKENDS.get(path);
+      let backend = existingReference?.deref();
+      if (!backend) {
+        backend = {
+          state: null,
+          generation: randomUUID(),
+          revision: 0,
+          references: 0,
+          coordinationKey: Object.freeze({}),
+          finalizerToken: {}
+        };
+        const reference = new WeakRef(backend);
+        PATH_BACKENDS.set(path, reference);
+        PATH_BACKEND_FINALIZER.register(backend, { path, reference }, backend.finalizerToken);
+      }
+      backend.references += 1;
+      return backend;
+    }
+    function releasePathBackend(path, backend) {
+      backend.references -= 1;
+      if (backend.references !== 0) return;
+      const reference = PATH_BACKENDS.get(path);
+      if (reference?.deref() === backend) PATH_BACKENDS.delete(path);
+      PATH_BACKEND_FINALIZER.unregister(backend.finalizerToken);
+    }
+    function nextBackendRevision(backend) {
+      if (!Number.isSafeInteger(backend.revision) || backend.revision >= Number.MAX_SAFE_INTEGER) {
+        throw new Error("Operator Job store revision is exhausted");
+      }
+      return backend.revision + 1;
+    }
+    var OperatorJobStore = class {
+      #path;
+      #artifactDirectory;
+      #backend;
+      get #state() {
+        if (this.#backend === null) throw new Error("Operator Job store is closed");
+        return this.#backend.state;
+      }
+      set #state(value) {
+        if (this.#backend === null) throw new Error("Operator Job store is closed");
+        this.#backend.state = value;
+      }
+      constructor(path) {
+        this.#path = canonicalStorePath(path);
+        this.#artifactDirectory = join(dirname(this.#path), "operator-artifacts");
+        this.#backend = acquirePathBackend(this.#path);
+        try {
+          if (this.#state === null) this.load();
+        } catch (error) {
+          releasePathBackend(this.#path, this.#backend);
+          this.#backend = null;
+          throw error;
+        }
+      }
+      get path() {
+        return this.#path;
+      }
+      get coordinationKey() {
+        if (this.#backend === null) throw new Error("Operator Job store is closed");
+        return this.#backend.coordinationKey;
+      }
+      get revision() {
+        if (this.#backend === null) throw new Error("Operator Job store is closed");
+        return this.#backend.revision;
+      }
+      get generation() {
+        if (this.#backend === null) throw new Error("Operator Job store is closed");
+        return this.#backend.generation;
+      }
+      close() {
+        if (this.#backend === null) return;
+        const backend = this.#backend;
+        this.#backend = null;
+        releasePathBackend(this.#path, backend);
+      }
+      load() {
+        if (!pathEntryExists(this.#path)) {
+          this.#state = canonicalState(initialState());
+          const nextRevision = nextBackendRevision(this.#backend);
+          this.persist();
+          this.#backend.revision = nextRevision;
+          return this.read();
+        }
+        try {
+          const encoded = readSecureFile(this.#path, dirname(this.#path), MAX_STORE_BYTES, "Operator Job store");
+          const migration = migrateV1State(
+            JSON.parse(encoded.toString("utf8")),
+            this.#artifactDirectory
+          );
+          this.#state = canonicalState(migration.state);
+          if (pathEntryExists(this.#artifactDirectory)) secureDirectory(this.#artifactDirectory);
+          for (const artifact of this.#state.artifacts) {
+            if (artifact.path !== null) this.#readExternalArtifact(artifact);
+          }
+          if (migration.migrated) {
+            const nextRevision = nextBackendRevision(this.#backend);
+            this.persist();
+            this.#backend.revision = nextRevision;
+          }
+        } catch (error) {
+          throw new Error(`Could not read Operator Job store: ${error.message}`);
+        }
+        this.#recoverInterruptedJobs();
+        return this.read();
+      }
+      persist() {
+        this.#state = canonicalState(this.#state);
+        const encoded = `${JSON.stringify(this.#state, null, 2)}
+`;
+        if (Buffer.byteLength(encoded) > MAX_STORE_BYTES) throw new Error("Operator Job store exceeds its byte limit");
+        writePrivateFile(this.#path, encoded);
+      }
+      #mutate(callback) {
+        const previous = this.#state;
+        const previousRevision = this.#backend.revision;
+        const nextRevision = nextBackendRevision(this.#backend);
+        this.#state = copy(previous);
+        try {
+          const result = callback(this.#state);
+          this.#state = canonicalState(this.#state);
+          this.persist();
+          this.#backend.revision = nextRevision;
+          return copy(result);
+        } catch (error) {
+          this.#state = previous;
+          this.#backend.revision = previousRevision;
+          throw error;
+        }
+      }
+      read() {
+        return {
+          schemaVersion: this.#state.schemaVersion,
+          sessions: this.#state.sessions.map(publicSession),
+          jobs: copy(this.#state.jobs),
+          steps: copy(this.#state.steps),
+          approvals: copy(this.#state.approvals),
+          artifacts: this.#state.artifacts.map((artifact) => this.#publicArtifact(artifact)),
+          events: this.#state.events.map(publicEvent)
+        };
+      }
+      readSummaryPage({ cursor = null, limit = 200 } = {}) {
+        integer(limit, "Operator bootstrap summary limit", {
+          minimum: 1,
+          maximum: MAX_BOOTSTRAP_SUMMARY_ITEMS
+        });
+        const generation = this.generation;
+        const revision = this.revision;
+        let offset = 0;
+        if (cursor !== null) {
+          const decoded = decodeSummaryCursor(cursor);
+          if (decoded.generation !== generation || decoded.revision !== revision) {
+            throw Object.assign(
+              new Error("Operator summary changed while it was being read"),
+              { code: "OPERATOR_SNAPSHOT_CHANGED" }
+            );
+          }
+          offset = decoded.offset;
+        }
+        const records = operatorSummaryRecords(this.#state);
+        if (offset > records.length) throw new Error("Operator summary cursor is invalid");
+        const output = { sessions: [], jobs: [], steps: [], approvals: [] };
+        const projectors = {
+          sessions: publicSessionSummary,
+          jobs: publicJobSummary,
+          steps: publicStepSummary,
+          approvals: publicApprovalSummary
+        };
+        const end = Math.min(records.length, offset + limit);
+        for (const record of records.slice(offset, end)) {
+          output[record.kind].push(projectors[record.kind](record.value));
+        }
+        return {
+          generation,
+          revision,
+          ...output,
+          totals: {
+            sessions: this.#state.sessions.length,
+            jobs: this.#state.jobs.length,
+            steps: this.#state.steps.length,
+            approvals: this.#state.approvals.length
+          },
+          truncated: end < records.length,
+          nextCursor: end < records.length ? encodeSummaryCursor(generation, revision, end) : null
+        };
+      }
+      readSummary(options2 = {}) {
+        return this.readSummaryPage(options2);
+      }
+      flush() {
+        this.persist();
+        return this.read();
+      }
+      createSession(input = {}) {
+        const now = nowTimestamp();
+        const session = {
+          id: randomUUID(),
+          runtime: normalizeRuntime(input.runtime),
+          modelId: nullableText(input.modelId, "Operator model id", 300),
+          effort: nullableText(input.effort, "Operator effort", 100),
+          protocol: requiredText(input.protocol, "Operator protocol", 200),
+          capabilityId: requiredText(input.capabilityId, "Operator capability id", 300),
+          transcript: [],
+          transcriptSequence: 0,
+          createdAt: now,
+          updatedAt: now,
+          closedAt: null
+        };
+        canonicalSession(session);
+        return this.#mutate((state) => {
+          state.sessions.push(session);
+          return session;
+        });
+      }
+      getSession(sessionId) {
+        const session = this.#state.sessions.find((candidate) => candidate.id === sessionId);
+        if (!session) throw new Error("Operator session not found");
+        return publicSession(session);
+      }
+      listSessions() {
+        return this.#state.sessions.map(publicSession);
+      }
+      createJob(input = {}) {
+        const sessionId = requiredText(input.sessionId, "Operator session id", 200);
+        const parentJobId = nullableText(input.parentJobId, "Parent Operator Job id", 200);
+        const now = nowTimestamp();
+        const job = {
+          id: randomUUID(),
+          sessionId,
+          parentJobId,
+          type: requiredText(input.type, "Operator Job type", 200),
+          objective: requiredText(input.objective, "Operator Job objective", 32768),
+          budget: normalizeBudget(input.budget),
+          status: "queued",
+          children: [],
+          artifactIds: [],
+          approvalIds: [],
+          eventSequence: 0,
+          checkpoint: input.checkpoint === void 0 ? null : cloneJson(input.checkpoint, "Operator Job initial checkpoint"),
+          result: null,
+          error: null,
+          terminalSnapshot: null,
+          createdAt: now,
+          updatedAt: now,
+          startedAt: null,
+          completedAt: null
+        };
+        canonicalJob(job);
+        return this.#mutate((state) => {
+          if (!state.sessions.some((session) => session.id === sessionId)) throw new Error("Operator Job session not found");
+          if (parentJobId !== null) {
+            const parent = state.jobs.find((candidate) => candidate.id === parentJobId);
+            if (!parent) throw new Error("Parent Operator Job not found");
+            if (parent.sessionId !== sessionId) throw new Error("Parent Job must use the same session");
+            if (TERMINAL_JOB_STATUSES.has(parent.status) || parent.status === "cancelling") {
+              throw new Error("Cannot add a child to a cancelling or terminal Operator Job");
+            }
+            parent.children.push(job.id);
+            parent.updatedAt = now;
+          }
+          state.jobs.push(job);
+          return job;
+        });
+      }
+      getJob(jobId) {
+        const job = this.#state.jobs.find((candidate) => candidate.id === jobId);
+        if (!job) throw new Error("Operator Job not found");
+        return copy(job);
+      }
+      listJobs({ sessionId = null, parentJobId = void 0 } = {}) {
+        return copy(this.#state.jobs.filter((job) => (sessionId === null || job.sessionId === sessionId) && (parentJobId === void 0 || job.parentJobId === parentJobId)));
+      }
+      createStep(jobId, input = {}) {
+        const stepInput = requireObject(input, "Operator Step");
+        const method = requiredText(stepInput.method, "Operator Step method", 300);
+        const idempotencyKey = requiredText(
+          stepInput.idempotencyKey,
+          "Operator Step idempotency key",
+          500
+        );
+        const request = {
+          method,
+          params: requireObject(stepInput.params ?? {}, "Operator Step params")
+        };
+        if (Object.hasOwn(stepInput, "reservation")) {
+          request.reservation = requireObject(stepInput.reservation, "Operator Step reservation");
+        }
+        const frozenRequest = boundedEnvelope(request, "Operator Step request");
+        const creationFacts = {};
+        if (Object.hasOwn(stepInput, "requestedParams")) {
+          creationFacts.requestedParams = boundedEnvelope(
+            requireObject(stepInput.requestedParams, "Operator Step requested params"),
+            "Operator Step requested params"
+          );
+        }
+        if (Object.hasOwn(stepInput, "requestedReservation")) {
+          creationFacts.requestedReservation = boundedEnvelope(
+            requireObject(stepInput.requestedReservation, "Operator Step requested reservation"),
+            "Operator Step requested reservation"
+          );
+        }
+        if (Object.hasOwn(stepInput, "trustedFacts")) {
+          creationFacts.trustedFacts = boundedEnvelope(
+            requireObject(stepInput.trustedFacts, "Operator Step trusted facts"),
+            "Operator Step trusted facts"
+          );
+        }
+        const inputDigest = sha256(stableJson(stepCreationDigestSource({
+          request: frozenRequest,
+          ...creationFacts
+        })));
+        const now = nowTimestamp();
+        const step = {
+          id: randomUUID(),
+          jobId: requiredText(jobId, "Operator Step Job id", 200),
+          sessionId: "",
+          method,
+          idempotencyKey,
+          status: "pending",
+          inputDigest,
+          outputArtifactIds: [],
+          attempt: 0,
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+          startedAt: null,
+          completedAt: null
+        };
+        const eventPayload = boundedEnvelope({
+          stepId: step.id,
+          idempotencyKey,
+          inputDigest,
+          request: frozenRequest,
+          ...creationFacts
+        }, "Operator Step creation event");
+        return this.#mutate((state) => {
+          const job = state.jobs.find((candidate) => candidate.id === step.jobId);
+          if (!job) throw new Error("Operator Step Job not found");
+          if (TERMINAL_JOB_STATUSES.has(job.status) || job.status === "cancelling") {
+            throw new Error("Cannot add a Step to a terminal Operator Job");
+          }
+          if (state.steps.some((candidate) => candidate.jobId === step.jobId && candidate.idempotencyKey === idempotencyKey)) {
+            throw new Error("Operator Step idempotency key must be unique within its Job");
+          }
+          if (job.eventSequence >= MAX_JOB_EVENTS) {
+            throw new Error("Operator Job reached the 10,000 event limit");
+          }
+          step.sessionId = job.sessionId;
+          canonicalStep(step);
+          state.steps.push(step);
+          job.eventSequence += 1;
+          job.updatedAt = now;
+          state.events.push({
+            id: randomUUID(),
+            jobId: job.id,
+            sequence: job.eventSequence,
+            kind: "operator_step_created",
+            payload: eventPayload,
+            occurredAt: now
+          });
+          return step;
+        });
+      }
+      getStep(stepId) {
+        const step = this.#state.steps.find((candidate) => candidate.id === stepId);
+        if (!step) throw new Error("Operator Step not found");
+        return copy(step);
+      }
+      listSteps({ jobId = null } = {}) {
+        if (jobId !== null) requiredText(jobId, "Operator Step Job id", 200);
+        return copy(this.#state.steps.filter((step) => jobId === null || step.jobId === jobId));
+      }
+      transitionStep(stepId, nextStatus, patch = {}) {
+        requiredText(nextStatus, "Operator Step status", 100);
+        const patchInput = requireObject(patch, "Operator Step transition patch");
+        const allowed = /* @__PURE__ */ new Set(["outputArtifactIds", "error"]);
+        for (const field of Object.keys(patchInput)) {
+          if (!allowed.has(field)) throw new Error(`Operator Step ${field} is immutable or unsupported`);
+        }
+        const normalized = {};
+        if (Object.hasOwn(patchInput, "outputArtifactIds")) {
+          normalized.outputArtifactIds = uniqueTextArray(
+            patchInput.outputArtifactIds,
+            "Operator Step artifact references"
+          );
+        }
+        if (Object.hasOwn(patchInput, "error")) {
+          normalized.error = cloneJson(patchInput.error ?? null, "Operator Step error");
+        }
+        boundedEnvelope(normalized, "Operator Step transition");
+        return this.#mutate((state) => {
+          const step = state.steps.find((candidate) => candidate.id === stepId);
+          if (!step) throw new Error("Operator Step not found");
+          if (["succeeded", "failed", "cancelled"].includes(step.status)) {
+            throw new Error("A terminal Operator Step cannot transition");
+          }
+          if (!STEP_TRANSITIONS.get(step.status)?.has(nextStatus)) {
+            throw new Error(`Illegal Operator Step transition: ${step.status} -> ${nextStatus}`);
+          }
+          const job = state.jobs.find((candidate) => candidate.id === step.jobId);
+          if (!job || TERMINAL_JOB_STATUSES.has(job.status)) {
+            throw new Error("Operator Step Job must remain active");
+          }
+          if (Object.hasOwn(normalized, "outputArtifactIds") && nextStatus !== "succeeded") {
+            throw new Error("Operator Step artifacts can only be attached on success");
+          }
+          for (const artifactId of normalized.outputArtifactIds ?? []) {
+            const artifact = state.artifacts.find((candidate) => candidate.id === artifactId);
+            if (!artifact || artifact.jobId !== step.jobId) {
+              throw new Error("Operator Step artifact reference is invalid");
+            }
+          }
+          if (Object.hasOwn(normalized, "error") && !["failed", "cancelled", "needs_recovery"].includes(nextStatus)) {
+            throw new Error("Operator Step error is unsupported for this transition");
+          }
+          if (nextStatus === "failed" && (normalized.error ?? step.error) === null) {
+            throw new Error("A failed Operator Step requires an error");
+          }
+          const now = nowTimestamp();
+          if (nextStatus === "running") {
+            step.attempt += 1;
+            if (step.startedAt === null) step.startedAt = now;
+            step.error = null;
+          }
+          if (nextStatus === "succeeded") step.error = null;
+          if (Object.hasOwn(normalized, "outputArtifactIds")) {
+            step.outputArtifactIds = normalized.outputArtifactIds;
+          }
+          if (Object.hasOwn(normalized, "error")) step.error = normalized.error;
+          step.status = nextStatus;
+          step.updatedAt = now;
+          if (["succeeded", "failed", "cancelled"].includes(nextStatus)) step.completedAt = now;
+          return step;
+        });
+      }
+      transitionJob(jobId, nextStatus, patch = {}) {
+        requiredText(nextStatus, "Operator Job status", 100);
+        const allowed = /* @__PURE__ */ new Set(["checkpoint", "result", "error"]);
+        for (const field of Object.keys(requireObject(patch, "Operator Job transition patch"))) {
+          if (!allowed.has(field)) throw new Error(`Operator Job ${field} is immutable or unsupported`);
+        }
+        const normalized = {};
+        for (const field of allowed) {
+          if (Object.hasOwn(patch, field)) normalized[field] = cloneJson(patch[field] ?? null, `Operator Job ${field}`);
+        }
+        boundedEnvelope(normalized, "Operator Job transition");
+        return this.#mutate((state) => {
+          const job = state.jobs.find((candidate) => candidate.id === jobId);
+          if (!job) throw new Error("Operator Job not found");
+          if (TERMINAL_JOB_STATUSES.has(job.status)) throw new Error("A terminal Operator Job cannot transition");
+          if (!JOB_TRANSITIONS.get(job.status)?.has(nextStatus)) {
+            throw new Error(`Illegal Operator Job transition: ${job.status} -> ${nextStatus}`);
+          }
+          const now = nowTimestamp();
+          if (job.status === "waiting_approval") closePendingApprovals(
+            state,
+            job.id,
+            now,
+            TERMINAL_JOB_STATUSES.has(nextStatus) ? "job_terminal" : "job_transition"
+          );
+          if (job.startedAt === null && nextStatus === "running") job.startedAt = now;
+          Object.assign(job, normalized);
+          if ((nextStatus === "running" || nextStatus === "succeeded") && !Object.hasOwn(normalized, "error")) {
+            job.error = null;
+          }
+          job.status = nextStatus;
+          job.updatedAt = now;
+          if (TERMINAL_JOB_STATUSES.has(nextStatus)) {
+            job.completedAt = now;
+            job.terminalSnapshot = terminalSnapshotFrom(job);
+          }
+          return job;
+        });
+      }
+      beginCancellation(jobId) {
+        requiredText(jobId, "Operator Job id", 200);
+        return this.#mutate((state) => {
+          const job = state.jobs.find((candidate) => candidate.id === jobId);
+          if (!job) throw new Error("Operator Job not found");
+          if (TERMINAL_JOB_STATUSES.has(job.status) || job.status === "cancelling") return job;
+          if (!["queued", "running", "waiting_approval", "paused", "needs_recovery"].includes(job.status)) {
+            throw new Error(`Operator Job cannot begin cancellation while ${job.status}`);
+          }
+          const now = nowTimestamp();
+          closePendingApprovals(state, job.id, now, "job_cancelling");
+          job.status = "cancelling";
+          job.updatedAt = now;
+          if (job.eventSequence < MAX_JOB_EVENTS) {
+            job.eventSequence += 1;
+            state.events.push({
+              id: randomUUID(),
+              jobId: job.id,
+              sequence: job.eventSequence,
+              kind: "operator_cancellation_requested",
+              payload: {},
+              occurredAt: now
+            });
+          }
+          return job;
+        });
+      }
+      interruptJob(jobId, error = {}) {
+        requiredText(jobId, "Operator Job id", 200);
+        const interruption = boundedEnvelope(
+          requireObject(error, "Operator Runtime interruption"),
+          "Operator Runtime interruption"
+        );
+        const normalizedError = {
+          code: requiredText(
+            interruption.code ?? "OPERATOR_RUNTIME_FAILED",
+            "Operator Runtime interruption code",
+            200
+          ),
+          message: requiredText(
+            interruption.message ?? "Operator Runtime failed",
+            "Operator Runtime interruption message",
+            16384
+          )
+        };
+        return this.#mutate((state) => {
+          const job = state.jobs.find((candidate) => candidate.id === jobId);
+          if (!job) throw new Error("Operator Job not found");
+          if (TERMINAL_JOB_STATUSES.has(job.status) || job.status === "needs_recovery") {
+            return job;
+          }
+          const previousStatus = job.status;
+          const now = nowTimestamp();
+          closePendingApprovals(state, job.id, now, "runtime_interrupted");
+          for (const step of state.steps) {
+            if (step.jobId !== job.id || ["succeeded", "failed", "cancelled", "needs_recovery"].includes(step.status)) continue;
+            step.status = "needs_recovery";
+            step.error = copy(normalizedError);
+            step.outputArtifactIds = [];
+            step.updatedAt = now;
+            step.completedAt = null;
+          }
+          job.status = "needs_recovery";
+          job.error = copy(normalizedError);
+          job.updatedAt = now;
+          if (job.eventSequence < MAX_JOB_EVENTS) {
+            job.eventSequence += 1;
+            state.events.push({
+              id: randomUUID(),
+              jobId: job.id,
+              sequence: job.eventSequence,
+              kind: "recovery_required",
+              payload: { previousStatus, reason: "runtime_failure" },
+              occurredAt: now
+            });
+          }
+          return job;
+        });
+      }
+      cancelJobTree(jobId, { rootStatus = "cancelled", rootPatch = {} } = {}) {
+        requiredText(jobId, "Operator Job id", 200);
+        if (rootStatus !== "cancelled" && rootStatus !== "failed") {
+          throw new Error("Operator cancellation terminal status is invalid");
+        }
+        const patch = boundedEnvelope(
+          requireObject(rootPatch, "Operator cancellation root patch"),
+          "Operator cancellation root patch"
+        );
+        for (const field of Object.keys(patch)) {
+          if (!["checkpoint", "result", "error"].includes(field)) {
+            throw new Error(`Operator Job ${field} is immutable or unsupported`);
+          }
+        }
+        if (rootStatus === "failed" && (patch.error ?? null) === null) {
+          throw new Error("A failed Operator Job requires an error");
+        }
+        return this.#mutate((state) => {
+          const jobs = new Map(state.jobs.map((job) => [job.id, job]));
+          const stepsByJob = /* @__PURE__ */ new Map();
+          for (const step of state.steps) {
+            if (!stepsByJob.has(step.jobId)) stepsByJob.set(step.jobId, []);
+            stepsByJob.get(step.jobId).push(step);
+          }
+          const approvalsByJob = /* @__PURE__ */ new Map();
+          for (const approval of state.approvals) {
+            if (!approvalsByJob.has(approval.jobId)) approvalsByJob.set(approval.jobId, []);
+            approvalsByJob.get(approval.jobId).push(approval);
+          }
+          const root = jobs.get(jobId);
+          if (!root) throw new Error("Operator Job not found");
+          if (TERMINAL_JOB_STATUSES.has(root.status)) return { job: root, completionOrder: [] };
+          if (root.status !== "cancelling") throw new Error("Operator Job cancellation was not begun");
+          const visit = [];
+          const stack = [root.id];
+          while (stack.length > 0) {
+            const currentId = stack.pop();
+            const current = jobs.get(currentId);
+            if (!current) throw new Error("Operator Job child reference is invalid");
+            visit.push(currentId);
+            for (let index = current.children.length - 1; index >= 0; index -= 1) {
+              stack.push(current.children[index]);
+            }
+          }
+          const now = nowTimestamp();
+          const completionOrder = [];
+          for (let index = visit.length - 1; index >= 0; index -= 1) {
+            const current = jobs.get(visit[index]);
+            if (TERMINAL_JOB_STATUSES.has(current.status)) continue;
+            closePendingApprovals(
+              state,
+              current.id,
+              now,
+              "job_cancelling",
+              approvalsByJob.get(current.id) ?? []
+            );
+            for (const step of stepsByJob.get(current.id) ?? []) cancelActiveStep(step, now);
+            const isRoot = current.id === root.id;
+            const terminalPatch = isRoot ? rootStatus === "cancelled" && !Object.hasOwn(patch, "error") ? { ...patch, error: {
+              code: "OPERATOR_CANCELLED",
+              message: "Operator Job was cancelled"
+            } } : patch : { error: {
+              code: "OPERATOR_CANCELLED",
+              message: "Operator Job was cancelled with its parent"
+            } };
+            finishJob(
+              current,
+              isRoot ? rootStatus : "cancelled",
+              now,
+              terminalPatch
+            );
+            completionOrder.push(current.id);
+          }
+          return { job: root, completionOrder };
+        });
+      }
+      appendEvent(jobId, input = {}) {
+        const kind = requiredText(input.kind, "Operator event kind", 300);
+        const payload = payloadFrom(
+          input,
+          /* @__PURE__ */ new Set(["id", "jobId", "sequence", "kind", "occurredAt"]),
+          "Operator event payload"
+        );
+        return this.#mutate((state) => {
+          const job = state.jobs.find((candidate) => candidate.id === jobId);
+          if (!job) throw new Error("Operator Job not found");
+          if (TERMINAL_JOB_STATUSES.has(job.status)) throw new Error("Cannot append an event to a terminal Operator Job");
+          if (job.eventSequence >= MAX_JOB_EVENTS) throw new Error("Operator Job reached the 10,000 event limit");
+          const now = nowTimestamp();
+          const event = {
+            id: randomUUID(),
+            jobId,
+            sequence: job.eventSequence + 1,
+            kind,
+            payload,
+            occurredAt: now
+          };
+          canonicalEvent(event);
+          state.events.push(event);
+          job.eventSequence = event.sequence;
+          job.updatedAt = now;
+          return publicEvent(event);
+        });
+      }
+      listEvents(jobId, { afterSequence = 0, limit = MAX_JOB_EVENTS } = {}) {
+        this.getJob(jobId);
+        integer(afterSequence, "Operator event cursor");
+        integer(limit, "Operator event page limit", { minimum: 1, maximum: MAX_JOB_EVENTS });
+        return this.#state.events.filter((event) => event.jobId === jobId && event.sequence > afterSequence).sort((left, right) => left.sequence - right.sequence).slice(0, limit).map(publicEvent);
+      }
+      #artifactPath(artifact) {
+        return join(this.#artifactDirectory, artifact.path);
+      }
+      #publicArtifact(artifact) {
+        return copy({ ...artifact, path: artifact.path === null ? null : this.#artifactPath(artifact) });
+      }
+      #readExternalArtifact(artifact) {
+        const body = readSecureFile(
+          this.#artifactPath(artifact),
+          this.#artifactDirectory,
+          MAX_ARTIFACT_BYTES,
+          "Operator artifact"
+        );
+        if (body.byteLength !== artifact.byteLength || sha256(body) !== artifact.sha256) {
+          throw new Error("Operator artifact integrity check failed");
+        }
+        return body;
+      }
+      createArtifact(jobId, input = {}) {
+        const artifactInput = requireObject(input, "Operator artifact");
+        const currentJob = this.getJob(jobId);
+        if (TERMINAL_JOB_STATUSES.has(currentJob.status)) throw new Error("Cannot add an artifact to a terminal Operator Job");
+        let body;
+        let encoding;
+        if (typeof artifactInput.body === "string") {
+          if (Buffer.byteLength(artifactInput.body, "utf8") > MAX_ARTIFACT_BYTES) {
+            throw new Error("Operator artifact exceeds its 64 MiB byte limit");
+          }
+          body = Buffer.from(artifactInput.body, "utf8");
+          encoding = "utf8";
+        } else if (Buffer.isBuffer(artifactInput.body) || artifactInput.body instanceof Uint8Array) {
+          if (artifactInput.body.byteLength > MAX_ARTIFACT_BYTES) {
+            throw new Error("Operator artifact exceeds its 64 MiB byte limit");
+          }
+          body = Buffer.from(artifactInput.body);
+          encoding = "base64";
+        } else {
+          throw new Error("Operator artifact body is required");
+        }
+        if (body.byteLength > MAX_ARTIFACT_BYTES) throw new Error("Operator artifact exceeds its 64 MiB byte limit");
+        const id = randomUUID();
+        const artifactDigest = sha256(body);
+        const artifact = {
+          id,
+          jobId,
+          kind: requiredText(artifactInput.kind, "Operator artifact kind", 200),
+          name: requiredText(artifactInput.name, "Operator artifact name", 1e3),
+          mediaType: requiredText(artifactInput.mediaType, "Operator artifact media type", 300),
+          byteLength: body.byteLength,
+          sha256: artifactDigest,
+          metadata: cloneJson(artifactInput.metadata ?? null, "Operator artifact metadata"),
+          path: null,
+          inline: body.byteLength <= MAX_INLINE_ARTIFACT_BYTES ? { encoding, body: body.toString(encoding) } : null,
+          createdAt: nowTimestamp()
+        };
+        if (artifact.inline === null) artifact.path = artifactFileName(id, artifactDigest);
+        canonicalArtifact(artifact);
+        let externalPath = null;
+        if (artifact.path !== null) {
+          externalPath = this.#artifactPath(artifact);
+          writePrivateFile(externalPath, body);
+        }
+        try {
+          const stored = this.#mutate((state) => {
+            const job = state.jobs.find((candidate) => candidate.id === jobId);
+            if (!job || TERMINAL_JOB_STATUSES.has(job.status)) throw new Error("Operator Job cannot accept an artifact");
+            state.artifacts.push(artifact);
+            job.artifactIds.push(id);
+            job.updatedAt = artifact.createdAt;
+            return artifact;
+          });
+          return this.#publicArtifact(stored);
+        } catch (error) {
+          if (externalPath !== null) {
+            try {
+              unlinkSync(externalPath);
+            } catch {
+            }
+          }
+          throw error;
+        }
+      }
+      getArtifact(artifactId) {
+        const artifact = this.#state.artifacts.find((candidate) => candidate.id === artifactId);
+        if (!artifact) throw new Error("Operator artifact not found");
+        return this.#publicArtifact(artifact);
+      }
+      listArtifacts(jobId) {
+        this.getJob(jobId);
+        return this.#state.artifacts.filter((artifact) => artifact.jobId === jobId).map((artifact) => this.#publicArtifact(artifact));
+      }
+      readArtifactBody(artifactId) {
+        const artifact = this.#state.artifacts.find((candidate) => candidate.id === artifactId);
+        if (!artifact) throw new Error("Operator artifact not found");
+        const body = artifact.inline === null ? this.#readExternalArtifact(artifact) : Buffer.from(artifact.inline.body, artifact.inline.encoding);
+        if (body.byteLength !== artifact.byteLength || sha256(body) !== artifact.sha256) {
+          throw new Error("Operator artifact integrity check failed");
+        }
+        return body;
+      }
+      createApproval(jobId, input = {}) {
+        const approvalInput = requireObject(input, "Operator approval");
+        const job = this.getJob(jobId);
+        if (job.status !== "waiting_approval") {
+          throw new Error("Operator Job must be waiting_approval before creating an approval");
+        }
+        const approval = {
+          id: randomUUID(),
+          jobId,
+          sessionId: job.sessionId,
+          stepId: nullableText(approvalInput.stepId, "Operator approval Step id", 200),
+          action: requiredText(approvalInput.action, "Operator approval action", 300),
+          scope: boundedEnvelope(requireObject(approvalInput.scope, "Operator approval scope"), "Operator approval scope"),
+          proposedMutation: boundedEnvelope(requireObject(approvalInput.proposedMutation, "Operator approval mutation"), "Operator approval mutation"),
+          risk: requiredText(approvalInput.risk, "Operator approval risk", 16384),
+          expiresAt: canonicalTimestamp(approvalInput.expiresAt, "Operator approval expiresAt"),
+          status: "pending",
+          decision: null,
+          decisionScope: null,
+          decidedBy: null,
+          createdAt: nowTimestamp(),
+          resolvedAt: null
+        };
+        canonicalApproval(approval);
+        return this.#mutate((state) => {
+          const current = state.jobs.find((candidate) => candidate.id === jobId);
+          if (!current || current.status !== "waiting_approval") throw new Error("Operator Job cannot accept approval");
+          state.approvals.push(approval);
+          current.approvalIds.push(approval.id);
+          current.updatedAt = approval.createdAt;
+          return approval;
+        });
+      }
+      getApproval(approvalId) {
+        const approval = this.#state.approvals.find((candidate) => candidate.id === approvalId);
+        if (!approval) throw new Error("Operator approval not found");
+        return copy(approval);
+      }
+      listApprovals(jobId) {
+        this.getJob(jobId);
+        return copy(this.#state.approvals.filter((approval) => approval.jobId === jobId));
+      }
+      resolveApproval(approvalId, input = {}) {
+        const decisionInput = requireObject(input, "Operator approval decision");
+        if (!["approve", "reject"].includes(decisionInput.decision)) throw new Error("Operator approval decision is invalid");
+        const decisionScope = requiredText(decisionInput.scope, "Operator approval decision scope", 300);
+        const decidedBy = nullableText(decisionInput.decidedBy, "Operator approval decider", 300);
+        return this.#mutate((state) => {
+          const approval = state.approvals.find((candidate) => candidate.id === approvalId);
+          if (!approval) throw new Error("Operator approval not found");
+          if (approval.status !== "pending") throw new Error("Operator approval is already resolved");
+          const job = state.jobs.find((candidate) => candidate.id === approval.jobId);
+          if (!job || job.status !== "waiting_approval") {
+            throw new Error("Operator approval Job status must remain waiting_approval");
+          }
+          if (decisionInput.decision === "approve" && Date.parse(approval.expiresAt) <= Date.now()) {
+            throw new Error("Operator approval has expired");
+          }
+          approval.status = decisionInput.decision === "approve" ? "approved" : "rejected";
+          approval.decision = decisionInput.decision;
+          approval.decisionScope = decisionScope;
+          approval.decidedBy = decidedBy;
+          approval.resolvedAt = nowTimestamp();
+          return approval;
+        });
+      }
+      appendSessionTranscript(sessionId, input = {}) {
+        const kind = requiredText(input.kind, "Operator transcript kind", 300);
+        const payload = payloadFrom(
+          input,
+          /* @__PURE__ */ new Set(["id", "sessionId", "sequence", "kind", "recordedAt"]),
+          "Operator transcript payload"
+        );
+        return this.#mutate((state) => {
+          const session = state.sessions.find((candidate) => candidate.id === sessionId);
+          if (!session) throw new Error("Operator session not found");
+          if (session.closedAt !== null) throw new Error("Operator session is closed");
+          if (session.transcriptSequence >= MAX_SESSION_TRANSCRIPT_ENTRIES) {
+            throw new Error("Operator transcript reached its entry limit");
+          }
+          const now = nowTimestamp();
+          const entry = {
+            id: randomUUID(),
+            sessionId,
+            sequence: session.transcriptSequence + 1,
+            kind,
+            payload,
+            recordedAt: now
+          };
+          canonicalTranscriptEntry(entry);
+          session.transcript.push(entry);
+          session.transcriptSequence = entry.sequence;
+          session.updatedAt = now;
+          return publicTranscriptEntry(entry);
+        });
+      }
+      getTerminalSnapshot(jobId) {
+        const job = this.getJob(jobId);
+        if (!TERMINAL_JOB_STATUSES.has(job.status) || job.terminalSnapshot === null) {
+          throw new Error("Operator Job has no terminal snapshot");
+        }
+        return copy(job.terminalSnapshot);
+      }
+      #recoverInterruptedJobs() {
+        const interrupted = this.#state.jobs.filter((job) => job.status === "running" || job.status === "cancelling");
+        if (interrupted.length === 0) return;
+        const now = nowTimestamp();
+        for (const job of interrupted) {
+          const previousStatus = job.status;
+          job.status = "needs_recovery";
+          job.updatedAt = now;
+          if (job.eventSequence < MAX_JOB_EVENTS) {
+            job.eventSequence += 1;
+            this.#state.events.push({
+              id: randomUUID(),
+              jobId: job.id,
+              sequence: job.eventSequence,
+              kind: "recovery_required",
+              payload: { previousStatus },
+              occurredAt: now
+            });
+          }
+        }
+        const nextRevision = nextBackendRevision(this.#backend);
+        this.persist();
+        this.#backend.revision = nextRevision;
+      }
+    };
+    module.exports = {
+      MAX_ARTIFACT_BYTES,
+      MAX_ENVELOPE_BYTES,
+      MAX_INLINE_ARTIFACT_BYTES,
+      MAX_JOB_EVENTS,
+      OPERATOR_JOB_STORE_SCHEMA,
+      OperatorJobStore
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/operator/operator-protocol.cjs
+var require_operator_protocol = __commonJS({
+  "../../desktop/rolling-skill/src/operator/operator-protocol.cjs"(exports, module) {
+    var { isAbsolute } = __require("node:path");
+    var OPERATOR_PROTOCOL = "rolling-skill-operator/v1";
+    var MAX_OBJECTIVE_LENGTH = 32768;
+    var MAX_IDENTIFIER_LENGTH = 300;
+    var MAX_CLI_PATH_LENGTH = 8192;
+    var SCOPE_FIELDS = Object.freeze([
+      "skillIds",
+      "datasetIds",
+      "runtimeIds",
+      "repositoryIds"
+    ]);
+    var BUDGET_FIELDS = Object.freeze([
+      "maxDurationMs",
+      "maxRuntimeTurns",
+      "maxEvaluations",
+      "maxTargetExecutions",
+      "maxJudgeExecutions",
+      "maxTokens",
+      "maxReportedCost"
+    ]);
+    var TRANSPORT_KINDS = /* @__PURE__ */ new Set(["codex-dynamic", "acp-mcp", "cli"]);
+    function plainObject(value) {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+      const prototype = Object.getPrototypeOf(value);
+      return prototype === Object.prototype || prototype === null;
+    }
+    function requiredText(value, label, maximum = MAX_IDENTIFIER_LENGTH) {
+      if (typeof value !== "string" || value.length === 0 || value.length > maximum || value.trim() !== value || /[\u0000-\u001f\u007f]/u.test(value)) throw new TypeError(`${label} is invalid`);
+      return value;
+    }
+    function objectiveText(value) {
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > MAX_OBJECTIVE_LENGTH) {
+        throw new TypeError("Operator objective is required and bounded");
+      }
+      return value;
+    }
+    function contextText(value) {
+      if (typeof value !== "string" || value.length === 0 || value.length > 128 * 1024 || /[\u0000\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) throw new TypeError("Operator context is invalid");
+      return value;
+    }
+    function stringArray(value, label) {
+      if (!Array.isArray(value) || value.length > 4096) throw new TypeError(`${label} must be bounded`);
+      const normalized = value.map((entry) => requiredText(entry, label));
+      if (new Set(normalized).size !== normalized.length) throw new TypeError(`${label} contains duplicates`);
+      return normalized;
+    }
+    function normalizeScope(value) {
+      if (!plainObject(value)) throw new TypeError("Operator scope must be a plain object");
+      const scope = {};
+      for (const field of SCOPE_FIELDS) scope[field] = stringArray(value[field] ?? [], field);
+      return scope;
+    }
+    function normalizeBudget(value) {
+      if (!plainObject(value)) throw new TypeError("Operator budget must be a plain object");
+      const budget = {};
+      for (const field of BUDGET_FIELDS) {
+        const entry = value[field];
+        if ((field === "maxTokens" || field === "maxReportedCost") && entry === null) {
+          budget[field] = null;
+          continue;
+        }
+        const valid = field === "maxReportedCost" ? Number.isFinite(entry) && entry >= 0 : Number.isSafeInteger(entry) && entry >= 0;
+        if (!valid) throw new TypeError(`Operator budget ${field} is invalid`);
+        budget[field] = entry;
+      }
+      return budget;
+    }
+    function normalizeTransport(value) {
+      if (!plainObject(value) || value.ready !== true || !TRANSPORT_KINDS.has(value.kind)) {
+        throw new TypeError("Operator transport must be a frozen ready transport");
+      }
+      const transport = { kind: value.kind };
+      if (value.kind === "cli") {
+        if (typeof value.executablePath !== "string" || value.executablePath.length > MAX_CLI_PATH_LENGTH || !isAbsolute(value.executablePath) || /[\u0000\r\n]/u.test(value.executablePath)) throw new TypeError("Operator CLI Tool path must be absolute");
+        transport.command = `${value.executablePath} invoke <method> --params <json>`;
+      }
+      return transport;
+    }
+    function protocolSnapshot(context) {
+      if (!plainObject(context)) throw new TypeError("Operator context must be a plain object");
+      return {
+        actions: stringArray(context.actions, "Operator actions"),
+        scope: normalizeScope(context.scope),
+        budget: normalizeBudget(context.budget),
+        transport: normalizeTransport(context.transport)
+      };
+    }
+    function buildOperatorInstructions(context) {
+      const snapshot = protocolSnapshot(context);
+      return [
+        "Rolling Skill Operator Protocol v1",
+        "",
+        "You operate Rolling Skill only through the provided scoped Tool transport.",
+        "A durable Job is the unit of work. Use child Jobs for bounded actions and rely on their persisted status after interruption or restart.",
+        "Large or durable outputs are artifacts: refer to them by artifact ID instead of copying full bodies into chat.",
+        "An approval is a hard execution gate. Explain the proposed action and wait; never claim an approval or expand authority yourself.",
+        "Never directly read, edit, or write Rolling Skill data files. Do not bypass the Tool by changing local JSON, databases, repositories, or runtime state.",
+        "The capability scope is frozen for this session. Do not infer IDs or act outside it.",
+        "The Job budget is frozen. If it is insufficient, request a budget expansion and wait for approval.",
+        "The Tool transport is frozen for this session. Do not switch transports or fall back during a turn.",
+        "When a Tool response contains a child jobId, briefly state that the child Job is running and end the turn. Wait for an environment completion message before continuing.",
+        "",
+        `Frozen actions: ${JSON.stringify(snapshot.actions)}`,
+        `Frozen scope: ${JSON.stringify(snapshot.scope)}`,
+        `Frozen budget: ${JSON.stringify(snapshot.budget)}`,
+        `Frozen transport: ${JSON.stringify(snapshot.transport)}`
+      ].join("\n");
+    }
+    function buildOperatorInitialInput(context, objective) {
+      return [
+        {
+          type: "operatorContext",
+          protocol: OPERATOR_PROTOCOL,
+          text: buildOperatorInstructions(context)
+        },
+        { type: "text", text: objectiveText(objective) }
+      ];
+    }
+    function serializeOperatorInput(input) {
+      if (!Array.isArray(input) || input.length === 0 || input.length > 100) {
+        throw new TypeError("Operator Runtime input must be a bounded array");
+      }
+      return input.map((part) => {
+        if (!plainObject(part)) throw new TypeError("Operator Runtime input part is invalid");
+        if (part.type === "operatorContext") {
+          if (part.protocol !== OPERATOR_PROTOCOL) throw new TypeError("Operator protocol is unsupported");
+          return { type: "text", text: `[Environment context \u2014 ${OPERATOR_PROTOCOL}]
+${contextText(part.text)}` };
+        }
+        if (part.type === "text") return { type: "text", text: objectiveText(part.text) };
+        throw new TypeError("Operator Runtime input part is unsupported");
+      });
+    }
+    module.exports = {
+      BUDGET_FIELDS,
+      MAX_OBJECTIVE_LENGTH,
+      OPERATOR_PROTOCOL,
+      SCOPE_FIELDS,
+      buildOperatorInitialInput,
+      buildOperatorInstructions,
+      protocolSnapshot,
+      serializeOperatorInput
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/operator/operator-tool-transport.cjs
+var require_operator_tool_transport = __commonJS({
+  "../../desktop/rolling-skill/src/operator/operator-tool-transport.cjs"(exports, module) {
+    var { constants, lstatSync, realpathSync } = __require("node:fs");
+    var { accessSync } = __require("node:fs");
+    var { isAbsolute } = __require("node:path");
+    var { StringDecoder } = __require("node:string_decoder");
+    var { z } = require_zod();
+    var {
+      OPERATOR_CONTROL_METHODS,
+      controlDefinition
+    } = require_contracts();
+    var OPERATOR_ENVIRONMENT_KEYS = Object.freeze([
+      "ROLLING_SKILL_CONTROL_SOCKET",
+      "ROLLING_SKILL_CONTROL_TOKEN",
+      "ROLLING_SKILL_OPERATOR_SESSION"
+    ]);
+    var OPERATOR_ENVIRONMENT_KEY_SET = new Set(OPERATOR_ENVIRONMENT_KEYS);
+    var MAX_OPERATOR_ENVIRONMENT_VALUE_LENGTH = 8192;
+    var MAX_OPERATOR_STREAM_BUFFER_BYTES = 64 * 1024;
+    var REDACTED = "[REDACTED]";
+    function plainObject(value) {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+      const prototype = Object.getPrototypeOf(value);
+      return prototype === Object.prototype || prototype === null;
+    }
+    function sanitizeOperatorChildEnvironment(environment = {}) {
+      if (!plainObject(environment)) throw new TypeError("Operator child environment must be a plain object");
+      const descriptors = Object.getOwnPropertyDescriptors(environment);
+      const sanitized = {};
+      for (const name of OPERATOR_ENVIRONMENT_KEYS) {
+        const descriptor = descriptors[name];
+        if (!descriptor) continue;
+        if (!Object.hasOwn(descriptor, "value")) {
+          throw new TypeError("Operator child environment values must be data properties");
+        }
+        const value = descriptor.value;
+        if (typeof value !== "string" || value.length === 0 || value.length > MAX_OPERATOR_ENVIRONMENT_VALUE_LENGTH || /[\0\r\n]/u.test(value)) {
+          throw new TypeError("Operator child environment value is invalid");
+        }
+        sanitized[name] = value;
+      }
+      return sanitized;
+    }
+    function operatorSecretPatterns(childEnvironment = {}) {
+      return [.../* @__PURE__ */ new Set([
+        ...OPERATOR_ENVIRONMENT_KEYS,
+        ...Object.values(sanitizeOperatorChildEnvironment(childEnvironment)).filter(Boolean)
+      ])].sort((left, right) => right.length - left.length);
+    }
+    function mergeOperatorChildEnvironment(inherited = {}, childEnvironment = {}) {
+      if (!plainObject(inherited)) throw new TypeError("Inherited child environment must be a plain object");
+      const merged = {};
+      for (const [name, value] of Object.entries(inherited)) {
+        if (!name.startsWith("ROLLING_SKILL_CONTROL_") && !OPERATOR_ENVIRONMENT_KEY_SET.has(name)) {
+          merged[name] = value;
+        }
+      }
+      return { ...merged, ...sanitizeOperatorChildEnvironment(childEnvironment) };
+    }
+    function redactOperatorSecrets(value, childEnvironment = {}) {
+      const secrets = operatorSecretPatterns(childEnvironment);
+      if (secrets.length === 0) return value;
+      const redactText = (text) => {
+        let result = text;
+        for (const secret of secrets) result = result.replaceAll(secret, REDACTED);
+        return result;
+      };
+      const seen = /* @__PURE__ */ new WeakMap();
+      const visit = (entry) => {
+        if (typeof entry === "string") return redactText(entry);
+        if (typeof entry !== "object" || entry === null) return entry;
+        if (seen.has(entry)) return seen.get(entry);
+        const output = Array.isArray(entry) ? [] : {};
+        seen.set(entry, output);
+        for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(entry))) {
+          if (!Object.hasOwn(descriptor, "value")) continue;
+          output[redactText(key)] = visit(descriptor.value);
+        }
+        return output;
+      };
+      return visit(value);
+    }
+    var OperatorStreamRedactor = class {
+      #decoder = new StringDecoder("utf8");
+      #ended = false;
+      #pending = "";
+      #patterns;
+      #overlap;
+      constructor(childEnvironment = {}) {
+        this.#patterns = operatorSecretPatterns(childEnvironment);
+        this.#overlap = Math.max(0, ...this.#patterns.map((pattern) => pattern.length - 1));
+      }
+      #nextMatch(limit) {
+        let selected = null;
+        for (const pattern of this.#patterns) {
+          const index = this.#pending.indexOf(pattern);
+          if (index < 0 || index >= limit) continue;
+          if (selected === null || index < selected.index || index === selected.index && pattern.length > selected.pattern.length) selected = { index, pattern };
+        }
+        return selected;
+      }
+      #drain(limit) {
+        if (limit <= 0) return [];
+        let output = "";
+        while (limit > 0) {
+          const match = this.#nextMatch(limit);
+          if (!match) {
+            output += this.#pending.slice(0, limit);
+            this.#pending = this.#pending.slice(limit);
+            break;
+          }
+          output += this.#pending.slice(0, match.index) + REDACTED;
+          const matchEnd = match.index + match.pattern.length;
+          limit -= matchEnd;
+          this.#pending = this.#pending.slice(matchEnd);
+        }
+        return output ? [output] : [];
+      }
+      #drainAvailable({ flush = false } = {}) {
+        const output = [];
+        let newline = this.#pending.indexOf("\n");
+        while (newline >= 0) {
+          output.push(...this.#drain(newline + 1));
+          newline = this.#pending.indexOf("\n");
+        }
+        if (flush) {
+          output.push(...this.#drain(this.#pending.length));
+        } else if (Buffer.byteLength(this.#pending, "utf8") > MAX_OPERATOR_STREAM_BUFFER_BYTES) {
+          output.push(...this.#drain(Math.max(0, this.#pending.length - this.#overlap)));
+        }
+        return output;
+      }
+      push(chunk) {
+        if (this.#ended) throw new Error("Operator stream redactor is closed");
+        this.#pending += this.#decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        return this.#drainAvailable();
+      }
+      end(chunk) {
+        if (this.#ended) return [];
+        this.#ended = true;
+        this.#pending += chunk === void 0 ? this.#decoder.end() : this.#decoder.end(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        return this.#drainAvailable({ flush: true });
+      }
+    };
+    function executablePath(value) {
+      if (typeof value !== "string" || !isAbsolute(value)) {
+        throw new TypeError("Bundled Operator Tool path must be absolute");
+      }
+      try {
+        const resolved = realpathSync(value);
+        const status = lstatSync(resolved);
+        if (!status.isFile()) return null;
+        accessSync(resolved, constants.X_OK);
+        return resolved;
+      } catch {
+        return null;
+      }
+    }
+    function hasCredentials(environment) {
+      return OPERATOR_ENVIRONMENT_KEYS.every((name) => typeof environment[name] === "string");
+    }
+    function methodToolName(method) {
+      return method.replaceAll(".", "_");
+    }
+    function codexDynamicTools() {
+      return [{
+        type: "namespace",
+        name: "rolling_skill",
+        description: "Scoped Rolling Skill Operator control tools.",
+        tools: OPERATOR_CONTROL_METHODS.map((method) => ({
+          type: "function",
+          name: methodToolName(method),
+          description: `Invoke the scoped Rolling Skill ${method} action.`,
+          inputSchema: z.toJSONSchema(controlDefinition(method).input)
+        }))
+      }];
+    }
+    function copy(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+    var OperatorToolTransport = class {
+      #childEnvironment;
+      #executablePath;
+      #selection = null;
+      constructor({ executablePath: requestedExecutablePath, childEnvironment = {} } = {}) {
+        this.requestedExecutablePath = requestedExecutablePath;
+        this.#childEnvironment = sanitizeOperatorChildEnvironment(childEnvironment);
+        this.#executablePath = void 0;
+      }
+      #resolveExecutable() {
+        if (this.#executablePath === void 0) {
+          this.#executablePath = executablePath(this.requestedExecutablePath);
+        }
+        return this.#executablePath;
+      }
+      preflight(runtimeDescriptor = {}, support = {}) {
+        const providerId = runtimeDescriptor?.providerId;
+        if (providerId === "codex" && support.dynamicToolsReady === true) {
+          return { kind: "codex-dynamic", ready: true };
+        }
+        const path = this.#resolveExecutable();
+        if (!path) {
+          return {
+            kind: "unsupported",
+            ready: false,
+            reason: "Bundled Operator Tool is unavailable"
+          };
+        }
+        if (!hasCredentials(this.#childEnvironment)) {
+          return {
+            kind: "unsupported",
+            ready: false,
+            reason: "Operator control credentials are unavailable"
+          };
+        }
+        if (providerId === "codebuddy" && support.mcpServersReady === true) {
+          return { kind: "acp-mcp", ready: true };
+        }
+        return { kind: "cli", ready: true, executablePath: path };
+      }
+      freeze(runtimeDescriptor = {}, support = {}) {
+        if (this.#selection) throw new Error("Operator Tool transport is already frozen");
+        this.#selection = Object.freeze(this.preflight(runtimeDescriptor, support));
+        return this.selection();
+      }
+      selection() {
+        return this.#selection ? copy(this.#selection) : null;
+      }
+      dynamicTools() {
+        return this.#selection?.kind === "codex-dynamic" ? codexDynamicTools() : [];
+      }
+      mcpServers() {
+        if (this.#selection?.kind !== "acp-mcp") return [];
+        const path = this.#resolveExecutable();
+        return [{
+          name: "rolling-skill-operator",
+          command: path,
+          args: ["operator-mcp"],
+          env: OPERATOR_ENVIRONMENT_KEYS.map((name) => ({
+            name,
+            value: this.#childEnvironment[name]
+          }))
+        }];
+      }
+      childEnvironment() {
+        return { ...this.#childEnvironment };
+      }
+    };
+    module.exports = {
+      MAX_OPERATOR_ENVIRONMENT_VALUE_LENGTH,
+      MAX_OPERATOR_STREAM_BUFFER_BYTES,
+      OPERATOR_ENVIRONMENT_KEYS,
+      OperatorStreamRedactor,
+      OperatorToolTransport,
+      codexDynamicTools,
+      mergeOperatorChildEnvironment,
+      redactOperatorSecrets,
+      sanitizeOperatorChildEnvironment
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/operator/operator-session-manager.cjs
+var require_operator_session_manager = __commonJS({
+  "../../desktop/rolling-skill/src/operator/operator-session-manager.cjs"(exports, module) {
+    var { createHash, randomUUID } = __require("node:crypto");
+    var { isAbsolute, resolve } = __require("node:path");
+    var {
+      OPERATOR_PROTOCOL,
+      buildOperatorInitialInput,
+      protocolSnapshot,
+      serializeOperatorInput
+    } = require_operator_protocol();
+    var {
+      OperatorToolTransport,
+      redactOperatorSecrets
+    } = require_operator_tool_transport();
+    var {
+      OPERATOR_CONTROL_ACTIONS,
+      controlDefinition,
+      createPublicControlError
+    } = require_contracts();
+    var TERMINAL_JOB_STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
+    var MAX_TRANSCRIPT_TEXT = 32 * 1024;
+    var MAX_BOUNDARY_TEXT = 16 * 1024;
+    var MAX_PENDING_BOUNDARIES = 1e3;
+    var MAX_ITEM_IDS = 1e4;
+    var MAX_CAPABILITY_LIFETIME_MS = 24 * 60 * 60 * 1e3;
+    var OPERATOR_CONTROL_ACTION_SET = new Set(OPERATOR_CONTROL_ACTIONS);
+    function plainObject(value) {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+      const prototype = Object.getPrototypeOf(value);
+      return prototype === Object.prototype || prototype === null;
+    }
+    function clone(value, label = "Value") {
+      try {
+        const serialized = JSON.stringify(value);
+        if (serialized === void 0) throw new Error();
+        return JSON.parse(serialized);
+      } catch {
+        throw new TypeError(`${label} must be JSON data`);
+      }
+    }
+    async function bestEffort(operation) {
+      try {
+        return await operation();
+      } catch {
+        return void 0;
+      }
+    }
+    function requiredText(value, label, maximum = 300) {
+      if (typeof value !== "string" || value.length === 0 || value.length > maximum || value.trim() !== value || /[\u0000-\u001f\u007f]/u.test(value)) throw new TypeError(`${label} is invalid`);
+      return value;
+    }
+    function messageText(value, label = "Operator message", maximum = MAX_TRANSCRIPT_TEXT) {
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > maximum) {
+        throw new TypeError(`${label} is required and bounded`);
+      }
+      return value;
+    }
+    function boundedText(value, maximum = MAX_TRANSCRIPT_TEXT) {
+      const text = typeof value === "string" ? value : "";
+      if (text.length <= maximum) return text;
+      return `${text.slice(0, maximum - 1)}\u2026`;
+    }
+    function operatorRuntime(runtime) {
+      if (!plainObject(runtime)) throw new TypeError("Operator Runtime is invalid");
+      return {
+        runtimeId: requiredText(runtime.runtimeId, "Operator Runtime id"),
+        providerId: requiredText(runtime.providerId, "Operator Runtime provider"),
+        displayName: requiredText(runtime.displayName ?? runtime.runtimeId, "Operator Runtime name"),
+        version: runtime.version === void 0 || runtime.version === null || runtime.version === "" ? null : requiredText(runtime.version, "Operator Runtime version"),
+        executablePath: runtime.executablePath === void 0 || runtime.executablePath === null || runtime.executablePath === "" ? null : requiredText(runtime.executablePath, "Operator Runtime executable", 8192)
+      };
+    }
+    function runtimeCapabilities(runtime) {
+      return Array.isArray(runtime?.capabilities) ? new Set(runtime.capabilities.filter((value) => typeof value === "string")) : /* @__PURE__ */ new Set();
+    }
+    function selectedEffort(runtime, requested) {
+      if (requested === void 0 || requested === null || requested === "") return null;
+      if (!runtimeCapabilities(runtime).has("reasoning-effort")) return null;
+      const effort = requiredText(requested, "Operator effort", 100);
+      if (Array.isArray(runtime.efforts) && runtime.efforts.length > 0 && !runtime.efforts.includes(effort)) {
+        return null;
+      }
+      return effort;
+    }
+    function selectedModel(runtime, requested) {
+      if (requested === void 0 || requested === null || requested === "") return null;
+      const model = requiredText(requested, "Operator model", 300);
+      if (Array.isArray(runtime.models) && runtime.models.length > 0) {
+        const available = runtime.models.some((candidate) => candidate === model || candidate?.id === model || candidate?.modelId === model);
+        if (!available) throw new Error("Selected Operator model is unavailable");
+      }
+      return model;
+    }
+    function capabilityBudget(budget) {
+      return {
+        maxRuntimeTurns: budget.maxRuntimeTurns,
+        maxEvaluations: budget.maxEvaluations
+      };
+    }
+    function capabilityLifetime(input, budget) {
+      const requested = input.expiresInMs ?? Math.max(6e4, budget.maxDurationMs);
+      if (!Number.isSafeInteger(requested) || requested <= 0 || requested > MAX_CAPABILITY_LIFETIME_MS) {
+        throw new TypeError("Operator capability lifetime is invalid");
+      }
+      return requested;
+    }
+    function canonicalJson(value) {
+      if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+      if (value && typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+      }
+      return JSON.stringify(value);
+    }
+    function safeSelection(selection, runtime, support) {
+      if (!plainObject(selection) || selection.ready !== true || typeof selection.kind !== "string") {
+        throw new Error(selection?.reason ?? "Operator Tool transport is unavailable");
+      }
+      if (!["codex-dynamic", "acp-mcp", "cli"].includes(selection.kind)) {
+        throw new Error("Operator Tool transport selection is invalid");
+      }
+      const output = {
+        kind: selection.kind,
+        ready: true,
+        descriptor: operatorRuntime(runtime),
+        support: {
+          dynamicToolsReady: support?.dynamicToolsReady === true,
+          mcpServersReady: support?.mcpServersReady === true
+        }
+      };
+      if (selection.kind === "cli") {
+        output.executablePath = requiredText(
+          selection.executablePath,
+          "Bundled Operator Tool path",
+          8192
+        );
+      }
+      return output;
+    }
+    function publicSelection(selection) {
+      return selection.kind === "cli" ? { kind: selection.kind, ready: true, executablePath: selection.executablePath } : { kind: selection.kind, ready: true };
+    }
+    function nativeResumeUnavailable(error) {
+      return [
+        "THREAD_NOT_FOUND",
+        "SESSION_NOT_FOUND",
+        "NOT_FOUND",
+        "RESUME_UNSUPPORTED",
+        "UNSUPPORTED"
+      ].includes(error?.code);
+    }
+    function turnInterruptionConverged(error) {
+      if (["NOT_FOUND", "NO_ACTIVE_TURN"].includes(error?.code)) return true;
+      return typeof error?.message === "string" && /\balready (?:completed|complete|finished)\b/iu.test(error.message);
+    }
+    function activeTurnTarget(control) {
+      if (control?.phase !== "active" || typeof control.runtimeThreadId !== "string" || control.runtimeThreadId.trim().length === 0 || typeof control.turnId !== "string" || control.turnId.trim().length === 0) return null;
+      return Object.freeze({
+        runtimeThreadId: control.runtimeThreadId,
+        turnId: control.turnId
+      });
+    }
+    function runtimeThreadId(response) {
+      return requiredText(
+        response?.thread?.id ?? response?.sessionId,
+        "Operator Runtime thread id",
+        500
+      );
+    }
+    function methodName(value) {
+      return requiredText(value, "Operator Tool method", 300);
+    }
+    function compactResult(value) {
+      if (!plainObject(value)) return { status: "unknown" };
+      const compact = {};
+      for (const key of ["status", "jobId", "stepId", "approvalId"]) {
+        if (typeof value[key] === "string") compact[key] = boundedText(value[key], 500);
+      }
+      if (plainObject(value.error)) {
+        compact.error = {
+          ...typeof value.error.code === "string" ? { code: boundedText(value.error.code, 200) } : {},
+          ...typeof value.error.message === "string" ? { message: boundedText(value.error.message, 1e3) } : {}
+        };
+      }
+      return compact;
+    }
+    function controlIdempotencyKey(control, method, input, invocationId) {
+      const explicit = typeof input?.idempotencyKey === "string" ? input.idempotencyKey : null;
+      const identity = canonicalJson([
+        control.sessionId,
+        method,
+        explicit ?? invocationId
+      ]);
+      return `operator:${createHash("sha256").update(identity).digest("hex")}`;
+    }
+    function compactActivity(item) {
+      const activity = {
+        itemId: requiredText(item.id ?? `item-${randomUUID()}`, "Operator activity id", 500),
+        type: requiredText(item.type ?? "runtimeActivity", "Operator activity type", 300)
+      };
+      for (const key of ["status", "name", "title"]) {
+        if (typeof item[key] === "string" && item[key].trim()) {
+          activity[key] = boundedText(item[key], 500);
+        }
+      }
+      if (Number.isSafeInteger(item.exitCode)) activity.exitCode = item.exitCode;
+      return activity;
+    }
+    function errorRecord(error, fallback = "Operator Runtime failed") {
+      return {
+        code: typeof error?.code === "string" ? boundedText(error.code, 200) : "OPERATOR_RUNTIME_ERROR",
+        message: boundedText(error?.message ?? fallback, 2e3)
+      };
+    }
+    function sessionConfiguration(session) {
+      return session.transcript.findLast((entry) => entry.kind === "operator_session_configuration") ?? null;
+    }
+    function latestRuntimeThread(session) {
+      return session.transcript.findLast((entry) => (entry.kind === "runtime_thread_started" || entry.kind === "runtime_thread_resumed") && typeof entry.runtimeThreadId === "string")?.runtimeThreadId ?? null;
+    }
+    function latestCapabilityId(session) {
+      return session.transcript.findLast((entry) => typeof entry.capabilityId === "string" && [
+        "operator_authority_issued",
+        "runtime_thread_started",
+        "runtime_thread_resumed"
+      ].includes(entry.kind))?.capabilityId ?? session.capabilityId;
+    }
+    function sessionIsPaused(session) {
+      const boundary = session.transcript.findLast((entry) => entry.kind === "operator_session_paused" || entry.kind === "operator_session_resumed" || entry.kind === "operator_session_stopped");
+      return boundary?.kind === "operator_session_paused";
+    }
+    function safeCheckpoint(job, artifacts) {
+      const summary = typeof job.checkpoint?.summary === "string" ? boundedText(job.checkpoint.summary, 8e3) : "The prior Runtime session was interrupted. Continue from durable Job state.";
+      const artifactIds = artifacts.map((artifact) => artifact.id).slice(0, 1e3);
+      return messageText([
+        "Operator restart checkpoint:",
+        summary,
+        `Durable artifact IDs: ${JSON.stringify(artifactIds)}`,
+        "Re-read durable Job state through Rolling Skill Tools before acting."
+      ].join("\n"), "Operator checkpoint", MAX_BOUNDARY_TEXT);
+    }
+    var OperatorSessionManager = class {
+      #store;
+      #engine;
+      #controlPlane;
+      #runtimeRegistry;
+      #capabilities;
+      #controlSocketPath;
+      #operatorToolPath;
+      #transportFactory;
+      #transportSupport;
+      #requestPermission;
+      #requestQuestion;
+      #supportsNativeResume;
+      #workspaceRoot;
+      #resolveManagedSkillWorkspace;
+      #traceDirectory;
+      #controls = /* @__PURE__ */ new Map();
+      #resumeFlights = /* @__PURE__ */ new Map();
+      #stopPromises = /* @__PURE__ */ new Map();
+      #blockedSessions = /* @__PURE__ */ new Set();
+      #revokedCapabilities = /* @__PURE__ */ new Set();
+      constructor({
+        store,
+        engine,
+        controlPlane,
+        runtimeRegistry,
+        capabilities = null,
+        capabilityIssuer = null,
+        capabilityStore = null,
+        controlSocketPath,
+        operatorToolPath,
+        transportFactory = null,
+        transportSupport = () => ({}),
+        requestPermission = null,
+        requestQuestion = null,
+        supportsNativeResume = null,
+        workspaceRoot = null,
+        resolveManagedSkillWorkspace = null,
+        traceDirectory = null
+      } = {}) {
+        if (!store || typeof store.createSession !== "function" || typeof store.createJob !== "function") {
+          throw new TypeError("OperatorSessionManager requires an OperatorJobStore");
+        }
+        if (!engine || typeof engine.execute !== "function" || typeof engine.reconcile !== "function" || typeof engine.cancel !== "function") {
+          throw new TypeError("OperatorSessionManager requires an OperatorJobEngine");
+        }
+        if (!controlPlane || typeof controlPlane.invoke !== "function" || typeof controlPlane.registerOperatorExecutor !== "function") throw new TypeError("OperatorSessionManager requires the shared ControlPlane");
+        if (!runtimeRegistry || typeof runtimeRegistry.createClient !== "function") {
+          throw new TypeError("OperatorSessionManager requires a RuntimeRegistry");
+        }
+        const issuer = capabilities ?? capabilityIssuer;
+        const revoker = capabilities ?? capabilityStore;
+        if (!issuer || typeof issuer.issue !== "function" || !revoker || typeof revoker.revoke !== "function") {
+          throw new TypeError("OperatorSessionManager requires capability issue and revoke access");
+        }
+        if (typeof controlSocketPath !== "string" || controlSocketPath.length === 0) {
+          throw new TypeError("Operator control socket is required");
+        }
+        if (transportFactory !== null && typeof transportFactory !== "function") {
+          throw new TypeError("Operator transport factory is invalid");
+        }
+        if (typeof transportSupport !== "function") throw new TypeError("Operator transport support resolver is invalid");
+        if (requestPermission !== null && typeof requestPermission !== "function") throw new TypeError("Operator permission callback is invalid");
+        if (requestQuestion !== null && typeof requestQuestion !== "function") throw new TypeError("Operator question callback is invalid");
+        if (supportsNativeResume !== null && typeof supportsNativeResume !== "function") throw new TypeError("Operator resume support resolver is invalid");
+        if (resolveManagedSkillWorkspace !== null && typeof resolveManagedSkillWorkspace !== "function") {
+          throw new TypeError("Managed Skill workspace resolver is invalid");
+        }
+        this.#store = store;
+        this.#engine = engine;
+        this.#controlPlane = controlPlane;
+        this.#runtimeRegistry = runtimeRegistry;
+        this.#capabilities = {
+          issue: issuer.issue.bind(issuer),
+          revoke: revoker.revoke.bind(revoker)
+        };
+        this.#controlSocketPath = controlSocketPath;
+        this.#operatorToolPath = operatorToolPath;
+        this.#transportFactory = transportFactory ?? ((input) => new OperatorToolTransport({
+          executablePath: this.#operatorToolPath,
+          childEnvironment: input.childEnvironment
+        }));
+        this.#transportSupport = transportSupport;
+        this.#requestPermission = requestPermission;
+        this.#requestQuestion = requestQuestion;
+        this.#supportsNativeResume = supportsNativeResume;
+        this.#workspaceRoot = workspaceRoot;
+        this.#resolveManagedSkillWorkspace = resolveManagedSkillWorkspace;
+        this.#traceDirectory = traceDirectory;
+      }
+      async #managedWorkspace(value, scope, { persisted = false } = {}) {
+        if (value === void 0 || value === null) {
+          return { binding: null, workspaceRoot: this.#workspaceRoot };
+        }
+        if (!plainObject(value)) throw new TypeError("Managed Skill binding is invalid");
+        const allowed = /* @__PURE__ */ new Set([
+          "repositoryId",
+          "skillId",
+          "optimizationRunId",
+          ...persisted ? ["workspaceDigest"] : []
+        ]);
+        const required = /* @__PURE__ */ new Set([
+          "repositoryId",
+          "skillId",
+          ...persisted ? ["workspaceDigest"] : []
+        ]);
+        if (Object.keys(value).some((key) => !allowed.has(key)) || [...required].some((key) => !Object.hasOwn(value, key))) {
+          throw new TypeError("Managed Skill binding is invalid");
+        }
+        const binding = {
+          repositoryId: requiredText(value.repositoryId, "Managed Skill repository id", 200),
+          skillId: requiredText(value.skillId, "Managed Skill id", 200),
+          ...value.optimizationRunId === void 0 ? {} : {
+            optimizationRunId: requiredText(
+              value.optimizationRunId,
+              "Optimization Run id",
+              200
+            )
+          }
+        };
+        if (!Array.isArray(scope?.repositoryIds) || !scope.repositoryIds.includes(binding.repositoryId) || !Array.isArray(scope?.skillIds) || !scope.skillIds.includes(binding.skillId)) {
+          throw new Error("Managed Skill binding is outside the frozen capability scope");
+        }
+        if (this.#resolveManagedSkillWorkspace === null) {
+          throw new Error("Managed Skill workspace resolution is unavailable");
+        }
+        const resolvedWorkspace = await this.#resolveManagedSkillWorkspace(Object.freeze({ ...binding }));
+        if (!plainObject(resolvedWorkspace) || resolvedWorkspace.repositoryId !== binding.repositoryId || resolvedWorkspace.skillId !== binding.skillId || resolvedWorkspace.optimizationRunId !== binding.optimizationRunId || typeof resolvedWorkspace.workspaceRoot !== "string" || !isAbsolute(resolvedWorkspace.workspaceRoot)) {
+          throw new Error("Managed Skill workspace resolution is invalid");
+        }
+        const workspaceRoot = resolve(resolvedWorkspace.workspaceRoot);
+        const workspaceDigest = `sha256:${createHash("sha256").update(workspaceRoot, "utf8").digest("hex")}`;
+        if (persisted && value.workspaceDigest !== workspaceDigest) {
+          throw Object.assign(new Error("Managed Skill workspace changed since the session was created"), {
+            code: "RESOURCE_CHANGED"
+          });
+        }
+        return {
+          binding: Object.freeze({ ...binding, workspaceDigest }),
+          workspaceRoot
+        };
+      }
+      async #runtimes() {
+        if (typeof this.#runtimeRegistry.discover !== "function") {
+          throw new Error("Operator Runtime discovery is unavailable");
+        }
+        const discovered = await this.#runtimeRegistry.discover();
+        if (Array.isArray(discovered)) return discovered;
+        if (Array.isArray(discovered?.available)) return discovered.available;
+        throw new Error("Operator Runtime discovery returned an invalid inventory");
+      }
+      async #runtimeById(runtimeId) {
+        const id = requiredText(runtimeId, "Operator Runtime id");
+        const descriptor = (await this.#runtimes()).find((candidate) => candidate?.runtimeId === id);
+        if (!descriptor) throw new Error("Selected Operator Runtime is unavailable");
+        operatorRuntime(descriptor);
+        return descriptor;
+      }
+      async #authority({ actions, scopes, budget, expiresInMs }) {
+        if (!Array.isArray(actions) || actions.some((action) => !OPERATOR_CONTROL_ACTION_SET.has(action))) {
+          throw new Error("Operator action is not exposed to the Runtime Tool");
+        }
+        const authoritySessionId = `operator-${randomUUID()}`;
+        const grant = await this.#capabilities.issue({
+          sessionId: authoritySessionId,
+          actions: clone(actions, "Operator actions"),
+          scopes: clone(scopes, "Operator scopes"),
+          expiresInMs,
+          budget: capabilityBudget(budget)
+        });
+        const expectedBudget = capabilityBudget(budget);
+        const invalid = !plainObject(grant) || typeof grant.id !== "string" || grant.id.length === 0 || typeof grant.token !== "string" || grant.token.length === 0 || grant.sessionId !== authoritySessionId || JSON.stringify(grant.actions) !== JSON.stringify(actions) || JSON.stringify(grant.scopes) !== JSON.stringify(scopes) || JSON.stringify(grant.budget) !== JSON.stringify(expectedBudget);
+        if (invalid) {
+          if (typeof grant?.id === "string") {
+            await bestEffort(() => this.#capabilities.revoke(grant.id));
+          }
+          throw new Error("Operator capability issuer returned an invalid grant");
+        }
+        return { grant, authoritySessionId };
+      }
+      #childEnvironment(authority) {
+        return {
+          ROLLING_SKILL_CONTROL_SOCKET: this.#controlSocketPath,
+          ROLLING_SKILL_CONTROL_TOKEN: authority.grant.token,
+          ROLLING_SKILL_OPERATOR_SESSION: authority.authoritySessionId
+        };
+      }
+      async #freezeTransport(runtime, authority, frozenSelection = null) {
+        const childEnvironment = this.#childEnvironment(authority);
+        const transport = this.#transportFactory({ runtime, childEnvironment });
+        if (!transport || typeof transport.freeze !== "function") {
+          throw new Error("Operator Tool transport factory returned an invalid transport");
+        }
+        const support = clone(await this.#transportSupport(runtime), "Operator transport support");
+        if (typeof transport.preflight === "function") {
+          const preflight = transport.preflight(runtime, support);
+          if (preflight?.ready !== true) throw new Error(preflight?.reason ?? "Operator Tool transport is unavailable");
+        }
+        const selection = safeSelection(transport.freeze(runtime, support), runtime, support);
+        if (frozenSelection !== null && canonicalJson(selection) !== canonicalJson(frozenSelection)) {
+          throw new Error("Frozen Operator Tool transport descriptor is no longer available");
+        }
+        return { transport, selection, childEnvironment };
+      }
+      #nativeResume(runtime, client) {
+        if (this.#supportsNativeResume) return this.#supportsNativeResume(runtime, client) === true;
+        return typeof client.resumeThread === "function" && runtimeCapabilities(runtime).has("threads");
+      }
+      #profile(control) {
+        return {
+          ...control.modelId ? { model: control.modelId } : {},
+          ...control.effort ? { effort: control.effort } : {},
+          threadSource: "subagent",
+          ephemeral: false
+        };
+      }
+      #threadOptions(control) {
+        const options2 = this.#profile(control);
+        const dynamicTools = control.transport.dynamicTools?.() ?? [];
+        const mcpServers = control.transport.mcpServers?.() ?? [];
+        if (control.selection.kind === "codex-dynamic") options2.dynamicTools = dynamicTools;
+        if (control.selection.kind === "acp-mcp") options2.mcpServers = mcpServers;
+        return options2;
+      }
+      #append(control, kind, payload = {}) {
+        const safe = redactOperatorSecrets(payload, control.childEnvironment);
+        return this.#store.appendSessionTranscript(control.sessionId, { kind, ...safe });
+      }
+      #budgetSnapshot(control) {
+        const usage = { runtimeTurns: 0, evaluations: 0 };
+        let revision = 0;
+        for (const event of this.#store.listEvents(control.parentJobId)) {
+          if (event.kind !== "operator_budget_reserved") continue;
+          for (const field of Object.keys(usage)) {
+            const amount = event.usage?.[field] ?? 0;
+            if (!Number.isSafeInteger(amount) || amount < 0) {
+              throw new Error("Durable Operator budget usage is invalid");
+            }
+            usage[field] += amount;
+            if (!Number.isSafeInteger(usage[field])) {
+              throw new Error("Durable Operator budget usage is too large");
+            }
+          }
+          revision += 1;
+          if (!Number.isSafeInteger(revision)) throw new Error("Durable Operator budget revision is too large");
+        }
+        return { usage, revision };
+      }
+      #controlIsLive(control, generation = control.controlGeneration) {
+        return this.#controls.get(control.sessionId) === control && !control.stopped && !control.paused && control.controlGeneration === generation && control.phase === "active";
+      }
+      #controlIsOwned(control, generation = control.controlGeneration) {
+        return this.#controls.get(control.sessionId) === control && !control.stopped && control.controlGeneration === generation;
+      }
+      #assertControlOwned(control, generation = control.controlGeneration) {
+        if (!this.#controlIsOwned(control, generation)) {
+          throw Object.assign(new Error("Operator session ownership changed"), {
+            code: "CONTROL_BUSY"
+          });
+        }
+      }
+      #syncExecutorLease(control) {
+        const shouldEnable = this.#controlIsLive(control);
+        const changed = shouldEnable ? control.executorLease?.enable() : control.executorLease?.disable();
+        if (shouldEnable && changed !== true) {
+          throw new Error("Operator executor lease is unavailable");
+        }
+      }
+      #registerExecutor(control, replace = void 0) {
+        const registration = {
+          sessionId: control.authority.authoritySessionId,
+          capabilityId: control.authority.grant.id,
+          enabled: false,
+          budgetSnapshot: () => this.#budgetSnapshot(control),
+          assertLive: () => this.#controlIsLive(control),
+          contextSnapshot: () => ({
+            workspaceRoot: control.workspaceRoot,
+            runtimeId: control.runtime.runtimeId
+          }),
+          execute: (request) => this.#executeControl(control, request),
+          ...replace === void 0 ? {} : { replace }
+        };
+        control.executorLease = this.#controlPlane.registerOperatorExecutor(registration);
+      }
+      async #executeControl(control, request) {
+        const generation = control.controlGeneration;
+        if (!this.#controlIsLive(control, generation)) {
+          throw createPublicControlError("CONTROL_BUSY");
+        }
+        const method = methodName(request?.method);
+        const callId = requiredText(request.invocationId, "Operator control invocation id", 500);
+        const input = clone(request?.input ?? {}, "Operator Tool parameters");
+        const policyDecision = request?.policyDecision;
+        if (!plainObject(policyDecision) || !["allow", "approval_required"].includes(policyDecision.decision)) {
+          throw createPublicControlError("FORBIDDEN", {
+            details: { action: controlDefinition(method).action }
+          });
+        }
+        this.#append(control, "tool_call_started", { callId, method });
+        let completionRecorded = false;
+        try {
+          const result = await this.#engine.execute(control.parentJobId, {
+            method,
+            params: input,
+            idempotencyKey: controlIdempotencyKey(control, method, input, callId),
+            ...policyDecision.decision === "approval_required" ? {
+              policyApproval: {
+                decision: "approval_required",
+                action: policyDecision.reason === "budget_expansion" ? "budget.expand" : controlDefinition(method).action,
+                reason: policyDecision.reason,
+                requestedScope: policyDecision.requestedScope ?? {}
+              }
+            } : {},
+            assertRunnable: () => this.#controlIsLive(control, generation),
+            handlerContext: request.context,
+            ...request.trustedFacts ? { trustedFacts: request.trustedFacts } : {}
+          });
+          if (!this.#controlIsLive(control, generation)) {
+            throw createPublicControlError("CONTROL_BUSY");
+          }
+          this.#append(control, "tool_call_completed", {
+            callId,
+            method,
+            result: compactResult(result)
+          });
+          completionRecorded = true;
+          if (result?.status === "succeeded") return result.result;
+          if (result?.status === "waiting_approval") {
+            const approval = this.#store.getApproval(result.approvalId);
+            throw createPublicControlError("APPROVAL_REQUIRED", {
+              details: {
+                action: approval.action,
+                reason: approval.risk,
+                approvalId: result.approvalId,
+                jobId: result.jobId,
+                stepId: result.stepId
+              }
+            });
+          }
+          if (["cancelled", "needs_recovery"].includes(result?.status)) {
+            throw createPublicControlError("CONTROL_BUSY");
+          }
+          throw createPublicControlError("CONTROL_ERROR");
+        } catch (error) {
+          if (!completionRecorded) {
+            this.#append(control, "tool_call_failed", { callId, method, error: errorRecord(error) });
+          }
+          throw error;
+        }
+      }
+      #snapshot(control) {
+        return {
+          session: this.#store.getSession(control.sessionId),
+          parentJob: this.#store.getJob(control.parentJobId),
+          runtimeThreadId: control.runtimeThreadId,
+          transport: publicSelection(control.selection),
+          state: control.stopped ? "stopped" : control.paused ? "paused" : control.phase
+        };
+      }
+      #createControl({
+        session,
+        parentJob,
+        runtime,
+        modelId,
+        effort,
+        authority,
+        transport,
+        selection,
+        childEnvironment,
+        scope,
+        actions,
+        budget,
+        nativeResume,
+        managedSkillBinding = null,
+        workspaceRoot = this.#workspaceRoot
+      }) {
+        const control = {
+          sessionId: session.id,
+          parentJobId: parentJob.id,
+          runtime,
+          modelId,
+          effort,
+          authority,
+          transport,
+          selection,
+          childEnvironment,
+          scope,
+          actions,
+          budget,
+          nativeResume,
+          managedSkillBinding,
+          workspaceRoot,
+          client: null,
+          runtimeThreadId: null,
+          turnId: null,
+          phase: "restoring",
+          paused: parentJob.status === "paused",
+          stopped: false,
+          generation: 0,
+          controlGeneration: 0,
+          completedTurnIds: /* @__PURE__ */ new Set(),
+          itemIds: /* @__PURE__ */ new Set(),
+          completedChildIds: /* @__PURE__ */ new Set(),
+          pendingChildIds: /* @__PURE__ */ new Set(),
+          boundaryQueue: [],
+          draining: false,
+          notification: null,
+          runtimeError: null,
+          stateListener: null,
+          executorLease: null,
+          pendingInteractions: /* @__PURE__ */ new Set(),
+          failurePromise: null,
+          failureCleanup: null,
+          runtimeExited: false,
+          clientStopped: false,
+          stopProgress: null
+        };
+        control.itemIds = new Set(session.transcript.filter((entry) => typeof entry.itemId === "string").map((entry) => entry.itemId).slice(-MAX_ITEM_IDS));
+        control.completedChildIds = new Set(session.transcript.filter((entry) => entry.kind === "child_completion_delivered" && typeof entry.childJobId === "string").map((entry) => entry.childJobId));
+        const deliveredBoundaries = new Set(session.transcript.filter((entry) => entry.kind === "operator_boundary_delivered" && typeof entry.boundaryId === "string").map((entry) => entry.boundaryId));
+        for (const entry of session.transcript) {
+          if (entry.kind !== "operator_boundary_enqueued" || typeof entry.boundaryId !== "string" || deliveredBoundaries.has(entry.boundaryId)) continue;
+          if (control.boundaryQueue.length >= MAX_PENDING_BOUNDARIES) {
+            throw new Error("Durable Operator boundary queue exceeds its limit");
+          }
+          const content = messageText(entry.content, "Durable Operator boundary", MAX_BOUNDARY_TEXT);
+          const boundaryKind = entry.boundaryKind === "environment" ? "environment" : "user";
+          control.boundaryQueue.push({
+            id: entry.boundaryId,
+            kind: boundaryKind,
+            ...typeof entry.childJobId === "string" ? { childJobId: entry.childJobId } : {},
+            input: boundaryKind === "environment" ? [{ type: "operatorContext", protocol: OPERATOR_PROTOCOL, text: content }] : [{ type: "text", text: content }]
+          });
+          if (typeof entry.childJobId === "string") control.pendingChildIds.add(entry.childJobId);
+        }
+        return control;
+      }
+      #clientOptions(control) {
+        return {
+          ...control.workspaceRoot ? { workspaceRoot: control.workspaceRoot } : {},
+          ...this.#traceDirectory ? { traceDirectory: this.#traceDirectory } : {},
+          childEnvironment: { ...control.childEnvironment },
+          nonInteractive: false,
+          requestTool: (request) => this.#requestTool(control, request),
+          requestPermission: (request) => this.#permission(control, request),
+          requestQuestion: (request) => this.#question(control, request)
+        };
+      }
+      #attach(control) {
+        const client = control.client;
+        control.notification = (message) => this.#notification(control, message);
+        control.runtimeError = (error) => {
+          void this.#runtimeFailure(control, error, { runtimeExited: true }).catch(() => {
+          });
+        };
+        control.stateListener = (state) => {
+          if (state?.status === "error" || state?.status === "stopped") {
+            void this.#runtimeFailure(
+              control,
+              new Error("Operator Runtime stopped unexpectedly"),
+              { runtimeExited: true }
+            ).catch(() => {
+            });
+          }
+        };
+        client.on?.("notification", control.notification);
+        client.on?.("runtimeError", control.runtimeError);
+        client.on?.("state", control.stateListener);
+      }
+      #detach(control) {
+        const client = control.client;
+        if (!client) return;
+        client.off?.("notification", control.notification);
+        client.off?.("runtimeError", control.runtimeError);
+        client.off?.("state", control.stateListener);
+      }
+      #matchesThread(control, params) {
+        const candidate = params.threadId ?? params.thread?.id ?? params.sessionId;
+        return candidate === void 0 || candidate === control.runtimeThreadId;
+      }
+      #notification(control, message) {
+        if (control.stopped || !plainObject(message)) return;
+        const params = plainObject(message.params) ? message.params : {};
+        if (!this.#matchesThread(control, params)) return;
+        try {
+          if (message.method === "turn/started") {
+            const turnId = params.turn?.id ?? params.turnId;
+            if (control.phase === "active" && typeof turnId === "string" && turnId.length > 0 && (control.turnId === null || control.turnId === turnId)) control.turnId = turnId;
+            this.#append(control, "turn_started", {
+              turnId: typeof turnId === "string" ? turnId : null
+            });
+            return;
+          }
+          if (message.method === "item/completed") {
+            const item = plainObject(params.item) ? params.item : {};
+            const itemId = typeof item.id === "string" ? item.id : null;
+            if (itemId && control.itemIds.has(itemId)) return;
+            if (itemId) {
+              if (control.itemIds.size >= MAX_ITEM_IDS) control.itemIds.delete(control.itemIds.values().next().value);
+              control.itemIds.add(itemId);
+            }
+            if (item.type === "agentMessage" && typeof item.text === "string" && item.text.length > 0) {
+              this.#append(control, "message", {
+                role: "assistant",
+                ...itemId ? { itemId } : {},
+                content: boundedText(item.text)
+              });
+            } else {
+              this.#append(control, "activity", compactActivity(item));
+            }
+            return;
+          }
+          if (message.method === "turn/completed") {
+            const turnId = params.turn?.id ?? params.turnId ?? control.turnId;
+            if (control.phase === "active" && control.turnId && turnId && control.turnId !== turnId) return;
+            if (typeof turnId === "string") {
+              if (control.completedTurnIds.size >= 100) {
+                control.completedTurnIds.delete(control.completedTurnIds.values().next().value);
+              }
+              control.completedTurnIds.add(turnId);
+            }
+            if (control.phase === "starting") {
+              this.#append(control, "turn_completed", {
+                turnId: turnId ?? null,
+                status: typeof params.turn?.status === "string" ? params.turn.status : "completed"
+              });
+              return;
+            }
+            if (control.phase !== "active") return;
+            control.executorLease?.disable();
+            control.controlGeneration += 1;
+            control.turnId = null;
+            control.phase = "idle";
+            this.#append(control, "turn_completed", {
+              turnId: turnId ?? null,
+              status: typeof params.turn?.status === "string" ? params.turn.status : "completed"
+            });
+            queueMicrotask(() => void this.#drainBoundary(control));
+            return;
+          }
+          if (message.method === "error" && params.willRetry !== true) {
+            this.#append(control, "runtime_error", {
+              error: errorRecord(params.error ?? new Error(params.message ?? "Operator Runtime failed"))
+            });
+          }
+        } catch (error) {
+          void this.#runtimeFailure(control, error).catch(() => {
+          });
+        }
+      }
+      #retryRuntimeFailureCleanup(control) {
+        const cleanup = control.failureCleanup;
+        if (!cleanup) return Promise.resolve();
+        if (cleanup.promise) return cleanup.promise;
+        const required = [];
+        if (!cleanup.jobInterruptComplete) {
+          required.push(this.#requiredStopOperation(
+            `interrupt ${control.parentJobId}`,
+            () => typeof this.#engine.interrupt === "function" ? this.#engine.interrupt(control.parentJobId, {
+              code: "OPERATOR_RUNTIME_FAILED",
+              message: "Operator Runtime failed"
+            }) : cleanup.outcomeUnknown ? this.#store.interruptJob(control.parentJobId, {
+              code: "OPERATOR_RUNTIME_FAILED",
+              message: "Operator Runtime failed"
+            }) : this.#store.getJob(control.parentJobId),
+            () => {
+              cleanup.jobInterruptComplete = true;
+            }
+          ));
+        }
+        if (!cleanup.revokeComplete) {
+          required.push(this.#requiredStopOperation(
+            `revoke ${control.authority.grant.id}`,
+            () => this.#capabilities.revoke(control.authority.grant.id),
+            () => {
+              cleanup.revokeComplete = true;
+              this.#revokedCapabilities.add(control.authority.grant.id);
+            }
+          ));
+        }
+        const turnInterruption = this.#turnInterruptionOperation(control, cleanup);
+        if (turnInterruption) required.push(turnInterruption);
+        const operation = (async () => {
+          const settled = await Promise.allSettled(required.map((entry) => entry.promise));
+          const failures = settled.flatMap((entry, index) => entry.status === "rejected" ? [Object.assign(
+            new Error(`${required[index].label}: ${entry.reason?.message ?? "failed"}`),
+            { cause: entry.reason }
+          )] : []);
+          if (cleanup.turnSettled && !cleanup.clientStopComplete) {
+            const clientStop = this.#requiredStopOperation(
+              "stop failed Runtime client",
+              () => {
+                if (typeof control.client?.stop !== "function") {
+                  throw new Error("Operator Runtime client cannot be stopped");
+                }
+                return control.client.stop();
+              },
+              () => {
+                cleanup.clientStopComplete = true;
+                control.clientStopped = true;
+              }
+            );
+            const [clientResult] = await Promise.allSettled([clientStop.promise]);
+            if (clientResult.status === "rejected") {
+              failures.push(Object.assign(
+                new Error(`${clientStop.label}: ${clientResult.reason?.message ?? "failed"}`),
+                { cause: clientResult.reason }
+              ));
+            }
+          }
+          if (failures.length > 0) {
+            control.phase = control.stopped ? "stopping" : "cleanup_failed";
+            throw new AggregateError(
+              failures,
+              `Operator Runtime cleanup incomplete: ${failures.map((failure) => failure.message).join("; ")}`
+            );
+          }
+          control.phase = "needs_recovery";
+          if (this.#controls.get(control.sessionId) === control) {
+            this.#controls.delete(control.sessionId);
+          }
+        })();
+        let shared;
+        shared = operation.finally(() => {
+          if (cleanup.promise === shared) cleanup.promise = null;
+          if (control.failurePromise === shared) control.failurePromise = null;
+        });
+        cleanup.promise = shared;
+        control.failurePromise = shared;
+        return shared;
+      }
+      #runtimeFailure(control, error, { runtimeExited = false } = {}) {
+        if (control.failureCleanup) {
+          if (runtimeExited) {
+            control.runtimeExited = true;
+            control.failureCleanup.turnTarget = null;
+            control.failureCleanup.turnSettled = true;
+          }
+          return this.#retryRuntimeFailureCleanup(control);
+        }
+        if (control.stopped) return Promise.resolve();
+        const turnTarget = runtimeExited ? null : activeTurnTarget(control);
+        const outcomeUnknown = this.#store.listSteps({ jobId: control.parentJobId }).some((step) => step.status === "running");
+        control.runtimeExited = runtimeExited;
+        control.controlGeneration += 1;
+        control.generation += 1;
+        control.phase = "needs_recovery";
+        control.executorLease?.disable();
+        control.executorLease?.unregister();
+        this.#abortInteractions(control);
+        try {
+          this.#append(control, "runtime_error", { error: errorRecord(error) });
+          if (!outcomeUnknown) {
+            this.#append(control, "operator_session_needs_resume", {
+              reason: "runtime_failure"
+            });
+          }
+        } catch {
+        }
+        this.#detach(control);
+        control.failureCleanup = {
+          outcomeUnknown,
+          jobInterruptComplete: false,
+          revokeComplete: this.#revokedCapabilities.has(control.authority.grant.id),
+          clientStopComplete: control.clientStopped,
+          turnTarget,
+          turnSettled: runtimeExited || turnTarget === null,
+          promise: null
+        };
+        return this.#retryRuntimeFailureCleanup(control);
+      }
+      async #startTurn(control, input) {
+        if (control.stopped) throw new Error("Operator session is stopped");
+        if (control.paused) throw new Error("Operator session is paused");
+        if (control.phase !== "idle" && control.phase !== "restoring") {
+          throw new Error("Operator Runtime turn is already active");
+        }
+        const controlGeneration = control.controlGeneration;
+        const generation = ++control.generation;
+        control.phase = "starting";
+        control.executorLease?.disable();
+        try {
+          const response = await control.client.startTurn(
+            control.runtimeThreadId,
+            serializeOperatorInput(input),
+            this.#profile(control)
+          );
+          this.#assertControlOwned(control, controlGeneration);
+          if (control.generation !== generation) {
+            throw Object.assign(new Error("Operator Runtime turn ownership changed"), {
+              code: "CONTROL_BUSY"
+            });
+          }
+          const turnId = requiredText(response?.turn?.id, "Operator Runtime turn id", 500);
+          control.turnId = turnId;
+          if (!control.completedTurnIds.has(turnId)) control.phase = "active";
+          else {
+            control.turnId = null;
+            control.phase = "idle";
+            queueMicrotask(() => void this.#drainBoundary(control));
+          }
+          this.#syncExecutorLease(control);
+          return response;
+        } catch (error) {
+          if (control.generation === generation && !control.stopped) {
+            control.turnId = null;
+            control.phase = "idle";
+            this.#append(control, "turn_failed", { error: errorRecord(error) });
+          }
+          throw error;
+        }
+      }
+      async #requestTool(control, request) {
+        if (control.stopped) throw new Error("Operator session is stopped");
+        if (control.failureCleanup) throw new Error("Operator Runtime is stopped; resume is required");
+        if (control.paused) throw new Error("Operator session is paused; new Steps are disabled");
+        if (control.phase !== "active") {
+          throw new Error("Operator Tool call is outside an active Runtime turn");
+        }
+        if (!plainObject(request) || !plainObject(request.params)) throw new TypeError("Operator Tool request is invalid");
+        const method = methodName(request.method);
+        const callId = requiredText(request.callId, "Operator Tool call id", 500);
+        try {
+          const result = await this.#controlPlane.invoke({
+            token: control.authority.grant.token,
+            sessionId: control.authority.authoritySessionId,
+            method,
+            params: clone(request.params, "Operator Tool parameters")
+          });
+          if (control.stopped) throw new Error("Operator session is stopped");
+          const publicResult = redactOperatorSecrets(
+            clone(result, "Operator Tool result"),
+            control.childEnvironment
+          );
+          return publicResult;
+        } catch (error) {
+          throw error;
+        }
+      }
+      async #interaction(control, invoke, fallback) {
+        const generation = control.controlGeneration;
+        if (!this.#controlIsLive(control, generation)) return fallback;
+        const controller = new AbortController();
+        control.pendingInteractions.add(controller);
+        let rejectAbort;
+        const aborted = new Promise((_resolve, reject) => {
+          rejectAbort = reject;
+        });
+        const abort = () => rejectAbort(Object.assign(new Error("Operator interaction cancelled"), {
+          code: "OPERATOR_CANCELLED"
+        }));
+        controller.signal.addEventListener("abort", abort, { once: true });
+        try {
+          const value = await Promise.race([
+            Promise.resolve().then(() => invoke(controller.signal)),
+            aborted
+          ]);
+          return this.#controlIsLive(control, generation) ? value : fallback;
+        } catch {
+          return fallback;
+        } finally {
+          controller.signal.removeEventListener("abort", abort);
+          control.pendingInteractions.delete(controller);
+        }
+      }
+      #abortInteractions(control) {
+        for (const controller of control.pendingInteractions) {
+          controller.abort();
+        }
+        control.pendingInteractions.clear();
+      }
+      async #permission(control, request) {
+        const generation = control.controlGeneration;
+        if (!this.#controlIsLive(control, generation)) return "decline";
+        const requestId = typeof request?.rpcId === "string" ? boundedText(request.rpcId, 500) : null;
+        this.#append(control, "permission_requested", { requestId });
+        const enriched = { ...clone(request ?? {}, "Operator permission request"), operatorSessionId: control.sessionId, operatorJobId: control.parentJobId };
+        const response = await this.#interaction(control, (signal) => this.#requestPermission ? this.#requestPermission({ ...enriched, signal }) : "decline", "decline");
+        if (!this.#controlIsLive(control, generation)) return "decline";
+        this.#append(control, "permission_resolved", {
+          requestId,
+          decision: typeof response === "string" ? boundedText(response, 200) : "decline"
+        });
+        return response;
+      }
+      async #question(control, request) {
+        const generation = control.controlGeneration;
+        if (!this.#controlIsLive(control, generation)) return { answers: [] };
+        const requestId = typeof request?.rpcId === "string" ? boundedText(request.rpcId, 500) : null;
+        const questions = Array.isArray(request?.questions) ? request.questions : [];
+        this.#append(control, "question_requested", { requestId, count: questions.length });
+        const enriched = { ...clone(request ?? {}, "Operator question request"), operatorSessionId: control.sessionId, operatorJobId: control.parentJobId };
+        const response = await this.#interaction(control, (signal) => this.#requestQuestion ? this.#requestQuestion({ ...enriched, signal }) : { answers: [] }, { answers: [] });
+        if (!this.#controlIsLive(control, generation)) return { answers: [] };
+        this.#append(control, "question_resolved", {
+          requestId,
+          answerCount: Array.isArray(response?.answers) ? response.answers.length : 0
+        });
+        return response;
+      }
+      async create(input = {}) {
+        if (!plainObject(input)) throw new TypeError("Operator session request is invalid");
+        const allowedInputKeys = /* @__PURE__ */ new Set([
+          "runtimeId",
+          "modelId",
+          "effort",
+          "objective",
+          "actions",
+          "scopes",
+          "budget",
+          "expiresInMs",
+          "managedSkillBinding"
+        ]);
+        if (Object.keys(input).some((key) => !allowedInputKeys.has(key))) {
+          throw new TypeError("Operator session request contains an unsupported field");
+        }
+        const runtime = await this.#runtimeById(input.runtimeId);
+        const modelId = selectedModel(runtime, input.modelId);
+        const effort = selectedEffort(runtime, input.effort);
+        const objective = messageText(input.objective, "Operator objective");
+        const context = protocolSnapshot({
+          actions: input.actions,
+          scope: input.scopes,
+          budget: input.budget,
+          transport: { kind: "codex-dynamic", ready: true }
+        });
+        const managedWorkspace = await this.#managedWorkspace(
+          input.managedSkillBinding,
+          context.scope
+        );
+        const expiresInMs = capabilityLifetime(input, context.budget);
+        const authority = await this.#authority({
+          actions: context.actions,
+          scopes: context.scope,
+          budget: context.budget,
+          expiresInMs
+        });
+        let frozen;
+        try {
+          frozen = await this.#freezeTransport(runtime, authority);
+        } catch (error) {
+          await bestEffort(() => this.#capabilities.revoke(authority.grant.id));
+          throw error;
+        }
+        const protocolContext = { ...context, transport: publicSelection(frozen.selection) };
+        let session;
+        let parentJob;
+        let control;
+        try {
+          session = this.#store.createSession({
+            runtime: operatorRuntime(runtime),
+            modelId,
+            effort,
+            protocol: OPERATOR_PROTOCOL,
+            capabilityId: authority.grant.id
+          });
+          parentJob = this.#store.createJob({
+            sessionId: session.id,
+            type: "operator-session",
+            objective,
+            budget: context.budget,
+            checkpoint: managedWorkspace.binding?.optimizationRunId ? { optimizationRunId: managedWorkspace.binding.optimizationRunId } : null
+          });
+          control = this.#createControl({
+            session,
+            parentJob,
+            runtime,
+            modelId,
+            effort,
+            authority,
+            ...frozen,
+            scope: context.scope,
+            actions: context.actions,
+            budget: context.budget,
+            nativeResume: false,
+            managedSkillBinding: managedWorkspace.binding,
+            workspaceRoot: managedWorkspace.workspaceRoot
+          });
+          control.client = this.#runtimeRegistry.createClient(runtime, this.#clientOptions(control));
+          if (!control.client || typeof control.client.start !== "function" || typeof control.client.startThread !== "function" || typeof control.client.startTurn !== "function") {
+            throw new Error("Operator Runtime client is incomplete");
+          }
+          control.nativeResume = this.#nativeResume(runtime, control.client);
+          this.#controls.set(session.id, control);
+          this.#registerExecutor(control);
+          this.#attach(control);
+          this.#append(control, "operator_session_configuration", {
+            protocol: OPERATOR_PROTOCOL,
+            actions: context.actions,
+            scopes: context.scope,
+            budget: context.budget,
+            transport: publicSelection(frozen.selection),
+            frozenTransport: frozen.selection,
+            nativeResume: control.nativeResume,
+            ...managedWorkspace.binding === null ? {} : { managedSkillBinding: managedWorkspace.binding }
+          });
+          this.#append(control, "operator_authority_issued", {
+            capabilityId: authority.grant.id
+          });
+          this.#append(control, "message", { role: "user", content: objective });
+          const restorationGeneration = control.controlGeneration;
+          await control.client.start();
+          this.#assertControlOwned(control, restorationGeneration);
+          const thread = await control.client.startThread(this.#threadOptions(control));
+          this.#assertControlOwned(control, restorationGeneration);
+          control.runtimeThreadId = runtimeThreadId(thread);
+          this.#append(control, "runtime_thread_started", { runtimeThreadId: control.runtimeThreadId });
+          parentJob = this.#store.transitionJob(parentJob.id, "running");
+          await this.#startTurn(control, buildOperatorInitialInput(protocolContext, objective));
+          return this.#snapshot(control);
+        } catch (error) {
+          const stoppedByLifecycle = control?.stopped === true || this.#blockedSessions.has(session?.id);
+          if (control) {
+            control.stopped = true;
+            control.executorLease?.unregister();
+            this.#detach(control);
+            await bestEffort(() => control.client?.stop?.());
+            this.#controls.delete(control.sessionId);
+          }
+          if (parentJob && !stoppedByLifecycle) {
+            try {
+              const current = this.#store.getJob(parentJob.id);
+              if (!TERMINAL_JOB_STATUSES.has(current.status)) {
+                await this.#engine.completeJob?.(parentJob.id, "failed", { error: errorRecord(error) });
+              }
+            } catch {
+            }
+          }
+          await bestEffort(() => this.#capabilities.revoke(authority.grant.id));
+          throw error;
+        }
+      }
+      #control(sessionId) {
+        const id = requiredText(sessionId, "Operator session id");
+        return this.#controls.get(id) ?? null;
+      }
+      get(sessionId) {
+        const control = this.#control(sessionId);
+        if (control) return this.#snapshot(control);
+        const session = this.#store.getSession(requiredText(sessionId, "Operator session id"));
+        const parentJob = this.#store.listJobs({ sessionId: session.id, parentJobId: null })[0];
+        if (!parentJob) throw new Error("Operator parent Job is missing");
+        const configuration = sessionConfiguration(session);
+        return {
+          session,
+          parentJob,
+          runtimeThreadId: latestRuntimeThread(session),
+          transport: configuration?.transport ?? null,
+          state: TERMINAL_JOB_STATUSES.has(parentJob.status) ? "stopped" : sessionIsPaused(session) ? "paused" : parentJob.status
+        };
+      }
+      async followUp(sessionId, text) {
+        const id = requiredText(sessionId, "Operator session id");
+        if (this.#blockedSessions.has(id)) throw new Error("Operator session is stopped");
+        const control = this.#control(id);
+        if (!control) throw new Error("Operator session must be resumed before messaging");
+        if (control.stopped) throw new Error("Operator session is stopped");
+        const content = messageText(text);
+        if (control.boundaryQueue.length >= MAX_PENDING_BOUNDARIES) throw new Error("Operator message queue is full");
+        const boundaryId = `boundary-${randomUUID()}`;
+        this.#append(control, "operator_boundary_enqueued", {
+          boundaryId,
+          boundaryKind: "user",
+          content
+        });
+        this.#append(control, "message", { role: "user", content });
+        const entry = { id: boundaryId, kind: "user", input: [{ type: "text", text: content }] };
+        control.boundaryQueue.push(entry);
+        const queued = control.phase !== "idle" || control.paused || control.draining;
+        void this.#drainBoundary(control);
+        return { queued };
+      }
+      sendMessage(sessionId, text) {
+        return this.followUp(sessionId, text);
+      }
+      async #drainBoundary(control) {
+        if (control.draining || control.stopped || control.paused || control.phase !== "idle") return;
+        const boundary = control.boundaryQueue[0];
+        if (!boundary) return;
+        control.draining = true;
+        try {
+          await this.#startTurn(control, boundary.input);
+          this.#assertControlOwned(control);
+          this.#append(control, "operator_boundary_delivered", {
+            boundaryId: boundary.id,
+            boundaryKind: boundary.kind,
+            ...boundary.childJobId ? { childJobId: boundary.childJobId } : {}
+          });
+          control.boundaryQueue.shift();
+          if (boundary.childJobId) {
+            control.pendingChildIds.delete(boundary.childJobId);
+            control.completedChildIds.add(boundary.childJobId);
+            this.#append(control, "child_completion_delivered", {
+              childJobId: boundary.childJobId,
+              boundaryId: boundary.id
+            });
+          }
+        } catch (error) {
+          void this.#runtimeFailure(control, error).catch(() => {
+          });
+        } finally {
+          control.draining = false;
+          if (control.phase === "idle" && control.boundaryQueue.length > 0) {
+            queueMicrotask(() => void this.#drainBoundary(control));
+          }
+        }
+      }
+      async notifyChildCompletion(sessionId, childJobId) {
+        const id = requiredText(sessionId, "Operator session id");
+        if (this.#blockedSessions.has(id)) throw new Error("Operator session is stopped");
+        const control = this.#control(id);
+        if (!control) throw new Error("Operator session must be resumed before child notification");
+        if (control.stopped) throw new Error("Operator session is stopped");
+        const child = this.#store.getJob(requiredText(childJobId, "Child Operator Job id"));
+        if (child.sessionId !== control.sessionId || child.parentJobId !== control.parentJobId) {
+          throw new Error("Child Operator Job does not belong to this session");
+        }
+        if (!TERMINAL_JOB_STATUSES.has(child.status)) throw new Error("Child Operator Job is not complete");
+        if (control.completedChildIds.has(child.id)) return { queued: false, duplicate: true };
+        if (control.pendingChildIds.has(child.id)) return { queued: true, duplicate: true };
+        if (control.boundaryQueue.length >= MAX_PENDING_BOUNDARIES) throw new Error("Operator message queue is full");
+        const artifactIds = this.#store.listArtifacts(child.id).map((artifact) => artifact.id).slice(0, 1e3);
+        const text = messageText([
+          "Rolling Skill environment update:",
+          `Child jobId ${child.id} completed with status ${child.status}.`,
+          `Artifact IDs: ${JSON.stringify(artifactIds)}`,
+          "Continue from durable Job and artifact state."
+        ].join("\n"), "Operator child completion", MAX_BOUNDARY_TEXT);
+        this.#append(control, "child_completion_enqueued", {
+          childJobId: child.id,
+          status: child.status,
+          artifactIds
+        });
+        const boundaryId = `boundary-${randomUUID()}`;
+        this.#append(control, "operator_boundary_enqueued", {
+          boundaryId,
+          boundaryKind: "environment",
+          childJobId: child.id,
+          content: text
+        });
+        control.pendingChildIds.add(child.id);
+        control.boundaryQueue.push({
+          id: boundaryId,
+          kind: "environment",
+          childJobId: child.id,
+          input: [{ type: "operatorContext", protocol: OPERATOR_PROTOCOL, text }]
+        });
+        const queued = control.phase !== "idle" || control.paused || control.draining;
+        void this.#drainBoundary(control);
+        return { queued };
+      }
+      async pause(sessionId) {
+        const control = this.#control(sessionId);
+        if (!control) throw new Error("Operator session must be resumed before pausing");
+        if (control.stopped) throw new Error("Operator session is stopped");
+        if (!control.paused) {
+          control.executorLease?.disable();
+          control.controlGeneration += 1;
+          this.#abortInteractions(control);
+          const parent = this.#store.getJob(control.parentJobId);
+          try {
+            if (parent.status === "running") {
+              this.#store.transitionJob(parent.id, "paused");
+            } else if (parent.status !== "paused" && parent.status !== "waiting_approval") {
+              throw new Error(`Operator session cannot pause while ${parent.status}`);
+            }
+            control.paused = true;
+            this.#append(control, "operator_session_paused", {});
+          } catch (error) {
+            if (!control.paused) this.#syncExecutorLease(control);
+            throw error;
+          }
+        }
+        return this.#snapshot(control);
+      }
+      async #reconcile(session, parentJob) {
+        const jobs = this.#store.listJobs({ sessionId: session.id });
+        const byParent = /* @__PURE__ */ new Map();
+        for (const job of jobs) {
+          if (!byParent.has(job.parentJobId)) byParent.set(job.parentJobId, []);
+          byParent.get(job.parentJobId).push(job);
+        }
+        const stack = [{ job: parentJob, visited: false }];
+        const ordered = [];
+        while (stack.length > 0) {
+          const entry = stack.pop();
+          if (entry.visited) {
+            ordered.push(entry.job);
+            continue;
+          }
+          stack.push({ job: entry.job, visited: true });
+          const children = byParent.get(entry.job.id) ?? [];
+          for (let index = children.length - 1; index >= 0; index -= 1) {
+            stack.push({ job: children[index], visited: false });
+          }
+        }
+        for (const job of ordered) {
+          let current = this.#store.getJob(job.id);
+          if (current.status === "paused" || current.status === "queued") {
+            current = this.#store.transitionJob(current.id, "running");
+          }
+          if (!TERMINAL_JOB_STATUSES.has(current.status)) {
+            if (typeof this.#engine.expireApprovals === "function") {
+              await this.#engine.expireApprovals(current.id);
+            }
+            await this.#engine.reconcile(job.id);
+          }
+        }
+        const steps = ordered.flatMap((job) => this.#store.listSteps({ jobId: job.id }));
+        const approvals = ordered.flatMap((job) => this.#store.listApprovals(job.id));
+        const pendingApprovals = approvals.filter((approval) => approval.status === "pending");
+        const pendingStepIds = new Set(pendingApprovals.map((approval) => approval.stepId));
+        const invalidPendingApproval = pendingApprovals.some((approval) => approval.stepId === null || this.#store.getStep(approval.stepId).status !== "waiting_approval");
+        const unresolvedWaitingStep = steps.some((step) => step.status === "waiting_approval" && !pendingStepIds.has(step.id));
+        const hasUnknownRecovery = invalidPendingApproval || unresolvedWaitingStep || ordered.some((job) => this.#store.getJob(job.id).status === "needs_recovery" || this.#store.listSteps({ jobId: job.id }).some((step) => step.status === "needs_recovery"));
+        let recoveredParent = this.#store.getJob(parentJob.id);
+        if (hasUnknownRecovery) {
+          if (recoveredParent.status === "running") {
+            recoveredParent = this.#store.transitionJob(recoveredParent.id, "needs_recovery");
+          }
+          throw new Error("Operator session cannot resume while needs_recovery");
+        }
+        if (pendingApprovals.length > 0) {
+          if (recoveredParent.status === "running") {
+            this.#store.transitionJob(recoveredParent.id, "waiting_approval");
+          }
+        } else if (recoveredParent.status === "waiting_approval") {
+          this.#store.transitionJob(recoveredParent.id, "running");
+        }
+        return { pendingApproval: pendingApprovals.length > 0 };
+      }
+      async #restore(sessionId) {
+        if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped");
+        const session = this.#store.getSession(sessionId);
+        const parents = this.#store.listJobs({ sessionId: session.id, parentJobId: null });
+        if (parents.length !== 1) throw new Error("Operator session must have exactly one parent Job");
+        let parentJob = parents[0];
+        if (TERMINAL_JOB_STATUSES.has(parentJob.status)) throw new Error("Operator session is stopped");
+        const configuration = sessionConfiguration(session);
+        if (!configuration || configuration.protocol !== OPERATOR_PROTOCOL) {
+          throw new Error("Operator session has no supported durable configuration");
+        }
+        const wasSessionPaused = sessionIsPaused(session);
+        const recovery = await this.#reconcile(session, parentJob);
+        if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped");
+        parentJob = this.#store.getJob(parentJob.id);
+        if (parentJob.status === "paused") parentJob = this.#store.transitionJob(parentJob.id, "running");
+        if (parentJob.status === "queued") parentJob = this.#store.transitionJob(parentJob.id, "running");
+        if (parentJob.status === "waiting_approval" && recovery.pendingApproval) {
+          if (wasSessionPaused) {
+            this.#store.appendSessionTranscript(session.id, { kind: "operator_session_resumed" });
+          }
+          return this.get(sessionId);
+        }
+        if (parentJob.status !== "running" && parentJob.status !== "waiting_approval") {
+          throw new Error(`Operator session cannot resume while ${parentJob.status}`);
+        }
+        const runtime = await this.#runtimeById(session.runtime.runtimeId);
+        if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped");
+        const context = protocolSnapshot({
+          actions: configuration.actions,
+          scope: configuration.scopes,
+          budget: configuration.budget,
+          transport: configuration.transport
+        });
+        const managedWorkspace = await this.#managedWorkspace(
+          configuration.managedSkillBinding,
+          context.scope,
+          { persisted: configuration.managedSkillBinding !== void 0 }
+        );
+        const authority = await this.#authority({
+          actions: context.actions,
+          scopes: context.scope,
+          budget: context.budget,
+          expiresInMs: capabilityLifetime({}, context.budget)
+        });
+        this.#store.appendSessionTranscript(session.id, {
+          kind: "operator_authority_issued",
+          capabilityId: authority.grant.id
+        });
+        if (this.#blockedSessions.has(sessionId)) {
+          await this.#capabilities.revoke(authority.grant.id);
+          this.#revokedCapabilities.add(authority.grant.id);
+          throw new Error("Operator session is stopped");
+        }
+        let frozen;
+        try {
+          frozen = await this.#freezeTransport(
+            runtime,
+            authority,
+            configuration.frozenTransport ?? context.transport
+          );
+          if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped");
+        } catch (error) {
+          await bestEffort(() => this.#capabilities.revoke(authority.grant.id));
+          throw error;
+        }
+        const control = this.#createControl({
+          session,
+          parentJob,
+          runtime,
+          modelId: session.modelId,
+          effort: session.effort,
+          authority,
+          ...frozen,
+          scope: context.scope,
+          actions: context.actions,
+          budget: context.budget,
+          nativeResume: configuration.nativeResume === true,
+          managedSkillBinding: managedWorkspace.binding,
+          workspaceRoot: managedWorkspace.workspaceRoot
+        });
+        try {
+          control.client = this.#runtimeRegistry.createClient(runtime, this.#clientOptions(control));
+          if (!control.client || typeof control.client.start !== "function" || typeof control.client.startThread !== "function" || typeof control.client.startTurn !== "function") {
+            throw new Error("Operator Runtime client is incomplete");
+          }
+          this.#controls.set(session.id, control);
+          this.#registerExecutor(control);
+          this.#attach(control);
+          const restorationGeneration = control.controlGeneration;
+          await control.client.start();
+          this.#assertControlOwned(control, restorationGeneration);
+          const priorThreadId = latestRuntimeThread(session);
+          if (control.nativeResume && priorThreadId && typeof control.client.resumeThread === "function") {
+            try {
+              const resumed = await control.client.resumeThread(priorThreadId, this.#threadOptions(control));
+              this.#assertControlOwned(control, restorationGeneration);
+              control.runtimeThreadId = runtimeThreadId(resumed);
+              control.phase = "idle";
+              this.#append(control, "runtime_thread_resumed", {
+                runtimeThreadId: control.runtimeThreadId,
+                capabilityId: authority.grant.id
+              });
+            } catch (error) {
+              this.#assertControlOwned(control, restorationGeneration);
+              if (!nativeResumeUnavailable(error)) throw error;
+              control.nativeResume = false;
+            }
+          }
+          if (!control.runtimeThreadId) {
+            const started = await control.client.startThread(this.#threadOptions(control));
+            this.#assertControlOwned(control, restorationGeneration);
+            control.runtimeThreadId = runtimeThreadId(started);
+            this.#append(control, "runtime_thread_started", {
+              runtimeThreadId: control.runtimeThreadId,
+              capabilityId: authority.grant.id,
+              checkpointResume: true
+            });
+            const jobs = this.#store.listJobs({ sessionId: session.id });
+            const jobIds = new Set(jobs.map((job) => job.id));
+            const artifacts = this.#store.read().artifacts.filter((artifact) => jobIds.has(artifact.jobId));
+            const checkpoint = safeCheckpoint(parentJob, artifacts);
+            this.#append(control, "environment", { content: checkpoint });
+            await this.#startTurn(control, buildOperatorInitialInput({
+              actions: context.actions,
+              scope: context.scope,
+              budget: context.budget,
+              transport: publicSelection(frozen.selection)
+            }, checkpoint));
+          }
+          if (control.phase === "idle" && control.boundaryQueue.length > 0) {
+            queueMicrotask(() => void this.#drainBoundary(control));
+          }
+          if (wasSessionPaused) this.#append(control, "operator_session_resumed", {});
+          return this.#snapshot(control);
+        } catch (error) {
+          control.stopped = true;
+          control.executorLease?.unregister();
+          this.#detach(control);
+          await bestEffort(() => control.client?.stop?.());
+          this.#controls.delete(session.id);
+          await bestEffort(() => this.#capabilities.revoke(authority.grant.id));
+          const outcomeUnknown = this.#store.listSteps({ jobId: parentJob.id }).some((step) => step.status === "running");
+          if (!outcomeUnknown) {
+            await bestEffort(() => Promise.resolve(this.#store.appendSessionTranscript(session.id, {
+              kind: "operator_session_needs_resume",
+              reason: "resume_failure"
+            })));
+          }
+          if (!TERMINAL_JOB_STATUSES.has(this.#store.getJob(parentJob.id).status)) {
+            await bestEffort(() => Promise.resolve(
+              typeof this.#engine.interrupt === "function" ? this.#engine.interrupt(parentJob.id, {
+                code: "OPERATOR_RESUME_FAILED",
+                message: "Operator Runtime resume failed"
+              }) : this.#store.interruptJob(parentJob.id, {
+                code: "OPERATOR_RESUME_FAILED",
+                message: "Operator Runtime resume failed"
+              })
+            ));
+          }
+          throw error;
+        }
+      }
+      async #resume(sessionId) {
+        const id = requiredText(sessionId, "Operator session id");
+        if (this.#blockedSessions.has(id)) throw new Error("Operator session is stopped");
+        const control = this.#controls.get(id);
+        if (!control) return this.#restore(id);
+        if (control.failureCleanup) {
+          await this.#retryRuntimeFailureCleanup(control);
+          if (this.#blockedSessions.has(id)) throw new Error("Operator session is stopped");
+          return this.#restore(id);
+        }
+        if (control.stopped) throw new Error("Operator session is stopped");
+        if (control.paused) {
+          const parent = this.#store.getJob(control.parentJobId);
+          if (parent.status === "paused") this.#store.transitionJob(parent.id, "running");
+          else if (parent.status !== "waiting_approval") {
+            throw new Error("Operator pause state is inconsistent");
+          }
+          control.paused = false;
+          control.controlGeneration += 1;
+          this.#syncExecutorLease(control);
+          this.#append(control, "operator_session_resumed", {});
+          void this.#drainBoundary(control);
+        }
+        return this.#snapshot(control);
+      }
+      resume(sessionId) {
+        const id = requiredText(sessionId, "Operator session id");
+        const existing = this.#resumeFlights.get(id);
+        if (existing) return existing;
+        const operation = this.#resume(id);
+        let shared;
+        shared = operation.finally(() => {
+          if (this.#resumeFlights.get(id) === shared) this.#resumeFlights.delete(id);
+        });
+        this.#resumeFlights.set(id, shared);
+        return shared;
+      }
+      restart(sessionId) {
+        return this.resume(sessionId);
+      }
+      resumeAfterApproval(sessionId) {
+        return this.resume(sessionId);
+      }
+      #requiredStopOperation(label, operation, onSuccess = null) {
+        let result;
+        try {
+          result = operation();
+        } catch (error) {
+          result = Promise.reject(error);
+        }
+        return {
+          label,
+          promise: Promise.resolve(result).then((value) => {
+            onSuccess?.(value);
+            return value;
+          })
+        };
+      }
+      #turnInterruptionOperation(control, progress) {
+        if (!progress?.turnTarget || progress.turnSettled) return null;
+        const { runtimeThreadId: runtimeThreadId2, turnId } = progress.turnTarget;
+        return this.#requiredStopOperation(
+          "interrupt Runtime turn",
+          async () => {
+            if (typeof control.client?.interruptTurn !== "function") {
+              throw new Error("Operator Runtime turn cannot be interrupted");
+            }
+            try {
+              await control.client.interruptTurn(runtimeThreadId2, turnId);
+            } catch (error) {
+              if (!turnInterruptionConverged(error)) throw error;
+            }
+          },
+          () => {
+            progress.turnSettled = true;
+          }
+        );
+      }
+      async #performStop(id, session, parent, control) {
+        const required = [];
+        if (control?.failureCleanup) {
+          required.push(this.#requiredStopOperation(
+            "settle failed Runtime cleanup",
+            () => this.#retryRuntimeFailureCleanup(control)
+          ));
+        }
+        const capabilityIds = /* @__PURE__ */ new Set([latestCapabilityId(session)]);
+        if (control) capabilityIds.add(control.authority.grant.id);
+        for (const capabilityId of capabilityIds) {
+          if (control?.failureCleanup && capabilityId === control.authority.grant.id) continue;
+          if (this.#revokedCapabilities.has(capabilityId)) continue;
+          required.push(this.#requiredStopOperation(
+            `revoke ${capabilityId}`,
+            () => this.#capabilities.revoke(capabilityId),
+            () => this.#revokedCapabilities.add(capabilityId)
+          ));
+        }
+        if (!TERMINAL_JOB_STATUSES.has(this.#store.getJob(parent.id).status)) {
+          required.push(this.#requiredStopOperation(
+            `cancel ${parent.id}`,
+            () => this.#engine.cancel(parent.id)
+          ));
+        }
+        const turnInterruption = control?.failureCleanup ? null : this.#turnInterruptionOperation(control, control?.stopProgress);
+        if (turnInterruption) required.push(turnInterruption);
+        const resumeFlight = this.#resumeFlights.get(id);
+        if (resumeFlight) {
+          required.push(this.#requiredStopOperation(
+            "settle in-flight resume",
+            () => Promise.resolve(resumeFlight).then(() => void 0, () => void 0)
+          ));
+        }
+        const settled = await Promise.allSettled(required.map((entry) => entry.promise));
+        const failures = settled.flatMap((entry, index) => entry.status === "rejected" ? [Object.assign(
+          new Error(`${required[index].label}: ${entry.reason?.message ?? "failed"}`),
+          { cause: entry.reason }
+        )] : []);
+        if (control && !control.failureCleanup && control.stopProgress?.turnSettled && !control.clientStopped) {
+          const clientStop = this.#requiredStopOperation(
+            "stop Runtime client",
+            () => {
+              if (typeof control.client?.stop !== "function") {
+                throw new Error("Operator Runtime client cannot be stopped");
+              }
+              return control.client.stop();
+            },
+            () => {
+              control.clientStopped = true;
+            }
+          );
+          const [clientResult] = await Promise.allSettled([clientStop.promise]);
+          if (clientResult.status === "rejected") {
+            failures.push(Object.assign(
+              new Error(`${clientStop.label}: ${clientResult.reason?.message ?? "failed"}`),
+              { cause: clientResult.reason }
+            ));
+          }
+        }
+        const refreshed = this.#store.getSession(id);
+        const lateCapabilityId = latestCapabilityId(refreshed);
+        if (!capabilityIds.has(lateCapabilityId) && !this.#revokedCapabilities.has(lateCapabilityId)) {
+          const late = this.#requiredStopOperation(
+            `revoke ${lateCapabilityId}`,
+            () => this.#capabilities.revoke(lateCapabilityId),
+            () => this.#revokedCapabilities.add(lateCapabilityId)
+          );
+          const lateResult = await Promise.allSettled([late.promise]);
+          if (lateResult[0].status === "rejected") {
+            failures.push(Object.assign(
+              new Error(`revoke ${lateCapabilityId}: ${lateResult[0].reason?.message ?? "failed"}`),
+              { cause: lateResult[0].reason }
+            ));
+          }
+        }
+        if (failures.length > 0) {
+          throw new AggregateError(
+            failures,
+            `Operator stop incomplete: ${failures.map((failure) => failure.message).join("; ")}`
+          );
+        }
+        const stoppedParent = this.#store.getJob(parent.id);
+        if (!TERMINAL_JOB_STATUSES.has(parent.status) && stoppedParent.status !== "cancelled") {
+          throw new Error("Operator parent Job was not cancelled");
+        }
+        if (control && !control.clientStopped) {
+          throw new Error("Operator Runtime client did not stop");
+        }
+        let snapshot;
+        if (control) {
+          this.#append(control, "operator_session_stopped", {});
+          snapshot = this.#snapshot(control);
+          if (this.#controls.get(id) === control) this.#controls.delete(id);
+        } else {
+          snapshot = this.get(id);
+        }
+        return snapshot;
+      }
+      stop(sessionId) {
+        const id = requiredText(sessionId, "Operator session id");
+        const existingStop = this.#stopPromises.get(id);
+        if (existingStop) return existingStop;
+        this.#blockedSessions.add(id);
+        const control = this.#controls.get(id);
+        const session = this.#store.getSession(id);
+        const parent = this.#store.listJobs({ sessionId: session.id, parentJobId: null })[0];
+        if (!parent) throw new Error("Operator parent Job is missing");
+        if (control) {
+          if (!control.stopProgress) {
+            const turnTarget = activeTurnTarget(control);
+            control.stopProgress = {
+              turnTarget,
+              turnSettled: turnTarget === null
+            };
+          }
+          control.stopped = true;
+          control.phase = "stopping";
+          control.controlGeneration += 1;
+          control.generation += 1;
+          control.boundaryQueue.length = 0;
+          control.pendingChildIds.clear();
+          control.executorLease?.disable();
+          control.executorLease?.unregister();
+          this.#abortInteractions(control);
+          this.#detach(control);
+        }
+        const operation = this.#performStop(id, session, parent, control);
+        let shared;
+        shared = operation.catch((error) => {
+          if (this.#stopPromises.get(id) === shared) this.#stopPromises.delete(id);
+          throw error;
+        });
+        this.#stopPromises.set(id, shared);
+        return shared;
+      }
+      async stopAll() {
+        const sessionIds = /* @__PURE__ */ new Set([
+          ...this.#controls.keys(),
+          ...this.#resumeFlights.keys(),
+          ...this.#stopPromises.keys()
+        ]);
+        for (const session of this.#store.listSessions()) {
+          const parent = this.#store.listJobs({ sessionId: session.id, parentJobId: null })[0];
+          if (parent && !TERMINAL_JOB_STATUSES.has(parent.status)) sessionIds.add(session.id);
+        }
+        const operations = [...sessionIds].map((sessionId) => this.stop(sessionId));
+        const settled = await Promise.allSettled(operations);
+        const failures = settled.flatMap((entry) => entry.status === "rejected" ? [entry.reason] : []);
+        if (failures.length > 0) throw new AggregateError(failures, "Operator stopAll incomplete");
+      }
+    };
+    module.exports = {
+      MAX_BOUNDARY_TEXT,
+      MAX_PENDING_BOUNDARIES,
+      MAX_TRANSCRIPT_TEXT,
+      OperatorSessionManager
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/optimization/optimization-contract.cjs
+var require_optimization_contract = __commonJS({
+  "../../desktop/rolling-skill/src/optimization/optimization-contract.cjs"(exports, module) {
+    var { createHash } = __require("node:crypto");
+    var { isAbsolute } = __require("node:path");
+    var { validateSkillEvidence } = require_evaluation_skill_evidence();
+    var OPTIMIZATION_CONFIG_SCHEMA = "rolling-skill-optimization-config/v1";
+    var OPTIMIZATION_DECISION_SCHEMA = "rolling-skill-optimization-decision/v1";
+    var FROZEN_OPTIMIZATION_RUN_SCHEMA = "rolling-skill-frozen-optimization-run/v1";
+    var MAX_DURATION_MS = 30 * 24 * 60 * 60 * 1e3;
+    var MAX_DECISION_BYTES = 64 * 1024;
+    var EFFORTS = /* @__PURE__ */ new Set(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+    var MODES = /* @__PURE__ */ new Set(["fixed", "adaptive"]);
+    var ACTIVATION_MODES = /* @__PURE__ */ new Set(["automatic", "explicit"]);
+    var DECISION_ACTIONS = /* @__PURE__ */ new Set(["continue", "finish", "pause"]);
+    var DANGEROUS_KEYS = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
+    function isPlainObject(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      const prototype = Object.getPrototypeOf(value);
+      return prototype === Object.prototype || prototype === null;
+    }
+    function requireObject(value, label) {
+      if (!isPlainObject(value)) throw new Error(`${label} must be a plain object`);
+      return value;
+    }
+    function rejectDangerousKey(key, label) {
+      if (DANGEROUS_KEYS.has(key)) throw new Error(`${label} contains an unsafe field`);
+    }
+    function exactKeys(value, required, optional, label) {
+      requireObject(value, label);
+      const requiredSet = new Set(required);
+      const allowed = /* @__PURE__ */ new Set([...required, ...optional]);
+      for (const key of Object.keys(value)) {
+        rejectDangerousKey(key, label);
+        if (!allowed.has(key)) throw new Error(`${label} contains unsupported field ${key}`);
+      }
+      for (const key of requiredSet) {
+        if (!Object.hasOwn(value, key)) throw new Error(`${label} is missing field ${key}`);
+      }
+      return value;
+    }
+    function cloneJson(value, label = "Value", seen = /* @__PURE__ */ new Set()) {
+      if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+      if (typeof value === "number") {
+        if (!Number.isFinite(value)) throw new Error(`${label} must contain finite JSON numbers`);
+        return value;
+      }
+      if (typeof value !== "object" || value === void 0) throw new Error(`${label} must be JSON`);
+      if (seen.has(value)) throw new Error(`${label} must not be cyclic`);
+      seen.add(value);
+      let copy;
+      if (Array.isArray(value)) {
+        const keys = Object.keys(value);
+        if (keys.length !== value.length || keys.some((key, index) => key !== String(index))) {
+          throw new Error(`${label} must be a dense array`);
+        }
+        copy = value.map((entry) => cloneJson(entry, label, seen));
+      } else {
+        requireObject(value, label);
+        copy = {};
+        for (const key of Object.keys(value)) {
+          rejectDangerousKey(key, label);
+          copy[key] = cloneJson(value[key], label, seen);
+        }
+      }
+      seen.delete(value);
+      return copy;
+    }
+    function deepFreeze(value) {
+      if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+      for (const child of Object.values(value)) deepFreeze(child);
+      return Object.freeze(value);
+    }
+    function canonicalJson(value) {
+      if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+      if (value !== null && typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+      }
+      return JSON.stringify(value);
+    }
+    function canonicalDigest(value) {
+      const copy = cloneJson(value, "Digest input");
+      return `sha256:${createHash("sha256").update(canonicalJson(copy)).digest("hex")}`;
+    }
+    function requiredText(value, label, maxLength = 300) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized) throw new Error(`${label} is required`);
+      if (normalized.length > maxLength) throw new Error(`${label} is too long`);
+      if (/\u0000/u.test(normalized)) throw new Error(`${label} contains unsupported characters`);
+      return normalized;
+    }
+    function nullableText(value, label, maxLength = 300) {
+      if (value === void 0 || value === null || value === "") return null;
+      return requiredText(value, label, maxLength);
+    }
+    function timestamp(value, label) {
+      const normalized = requiredText(value, label, 100);
+      if (!Number.isFinite(Date.parse(normalized)) || new Date(normalized).toISOString() !== normalized) {
+        throw new Error(`${label} must be a canonical timestamp`);
+      }
+      return normalized;
+    }
+    function digestText(value, label) {
+      const normalized = requiredText(value, label, 80);
+      if (!/^sha256:[a-f0-9]{64}$/u.test(normalized)) throw new Error(`${label} must be SHA-256`);
+      return normalized;
+    }
+    function boundedInteger(value, label, minimum, maximum) {
+      if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+        throw new Error(`${label} is outside its supported limit`);
+      }
+      return value;
+    }
+    function boundedNumber(value, label, minimum, maximum, { exclusiveMinimum = false } = {}) {
+      const outsideMinimum = exclusiveMinimum ? value <= minimum : value < minimum;
+      if (!Number.isFinite(value) || outsideMinimum || value > maximum) {
+        throw new Error(`${label} is outside its supported limit`);
+      }
+      return value;
+    }
+    function optionalPositiveInteger(value, label, maximum) {
+      if (value === void 0 || value === null) return null;
+      return boundedInteger(value, label, 1, maximum);
+    }
+    function optionalNonnegativeInteger(value, label, maximum) {
+      if (value === void 0 || value === null) return null;
+      return boundedInteger(value, label, 0, maximum);
+    }
+    function runtimeSelection(value, label) {
+      exactKeys(value, ["runtimeId", "modelId"], ["effort"], label);
+      const effort = nullableText(value.effort, `${label} effort`, 100);
+      if (effort !== null && !EFFORTS.has(effort)) throw new Error(`${label} effort is unsupported`);
+      return {
+        runtimeId: requiredText(value.runtimeId, `${label} runtime id`, 300),
+        modelId: requiredText(value.modelId, `${label} model id`, 300),
+        effort
+      };
+    }
+    function limits(value) {
+      exactKeys(
+        value,
+        ["maxEpochs", "maxDurationMs", "patience", "minimumImprovement"],
+        ["maxTurns", "maxTokens", "maxCostMicros"],
+        "Optimization limits"
+      );
+      const maxEpochs = boundedInteger(value.maxEpochs, "Optimization max epochs", 1, 100);
+      const patience = boundedInteger(value.patience, "Optimization patience", 1, maxEpochs);
+      return {
+        maxEpochs,
+        maxDurationMs: boundedInteger(
+          value.maxDurationMs,
+          "Optimization max duration",
+          1,
+          MAX_DURATION_MS
+        ),
+        patience,
+        minimumImprovement: boundedNumber(
+          value.minimumImprovement,
+          "Optimization minimum improvement",
+          0,
+          100
+        ),
+        maxTurns: optionalPositiveInteger(value.maxTurns, "Optimization max turns", 1e6),
+        maxTokens: optionalNonnegativeInteger(
+          value.maxTokens,
+          "Optimization max tokens",
+          1e12
+        ),
+        maxCostMicros: optionalNonnegativeInteger(
+          value.maxCostMicros,
+          "Optimization max cost",
+          Number.MAX_SAFE_INTEGER
+        )
+      };
+    }
+    function target(value) {
+      exactKeys(
+        value,
+        ["minimumScore", "minimumPassRate", "requireCriticalCases"],
+        [],
+        "Optimization target"
+      );
+      if (typeof value.requireCriticalCases !== "boolean") {
+        throw new Error("Optimization critical Case target must be boolean");
+      }
+      return {
+        minimumScore: boundedNumber(value.minimumScore, "Optimization minimum score", 0, 100),
+        minimumPassRate: boundedNumber(value.minimumPassRate, "Optimization minimum pass rate", 0, 1),
+        requireCriticalCases: value.requireCriticalCases
+      };
+    }
+    function telemetry(value) {
+      exactKeys(value, ["tokens", "cost"], [], "Optimization telemetry");
+      if (typeof value.tokens !== "boolean" || typeof value.cost !== "boolean") {
+        throw new Error("Optimization telemetry capabilities must be boolean");
+      }
+      return { tokens: value.tokens, cost: value.cost };
+    }
+    function parseOptimizationConfig(value) {
+      const source = cloneJson(value, "Optimization config");
+      exactKeys(
+        source,
+        [
+          "skillId",
+          "baselineVersionId",
+          "datasetId",
+          "operator",
+          "targets",
+          "judge",
+          "activationMode",
+          "mode",
+          "limits",
+          "target",
+          "telemetry"
+        ],
+        [],
+        "Optimization config"
+      );
+      const mode = requiredText(source.mode, "Optimization mode", 20);
+      if (!MODES.has(mode)) throw new Error("Optimization mode must be fixed or adaptive");
+      const activationMode = requiredText(source.activationMode, "Optimization activation mode", 20);
+      if (!ACTIVATION_MODES.has(activationMode)) {
+        throw new Error("Optimization activation mode must be automatic or explicit");
+      }
+      if (!Array.isArray(source.targets) || source.targets.length === 0 || source.targets.length > 64) {
+        throw new Error("Optimization targets must contain between 1 and 64 entries");
+      }
+      const targets = source.targets.map((entry, index) => runtimeSelection(
+        entry,
+        `Optimization target ${index + 1}`
+      ));
+      if (new Set(targets.map((entry) => entry.runtimeId)).size !== targets.length) {
+        throw new Error("Optimization target runtime ids must be unique");
+      }
+      const parsed = {
+        schemaVersion: OPTIMIZATION_CONFIG_SCHEMA,
+        skillId: requiredText(source.skillId, "Optimization Skill id", 200),
+        baselineVersionId: requiredText(
+          source.baselineVersionId,
+          "Optimization baseline version id",
+          200
+        ),
+        datasetId: requiredText(source.datasetId, "Optimization Dataset id", 200),
+        operator: runtimeSelection(source.operator, "Optimization operator"),
+        targets,
+        judge: runtimeSelection(source.judge, "Optimization Judge"),
+        activationMode,
+        mode,
+        limits: limits(source.limits),
+        target: target(source.target),
+        telemetry: telemetry(source.telemetry)
+      };
+      if (parsed.limits.maxTokens > 0 && !parsed.telemetry.tokens) {
+        throw new Error("A hard token budget requires token telemetry capability");
+      }
+      if (parsed.limits.maxCostMicros > 0 && !parsed.telemetry.cost) {
+        throw new Error("A hard cost budget requires cost telemetry capability");
+      }
+      return deepFreeze(parsed);
+    }
+    function parseJsonText(value, label) {
+      if (typeof value !== "string") return value;
+      const blocks = [...value.matchAll(/```(?:json)?\s*([\s\S]*?)```/giu)];
+      for (const block of blocks.reverse()) {
+        try {
+          return JSON.parse(block[1].trim());
+        } catch {
+        }
+      }
+      try {
+        return JSON.parse(value);
+      } catch {
+        throw new Error(`${label} does not contain valid JSON`);
+      }
+    }
+    function decisionObservation(value, index) {
+      exactKeys(
+        value,
+        ["kind", "summary"],
+        ["artifactId"],
+        `Optimization decision observation ${index + 1}`
+      );
+      const observation = {
+        kind: requiredText(value.kind, `Optimization decision observation ${index + 1} kind`, 100),
+        summary: requiredText(value.summary, `Optimization decision observation ${index + 1} summary`, 2e3)
+      };
+      if (value.artifactId !== void 0) {
+        const artifactId = requiredText(
+          value.artifactId,
+          `Optimization decision observation ${index + 1} artifact id`,
+          200
+        );
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u.test(artifactId)) {
+          throw new Error("Optimization decision observation artifact id must be opaque");
+        }
+        observation.artifactId = artifactId;
+      }
+      return observation;
+    }
+    function parseOptimizationDecision(value) {
+      const source = cloneJson(parseJsonText(value, "Optimization decision"), "Optimization decision");
+      exactKeys(
+        source,
+        ["schemaVersion", "action", "rationale"],
+        ["observations"],
+        "Optimization decision"
+      );
+      if (source.schemaVersion !== OPTIMIZATION_DECISION_SCHEMA) {
+        throw new Error(`Optimization decision must use schema ${OPTIMIZATION_DECISION_SCHEMA}`);
+      }
+      const action = requiredText(source.action, "Optimization decision action", 20);
+      if (!DECISION_ACTIONS.has(action)) {
+        throw new Error("Optimization decision action must be continue, finish, or pause");
+      }
+      const observationSource = source.observations === void 0 ? [] : source.observations;
+      if (!Array.isArray(observationSource) || observationSource.length > 64) {
+        throw new Error("Optimization decision observations must be a bounded array");
+      }
+      const observations = observationSource.map(decisionObservation);
+      const parsed = {
+        schemaVersion: OPTIMIZATION_DECISION_SCHEMA,
+        action,
+        rationale: requiredText(source.rationale, "Optimization decision rationale", 8192),
+        observations
+      };
+      if (Buffer.byteLength(canonicalJson(parsed)) > MAX_DECISION_BYTES) {
+        throw new Error("Optimization decision exceeds its byte limit");
+      }
+      return deepFreeze(parsed);
+    }
+    function trustedSkillRoot(value) {
+      const root = requiredText(value, "Baseline Skill root", 4096);
+      if (isAbsolute(root) || root.includes("\\") || root.split("/").some((part) => part === ".." || part === "")) {
+        throw new Error("Baseline Skill root must be a trusted repository-relative path");
+      }
+      return root;
+    }
+    function baselineSnapshot(value, { releasedFact = true } = {}) {
+      exactKeys(
+        value,
+        ["repositoryId", "skillId", "versionId", "commit", "skillRoot", "contentDigest"],
+        releasedFact ? ["state"] : [],
+        "Optimization baseline"
+      );
+      if (releasedFact && String(value.state ?? "").toLowerCase() !== "released") {
+        throw new Error("Optimization baseline must be a Released Skill version");
+      }
+      const commit = requiredText(value.commit, "Baseline commit", 64);
+      if (!/^[a-f0-9]{40}$/u.test(commit)) throw new Error("Baseline commit must be a full SHA-1");
+      return {
+        repositoryId: requiredText(value.repositoryId, "Baseline repository id", 200),
+        skillId: requiredText(value.skillId, "Baseline Skill id", 200),
+        versionId: requiredText(value.versionId, "Baseline version id", 200),
+        commit,
+        skillRoot: trustedSkillRoot(value.skillRoot),
+        contentDigest: digestText(value.contentDigest, "Baseline content digest")
+      };
+    }
+    function caseRevision(value, index) {
+      exactKeys(
+        value,
+        ["caseId", "revision", "rubricVersionId", "calibrationStatus"],
+        [],
+        `Dataset Case revision ${index + 1}`
+      );
+      const calibrationStatus = requiredText(
+        value.calibrationStatus,
+        `Dataset Case revision ${index + 1} calibration status`,
+        40
+      );
+      if (calibrationStatus !== "current") {
+        throw new Error("Every Dataset Case requires current Rubric calibration");
+      }
+      return {
+        caseId: requiredText(value.caseId, `Dataset Case revision ${index + 1} id`, 200),
+        revision: boundedInteger(
+          value.revision,
+          `Dataset Case revision ${index + 1}`,
+          1,
+          Number.MAX_SAFE_INTEGER
+        ),
+        rubricVersionId: requiredText(
+          value.rubricVersionId,
+          `Dataset Case revision ${index + 1} Rubric version id`,
+          200
+        ),
+        calibrationStatus
+      };
+    }
+    function datasetSnapshot(value, { bindingFact = true } = {}) {
+      exactKeys(
+        value,
+        ["id", "revision", "caseRevisions", "digest", "repositoryId"],
+        bindingFact ? ["skillId"] : [],
+        "Optimization Dataset"
+      );
+      if (!Array.isArray(value.caseRevisions) || value.caseRevisions.length === 0) {
+        throw new Error("Optimization Dataset requires calibrated Case revisions");
+      }
+      if (value.caseRevisions.length > 1e5) {
+        throw new Error("Optimization Dataset has too many Case revisions");
+      }
+      const caseRevisions = value.caseRevisions.map(caseRevision);
+      if (new Set(caseRevisions.map((entry) => entry.caseId)).size !== caseRevisions.length) {
+        throw new Error("Optimization Dataset Case revisions must be unique");
+      }
+      return {
+        id: requiredText(value.id, "Optimization Dataset id", 200),
+        revision: boundedInteger(value.revision, "Optimization Dataset revision", 1, Number.MAX_SAFE_INTEGER),
+        caseRevisions,
+        digest: digestText(value.digest, "Optimization Dataset digest"),
+        repositoryId: requiredText(value.repositoryId, "Optimization Dataset repository id", 200)
+      };
+    }
+    function rubricSnapshot(value, { publishedFact = true } = {}) {
+      if (!isPlainObject(value)) throw new Error("A published Rubric is required for optimization");
+      exactKeys(
+        value,
+        ["id", "version", "scoringModel", "digest"],
+        publishedFact ? ["datasetId", "publishedAt"] : [],
+        "Optimization Rubric"
+      );
+      if (publishedFact) timestamp(value.publishedAt, "Optimization Rubric publishedAt");
+      const scoringModel = requiredText(value.scoringModel, "Optimization Rubric scoring model", 100);
+      if (scoringModel !== "unified-100/v1") {
+        throw new Error("Optimization requires a published Rubric using unified-100/v1");
+      }
+      return {
+        id: requiredText(value.id, "Optimization Rubric id", 200),
+        version: boundedInteger(value.version, "Optimization Rubric version", 1, Number.MAX_SAFE_INTEGER),
+        scoringModel,
+        digest: digestText(value.digest, "Optimization Rubric digest")
+      };
+    }
+    function frozenRunBody(value, { trustedFacts = true } = {}) {
+      const baseline = baselineSnapshot(value.baseline, { releasedFact: trustedFacts });
+      const dataset = datasetSnapshot(value.dataset, { bindingFact: trustedFacts });
+      const rubric = rubricSnapshot(value.rubric, { publishedFact: trustedFacts });
+      const config = parseOptimizationConfig(value.config);
+      if (config.skillId !== baseline.skillId || config.baselineVersionId !== baseline.versionId) {
+        throw new Error("Optimization config does not match the trusted baseline Skill identity");
+      }
+      if (config.datasetId !== dataset.id) {
+        throw new Error("Optimization config does not match the trusted Dataset identity");
+      }
+      if (trustedFacts) {
+        const datasetSkillId = requiredText(value.dataset.skillId, "Dataset stable Skill identity", 200);
+        if (datasetSkillId !== baseline.skillId) {
+          throw new Error("Dataset is bound to a different stable Skill identity");
+        }
+        if (dataset.repositoryId !== baseline.repositoryId) {
+          throw new Error("Dataset is bound to a different stable Skill repository identity");
+        }
+        if (value.rubric.datasetId !== dataset.id) {
+          throw new Error("Published Rubric does not belong to the selected Dataset");
+        }
+      }
+      if (dataset.caseRevisions.some((entry) => entry.rubricVersionId !== rubric.id)) {
+        throw new Error("One or more Dataset Cases have stale Rubric calibration");
+      }
+      if (config.limits.maxTokens > 0 && !config.telemetry.tokens) {
+        throw new Error("A hard token budget requires token telemetry capability");
+      }
+      if (config.limits.maxCostMicros > 0 && !config.telemetry.cost) {
+        throw new Error("A hard cost budget requires cost telemetry capability");
+      }
+      return {
+        schemaVersion: FROZEN_OPTIMIZATION_RUN_SCHEMA,
+        baseline,
+        dataset,
+        rubric,
+        skillEvidenceDigest: digestText(value.skillEvidenceDigest, "Optimization Skill evidence digest"),
+        operator: cloneJson(config.operator),
+        targets: cloneJson(config.targets),
+        judge: cloneJson(config.judge),
+        activationMode: config.activationMode,
+        mode: config.mode,
+        limits: cloneJson(config.limits),
+        target: cloneJson(config.target),
+        telemetry: cloneJson(config.telemetry),
+        createdAt: timestamp(value.createdAt, "Optimization creation time")
+      };
+    }
+    function freezeOptimizationRun(value) {
+      const source = cloneJson(value, "Optimization frozen-run input");
+      exactKeys(
+        source,
+        ["baseline", "dataset", "rubric", "skillEvidence", "config", "createdAt"],
+        [],
+        "Optimization frozen-run input"
+      );
+      let evidence;
+      try {
+        evidence = validateSkillEvidence(source.skillEvidence, { requireComplete: true });
+      } catch (error) {
+        throw new Error(`Optimization requires complete Skill evidence: ${error.message}`);
+      }
+      const body = frozenRunBody({ ...source, skillEvidenceDigest: evidence.digest });
+      return deepFreeze({ ...body, digest: canonicalDigest(body) });
+    }
+    function validateFrozenOptimizationRun(value) {
+      const source = cloneJson(value, "Frozen optimization run");
+      exactKeys(
+        source,
+        [
+          "schemaVersion",
+          "baseline",
+          "dataset",
+          "rubric",
+          "skillEvidenceDigest",
+          "operator",
+          "targets",
+          "judge",
+          "activationMode",
+          "mode",
+          "limits",
+          "target",
+          "telemetry",
+          "createdAt",
+          "digest"
+        ],
+        [],
+        "Frozen optimization run"
+      );
+      if (source.schemaVersion !== FROZEN_OPTIMIZATION_RUN_SCHEMA) {
+        throw new Error(`Frozen optimization run must use ${FROZEN_OPTIMIZATION_RUN_SCHEMA}`);
+      }
+      const body = frozenRunBody({
+        baseline: source.baseline,
+        dataset: source.dataset,
+        rubric: source.rubric,
+        skillEvidenceDigest: source.skillEvidenceDigest,
+        config: {
+          skillId: source.baseline.skillId,
+          baselineVersionId: source.baseline.versionId,
+          datasetId: source.dataset.id,
+          operator: source.operator,
+          targets: source.targets,
+          judge: source.judge,
+          activationMode: source.activationMode,
+          mode: source.mode,
+          limits: source.limits,
+          target: source.target,
+          telemetry: source.telemetry
+        },
+        createdAt: source.createdAt
+      }, { trustedFacts: false });
+      const claimedDigest = digestText(source.digest, "Frozen optimization run digest");
+      if (canonicalDigest(body) !== claimedDigest) {
+        throw new Error("Frozen optimization run digest does not match its immutable snapshot");
+      }
+      return deepFreeze({ ...body, digest: claimedDigest });
+    }
+    module.exports = {
+      FROZEN_OPTIMIZATION_RUN_SCHEMA,
+      MAX_DURATION_MS,
+      OPTIMIZATION_CONFIG_SCHEMA,
+      OPTIMIZATION_DECISION_SCHEMA,
+      canonicalOptimizationDigest: canonicalDigest,
+      freezeOptimizationRun,
+      parseOptimizationConfig,
+      parseOptimizationDecision,
+      validateFrozenOptimizationRun
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/optimization/optimization-report.cjs
+var require_optimization_report = __commonJS({
+  "../../desktop/rolling-skill/src/optimization/optimization-report.cjs"(exports, module) {
+    "use strict";
+    var { createHash } = __require("node:crypto");
+    function sha256(value) {
+      return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+    }
+    function display(value, fallback = "\u2014") {
+      return value === null || value === void 0 || value === "" ? fallback : String(value);
+    }
+    function percent(value) {
+      return Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : "\u2014";
+    }
+    function artifactValue(value) {
+      if (value === null || value === void 0) return null;
+      if (Buffer.isBuffer(value)) return JSON.parse(value.toString("utf8"));
+      if (typeof value === "string") return JSON.parse(value);
+      if (typeof value !== "object" || Array.isArray(value)) return value;
+      if (typeof value.body === "string") return JSON.parse(value.body);
+      if (value.inline && typeof value.inline.body === "string") {
+        const encoding = value.inline.encoding === "base64" ? "base64" : "utf8";
+        return JSON.parse(Buffer.from(value.inline.body, encoding).toString("utf8"));
+      }
+      return value;
+    }
+    function readArtifact(read, artifactId) {
+      if (!artifactId) return null;
+      return artifactValue(read(artifactId));
+    }
+    function entryText(entry) {
+      const identity = [entry.caseId, entry.runtimeId].filter(Boolean).join(" \xD7 ") || "\u672A\u77E5\u9879";
+      const delta = Number.isFinite(entry.delta) ? `\uFF08\u0394 ${entry.delta > 0 ? "+" : ""}${entry.delta}\uFF09` : "";
+      return `${identity}${delta}`;
+    }
+    function listSection(lines, title, entries) {
+      lines.push(`#### ${title}`, "");
+      if (!Array.isArray(entries) || entries.length === 0) {
+        lines.push("- \u65E0", "");
+        return;
+      }
+      for (const entry of entries) lines.push(`- ${entryText(entry)}`);
+      lines.push("");
+    }
+    function renderEpoch(lines, epoch, read) {
+      const candidate = readArtifact(read, epoch.candidateArtifactId) ?? {};
+      const analysis = readArtifact(read, epoch.analysisArtifactId) ?? {};
+      const decision = readArtifact(read, epoch.decisionArtifactId) ?? {};
+      const installations = (epoch.installArtifactIds ?? []).map((artifactId) => readArtifact(read, artifactId)).filter(Boolean).flatMap((artifact) => Array.isArray(artifact.jobs) ? artifact.jobs : [artifact]);
+      lines.push(
+        `### Epoch ${display(epoch.number)}`,
+        "",
+        `- \u72B6\u6001\uFF1A${display(epoch.status)}`,
+        `- Candidate\uFF1A${display(candidate.id ?? candidate.versionId)}`,
+        `- commit\uFF1A${display(candidate.commit)}`,
+        `- \u5185\u5BB9\u6458\u8981\uFF1A${display(candidate.contentDigest)}`,
+        `- Diff \u6458\u8981\uFF1A${display(candidate.diffSummary, "\u672A\u63D0\u4F9B")}`,
+        `- \u5F97\u5206\uFF1A${display(analysis.score)}\uFF08\u76F8\u5BF9\u4E0A\u4E00\u8F6E \u0394 ${display(analysis.scoreDelta)}\uFF09`,
+        `- \u901A\u8FC7\u7387\uFF1A${percent(analysis.passRate)}`,
+        `- \u6267\u884C\u5931\u8D25\uFF1A${display(analysis.executionFailureCount, "0")}\uFF1B\u8BC4\u5206\u5931\u8D25\uFF1A${display(analysis.gradingFailureCount, "0")}`,
+        "",
+        "#### Runtime \u5B89\u88C5\u7ED3\u679C",
+        ""
+      );
+      if (installations.length === 0) lines.push("- \u672A\u63D0\u4F9B");
+      for (const job of installations) {
+        lines.push(`- ${display(job.runtime?.runtimeId ?? job.runtimeId)}\uFF1A${display(job.status)}`);
+      }
+      lines.push("");
+      listSection(lines, "\u6539\u8FDB\u9879", analysis.improved);
+      listSection(lines, "\u56DE\u5F52\u9879", analysis.regressed);
+      listSection(lines, "\u5173\u952E\u5931\u8D25", analysis.criticalFailures);
+      lines.push(
+        "#### Agent \u5224\u65AD\u7406\u7531",
+        "",
+        `> ${display(decision.rationale, "\u672A\u63D0\u4F9B")}`,
+        ""
+      );
+    }
+    function generateOptimizationReport({ run, readArtifact: read }) {
+      if (!run || typeof run !== "object" || Array.isArray(run)) {
+        throw new Error("Optimization Run is required");
+      }
+      if (typeof read !== "function") throw new Error("Optimization artifact reader is required");
+      const snapshot = run.snapshot ?? {};
+      const baseline = snapshot.baseline ?? {};
+      const checkpoint = run.checkpoint ?? {};
+      const tokens = checkpoint.telemetry?.tokens;
+      const costMicros = checkpoint.telemetry?.costMicros;
+      const lines = [
+        "# Skill \u591A\u8F6E\u4F18\u5316\u62A5\u544A",
+        "",
+        `- Run\uFF1A${display(run.id)}`,
+        `- \u72B6\u6001\uFF1A${display(run.state)}`,
+        `- \u505C\u6B62\u539F\u56E0\uFF1A${display(checkpoint.stopReason, "\u672A\u63D0\u4F9B")}`,
+        "",
+        "## \u51BB\u7ED3\u8F93\u5165",
+        "",
+        `- Repository\uFF1A${display(baseline.repositoryId)}`,
+        `- Skill\uFF1A${display(baseline.skillId)}`,
+        `- Released \u57FA\u7EBF\uFF1A${display(baseline.versionId)}`,
+        `- \u57FA\u7EBF commit\uFF1A${display(baseline.commit)}`,
+        `- Skill \u6839\u76EE\u5F55\uFF1A${display(baseline.skillRoot)}`,
+        `- \u57FA\u7EBF\u5185\u5BB9\u6458\u8981\uFF1A${display(baseline.contentDigest)}`,
+        `- Dataset\uFF1A${display(snapshot.dataset?.id)} @ revision ${display(snapshot.dataset?.revision)}\uFF08${display(snapshot.dataset?.digest)}\uFF09`,
+        `- Rubric\uFF1A${display(snapshot.rubric?.id)} @ version ${display(snapshot.rubric?.version)}\uFF08${display(snapshot.rubric?.digest)}\uFF09`,
+        "",
+        "## Runtime \u77E9\u9635",
+        "",
+        "| Runtime | Model | Effort |",
+        "| --- | --- | --- |"
+      ];
+      for (const target of snapshot.targets ?? []) {
+        lines.push(`| ${display(target.runtimeId)} | ${display(target.modelId)} | ${display(target.effort)} |`);
+      }
+      lines.push("", "## Epoch \u7ED3\u679C", "");
+      for (const epoch of run.epochs ?? []) renderEpoch(lines, epoch, read);
+      lines.push(
+        "## \u9884\u7B97\u4E0E\u9065\u6D4B",
+        "",
+        `- Token\uFF1A${Number.isFinite(tokens) ? tokens : "\u8FD0\u884C\u65F6\u672A\u63D0\u4F9B"}`,
+        `- \u6210\u672C\uFF08micros\uFF09\uFF1A${Number.isFinite(costMicros) ? costMicros : "\u8FD0\u884C\u65F6\u672A\u63D0\u4F9B"}`,
+        "",
+        "## \u53D1\u5E03\u4E0E\u6700\u7EC8\u56DE\u5F52",
+        "",
+        `- Release approval\uFF1A${display(checkpoint.releaseApprovalId, "\u672A\u7533\u8BF7")}`,
+        `- Install approval\uFF1A${display(checkpoint.installApprovalId, "\u672A\u7533\u8BF7")}`,
+        `- Released version\uFF1A${display(checkpoint.releasedVersionId, "\u672A\u53D1\u5E03")}`,
+        `- Released install Artifact\uFF1A${display(checkpoint.releasedInstallArtifactId, "\u672A\u63D0\u4F9B")}`,
+        `- \u6700\u7EC8\u56DE\u5F52\uFF1A${checkpoint.finalRegressionPassed === true ? "\u901A\u8FC7" : checkpoint.finalRegressionPassed === false ? "\u672A\u901A\u8FC7" : "\u672A\u8FD0\u884C"}`,
+        `- \u6700\u7EC8\u8BC4\u6D4B Artifact\uFF1A${display(checkpoint.finalEvaluationArtifactId, "\u672A\u63D0\u4F9B")}`,
+        "",
+        "## \u6062\u590D\u72B6\u6001",
+        "",
+        `- Run \u6062\u590D\u72B6\u6001\uFF1A${display(run.state)}`
+      );
+      if (run.recovery) {
+        lines.push(
+          `- \u4E2D\u65AD\u524D\u72B6\u6001\uFF1A${display(run.recovery.previousState)}`,
+          `- \u539F\u56E0\uFF1A${display(run.recovery.reason)}`,
+          `- \u6062\u590D\u65F6\u95F4\uFF1A${display(run.recovery.recoveredAt)}`
+        );
+      }
+      for (const target of checkpoint.recoveryTargets ?? []) {
+        lines.push(
+          `- ${display(target.runtimeId)}\uFF1A${display(target.status)}\uFF1B\u5B89\u88C5 Job ${display(target.installationJobId)}\uFF1Bmarker run=${display(target.marker?.runId)}, epoch=${display(target.marker?.epoch)}\uFF1Bdigest ${display(target.contentDigest)}`
+        );
+      }
+      lines.push("");
+      const markdown = lines.join("\n");
+      return { markdown, digest: sha256(markdown) };
+    }
+    function persistOptimizationReport({ run, readArtifact: readArtifact2, artifactStore, jobId }) {
+      if (!artifactStore || typeof artifactStore.createArtifact !== "function") {
+        throw new Error("Optimization Artifact store is required");
+      }
+      if (typeof jobId !== "string" || !jobId.trim()) {
+        throw new Error("Optimization report Job id is required");
+      }
+      const report = generateOptimizationReport({ run, readArtifact: readArtifact2 });
+      const artifact = artifactStore.createArtifact(jobId, {
+        kind: "optimization-report",
+        name: `${run.id}.md`,
+        mediaType: "text/markdown; charset=utf-8",
+        body: report.markdown,
+        metadata: { runId: run.id, digest: report.digest }
+      });
+      return { ...report, artifact, reportArtifactId: artifact.id };
+    }
+    module.exports = { generateOptimizationReport, persistOptimizationReport };
+  }
+});
+
+// ../../desktop/rolling-skill/src/optimization/optimization-control-service.cjs
+var require_optimization_control_service = __commonJS({
+  "../../desktop/rolling-skill/src/optimization/optimization-control-service.cjs"(exports, module) {
+    "use strict";
+    var {
+      freezeOptimizationRun,
+      parseOptimizationConfig
+    } = require_optimization_contract();
+    var { persistOptimizationReport } = require_optimization_report();
+    var MAX_PUBLIC_ARTIFACT_BYTES = 1024 * 1024;
+    function dependency(value, method, label) {
+      if (!value || typeof value[method] !== "function") {
+        throw new Error(`${label} with ${method}() is required`);
+      }
+      return value;
+    }
+    function requiredText(value, label, maximum = 300) {
+      const text = typeof value === "string" ? value.trim() : "";
+      if (!text || text.length > maximum) throw new Error(`${label} is required`);
+      return text;
+    }
+    function normalizedConfig(value) {
+      const { schemaVersion: _schemaVersion, ...config } = parseOptimizationConfig(value);
+      return structuredClone(config);
+    }
+    function boundedArtifactValue(readArtifact, artifactId) {
+      if (!artifactId) return null;
+      let value;
+      try {
+        value = readArtifact(artifactId, MAX_PUBLIC_ARTIFACT_BYTES);
+        if (Buffer.isBuffer(value)) value = value.toString("utf8");
+        if (typeof value === "string") {
+          if (Buffer.byteLength(value, "utf8") > MAX_PUBLIC_ARTIFACT_BYTES) return null;
+          value = JSON.parse(value);
+        }
+        if (value?.inline && typeof value.inline.body === "string") {
+          if (value.inline.encoding === "base64" && value.inline.body.length > Math.ceil(MAX_PUBLIC_ARTIFACT_BYTES * 4 / 3) + 4) return null;
+          const body = value.inline.encoding === "base64" ? Buffer.from(value.inline.body, "base64").toString("utf8") : value.inline.body;
+          if (Buffer.byteLength(body, "utf8") > MAX_PUBLIC_ARTIFACT_BYTES) return null;
+          value = JSON.parse(body);
+        } else if (value && typeof value.body === "string") {
+          if (Buffer.byteLength(value.body, "utf8") > MAX_PUBLIC_ARTIFACT_BYTES) return null;
+          value = JSON.parse(value.body);
+        }
+      } catch {
+        return null;
+      }
+      return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+    }
+    function publicMarker(value) {
+      if (!value || typeof value !== "object") return null;
+      const runId = typeof value.runId === "string" ? value.runId.slice(0, 200) : "";
+      const versionId = typeof value.versionId === "string" ? value.versionId.slice(0, 200) : "";
+      const contentDigest = typeof value.contentDigest === "string" ? value.contentDigest.slice(0, 80) : "";
+      if (!runId || !versionId || !Number.isSafeInteger(value.epoch) || !contentDigest) return null;
+      return { runId, epoch: value.epoch, versionId, contentDigest };
+    }
+    function publicInstallation(value) {
+      if (!value || typeof value !== "object") return null;
+      const runtimeId = typeof value.runtimeId === "string" ? value.runtimeId : value.runtime?.runtimeId;
+      const installationJobId = typeof value.installationJobId === "string" ? value.installationJobId : value.id;
+      if (typeof runtimeId !== "string" || !runtimeId || typeof installationJobId !== "string" || !installationJobId) {
+        return null;
+      }
+      const result = value.parsedResult?.result ?? {};
+      const digest = value.lastVerifiedDigest ?? result.actualDigest ?? null;
+      const marker = value.lastVerifiedMarker ?? result.markerAfter ?? null;
+      return {
+        runtimeId: runtimeId.slice(0, 200),
+        status: String(value.status ?? "unknown").slice(0, 80),
+        installationJobId: installationJobId.slice(0, 200),
+        ...typeof digest === "string" ? { lastVerifiedDigest: digest.slice(0, 80) } : {},
+        ...publicMarker(marker) ? { lastVerifiedMarker: publicMarker(marker) } : {}
+      };
+    }
+    function publicCheckpoint(value = {}) {
+      const fields = [
+        "paused",
+        "pauseReason",
+        "stopReason",
+        "reportArtifactId",
+        "reportDigest",
+        "releaseApprovalId",
+        "installApprovalId",
+        "releasedVersionId",
+        "finalEvaluationArtifactId",
+        "finalRegressionPassed"
+      ];
+      const checkpoint = Object.fromEntries(fields.filter((field) => value[field] !== void 0).map((field) => [field, structuredClone(value[field])]));
+      if (value.telemetry && typeof value.telemetry === "object") {
+        const elapsedMs = Number(value.telemetry.elapsedMs);
+        const turnsUsed = Number(value.telemetry.turnsUsed);
+        const tokens = value.telemetry.tokens;
+        const costMicros = value.telemetry.costMicros;
+        if (Number.isFinite(elapsedMs) && elapsedMs >= 0 && Number.isSafeInteger(turnsUsed) && turnsUsed >= 0) {
+          checkpoint.telemetry = {
+            elapsedMs,
+            turnsUsed,
+            tokens: Number.isSafeInteger(tokens) && tokens >= 0 ? tokens : null,
+            costMicros: Number.isSafeInteger(costMicros) && costMicros >= 0 ? costMicros : null
+          };
+        }
+      }
+      const recoveryTargets = (Array.isArray(value.recoveryTargets) ? value.recoveryTargets : []).slice(0, 64).map(publicInstallation).filter(Boolean);
+      if (recoveryTargets.length) checkpoint.recoveryTargets = recoveryTargets;
+      return checkpoint;
+    }
+    function publicCandidate(value) {
+      if (!value || typeof value !== "object") return null;
+      const versionId = typeof value.versionId === "string" ? value.versionId : value.id;
+      if (typeof versionId !== "string" || !versionId || typeof value.commit !== "string" || !value.commit || typeof value.contentDigest !== "string" || !value.contentDigest) return null;
+      return {
+        versionId: versionId.slice(0, 200),
+        commit: value.commit.slice(0, 80),
+        contentDigest: value.contentDigest.slice(0, 80)
+      };
+    }
+    function publicAnalysis(value) {
+      if (!value || typeof value !== "object") return null;
+      const regressionCount = Number.isSafeInteger(value.regressionCount) ? value.regressionCount : Array.isArray(value.regressed) ? value.regressed.length : 0;
+      const summary = { regressionCount: Math.max(0, Math.min(regressionCount, 1e5)) };
+      for (const [field, minimum, maximum] of [
+        ["score", 0, 100],
+        ["scoreDelta", -100, 100],
+        ["passRate", 0, 1]
+      ]) {
+        if (Number.isFinite(value[field]) && value[field] >= minimum && value[field] <= maximum) {
+          summary[field] = value[field];
+        }
+      }
+      for (const field of ["executionFailureCount", "gradingFailureCount"]) {
+        if (Number.isSafeInteger(value[field]) && value[field] >= 0) {
+          summary[field] = Math.min(value[field], 1e5);
+        }
+      }
+      return summary;
+    }
+    function publicDecision(value) {
+      if (!value || typeof value !== "object" || !["continue", "finish", "pause"].includes(value.action)) {
+        return null;
+      }
+      return {
+        action: value.action,
+        rationale: String(value.rationale ?? "").slice(0, 8192)
+      };
+    }
+    function publicEpoch(epoch, readArtifact) {
+      const candidate = publicCandidate(boundedArtifactValue(readArtifact, epoch.candidateArtifactId));
+      const installationArtifacts = (epoch.installArtifactIds ?? []).slice(0, 64).map((artifactId) => boundedArtifactValue(readArtifact, artifactId)).filter(Boolean);
+      const installations = installationArtifacts.flatMap((artifact) => Array.isArray(artifact.jobs) ? artifact.jobs.slice(0, 64) : [artifact]).slice(0, 64).map(publicInstallation).filter(Boolean);
+      const analysis = publicAnalysis(boundedArtifactValue(readArtifact, epoch.analysisArtifactId));
+      const decision = publicDecision(boundedArtifactValue(readArtifact, epoch.decisionArtifactId));
+      return {
+        number: epoch.number,
+        status: epoch.status,
+        candidateArtifactId: epoch.candidateArtifactId ?? null,
+        installArtifactIds: structuredClone(epoch.installArtifactIds ?? []),
+        evaluationArtifactIds: structuredClone(epoch.evaluationArtifactIds ?? []),
+        analysisArtifactId: epoch.analysisArtifactId ?? null,
+        decisionArtifactId: epoch.decisionArtifactId ?? null,
+        ...candidate ? { candidate } : {},
+        ...installations.length ? { installations } : {},
+        ...analysis ? { analysis } : {},
+        ...decision ? { decision } : {}
+      };
+    }
+    function publicRun(run, readArtifact = () => null) {
+      const snapshot = run.snapshot ?? {};
+      return {
+        id: run.id,
+        state: run.state,
+        revision: run.revision,
+        currentEpoch: run.currentEpoch,
+        snapshotDigest: snapshot.digest,
+        baseline: {
+          repositoryId: snapshot.baseline?.repositoryId,
+          skillId: snapshot.baseline?.skillId,
+          versionId: snapshot.baseline?.versionId,
+          ...snapshot.baseline?.commit ? { commit: snapshot.baseline.commit } : {},
+          ...snapshot.baseline?.contentDigest ? { contentDigest: snapshot.baseline.contentDigest } : {}
+        },
+        dataset: {
+          id: snapshot.dataset?.id,
+          revision: snapshot.dataset?.revision,
+          ...snapshot.dataset?.digest ? { digest: snapshot.dataset.digest } : {}
+        },
+        rubric: {
+          id: snapshot.rubric?.id,
+          version: snapshot.rubric?.version,
+          ...snapshot.rubric?.digest ? { digest: snapshot.rubric.digest } : {}
+        },
+        operator: structuredClone(snapshot.operator),
+        targets: structuredClone(snapshot.targets ?? []),
+        judge: structuredClone(snapshot.judge),
+        activationMode: snapshot.activationMode,
+        mode: snapshot.mode,
+        limits: structuredClone(snapshot.limits),
+        target: structuredClone(snapshot.target),
+        telemetry: structuredClone(snapshot.telemetry),
+        epochs: (run.epochs ?? []).slice(0, 100).map((epoch) => publicEpoch(epoch, readArtifact)),
+        checkpoint: publicCheckpoint(run.checkpoint),
+        error: run.error === null || run.error === void 0 ? null : {
+          code: String(run.error.code ?? "OPTIMIZATION_FAILED").slice(0, 200),
+          message: String(run.error.message ?? "Optimization failed").slice(0, 4096)
+        }
+      };
+    }
+    function publicPreflight(snapshot) {
+      const run = publicRun({
+        id: "preflight",
+        state: "preflight",
+        revision: 0,
+        currentEpoch: 0,
+        snapshot,
+        epochs: [],
+        checkpoint: {},
+        error: null
+      });
+      return {
+        snapshotDigest: run.snapshotDigest,
+        baseline: run.baseline,
+        dataset: run.dataset,
+        rubric: run.rubric,
+        targets: run.targets,
+        ready: true
+      };
+    }
+    var OptimizationControlService = class {
+      constructor(options2 = {}) {
+        this.store = dependency(options2.store, "createRun", "Optimization store");
+        dependency(this.store, "getRun", "Optimization store");
+        dependency(this.store, "listRuns", "Optimization store");
+        dependency(this.store, "updateCheckpoint", "Optimization store");
+        this.workspaceManager = dependency(
+          options2.workspaceManager,
+          "create",
+          "Optimization workspace manager"
+        );
+        dependency(this.workspaceManager, "recover", "Optimization workspace manager");
+        this.operatorSessionManager = dependency(
+          options2.operatorSessionManager,
+          "create",
+          "Optimization Operator session manager"
+        );
+        this.runner = dependency(options2.runner, "run", "Optimization Runner");
+        dependency(this.runner, "pause", "Optimization Runner");
+        dependency(this.runner, "resume", "Optimization Runner");
+        dependency(this.runner, "stop", "Optimization Runner");
+        this.operatorGateway = dependency(
+          options2.operatorGateway,
+          "submitCandidate",
+          "Optimization Operator gateway"
+        );
+        dependency(this.operatorGateway, "submitDecision", "Optimization Operator gateway");
+        this.artifactStore = dependency(options2.artifactStore, "createArtifact", "Artifact store");
+        if (typeof options2.resolvePreflight !== "function") {
+          throw new Error("Optimization preflight resolver is required");
+        }
+        this.resolvePreflight = options2.resolvePreflight;
+        this.freezeRun = options2.freezeRun ?? (({ trusted, config, createdAt }) => freezeOptimizationRun({ ...trusted, config, createdAt }));
+        if (typeof this.freezeRun !== "function") throw new Error("Optimization freezer is invalid");
+        this.readArtifact = options2.readArtifact;
+        if (typeof this.readArtifact !== "function") throw new Error("Optimization artifact reader is required");
+        this.clock = options2.clock ?? (() => (/* @__PURE__ */ new Date()).toISOString());
+        if (typeof this.clock !== "function") throw new Error("Optimization clock is invalid");
+        this.startupRecoveryComplete = false;
+      }
+      async #snapshot(config) {
+        const normalized = normalizedConfig(config);
+        const trusted = await this.resolvePreflight(structuredClone(normalized));
+        return this.freezeRun({
+          trusted: structuredClone(trusted),
+          config: normalized,
+          createdAt: this.clock()
+        });
+      }
+      async preflight(config) {
+        return publicPreflight(await this.#snapshot(config));
+      }
+      async start(input) {
+        const { idempotencyKey, ...config } = structuredClone(input);
+        const snapshot = await this.#snapshot(config);
+        const created = this.store.createRun(snapshot, { idempotencyKey });
+        const run = this.store.getRun(created.runId);
+        const workspace = await this.workspaceManager.create(run);
+        const runtimeIds = [.../* @__PURE__ */ new Set([
+          snapshot.operator.runtimeId,
+          snapshot.judge.runtimeId,
+          ...snapshot.targets.map((target) => target.runtimeId)
+        ])];
+        const operator = await this.operatorSessionManager.create({
+          runtimeId: snapshot.operator.runtimeId,
+          modelId: snapshot.operator.modelId,
+          effort: snapshot.operator.effort,
+          objective: [
+            `Optimize frozen Run ${run.id}.`,
+            "Wait for an optimization Candidate or decision request, then use only the matching optimization.submit_* Tool.",
+            "Edit only the provided optimization worktree and do not change Dataset or Rubric inputs."
+          ].join(" "),
+          actions: ["optimizations.read", "optimizations.execute"],
+          scopes: {
+            skillIds: [snapshot.baseline.skillId],
+            datasetIds: [snapshot.dataset.id],
+            runtimeIds,
+            repositoryIds: [snapshot.baseline.repositoryId]
+          },
+          budget: {
+            maxDurationMs: snapshot.limits.maxDurationMs,
+            maxRuntimeTurns: snapshot.limits.maxTurns ?? 1e6,
+            maxEvaluations: snapshot.limits.maxEpochs + 2,
+            maxTargetExecutions: snapshot.targets.length * (snapshot.limits.maxEpochs + 2),
+            maxJudgeExecutions: snapshot.limits.maxEpochs + 2,
+            maxTokens: snapshot.limits.maxTokens,
+            maxReportedCost: snapshot.limits.maxCostMicros === null ? null : snapshot.limits.maxCostMicros / 1e6
+          },
+          expiresInMs: snapshot.limits.maxDurationMs,
+          managedSkillBinding: {
+            repositoryId: snapshot.baseline.repositoryId,
+            skillId: snapshot.baseline.skillId,
+            optimizationRunId: run.id
+          }
+        });
+        const operatorSessionId = requiredText(
+          operator?.session?.id,
+          "Optimization Operator session id",
+          300
+        );
+        const parentJobId = requiredText(
+          operator?.parentJob?.id,
+          "Optimization Operator parent Job id",
+          300
+        );
+        this.store.updateCheckpoint(run.id, { operatorSessionId, operatorParentJobId: parentJobId });
+        const operation = this.runner.run(run.id, {
+          operatorSessionId,
+          parentJobId,
+          workspace: structuredClone(workspace)
+        });
+        Promise.resolve(operation).catch(() => {
+        });
+        return this.get(run.id);
+      }
+      get(runId) {
+        return { run: publicRun(
+          this.store.getRun(requiredText(runId, "Optimization Run id", 200)),
+          this.readArtifact
+        ) };
+      }
+      scope(runId) {
+        const snapshot = this.store.getRun(requiredText(runId, "Optimization Run id", 200)).snapshot;
+        return {
+          skillIds: [snapshot.baseline.skillId],
+          datasetIds: [snapshot.dataset.id],
+          runtimeIds: [.../* @__PURE__ */ new Set([
+            snapshot.operator.runtimeId,
+            snapshot.judge.runtimeId,
+            ...snapshot.targets.map((target) => target.runtimeId)
+          ])],
+          repositoryIds: [snapshot.baseline.repositoryId]
+        };
+      }
+      async pause(runId) {
+        runId = requiredText(runId, "Optimization Run id", 200);
+        await this.runner.pause(runId);
+        return this.get(runId);
+      }
+      async recoverStartup() {
+        const recovered = [];
+        for (const run of this.store.listRuns()) {
+          if (run.state !== "needs_recovery" || !run.checkpoint?.workspace) continue;
+          await this.workspaceManager.recover(run, run.checkpoint.workspace);
+          recovered.push({ runId: run.id, status: "ready" });
+        }
+        this.startupRecoveryComplete = true;
+        return recovered;
+      }
+      async resume(runId) {
+        runId = requiredText(runId, "Optimization Run id", 200);
+        if (!this.startupRecoveryComplete) {
+          throw new Error("Optimization startup recovery is not complete");
+        }
+        const run = this.store.getRun(runId);
+        await this.runner.resume(runId, {
+          operatorSessionId: run.checkpoint?.operatorSessionId,
+          parentJobId: run.checkpoint?.operatorParentJobId,
+          workspace: run.checkpoint?.workspace
+        });
+        return this.get(runId);
+      }
+      async stop(runId) {
+        runId = requiredText(runId, "Optimization Run id", 200);
+        await this.runner.stop(runId);
+        return this.get(runId);
+      }
+      submitCandidate(input, context = {}) {
+        const accepted = this.operatorGateway.submitCandidate({
+          runId: input.runId,
+          message: input.message,
+          operatorSessionId: requiredText(context.sessionId, "Current Operator session id", 300)
+        });
+        return { accepted };
+      }
+      submitDecision(input, context = {}) {
+        const accepted = this.operatorGateway.submitDecision({
+          runId: input.runId,
+          decision: structuredClone(input.decision),
+          limitRequest: input.limitRequest === void 0 ? null : structuredClone(input.limitRequest),
+          operatorSessionId: requiredText(context.sessionId, "Current Operator session id", 300)
+        });
+        return { accepted };
+      }
+      report(runId) {
+        runId = requiredText(runId, "Optimization Run id", 200);
+        const run = this.store.getRun(runId);
+        const parentJobId = requiredText(
+          run.checkpoint?.operatorParentJobId,
+          "Optimization Operator parent Job id",
+          300
+        );
+        const generated = persistOptimizationReport({
+          run,
+          readArtifact: this.readArtifact,
+          artifactStore: this.artifactStore,
+          jobId: parentJobId
+        });
+        this.store.updateCheckpoint(runId, {
+          reportArtifactId: generated.reportArtifactId,
+          reportDigest: generated.digest
+        }, { expectedRevision: run.revision });
+        return { report: {
+          artifactId: generated.reportArtifactId,
+          digest: generated.digest,
+          mediaType: "text/markdown; charset=utf-8"
+        } };
+      }
+    };
+    module.exports = { OptimizationControlService, publicOptimizationRun: publicRun };
+  }
+});
+
+// ../../desktop/rolling-skill/src/optimization/optimization-operator-gateway.cjs
+var require_optimization_operator_gateway = __commonJS({
+  "../../desktop/rolling-skill/src/optimization/optimization-operator-gateway.cjs"(exports, module) {
+    "use strict";
+    function requiredText(value, label, maximum = 8192) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized) throw new Error(`${label} is required`);
+      if (normalized.length > maximum) throw new Error(`${label} is too long`);
+      return normalized;
+    }
+    function requestIdentity(request, kind) {
+      const runId = requiredText(request?.run?.runId ?? request?.run?.id, "Optimization Run id", 200);
+      const operatorSessionId = requiredText(
+        request?.operatorSessionId,
+        "Optimization current Operator session",
+        300
+      );
+      const epoch = request?.epoch;
+      if (!Number.isSafeInteger(epoch) || epoch < 1 || epoch > 100) {
+        throw new Error("Optimization pending Epoch is invalid");
+      }
+      return { runId, kind, epoch, operatorSessionId };
+    }
+    var OptimizationOperatorGateway = class {
+      constructor(options2 = {}) {
+        if (options2.onRequest !== void 0 && typeof options2.onRequest !== "function") {
+          throw new Error("Optimization Operator notification callback is invalid");
+        }
+        this.requests = /* @__PURE__ */ new Map();
+        this.onRequest = options2.onRequest ?? null;
+      }
+      #request(request, kind) {
+        const identity = requestIdentity(request, kind);
+        if (this.requests.has(identity.runId)) {
+          throw new Error("Optimization Run already has a pending Operator request");
+        }
+        const pending = new Promise((resolve, reject) => {
+          this.requests.set(identity.runId, { ...identity, resolve, reject });
+        });
+        if (this.onRequest !== null) {
+          Promise.resolve().then(() => this.onRequest({ ...identity })).catch((error) => {
+            const current = this.requests.get(identity.runId);
+            if (current?.kind !== identity.kind || current?.epoch !== identity.epoch) return;
+            this.requests.delete(identity.runId);
+            current.reject(error);
+          });
+        }
+        return pending;
+      }
+      requestCandidate(request) {
+        return this.#request(request, "candidate");
+      }
+      requestDecision(request) {
+        return this.#request(request, "decision");
+      }
+      pending(runId) {
+        const current = this.requests.get(String(runId));
+        if (!current) return null;
+        return {
+          runId: current.runId,
+          kind: current.kind,
+          epoch: current.epoch,
+          operatorSessionId: current.operatorSessionId
+        };
+      }
+      #submit(input, kind, value) {
+        const runId = requiredText(input?.runId, "Optimization Run id", 200);
+        const operatorSessionId = requiredText(
+          input?.operatorSessionId,
+          "Optimization current Operator session",
+          300
+        );
+        const current = this.requests.get(runId);
+        if (!current) throw new Error("Optimization Run has no current pending Operator request");
+        if (current.kind !== kind) {
+          throw new Error(`Optimization Run is waiting for a ${current.kind} decision phase submission`);
+        }
+        if (current.operatorSessionId !== operatorSessionId) {
+          throw new Error("Optimization submission does not belong to the current Operator session");
+        }
+        this.requests.delete(runId);
+        current.resolve(value);
+        return { runId, kind };
+      }
+      submitCandidate(input) {
+        const message = requiredText(input?.message, "Optimization Candidate message", 2e3);
+        return this.#submit(input, "candidate", { message });
+      }
+      submitDecision(input) {
+        return this.#submit(input, "decision", {
+          decision: structuredClone(input?.decision),
+          limitRequest: input?.limitRequest === void 0 ? null : structuredClone(input.limitRequest)
+        });
+      }
+      cancelRun(runId, reason = "Optimization Operator request cancelled") {
+        const current = this.requests.get(String(runId));
+        if (!current) return false;
+        this.requests.delete(current.runId);
+        current.reject(new Error(requiredText(reason, "Optimization cancellation reason", 1e3)));
+        return true;
+      }
+      cancelAll(reason = "Optimization Operator gateway stopped") {
+        for (const runId of [...this.requests.keys()]) this.cancelRun(runId, reason);
+      }
+    };
+    module.exports = { OptimizationOperatorGateway };
+  }
+});
+
+// ../../desktop/rolling-skill/src/optimization/optimization-analysis.cjs
+var require_optimization_analysis = __commonJS({
+  "../../desktop/rolling-skill/src/optimization/optimization-analysis.cjs"(exports, module) {
+    "use strict";
+    var OPTIMIZATION_ANALYSIS_SCHEMA = "rolling-skill-optimization-analysis/v1";
+    var SCORE_EPSILON = 1e-9;
+    function requireObject(value, label) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} must be an object`);
+      }
+      return value;
+    }
+    function finiteNumber(value, label, { minimum = 0, maximum = Number.MAX_SAFE_INTEGER } = {}) {
+      if (!Number.isFinite(value) || value < minimum || value > maximum) {
+        throw new Error(`${label} must be a finite number between ${minimum} and ${maximum}`);
+      }
+      return value;
+    }
+    function optionalLimit(value, label, { integer = false } = {}) {
+      if (value === null || value === void 0) return null;
+      const normalized = finiteNumber(value, label);
+      if (integer && !Number.isSafeInteger(normalized)) throw new Error(`${label} must be an integer`);
+      return normalized;
+    }
+    function rounded(value) {
+      if (value === null || value === void 0) return null;
+      return Math.round((value + Number.EPSILON) * 1e6) / 1e6;
+    }
+    function deepFreeze(value) {
+      if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+      for (const child of Object.values(value)) deepFreeze(child);
+      return Object.freeze(value);
+    }
+    function resultIdentity(result, label) {
+      const caseId = String(result?.caseId ?? result?.caseSnapshot?.id ?? "").trim();
+      const runtimeId = String(
+        result?.runtimeId ?? result?.runtimeConfiguration?.runtimeId ?? ""
+      ).trim();
+      if (!caseId || !runtimeId) throw new Error(`${label} has an incomplete Case \xD7 Runtime key`);
+      return { caseId, runtimeId, key: `${caseId}\0${runtimeId}` };
+    }
+    function indexEvaluation(run, label, expectedKeys = null) {
+      requireObject(run, label);
+      if (!Array.isArray(run.results)) throw new Error(`${label} results must be an array`);
+      const indexed = /* @__PURE__ */ new Map();
+      for (const result of run.results) {
+        const identity = resultIdentity(result, label);
+        if (indexed.has(identity.key)) throw new Error(`${label} contains a duplicate Case \xD7 Runtime key`);
+        if (expectedKeys && !expectedKeys.has(identity.key)) {
+          throw new Error(`${label} contains a foreign Case \xD7 Runtime snapshot key`);
+        }
+        indexed.set(identity.key, { identity, result });
+      }
+      return indexed;
+    }
+    function scoredResult(result) {
+      if (!result) {
+        return {
+          score: null,
+          passed: false,
+          criticalFailures: [],
+          reason: "missing_result"
+        };
+      }
+      if (result.status !== "completed") {
+        return {
+          score: null,
+          passed: false,
+          criticalFailures: [],
+          reason: "execution_failure"
+        };
+      }
+      const score = result.computedScore?.totalScore;
+      if (result.gradingStatus !== "completed" || !Number.isFinite(score) || score < 0 || score > 100) {
+        return {
+          score: null,
+          passed: false,
+          criticalFailures: [],
+          reason: "grading_failure"
+        };
+      }
+      const criticalFailures = Array.isArray(result.computedScore.criticalFailures) ? [...new Set(result.computedScore.criticalFailures.map(String))].sort() : [];
+      return {
+        score,
+        passed: result.computedScore.overallVerdict === "pass" || result.computedScore.outcomeTier === "formal_pass",
+        criticalFailures,
+        reason: null
+      };
+    }
+    function summarize(indexed, expectedEntries) {
+      let scoreSum = 0;
+      let completedScoreCount = 0;
+      let passCount = 0;
+      let executionFailureCount = 0;
+      let gradingFailureCount = 0;
+      let missingResultCount = 0;
+      const criticalFailures = [];
+      for (const entry of expectedEntries) {
+        const indexedResult = indexed.get(entry.key)?.result ?? null;
+        const scored = scoredResult(indexedResult);
+        if (scored.score !== null) {
+          scoreSum += scored.score;
+          completedScoreCount += 1;
+          if (scored.passed) passCount += 1;
+        }
+        if (scored.reason === "missing_result") missingResultCount += 1;
+        if (scored.reason === "execution_failure") executionFailureCount += 1;
+        if (scored.reason === "grading_failure") gradingFailureCount += 1;
+        if (scored.criticalFailures.length) {
+          criticalFailures.push({
+            caseId: entry.caseId,
+            runtimeId: entry.runtimeId,
+            criticalFailures: scored.criticalFailures
+          });
+        }
+      }
+      const expectedResultCount = expectedEntries.length;
+      return {
+        score: completedScoreCount ? rounded(scoreSum / completedScoreCount) : null,
+        passRate: expectedResultCount ? rounded(passCount / expectedResultCount) : 0,
+        passCount,
+        expectedResultCount,
+        completedScoreCount,
+        missingScoreCount: expectedResultCount - completedScoreCount,
+        executionFailureCount,
+        gradingFailureCount,
+        missingResultCount,
+        criticalFailures
+      };
+    }
+    function comparisonEntry(expected, comparisonIndex, currentIndex) {
+      const previous = scoredResult(comparisonIndex.get(expected.key)?.result ?? null);
+      const current = scoredResult(currentIndex.get(expected.key)?.result ?? null);
+      return {
+        caseId: expected.caseId,
+        runtimeId: expected.runtimeId,
+        previousScore: previous.score,
+        currentScore: current.score,
+        delta: previous.score === null || current.score === null ? null : rounded(current.score - previous.score),
+        previousPassed: previous.passed,
+        currentPassed: current.passed,
+        reason: current.reason,
+        criticalFailures: current.criticalFailures,
+        previousCriticalFailures: previous.criticalFailures
+      };
+    }
+    function normalizedRegressionThresholds(value = {}) {
+      requireObject(value, "Optimization regression thresholds");
+      return {
+        maximumScoreDrop: optionalLimit(
+          value.maximumScoreDrop,
+          "Optimization maximum score drop"
+        ),
+        maximumRegressedResults: optionalLimit(
+          value.maximumRegressedResults,
+          "Optimization maximum regressed results",
+          { integer: true }
+        )
+      };
+    }
+    function insufficientImprovementCount(history, scoreDelta, minimumImprovement) {
+      if (!Array.isArray(history)) throw new Error("Optimization history must be an array");
+      const deltas = history.map((entry) => entry?.scoreDelta).concat(scoreDelta);
+      let count = 0;
+      for (let index = deltas.length - 1; index >= 0; index -= 1) {
+        const delta = deltas[index];
+        if (Number.isFinite(delta) && delta + SCORE_EPSILON >= minimumImprovement) break;
+        count += 1;
+      }
+      return count;
+    }
+    function compareEvaluationRuns(input = {}) {
+      const baselineIndex = indexEvaluation(input.baseline, "Baseline evaluation");
+      if (!baselineIndex.size) throw new Error("Baseline evaluation must contain results");
+      const expectedEntries = [...baselineIndex.values()].map((entry) => entry.identity).sort((left, right) => left.caseId.localeCompare(right.caseId) || left.runtimeId.localeCompare(right.runtimeId));
+      const expectedKeys = new Set(expectedEntries.map((entry) => entry.key));
+      const previousRun = input.previous ?? input.baseline;
+      const previousIndex = indexEvaluation(previousRun, "Previous evaluation", expectedKeys);
+      const currentIndex = indexEvaluation(input.current, "Current evaluation", expectedKeys);
+      const baselineSummary = summarize(baselineIndex, expectedEntries);
+      const previousSummary = summarize(previousIndex, expectedEntries);
+      const currentSummary = summarize(currentIndex, expectedEntries);
+      const entries = expectedEntries.map((entry) => comparisonEntry(entry, previousIndex, currentIndex));
+      const improved = entries.filter((entry) => entry.delta !== null && entry.delta > SCORE_EPSILON);
+      const unchanged = entries.filter((entry) => entry.delta !== null && Math.abs(entry.delta) <= SCORE_EPSILON);
+      const regressed = entries.filter((entry) => entry.currentScore === null || entry.delta !== null && entry.delta < -SCORE_EPSILON);
+      const newlyPassed = entries.filter((entry) => !entry.previousPassed && entry.currentPassed);
+      const newlyFailed = entries.filter((entry) => entry.previousPassed && !entry.currentPassed);
+      const newCriticalFailures = entries.map((entry) => ({
+        caseId: entry.caseId,
+        runtimeId: entry.runtimeId,
+        criticalFailures: entry.criticalFailures.filter(
+          (failure) => !entry.previousCriticalFailures.includes(failure)
+        )
+      })).filter((entry) => entry.criticalFailures.length);
+      const target = requireObject(input.target, "Optimization target");
+      const limits = requireObject(input.limits, "Optimization limits");
+      const minimumScore = finiteNumber(target.minimumScore, "Optimization minimum score", { maximum: 100 });
+      const minimumPassRate = finiteNumber(
+        target.minimumPassRate,
+        "Optimization minimum pass rate",
+        { maximum: 1 }
+      );
+      if (typeof target.requireCriticalCases !== "boolean") {
+        throw new Error("Optimization critical Case requirement must be boolean");
+      }
+      const maxEpochs = optionalLimit(limits.maxEpochs, "Optimization max epochs", { integer: true });
+      const patience = optionalLimit(limits.patience, "Optimization patience", { integer: true });
+      const minimumImprovement = finiteNumber(
+        limits.minimumImprovement,
+        "Optimization minimum improvement",
+        { maximum: 100 }
+      );
+      if (!maxEpochs || !patience) throw new Error("Optimization Epoch and patience limits are required");
+      const mode = String(input.mode ?? "");
+      if (mode !== "fixed" && mode !== "adaptive") {
+        throw new Error("Optimization mode must be fixed or adaptive");
+      }
+      if (!Number.isSafeInteger(input.epoch) || input.epoch < 1) {
+        throw new Error("Optimization Epoch must be a positive integer");
+      }
+      const scoreDelta = currentSummary.score === null || previousSummary.score === null ? null : rounded(currentSummary.score - previousSummary.score);
+      const baselineScoreDelta = currentSummary.score === null || baselineSummary.score === null ? null : rounded(currentSummary.score - baselineSummary.score);
+      const regressionThresholds = normalizedRegressionThresholds(input.regressionThresholds ?? {});
+      const broadRegressionReasons = [];
+      if (regressionThresholds.maximumScoreDrop !== null && scoreDelta !== null && scoreDelta < -regressionThresholds.maximumScoreDrop - SCORE_EPSILON) broadRegressionReasons.push("score_drop");
+      if (regressionThresholds.maximumRegressedResults !== null && regressed.length > regressionThresholds.maximumRegressedResults) broadRegressionReasons.push("regressed_results");
+      const consecutiveInsufficientImprovement = insufficientImprovementCount(
+        input.history ?? [],
+        scoreDelta,
+        minimumImprovement
+      );
+      const progress = {
+        cancelRequested: input.progress?.cancelRequested === true,
+        recoveryFailed: input.progress?.recoveryFailed === true,
+        elapsedMs: optionalLimit(input.progress?.elapsedMs ?? 0, "Optimization elapsed time"),
+        turnsUsed: optionalLimit(input.progress?.turnsUsed ?? 0, "Optimization turns used", { integer: true }),
+        tokensUsed: optionalLimit(input.progress?.tokensUsed, "Optimization tokens used", { integer: true }),
+        costMicros: optionalLimit(input.progress?.costMicros, "Optimization cost used", { integer: true })
+      };
+      const analysis = {
+        schemaVersion: OPTIMIZATION_ANALYSIS_SCHEMA,
+        baselineEvaluationRunId: String(input.baseline.id ?? ""),
+        previousEvaluationRunId: String(previousRun.id ?? ""),
+        currentEvaluationRunId: String(input.current.id ?? ""),
+        mode,
+        epoch: input.epoch,
+        target: {
+          minimumScore,
+          minimumPassRate,
+          requireCriticalCases: target.requireCriticalCases
+        },
+        limits: {
+          maxEpochs,
+          maxDurationMs: optionalLimit(limits.maxDurationMs, "Optimization max duration"),
+          maxTurns: optionalLimit(limits.maxTurns, "Optimization max turns", { integer: true }),
+          maxTokens: optionalLimit(limits.maxTokens, "Optimization max tokens", { integer: true }),
+          maxCostMicros: optionalLimit(limits.maxCostMicros, "Optimization max cost", { integer: true }),
+          patience,
+          minimumImprovement
+        },
+        progress,
+        agentDecision: input.agentDecision ? { action: String(input.agentDecision.action ?? "") } : null,
+        regressionThresholds,
+        broadRegressionReasons,
+        broadRegression: broadRegressionReasons.length > 0,
+        baseline: baselineSummary,
+        previous: previousSummary,
+        current: currentSummary,
+        score: currentSummary.score,
+        scoreDelta,
+        baselineScoreDelta,
+        passRate: currentSummary.passRate,
+        completedScoreCount: currentSummary.completedScoreCount,
+        missingScoreCount: currentSummary.missingScoreCount,
+        executionFailureCount: currentSummary.executionFailureCount,
+        gradingFailureCount: currentSummary.gradingFailureCount,
+        missingResultCount: currentSummary.missingResultCount,
+        improved,
+        unchanged,
+        regressed,
+        newlyPassed,
+        newlyFailed,
+        criticalFailures: currentSummary.criticalFailures,
+        newCriticalFailures,
+        targetReached: currentSummary.score !== null && currentSummary.score + SCORE_EPSILON >= minimumScore && currentSummary.passRate + SCORE_EPSILON >= minimumPassRate && (!target.requireCriticalCases || currentSummary.criticalFailures.length === 0),
+        consecutiveInsufficientImprovement,
+        patienceExhausted: mode === "adaptive" && consecutiveInsufficientImprovement >= patience
+      };
+      return deepFreeze(analysis);
+    }
+    function stop(action, reason, hardStop) {
+      return Object.freeze({ action, reason, hardStop, shouldStop: action !== "continue" });
+    }
+    function evaluateStopRules(analysis) {
+      requireObject(analysis, "Optimization analysis");
+      const progress = requireObject(analysis.progress, "Optimization progress");
+      const limits = requireObject(analysis.limits, "Optimization limits");
+      if (progress.cancelRequested) return stop("restore", "cancel_requested", true);
+      if (progress.recoveryFailed) return stop("recover", "recovery_failed", true);
+      for (const [used, limit, reason] of [
+        [progress.elapsedMs, limits.maxDurationMs, "duration_budget_exhausted"],
+        [progress.turnsUsed, limits.maxTurns, "turn_budget_exhausted"],
+        [progress.tokensUsed, limits.maxTokens, "token_budget_exhausted"],
+        [progress.costMicros, limits.maxCostMicros, "cost_budget_exhausted"]
+      ]) {
+        if (limit !== null && limit !== void 0 && used !== null && used >= limit) {
+          return stop("restore", reason, true);
+        }
+      }
+      if (analysis.newCriticalFailures?.length) return stop("restore", "critical_regression", true);
+      if (analysis.broadRegression) return stop("restore", "broad_regression", true);
+      if (analysis.targetReached) return stop("finish", "target_achieved", true);
+      if (analysis.epoch >= limits.maxEpochs) return stop("finish", "max_epochs_reached", true);
+      if (analysis.mode === "adaptive" && analysis.patienceExhausted) {
+        return stop("finish", "patience_exhausted", true);
+      }
+      const action = analysis.agentDecision?.action ?? "continue";
+      if (action === "finish") return stop("finish", "agent_finish", false);
+      if (action === "pause") return stop("pause", "agent_pause", false);
+      if (action !== "continue") throw new Error("Optimization Agent decision is invalid");
+      return stop("continue", "continue", false);
+    }
+    module.exports = {
+      OPTIMIZATION_ANALYSIS_SCHEMA,
+      compareEvaluationRuns,
+      evaluateStopRules
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/optimization/optimization-runner.cjs
+var require_optimization_runner = __commonJS({
+  "../../desktop/rolling-skill/src/optimization/optimization-runner.cjs"(exports, module) {
+    "use strict";
+    var { parseOptimizationDecision } = require_optimization_contract();
+    var { compareEvaluationRuns, evaluateStopRules } = require_optimization_analysis();
+    var SUCCESSFUL_INSTALLATION_STATUSES = /* @__PURE__ */ new Set(["succeeded"]);
+    function requiredDependency(value, method, label) {
+      if (!value || typeof value[method] !== "function") {
+        throw new Error(`${label} with ${method}() is required`);
+      }
+      return value;
+    }
+    function clone(value) {
+      return value === void 0 ? void 0 : structuredClone(value);
+    }
+    function errorRecord(error, fallbackCode = "OPTIMIZATION_FAILED") {
+      return {
+        code: typeof error?.code === "string" && error.code ? error.code : fallbackCode,
+        message: typeof error?.message === "string" && error.message ? error.message : String(error)
+      };
+    }
+    function installedInitialState(job, baseline) {
+      const result = job?.parsedResult;
+      if (job?.status !== "succeeded" || result?.status !== "succeeded") {
+        const error = new Error(`Runtime ${job?.runtime?.runtimeId ?? "unknown"} failed experiment preflight`);
+        error.code = job?.status === "needs_recovery" ? "OPTIMIZATION_INSTALL_NEEDS_RECOVERY" : "OPTIMIZATION_PREFLIGHT_FAILED";
+        throw error;
+      }
+      if (result.classificationBefore === "absent") {
+        return { classification: "absent", destination: null };
+      }
+      if (result.classificationBefore !== "managed-clean" || !result.destination) {
+        const error = new Error("Optimization preflight requires absent or exact managed-clean baseline");
+        error.code = "OPTIMIZATION_PREFLIGHT_FAILED";
+        throw error;
+      }
+      return {
+        classification: "managed-clean",
+        destination: result.destination,
+        versionId: baseline.versionId,
+        commit: baseline.commit,
+        contentDigest: baseline.contentDigest
+      };
+    }
+    function optimizationLimitRequest(value, currentLimits, telemetry) {
+      if (value === null || value === void 0) return null;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Optimization limit request must be an object");
+      }
+      const keys = Object.keys(value).sort();
+      if (keys.join(",") !== "field,rationale,value") {
+        throw new Error("Optimization limit request has unknown or missing fields");
+      }
+      const field = String(value.field ?? "");
+      const maxima = {
+        maxEpochs: 100,
+        maxDurationMs: 30 * 24 * 60 * 60 * 1e3,
+        maxTurns: 1e6,
+        maxTokens: 1e12,
+        maxCostMicros: Number.MAX_SAFE_INTEGER
+      };
+      if (!Object.hasOwn(maxima, field)) throw new Error("Optimization limit field is unsupported");
+      if (!Number.isSafeInteger(value.value) || value.value < 1 || value.value > maxima[field]) {
+        throw new Error("Optimization requested limit is outside its supported bound");
+      }
+      const current = currentLimits[field];
+      if (current !== null && current !== void 0 && value.value <= current) {
+        throw new Error("Optimization requested limit must increase the current limit");
+      }
+      if (field === "maxTokens" && telemetry?.tokens !== true) {
+        throw new Error("Optimization token limit requires token telemetry");
+      }
+      if (field === "maxCostMicros" && telemetry?.cost !== true) {
+        throw new Error("Optimization cost limit requires cost telemetry");
+      }
+      const rationale = String(value.rationale ?? "").trim();
+      if (!rationale || rationale.length > 8192) {
+        throw new Error("Optimization limit request rationale is required");
+      }
+      return { field, value: value.value, rationale };
+    }
+    function boundedRunSummary(run) {
+      const epoch = run.epochs?.at(-1) ?? null;
+      return {
+        runId: run.id,
+        state: run.state,
+        currentEpoch: run.currentEpoch,
+        baselineVersionId: run.snapshot?.baseline?.versionId ?? null,
+        datasetId: run.snapshot?.dataset?.id ?? null,
+        datasetRevision: run.snapshot?.dataset?.revision ?? null,
+        rubricId: run.snapshot?.rubric?.id ?? null,
+        rubricVersion: run.snapshot?.rubric?.version ?? null,
+        limits: clone(run.snapshot?.limits ?? {}),
+        target: clone(run.snapshot?.target ?? {}),
+        epoch: epoch ? {
+          id: epoch.id,
+          number: epoch.number,
+          status: epoch.status,
+          candidateArtifactId: epoch.candidateArtifactId,
+          installArtifactIds: clone(epoch.installArtifactIds),
+          evaluationArtifactIds: clone(epoch.evaluationArtifactIds),
+          analysisArtifactId: epoch.analysisArtifactId,
+          decisionArtifactId: epoch.decisionArtifactId
+        } : null
+      };
+    }
+    function boundedAnalysisSummary(analysis) {
+      const bounded = (entries) => ({
+        entries: clone((entries ?? []).slice(0, 20)),
+        omitted: Math.max(0, (entries?.length ?? 0) - 20)
+      });
+      return {
+        schemaVersion: analysis.schemaVersion,
+        epoch: analysis.epoch,
+        score: analysis.score,
+        scoreDelta: analysis.scoreDelta,
+        baselineScoreDelta: analysis.baselineScoreDelta,
+        passRate: analysis.passRate,
+        completedScoreCount: analysis.completedScoreCount,
+        missingScoreCount: analysis.missingScoreCount,
+        executionFailureCount: analysis.executionFailureCount,
+        gradingFailureCount: analysis.gradingFailureCount,
+        targetReached: analysis.targetReached,
+        consecutiveInsufficientImprovement: analysis.consecutiveInsufficientImprovement,
+        improved: bounded(analysis.improved),
+        regressed: bounded(analysis.regressed),
+        criticalFailures: bounded(analysis.criticalFailures)
+      };
+    }
+    function recoveryTargetSummary(job) {
+      const result = job?.parsedResult?.result ?? {};
+      const marker = result.markerAfter;
+      return {
+        runtimeId: job?.runtime?.runtimeId ?? job?.runtimeId ?? "unknown-runtime",
+        status: job?.status ?? "needs_recovery",
+        installationJobId: job?.id ?? "unknown-installation-job",
+        ...typeof result.actualDigest === "string" ? { lastVerifiedDigest: result.actualDigest } : {},
+        ...marker && typeof marker === "object" ? { lastVerifiedMarker: {
+          runId: marker.runId,
+          epoch: marker.epoch,
+          versionId: marker.versionId,
+          contentDigest: marker.contentDigest
+        } } : {}
+      };
+    }
+    var OptimizationRunner = class {
+      constructor(options2 = {}) {
+        this.store = requiredDependency(options2.store, "getRun", "Optimization store");
+        requiredDependency(this.store, "transitionRun", "Optimization store");
+        requiredDependency(this.store, "createEpoch", "Optimization store");
+        requiredDependency(this.store, "updateEpoch", "Optimization store");
+        requiredDependency(this.store, "updateCheckpoint", "Optimization store");
+        this.artifactStore = requiredDependency(options2.artifactStore, "createArtifact", "Artifact store");
+        this.childJobs = requiredDependency(options2.childJobs, "run", "Optimization child Job runner");
+        this.workspaceManager = requiredDependency(
+          options2.workspaceManager,
+          "createCandidate",
+          "Optimization workspace manager"
+        );
+        requiredDependency(this.workspaceManager, "create", "Optimization workspace manager");
+        this.installationManager = requiredDependency(
+          options2.installationManager,
+          "startOptimizationExperiment",
+          "Skill installation manager"
+        );
+        requiredDependency(this.installationManager, "wait", "Skill installation manager");
+        this.evaluationManager = requiredDependency(
+          options2.evaluationManager,
+          "run",
+          "Optimization evaluation manager"
+        );
+        this.operatorGateway = requiredDependency(
+          options2.operatorGateway,
+          "requestCandidate",
+          "Optimization Operator gateway"
+        );
+        requiredDependency(this.operatorGateway, "requestDecision", "Optimization Operator gateway");
+        this.approvals = requiredDependency(options2.approvals, "request", "Optimization approval gateway");
+        this.releaseManager = requiredDependency(options2.releaseManager, "release", "Skill release manager");
+        this.telemetry = options2.telemetry ?? (() => ({}));
+        if (typeof this.telemetry !== "function") throw new Error("Optimization telemetry reader is invalid");
+        this.onChanged = options2.onChanged ?? (() => {
+        });
+        if (typeof this.onChanged !== "function") throw new Error("Optimization change callback is invalid");
+        this.controls = /* @__PURE__ */ new Map();
+        this.schedulingStopped = false;
+      }
+      run(runId, context = {}) {
+        if (this.schedulingStopped) {
+          throw new Error("Optimization Runner scheduling is stopped for App shutdown");
+        }
+        if (this.controls.has(runId)) return this.controls.get(runId).operation;
+        const workspace = context.workspace === void 0 || context.workspace === null ? null : clone(context.workspace);
+        if (workspace !== null && workspace.runId !== runId) {
+          throw new Error("Optimization workspace does not belong to the requested Run");
+        }
+        const control = {
+          runId,
+          operatorSessionId: String(context.operatorSessionId ?? ""),
+          parentJobId: String(context.parentJobId ?? ""),
+          cancelRequested: false,
+          pauseRequested: false,
+          initialTargets: null,
+          currentCandidate: null,
+          previousCandidate: null,
+          baselineEvaluation: null,
+          previousEvaluation: null,
+          analyses: [],
+          workspace,
+          approvedLimits: {}
+        };
+        if (!control.operatorSessionId || !control.parentJobId) {
+          throw new Error("Optimization Runner requires an Operator session and parent Job");
+        }
+        const operation = this.#execute(control).finally(() => {
+          if (this.controls.get(runId) === control) this.controls.delete(runId);
+        });
+        control.operation = operation;
+        this.controls.set(runId, control);
+        return operation;
+      }
+      resume(runId, context = {}) {
+        if (this.schedulingStopped) {
+          throw new Error("Optimization Runner scheduling is stopped for App shutdown");
+        }
+        if (this.controls.has(runId)) throw new Error("Optimization Run is already active");
+        const run = this.store.getRun(runId);
+        if (run.state !== "needs_recovery" || run.checkpoint?.paused !== true) {
+          throw new Error("Optimization Run is not paused and resumable");
+        }
+        const control = {
+          runId,
+          operatorSessionId: String(
+            context.operatorSessionId ?? run.checkpoint.operatorSessionId ?? ""
+          ),
+          parentJobId: String(
+            context.parentJobId ?? run.checkpoint.operatorParentJobId ?? ""
+          ),
+          cancelRequested: false,
+          pauseRequested: false,
+          initialTargets: clone(run.checkpoint.initialTargets ?? null),
+          currentCandidate: null,
+          previousCandidate: null,
+          baselineEvaluation: null,
+          previousEvaluation: null,
+          analyses: [],
+          workspace: clone(context.workspace ?? this.workspaceManager.get?.(runId) ?? null),
+          approvedLimits: clone(run.checkpoint.approvedLimits ?? {}),
+          resumePrepared: true
+        };
+        if (!control.operatorSessionId || !control.parentJobId || !control.workspace) {
+          throw new Error("Optimization resume requires its frozen Operator and workspace identities");
+        }
+        const operation = this.#prepareResume(control).then(() => this.#execute(control)).finally(() => {
+          if (this.controls.get(runId) === control) this.controls.delete(runId);
+        });
+        control.operation = operation;
+        this.controls.set(runId, control);
+        return operation;
+      }
+      stop(runId) {
+        const control = this.controls.get(runId);
+        if (!control) throw new Error("Optimization Run is not active");
+        control.cancelRequested = true;
+        return { runId, status: "stopping" };
+      }
+      pause(runId) {
+        const control = this.controls.get(runId);
+        if (!control) throw new Error("Optimization Run is not active");
+        control.pauseRequested = true;
+        return { runId, status: "pausing" };
+      }
+      checkpointAndStop() {
+        this.schedulingStopped = true;
+        const activeRunIds = [...this.controls.keys()].sort();
+        for (const runId of activeRunIds) this.controls.get(runId).pauseRequested = true;
+        return { activeRunIds };
+      }
+      async waitForIdle() {
+        const operations = [...this.controls.values()].map((control) => control.operation);
+        await Promise.allSettled(operations);
+        return { activeRunIds: [...this.controls.keys()].sort() };
+      }
+      #readArtifact(artifactId) {
+        if (typeof this.artifactStore.readArtifactBody !== "function") {
+          throw new Error("Optimization Artifact store cannot restore persisted bodies");
+        }
+        const body = this.artifactStore.readArtifactBody(artifactId);
+        return JSON.parse(Buffer.from(body).toString("utf8"));
+      }
+      async #prepareResume(control) {
+        const run = this.store.getRun(control.runId);
+        const epoch = run.epochs.at(-1);
+        if (!run.checkpoint?.baselineEvaluationArtifactId) {
+          throw new Error("Paused Optimization Run lacks durable resume evidence");
+        }
+        control.baselineEvaluation = this.#readArtifact(
+          run.checkpoint.baselineEvaluationArtifactId
+        );
+        control.analyses = run.epochs.filter((entry) => entry.analysisArtifactId).map((entry) => this.#readArtifact(entry.analysisArtifactId));
+        const evaluatedEpoch = [...run.epochs].reverse().find((entry) => entry.candidateArtifactId && entry.evaluationArtifactIds?.length);
+        if (evaluatedEpoch) {
+          control.previousCandidate = this.#readArtifact(evaluatedEpoch.candidateArtifactId);
+          control.previousEvaluation = this.#readArtifact(evaluatedEpoch.evaluationArtifactIds[0]);
+        } else {
+          control.previousEvaluation = control.baselineEvaluation;
+        }
+        if (epoch && !["completed", "succeeded", "failed", "cancelled"].includes(epoch.status)) {
+          const completeEvidence = epoch.candidateArtifactId && epoch.installArtifactIds?.length && epoch.evaluationArtifactIds?.length && epoch.analysisArtifactId && epoch.decisionArtifactId;
+          this.store.updateEpoch(control.runId, epoch.id, {
+            status: completeEvidence ? "completed" : "cancelled"
+          });
+        }
+        this.#transition(control, "editing", { paused: false });
+      }
+      #checkpoint(control, patch = {}) {
+        const run = this.store.getRun(control.runId);
+        return { ...clone(run.checkpoint ?? {}), ...clone(patch) };
+      }
+      #transition(control, state, checkpointPatch = null, error = void 0) {
+        const patch = {};
+        if (checkpointPatch !== null) patch.checkpoint = this.#checkpoint(control, checkpointPatch);
+        if (error !== void 0) patch.error = error;
+        this.store.transitionRun(control.runId, state, patch);
+        this.onChanged({ runId: control.runId, state });
+        return this.store.getRun(control.runId);
+      }
+      #artifact(jobId, kind, name, value, metadata = {}) {
+        return this.artifactStore.createArtifact(jobId, {
+          kind,
+          name,
+          mediaType: "application/json",
+          body: `${JSON.stringify(value, null, 2)}
+`,
+          metadata
+        });
+      }
+      #child(control, type, objective, operation) {
+        return this.childJobs.run({
+          parentJobId: control.parentJobId,
+          type,
+          objective
+        }, operation);
+      }
+      async #evaluate(control, kind, candidate, installationJobs, epoch = null) {
+        return this.#child(control, `optimization_${kind.replaceAll("-", "_")}`, `Run ${kind} evaluation`, async ({ jobId }) => {
+          const evaluation = await this.evaluationManager.run({
+            kind,
+            optimizationRun: this.store.getRun(control.runId),
+            candidate: clone(candidate),
+            installationJobs: clone(installationJobs),
+            targets: clone(this.store.getRun(control.runId).snapshot.targets)
+          });
+          if (!evaluation || !(/* @__PURE__ */ new Set(["completed", "partial"])).has(evaluation.status)) {
+            const error = new Error(`${kind} evaluation did not complete`);
+            error.code = "OPTIMIZATION_EVALUATION_FAILED";
+            throw error;
+          }
+          const artifact = this.#artifact(jobId, "optimization-evaluation", `${kind}.json`, evaluation, {
+            runId: control.runId,
+            epoch,
+            kind
+          });
+          return { evaluation, artifact };
+        });
+      }
+      async #waitInstallationJobs(jobs) {
+        const completed = await Promise.all(jobs.map(async (job) => {
+          const waited = await this.installationManager.wait(job.id);
+          return waited?.id ? waited : this.installationManager.store.getJob(job.id);
+        }));
+        const failed = completed.find((job) => !SUCCESSFUL_INSTALLATION_STATUSES.has(job.status));
+        if (failed) {
+          const error = new Error(`Runtime installation Job ${failed.id} ended as ${failed.status}`);
+          error.code = failed.status === "needs_recovery" ? "OPTIMIZATION_INSTALL_NEEDS_RECOVERY" : "OPTIMIZATION_INSTALL_FAILED";
+          error.installationJob = failed;
+          error.installationJobs = completed;
+          throw error;
+        }
+        return completed;
+      }
+      async #experiment(control, operation, candidate, epoch, previousCandidate = null, targetRuntimeIds = null) {
+        return this.#child(control, `optimization_${operation}`, `Run ${operation} for Epoch ${epoch}`, async ({ jobId }) => {
+          const snapshot = this.store.getRun(control.runId).snapshot;
+          const selectedRuntimeIds = targetRuntimeIds === null ? null : new Set(targetRuntimeIds);
+          const targets = snapshot.targets.filter((target) => selectedRuntimeIds === null || selectedRuntimeIds.has(target.runtimeId)).map((target) => ({
+            ...clone(target),
+            ...operation === "experiment_inspect" ? {} : {
+              initial: clone(control.initialTargets[target.runtimeId])
+            }
+          }));
+          const jobs = await this.installationManager.startOptimizationExperiment({
+            operation,
+            run: this.store.getRun(control.runId),
+            epoch,
+            candidateVersionId: candidate.id,
+            previousCandidateVersionId: previousCandidate?.id ?? null,
+            targets
+          });
+          const completed = await this.#waitInstallationJobs(jobs);
+          const artifact = this.#artifact(jobId, "optimization-installation", `${operation}-${epoch}.json`, {
+            operation,
+            jobs: completed
+          }, { runId: control.runId, epoch, operation });
+          return { jobs: completed, artifact };
+        });
+      }
+      async #requestDecision(control, context) {
+        let validationError = null;
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          const raw = await this.operatorGateway.requestDecision({
+            ...context,
+            attempt,
+            validationError,
+            operatorSessionId: control.operatorSessionId
+          });
+          try {
+            const wrapped = raw && typeof raw === "object" && !Array.isArray(raw) && raw.decision ? raw : { decision: raw, limitRequest: null };
+            const decision = parseOptimizationDecision(wrapped.decision);
+            const run = this.store.getRun(control.runId);
+            const limitRequest = optimizationLimitRequest(
+              wrapped.limitRequest,
+              { ...run.snapshot.limits, ...control.approvedLimits },
+              run.snapshot.telemetry
+            );
+            if (limitRequest && decision.action !== "continue") {
+              throw new Error("Optimization limit request requires a continue decision");
+            }
+            return { decision, limitRequest };
+          } catch (error2) {
+            validationError = error2.message;
+          }
+        }
+        const error = new Error(`Optimization decision remained invalid after one repair: ${validationError}`);
+        error.code = "OPTIMIZATION_DECISION_INVALID";
+        throw error;
+      }
+      async #execute(control) {
+        let terminalIntent = "failed";
+        try {
+          let run = this.store.getRun(control.runId);
+          if (run.state === "preflight") {
+            if (control.workspace === null) {
+              control.workspace = await this.workspaceManager.create(run);
+            }
+            this.#transition(control, "baseline", { workspace: control.workspace });
+            const baseline = await this.#evaluate(
+              control,
+              "baseline",
+              run.snapshot.baseline,
+              []
+            );
+            control.baselineEvaluation = baseline.evaluation;
+            control.previousEvaluation = baseline.evaluation;
+            this.#transition(control, "editing", {
+              baselineEvaluationArtifactId: baseline.artifact.id,
+              baselineEvaluationRunId: baseline.evaluation.id
+            });
+          } else if (!(control.resumePrepared === true && run.state === "editing")) {
+            throw new Error("Optimization Run must start in preflight or a prepared resume");
+          }
+          while (true) {
+            if (control.cancelRequested) {
+              terminalIntent = "cancelled";
+              return this.#restore(control, terminalIntent, new Error("Optimization cancelled by user"));
+            }
+            const created = this.store.createEpoch(control.runId);
+            const epochNumber = created.index;
+            const submission = await this.operatorGateway.requestCandidate({
+              run: boundedRunSummary(this.store.getRun(control.runId)),
+              epoch: epochNumber,
+              workspace: clone(control.workspace),
+              operatorSessionId: control.operatorSessionId
+            });
+            const candidateChild = await this.#child(
+              control,
+              "optimization_candidate",
+              `Commit Candidate for Epoch ${epochNumber}`,
+              async ({ jobId }) => {
+                const version = await this.workspaceManager.createCandidate({
+                  runId: control.runId,
+                  epoch: epochNumber,
+                  message: String(submission?.message ?? "")
+                });
+                const artifact = this.#artifact(
+                  jobId,
+                  "optimization-candidate",
+                  `candidate-${epochNumber}.json`,
+                  version,
+                  { runId: control.runId, epoch: epochNumber }
+                );
+                return { candidate: version, artifact };
+              }
+            );
+            control.currentCandidate = candidateChild.candidate;
+            this.store.updateEpoch(control.runId, created.epochId, {
+              candidateArtifactId: candidateChild.artifact.id
+            });
+            if (control.initialTargets === null) {
+              const preflight = await this.#experiment(
+                control,
+                "experiment_inspect",
+                control.currentCandidate,
+                epochNumber
+              );
+              control.initialTargets = Object.fromEntries(preflight.jobs.map((job) => [
+                job.runtime.runtimeId,
+                installedInitialState(job, run.snapshot.baseline)
+              ]));
+              this.#transition(control, "installing", {
+                experimentPreflightArtifactId: preflight.artifact.id,
+                initialTargets: control.initialTargets
+              });
+            } else {
+              this.#transition(control, "installing");
+            }
+            const installation = await this.#experiment(
+              control,
+              "experiment_install",
+              control.currentCandidate,
+              epochNumber,
+              control.previousCandidate
+            );
+            this.store.updateEpoch(control.runId, created.epochId, {
+              installArtifactIds: [installation.artifact.id]
+            });
+            this.#transition(control, "evaluating");
+            const candidateEvaluation = await this.#evaluate(
+              control,
+              "candidate",
+              control.currentCandidate,
+              installation.jobs,
+              epochNumber
+            );
+            this.store.updateEpoch(control.runId, created.epochId, {
+              evaluationArtifactIds: [candidateEvaluation.artifact.id]
+            });
+            this.#transition(control, "deciding");
+            const progress = {
+              ...clone(await this.telemetry({ runId: control.runId, epoch: epochNumber })),
+              cancelRequested: control.cancelRequested,
+              recoveryFailed: false
+            };
+            this.store.updateCheckpoint(control.runId, {
+              telemetry: {
+                elapsedMs: progress.elapsedMs,
+                turnsUsed: progress.turnsUsed,
+                tokens: progress.tokensUsed,
+                costMicros: progress.costMicros
+              }
+            });
+            this.onChanged({ runId: control.runId, state: "deciding" });
+            const analysisInput = {
+              baseline: control.baselineEvaluation,
+              previous: control.previousEvaluation,
+              current: candidateEvaluation.evaluation,
+              mode: run.snapshot.mode,
+              epoch: epochNumber,
+              target: run.snapshot.target,
+              limits: run.snapshot.limits,
+              progress,
+              history: control.analyses
+            };
+            const provisional = compareEvaluationRuns({
+              ...analysisInput,
+              agentDecision: { action: "continue" }
+            });
+            let requestedDecision;
+            try {
+              requestedDecision = await this.#requestDecision(control, {
+                run: boundedRunSummary(this.store.getRun(control.runId)),
+                epoch: epochNumber,
+                analysis: boundedAnalysisSummary(provisional)
+              });
+            } catch (error) {
+              if (error.code !== "OPTIMIZATION_DECISION_INVALID") throw error;
+              this.#transition(control, "needs_recovery", {
+                paused: true,
+                pauseReason: error.code
+              }, errorRecord(error));
+              return { runId: control.runId, status: "paused", reason: error.code };
+            }
+            const { decision, limitRequest } = requestedDecision;
+            let limitApproval = null;
+            if (limitRequest) {
+              limitApproval = await this.approvals.request({
+                kind: "limit",
+                parentJobId: control.parentJobId,
+                runId: control.runId,
+                epoch: epochNumber,
+                request: limitRequest
+              });
+              if (limitApproval?.approved === true) {
+                control.approvedLimits[limitRequest.field] = limitRequest.value;
+                analysisInput.limits = {
+                  ...analysisInput.limits,
+                  ...control.approvedLimits
+                };
+              }
+            }
+            const analysis = compareEvaluationRuns({ ...analysisInput, agentDecision: decision });
+            const analysisArtifact = this.#artifact(
+              control.parentJobId,
+              "optimization-analysis",
+              `analysis-${epochNumber}.json`,
+              analysis,
+              { runId: control.runId, epoch: epochNumber }
+            );
+            const decisionArtifact = this.#artifact(
+              control.parentJobId,
+              "optimization-decision",
+              `decision-${epochNumber}.json`,
+              decision,
+              { runId: control.runId, epoch: epochNumber }
+            );
+            this.store.updateEpoch(control.runId, created.epochId, {
+              analysisArtifactId: analysisArtifact.id,
+              decisionArtifactId: decisionArtifact.id
+            });
+            control.analyses.push(analysis);
+            const stopDecision = evaluateStopRules(analysis);
+            if (control.pauseRequested || stopDecision.action === "pause") {
+              this.#transition(control, "needs_recovery", {
+                paused: true,
+                pauseReason: control.pauseRequested ? "user_pause" : stopDecision.reason
+              });
+              return { runId: control.runId, status: "paused", reason: stopDecision.reason };
+            }
+            if (stopDecision.action === "continue") {
+              this.store.updateEpoch(control.runId, created.epochId, { status: "completed" });
+              control.previousCandidate = control.currentCandidate;
+              control.previousEvaluation = candidateEvaluation.evaluation;
+              this.#transition(control, "editing", {
+                approvedLimits: control.approvedLimits,
+                ...limitRequest ? {
+                  lastLimitRequest: limitRequest,
+                  lastLimitApprovalId: limitApproval?.approvalId ?? null
+                } : {}
+              });
+              continue;
+            }
+            if (stopDecision.action === "restore" || stopDecision.action === "recover") {
+              terminalIntent = "failed";
+              return this.#restore(
+                control,
+                terminalIntent,
+                Object.assign(new Error(stopDecision.reason), { code: stopDecision.reason })
+              );
+            }
+            return await this.#releaseAndVerify(control, {
+              epochId: created.epochId,
+              epochNumber,
+              candidate: control.currentCandidate,
+              candidateEvaluation: candidateEvaluation.evaluation,
+              stopReason: stopDecision.reason
+            });
+          }
+        } catch (error) {
+          if (control.pauseRequested) {
+            this.#transition(control, "needs_recovery", {
+              paused: true,
+              pauseReason: "app_shutdown"
+            });
+            return { runId: control.runId, status: "paused", reason: "app_shutdown" };
+          }
+          return this.#restore(control, terminalIntent, error);
+        }
+      }
+      async #releaseAndVerify(control, context) {
+        this.#transition(control, "waiting_approval", { stopReason: context.stopReason });
+        const releaseApproval = await this.approvals.request({
+          kind: "release",
+          parentJobId: control.parentJobId,
+          runId: control.runId,
+          epoch: context.epochNumber,
+          candidate: clone(context.candidate)
+        });
+        if (releaseApproval?.approved !== true) {
+          return this.#restore(
+            control,
+            "cancelled",
+            Object.assign(new Error("Optimization release was rejected"), {
+              code: "OPTIMIZATION_RELEASE_REJECTED"
+            })
+          );
+        }
+        if (control.cancelRequested) {
+          throw Object.assign(new Error("Optimization cancelled before release"), {
+            code: "OPTIMIZATION_CANCELLED"
+          });
+        }
+        const released = await this.#child(
+          control,
+          "optimization_release",
+          "Release approved Optimization Candidate",
+          ({ jobId }) => this.releaseManager.release({
+            run: this.store.getRun(control.runId),
+            candidate: context.candidate,
+            approval: releaseApproval,
+            jobId
+          })
+        );
+        const installApproval = await this.approvals.request({
+          kind: "install",
+          parentJobId: control.parentJobId,
+          runId: control.runId,
+          epoch: context.epochNumber,
+          versionId: released.id
+        });
+        if (installApproval?.approved !== true) {
+          return this.#restore(
+            control,
+            "cancelled",
+            Object.assign(new Error("Optimization Released installation was rejected"), {
+              code: "OPTIMIZATION_INSTALL_REJECTED"
+            })
+          );
+        }
+        if (control.cancelRequested) {
+          throw Object.assign(new Error("Optimization cancelled before Released installation"), {
+            code: "OPTIMIZATION_CANCELLED"
+          });
+        }
+        this.#transition(control, "installing", {
+          releasePhase: "released-install",
+          releaseApprovalId: releaseApproval.approvalId ?? null,
+          installApprovalId: installApproval.approvalId ?? null,
+          releasedVersionId: released.id
+        });
+        const formalInstallation = await this.#child(
+          control,
+          "optimization_released_install",
+          "Install approved Released Skill",
+          async ({ jobId }) => {
+            const jobs = await this.installationManager.start({
+              skillId: released.skillId,
+              versionId: released.id,
+              targets: clone(this.store.getRun(control.runId).snapshot.targets)
+            });
+            const completed = await this.#waitInstallationJobs(jobs);
+            const artifact = this.#artifact(jobId, "optimization-installation", "released-install.json", {
+              versionId: released.id,
+              jobs: completed
+            });
+            return { jobs: completed, artifact };
+          }
+        );
+        this.#transition(control, "evaluating", {
+          releasePhase: "final-regression",
+          releasedInstallArtifactId: formalInstallation.artifact.id
+        });
+        const finalEvaluation = await this.#evaluate(
+          control,
+          "final-regression",
+          released,
+          formalInstallation.jobs,
+          context.epochNumber
+        );
+        const epoch = this.store.getRun(control.runId).epochs.find(
+          (entry) => entry.id === context.epochId
+        );
+        this.store.updateEpoch(control.runId, context.epochId, {
+          evaluationArtifactIds: [...epoch.evaluationArtifactIds, finalEvaluation.artifact.id]
+        });
+        this.#transition(control, "deciding", {
+          releasePhase: "verified",
+          finalEvaluationRunId: finalEvaluation.evaluation.id,
+          finalEvaluationArtifactId: finalEvaluation.artifact.id
+        });
+        const regression = compareEvaluationRuns({
+          baseline: context.candidateEvaluation,
+          previous: context.candidateEvaluation,
+          current: finalEvaluation.evaluation,
+          mode: "fixed",
+          epoch: 1,
+          target: { minimumScore: 0, minimumPassRate: 0, requireCriticalCases: true },
+          limits: {
+            maxEpochs: 2,
+            maxDurationMs: this.store.getRun(control.runId).snapshot.limits.maxDurationMs,
+            maxTurns: null,
+            maxTokens: null,
+            maxCostMicros: null,
+            patience: 1,
+            minimumImprovement: 0
+          },
+          progress: { elapsedMs: 0, turnsUsed: 0, tokensUsed: null, costMicros: null },
+          history: [],
+          agentDecision: { action: "finish" },
+          regressionThresholds: { maximumScoreDrop: 0, maximumRegressedResults: 0 }
+        });
+        if (regression.broadRegression || regression.newCriticalFailures.length || regression.missingScoreCount > 0) {
+          return this.#restore(
+            control,
+            "failed",
+            Object.assign(new Error("Released installation final regression failed"), {
+              code: "OPTIMIZATION_FINAL_REGRESSION_FAILED"
+            })
+          );
+        }
+        this.store.updateEpoch(control.runId, context.epochId, { status: "succeeded" });
+        this.#transition(control, "succeeded", { finalRegressionPassed: true }, null);
+        await this.workspaceManager.cleanup?.(control.runId);
+        return { runId: control.runId, status: "succeeded", releasedVersionId: released.id };
+      }
+      async #restore(control, terminalState, cause) {
+        let run = this.store.getRun(control.runId);
+        const epoch = run.epochs.at(-1) ?? null;
+        if (!control.initialTargets || !control.currentCandidate) {
+          if (epoch && !["completed", "succeeded", "failed", "cancelled"].includes(epoch.status)) {
+            this.store.updateEpoch(control.runId, epoch.id, {
+              status: terminalState === "cancelled" ? "cancelled" : "failed"
+            });
+          }
+          if (run.state === "baseline" || run.state === "preflight") {
+            this.#transition(control, terminalState, null, errorRecord(cause));
+          } else {
+            this.#transition(control, "restoring", null, errorRecord(cause));
+            this.#transition(control, terminalState);
+          }
+          return { runId: control.runId, status: terminalState, error: errorRecord(cause) };
+        }
+        try {
+          if (run.state !== "restoring") this.#transition(control, "restoring", null, errorRecord(cause));
+          for (const [classification, operation] of [
+            ["managed-clean", "experiment_restore"],
+            ["absent", "experiment_remove"]
+          ]) {
+            const runtimeIds = Object.entries(control.initialTargets).filter(([, initial]) => initial.classification === classification).map(([runtimeId]) => runtimeId);
+            if (!runtimeIds.length) continue;
+            await this.#experiment(
+              control,
+              operation,
+              control.currentCandidate,
+              control.currentCandidate.optimizationEpoch,
+              control.previousCandidate,
+              runtimeIds
+            );
+          }
+          run = this.store.getRun(control.runId);
+          const currentEpoch = run.epochs.at(-1);
+          if (currentEpoch && !["completed", "succeeded", "failed", "cancelled"].includes(currentEpoch.status)) {
+            this.store.updateEpoch(control.runId, currentEpoch.id, {
+              status: terminalState === "cancelled" ? "cancelled" : "failed"
+            });
+          }
+          this.#transition(control, terminalState);
+          await this.workspaceManager.cleanup?.(control.runId);
+          return { runId: control.runId, status: terminalState, error: errorRecord(cause) };
+        } catch (recoveryError) {
+          const recoveryJobs = Array.isArray(recoveryError.installationJobs) ? recoveryError.installationJobs : recoveryError.installationJob ? [recoveryError.installationJob] : [];
+          this.#transition(control, "needs_recovery", {
+            recoveryError: errorRecord(recoveryError),
+            recoveryTargets: recoveryJobs.map(recoveryTargetSummary)
+          }, errorRecord(cause));
+          return {
+            runId: control.runId,
+            status: "needs_recovery",
+            error: errorRecord(cause),
+            recoveryError: errorRecord(recoveryError)
+          };
+        }
+      }
+    };
+    module.exports = { OptimizationRunner };
+  }
+});
+
+// ../../desktop/rolling-skill/src/optimization/optimization-store.cjs
+var require_optimization_store = __commonJS({
+  "../../desktop/rolling-skill/src/optimization/optimization-store.cjs"(exports, module) {
+    var { randomUUID } = __require("node:crypto");
+    var {
+      constants,
+      closeSync,
+      fchmodSync,
+      fstatSync,
+      fsyncSync,
+      linkSync,
+      lstatSync,
+      mkdirSync,
+      openSync,
+      readSync,
+      realpathSync,
+      renameSync,
+      unlinkSync,
+      writeFileSync
+    } = __require("node:fs");
+    var { basename, dirname, join, resolve } = __require("node:path");
+    var {
+      canonicalOptimizationDigest,
+      validateFrozenOptimizationRun
+    } = require_optimization_contract();
+    var OPTIMIZATION_STORE_SCHEMA = "rolling-skill-optimization-runs/v1";
+    var MAX_STORE_BYTES = 16 * 1024 * 1024;
+    var MAX_RUNS = 1e4;
+    var MAX_OPERATIONS = 1e4;
+    var MAX_ARTIFACT_REFERENCES = 512;
+    var MAX_CHECKPOINT_BYTES = 64 * 1024;
+    var MAX_OWNERSHIP_BYTES = 4 * 1024;
+    var OWNERSHIP_SCHEMA = "rolling-skill-optimization-owner/v1";
+    var TAKEOVER_SCHEMA = "rolling-skill-optimization-takeover/v1";
+    var NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+    var DIRECTORY = constants.O_DIRECTORY ?? 0;
+    var TERMINAL_STATES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled"]);
+    var ACTIVE_RESTART_STATES = /* @__PURE__ */ new Set([
+      "baseline",
+      "editing",
+      "installing",
+      "evaluating",
+      "deciding",
+      "restoring"
+    ]);
+    var RUN_STATES = /* @__PURE__ */ new Set([
+      "preflight",
+      "baseline",
+      "editing",
+      "installing",
+      "evaluating",
+      "deciding",
+      "waiting_approval",
+      "restoring",
+      "succeeded",
+      "failed",
+      "cancelled",
+      "needs_recovery"
+    ]);
+    var RUN_TRANSITIONS = /* @__PURE__ */ new Map([
+      ["preflight", /* @__PURE__ */ new Set(["baseline", "failed", "cancelled", "needs_recovery"])],
+      ["baseline", /* @__PURE__ */ new Set(["editing", "failed", "cancelled", "needs_recovery"])],
+      ["editing", /* @__PURE__ */ new Set(["installing", "restoring", "failed", "cancelled", "needs_recovery"])],
+      ["installing", /* @__PURE__ */ new Set(["evaluating", "restoring", "failed", "cancelled", "needs_recovery"])],
+      ["evaluating", /* @__PURE__ */ new Set(["deciding", "restoring", "failed", "cancelled", "needs_recovery"])],
+      ["deciding", /* @__PURE__ */ new Set([
+        "editing",
+        "waiting_approval",
+        "restoring",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "needs_recovery"
+      ])],
+      ["waiting_approval", /* @__PURE__ */ new Set([
+        "editing",
+        "installing",
+        "restoring",
+        "failed",
+        "cancelled",
+        "needs_recovery"
+      ])],
+      ["restoring", /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled", "needs_recovery"])],
+      ["needs_recovery", /* @__PURE__ */ new Set([
+        "baseline",
+        "editing",
+        "installing",
+        "evaluating",
+        "deciding",
+        "waiting_approval",
+        "restoring",
+        "failed",
+        "cancelled"
+      ])]
+    ]);
+    var EPOCH_STATES = /* @__PURE__ */ new Set([
+      "editing",
+      "installing",
+      "evaluating",
+      "deciding",
+      "completed",
+      "succeeded",
+      "failed",
+      "cancelled"
+    ]);
+    var TERMINAL_EPOCH_STATES = /* @__PURE__ */ new Set(["completed", "succeeded", "failed", "cancelled"]);
+    var EPOCH_TRANSITIONS = /* @__PURE__ */ new Map([
+      ["editing", /* @__PURE__ */ new Set(["installing", "failed", "cancelled"])],
+      ["installing", /* @__PURE__ */ new Set(["evaluating", "failed", "cancelled"])],
+      ["evaluating", /* @__PURE__ */ new Set(["deciding", "failed", "cancelled"])],
+      ["deciding", /* @__PURE__ */ new Set(["completed", "succeeded", "failed", "cancelled"])]
+    ]);
+    var IMMUTABLE_EPOCH_FIELDS = /* @__PURE__ */ new Map([
+      ["installing", ["candidateArtifactId"]],
+      ["evaluating", ["candidateArtifactId", "installArtifactIds"]],
+      ["deciding", ["candidateArtifactId", "installArtifactIds", "evaluationArtifactIds"]]
+    ]);
+    var EPOCH_EVIDENCE_FIELDS = [
+      "candidateArtifactId",
+      "installArtifactIds",
+      "evaluationArtifactIds",
+      "analysisArtifactId",
+      "decisionArtifactId"
+    ];
+    var OPERATION_KINDS = /* @__PURE__ */ new Set(["transition", "create_epoch", "update_epoch"]);
+    var DANGEROUS_KEYS = /* @__PURE__ */ new Set(["__proto__", "prototype", "constructor"]);
+    function isPlainObject(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      const prototype = Object.getPrototypeOf(value);
+      return prototype === Object.prototype || prototype === null;
+    }
+    function requireObject(value, label) {
+      if (!isPlainObject(value)) throw new Error(`${label} must be a plain object`);
+      return value;
+    }
+    function exactKeys(value, required, optional, label) {
+      requireObject(value, label);
+      const allowed = /* @__PURE__ */ new Set([...required, ...optional]);
+      for (const key of Object.keys(value)) {
+        if (DANGEROUS_KEYS.has(key)) throw new Error(`${label} contains an unsafe field`);
+        if (!allowed.has(key)) throw new Error(`${label} has unknown or missing fields (${key})`);
+      }
+      for (const key of required) {
+        if (!Object.hasOwn(value, key)) throw new Error(`${label} has unknown or missing fields (${key})`);
+      }
+      return value;
+    }
+    function cloneJson(value, label = "Value", seen = /* @__PURE__ */ new Set()) {
+      if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+      if (typeof value === "number") {
+        if (!Number.isFinite(value)) throw new Error(`${label} contains a non-finite number`);
+        return value;
+      }
+      if (typeof value !== "object" || value === void 0) throw new Error(`${label} must be JSON`);
+      if (seen.has(value)) throw new Error(`${label} is cyclic`);
+      seen.add(value);
+      let copy;
+      if (Array.isArray(value)) {
+        const keys = Object.keys(value);
+        if (keys.length !== value.length || keys.some((key, index) => key !== String(index))) {
+          throw new Error(`${label} must be a dense array`);
+        }
+        copy = value.map((entry) => cloneJson(entry, label, seen));
+      } else {
+        requireObject(value, label);
+        copy = {};
+        for (const key of Object.keys(value)) {
+          if (DANGEROUS_KEYS.has(key)) throw new Error(`${label} contains an unsafe field`);
+          copy[key] = cloneJson(value[key], label, seen);
+        }
+      }
+      seen.delete(value);
+      return copy;
+    }
+    function requiredText(value, label, maxLength = 300) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized) throw new Error(`${label} is required`);
+      if (normalized !== value) throw new Error(`${label} is not canonical`);
+      if (normalized.length > maxLength) throw new Error(`${label} is too long`);
+      if (/\u0000/u.test(normalized)) throw new Error(`${label} contains unsupported characters`);
+      return normalized;
+    }
+    function publicId(value, label) {
+      const normalized = requiredText(value, label, 200);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u.test(normalized)) {
+        throw new Error(`${label} must be an opaque identifier, not a path`);
+      }
+      return normalized;
+    }
+    function integer(value, label, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) {
+      if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+        throw new Error(`${label} is invalid`);
+      }
+      return value;
+    }
+    function timestamp(value, label) {
+      const normalized = requiredText(value, label, 100);
+      if (!Number.isFinite(Date.parse(normalized)) || new Date(normalized).toISOString() !== normalized) {
+        throw new Error(`${label} must be a canonical timestamp`);
+      }
+      return normalized;
+    }
+    function nullableTimestamp(value, label) {
+      return value === null ? null : timestamp(value, label);
+    }
+    function nowTimestamp() {
+      return (/* @__PURE__ */ new Date()).toISOString();
+    }
+    function encodedBytes(value, label) {
+      try {
+        return Buffer.byteLength(JSON.stringify(value));
+      } catch {
+        throw new Error(`${label} is invalid`);
+      }
+    }
+    function boundedJson(value, label, maximum = MAX_CHECKPOINT_BYTES) {
+      const copy = cloneJson(value, label);
+      if (encodedBytes(copy, label) > maximum) throw new Error(`${label} exceeds its byte limit`);
+      return copy;
+    }
+    function artifactId(value, label) {
+      return publicId(value, label);
+    }
+    function nullableArtifactId(value, label) {
+      return value === null ? null : artifactId(value, label);
+    }
+    function artifactIds(value, label) {
+      if (!Array.isArray(value) || value.length > MAX_ARTIFACT_REFERENCES) {
+        throw new Error(`${label} must be a bounded array`);
+      }
+      const normalized = value.map((entry) => artifactId(entry, label));
+      if (new Set(normalized).size !== normalized.length) {
+        throw new Error(`${label} must contain unique references`);
+      }
+      return normalized;
+    }
+    function epochEvidencePatchValue(field, value) {
+      if (field === "candidateArtifactId") return nullableArtifactId(value, "Candidate artifact id");
+      if (field === "installArtifactIds") return artifactIds(value, "Install artifact ids");
+      if (field === "evaluationArtifactIds") return artifactIds(value, "Evaluation artifact ids");
+      if (field === "analysisArtifactId") return nullableArtifactId(value, "Analysis artifact id");
+      return nullableArtifactId(value, "Decision artifact id");
+    }
+    function sameJson(left, right) {
+      return JSON.stringify(left) === JSON.stringify(right);
+    }
+    function extendsArtifactSequence(current, next) {
+      return current.every((value, index) => next[index] === value);
+    }
+    function pathEntryExists(path) {
+      try {
+        lstatSync(path);
+        return true;
+      } catch (error) {
+        if (error?.code === "ENOENT") return false;
+        throw error;
+      }
+    }
+    function secureDirectory(path, { create = false } = {}) {
+      const directory = resolve(path);
+      if (create) mkdirSync(directory, { recursive: true, mode: 448 });
+      const status = lstatSync(directory);
+      if (status.isSymbolicLink() || !status.isDirectory()) {
+        throw new Error("Private directory must be a regular directory, not a symbolic link");
+      }
+      if ((status.mode & 511) !== 448) {
+        throw new Error("Private directory must use owner-only mode 0700");
+      }
+      return { path: directory, realPath: realpathSync(directory), status };
+    }
+    function secureFileMetadata(path, directory, maximumBytes, label) {
+      const filePath = resolve(path);
+      const parent = secureDirectory(directory);
+      if (dirname(filePath) !== parent.path) throw new Error(`${label} path escapes its private directory`);
+      const status = lstatSync(filePath);
+      if (status.isSymbolicLink() || !status.isFile()) {
+        throw new Error(`${label} must be a regular file, not a symbolic link`);
+      }
+      if (status.nlink !== 1) throw new Error(`${label} must have a single link`);
+      if ((status.mode & 511) !== 384) throw new Error(`${label} must use owner-only mode 0600`);
+      if (status.size > maximumBytes) throw new Error(`${label} exceeds its byte limit`);
+      const realPath = realpathSync(filePath);
+      if (dirname(realPath) !== parent.realPath) throw new Error(`${label} real path escapes its private directory`);
+      return { filePath, realPath, status };
+    }
+    function canonicalStorePath(value) {
+      const requestedPath = resolve(requiredText(value, "Optimization store path", 8192));
+      const requestedDirectory = dirname(requestedPath);
+      const parent = secureDirectory(requestedDirectory, { create: true });
+      if (!pathEntryExists(requestedPath)) return join(parent.realPath, basename(requestedPath));
+      return secureFileMetadata(
+        requestedPath,
+        requestedDirectory,
+        MAX_STORE_BYTES,
+        "Optimization store"
+      ).realPath;
+    }
+    function readSecureFileRecord(path, directory, maximumBytes, label) {
+      const before = secureFileMetadata(path, directory, maximumBytes, label);
+      const descriptor = openSync(before.filePath, constants.O_RDONLY | NOFOLLOW);
+      try {
+        const opened = fstatSync(descriptor);
+        if (!opened.isFile() || opened.dev !== before.status.dev || opened.ino !== before.status.ino) {
+          throw new Error(`${label} changed while it was being opened`);
+        }
+        if (opened.nlink !== 1) throw new Error(`${label} must have a single link`);
+        if ((opened.mode & 511) !== 384) throw new Error(`${label} must use owner-only mode 0600`);
+        if (opened.size > maximumBytes) throw new Error(`${label} exceeds its byte limit`);
+        const body = Buffer.alloc(opened.size);
+        let offset = 0;
+        while (offset < body.byteLength) {
+          const count = readSync(descriptor, body, offset, body.byteLength - offset, offset);
+          if (count === 0) throw new Error(`${label} changed while it was being read`);
+          offset += count;
+        }
+        const extra = Buffer.alloc(1);
+        if (readSync(descriptor, extra, 0, 1, offset) !== 0) {
+          throw new Error(`${label} grew while it was being read`);
+        }
+        return {
+          body,
+          identity: { dev: String(opened.dev), ino: String(opened.ino) }
+        };
+      } finally {
+        closeSync(descriptor);
+      }
+    }
+    function readSecureFile(path, directory, maximumBytes, label) {
+      return readSecureFileRecord(path, directory, maximumBytes, label).body;
+    }
+    function fsyncDirectoryBestEffort(path) {
+      let descriptor = null;
+      try {
+        descriptor = openSync(path, constants.O_RDONLY | DIRECTORY | NOFOLLOW);
+        if (fstatSync(descriptor).isDirectory()) fsyncSync(descriptor);
+      } catch {
+      } finally {
+        if (descriptor !== null) {
+          try {
+            closeSync(descriptor);
+          } catch {
+          }
+        }
+      }
+    }
+    function writePrivateFile(path, body) {
+      const filePath = resolve(path);
+      const directory = dirname(filePath);
+      secureDirectory(directory, { create: true });
+      if (pathEntryExists(filePath)) {
+        secureFileMetadata(filePath, directory, Number.MAX_SAFE_INTEGER, "Optimization store");
+      }
+      const temporaryPath = join(directory, `.${basename(filePath)}.tmp-${process.pid}-${randomUUID()}`);
+      const descriptor = openSync(
+        temporaryPath,
+        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | NOFOLLOW,
+        384
+      );
+      let renamed = false;
+      try {
+        try {
+          const status = fstatSync(descriptor);
+          if (!status.isFile()) throw new Error("Atomic temporary path is not a regular file");
+          fchmodSync(descriptor, 384);
+          writeFileSync(descriptor, body);
+          fsyncSync(descriptor);
+        } finally {
+          closeSync(descriptor);
+        }
+        secureFileMetadata(temporaryPath, directory, Number.MAX_SAFE_INTEGER, "Atomic temporary file");
+        secureDirectory(directory);
+        renameSync(temporaryPath, filePath);
+        renamed = true;
+        fsyncDirectoryBestEffort(directory);
+      } catch (error) {
+        if (!renamed) {
+          try {
+            unlinkSync(temporaryPath);
+          } catch {
+          }
+        }
+        throw error;
+      }
+    }
+    function processIsAlive(pid) {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        if (error?.code === "ESRCH") return false;
+        return true;
+      }
+    }
+    function ownershipPath(path) {
+      return join(dirname(path), `.${basename(path)}.owner`);
+    }
+    function readOwnership(path) {
+      const record = readSecureFileRecord(
+        path,
+        dirname(path),
+        MAX_OWNERSHIP_BYTES,
+        "Optimization ownership lock"
+      );
+      const value = JSON.parse(record.body.toString("utf8"));
+      exactKeys(value, ["schemaVersion", "pid", "token"], [], "Optimization ownership lock");
+      if (value.schemaVersion !== OWNERSHIP_SCHEMA) throw new Error("Optimization ownership lock schema is invalid");
+      return {
+        schemaVersion: OWNERSHIP_SCHEMA,
+        pid: integer(value.pid, "Optimization ownership pid", 1),
+        token: publicId(value.token, "Optimization ownership token"),
+        ...record.identity
+      };
+    }
+    function takeoverPath(path) {
+      return `${path}.takeover`;
+    }
+    function sameFileIdentity(left, right) {
+      return left.dev === right.dev && left.ino === right.ino;
+    }
+    function sameControlIdentity(left, right) {
+      return left.token === right.token && sameFileIdentity(left, right);
+    }
+    function readControlFileIdentity(path) {
+      const { status } = secureFileMetadata(
+        path,
+        dirname(path),
+        MAX_OWNERSHIP_BYTES,
+        "Optimization control file"
+      );
+      return { dev: String(status.dev), ino: String(status.ino) };
+    }
+    function createControlFile(path, value) {
+      const body = `${JSON.stringify(value)}
+`;
+      const descriptor = openSync(
+        path,
+        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | NOFOLLOW,
+        384
+      );
+      let identity = null;
+      let failure = null;
+      try {
+        const status = fstatSync(descriptor);
+        identity = { dev: String(status.dev), ino: String(status.ino) };
+        fchmodSync(descriptor, 384);
+        writeFileSync(descriptor, body);
+        fsyncSync(descriptor);
+      } catch (error) {
+        failure = error;
+      } finally {
+        closeSync(descriptor);
+      }
+      if (failure !== null) {
+        if (identity !== null) {
+          try {
+            verifiedUnlink(
+              path,
+              identity,
+              readControlFileIdentity,
+              "Incomplete Optimization control file",
+              sameFileIdentity
+            );
+          } catch {
+          }
+        }
+        throw failure;
+      }
+      fsyncDirectoryBestEffort(dirname(path));
+      return { ...value, path, ...identity };
+    }
+    function readTakeover(path) {
+      const record = readSecureFileRecord(
+        path,
+        dirname(path),
+        MAX_OWNERSHIP_BYTES,
+        "Optimization takeover claim"
+      );
+      const value = JSON.parse(record.body.toString("utf8"));
+      exactKeys(
+        value,
+        ["schemaVersion", "pid", "token", "ownerToken", "ownerDev", "ownerIno"],
+        [],
+        "Optimization takeover claim"
+      );
+      if (value.schemaVersion !== TAKEOVER_SCHEMA) throw new Error("Optimization takeover claim schema is invalid");
+      for (const field of ["ownerDev", "ownerIno"]) {
+        if (!/^\d+$/u.test(requiredText(value[field], `Optimization takeover ${field}`, 100))) {
+          throw new Error(`Optimization takeover ${field} is invalid`);
+        }
+      }
+      return {
+        schemaVersion: TAKEOVER_SCHEMA,
+        pid: integer(value.pid, "Optimization takeover pid", 1),
+        token: publicId(value.token, "Optimization takeover token"),
+        ownerToken: publicId(value.ownerToken, "Optimization takeover owner token"),
+        ownerDev: value.ownerDev,
+        ownerIno: value.ownerIno,
+        ...record.identity
+      };
+    }
+    function createTakeover(path, owner) {
+      const token = randomUUID();
+      return createControlFile(path, {
+        schemaVersion: TAKEOVER_SCHEMA,
+        pid: process.pid,
+        token,
+        ownerToken: owner.token,
+        ownerDev: owner.dev,
+        ownerIno: owner.ino
+      });
+    }
+    function restoreRetiredControlFile(path, retiredPath, label) {
+      try {
+        linkSync(retiredPath, path);
+      } catch (error) {
+        if (error?.code !== "EEXIST") {
+          throw new Error(`${label} could not be restored: ${error.message}`);
+        }
+      }
+      unlinkSync(retiredPath);
+      fsyncDirectoryBestEffort(dirname(path));
+    }
+    function verifiedUnlink(path, expected, reader, label, sameIdentity = sameControlIdentity) {
+      const retiredPath = `${path}.retired-${process.pid}-${randomUUID()}`;
+      try {
+        renameSync(path, retiredPath);
+      } catch (error) {
+        if (error?.code === "ENOENT") return false;
+        throw error;
+      }
+      let retired;
+      try {
+        retired = reader(retiredPath);
+      } catch (error) {
+        try {
+          restoreRetiredControlFile(path, retiredPath, label);
+        } catch (restoreError) {
+          throw new Error(`${label} verification failed and ${restoreError.message}`, { cause: error });
+        }
+        throw error;
+      }
+      if (!sameIdentity(retired, expected)) {
+        restoreRetiredControlFile(path, retiredPath, label);
+        return false;
+      }
+      unlinkSync(retiredPath);
+      fsyncDirectoryBestEffort(dirname(path));
+      return true;
+    }
+    function ownershipBlockedError() {
+      const error = new Error("Optimization ownership creation is blocked by a takeover claim");
+      error.code = "EOWNERSHIPCLAIM";
+      return error;
+    }
+    function createOwnership(path, takeover = null) {
+      const claimPath = takeoverPath(path);
+      if (takeover === null && pathEntryExists(claimPath)) throw ownershipBlockedError();
+      if (takeover !== null) {
+        const currentClaim = readTakeover(claimPath);
+        if (!sameControlIdentity(currentClaim, takeover)) {
+          throw new Error("Optimization takeover claim changed before ownership creation");
+        }
+      }
+      const token = randomUUID();
+      const ownership = createControlFile(path, {
+        schemaVersion: OWNERSHIP_SCHEMA,
+        pid: process.pid,
+        token
+      });
+      try {
+        if (takeover === null && pathEntryExists(claimPath)) {
+          throw ownershipBlockedError();
+        }
+        if (takeover !== null) {
+          const currentClaim = readTakeover(claimPath);
+          if (!sameControlIdentity(currentClaim, takeover)) {
+            throw new Error("Optimization takeover claim changed during ownership creation");
+          }
+        }
+      } catch (error) {
+        verifiedUnlink(path, ownership, readOwnership, "Optimization unclaimed ownership");
+        throw error;
+      }
+      return ownership;
+    }
+    function releaseOwnership(ownership) {
+      if (!ownership) return;
+      try {
+        verifiedUnlink(
+          ownership.path,
+          ownership,
+          readOwnership,
+          "Optimization ownership lock"
+        );
+      } catch {
+      }
+    }
+    function releaseTakeover(path, takeover) {
+      return verifiedUnlink(path, takeover, readTakeover, "Optimization takeover claim");
+    }
+    function verifyOwnership(ownership) {
+      let current;
+      try {
+        current = readOwnership(ownership.path);
+      } catch (error) {
+        throw new Error(`Could not verify Optimization store ownership: ${error.message}`);
+      }
+      if (current.pid !== process.pid || !sameControlIdentity(current, ownership)) {
+        throw new Error("Optimization store ownership was lost");
+      }
+    }
+    function acquireOwnership(storePath) {
+      const path = ownershipPath(storePath);
+      const claimPath = takeoverPath(path);
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        try {
+          return createOwnership(path);
+        } catch (error) {
+          if (!["EEXIST", "EOWNERSHIPCLAIM"].includes(error?.code)) throw error;
+        }
+        if (pathEntryExists(claimPath)) {
+          const claim = readTakeover(claimPath);
+          if (processIsAlive(claim.pid)) {
+            throw new Error(`Optimization ownership takeover is held by live process ${claim.pid}`);
+          }
+          verifiedUnlink(claimPath, claim, readTakeover, "Stale Optimization takeover claim");
+          continue;
+        }
+        let owner;
+        try {
+          owner = readOwnership(path);
+        } catch (error) {
+          if (error?.code === "ENOENT") continue;
+          throw new Error(`Could not verify Optimization store owner: ${error.message}`);
+        }
+        if (owner.pid !== process.pid && processIsAlive(owner.pid)) {
+          throw new Error(`Optimization store is owned by live process ${owner.pid}`);
+        }
+        let takeover;
+        try {
+          takeover = createTakeover(claimPath, owner);
+        } catch (error) {
+          if (error?.code !== "EEXIST") throw error;
+          const claim = readTakeover(claimPath);
+          if (processIsAlive(claim.pid)) {
+            throw new Error(`Optimization ownership takeover is held by live process ${claim.pid}`);
+          }
+          verifiedUnlink(claimPath, claim, readTakeover, "Stale Optimization takeover claim");
+          continue;
+        }
+        let currentOwner = null;
+        try {
+          currentOwner = readOwnership(path);
+        } catch (error) {
+          if (error?.code !== "ENOENT") {
+            releaseTakeover(claimPath, takeover);
+            throw error;
+          }
+        }
+        if (currentOwner !== null && !sameControlIdentity(currentOwner, owner)) {
+          releaseTakeover(claimPath, takeover);
+          if (currentOwner.pid !== process.pid && processIsAlive(currentOwner.pid)) {
+            throw new Error(`Optimization store is owned by live process ${currentOwner.pid}`);
+          }
+          continue;
+        }
+        if (currentOwner !== null && !verifiedUnlink(
+          path,
+          owner,
+          readOwnership,
+          "Stale Optimization ownership lock"
+        )) {
+          releaseTakeover(claimPath, takeover);
+          continue;
+        }
+        let ownership;
+        try {
+          ownership = createOwnership(path, takeover);
+        } catch (error) {
+          releaseTakeover(claimPath, takeover);
+          if (["EEXIST", "EOWNERSHIPCLAIM"].includes(error?.code)) continue;
+          throw error;
+        }
+        if (!releaseTakeover(claimPath, takeover)) {
+          releaseOwnership(ownership);
+          throw new Error("Optimization takeover claim changed before release");
+        }
+        verifyOwnership(ownership);
+        return ownership;
+      }
+      throw new Error("Could not acquire Optimization store ownership");
+    }
+    function initialState() {
+      return {
+        schemaVersion: OPTIMIZATION_STORE_SCHEMA,
+        generation: randomUUID(),
+        revision: 0,
+        runs: [],
+        creationKeys: []
+      };
+    }
+    function canonicalEpoch(value) {
+      exactKeys(value, [
+        "id",
+        "number",
+        "status",
+        "candidateArtifactId",
+        "installArtifactIds",
+        "evaluationArtifactIds",
+        "analysisArtifactId",
+        "decisionArtifactId",
+        "createdAt",
+        "updatedAt",
+        "completedAt"
+      ], [], "Optimization epoch");
+      const status = requiredText(value.status, "Optimization epoch status", 40);
+      if (!EPOCH_STATES.has(status)) throw new Error("Optimization epoch status is invalid");
+      const epoch = {
+        id: publicId(value.id, "Optimization epoch id"),
+        number: integer(value.number, "Optimization epoch number", 1, 100),
+        status,
+        candidateArtifactId: nullableArtifactId(value.candidateArtifactId, "Candidate artifact id"),
+        installArtifactIds: artifactIds(value.installArtifactIds, "Install artifact ids"),
+        evaluationArtifactIds: artifactIds(value.evaluationArtifactIds, "Evaluation artifact ids"),
+        analysisArtifactId: nullableArtifactId(value.analysisArtifactId, "Analysis artifact id"),
+        decisionArtifactId: nullableArtifactId(value.decisionArtifactId, "Decision artifact id"),
+        createdAt: timestamp(value.createdAt, "Optimization epoch createdAt"),
+        updatedAt: timestamp(value.updatedAt, "Optimization epoch updatedAt"),
+        completedAt: nullableTimestamp(value.completedAt, "Optimization epoch completedAt")
+      };
+      if (TERMINAL_EPOCH_STATES.has(status) !== (epoch.completedAt !== null)) {
+        throw new Error("Optimization epoch terminal fields are inconsistent");
+      }
+      if (["completed", "succeeded"].includes(status) && (epoch.candidateArtifactId === null || epoch.installArtifactIds.length === 0 || epoch.evaluationArtifactIds.length === 0 || epoch.analysisArtifactId === null || epoch.decisionArtifactId === null)) {
+        throw new Error("A completed Optimization epoch requires Candidate, install, evaluation, analysis, and decision artifact references");
+      }
+      return epoch;
+    }
+    function canonicalRunMutationResult(value) {
+      exactKeys(
+        value,
+        ["runId", "state", "revision", "updatedAt"],
+        [],
+        "Optimization run mutation result"
+      );
+      const state = requiredText(value.state, "Optimization run mutation result state", 40);
+      if (!RUN_STATES.has(state)) throw new Error("Optimization run mutation result state is invalid");
+      return {
+        runId: publicId(value.runId, "Optimization run mutation result run id"),
+        state,
+        revision: integer(value.revision, "Optimization run mutation result revision"),
+        updatedAt: timestamp(value.updatedAt, "Optimization run mutation result updatedAt")
+      };
+    }
+    function canonicalEpochMutationResult(value) {
+      exactKeys(
+        value,
+        ["runId", "epochId", "index", "status", "revision", "updatedAt"],
+        [],
+        "Optimization Epoch mutation result"
+      );
+      const status = requiredText(value.status, "Optimization Epoch mutation result status", 40);
+      if (!EPOCH_STATES.has(status)) throw new Error("Optimization Epoch mutation result status is invalid");
+      return {
+        runId: publicId(value.runId, "Optimization Epoch mutation result run id"),
+        epochId: publicId(value.epochId, "Optimization Epoch mutation result Epoch id"),
+        index: integer(value.index, "Optimization Epoch mutation result index", 1, 100),
+        status,
+        revision: integer(value.revision, "Optimization Epoch mutation result revision"),
+        updatedAt: timestamp(value.updatedAt, "Optimization Epoch mutation result updatedAt")
+      };
+    }
+    function canonicalOperation(value) {
+      exactKeys(value, ["key", "kind", "inputDigest", "result"], [], "Optimization operation");
+      const inputDigest = requiredText(value.inputDigest, "Optimization operation input digest", 80);
+      if (!/^sha256:[a-f0-9]{64}$/u.test(inputDigest)) {
+        throw new Error("Optimization operation input digest is invalid");
+      }
+      const kind = requiredText(value.kind, "Optimization operation kind", 100);
+      if (!OPERATION_KINDS.has(kind)) throw new Error("Optimization operation kind is invalid");
+      return {
+        key: requiredText(value.key, "Optimization idempotency key", 500),
+        kind,
+        inputDigest,
+        result: kind === "transition" ? canonicalRunMutationResult(value.result) : canonicalEpochMutationResult(value.result)
+      };
+    }
+    function canonicalRecovery(value) {
+      if (value === null) return null;
+      exactKeys(
+        value,
+        ["previousState", "reason", "recoveredAt"],
+        [],
+        "Optimization recovery metadata"
+      );
+      const previousState = requiredText(value.previousState, "Optimization recovery previous state", 40);
+      if (!ACTIVE_RESTART_STATES.has(previousState)) {
+        throw new Error("Optimization recovery previous state is invalid");
+      }
+      const reason = requiredText(value.reason, "Optimization recovery reason", 100);
+      if (reason !== "process_interrupted") throw new Error("Optimization recovery reason is invalid");
+      return {
+        previousState,
+        reason,
+        recoveredAt: timestamp(value.recoveredAt, "Optimization recovery time")
+      };
+    }
+    function canonicalRun(value) {
+      exactKeys(value, [
+        "id",
+        "state",
+        "revision",
+        "snapshot",
+        "epochs",
+        "currentEpoch",
+        "checkpoint",
+        "recovery",
+        "error",
+        "operations",
+        "createdAt",
+        "updatedAt",
+        "completedAt"
+      ], [], "Optimization run");
+      const state = requiredText(value.state, "Optimization run state", 40);
+      if (!RUN_STATES.has(state)) throw new Error("Optimization run state is invalid");
+      if (!Array.isArray(value.epochs) || value.epochs.length > 100) {
+        throw new Error("Optimization run epochs exceed their limit");
+      }
+      if (!Array.isArray(value.operations) || value.operations.length > MAX_OPERATIONS) {
+        throw new Error("Optimization run operations exceed their limit");
+      }
+      const snapshot = validateFrozenOptimizationRun(value.snapshot);
+      const epochs = value.epochs.map(canonicalEpoch);
+      const operations = value.operations.map(canonicalOperation);
+      const checkpoint = boundedJson(
+        requireObject(value.checkpoint, "Optimization checkpoint"),
+        "Optimization checkpoint"
+      );
+      if (new Set(epochs.map((entry) => entry.id)).size !== epochs.length) {
+        throw new Error("Optimization epoch ids must be unique");
+      }
+      epochs.forEach((epoch, index) => {
+        if (epoch.number !== index + 1) throw new Error("Optimization epoch sequence is invalid");
+      });
+      const effectiveMaxEpochs = Number.isSafeInteger(checkpoint?.approvedLimits?.maxEpochs) ? checkpoint.approvedLimits.maxEpochs : snapshot.limits.maxEpochs;
+      if (effectiveMaxEpochs < snapshot.limits.maxEpochs || effectiveMaxEpochs > 100) {
+        throw new Error("Optimization approved epoch limit is invalid");
+      }
+      if (epochs.length > effectiveMaxEpochs) {
+        throw new Error("Optimization run exceeds its frozen epoch limit");
+      }
+      if (new Set(operations.map((entry) => entry.key)).size !== operations.length) {
+        throw new Error("Optimization run idempotency keys must be unique");
+      }
+      const run = {
+        id: publicId(value.id, "Optimization run id"),
+        state,
+        revision: integer(value.revision, "Optimization run revision"),
+        snapshot: cloneJson(snapshot),
+        epochs,
+        currentEpoch: integer(value.currentEpoch, "Optimization current epoch", 0, epochs.length),
+        checkpoint,
+        recovery: canonicalRecovery(value.recovery),
+        error: value.error === null ? null : boundedJson(value.error, "Optimization error", 32 * 1024),
+        operations,
+        createdAt: timestamp(value.createdAt, "Optimization run createdAt"),
+        updatedAt: timestamp(value.updatedAt, "Optimization run updatedAt"),
+        completedAt: nullableTimestamp(value.completedAt, "Optimization run completedAt")
+      };
+      if (run.currentEpoch !== epochs.length) throw new Error("Optimization current epoch is inconsistent");
+      if (TERMINAL_STATES.has(run.state) !== (run.completedAt !== null)) {
+        throw new Error("Optimization run terminal fields are inconsistent");
+      }
+      const currentEpoch = epochs.at(-1) ?? null;
+      if (TERMINAL_STATES.has(run.state) && epochs.some((epoch) => !TERMINAL_EPOCH_STATES.has(epoch.status))) {
+        throw new Error("A terminal Optimization run cannot contain a nonterminal Epoch");
+      }
+      if (["editing", "installing", "evaluating", "deciding"].includes(run.state)) {
+        const releaseFinalRegression = run.state === "evaluating" && run.checkpoint.releasePhase === "final-regression" && currentEpoch?.status === "deciding";
+        if (currentEpoch !== null && !TERMINAL_EPOCH_STATES.has(currentEpoch.status) && currentEpoch.status !== run.state && !(run.state === "installing" && currentEpoch.status === "deciding") && !releaseFinalRegression) {
+          throw new Error("Optimization Run phase does not match its current Epoch");
+        }
+        if (["installing", "evaluating", "deciding"].includes(run.state) && currentEpoch === null) {
+          throw new Error(`Optimization Run phase ${run.state} requires a current Epoch`);
+        }
+      }
+      if (run.state === "waiting_approval" && (currentEpoch === null || !TERMINAL_EPOCH_STATES.has(currentEpoch.status) && currentEpoch.status !== "deciding")) {
+        throw new Error("Optimization approval requires a deciding current Epoch");
+      }
+      if (["installing", "evaluating", "deciding", "waiting_approval"].includes(run.state)) {
+        if (currentEpoch.candidateArtifactId === null) {
+          throw new Error("Optimization installing phase requires a Candidate artifact");
+        }
+      }
+      if (["evaluating", "deciding", "waiting_approval"].includes(run.state)) {
+        if (currentEpoch.installArtifactIds.length === 0) {
+          throw new Error("Optimization evaluating phase requires an install artifact");
+        }
+      }
+      if (["deciding", "waiting_approval"].includes(run.state)) {
+        if (currentEpoch.evaluationArtifactIds.length === 0) {
+          throw new Error("Optimization deciding phase requires an evaluation artifact");
+        }
+      }
+      if (run.state === "waiting_approval" || run.state === "installing" && currentEpoch?.status === "deciding") {
+        if (currentEpoch.analysisArtifactId === null || currentEpoch.decisionArtifactId === null) {
+          throw new Error("Optimization approval requires analysis and decision artifacts");
+        }
+      }
+      for (const operation of run.operations) {
+        if (operation.result.runId !== run.id) {
+          throw new Error("Optimization operation result reference is inconsistent");
+        }
+        if (operation.result.revision > run.revision) {
+          throw new Error("Optimization operation result revision is in the future");
+        }
+        if (operation.result.updatedAt > run.updatedAt) {
+          throw new Error("Optimization operation result timestamp is in the future");
+        }
+        if (operation.kind !== "transition") {
+          const epoch = epochs[operation.result.index - 1];
+          if (!epoch || epoch.id !== operation.result.epochId) {
+            throw new Error("Optimization operation result references an inconsistent Epoch");
+          }
+        }
+      }
+      return run;
+    }
+    function canonicalCreationKey(value) {
+      exactKeys(value, ["key", "inputDigest", "result"], [], "Optimization creation idempotency record");
+      const inputDigest = requiredText(value.inputDigest, "Optimization creation input digest", 80);
+      if (!/^sha256:[a-f0-9]{64}$/u.test(inputDigest)) {
+        throw new Error("Optimization creation input digest is invalid");
+      }
+      return {
+        key: requiredText(value.key, "Optimization creation idempotency key", 500),
+        inputDigest,
+        result: canonicalRunMutationResult(value.result)
+      };
+    }
+    function canonicalState(value) {
+      requireObject(value, "Optimization store");
+      if (value.schemaVersion !== OPTIMIZATION_STORE_SCHEMA) {
+        throw new Error(`Unsupported Optimization store schema: ${value.schemaVersion}`);
+      }
+      exactKeys(
+        value,
+        ["schemaVersion", "generation", "revision", "runs", "creationKeys"],
+        [],
+        "Optimization store"
+      );
+      if (!Array.isArray(value.runs) || value.runs.length > MAX_RUNS) {
+        throw new Error("Optimization store run count is invalid");
+      }
+      if (!Array.isArray(value.creationKeys) || value.creationKeys.length > MAX_RUNS) {
+        throw new Error("Optimization store creation-key count is invalid");
+      }
+      const state = {
+        schemaVersion: OPTIMIZATION_STORE_SCHEMA,
+        generation: publicId(value.generation, "Optimization store generation"),
+        revision: integer(value.revision, "Optimization store revision"),
+        runs: value.runs.map(canonicalRun),
+        creationKeys: value.creationKeys.map(canonicalCreationKey)
+      };
+      if (new Set(state.runs.map((entry) => entry.id)).size !== state.runs.length) {
+        throw new Error("Optimization run ids must be unique");
+      }
+      if (new Set(state.creationKeys.map((entry) => entry.key)).size !== state.creationKeys.length) {
+        throw new Error("Optimization creation idempotency keys must be unique");
+      }
+      const runs = new Map(state.runs.map((entry) => [entry.id, entry]));
+      for (const creation of state.creationKeys) {
+        const run = runs.get(creation.result.runId);
+        if (!run) throw new Error("Optimization creation key references an unknown run");
+        if (creation.result.state !== "preflight" || creation.result.revision !== 0 || creation.result.updatedAt !== run.createdAt) {
+          throw new Error("Optimization creation result is inconsistent with Run creation");
+        }
+      }
+      return state;
+    }
+    function copyRun(run) {
+      return cloneJson(run);
+    }
+    function operationOptions(patch, options2) {
+      const normalizedPatch = cloneJson(patch, "Optimization mutation patch");
+      const normalizedOptions = cloneJson(options2, "Optimization mutation options");
+      exactKeys(normalizedOptions, [], ["expectedRevision", "idempotencyKey"], "Optimization mutation options");
+      return { patch: normalizedPatch, options: normalizedOptions };
+    }
+    function publicRunSummary(run) {
+      const refs = {
+        candidates: [],
+        installations: [],
+        evaluations: [],
+        analyses: [],
+        decisions: []
+      };
+      for (const epoch of run.epochs) {
+        if (epoch.candidateArtifactId !== null) refs.candidates.push(epoch.candidateArtifactId);
+        refs.installations.push(...epoch.installArtifactIds);
+        refs.evaluations.push(...epoch.evaluationArtifactIds);
+        if (epoch.analysisArtifactId !== null) refs.analyses.push(epoch.analysisArtifactId);
+        if (epoch.decisionArtifactId !== null) refs.decisions.push(epoch.decisionArtifactId);
+      }
+      for (const values of Object.values(refs)) {
+        const unique = [...new Set(values)];
+        values.splice(0, values.length, ...unique);
+      }
+      return {
+        id: run.id,
+        state: run.state,
+        revision: run.revision,
+        createdAt: run.createdAt,
+        updatedAt: run.updatedAt,
+        completedAt: run.completedAt,
+        currentEpoch: run.currentEpoch,
+        counts: {
+          epochs: run.epochs.length,
+          terminalEpochs: run.epochs.filter((entry) => TERMINAL_EPOCH_STATES.has(entry.status)).length
+        },
+        artifactRefs: refs
+      };
+    }
+    var PATH_BACKENDS = /* @__PURE__ */ new Map();
+    var PATH_BACKEND_FINALIZER = new FinalizationRegistry(({ path, reference, ownership }) => {
+      if (PATH_BACKENDS.get(path) === reference) PATH_BACKENDS.delete(path);
+      releaseOwnership(ownership);
+    });
+    function acquirePathBackend(path) {
+      const existingReference = PATH_BACKENDS.get(path);
+      let backend = existingReference?.deref();
+      if (!backend) {
+        const ownership = acquireOwnership(path);
+        backend = {
+          state: null,
+          coordinationKey: Object.freeze({}),
+          ownership,
+          references: 0,
+          finalizerToken: {}
+        };
+        const reference = new WeakRef(backend);
+        PATH_BACKENDS.set(path, reference);
+        PATH_BACKEND_FINALIZER.register(
+          backend,
+          { path, reference, ownership },
+          backend.finalizerToken
+        );
+      }
+      backend.references += 1;
+      return backend;
+    }
+    function releasePathBackend(path, backend) {
+      backend.references -= 1;
+      if (backend.references !== 0) return;
+      const reference = PATH_BACKENDS.get(path);
+      if (reference?.deref() === backend) PATH_BACKENDS.delete(path);
+      PATH_BACKEND_FINALIZER.unregister(backend.finalizerToken);
+      releaseOwnership(backend.ownership);
+    }
+    var OptimizationStore = class {
+      #path;
+      #backend;
+      get #state() {
+        if (this.#backend === null) throw new Error("Optimization store is closed");
+        return this.#backend.state;
+      }
+      set #state(value) {
+        if (this.#backend === null) throw new Error("Optimization store is closed");
+        this.#backend.state = value;
+      }
+      get #storeRevision() {
+        return this.#state.revision;
+      }
+      constructor(path) {
+        this.#path = canonicalStorePath(path);
+        this.#backend = acquirePathBackend(this.#path);
+        try {
+          if (this.#state === null) this.load();
+        } catch (error) {
+          releasePathBackend(this.#path, this.#backend);
+          this.#backend = null;
+          throw error;
+        }
+      }
+      get path() {
+        return this.#path;
+      }
+      get revision() {
+        this.#requireOpen();
+        return this.#storeRevision;
+      }
+      get generation() {
+        this.#requireOpen();
+        return this.#state.generation;
+      }
+      get coordinationKey() {
+        this.#requireOpen();
+        return this.#backend.coordinationKey;
+      }
+      #requireOpen() {
+        if (this.#backend === null) throw new Error("Optimization store is closed");
+      }
+      close() {
+        if (this.#backend === null) return;
+        const backend = this.#backend;
+        this.#backend = null;
+        releasePathBackend(this.#path, backend);
+      }
+      load() {
+        this.#requireOpen();
+        if (!pathEntryExists(this.#path)) {
+          this.#state = canonicalState(initialState());
+          this.persist();
+          return this.read();
+        }
+        try {
+          const body = readSecureFile(
+            this.#path,
+            dirname(this.#path),
+            MAX_STORE_BYTES,
+            "Optimization store"
+          );
+          this.#state = canonicalState(JSON.parse(body.toString("utf8")));
+        } catch (error) {
+          throw new Error(`Could not read Optimization store: ${error.message}`);
+        }
+        this.#normalizeInterruptedRuns();
+        return this.read();
+      }
+      persist() {
+        this.#requireOpen();
+        verifyOwnership(this.#backend.ownership);
+        this.#state = canonicalState(this.#state);
+        const encoded = `${JSON.stringify(this.#state, null, 2)}
+`;
+        if (Buffer.byteLength(encoded) > MAX_STORE_BYTES) {
+          throw new Error("Optimization store exceeds its byte limit");
+        }
+        writePrivateFile(this.#path, encoded);
+      }
+      #mutate(callback) {
+        this.#requireOpen();
+        const previous = this.#state;
+        this.#state = cloneJson(previous);
+        try {
+          const result = callback(this.#state);
+          this.#state.revision += 1;
+          this.#state = canonicalState(this.#state);
+          this.persist();
+          return cloneJson(result);
+        } catch (error) {
+          this.#state = previous;
+          throw error;
+        }
+      }
+      #requireRun(runId, state = this.#state) {
+        const id = publicId(runId, "Optimization run id");
+        const run = state.runs.find((entry) => entry.id === id);
+        if (!run) throw new Error("Unknown Optimization run");
+        return run;
+      }
+      #checkRevision(run, expectedRevision) {
+        if (expectedRevision === void 0 || expectedRevision === null) return;
+        integer(expectedRevision, "Expected Optimization run revision");
+        if (run.revision !== expectedRevision) {
+          throw new Error("Optimization run revision changed; CAS rejected the mutation");
+        }
+      }
+      #existingOperation(run, key, kind, inputDigest) {
+        if (key === void 0 || key === null) return null;
+        const normalizedKey = requiredText(key, "Optimization idempotency key", 500);
+        const existing = run.operations.find((entry) => entry.key === normalizedKey);
+        if (!existing) return null;
+        if (existing.kind !== kind || existing.inputDigest !== inputDigest) {
+          throw new Error("Optimization idempotency key was already used for different input");
+        }
+        return existing;
+      }
+      #recordOperation(run, key, kind, inputDigest, epoch = null) {
+        const result = epoch === null ? canonicalRunMutationResult({
+          runId: run.id,
+          state: run.state,
+          revision: run.revision,
+          updatedAt: run.updatedAt
+        }) : canonicalEpochMutationResult({
+          runId: run.id,
+          epochId: epoch.id,
+          index: epoch.number,
+          status: epoch.status,
+          revision: run.revision,
+          updatedAt: run.updatedAt
+        });
+        if (key !== void 0 && key !== null) {
+          if (run.operations.length >= MAX_OPERATIONS) {
+            throw new Error("Optimization run reached its idempotency operation limit");
+          }
+          run.operations.push({
+            key: requiredText(key, "Optimization idempotency key", 500),
+            kind,
+            inputDigest,
+            result
+          });
+        }
+        return result;
+      }
+      read() {
+        this.#requireOpen();
+        return cloneJson(this.#state);
+      }
+      createRun(snapshot, options2 = {}) {
+        this.#requireOpen();
+        const frozen = validateFrozenOptimizationRun(snapshot);
+        const normalizedOptions = cloneJson(options2, "Optimization create options");
+        exactKeys(
+          normalizedOptions,
+          [],
+          ["id", "idempotencyKey", "expectedRevision"],
+          "Optimization create options"
+        );
+        if (normalizedOptions.expectedRevision !== void 0) {
+          integer(normalizedOptions.expectedRevision, "Expected Optimization store revision");
+          if (normalizedOptions.expectedRevision !== this.#storeRevision) {
+            throw new Error("Optimization store revision changed; CAS rejected run creation");
+          }
+        }
+        const inputDigest = canonicalOptimizationDigest(frozen);
+        if (normalizedOptions.idempotencyKey !== void 0) {
+          const key = requiredText(normalizedOptions.idempotencyKey, "Optimization creation idempotency key", 500);
+          const existing = this.#state.creationKeys.find((entry) => entry.key === key);
+          if (existing) {
+            if (existing.inputDigest !== inputDigest) {
+              throw new Error("Optimization creation idempotency key was already used for different input");
+            }
+            return cloneJson(existing.result);
+          }
+        }
+        if (this.#state.runs.length >= MAX_RUNS) throw new Error("Optimization store reached its run limit");
+        const now = nowTimestamp();
+        const run = {
+          id: normalizedOptions.id === void 0 ? randomUUID() : publicId(normalizedOptions.id, "Optimization run id"),
+          state: "preflight",
+          revision: 0,
+          snapshot: cloneJson(frozen),
+          epochs: [],
+          currentEpoch: 0,
+          checkpoint: {},
+          recovery: null,
+          error: null,
+          operations: [],
+          createdAt: now,
+          updatedAt: now,
+          completedAt: null
+        };
+        return this.#mutate((state) => {
+          if (state.runs.some((entry) => entry.id === run.id)) {
+            throw new Error("Optimization run id already exists");
+          }
+          state.runs.push(run);
+          const result = canonicalRunMutationResult({
+            runId: run.id,
+            state: run.state,
+            revision: run.revision,
+            updatedAt: run.updatedAt
+          });
+          if (normalizedOptions.idempotencyKey !== void 0) {
+            state.creationKeys.push({
+              key: normalizedOptions.idempotencyKey,
+              inputDigest,
+              result
+            });
+          }
+          return result;
+        });
+      }
+      getRun(runId) {
+        this.#requireOpen();
+        return copyRun(this.#requireRun(runId));
+      }
+      listRuns() {
+        this.#requireOpen();
+        return this.#state.runs.map(copyRun).sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id));
+      }
+      updateCheckpoint(runId, patch = {}, options2 = {}) {
+        this.#requireOpen();
+        const checkpointPatch = boundedJson(
+          requireObject(cloneJson(patch, "Optimization checkpoint patch"), "Optimization checkpoint patch"),
+          "Optimization checkpoint patch"
+        );
+        const normalizedOptions = cloneJson(options2, "Optimization checkpoint options");
+        exactKeys(
+          normalizedOptions,
+          [],
+          ["expectedRevision"],
+          "Optimization checkpoint options"
+        );
+        const current = this.#requireRun(runId);
+        this.#checkRevision(current, normalizedOptions.expectedRevision);
+        return this.#mutate((state) => {
+          const run = this.#requireRun(runId, state);
+          const now = nowTimestamp();
+          run.checkpoint = boundedJson(
+            { ...run.checkpoint, ...checkpointPatch },
+            "Optimization checkpoint"
+          );
+          run.revision += 1;
+          run.updatedAt = now;
+          return copyRun(run);
+        });
+      }
+      transitionRun(runId, nextState, patch = {}, options2 = {}) {
+        this.#requireOpen();
+        nextState = requiredText(nextState, "Optimization next state", 40);
+        if (!RUN_STATES.has(nextState)) throw new Error("Optimization next state is invalid");
+        const normalized = operationOptions(patch, options2);
+        exactKeys(normalized.patch, [], ["checkpoint", "error"], "Optimization transition patch");
+        const inputDigest = canonicalOptimizationDigest({ nextState, patch: normalized.patch });
+        const current = this.#requireRun(runId);
+        const existing = this.#existingOperation(
+          current,
+          normalized.options.idempotencyKey,
+          "transition",
+          inputDigest
+        );
+        if (existing) return cloneJson(existing.result);
+        this.#checkRevision(current, normalized.options.expectedRevision);
+        if (TERMINAL_STATES.has(current.state)) throw new Error("A terminal Optimization run is immutable");
+        if (!RUN_TRANSITIONS.get(current.state)?.has(nextState)) {
+          throw new Error(`Invalid Optimization run transition: ${current.state} -> ${nextState}`);
+        }
+        const currentEpoch = current.epochs.at(-1) ?? null;
+        const releaseInstallRecovery = current.state === "needs_recovery" && current.recovery?.previousState === "installing" && currentEpoch?.status === "deciding";
+        const approvedReleaseInstall = nextState === "installing" && currentEpoch?.status === "deciding" && (current.state === "waiting_approval" || releaseInstallRecovery);
+        const releaseFinalRegression = currentEpoch?.status === "deciding" && (current.state === "installing" && current.checkpoint?.releasePhase === "released-install" && nextState === "evaluating" || current.state === "evaluating" && current.checkpoint?.releasePhase === "final-regression" && nextState === "deciding");
+        if (releaseInstallRecovery && !(/* @__PURE__ */ new Set(["installing", "restoring", "failed", "cancelled"])).has(nextState)) {
+          throw new Error("Optimization approved installation recovery cannot backtrack or skip phase");
+        }
+        if (["installing", "evaluating", "deciding"].includes(nextState)) {
+          if (currentEpoch === null || TERMINAL_EPOCH_STATES.has(currentEpoch.status)) {
+            throw new Error(`Optimization ${nextState} phase requires a nonterminal current Epoch`);
+          }
+          const allowedEpochStatuses = approvedReleaseInstall || releaseFinalRegression ? /* @__PURE__ */ new Set(["deciding"]) : (/* @__PURE__ */ new Map([
+            ["installing", /* @__PURE__ */ new Set(["editing", "installing"])],
+            ["evaluating", /* @__PURE__ */ new Set(["installing", "evaluating"])],
+            ["deciding", /* @__PURE__ */ new Set(["evaluating", "deciding"])]
+          ])).get(nextState);
+          if (!allowedEpochStatuses.has(currentEpoch.status)) {
+            throw new Error(`Optimization Epoch cannot backtrack or skip forward into ${nextState}`);
+          }
+          if (currentEpoch.candidateArtifactId === null) {
+            throw new Error("Optimization installing phase requires a Candidate artifact");
+          }
+          if (["evaluating", "deciding"].includes(nextState) && currentEpoch.installArtifactIds.length === 0) {
+            throw new Error("Optimization evaluating phase requires an install artifact");
+          }
+          if (nextState === "deciding" && currentEpoch.evaluationArtifactIds.length === 0) {
+            throw new Error("Optimization deciding phase requires an evaluation artifact");
+          }
+          if (approvedReleaseInstall && (currentEpoch.analysisArtifactId === null || currentEpoch.decisionArtifactId === null)) {
+            throw new Error("Optimization approved installation requires analysis and decision artifacts");
+          }
+        }
+        if (nextState === "waiting_approval" && (currentEpoch === null || currentEpoch.status !== "deciding")) {
+          throw new Error("Optimization approval requires a deciding current Epoch");
+        }
+        if (nextState === "waiting_approval" && (currentEpoch.analysisArtifactId === null || currentEpoch.decisionArtifactId === null)) {
+          throw new Error("Optimization approval requires analysis and decision artifacts");
+        }
+        if (nextState === "editing" && currentEpoch !== null && !TERMINAL_EPOCH_STATES.has(currentEpoch.status)) {
+          throw new Error("Optimization must terminalize the current Epoch before returning to editing");
+        }
+        if (TERMINAL_STATES.has(nextState) && current.epochs.some(
+          (epoch) => !TERMINAL_EPOCH_STATES.has(epoch.status)
+        )) {
+          throw new Error("A terminal Optimization run requires every Epoch to be terminal");
+        }
+        return this.#mutate((state) => {
+          const run = this.#requireRun(runId, state);
+          const now = nowTimestamp();
+          run.state = nextState;
+          if (["installing", "evaluating", "deciding"].includes(nextState) && !approvedReleaseInstall && !releaseFinalRegression) {
+            const epoch = run.epochs.at(-1);
+            epoch.status = nextState;
+            epoch.updatedAt = now;
+            epoch.completedAt = null;
+          }
+          if (Object.hasOwn(normalized.patch, "checkpoint")) {
+            run.checkpoint = boundedJson(
+              requireObject(normalized.patch.checkpoint, "Optimization checkpoint"),
+              "Optimization checkpoint"
+            );
+          }
+          if (Object.hasOwn(normalized.patch, "error")) {
+            run.error = normalized.patch.error === null ? null : boundedJson(normalized.patch.error, "Optimization error", 32 * 1024);
+          }
+          run.revision += 1;
+          run.updatedAt = now;
+          if (TERMINAL_STATES.has(nextState)) run.completedAt = now;
+          return this.#recordOperation(
+            run,
+            normalized.options.idempotencyKey,
+            "transition",
+            inputDigest
+          );
+        });
+      }
+      createEpoch(runId, input = {}, options2 = {}) {
+        this.#requireOpen();
+        const source = cloneJson(input, "Optimization epoch input");
+        exactKeys(source, [], ["id", "candidateArtifactId"], "Optimization epoch input");
+        const normalizedOptions = cloneJson(options2, "Optimization epoch options");
+        exactKeys(
+          normalizedOptions,
+          [],
+          ["expectedRevision", "idempotencyKey"],
+          "Optimization epoch options"
+        );
+        const current = this.#requireRun(runId);
+        const inputDigest = canonicalOptimizationDigest(source);
+        const existing = this.#existingOperation(
+          current,
+          normalizedOptions.idempotencyKey,
+          "create_epoch",
+          inputDigest
+        );
+        if (existing) return cloneJson(existing.result);
+        this.#checkRevision(current, normalizedOptions.expectedRevision);
+        if (TERMINAL_STATES.has(current.state)) throw new Error("A terminal Optimization run is immutable");
+        if (current.state !== "editing") throw new Error("Optimization epochs can only start while editing");
+        if (current.epochs.some((entry) => !TERMINAL_EPOCH_STATES.has(entry.status))) {
+          throw new Error("An Optimization Epoch is already in progress");
+        }
+        const effectiveMaxEpochs = Number.isSafeInteger(current.checkpoint?.approvedLimits?.maxEpochs) ? current.checkpoint.approvedLimits.maxEpochs : current.snapshot.limits.maxEpochs;
+        if (effectiveMaxEpochs < current.snapshot.limits.maxEpochs || effectiveMaxEpochs > 100) {
+          throw new Error("Optimization approved epoch limit is invalid");
+        }
+        if (current.epochs.length >= effectiveMaxEpochs) {
+          throw new Error("Optimization run reached its frozen epoch limit");
+        }
+        return this.#mutate((state) => {
+          const run = this.#requireRun(runId, state);
+          const now = nowTimestamp();
+          const epoch = {
+            id: source.id === void 0 ? randomUUID() : publicId(source.id, "Optimization epoch id"),
+            number: run.epochs.length + 1,
+            status: "editing",
+            candidateArtifactId: source.candidateArtifactId === void 0 ? null : artifactId(source.candidateArtifactId, "Candidate artifact id"),
+            installArtifactIds: [],
+            evaluationArtifactIds: [],
+            analysisArtifactId: null,
+            decisionArtifactId: null,
+            createdAt: now,
+            updatedAt: now,
+            completedAt: null
+          };
+          run.epochs.push(epoch);
+          run.currentEpoch = epoch.number;
+          run.revision += 1;
+          run.updatedAt = now;
+          return this.#recordOperation(
+            run,
+            normalizedOptions.idempotencyKey,
+            "create_epoch",
+            inputDigest,
+            epoch
+          );
+        });
+      }
+      updateEpoch(runId, epochId, patch = {}, options2 = {}) {
+        this.#requireOpen();
+        epochId = publicId(epochId, "Optimization epoch id");
+        const normalized = operationOptions(patch, options2);
+        exactKeys(normalized.patch, [], [
+          "status",
+          "candidateArtifactId",
+          "installArtifactIds",
+          "evaluationArtifactIds",
+          "analysisArtifactId",
+          "decisionArtifactId"
+        ], "Optimization epoch patch");
+        const current = this.#requireRun(runId);
+        const epoch = current.epochs.find((entry) => entry.id === epochId);
+        if (!epoch) throw new Error("Unknown Optimization epoch");
+        const inputDigest = canonicalOptimizationDigest({ epochId, patch: normalized.patch });
+        const existing = this.#existingOperation(
+          current,
+          normalized.options.idempotencyKey,
+          "update_epoch",
+          inputDigest
+        );
+        if (existing) return cloneJson(existing.result);
+        this.#checkRevision(current, normalized.options.expectedRevision);
+        if (TERMINAL_STATES.has(current.state)) throw new Error("A terminal Optimization run is immutable");
+        if (TERMINAL_EPOCH_STATES.has(epoch.status)) {
+          throw new Error("A terminal Optimization epoch is append-only and immutable");
+        }
+        const evidencePatch = {};
+        for (const field of EPOCH_EVIDENCE_FIELDS) {
+          if (Object.hasOwn(normalized.patch, field)) {
+            evidencePatch[field] = epochEvidencePatchValue(field, normalized.patch[field]);
+          }
+        }
+        const frozenEvidence = current.state === "waiting_approval" || epoch.status === "deciding" && (current.state === "installing" || current.state === "needs_recovery" && current.recovery?.previousState === "installing");
+        if (frozenEvidence) {
+          for (const [field, value] of Object.entries(evidencePatch)) {
+            if (!sameJson(value, epoch[field])) {
+              throw new Error(`Optimization Epoch ${field} evidence is frozen and immutable`);
+            }
+          }
+        }
+        for (const field of ["candidateArtifactId", "analysisArtifactId", "decisionArtifactId"]) {
+          if (Object.hasOwn(evidencePatch, field) && epoch[field] !== null && evidencePatch[field] !== epoch[field]) {
+            throw new Error(`Optimization Epoch ${field} is append-only and immutable`);
+          }
+        }
+        for (const field of ["installArtifactIds", "evaluationArtifactIds"]) {
+          if (Object.hasOwn(evidencePatch, field) && !extendsArtifactSequence(epoch[field], evidencePatch[field])) {
+            throw new Error(`Optimization Epoch ${field} is append-only and immutable`);
+          }
+        }
+        for (const field of IMMUTABLE_EPOCH_FIELDS.get(epoch.status) ?? []) {
+          const finalRegressionAppend = field === "evaluationArtifactIds" && current.state === "evaluating" && current.checkpoint?.releasePhase === "final-regression";
+          if (Object.hasOwn(evidencePatch, field) && !sameJson(evidencePatch[field], epoch[field]) && !finalRegressionAppend) {
+            throw new Error(`Optimization Epoch ${field} is append-only and immutable in ${epoch.status}`);
+          }
+        }
+        if (Object.hasOwn(normalized.patch, "status")) {
+          const requestedStatus = requiredText(
+            normalized.patch.status,
+            "Optimization epoch status",
+            40
+          );
+          if (requestedStatus !== epoch.status && !EPOCH_TRANSITIONS.get(epoch.status)?.has(requestedStatus)) {
+            throw new Error(`Invalid Optimization Epoch transition: ${epoch.status} -> ${requestedStatus}`);
+          }
+        }
+        return this.#mutate((state) => {
+          const run = this.#requireRun(runId, state);
+          const stored = run.epochs.find((entry) => entry.id === epochId);
+          const nextStatus = normalized.patch.status === void 0 ? stored.status : requiredText(normalized.patch.status, "Optimization epoch status", 40);
+          if (!EPOCH_STATES.has(nextStatus)) throw new Error("Optimization epoch status is invalid");
+          if (Object.hasOwn(normalized.patch, "candidateArtifactId")) {
+            stored.candidateArtifactId = nullableArtifactId(
+              normalized.patch.candidateArtifactId,
+              "Candidate artifact id"
+            );
+          }
+          if (Object.hasOwn(normalized.patch, "installArtifactIds")) {
+            stored.installArtifactIds = artifactIds(
+              normalized.patch.installArtifactIds,
+              "Install artifact ids"
+            );
+          }
+          if (Object.hasOwn(normalized.patch, "evaluationArtifactIds")) {
+            stored.evaluationArtifactIds = artifactIds(
+              normalized.patch.evaluationArtifactIds,
+              "Evaluation artifact ids"
+            );
+          }
+          for (const [field, label] of [
+            ["analysisArtifactId", "Analysis artifact id"],
+            ["decisionArtifactId", "Decision artifact id"]
+          ]) {
+            if (Object.hasOwn(normalized.patch, field)) {
+              stored[field] = nullableArtifactId(normalized.patch[field], label);
+            }
+          }
+          const now = nowTimestamp();
+          stored.status = nextStatus;
+          stored.updatedAt = now;
+          if (TERMINAL_EPOCH_STATES.has(nextStatus)) stored.completedAt = now;
+          canonicalEpoch(stored);
+          run.revision += 1;
+          run.updatedAt = now;
+          return this.#recordOperation(
+            run,
+            normalized.options.idempotencyKey,
+            "update_epoch",
+            inputDigest,
+            stored
+          );
+        });
+      }
+      publicSummary(runId) {
+        this.#requireOpen();
+        return cloneJson(publicRunSummary(this.#requireRun(runId)));
+      }
+      listPublicSummaries() {
+        this.#requireOpen();
+        return this.#state.runs.map(publicRunSummary).map((entry) => cloneJson(entry));
+      }
+      #normalizeInterruptedRuns() {
+        const interrupted = this.#state.runs.filter((run) => ACTIVE_RESTART_STATES.has(run.state));
+        if (interrupted.length === 0) return;
+        const now = nowTimestamp();
+        for (const run of interrupted) {
+          const previousState = run.state;
+          run.state = "needs_recovery";
+          run.revision += 1;
+          run.recovery = {
+            previousState,
+            reason: "process_interrupted",
+            recoveredAt: now
+          };
+          run.updatedAt = now;
+        }
+        this.#state.revision += 1;
+        this.persist();
+      }
+    };
+    module.exports = {
+      MAX_STORE_BYTES,
+      OPTIMIZATION_STORE_SCHEMA,
+      OptimizationStore
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/optimization/optimization-workspace.cjs
+var require_optimization_workspace = __commonJS({
+  "../../desktop/rolling-skill/src/optimization/optimization-workspace.cjs"(exports, module) {
+    "use strict";
+    var {
+      chmodSync,
+      lstatSync,
+      mkdirSync,
+      realpathSync
+    } = __require("node:fs");
+    var { join, resolve, sep } = __require("node:path");
+    var { ManagedSkillGit } = require_managed_skill_git();
+    var {
+      DEFAULT_SCAN_LIMITS,
+      scanManagedSkillRepository,
+      snapshotManagedSkill
+    } = require_managed_skill_snapshot();
+    function requiredText(value, label, maximum = 4096) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized || normalized.length > maximum) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function requiredId(value, label) {
+      const id = requiredText(value, `${label} id`, 200);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u.test(id)) {
+        throw new Error(`${label} id contains unsupported characters`);
+      }
+      return id;
+    }
+    function requiredEpoch(value) {
+      if (!Number.isSafeInteger(value) || value < 1 || value > 100) {
+        throw new Error("Optimization epoch must be an integer between 1 and 100");
+      }
+      return value;
+    }
+    function isContained(root, candidate) {
+      return candidate === root || candidate.startsWith(`${root}${sep}`);
+    }
+    function exactKeys(value, required, label) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} must be an object`);
+      }
+      const keys = Object.keys(value).sort();
+      const expected = [...required].sort();
+      if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
+        throw new Error(`${label} has an unknown or missing field`);
+      }
+      return value;
+    }
+    function workspaceCopy(record) {
+      return {
+        runId: record.runId,
+        repositoryId: record.repositoryId,
+        skillId: record.skillId,
+        versionId: record.versionId,
+        workspacePath: record.workspacePath,
+        branchName: record.branchName,
+        baselineCommit: record.baselineCommit
+      };
+    }
+    var OptimizationWorkspaceManager = class {
+      constructor(options2 = {}) {
+        const applicationSupportDirectory = resolve(requiredText(
+          options2.applicationSupportDirectory,
+          "Application Support directory",
+          8192
+        ));
+        mkdirSync(applicationSupportDirectory, { recursive: true, mode: 448 });
+        this.applicationSupportDirectory = realpathSync(applicationSupportDirectory);
+        const requestedWorkspacesRoot = join(
+          this.applicationSupportDirectory,
+          "optimization-workspaces"
+        );
+        try {
+          const status = lstatSync(requestedWorkspacesRoot);
+          if (status.isSymbolicLink() || !status.isDirectory()) {
+            throw new Error("Optimization workspace root must be a regular directory");
+          }
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+          mkdirSync(requestedWorkspacesRoot, { mode: 448 });
+        }
+        chmodSync(requestedWorkspacesRoot, 448);
+        this.workspacesRoot = realpathSync(requestedWorkspacesRoot);
+        if (this.workspacesRoot !== requestedWorkspacesRoot || !isContained(this.applicationSupportDirectory, this.workspacesRoot)) {
+          throw new Error("Optimization workspace root escapes Application Support");
+        }
+        this.store = options2.store;
+        if (!this.store) throw new Error("Managed Skill store is required");
+        this.git = options2.git ?? new ManagedSkillGit();
+        this.scanLimits = { ...DEFAULT_SCAN_LIMITS, ...options2.scanLimits ?? {} };
+        this.workspaces = /* @__PURE__ */ new Map();
+        this.operationTail = Promise.resolve();
+      }
+      enqueue(operation) {
+        const result = this.operationTail.then(operation, operation);
+        this.operationTail = result.catch(() => {
+        });
+        return result;
+      }
+      create(run) {
+        return this.enqueue(() => this.#create(run));
+      }
+      get(runId) {
+        runId = requiredId(runId, "Optimization Run");
+        const record = this.workspaces.get(runId);
+        if (!record) throw new Error("Unknown registered Optimization workspace");
+        this.#verifyWorkspace(record);
+        return workspaceCopy(record);
+      }
+      recover(run, expectedWorkspace) {
+        return this.enqueue(async () => {
+          if (!run || typeof run !== "object" || Array.isArray(run)) {
+            throw new Error("Optimization Run is required");
+          }
+          exactKeys(
+            expectedWorkspace,
+            [
+              "runId",
+              "repositoryId",
+              "skillId",
+              "versionId",
+              "workspacePath",
+              "branchName",
+              "baselineCommit"
+            ],
+            "Persisted Optimization workspace"
+          );
+          const runId = requiredId(run.id, "Optimization Run");
+          if (this.workspaces.has(runId)) {
+            throw new Error("Optimization workspace is already registered");
+          }
+          const baseline = run.snapshot?.baseline;
+          const repository = this.store.getRepository(baseline?.repositoryId);
+          const skill = this.store.getSkill(baseline?.skillId);
+          const version = this.store.getVersion(baseline?.versionId);
+          if (skill.repositoryId !== repository.id || version.repositoryId !== repository.id || version.skillId !== skill.id || version.state !== "released" || version.commit !== baseline.commit || version.skillRoot !== baseline.skillRoot || version.contentDigest !== baseline.contentDigest) {
+            throw new Error("Persisted Optimization baseline identity changed");
+          }
+          const record = {
+            runId,
+            repositoryId: repository.id,
+            skillId: skill.id,
+            versionId: version.id,
+            skillRoot: skill.skillRoot,
+            repositoryPath: realpathSync(repository.managedPath),
+            workspacePath: resolve(this.workspacesRoot, runId),
+            branchName: `rolling-skill/optimization/${runId}`,
+            baselineCommit: version.commit,
+            baselineDigest: version.contentDigest
+          };
+          if (JSON.stringify(workspaceCopy(record)) !== JSON.stringify(expectedWorkspace)) {
+            throw new Error("Persisted Optimization workspace identity changed");
+          }
+          this.#verifyWorkspace(record);
+          if (await this.git.defaultBranch(record.workspacePath) !== record.branchName || !await this.git.isAncestor(
+            record.repositoryPath,
+            record.baselineCommit,
+            await this.git.worktreeHead(record.workspacePath)
+          )) {
+            throw new Error("Persisted Optimization workspace branch identity changed");
+          }
+          this.workspaces.set(runId, record);
+          return workspaceCopy(record);
+        });
+      }
+      async #create(run) {
+        if (!run || typeof run !== "object" || Array.isArray(run)) {
+          throw new Error("Optimization Run is required");
+        }
+        const runId = requiredId(run.id, "Optimization Run");
+        if (this.workspaces.has(runId)) throw new Error("Optimization workspace is already registered");
+        const baseline = run.snapshot?.baseline;
+        if (!baseline || typeof baseline !== "object" || Array.isArray(baseline)) {
+          throw new Error("Optimization baseline is required");
+        }
+        const repositoryId = requiredId(baseline.repositoryId, "Repository");
+        const skillId = requiredId(baseline.skillId, "Skill");
+        const versionId = requiredId(baseline.versionId, "Version");
+        const repository = this.store.getRepository(repositoryId);
+        const skill = this.store.getSkill(skillId);
+        const version = this.store.getVersion(versionId);
+        if (skill.repositoryId !== repository.id || version.repositoryId !== repository.id || version.skillId !== skill.id || version.state !== "released") {
+          throw new Error("Optimization baseline does not match a Released managed Skill version");
+        }
+        for (const field of ["commit", "skillRoot", "contentDigest"]) {
+          if (requiredText(baseline[field], `Optimization baseline ${field}`, 4096) !== version[field]) {
+            throw new Error(`Optimization baseline ${field} changed`);
+          }
+        }
+        const repositoryPath = realpathSync(repository.managedPath);
+        const workspacePath = resolve(this.workspacesRoot, runId);
+        if (!isContained(this.workspacesRoot, workspacePath) || workspacePath === this.workspacesRoot) {
+          throw new Error("Optimization workspace path escapes Application Support");
+        }
+        try {
+          lstatSync(workspacePath);
+          throw new Error("Optimization workspace path already exists");
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+        const branchName = `rolling-skill/optimization/${runId}`;
+        const record = {
+          runId,
+          repositoryId,
+          skillId,
+          versionId,
+          skillRoot: skill.skillRoot,
+          repositoryPath,
+          workspacePath,
+          branchName,
+          baselineCommit: version.commit,
+          baselineDigest: version.contentDigest
+        };
+        this.workspaces.set(runId, record);
+        try {
+          await this.git.createWorktree(
+            repositoryPath,
+            workspacePath,
+            branchName,
+            version.commit
+          );
+          const status = lstatSync(workspacePath);
+          const actualPath = realpathSync(workspacePath);
+          if (status.isSymbolicLink() || !status.isDirectory() || actualPath !== workspacePath || !isContained(this.workspacesRoot, actualPath)) {
+            throw new Error("Optimization workspace identity is invalid");
+          }
+          if (await this.git.worktreeHead(workspacePath) !== version.commit || await this.git.defaultBranch(workspacePath) !== branchName) {
+            throw new Error("Optimization workspace did not start at its frozen baseline");
+          }
+          return workspaceCopy(record);
+        } catch (error) {
+          this.workspaces.delete(runId);
+          if (realpathIfDirectory(workspacePath) === workspacePath) {
+            await this.git.removeWorktree(repositoryPath, workspacePath).catch(() => {
+            });
+          }
+          throw error;
+        }
+      }
+      createCandidate(input = {}) {
+        return this.enqueue(() => this.#createCandidate(input));
+      }
+      async #createCandidate(input) {
+        exactKeys(input, ["runId", "epoch", "message"], "Optimization Candidate input");
+        const runId = requiredId(input.runId, "Optimization Run");
+        const epoch = requiredEpoch(input.epoch);
+        const message = requiredText(input.message, "Candidate commit message", 2e3);
+        const record = this.workspaces.get(runId);
+        if (!record) throw new Error("Unknown registered Optimization workspace");
+        this.#verifyWorkspace(record);
+        if (await this.git.defaultBranch(record.workspacePath) !== record.branchName) {
+          throw new Error("Optimization workspace branch identity changed");
+        }
+        const before = await this.git.worktreeHead(record.workspacePath);
+        if (!await this.git.isAncestor(record.repositoryPath, record.baselineCommit, before)) {
+          throw new Error("Optimization workspace HEAD is outside its frozen baseline history");
+        }
+        const status = await this.git.status(record.workspacePath);
+        const commitMessage = `${message}
+
+Rolling-Skill-Optimization-Run: ${runId}
+Rolling-Skill-Optimization-Epoch: ${epoch}`;
+        if (!status.dirty) {
+          const recorded = this.store.listVersions(record.skillId).find((entry) => entry.commit === before);
+          if (recorded) {
+            if (recorded.optimizationRunId === runId && recorded.optimizationEpoch === epoch) {
+              return recorded;
+            }
+            throw new Error("Optimization workspace HEAD belongs to another Candidate");
+          }
+          const committedMessage = await this.git.run(
+            ["show", "-s", "--format=%B", before],
+            { cwd: record.workspacePath }
+          );
+          if (committedMessage.stdout !== commitMessage) {
+            throw new Error("Optimization workspace has no Candidate changes");
+          }
+        }
+        const scan = scanManagedSkillRepository(record.workspacePath, this.scanLimits);
+        const selected = scan.skills.find((entry) => entry.skillRoot === record.skillRoot);
+        const storedSkill = this.store.getSkill(record.skillId);
+        if (!selected || selected.status !== "valid" || selected.name !== storedSkill.name) {
+          throw new Error("Selected Optimization Skill is invalid or changed identity");
+        }
+        const workingSnapshot = snapshotManagedSkill(
+          join(record.workspacePath, selected.skillRoot),
+          this.scanLimits
+        );
+        if (workingSnapshot.digest === record.baselineDigest || this.store.listVersions(record.skillId).some((entry) => entry.contentDigest === workingSnapshot.digest)) {
+          throw new Error("Selected Optimization Skill content has not changed");
+        }
+        const commit = status.dirty ? await this.git.commitAll(record.workspacePath, commitMessage, {
+          forcePaths: scan.skills.filter((entry) => entry.status === "valid").map((entry) => entry.skillRoot)
+        }) : before;
+        if ((await this.git.status(record.workspacePath)).dirty || await this.git.defaultBranch(record.workspacePath) !== record.branchName || await this.git.worktreeHead(record.workspacePath) !== commit || !await this.git.isAncestor(record.repositoryPath, record.baselineCommit, commit)) {
+          throw new Error("Optimization Candidate commit changed during creation");
+        }
+        const committedScan = scanManagedSkillRepository(record.workspacePath, this.scanLimits);
+        const committedSkill = committedScan.skills.find((entry) => entry.skillRoot === record.skillRoot);
+        if (!committedSkill || committedSkill.status !== "valid" || committedSkill.name !== storedSkill.name) {
+          throw new Error("Committed Optimization Skill identity is invalid");
+        }
+        const snapshot = await this.git.snapshotSkill(
+          record.workspacePath,
+          commit,
+          record.skillRoot,
+          this.scanLimits
+        );
+        if (snapshot.digest !== workingSnapshot.digest || snapshot.digest === record.baselineDigest) {
+          throw new Error("Committed Optimization Skill digest is inconsistent");
+        }
+        return this.store.addVersion({
+          repositoryId: record.repositoryId,
+          skillId: record.skillId,
+          commit,
+          contentDigest: snapshot.digest,
+          state: "candidate",
+          createdBy: "optimization",
+          optimizationRunId: runId,
+          optimizationEpoch: epoch
+        });
+      }
+      cleanup(runId) {
+        return this.enqueue(async () => {
+          runId = requiredId(runId, "Optimization Run");
+          const record = this.workspaces.get(runId);
+          if (!record) throw new Error("Unknown registered Optimization workspace");
+          this.#verifyWorkspace(record);
+          if (await this.git.defaultBranch(record.workspacePath) !== record.branchName) {
+            throw new Error("Optimization workspace branch identity changed");
+          }
+          await this.git.removeWorktree(record.repositoryPath, record.workspacePath);
+          this.workspaces.delete(runId);
+          return workspaceCopy(record);
+        });
+      }
+      #verifyWorkspace(record) {
+        const status = lstatSync(record.workspacePath);
+        if (status.isSymbolicLink() || !status.isDirectory()) {
+          throw new Error("Optimization workspace must be a regular directory");
+        }
+        const actual = realpathSync(record.workspacePath);
+        if (actual !== record.workspacePath || !isContained(this.workspacesRoot, actual)) {
+          throw new Error("Optimization workspace identity changed or escaped Application Support");
+        }
+      }
+    };
+    function realpathIfDirectory(path) {
+      try {
+        const status = lstatSync(path);
+        if (status.isSymbolicLink() || !status.isDirectory()) return null;
+        return realpathSync(path);
+      } catch {
+        return null;
+      }
+    }
+    module.exports = { OptimizationWorkspaceManager };
+  }
+});
+
+// ../rolling-skill-core/src/operator-services.cjs
+var require_operator_services = __commonJS({
+  "../rolling-skill-core/src/operator-services.cjs"(exports, module) {
+    var PRIVATE_OUTPUT_KEY = /(?:capability|token|secret|socket|environment|executablePath|(?:^|_)path$|reasoning|(?:^|_)body$)/iu;
+    var MAX_TEXT = 32 * 1024;
+    var MAX_ARRAY = 1e4;
+    function requiredText(value, label, maximum = 300) {
+      const text = typeof value === "string" ? value.trim() : "";
+      if (!text || text.length > maximum) throw new Error(`${label} is required`);
+      return text;
+    }
+    function exactKeys(value, allowed, label) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} must be an object`);
+      }
+      const unsupported = Object.keys(value).find((key) => !allowed.has(key));
+      if (unsupported) throw new Error(`${label} contains an unsupported field: ${unsupported}`);
+      return value;
+    }
+    function publicValue(value, depth = 0) {
+      if (value === null || typeof value === "boolean") return value;
+      if (typeof value === "number") return Number.isFinite(value) ? value : null;
+      if (typeof value === "string") {
+        return value.length <= MAX_TEXT ? value : `${value.slice(0, MAX_TEXT - 1)}\u2026`;
+      }
+      if (!value || typeof value !== "object" || depth >= 8) return null;
+      if (Array.isArray(value)) {
+        return value.slice(0, MAX_ARRAY).map((entry) => publicValue(entry, depth + 1));
+      }
+      const output = {};
+      for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+        if (!Object.hasOwn(descriptor, "value") || PRIVATE_OUTPUT_KEY.test(key)) continue;
+        output[key] = publicValue(descriptor.value, depth + 1);
+      }
+      return output;
+    }
+    function sessionId(input) {
+      exactKeys(input, /* @__PURE__ */ new Set(["sessionId"]), "Operator session request");
+      return requiredText(input.sessionId, "Operator session id", 200);
+    }
+    function runId(input) {
+      exactKeys(input, /* @__PURE__ */ new Set(["runId"]), "Optimization request");
+      return requiredText(input.runId, "Optimization Run id", 200);
+    }
+    function createOperatorServices({
+      jobStore,
+      jobEngine,
+      sessionManager,
+      optimizationStore,
+      optimizationControl,
+      ready = null
+    } = {}) {
+      if (!jobStore || typeof jobStore.readSummaryPage !== "function") {
+        throw new Error("Operator Job store is required");
+      }
+      if (!jobEngine || typeof jobEngine.resolveApproval !== "function") {
+        throw new Error("Operator Job engine is required");
+      }
+      for (const method of ["create", "get", "pause", "resume", "stop", "sendMessage"]) {
+        if (typeof sessionManager?.[method] !== "function") {
+          throw new Error(`Operator session manager with ${method}() is required`);
+        }
+      }
+      if (!optimizationStore || typeof optimizationStore.listPublicSummaries !== "function") {
+        throw new Error("Optimization store is required");
+      }
+      for (const method of ["get", "preflight", "start", "pause", "resume", "stop", "report"]) {
+        if (typeof optimizationControl?.[method] !== "function") {
+          throw new Error(`Optimization control service with ${method}() is required`);
+        }
+      }
+      return Object.freeze({
+        operatorSummary(input = {}) {
+          exactKeys(input, /* @__PURE__ */ new Set(["cursor", "limit"]), "Operator summary request");
+          const limit = input.limit === void 0 ? 100 : Number(input.limit);
+          if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+            throw new Error("Operator summary limit is invalid");
+          }
+          return publicValue(jobStore.readSummaryPage({
+            cursor: input.cursor ?? null,
+            limit
+          }));
+        },
+        operatorArtifacts(input = {}) {
+          exactKeys(input, /* @__PURE__ */ new Set(["jobId"]), "Operator artifact request");
+          return publicValue(jobStore.listArtifacts(
+            requiredText(input.jobId, "Operator Job id", 200)
+          ));
+        },
+        async operatorStart(input = {}) {
+          exactKeys(input, /* @__PURE__ */ new Set([
+            "runtimeId",
+            "modelId",
+            "effort",
+            "objective",
+            "actions",
+            "scopes",
+            "budget",
+            "expiresInMs",
+            "managedSkillBinding"
+          ]), "Operator start request");
+          await ready;
+          return publicValue(await sessionManager.create(structuredClone(input)));
+        },
+        operatorGet(input = {}) {
+          return publicValue(sessionManager.get(sessionId(input)));
+        },
+        operatorPause(input = {}) {
+          return Promise.resolve(sessionManager.pause(sessionId(input))).then(publicValue);
+        },
+        operatorResume(input = {}) {
+          return Promise.resolve(sessionManager.resume(sessionId(input))).then(publicValue);
+        },
+        operatorCancel(input = {}) {
+          return Promise.resolve(sessionManager.stop(sessionId(input))).then(publicValue);
+        },
+        operatorSend(input = {}) {
+          exactKeys(input, /* @__PURE__ */ new Set(["sessionId", "text"]), "Operator message request");
+          return Promise.resolve(sessionManager.sendMessage(
+            requiredText(input.sessionId, "Operator session id", 200),
+            requiredText(input.text, "Operator message", 32e3)
+          )).then(publicValue);
+        },
+        async operatorApprove(input = {}) {
+          exactKeys(
+            input,
+            /* @__PURE__ */ new Set(["sessionId", "approvalId", "decision", "scope"]),
+            "Operator approval request"
+          );
+          const selectedSessionId = requiredText(input.sessionId, "Operator session id", 200);
+          const decision = input.decision === "approve" || input.decision === "reject" ? input.decision : null;
+          if (!decision) throw new Error("Operator approval decision is invalid");
+          const result = await jobEngine.resolveApproval(
+            requiredText(input.approvalId, "Operator approval id", 200),
+            {
+              decision,
+              scope: requiredText(input.scope, "Operator approval scope", 300),
+              decidedBy: "dsh-user"
+            }
+          );
+          if (decision === "approve" && typeof sessionManager.resumeAfterApproval === "function") {
+            await sessionManager.resumeAfterApproval(selectedSessionId);
+          }
+          return publicValue(result);
+        },
+        optimizationList() {
+          return publicValue(optimizationStore.listPublicSummaries());
+        },
+        optimizationGet(input = {}) {
+          return publicValue(optimizationControl.get(runId(input)));
+        },
+        optimizationPreflight(input = {}) {
+          return Promise.resolve(optimizationControl.preflight(structuredClone(input))).then(publicValue);
+        },
+        optimizationStart(input = {}) {
+          return Promise.resolve(optimizationControl.start(structuredClone(input))).then(publicValue);
+        },
+        optimizationPause(input = {}) {
+          return Promise.resolve(optimizationControl.pause(runId(input))).then(publicValue);
+        },
+        optimizationResume(input = {}) {
+          return Promise.resolve(optimizationControl.resume(runId(input))).then(publicValue);
+        },
+        optimizationCancel(input = {}) {
+          return Promise.resolve(optimizationControl.stop(runId(input))).then(publicValue);
+        },
+        optimizationReport(input = {}) {
+          return publicValue(optimizationControl.report(runId(input)));
+        }
+      });
+    }
+    function canonicalJson(value) {
+      if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+      if (value && typeof value === "object") {
+        return `{${Object.keys(value).filter((key) => value[key] !== void 0).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+      }
+      return JSON.stringify(value);
+    }
+    function digest(value) {
+      return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
+    }
+    function revision(value) {
+      return Number.parseInt(
+        createHash("sha256").update(canonicalJson(value)).digest("hex").slice(0, 12),
+        16
+      ) + 1;
+    }
+    function createOperatorRuntime({
+      paths,
+      store,
+      rawCaseStore,
+      managedSkillStore,
+      managedSkillManager,
+      installationStore,
+      installationManager,
+      runtimeServices,
+      evaluationRunner,
+      evaluationServices,
+      curationManager,
+      rubricManager,
+      workspaceRoot,
+      requestPermission = null,
+      requestQuestion = null,
+      operatorToolPath = null,
+      onChanged = () => {
+      }
+    } = {}) {
+      if (!paths || !store || !runtimeServices || !evaluationRunner) {
+        throw new Error("Operator runtime dependencies are required");
+      }
+      const jobStore = new OperatorJobStore(paths.operatorJobs);
+      const optimizationStore = new OptimizationStore(paths.optimizationRuns);
+      let sessionManager = null;
+      let optimizationControl = null;
+      const optimizationFacade = Object.freeze({
+        preflight: (input) => optimizationControl.preflight(input),
+        start: (input) => optimizationControl.start(input),
+        get: (runId2) => optimizationControl.get(runId2),
+        pause: (runId2) => optimizationControl.pause(runId2),
+        resume: (runId2) => optimizationControl.resume(runId2),
+        stop: (runId2) => optimizationControl.stop(runId2),
+        submitCandidate: (input, context) => optimizationControl.submitCandidate(input, context),
+        submitDecision: (input, context) => optimizationControl.submitDecision(input, context),
+        report: (runId2) => optimizationControl.report(runId2)
+      });
+      let domainServices = null;
+      const handlers = Object.fromEntries(CONTROL_METHODS.filter((method) => controlDefinition(method).operatorExposed === true).map((method) => [method, ({ params, controlContext }) => domainServices[method](params, controlContext)]));
+      const jobEngine = new OperatorJobEngine({
+        store: jobStore,
+        handlers,
+        runtimeTelemetry: () => runtimeServices.list().map((runtime) => ({
+          runtimeId: runtime.runtimeId,
+          tokens: runtime.capabilities?.includes("token-usage") === true,
+          cost: runtime.capabilities?.includes("cost-usage") === true
+        })),
+        resolveEvaluationCaseCount: ({ datasetId }) => {
+          const cases = store.listCases(datasetId).sort((left, right) => String(left.id).localeCompare(String(right.id)));
+          return { caseIds: cases.map((entry) => entry.id), datasetRevision: digest(cases) };
+        },
+        resolveTrustedFacts: (request) => domainServices.resolveTrustedFacts(request)
+      });
+      const capabilityStore = new CapabilityStore();
+      const capabilityIssuer = createTrustedCapabilityIssuer(capabilityStore);
+      const sessionFacade = Object.freeze({
+        pause: (sessionId_) => sessionManager.pause(sessionId_),
+        resume: (sessionId_) => sessionManager.resume(sessionId_),
+        resumeAfterApproval: (sessionId_) => sessionManager.resumeAfterApproval(sessionId_),
+        stop: (sessionId_) => sessionManager.stop(sessionId_)
+      });
+      domainServices = createDomainServices({
+        rawCaseStore,
+        evaluationStore: store,
+        evaluationRunner,
+        managedSkillManager,
+        managedSkillStore,
+        operatorJobStore: jobStore,
+        operatorJobEngine: jobEngine,
+        operatorSessionManager: sessionFacade,
+        curationManager,
+        rubricManager,
+        skillInstallationStore: installationStore,
+        skillInstallationManager: installationManager,
+        optimizationControlService: optimizationFacade,
+        listDatasets: () => store.listDatasets(),
+        listRawCaseSkills: () => ({ skills: managedSkillManager.catalog().skills }),
+        listRuntimes: () => runtimeServices.list(),
+        listModelsForRuntime: (runtimeId_) => runtimeServices.models(runtimeId_),
+        startEvaluation: (input) => evaluationServices.start(input),
+        workspaceRoot: () => workspaceRoot
+      });
+      const controlPlane = new ControlPlane({
+        capabilities: capabilityStore,
+        policy: createControlPolicy(),
+        services: domainServices
+      });
+      const controlSocket = new ControlSocketServer({ userData: paths.root, controlPlane });
+      const controlSocketPath = join(paths.root, "control", "control.sock");
+      const runtimeRegistry = {
+        discover: async () => runtimeServices.list(),
+        createClient: (descriptor, options2) => runtimeServices.createClient(
+          descriptor.runtimeId,
+          options2
+        )
+      };
+      const workspaceManager = new OptimizationWorkspaceManager({
+        applicationSupportDirectory: paths.root,
+        store: managedSkillStore
+      });
+      const resolveManagedWorkspace = (binding = {}) => {
+        if (binding.optimizationRunId) {
+          const selected = workspaceManager.get(binding.optimizationRunId);
+          if (selected.repositoryId !== binding.repositoryId || selected.skillId !== binding.skillId) {
+            throw new Error("Optimization workspace does not match the managed Skill binding");
+          }
+          return {
+            repositoryId: selected.repositoryId,
+            skillId: selected.skillId,
+            optimizationRunId: selected.runId,
+            workspaceRoot: selected.workspacePath
+          };
+        }
+        const skill = managedSkillStore.getSkill(binding.skillId);
+        if (skill.repositoryId !== binding.repositoryId) {
+          throw new Error("Managed Skill does not belong to the selected repository");
+        }
+        return {
+          repositoryId: binding.repositoryId,
+          skillId: binding.skillId,
+          workspaceRoot: managedSkillManager.repositoryPath(binding.repositoryId)
+        };
+      };
+      sessionManager = new OperatorSessionManager({
+        store: jobStore,
+        engine: jobEngine,
+        controlPlane,
+        runtimeRegistry,
+        capabilities: {
+          issue: (request) => capabilityIssuer.issue(request),
+          revoke: (id) => capabilityStore.revoke(id)
+        },
+        controlSocketPath,
+        operatorToolPath,
+        transportSupport: (runtime) => ({
+          dynamicToolsReady: runtime?.providerId === "codex",
+          mcpServersReady: runtime?.providerId === "codebuddy" && Boolean(operatorToolPath)
+        }),
+        requestPermission,
+        requestQuestion,
+        workspaceRoot,
+        resolveManagedSkillWorkspace: resolveManagedWorkspace,
+        traceDirectory: join(paths.traces, "operator")
+      });
+      function datasetSnapshot(datasetId) {
+        const dataset = store.getDataset(requiredText(datasetId, "Optimization Dataset id", 200));
+        const cases = store.listCases(dataset.id).sort((left, right) => String(left.id).localeCompare(String(right.id)));
+        const rubric = store.getActiveDatasetRubric(dataset.id);
+        if (!rubric) throw new Error("Optimization requires an active published Dataset Rubric");
+        const binding = dataset.skillReference ?? {};
+        const repositoryId = requiredText(binding.repositoryId, "Dataset repository id", 200);
+        const skillId = requiredText(binding.id, "Dataset Skill id", 200);
+        const body = { dataset, cases };
+        return {
+          dataset,
+          rubric,
+          snapshot: {
+            id: dataset.id,
+            revision: revision(body),
+            caseRevisions: cases.map((entry) => ({
+              caseId: entry.id,
+              revision: Number.isSafeInteger(entry.revision) && entry.revision > 0 ? entry.revision : revision(entry),
+              rubricVersionId: entry.rubricVersionId,
+              calibrationStatus: entry.rubricCalibration?.status === "current" ? "current" : "needed"
+            })),
+            digest: digest(body),
+            repositoryId,
+            skillId
+          }
+        };
+      }
+      async function resolvePreflight(config) {
+        const skill = managedSkillStore.getSkill(requiredText(
+          config.skillId,
+          "Optimization Skill id",
+          200
+        ));
+        const version = managedSkillStore.getVersion(requiredText(
+          config.baselineVersionId,
+          "Optimization baseline version id",
+          200
+        ));
+        const repository = managedSkillStore.getRepository(skill.repositoryId);
+        if (version.state !== "released" || version.skillId !== skill.id || version.repositoryId !== repository.id) {
+          throw new Error("Optimization baseline must be the selected Skill's Released version");
+        }
+        const frozenDataset = datasetSnapshot(config.datasetId);
+        const requestedRuntimeIds = [.../* @__PURE__ */ new Set([
+          config.operator.runtimeId,
+          config.judge.runtimeId,
+          ...config.targets.map((target) => target.runtimeId)
+        ])];
+        const runtimes = requestedRuntimeIds.map((runtimeId_) => runtimeServices.descriptor(runtimeId_));
+        if (config.telemetry.tokens && runtimes.some((entry) => !entry.capabilities?.includes("token-usage"))) {
+          throw new Error("Optimization token telemetry is unavailable on one or more Runtimes");
+        }
+        if (config.telemetry.cost && runtimes.some((entry) => !entry.capabilities?.includes("cost-usage"))) {
+          throw new Error("Optimization cost telemetry is unavailable on one or more Runtimes");
+        }
+        const skillEvidence = await snapshotManagedSkillEvidence({
+          name: skill.name,
+          repositoryId: repository.id,
+          skillId: skill.id,
+          versionId: version.id,
+          repositoryPath: repository.managedPath,
+          commit: version.commit,
+          skillRoot: version.skillRoot,
+          contentDigest: version.contentDigest
+        }, { git: managedSkillManager.git });
+        return {
+          baseline: {
+            repositoryId: repository.id,
+            skillId: skill.id,
+            versionId: version.id,
+            commit: version.commit,
+            skillRoot: version.skillRoot,
+            contentDigest: version.contentDigest,
+            state: version.state
+          },
+          dataset: frozenDataset.snapshot,
+          rubric: {
+            id: frozenDataset.rubric.id,
+            version: frozenDataset.rubric.version,
+            scoringModel: frozenDataset.rubric.rubric?.scoringModel,
+            digest: frozenDataset.rubric.rubricDigest,
+            datasetId: frozenDataset.dataset.id,
+            publishedAt: frozenDataset.rubric.publishedAt
+          },
+          skillEvidence
+        };
+      }
+      function runtimeConfiguration(requested) {
+        const descriptor = runtimeServices.descriptor(requested.runtimeId);
+        return {
+          ...descriptor,
+          modelId: requested.modelId ?? null,
+          effort: requested.effort ?? null,
+          skillEvidenceBinding: "verified"
+        };
+      }
+      async function runEvaluation(input) {
+        const snapshot = input.optimizationRun.snapshot;
+        const frozenDataset = datasetSnapshot(snapshot.dataset.id);
+        if (frozenDataset.snapshot.digest !== snapshot.dataset.digest || frozenDataset.rubric.id !== snapshot.rubric.id || frozenDataset.rubric.rubricDigest !== snapshot.rubric.digest) {
+          throw Object.assign(new Error("Frozen Optimization Dataset or Rubric changed"), {
+            code: "RESOURCE_CHANGED"
+          });
+        }
+        const candidate = input.candidate;
+        const skill = managedSkillStore.getSkill(candidate.skillId);
+        const repository = managedSkillStore.getRepository(candidate.repositoryId);
+        const skillEvidence = await snapshotManagedSkillEvidence({
+          name: skill.name,
+          repositoryId: repository.id,
+          skillId: skill.id,
+          versionId: candidate.id,
+          repositoryPath: repository.managedPath,
+          commit: candidate.commit,
+          skillRoot: candidate.skillRoot,
+          contentDigest: candidate.contentDigest
+        }, { git: managedSkillManager.git });
+        const installationJobIdsByRuntime = Object.fromEntries(
+          (input.installationJobs ?? []).map((job) => [job.runtime.runtimeId, job.id])
+        );
+        const run = store.createEvaluationRun({
+          datasetId: snapshot.dataset.id,
+          caseIds: snapshot.dataset.caseRevisions.map((entry) => entry.caseId),
+          selectionMode: "selected",
+          activationMode: snapshot.activationMode,
+          skillEvidence,
+          managedVersionSnapshot: {
+            repositoryId: repository.id,
+            skillId: skill.id,
+            versionId: candidate.id,
+            commit: candidate.commit,
+            skillRoot: candidate.skillRoot,
+            contentDigest: candidate.contentDigest,
+            installationJobIdsByRuntime
+          },
+          judgeProfile: {
+            runtimePolicy: "active",
+            modelId: snapshot.judge.modelId,
+            effort: snapshot.judge.effort
+          },
+          judgeConfiguration: runtimeConfiguration(snapshot.judge),
+          runtimeConfigurations: input.targets.map(runtimeConfiguration)
+        }, { optimizationAuthorized: true });
+        await evaluationRunner.run(run);
+        return store.getEvaluationRun(run.id);
+      }
+      const operatorGateway = new OptimizationOperatorGateway({
+        onRequest: ({ runId: runId_, kind, epoch, operatorSessionId }) => sessionManager.sendMessage(
+          operatorSessionId,
+          `Optimization Run ${runId_} is waiting for Epoch ${epoch} ${kind} submission.`
+        )
+      });
+      const runner = new OptimizationRunner({
+        store: optimizationStore,
+        artifactStore: jobStore,
+        childJobs: { run: (input, operation) => jobEngine.runChild(input, operation) },
+        workspaceManager,
+        installationManager,
+        evaluationManager: { run: runEvaluation },
+        operatorGateway,
+        approvals: { request: async (input) => {
+          const approval = await jobEngine.requestApproval(input.parentJobId, {
+            action: `optimization.${input.kind}`,
+            risk: `Approve Optimization ${input.kind}`,
+            scope: {
+              runId: input.runId,
+              epoch: input.epoch,
+              kind: input.kind
+            },
+            proposedMutation: { kind: input.kind, runId: input.runId },
+            idempotencyKey: `${input.runId}:${input.kind}:${input.epoch}`
+          });
+          return {
+            ...approval,
+            ...input.kind === "release" ? { versionLabel: `opt-${input.runId.slice(-40)}-e${input.epoch}`.slice(0, 64) } : {}
+          };
+        } },
+        releaseManager: { release: (input) => managedSkillManager.releaseVersion({
+          versionId: input.candidate.id,
+          versionLabel: input.approval.versionLabel,
+          expectedCandidate: {
+            commit: input.candidate.commit,
+            contentDigest: input.candidate.contentDigest,
+            state: input.candidate.state,
+            versionLabel: input.approval.versionLabel
+          }
+        }) },
+        telemetry: ({ runId: runId_ }) => {
+          const run = optimizationStore.getRun(runId_);
+          return {
+            elapsedMs: Math.max(0, Date.now() - Date.parse(run.createdAt)),
+            turnsUsed: 0,
+            tokensUsed: run.snapshot.telemetry.tokens ? 0 : null,
+            costMicros: run.snapshot.telemetry.cost ? 0 : null
+          };
+        },
+        onChanged
+      });
+      optimizationControl = new OptimizationControlService({
+        store: optimizationStore,
+        workspaceManager,
+        operatorSessionManager: sessionManager,
+        runner,
+        operatorGateway,
+        artifactStore: jobStore,
+        readArtifact: (artifactId, maximumBytes) => {
+          const artifact = jobStore.getArtifact(artifactId);
+          if (artifact.byteLength > maximumBytes) return null;
+          return jobStore.readArtifactBody(artifactId);
+        },
+        resolvePreflight
+      });
+      const ready = Promise.all([
+        controlSocket.start().catch(() => null),
+        optimizationControl.recoverStartup()
+      ]);
+      const services = createOperatorServices({
+        jobStore,
+        jobEngine,
+        sessionManager,
+        optimizationStore,
+        optimizationControl,
+        ready
+      });
+      async function close() {
+        await Promise.allSettled([
+          sessionManager.stopAll(),
+          runner.checkpointAndStop?.()
+        ]);
+        await Promise.allSettled([
+          runner.waitForIdle?.(),
+          controlSocket.close()
+        ]);
+        optimizationStore.close();
+        jobStore.close();
+      }
+      return Object.freeze({
+        close,
+        controlPlane,
+        jobEngine,
+        jobStore,
+        optimizationControl,
+        optimizationStore,
+        ready,
+        services,
+        sessionManager
+      });
+    }
+    module.exports = {
+      createOperatorRuntime,
+      createOperatorServices,
+      publicOperatorValue: publicValue
+    };
+    var { createHash } = __require("node:crypto");
+    var { join } = __require("node:path");
+    var {
+      snapshotManagedSkillEvidence
+    } = require_evaluation_skill_evidence();
+    var {
+      CapabilityStore,
+      createTrustedCapabilityIssuer
+    } = require_capability_store();
+    var {
+      ControlPlane
+    } = require_control_plane();
+    var {
+      CONTROL_METHODS,
+      controlDefinition
+    } = require_contracts();
+    var {
+      createDomainServices
+    } = require_domain_services();
+    var {
+      createControlPolicy
+    } = require_policy();
+    var {
+      ControlSocketServer
+    } = require_socket_server();
+    var {
+      OperatorJobEngine
+    } = require_job_engine();
+    var {
+      OperatorJobStore
+    } = require_job_store();
+    var {
+      OperatorSessionManager
+    } = require_operator_session_manager();
+    var {
+      OptimizationControlService
+    } = require_optimization_control_service();
+    var {
+      OptimizationOperatorGateway
+    } = require_optimization_operator_gateway();
+    var {
+      OptimizationRunner
+    } = require_optimization_runner();
+    var {
+      OptimizationStore
+    } = require_optimization_store();
+    var {
+      OptimizationWorkspaceManager
+    } = require_optimization_workspace();
+  }
+});
+
+// ../../desktop/rolling-skill/package.json
+var require_package = __commonJS({
+  "../../desktop/rolling-skill/package.json"(exports, module) {
+    module.exports = {
+      name: "rolling-skill-desktop",
+      version: "0.9.3",
+      private: true,
+      author: "Rolling Skill",
+      description: "Native-window macOS client for the Rolling Skill evaluation workbench",
+      main: "src/main.cjs",
+      scripts: {
+        start: "electron .",
+        "render:icon": "electron scripts/render-icon.cjs assets/icon-s-keycap-orange.svg assets/icon-s-keycap-orange.png",
+        test: "node --test test/*.test.cjs",
+        "smoke:renderer": "electron scripts/renderer-smoke.cjs",
+        "build:tool": "node scripts/build-external-tool.mjs",
+        "pack:mac": "npm run render:icon && npm run build:tool && electron-builder --mac dir --arm64",
+        "dist:mac": "npm run render:icon && electron-builder --mac dmg zip --arm64"
+      },
+      devDependencies: {
+        "@modelcontextprotocol/client": "^2.0.0",
+        electron: "^43.3.0",
+        "electron-builder": "^26.0.12",
+        esbuild: "^0.25.12",
+        yazl: "^3.3.1"
+      },
+      build: {
+        appId: "com.rolling-skill.desktop",
+        productName: "Rolling Skill",
+        asar: true,
+        files: [
+          "src/**/*",
+          "renderer/**/*",
+          "package.json"
+        ],
+        directories: {
+          output: "dist",
+          buildResources: "assets"
+        },
+        mac: {
+          target: [
+            "dir"
+          ],
+          category: "public.app-category.developer-tools",
+          minimumSystemVersion: "13.0",
+          darkModeSupport: true,
+          icon: "assets/icon-s-keycap-orange.png",
+          identity: null
+        }
+      },
+      dependencies: {
+        "@modelcontextprotocol/server": "^2.0.0",
+        he: "^1.2.0",
+        marked: "^15.0.12",
+        yaml: "^2.9.0",
+        yauzl: "^3.4.0",
+        zod: "^4.4.3"
+      }
+    };
+  }
+});
+
 // ../../desktop/rolling-skill/src/evaluation-turn-error.cjs
 var require_evaluation_turn_error = __commonJS({
   "../../desktop/rolling-skill/src/evaluation-turn-error.cjs"(exports, module) {
@@ -39280,269 +55609,6 @@ var require_trace_recorder = __commonJS({
       }
     };
     module.exports = { TraceRecorder, safeSessionId };
-  }
-});
-
-// ../../desktop/rolling-skill/src/operator/operator-tool-transport.cjs
-var require_operator_tool_transport = __commonJS({
-  "../../desktop/rolling-skill/src/operator/operator-tool-transport.cjs"(exports, module) {
-    var { constants, lstatSync, realpathSync } = __require("node:fs");
-    var { accessSync } = __require("node:fs");
-    var { isAbsolute } = __require("node:path");
-    var { StringDecoder } = __require("node:string_decoder");
-    var { z } = require_zod();
-    var {
-      OPERATOR_CONTROL_METHODS,
-      controlDefinition
-    } = require_contracts();
-    var OPERATOR_ENVIRONMENT_KEYS = Object.freeze([
-      "ROLLING_SKILL_CONTROL_SOCKET",
-      "ROLLING_SKILL_CONTROL_TOKEN",
-      "ROLLING_SKILL_OPERATOR_SESSION"
-    ]);
-    var OPERATOR_ENVIRONMENT_KEY_SET = new Set(OPERATOR_ENVIRONMENT_KEYS);
-    var MAX_OPERATOR_ENVIRONMENT_VALUE_LENGTH = 8192;
-    var MAX_OPERATOR_STREAM_BUFFER_BYTES = 64 * 1024;
-    var REDACTED = "[REDACTED]";
-    function plainObject(value) {
-      if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-      const prototype = Object.getPrototypeOf(value);
-      return prototype === Object.prototype || prototype === null;
-    }
-    function sanitizeOperatorChildEnvironment(environment = {}) {
-      if (!plainObject(environment)) throw new TypeError("Operator child environment must be a plain object");
-      const descriptors = Object.getOwnPropertyDescriptors(environment);
-      const sanitized = {};
-      for (const name of OPERATOR_ENVIRONMENT_KEYS) {
-        const descriptor = descriptors[name];
-        if (!descriptor) continue;
-        if (!Object.hasOwn(descriptor, "value")) {
-          throw new TypeError("Operator child environment values must be data properties");
-        }
-        const value = descriptor.value;
-        if (typeof value !== "string" || value.length === 0 || value.length > MAX_OPERATOR_ENVIRONMENT_VALUE_LENGTH || /[\0\r\n]/u.test(value)) {
-          throw new TypeError("Operator child environment value is invalid");
-        }
-        sanitized[name] = value;
-      }
-      return sanitized;
-    }
-    function operatorSecretPatterns(childEnvironment = {}) {
-      return [.../* @__PURE__ */ new Set([
-        ...OPERATOR_ENVIRONMENT_KEYS,
-        ...Object.values(sanitizeOperatorChildEnvironment(childEnvironment)).filter(Boolean)
-      ])].sort((left, right) => right.length - left.length);
-    }
-    function mergeOperatorChildEnvironment(inherited = {}, childEnvironment = {}) {
-      if (!plainObject(inherited)) throw new TypeError("Inherited child environment must be a plain object");
-      const merged = {};
-      for (const [name, value] of Object.entries(inherited)) {
-        if (!name.startsWith("ROLLING_SKILL_CONTROL_") && !OPERATOR_ENVIRONMENT_KEY_SET.has(name)) {
-          merged[name] = value;
-        }
-      }
-      return { ...merged, ...sanitizeOperatorChildEnvironment(childEnvironment) };
-    }
-    function redactOperatorSecrets(value, childEnvironment = {}) {
-      const secrets = operatorSecretPatterns(childEnvironment);
-      if (secrets.length === 0) return value;
-      const redactText = (text) => {
-        let result = text;
-        for (const secret of secrets) result = result.replaceAll(secret, REDACTED);
-        return result;
-      };
-      const seen = /* @__PURE__ */ new WeakMap();
-      const visit = (entry) => {
-        if (typeof entry === "string") return redactText(entry);
-        if (typeof entry !== "object" || entry === null) return entry;
-        if (seen.has(entry)) return seen.get(entry);
-        const output = Array.isArray(entry) ? [] : {};
-        seen.set(entry, output);
-        for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(entry))) {
-          if (!Object.hasOwn(descriptor, "value")) continue;
-          output[redactText(key)] = visit(descriptor.value);
-        }
-        return output;
-      };
-      return visit(value);
-    }
-    var OperatorStreamRedactor = class {
-      #decoder = new StringDecoder("utf8");
-      #ended = false;
-      #pending = "";
-      #patterns;
-      #overlap;
-      constructor(childEnvironment = {}) {
-        this.#patterns = operatorSecretPatterns(childEnvironment);
-        this.#overlap = Math.max(0, ...this.#patterns.map((pattern) => pattern.length - 1));
-      }
-      #nextMatch(limit) {
-        let selected = null;
-        for (const pattern of this.#patterns) {
-          const index = this.#pending.indexOf(pattern);
-          if (index < 0 || index >= limit) continue;
-          if (selected === null || index < selected.index || index === selected.index && pattern.length > selected.pattern.length) selected = { index, pattern };
-        }
-        return selected;
-      }
-      #drain(limit) {
-        if (limit <= 0) return [];
-        let output = "";
-        while (limit > 0) {
-          const match = this.#nextMatch(limit);
-          if (!match) {
-            output += this.#pending.slice(0, limit);
-            this.#pending = this.#pending.slice(limit);
-            break;
-          }
-          output += this.#pending.slice(0, match.index) + REDACTED;
-          const matchEnd = match.index + match.pattern.length;
-          limit -= matchEnd;
-          this.#pending = this.#pending.slice(matchEnd);
-        }
-        return output ? [output] : [];
-      }
-      #drainAvailable({ flush = false } = {}) {
-        const output = [];
-        let newline = this.#pending.indexOf("\n");
-        while (newline >= 0) {
-          output.push(...this.#drain(newline + 1));
-          newline = this.#pending.indexOf("\n");
-        }
-        if (flush) {
-          output.push(...this.#drain(this.#pending.length));
-        } else if (Buffer.byteLength(this.#pending, "utf8") > MAX_OPERATOR_STREAM_BUFFER_BYTES) {
-          output.push(...this.#drain(Math.max(0, this.#pending.length - this.#overlap)));
-        }
-        return output;
-      }
-      push(chunk) {
-        if (this.#ended) throw new Error("Operator stream redactor is closed");
-        this.#pending += this.#decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-        return this.#drainAvailable();
-      }
-      end(chunk) {
-        if (this.#ended) return [];
-        this.#ended = true;
-        this.#pending += chunk === void 0 ? this.#decoder.end() : this.#decoder.end(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-        return this.#drainAvailable({ flush: true });
-      }
-    };
-    function executablePath(value) {
-      if (typeof value !== "string" || !isAbsolute(value)) {
-        throw new TypeError("Bundled Operator Tool path must be absolute");
-      }
-      try {
-        const resolved = realpathSync(value);
-        const status = lstatSync(resolved);
-        if (!status.isFile()) return null;
-        accessSync(resolved, constants.X_OK);
-        return resolved;
-      } catch {
-        return null;
-      }
-    }
-    function hasCredentials(environment) {
-      return OPERATOR_ENVIRONMENT_KEYS.every((name) => typeof environment[name] === "string");
-    }
-    function methodToolName(method) {
-      return method.replaceAll(".", "_");
-    }
-    function codexDynamicTools() {
-      return [{
-        type: "namespace",
-        name: "rolling_skill",
-        description: "Scoped Rolling Skill Operator control tools.",
-        tools: OPERATOR_CONTROL_METHODS.map((method) => ({
-          type: "function",
-          name: methodToolName(method),
-          description: `Invoke the scoped Rolling Skill ${method} action.`,
-          inputSchema: z.toJSONSchema(controlDefinition(method).input)
-        }))
-      }];
-    }
-    function copy(value) {
-      return JSON.parse(JSON.stringify(value));
-    }
-    var OperatorToolTransport = class {
-      #childEnvironment;
-      #executablePath;
-      #selection = null;
-      constructor({ executablePath: requestedExecutablePath, childEnvironment = {} } = {}) {
-        this.requestedExecutablePath = requestedExecutablePath;
-        this.#childEnvironment = sanitizeOperatorChildEnvironment(childEnvironment);
-        this.#executablePath = void 0;
-      }
-      #resolveExecutable() {
-        if (this.#executablePath === void 0) {
-          this.#executablePath = executablePath(this.requestedExecutablePath);
-        }
-        return this.#executablePath;
-      }
-      preflight(runtimeDescriptor = {}, support = {}) {
-        const providerId = runtimeDescriptor?.providerId;
-        if (providerId === "codex" && support.dynamicToolsReady === true) {
-          return { kind: "codex-dynamic", ready: true };
-        }
-        const path = this.#resolveExecutable();
-        if (!path) {
-          return {
-            kind: "unsupported",
-            ready: false,
-            reason: "Bundled Operator Tool is unavailable"
-          };
-        }
-        if (!hasCredentials(this.#childEnvironment)) {
-          return {
-            kind: "unsupported",
-            ready: false,
-            reason: "Operator control credentials are unavailable"
-          };
-        }
-        if (providerId === "codebuddy" && support.mcpServersReady === true) {
-          return { kind: "acp-mcp", ready: true };
-        }
-        return { kind: "cli", ready: true, executablePath: path };
-      }
-      freeze(runtimeDescriptor = {}, support = {}) {
-        if (this.#selection) throw new Error("Operator Tool transport is already frozen");
-        this.#selection = Object.freeze(this.preflight(runtimeDescriptor, support));
-        return this.selection();
-      }
-      selection() {
-        return this.#selection ? copy(this.#selection) : null;
-      }
-      dynamicTools() {
-        return this.#selection?.kind === "codex-dynamic" ? codexDynamicTools() : [];
-      }
-      mcpServers() {
-        if (this.#selection?.kind !== "acp-mcp") return [];
-        const path = this.#resolveExecutable();
-        return [{
-          name: "rolling-skill-operator",
-          command: path,
-          args: ["operator-mcp"],
-          env: OPERATOR_ENVIRONMENT_KEYS.map((name) => ({
-            name,
-            value: this.#childEnvironment[name]
-          }))
-        }];
-      }
-      childEnvironment() {
-        return { ...this.#childEnvironment };
-      }
-    };
-    module.exports = {
-      MAX_OPERATOR_ENVIRONMENT_VALUE_LENGTH,
-      MAX_OPERATOR_STREAM_BUFFER_BYTES,
-      OPERATOR_ENVIRONMENT_KEYS,
-      OperatorStreamRedactor,
-      OperatorToolTransport,
-      codexDynamicTools,
-      mergeOperatorChildEnvironment,
-      redactOperatorSecrets,
-      sanitizeOperatorChildEnvironment
-    };
   }
 });
 
@@ -43302,6 +59368,9 @@ var require_application = __commonJS({
       CurationManager
     } = require_curation_manager();
     var {
+      RubricManager
+    } = require_rubric_manager();
+    var {
       EvaluationRunner
     } = require_evaluation_runner();
     var {
@@ -43318,6 +59387,7 @@ var require_application = __commonJS({
     var { RollingSkillConfigStore } = require_config_store();
     var { ensureDataLayout, resolveDataPaths } = require_data_root();
     var { createEvaluationServices } = require_evaluation_services();
+    var { createOperatorRuntime } = require_operator_services();
     var { createRuntimeServices } = require_runtime_services();
     var { createSkillServices } = require_skill_services();
     var MAX_DISPATCH_BYTES = 1024 * 1024;
@@ -43425,15 +59495,37 @@ var require_application = __commonJS({
         installationStore,
         runtimeServices
       });
+      const selectedRuntimeId = () => configStore.read().runtime?.runtimeId ?? null;
+      const selectedRuntimeDescriptor = () => {
+        const runtimeId = selectedRuntimeId();
+        return runtimeId ? runtimeServices.descriptor(runtimeId) : null;
+      };
+      const getSelectedRuntime = () => {
+        const runtimeId = selectedRuntimeId();
+        if (!runtimeId) throw new Error("Select a Runtime before starting an Agent task");
+        return runtimeServices.getClient(runtimeId, { nonInteractive: false });
+      };
+      const curationManager = options2.curationManager ?? new CurationManager({
+        store,
+        getRuntime: getSelectedRuntime,
+        getRuntimeDescriptor: selectedRuntimeDescriptor,
+        onChanged: () => publish()
+      });
+      const rubricManager = options2.rubricManager ?? new RubricManager({
+        store,
+        getRuntime: getSelectedRuntime,
+        getRuntimeDescriptor: selectedRuntimeDescriptor,
+        onChanged: () => publish()
+      });
       const refreshManager = options2.caseRefreshManager ?? {
         async createSession({ runtimeId, datasetId, caseId }) {
-          const selectedRuntimeId = runtimeId ?? configStore.read().runtime?.runtimeId;
-          if (!selectedRuntimeId) throw new Error("Select a Runtime before refreshing Cases");
-          const descriptor = runtimeServices.descriptor(selectedRuntimeId);
-          const getRuntime = () => runtimeServices.getClient(selectedRuntimeId, {
+          const selectedRuntimeId2 = runtimeId ?? configStore.read().runtime?.runtimeId;
+          if (!selectedRuntimeId2) throw new Error("Select a Runtime before refreshing Cases");
+          const descriptor = runtimeServices.descriptor(selectedRuntimeId2);
+          const getRuntime = () => runtimeServices.getClient(selectedRuntimeId2, {
             nonInteractive: false
           });
-          const curationManager = new CurationManager({
+          const curationManager2 = new CurationManager({
             store,
             getRuntime,
             getRuntimeDescriptor: () => descriptor,
@@ -43441,7 +59533,7 @@ var require_application = __commonJS({
           });
           const manager = new CaseRefreshManager({
             store,
-            curationManager,
+            curationManager: curationManager2,
             getRuntime,
             getRuntimeDescriptor: () => descriptor
           });
@@ -43472,6 +59564,26 @@ var require_application = __commonJS({
         onChanged: () => publish(),
         ...options2.snapshotSkill ? { snapshotSkill: options2.snapshotSkill } : {}
       });
+      const operatorRuntime = options2.operatorRuntime ?? createOperatorRuntime({
+        paths,
+        store,
+        rawCaseStore,
+        managedSkillStore,
+        managedSkillManager,
+        installationStore,
+        installationManager,
+        runtimeServices,
+        evaluationRunner,
+        evaluationServices,
+        curationManager,
+        rubricManager,
+        workspaceRoot,
+        requestPermission: options2.requestRuntimePermission ?? null,
+        requestQuestion: options2.requestRuntimeQuestion ?? null,
+        operatorToolPath: options2.operatorToolPath ?? null,
+        onChanged: () => publish()
+      });
+      const operatorServices = operatorRuntime.services;
       const subscribers = /* @__PURE__ */ new Set();
       let closed = false;
       function dashboardSnapshot() {
@@ -43484,7 +59596,9 @@ var require_application = __commonJS({
             cases: state.cases.length,
             rawCases: rawCases.length,
             evaluations: state.evaluationRuns.length,
-            managedSkills: managedSkills.skills.length
+            managedSkills: managedSkills.skills.length,
+            operatorSessions: operatorServices.operatorSummary({ limit: 1 }).totals.sessions,
+            optimizations: operatorServices.optimizationList().length
           },
           dataRoot: paths.root,
           automaticCapture: automaticCaptureStateStore.read(),
@@ -43541,6 +59655,23 @@ var require_application = __commonJS({
         "installations.cancel": (input) => skillServices.cancelInstallation(input),
         "installations.inspect": (input) => skillServices.inspectInstallation(input),
         "installations.send": (input) => skillServices.sendInstallation(input),
+        "operators.summary": (input) => operatorServices.operatorSummary(input),
+        "operators.get": (input) => operatorServices.operatorGet(input),
+        "operators.start": (input) => operatorServices.operatorStart(input),
+        "operators.pause": (input) => operatorServices.operatorPause(input),
+        "operators.resume": (input) => operatorServices.operatorResume(input),
+        "operators.cancel": (input) => operatorServices.operatorCancel(input),
+        "operators.approve": (input) => operatorServices.operatorApprove(input),
+        "operators.artifacts": (input) => operatorServices.operatorArtifacts(input),
+        "operators.send": (input) => operatorServices.operatorSend(input),
+        "optimizations.list": () => operatorServices.optimizationList(),
+        "optimizations.get": (input) => operatorServices.optimizationGet(input),
+        "optimizations.preflight": (input) => operatorServices.optimizationPreflight(input),
+        "optimizations.start": (input) => operatorServices.optimizationStart(input),
+        "optimizations.pause": (input) => operatorServices.optimizationPause(input),
+        "optimizations.resume": (input) => operatorServices.optimizationResume(input),
+        "optimizations.cancel": (input) => operatorServices.optimizationCancel(input),
+        "optimizations.report": (input) => operatorServices.optimizationReport(input),
         ...caseServices.methods
       };
       const mutations = /* @__PURE__ */ new Set([
@@ -43559,6 +59690,17 @@ var require_application = __commonJS({
         "installations.cancel",
         "installations.inspect",
         "installations.send",
+        "operators.start",
+        "operators.pause",
+        "operators.resume",
+        "operators.cancel",
+        "operators.approve",
+        "operators.send",
+        "optimizations.start",
+        "optimizations.pause",
+        "optimizations.resume",
+        "optimizations.cancel",
+        "optimizations.report",
         ...caseServices.mutations
       ]);
       async function snapshot() {
@@ -43599,6 +59741,7 @@ var require_application = __commonJS({
         rawCaseStore.close();
         await evaluationRunner.stopAll?.();
         await installationManager.stopAll?.();
+        await operatorRuntime.close();
         await runtimeServices.close();
       }
       return Object.freeze({ close, dispatch, snapshot, subscribe });
@@ -43616,6 +59759,7 @@ var require_src = __commonJS({
     var { createRollingSkillApplication: createRollingSkillApplication2 } = require_application();
     var { createCaseServices } = require_case_services();
     var { createEvaluationServices } = require_evaluation_services();
+    var { createOperatorRuntime, createOperatorServices } = require_operator_services();
     var { createRuntimeServices } = require_runtime_services();
     var { createSkillServices } = require_skill_services();
     var { RollingSkillConfigStore } = require_config_store();
@@ -43624,6 +59768,8 @@ var require_src = __commonJS({
       RollingSkillConfigStore,
       createCaseServices,
       createEvaluationServices,
+      createOperatorRuntime,
+      createOperatorServices,
       createRollingSkillApplication: createRollingSkillApplication2,
       createRuntimeServices,
       createSkillServices,
