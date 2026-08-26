@@ -656,6 +656,7 @@ describe("control-plane domain services", () => {
         assert.deepEqual(got.cases, [{
             id: "case-1",
             datasetId: "dataset-1",
+            caseType: "goodcase",
             title: "Find the July total",
             label: "goodcase",
             inputSummary: "Find the July total",

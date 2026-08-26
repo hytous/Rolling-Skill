@@ -428,6 +428,7 @@ function publicSummaryText(value, limit = 4_096) {
 
 function publicCase(entry) {
     const title = publicSummaryText(entry?.title ?? entry?.question, 500)
+    const caseType = ["goodcase", "badcase"].includes(entry?.caseType) ? entry.caseType : null
     const label = identifier(entry?.label) ?? identifier(entry?.caseType)
     const inputSummary = publicSummaryText(entry?.inputSummary ?? entry?.question)
     const outputSummary = publicSummaryText(
@@ -436,6 +437,7 @@ function publicCase(entry) {
     const artifactRefs = publicArtifactReferences(entry)
     return {
         ...ownFields(entry, ["id", "datasetId"]),
+        ...(caseType === null ? {} : {caseType}),
         ...(title === null ? {} : {title}),
         ...(identifier(entry?.status ?? entry?.rubricCalibration?.status) === null
             ? {}

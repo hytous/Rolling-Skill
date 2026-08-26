@@ -138,6 +138,7 @@ const publicArtifactReference = z.object({
 const publicDatasetCase = z.object({
     id,
     datasetId: id.optional(),
+    caseType: z.enum(["goodcase", "badcase"]).optional(),
     title: z.string().max(500).optional(),
     status: boundedText(80, "Case status").optional(),
     label: boundedText(200, "Case label").optional(),
