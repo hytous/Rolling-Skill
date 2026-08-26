@@ -14,6 +14,7 @@ const {
 } = require("./episode-curation.cjs")
 
 const MAX_TIMER_DELAY = 2_147_000_000
+const AUTOMATIC_CONFIDENCE_THRESHOLD = 0.8
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
@@ -41,6 +42,39 @@ function responseText(value) {
 
 function arrays(value) {
     return Array.isArray(value) ? value : Array.isArray(value?.data) ? value.data : []
+}
+
+function normalizedSkillName(value) {
+    return String(value ?? "").trim().toLocaleLowerCase("en-US")
+}
+
+function sameAutomaticSkill(left, right) {
+    if (!left || !right) return false
+    const leftId = String(left.id ?? "").trim()
+    const rightId = String(right.id ?? "").trim()
+    if (leftId && rightId) return leftId === rightId
+    if (!normalizedSkillName(left.name) || normalizedSkillName(left.name) !== normalizedSkillName(right.name)) {
+        return false
+    }
+    const leftPath = String(left.path ?? "").trim()
+    const rightPath = String(right.path ?? "").trim()
+    return !leftPath || !rightPath || leftPath === rightPath
+}
+
+function automaticDatasetFor(candidate, datasets, preferredDatasetId = null) {
+    const confidence = Number(candidate?.confidence)
+    if (
+        !Number.isFinite(confidence) ||
+        confidence < AUTOMATIC_CONFIDENCE_THRESHOLD ||
+        candidate?.outcome === "uncertain" ||
+        !candidate?.skill
+    ) return null
+    const matches = arrays(datasets).filter((dataset) => (
+        sameAutomaticSkill(dataset?.skillReference, candidate.skill)
+    ))
+    const preferred = matches.find((dataset) => dataset.id === preferredDatasetId)
+    if (preferred) return preferred
+    return matches.length === 1 ? matches[0] : null
 }
 
 class ConversationDiscoveryManager {
@@ -77,6 +111,8 @@ class ConversationDiscoveryManager {
         this.onStatus = onStatus
         this.onError = onError
         this.analysisThreadIds = new Set()
+        this.automaticSessions = new Map()
+        this.automaticArchiveAttempts = new Set()
         this.runningPromise = null
         this.timer = null
         this.started = false
@@ -168,6 +204,31 @@ class ConversationDiscoveryManager {
 
     async handleNotification() {
         return false
+    }
+
+    async handleCurationChanged(session) {
+        const tracked = this.automaticSessions.get(session?.id)
+        if (
+            !tracked ||
+            session.status !== "needs_review" ||
+            !session.draft ||
+            this.automaticArchiveAttempts.has(session.id)
+        ) return false
+        this.automaticArchiveAttempts.add(session.id)
+        try {
+            const savedCase = await this.curationManager.archive(session.id)
+            this.rawCaseStore.markDispatched(tracked.rawCaseId, {
+                mode: "automatic",
+                caseId: savedCase.id,
+            })
+            this.automaticSessions.delete(session.id)
+            this.emitStatus()
+            return true
+        } catch (error) {
+            this.onError(error)
+            this.emitStatus()
+            return false
+        }
     }
 
     async runDueScan() {
@@ -326,31 +387,74 @@ class ConversationDiscoveryManager {
             : null
         const endItemId = finalItem?.id ?? episode.source.endItemId
         const endTurnId = finalItem?.turnId ?? episode.source.endTurnId
+        const source = {
+            kind: "automatic_capture",
+            runtimeId,
+            threadId,
+            startTurnId: episode.source.startTurnId,
+            startItemId: episode.source.startItemId,
+            endTurnId,
+            endItemId,
+            outcome: result.outcome,
+            caseType: result.caseType,
+            confidence: result.confidence,
+            summary: segment.summary,
+            reason: result.reason,
+            inspectedAt: this.now().toISOString(),
+        }
+        const candidateSkill = {
+            ...(skill.id ? {id: skill.id} : {}),
+            name: skill.name,
+            ...(skill.path ? {path: skill.path} : {}),
+        }
         const saved = this.rawCaseStore.addAutomaticCandidate({
             question: episode.originalQuestion,
-            skill: {
-                ...(skill.id ? {id: skill.id} : {}),
-                name: skill.name,
-                ...(skill.path ? {path: skill.path} : {}),
-            },
+            skill: candidateSkill,
             note: result.reason || segment.summary,
-            source: {
-                kind: "automatic_capture",
-                runtimeId,
-                threadId,
-                startTurnId: episode.source.startTurnId,
-                startItemId: episode.source.startItemId,
-                endTurnId,
-                endItemId,
-                outcome: result.outcome,
-                caseType: result.caseType,
-                confidence: result.confidence,
-                summary: segment.summary,
-                reason: result.reason,
-                inspectedAt: this.now().toISOString(),
-            },
+            source,
+        })
+        await this.createAutomaticCuration({
+            saved,
+            source,
+            skill: candidateSkill,
+            datasets,
+            profile,
         })
         return {irrelevant: false, episode, result, saved}
+    }
+
+    async createAutomaticCuration({saved, source, skill, datasets, profile}) {
+        if (profile.mode !== "automatic" || !this.curationManager?.createSession) return null
+        const dataset = automaticDatasetFor({
+            confidence: source.confidence,
+            outcome: source.outcome,
+            skill,
+        }, datasets, profile.datasetId)
+        if (!dataset?.activeRubricVersionId || !saved?.rawCase?.id) return null
+        const curatorProfile = this.store.read().settings.curatorProfile ?? {}
+        try {
+            const session = await this.curationManager.createSession({
+                datasetId: dataset.id,
+                caseType: source.caseType,
+                sourceThreadId: source.threadId,
+                startItemId: source.startItemId,
+                startTurnId: source.startTurnId,
+                endItemId: source.endItemId,
+                endTurnId: source.endTurnId,
+                issueDescription: source.reason ?? "",
+                modelId: curatorProfile.modelId ?? null,
+                effort: curatorProfile.effort ?? null,
+            })
+            this.automaticSessions.set(session.id, {rawCaseId: saved.rawCase.id})
+            if (session.status === "needs_review" && session.draft) {
+                await this.handleCurationChanged(session)
+            }
+            return session
+        } catch (error) {
+            this.onError(error)
+            this.emitStatus()
+            return null
+        }
     }
 
     async scanThread({runtime, runtimeId, threadId, skills, datasets, profile}) {
@@ -414,4 +518,6 @@ class ConversationDiscoveryManager {
 module.exports = {
     AutomaticCaptureManager: ConversationDiscoveryManager,
     ConversationDiscoveryManager,
+    automaticDatasetFor,
+    sameAutomaticSkill,
 }

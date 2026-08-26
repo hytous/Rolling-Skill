@@ -403,6 +403,42 @@ describe("desktop main/preload bridge", () => {
         assert.match(preload, /onRawCasesChanged/)
     })
 
+    it("bridges scheduled capture status and manual Draft creation without exposing scan cursors", async () => {
+        const main = source("src/main.cjs")
+        const preload = source("src/preload.cjs")
+        const {api, calls} = preloadBridge((channel) => (
+            channel === "automatic-capture:status"
+                ? {mode: "scheduled", running: false}
+                : {id: "session-1"}
+        ))
+
+        await api.createCurationFromRawCase("raw-1", "dataset-1")
+        const status = await api.getAutomaticCaptureStatus()
+
+        assert.deepEqual(plain(calls), [
+            {
+                channel: "curation:create-from-raw-case",
+                payload: {rawCaseId: "raw-1", datasetId: "dataset-1"},
+            },
+            {channel: "automatic-capture:status"},
+        ])
+        assert.deepEqual(plain(status), {mode: "scheduled", running: false})
+        assert.match(preload, /onAutomaticCaptureStatus/)
+        assert.doesNotMatch(preload, /lastInspectedUserItemId|pendingStartUserItemId|checkedRanges/)
+        assert.match(
+            main,
+            /new AutomaticCaptureStateStore\(join\([\s\S]{0,80}app\.getPath\("userData"\)/u,
+        )
+        assert.match(main, /curation:create-from-raw-case/u)
+        assert.match(main, /automatic-capture:status/u)
+        assert.match(main, /source\.runtimeId[\s\S]{0,180}runtimeDescriptor\?\.runtimeId/u)
+        assert.match(main, /automaticCaptureManager\.start\(\)/u)
+        assert.match(main, /automaticCaptureManager\?\.stop\(\)/u)
+        assert.match(main, /settings:update[\s\S]{0,240}automaticCaptureManager\?\.reschedule\(\)/u)
+        assert.match(main, /restartRuntimeNow[\s\S]{0,900}automaticCaptureManager\?\.reschedule\(\)/u)
+        assert.match(main, /onChanged:[\s\S]{0,220}handleCurationChanged/u)
+    })
+
     it("keeps managed Skill repository paths and mutations in the main process", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")

@@ -31,7 +31,10 @@ const {AsyncLocalStorage} = require("node:async_hooks")
 const {CodexRuntimeProvider} = require("./codex-runtime-provider.cjs")
 const {CodeBuddyRuntimeProvider} = require("./codebuddy-runtime-provider.cjs")
 const {DeepSeekHarnessRuntimeProvider} = require("./deepseek-harness-runtime-provider.cjs")
-const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
+const {AutomaticCaptureManager, sameAutomaticSkill} = require("./automatic-capture.cjs")
+const {
+    AutomaticCaptureStateStore,
+} = require("./automatic-capture-state-store.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
 const {CaseRecycleService} = require("./case-recycle-service.cjs")
 const {CaseRefreshManager} = require("./case-refresh-manager.cjs")
@@ -184,6 +187,7 @@ let store = null
 let curationManager = null
 let rubricManager = null
 let automaticCaptureManager = null
+let automaticCaptureStateStore = null
 let evaluationRunner = null
 let activityStore = null
 let rawCaseStore = null
@@ -322,7 +326,8 @@ function isHiddenRuntimeThread(threadId) {
         threadId && (
             curationManager?.hiddenThreadIds().has(threadId) ||
             rubricManager?.hiddenThreadIds().has(threadId) ||
-            caseRefreshManager?.hiddenThreadIds().has(threadId)
+            caseRefreshManager?.hiddenThreadIds().has(threadId) ||
+            automaticCaptureManager?.hiddenThreadIds().has(threadId)
         ),
     )
 }
@@ -879,6 +884,7 @@ async function restartRuntimeNow({rediscover = false} = {}) {
     if (!client) {
         const state = unavailableRuntimeState()
         send("runtime:state", state)
+        automaticCaptureManager?.reschedule()
         return state
     }
     try {
@@ -891,6 +897,8 @@ async function restartRuntimeNow({rediscover = false} = {}) {
                 : {...enrichRuntimeState(client.state()), status: "error", error: error.message}
         send("runtime:state", state)
         return state
+    } finally {
+        automaticCaptureManager?.reschedule()
     }
 }
 
@@ -2643,6 +2651,68 @@ function openManagedSkillStore(registryPath) {
     }
 }
 
+function automaticRawCaseObservation(rawCase) {
+    if (rawCase?.source?.kind !== "automatic_capture") {
+        throw new Error("Only an automatic capture Raw Case can create a Case Draft")
+    }
+    const observations = Array.isArray(rawCase.source.observations)
+        ? rawCase.source.observations
+        : []
+    const source = observations.at(-1) ?? rawCase.source
+    return {
+        runtimeId: requireIdentifier(source.runtimeId, "source Runtime"),
+        threadId: requireIdentifier(source.threadId, "source task"),
+        startTurnId: requireIdentifier(source.startTurnId, "episode start turn"),
+        startItemId: requireIdentifier(source.startItemId, "episode start Item"),
+        endTurnId: requireIdentifier(source.endTurnId, "episode end turn"),
+        endItemId: requireIdentifier(source.endItemId, "episode end Item"),
+        caseType: new Set(["goodcase", "badcase"]).has(source.caseType)
+            ? source.caseType
+            : "goodcase",
+        reason: String(source.reason ?? rawCase.note ?? "").trim(),
+    }
+}
+
+async function createCurationFromRawCase(input = {}) {
+    const rawCaseId = requireIdentifier(input.rawCaseId, "Raw Case")
+    const rawCase = rawCaseStore.get(rawCaseId)
+    if (!rawCase) throw new Error(`Unknown pending Raw Case: ${rawCaseId}`)
+    const source = automaticRawCaseObservation(rawCase)
+    if (source.runtimeId !== runtimeDescriptor?.runtimeId) {
+        throw new Error("Switch to the Raw Case source Runtime before creating its Case Draft")
+    }
+    const datasetId = requireIdentifier(input.datasetId, "dataset")
+    const dataset = store.getDataset(datasetId)
+    if (!sameAutomaticSkill(dataset.skillReference, rawCase.skill)) {
+        throw new Error("The selected dataset is bound to a different Skill")
+    }
+    await requireAvailableDatasetSkill(dataset)
+    requirePublishedDatasetRubric(dataset)
+    const curatorProfile = store.read().settings.curatorProfile
+    const session = await curationManager.createSession({
+        datasetId,
+        caseType: source.caseType,
+        sourceThreadId: source.threadId,
+        startItemId: source.startItemId,
+        startTurnId: source.startTurnId,
+        endItemId: source.endItemId,
+        endTurnId: source.endTurnId,
+        issueDescription: source.reason,
+        traceReference: client?.recorder?.referenceForEpisode({
+            threadId: source.threadId,
+            startItemId: source.startItemId,
+            endItemId: source.endItemId,
+        }) ?? null,
+        modelId: curatorProfile.modelId,
+        effort: curatorProfile.effort,
+    })
+    rawCaseStore.markDispatched(rawCase.id, {
+        mode: "curation",
+        sessionId: session.id,
+    })
+    return session
+}
+
 function installIpc() {
     ipcMain.handle("app:bootstrap", async () => {
         const runtime = client
@@ -2658,6 +2728,7 @@ function installIpc() {
             sourceCurationMarkers: sourceCurationMarkers(),
             curatorProfile: store.read().settings.curatorProfile,
             settings: store.read().settings,
+            automaticCaptureStatus: automaticCaptureManager.status(),
             rawCases: rawCaseStore.list(),
             managedSkills: managedSkillManager.overview(),
             managedSkillStartupError,
@@ -2749,6 +2820,10 @@ function installIpc() {
             },
         ),
     )
+    ipcMain.handle("curation:create-from-raw-case", (_event, input = {}) =>
+        createCurationFromRawCase(input),
+    )
+    ipcMain.handle("automatic-capture:status", () => automaticCaptureManager.status())
 
     ipcMain.handle("skill-repositories:rescan", async () => {
         const overview = await managedSkillManager.rescanAll()
@@ -3179,6 +3254,7 @@ function installIpc() {
     ipcMain.handle("settings:update", (_event, input) => {
         const settings = store.updateSettings(input)
         client?.setExecutionPolicy?.(currentExecutionPolicy())
+        automaticCaptureManager?.reschedule()
         return settings
     })
 
@@ -3509,6 +3585,7 @@ async function shutdownApplication() {
             console.error(`Rolling Skill ${label} shutdown failed`, error)
         }
     }
+    await stage("Automatic capture", () => automaticCaptureManager?.stop())
     await stage("Optimization Runner", () => optimizationRunner?.checkpointAndStop?.())
     await stage("Optimization gateway", () => optimizationOperatorGateway?.cancelAll?.())
     await stage("Operator", () => operatorSessionManager?.stopAll?.())
@@ -3544,6 +3621,10 @@ if (!hasLock) {
         })
         workspaceRoot = locateInitialWorkspace()
         store = new LocalEvaluationStore(join(app.getPath("userData"), "evaluation-store.json"))
+        automaticCaptureStateStore = new AutomaticCaptureStateStore(join(
+            app.getPath("userData"),
+            "automatic-capture-state.json",
+        ))
         managedSkillStore = openManagedSkillStore(
             join(app.getPath("userData"), "skill-registry.json"),
         )
@@ -3552,7 +3633,10 @@ if (!hasLock) {
             store: managedSkillStore,
         })
         rawCaseStore = new RawCaseStore()
-        rawCaseStore.subscribe((rawCases) => send("raw-cases:changed", rawCases))
+        rawCaseStore.subscribe((rawCases) => {
+            send("raw-cases:changed", rawCases)
+            automaticCaptureManager?.emitStatus()
+        })
         caseRecycleService = new CaseRecycleService({store, rawCaseStore})
         activityStore = new ThreadActivityStore(
             join(app.getPath("userData"), "thread-activity-store.json"),
@@ -3561,7 +3645,10 @@ if (!hasLock) {
             store,
             getRuntime: ensureRuntime,
             getRuntimeDescriptor: () => runtimeDescriptor,
-            onChanged: (session) => send("curation:changed", session),
+            onChanged: (session) => {
+                send("curation:changed", session)
+                void automaticCaptureManager?.handleCurationChanged(session)
+            },
             onActivity: (activity) => send("curation:activity", activity),
         })
         caseRefreshManager = new CaseRefreshManager({
@@ -3579,12 +3666,31 @@ if (!hasLock) {
         })
         automaticCaptureManager = new AutomaticCaptureManager({
             store,
+            stateStore: automaticCaptureStateStore,
+            rawCaseStore,
             curationManager,
-            getTraceReference: (episode) => client?.recorder?.referenceForEpisode(episode) ?? null,
-            verifyDatasetSkill: async (dataset) => {
-                await requireAvailableDatasetSkill(dataset)
-                requirePublishedDatasetRubric(dataset)
+            getRuntime: ensureRuntime,
+            getRuntimeDescriptor: () => runtimeDescriptor,
+            listDatasets: () => store.listDatasets(),
+            listSkills: async (runtime) => {
+                if (typeof runtime.listSkills !== "function") return []
+                const response = cachedRuntimeSkills(await runtime.listSkills({forceReload: true}))
+                return (response.data ?? []).flatMap((entry) => entry.skills ?? [])
+                    .filter((skill) => skill.enabled)
             },
+            runAnalysis: async (input) => {
+                const runtime = await ensureRuntime()
+                if (typeof runtime.runEvaluationJudge !== "function") {
+                    throw new Error("The active Runtime cannot run automatic capture analysis")
+                }
+                return runtime.runEvaluationJudge(input)
+            },
+            getHiddenThreadIds: () => new Set([
+                ...curationManager.hiddenThreadIds(),
+                ...rubricManager.hiddenThreadIds(),
+                ...caseRefreshManager.hiddenThreadIds(),
+            ]),
+            onStatus: (status) => send("automatic-capture:status", status),
             onError: (error) => send("runtime:state", {
                 ...enrichRuntimeState(client?.state() ?? {workspaceRoot}),
                 error: `Automatic capture failed: ${error.message}`,
@@ -3636,6 +3742,7 @@ if (!hasLock) {
         installIpc()
         installMenu()
         createWindow()
+        automaticCaptureManager.start()
         void ensureRuntime().catch((error) => {
             send(
                 "runtime:state",

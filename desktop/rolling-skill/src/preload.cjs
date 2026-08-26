@@ -182,6 +182,9 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     deleteRawCase: (id) => ipcRenderer.invoke("raw-cases:delete", id),
     markRawCaseDispatched: (id, threadId, mode) =>
         ipcRenderer.invoke("raw-cases:mark-dispatched", {id, threadId, mode}),
+    createCurationFromRawCase: (rawCaseId, datasetId) =>
+        ipcRenderer.invoke("curation:create-from-raw-case", {rawCaseId, datasetId}),
+    getAutomaticCaptureStatus: () => ipcRenderer.invoke("automatic-capture:status"),
     listManagedSkills: collectManagedSkillOverview,
     rescanManagedSkills: () => ipcRenderer.invoke("skill-repositories:rescan"),
     importManagedSkill: (input) => ipcRenderer.invoke("skill-repositories:import", input),
@@ -270,6 +273,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     onRuntimeQuestion: (listener) => subscribe("runtime:question-requested", listener),
     onRuntimeQuestionResolved: (listener) => subscribe("runtime:question-resolved", listener),
     onRawCasesChanged: (listener) => subscribe("raw-cases:changed", listener),
+    onAutomaticCaptureStatus: (listener) => subscribe("automatic-capture:status", listener),
     onManagedSkillsChanged: (listener) => subscribe("managed-skills:changed", listener),
     onSkillInstallationsChanged: (listener) =>
         subscribe("skill-installations:changed", listener),

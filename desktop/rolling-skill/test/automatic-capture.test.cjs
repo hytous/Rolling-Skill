@@ -7,6 +7,7 @@ const {afterEach, describe, it} = require("node:test")
 const {
     AutomaticCaptureManager,
     ConversationDiscoveryManager,
+    automaticDatasetFor,
 } = require("../src/automatic-capture.cjs")
 const {AutomaticCaptureStateStore} = require("../src/automatic-capture-state-store.cjs")
 
@@ -46,6 +47,8 @@ function fixture({
     runAnalysis = null,
     rawCaseStore = null,
     hidden = new Set(),
+    datasets = null,
+    curationManager = null,
 } = {}) {
     const directory = mkdtempSync(join(tmpdir(), "rolling-skill-discovery-"))
     directories.push(directory)
@@ -74,12 +77,17 @@ function fixture({
         },
     }
     const candidates = []
+    const dispatches = []
     const raw = rawCaseStore ?? {
         addAutomaticCandidate(input) {
             candidates.push(input)
             return {created: true, observed: true, rawCase: {id: `raw-${candidates.length}`, ...input}}
         },
         list: () => candidates,
+        markDispatched(id, dispatch) {
+            dispatches.push({id, dispatch})
+            return {id}
+        },
     }
     const analyses = []
     const analysis = runAnalysis ?? (async (input) => {
@@ -111,7 +119,8 @@ function fixture({
         rawCaseStore: raw,
         getRuntime: async () => activeRuntime,
         getRuntimeDescriptor: () => ({runtimeId: "codex:/opt/codex-a"}),
-        listDatasets: () => [{
+        curationManager,
+        listDatasets: () => datasets ?? [{
             id: "dataset-1",
             name: "Billing",
             skillReference: {name: "billing-cost-management", path: "/skills/billing/SKILL.md"},
@@ -130,6 +139,7 @@ function fixture({
     return {
         analyses,
         candidates,
+        dispatches,
         errors,
         manager,
         raw,
@@ -140,6 +150,41 @@ function fixture({
         statuses,
     }
 }
+
+describe("automatic dataset routing", () => {
+    const candidate = {
+        confidence: 0.92,
+        outcome: "resolved",
+        skill: {
+            id: "skill-billing",
+            name: "billing-cost-management",
+            path: "/skills/billing/SKILL.md",
+        },
+    }
+    const matching = (id) => ({
+        id,
+        skillReference: {
+            id: "skill-billing",
+            name: "billing-cost-management",
+            path: "/skills/billing/SKILL.md",
+        },
+    })
+
+    it("prefers a compatible configured dataset and otherwise accepts one unique match", () => {
+        const datasets = [matching("dataset-1"), matching("dataset-2")]
+
+        assert.equal(automaticDatasetFor(candidate, datasets, "dataset-2")?.id, "dataset-2")
+        assert.equal(automaticDatasetFor(candidate, [matching("dataset-1")], null)?.id, "dataset-1")
+    })
+
+    it("fails closed for low confidence, uncertain, missing, and ambiguous routes", () => {
+        assert.equal(automaticDatasetFor({...candidate, confidence: 0.79}, [matching("dataset-1")]), null)
+        assert.equal(automaticDatasetFor({...candidate, confidence: undefined}, [matching("dataset-1")]), null)
+        assert.equal(automaticDatasetFor({...candidate, outcome: "uncertain"}, [matching("dataset-1")]), null)
+        assert.equal(automaticDatasetFor(candidate, [{id: "other", skillReference: {name: "other"}}]), null)
+        assert.equal(automaticDatasetFor(candidate, [matching("dataset-1"), matching("dataset-2")]), null)
+    })
+})
 
 describe("scheduled conversation discovery manager", () => {
     it("does nothing while capture is off and ignores turn completion notifications", async () => {
@@ -264,5 +309,141 @@ describe("scheduled conversation discovery manager", () => {
 
         assert.equal(timers.length, 0)
         assert.deepEqual(cleared, [])
+    })
+
+    it("creates an automatic Draft only with a published Rubric and archives a valid Draft once", async () => {
+        const created = []
+        const archived = []
+        const curationManager = {
+            async createSession(input) {
+                created.push(input)
+                return {id: "session-1", status: "queued"}
+            },
+            async archive(id) {
+                archived.push(id)
+                return {id: "case-1"}
+            },
+            hiddenThreadIds: () => new Set(),
+        }
+        const value = fixture({
+            mode: "automatic",
+            curationManager,
+            datasets: [{
+                id: "dataset-1",
+                name: "Billing",
+                activeRubricVersionId: "rubric-1",
+                skillReference: {
+                    name: "billing-cost-management",
+                    path: "/skills/billing/SKILL.md",
+                },
+            }],
+        })
+
+        assert.equal(await value.manager.runDueScan(), true)
+        assert.equal(created.length, 1)
+        assert.equal(created[0].datasetId, "dataset-1")
+        assert.equal(created[0].sourceThreadId, "thread-1")
+        assert.equal(created[0].startItemId, "thread-1-user-1")
+        assert.equal(created[0].endItemId, "thread-1-agent-2")
+        assert.deepEqual(value.dispatches, [])
+
+        await value.manager.handleCurationChanged({
+            id: "session-1",
+            status: "needs_review",
+            draft: {schemaVersion: "rolling-skill-curated-case/v1"},
+        })
+        await value.manager.handleCurationChanged({
+            id: "session-1",
+            status: "needs_review",
+            draft: {schemaVersion: "rolling-skill-curated-case/v1"},
+        })
+
+        assert.deepEqual(archived, ["session-1"])
+        assert.deepEqual(value.dispatches, [{
+            id: "raw-1",
+            dispatch: {mode: "automatic", caseId: "case-1"},
+        }])
+    })
+
+    it("retains the Raw Case when the route lacks a Rubric or Draft creation fails", async () => {
+        let creates = 0
+        const missingRubric = fixture({
+            mode: "automatic",
+            curationManager: {
+                async createSession() { creates += 1 },
+                hiddenThreadIds: () => new Set(),
+            },
+            datasets: [{
+                id: "dataset-1",
+                skillReference: {
+                    name: "billing-cost-management",
+                    path: "/skills/billing/SKILL.md",
+                },
+                activeRubricVersionId: null,
+            }],
+        })
+
+        assert.equal(await missingRubric.manager.runDueScan(), true)
+        assert.equal(creates, 0)
+        assert.equal(missingRubric.candidates.length, 1)
+        assert.deepEqual(missingRubric.dispatches, [])
+
+        const failedDraft = fixture({
+            mode: "automatic",
+            curationManager: {
+                async createSession() {
+                    creates += 1
+                    throw new Error("Curator unavailable")
+                },
+                hiddenThreadIds: () => new Set(),
+            },
+            datasets: [{
+                id: "dataset-1",
+                skillReference: {
+                    name: "billing-cost-management",
+                    path: "/skills/billing/SKILL.md",
+                },
+                activeRubricVersionId: "rubric-1",
+            }],
+        })
+
+        assert.equal(await failedDraft.manager.runDueScan(), true)
+        assert.equal(failedDraft.candidates.length, 1)
+        assert.deepEqual(failedDraft.dispatches, [])
+        assert.match(failedDraft.errors.at(-1).message, /Curator unavailable/u)
+    })
+
+    it("marks a Raw Case dispatched only after automatic Case persistence succeeds", async () => {
+        let resolveArchive
+        const archiveResult = new Promise((resolve) => { resolveArchive = resolve })
+        const value = fixture({
+            mode: "automatic",
+            curationManager: {
+                async createSession() { return {id: "session-1", status: "queued"} },
+                archive: () => archiveResult,
+                hiddenThreadIds: () => new Set(),
+            },
+            datasets: [{
+                id: "dataset-1",
+                activeRubricVersionId: "rubric-1",
+                skillReference: {
+                    name: "billing-cost-management",
+                    path: "/skills/billing/SKILL.md",
+                },
+            }],
+        })
+        await value.manager.runDueScan()
+
+        const saving = value.manager.handleCurationChanged({
+            id: "session-1",
+            status: "needs_review",
+            draft: {schemaVersion: "rolling-skill-curated-case/v1"},
+        })
+        await Promise.resolve()
+        assert.deepEqual(value.dispatches, [])
+
+        resolveArchive({id: "case-1"})
+        await saving
+        assert.equal(value.dispatches.length, 1)
     })
 })
