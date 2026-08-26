@@ -1,0 +1,138 @@
+.rolling-skill-workbench {
+    box-sizing: border-box;
+    color: var(--dsw-alias-label-primary);
+    display: grid;
+    gap: 20px;
+    min-width: 0;
+    padding: 4px 0 24px;
+}
+
+.rolling-skill-header {
+    align-items: flex-start;
+    display: flex;
+    gap: 16px;
+    justify-content: space-between;
+}
+
+.rolling-skill-header h2,
+.rolling-skill-panel h3 {
+    margin: 0;
+}
+
+.rolling-skill-header p,
+.rolling-skill-panel p {
+    color: var(--dsw-alias-label-secondary);
+    margin: 6px 0 0;
+}
+
+.rolling-skill-tabs {
+    align-items: center;
+    border-bottom: 1px solid var(--dsw-alias-border-l2);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding-bottom: 10px;
+}
+
+.rolling-skill-counts {
+    display: grid;
+    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.rolling-skill-count,
+.rolling-skill-panel,
+.rolling-skill-state {
+    background: var(--dsw-alias-bg-layer-2);
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: 10px;
+}
+
+.rolling-skill-count {
+    display: grid;
+    gap: 4px;
+    padding: 14px;
+}
+
+.rolling-skill-count strong {
+    font-size: 22px;
+    line-height: 28px;
+}
+
+.rolling-skill-count span,
+.rolling-skill-panel dt {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+}
+
+.rolling-skill-overview {
+    display: grid;
+    gap: 12px;
+}
+
+.rolling-skill-grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.rolling-skill-panel,
+.rolling-skill-state {
+    min-width: 0;
+    padding: 16px;
+}
+
+.rolling-skill-panel dl {
+    display: grid;
+    gap: 10px;
+    margin: 14px 0 0;
+}
+
+.rolling-skill-panel dl > div {
+    align-items: baseline;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+}
+
+.rolling-skill-panel dd {
+    margin: 0;
+    max-width: 68%;
+    overflow-wrap: anywhere;
+    text-align: right;
+}
+
+.rolling-skill-runtime,
+.rolling-skill-state {
+    display: grid;
+    gap: 8px;
+}
+
+.rolling-skill-runtime {
+    margin-top: 14px;
+}
+
+.rolling-skill-runtime code,
+.rolling-skill-path code {
+    color: var(--dsw-alias-label-secondary);
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.rolling-skill-path code {
+    display: block;
+    margin-top: 10px;
+}
+
+.rolling-skill-error {
+    border-color: var(--dsw-alias-state-error-primary);
+    color: var(--dsw-alias-label-error);
+}
+
+@media (max-width: 640px) {
+    .rolling-skill-header {
+        align-items: stretch;
+        flex-direction: column;
+    }
+}

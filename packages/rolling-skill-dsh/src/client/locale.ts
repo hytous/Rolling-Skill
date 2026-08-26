@@ -1,0 +1,71 @@
+export const LOCALE_NAMESPACE = "rolling-skill"
+
+export const zh = {
+    nav: "Rolling Skill",
+    title: "Rolling Skill 工作台",
+    subtitle: "持续沉淀、更新并评测真实 Case",
+    refresh: "刷新",
+    loading: "正在读取 Rolling Skill 数据…",
+    loadError: "无法读取 Rolling Skill 数据",
+    retry: "重试",
+    overview: "概览",
+    cases: "Case 与数据集",
+    skills: "Skill 管理",
+    evaluations: "Skill 评测",
+    automatic: "自动沉淀",
+    operator: "自操作与优化",
+    settings: "插件设置",
+    datasetsCount: "数据集",
+    casesCount: "Case",
+    rawCasesCount: "Raw Case",
+    evaluationsCount: "评测运行",
+    managedSkillsCount: "Managed Skill",
+    automaticStatus: "自动沉淀状态",
+    nextRun: "下次运行",
+    lastSuccess: "上次成功",
+    lastError: "上次错误",
+    notAvailable: "—",
+    noError: "无",
+    runtime: "目标 Runtime",
+    noRuntime: "尚未选择 Runtime",
+    dataDirectory: "数据目录",
+    comingSoon: "此模块将在接下来的插件化步骤中接入共享 Core。",
+} as const
+
+export type TranslationKey = keyof typeof zh
+
+export const en: Record<TranslationKey, string> = {
+    nav: "Rolling Skill",
+    title: "Rolling Skill Workbench",
+    subtitle: "Continuously curate, refresh, and evaluate real Cases",
+    refresh: "Refresh",
+    loading: "Loading Rolling Skill data…",
+    loadError: "Could not load Rolling Skill data",
+    retry: "Retry",
+    overview: "Overview",
+    cases: "Cases & Datasets",
+    skills: "Skill Management",
+    evaluations: "Skill Evaluations",
+    automatic: "Automatic Capture",
+    operator: "Operator & Optimization",
+    settings: "Plugin Settings",
+    datasetsCount: "Datasets",
+    casesCount: "Cases",
+    rawCasesCount: "Raw Cases",
+    evaluationsCount: "Evaluation Runs",
+    managedSkillsCount: "Managed Skills",
+    automaticStatus: "Automatic Capture Status",
+    nextRun: "Next Run",
+    lastSuccess: "Last Success",
+    lastError: "Last Error",
+    notAvailable: "—",
+    noError: "None",
+    runtime: "Target Runtime",
+    noRuntime: "No Runtime selected",
+    dataDirectory: "Data Directory",
+    comingSoon: "This module will connect to the shared Core in the next pluginization steps.",
+}
+
+export const DICTIONARIES = {zh, en}
+
+export type Translate = (key: TranslationKey) => string
