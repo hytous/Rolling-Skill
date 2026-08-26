@@ -3,6 +3,8 @@ import {useEffect, useState} from "react"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
+import {RuntimeSelect} from "./RuntimeSelect"
+import type {RuntimeDescriptor} from "./RuntimeSelect"
 
 interface Dataset {id: string; name: string}
 interface CaseEntry {
@@ -16,6 +18,8 @@ interface CasePage {items: CaseEntry[]; total: number}
 
 export function CasesPanel({t, revision, onChanged}: {t: Translate; revision: number; onChanged: () => void}) {
     const [datasets, setDatasets] = useState<Dataset[]>([])
+    const [runtimes, setRuntimes] = useState<RuntimeDescriptor[]>([])
+    const [runtimeId, setRuntimeId] = useState("")
     const [datasetId, setDatasetId] = useState("")
     const [entries, setEntries] = useState<CaseEntry[]>([])
     const [deleting, setDeleting] = useState<CaseEntry | null>(null)
@@ -25,9 +29,13 @@ export function CasesPanel({t, revision, onChanged}: {t: Translate; revision: nu
 
     useEffect(() => {
         const controller = new AbortController()
-        requestRollingSkill<Dataset[]>("datasets.list", {}, controller.signal)
-            .then((value) => {
+        Promise.all([
+            requestRollingSkill<Dataset[]>("datasets.list", {}, controller.signal),
+            requestRollingSkill<RuntimeDescriptor[]>("runtimes.list", {}, controller.signal),
+        ]).then(([value, runtimeItems]) => {
                 setDatasets(value)
+                setRuntimes(runtimeItems)
+                setRuntimeId((current) => current || runtimeItems[0]?.runtimeId || "")
                 setDatasetId((current) => current && value.some((entry) => entry.id === current)
                     ? current
                     : value[0]?.id ?? "")
@@ -69,11 +77,13 @@ export function CasesPanel({t, revision, onChanged}: {t: Translate; revision: nu
         caseId: entry.id,
         expectedUpdatedAt: entry.updatedAt,
         idempotencyKey: crypto.randomUUID(),
+        runtimeId,
     }))
     const refreshBatch = (scope: "goodcase" | "all") => mutate(() => requestRollingSkill("cases.refreshBatch", {
         datasetId,
         scope,
         idempotencyKey: crypto.randomUUID(),
+        runtimeId,
     }))
     const remove = () => {
         const entry = deleting
@@ -102,6 +112,7 @@ export function CasesPanel({t, revision, onChanged}: {t: Translate; revision: nu
             <select className="rolling-skill-select" aria-label={t("selectDataset")} value={datasetId} onChange={(event) => setDatasetId(event.target.value)}>
                 {datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
             </select>
+            <RuntimeSelect t={t} runtimes={runtimes} value={runtimeId} onChange={setRuntimeId} label={t("refreshRuntime")}/>
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
             <div className="rolling-skill-list">
                 {entries.map((entry) => (

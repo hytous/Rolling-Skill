@@ -65,4 +65,22 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(workbench, /<CasesPanel/u)
         assert.match(workbench, /<RawCasesPanel/u)
     })
+
+    it("reuses a full-identity Runtime row for Case refresh and evaluations", () => {
+        const runtime = source("workbench/RuntimeSelect.tsx")
+        const evaluations = source("workbench/EvaluationsPanel.tsx")
+        const cases = source("workbench/CasesPanel.tsx")
+        const workbench = source("workbench/Workbench.tsx")
+
+        assert.match(runtime, /displayName/u)
+        assert.match(runtime, /version/u)
+        assert.match(runtime, /executablePath/u)
+        assert.match(evaluations, /runtimes\.list/u)
+        assert.match(evaluations, /runtimes\.models/u)
+        assert.match(evaluations, /evaluations\.start/u)
+        assert.match(evaluations, /evaluations\.cancel/u)
+        assert.match(evaluations, /<RuntimeSelect/u)
+        assert.match(cases, /<RuntimeSelect/u)
+        assert.match(workbench, /<EvaluationsPanel/u)
+    })
 })

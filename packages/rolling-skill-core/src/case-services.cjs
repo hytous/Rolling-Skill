@@ -124,7 +124,11 @@ function createCaseServices({store, rawCaseStore, recycleService, refreshManager
             const caseId = requiredText(input.caseId, "Case id", 200)
             const entry = currentCase(store, datasetId, caseId)
             assertExpected(entry.updatedAt, input.expectedUpdatedAt, "Case")
-            return requireRefreshManager().createSession({datasetId, caseId})
+            return requireRefreshManager().createSession({
+                datasetId,
+                caseId,
+                runtimeId: optionalRuntimeId(input.runtimeId),
+            })
         }),
         "cases.refreshBatch": (input) => once("cases.refreshBatch", input, async () => {
             const datasetId = requiredText(input.datasetId, "Dataset id", 200)
@@ -154,6 +158,7 @@ function createCaseServices({store, rawCaseStore, recycleService, refreshManager
                 sessions.push(await requireRefreshManager().createSession({
                     datasetId,
                     caseId: entry.id,
+                    runtimeId: optionalRuntimeId(input.runtimeId),
                 }))
             }
             return {scope, eligibleCount: eligible.length, skipped, sessions}
@@ -211,6 +216,12 @@ function createCaseServices({store, rawCaseStore, recycleService, refreshManager
     }
 
     return Object.freeze({dispatch, methods: Object.freeze(methods), mutations: MUTATIONS})
+}
+
+function optionalRuntimeId(value) {
+    return value === undefined || value === null || value === ""
+        ? null
+        : requiredText(value, "Runtime id", 500)
 }
 
 module.exports = {createCaseServices}

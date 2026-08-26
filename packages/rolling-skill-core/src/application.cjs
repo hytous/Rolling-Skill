@@ -1,4 +1,5 @@
 const {Buffer} = require("node:buffer")
+const {join} = require("node:path")
 
 const {
     AutomaticCaptureStateStore,
@@ -15,9 +16,23 @@ const {
 const {
     CaseRecycleService,
 } = require("../../../desktop/rolling-skill/src/case-recycle-service.cjs")
+const {
+    CaseRefreshManager,
+} = require("../../../desktop/rolling-skill/src/case-refresh-manager.cjs")
+const {
+    CurationManager,
+} = require("../../../desktop/rolling-skill/src/curation-manager.cjs")
+const {
+    EvaluationRunner,
+} = require("../../../desktop/rolling-skill/src/evaluation-runner.cjs")
+const {
+    resolveExecutionPolicy,
+} = require("../../../desktop/rolling-skill/src/execution-policy.cjs")
 const {createCaseServices} = require("./case-services.cjs")
 const {RollingSkillConfigStore} = require("./config-store.cjs")
 const {ensureDataLayout, resolveDataPaths} = require("./data-root.cjs")
+const {createEvaluationServices} = require("./evaluation-services.cjs")
+const {createRuntimeServices} = require("./runtime-services.cjs")
 
 const MAX_DISPATCH_BYTES = 1024 * 1024
 
@@ -102,12 +117,60 @@ function createRollingSkillApplication(options = {}) {
     )
     const managedSkillStore = new ManagedSkillStore(paths.managedSkillRegistry)
     const configStore = new RollingSkillConfigStore(paths.config)
+    const workspaceRoot = options.workspaceRoot ?? process.cwd()
+    const runtimeServices = createRuntimeServices({
+        registry: options.runtimeRegistry,
+        configStore,
+        workspaceRoot,
+        traceDirectory: paths.traces,
+    })
+    const refreshManager = options.caseRefreshManager ?? {
+        async createSession({runtimeId, datasetId, caseId}) {
+            const selectedRuntimeId = runtimeId ?? configStore.read().runtime?.runtimeId
+            if (!selectedRuntimeId) throw new Error("Select a Runtime before refreshing Cases")
+            const descriptor = runtimeServices.descriptor(selectedRuntimeId)
+            const getRuntime = () => runtimeServices.getClient(selectedRuntimeId, {
+                nonInteractive: false,
+            })
+            const curationManager = new CurationManager({
+                store,
+                getRuntime,
+                getRuntimeDescriptor: () => descriptor,
+                onChanged: () => publish(),
+            })
+            const manager = new CaseRefreshManager({
+                store,
+                curationManager,
+                getRuntime,
+                getRuntimeDescriptor: () => descriptor,
+            })
+            return manager.createSession({datasetId, caseId})
+        },
+    }
     const recycleService = new CaseRecycleService({store, rawCaseStore})
     const caseServices = createCaseServices({
         store,
         rawCaseStore,
         recycleService,
-        refreshManager: options.caseRefreshManager ?? null,
+        refreshManager,
+    })
+    const evaluationRunner = options.evaluationRunner ?? new EvaluationRunner({
+        store,
+        runtimeRegistry: {
+            createClient: (descriptor, clientOptions) =>
+                runtimeServices.createClient(descriptor.runtimeId, clientOptions),
+        },
+        workspaceRoot,
+        traceDirectory: join(paths.traces, "evaluations"),
+        getExecutionPolicy: () => resolveExecutionPolicy(store.read().settings),
+        onChanged: () => publish(),
+    })
+    const evaluationServices = createEvaluationServices({
+        store,
+        runtimeServices,
+        runner: evaluationRunner,
+        onChanged: () => publish(),
+        ...(options.snapshotSkill ? {snapshotSkill: options.snapshotSkill} : {}),
     })
     const subscribers = new Set()
     let closed = false
@@ -153,14 +216,20 @@ function createRollingSkillApplication(options = {}) {
         }),
         "rawCases.list": () => rawCaseStore.list(),
         "rawCases.add": (input) => rawCaseStore.add(input),
-        "evaluations.list": ({datasetId = null}) =>
-            store.listEvaluationRunSummaries(datasetId),
         "settings.get": () => settingsSnapshot(),
         "settings.update": ({rollingSkill = {}, plugin = {}}) => {
             if (Object.keys(rollingSkill).length > 0) store.updateSettings(rollingSkill)
             if (Object.keys(plugin).length > 0) configStore.update(plugin)
             return settingsSnapshot()
         },
+        "runtimes.list": ({force = false}) => force
+            ? runtimeServices.refresh()
+            : runtimeServices.list(),
+        "runtimes.models": ({runtimeId}) => runtimeServices.models(runtimeId),
+        "evaluations.start": (input) => evaluationServices.start(input),
+        "evaluations.list": (input) => evaluationServices.list(input),
+        "evaluations.get": (input) => evaluationServices.get(input),
+        "evaluations.cancel": (input) => evaluationServices.cancel(input),
         ...caseServices.methods,
     }
     const mutations = new Set([
@@ -168,6 +237,8 @@ function createRollingSkillApplication(options = {}) {
         "rawCases.add",
         "rawCases.update",
         "settings.update",
+        "evaluations.start",
+        "evaluations.cancel",
         ...caseServices.mutations,
     ])
 
@@ -210,6 +281,8 @@ function createRollingSkillApplication(options = {}) {
         closed = true
         subscribers.clear()
         rawCaseStore.close()
+        await evaluationRunner.stopAll?.()
+        await runtimeServices.close()
     }
 
     return Object.freeze({close, dispatch, snapshot, subscribe})

@@ -41,4 +41,11 @@ describe("Rolling Skill DSH package manifest", () => {
         assert.equal(worker.match(/^#!.*$/gmu)?.length, 1)
         assert.match(worker, /^#!\/usr\/bin\/env node\n/u)
     })
+
+    it("keeps generated bundle lines free of trailing whitespace", () => {
+        for (const filename of ["index.js", "client.js", "worker.cjs"]) {
+            const bundle = readFileSync(join(packageRoot, "lib", filename), "utf8")
+            assert.doesNotMatch(bundle, /[ \t]+$/mu, `${filename} contains trailing whitespace`)
+        }
+    })
 })

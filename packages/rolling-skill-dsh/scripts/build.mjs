@@ -1,4 +1,4 @@
-import {chmod, mkdir, rm} from "node:fs/promises"
+import {chmod, mkdir, readFile, rm, writeFile} from "node:fs/promises"
 import {dirname, join} from "node:path"
 import {fileURLToPath} from "node:url"
 
@@ -33,6 +33,7 @@ await build({
     target: "node22",
     logLevel: "warning",
 })
+
 await chmod(join(outputRoot, "worker.cjs"), 0o755)
 
 await build({
@@ -51,3 +52,9 @@ await build({
     loader: {".css": "text"},
     logLevel: "warning",
 })
+
+for (const filename of ["index.js", "client.js", "worker.cjs"]) {
+    const path = join(outputRoot, filename)
+    const source = await readFile(path, "utf8")
+    await writeFile(path, source.replace(/[ \t]+$/gmu, ""), "utf8")
+}

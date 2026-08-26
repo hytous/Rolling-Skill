@@ -5,6 +5,7 @@ import {requestRollingSkill} from "../api"
 import type {Translate, TranslationKey} from "../locale"
 import {CasesPanel} from "./CasesPanel"
 import {DatasetsPanel} from "./DatasetsPanel"
+import {EvaluationsPanel} from "./EvaluationsPanel"
 import {RawCasesPanel} from "./RawCasesPanel"
 
 interface DashboardSnapshot {
@@ -132,6 +133,8 @@ export function Workbench({locale, t}: WorkbenchProps) {
                     <CasesPanel t={t} revision={dataRevision} onChanged={() => setDataRevision((value) => value + 1)}/>
                     <RawCasesPanel t={t} revision={dataRevision} onChanged={() => setDataRevision((value) => value + 1)}/>
                 </div>
+            ) : activeTab === "evaluations" ? (
+                <EvaluationsPanel t={t}/>
             ) : activeTab !== "overview" ? (
                 <div className="rolling-skill-panel">
                     <h3>{t(TABS.find((tab) => tab.id === activeTab)?.label ?? "overview")}</h3>
