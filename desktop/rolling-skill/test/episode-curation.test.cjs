@@ -292,6 +292,29 @@ describe("episode curation evidence", () => {
         assert.match(formatted, /mcp-1/)
     })
 
+    it("treats a refresh baseline as historical guidance and the replay question as immutable", () => {
+        const episode = buildEpisodeSnapshot(sourceThread(), {
+            startItemId: "user-1",
+            endItemId: "agent-2",
+        })
+        const prompt = buildCuratorPrompt({
+            episode,
+            caseType: "goodcase",
+            operation: "refresh",
+            refreshBaseline: {
+                question: episode.originalQuestion,
+                answer: "历史值 100 CNY",
+                curated: goodDraft(),
+            },
+        })
+
+        assert.match(prompt, /historical[\s\S]*not current truth/iu)
+        assert.match(prompt, /new replay episode/iu)
+        assert.match(prompt, /immutable evaluation question/iu)
+        assert.match(prompt, /历史值 100 CNY/u)
+        assert.match(prompt, new RegExp(episode.originalQuestion, "u"))
+    })
+
     it("rejects badcase drafts without an explicit failure analysis", () => {
         assert.throws(
             () => parseCuratorDraft(JSON.stringify(goodDraft()), {caseType: "badcase"}),

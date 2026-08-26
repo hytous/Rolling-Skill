@@ -272,6 +272,30 @@ class CurationManager {
         }
     }
 
+    async createRefreshSession(input) {
+        const releaseDataset = this.store.reserveDataset(input.datasetId)
+        try {
+            const runtimeDescriptor = this.getRuntimeDescriptor()
+            const session = this.store.createCaseRefreshSession({
+                datasetId: input.datasetId,
+                caseId: input.caseId,
+                episode: input.episode,
+                curator: {
+                    runtimeId: runtimeDescriptor?.runtimeId ?? null,
+                    modelProvider: runtimeDescriptor?.providerId ?? null,
+                    modelId: input.modelId ?? null,
+                    effort: input.effort ?? null,
+                    promptVersion: CURATOR_PROMPT_VERSION,
+                },
+            })
+            this.emitChanged(session)
+            this.queue(session.id, () => this.startInitialTurn(session.id))
+            return session
+        } finally {
+            releaseDataset()
+        }
+    }
+
     async startInitialTurn(sessionId) {
         try {
             let session = this.store.getCurationSession(sessionId)
@@ -315,7 +339,9 @@ class CurationManager {
             })
             const kickoff = session.operation === "calibration"
                 ? `Calibrate the existing ${session.caseType} Case against dataset rubric v${session.rubricVersionSnapshot?.version ?? "current"}. The immutable evaluation question is:\n\n${session.episode.originalQuestion}`
-                : `Curate this ${session.caseType} episode. The immutable evaluation question is:\n\n${session.episode.originalQuestion}${session.issueDescription ? `\n\nThe reviewer described this issue in the captured agent answer:\n\n${session.issueDescription}` : ""}`
+                : session.operation === "refresh"
+                  ? `Review this refreshed ${session.caseType} Case using the new replay evidence. The immutable evaluation question is:\n\n${session.episode.originalQuestion}`
+                  : `Curate this ${session.caseType} episode. The immutable evaluation question is:\n\n${session.episode.originalQuestion}${session.issueDescription ? `\n\nThe reviewer described this issue in the captured agent answer:\n\n${session.issueDescription}` : ""}`
             session = this.store.appendCurationMessage(sessionId, {role: "user", text: kickoff})
             this.emitChanged(session)
             const prompt = buildCuratorPrompt({
@@ -325,7 +351,11 @@ class CurationManager {
                 modelId: session.curator.modelId,
                 skillReference: session.skillReference,
                 rubricVersion: session.rubricVersionSnapshot,
-                calibrationBaseline: session.baselineCaseSnapshot,
+                operation: session.operation,
+                calibrationBaseline:
+                    session.operation === "calibration" ? session.baselineCaseSnapshot : null,
+                refreshBaseline:
+                    session.operation === "refresh" ? session.baselineCaseSnapshot : null,
             })
             const turnInput = session.skillReference
                 ? [

@@ -350,6 +350,46 @@ describe("curation manager", () => {
         assert.equal(store.listCases(datasetId).length, 1)
     })
 
+    it("starts a refresh Draft from new replay evidence and a historical Case baseline", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const sourceSession = store.createCurationSession({
+            datasetId,
+            caseType: "goodcase",
+            episode: buildEpisodeSnapshot(sourceThread(), {endItemId: "answer-1"}),
+            curator: {},
+        })
+        store.recordCurationRevision(sourceSession.id, {
+            draft: validDraft("Historical saved summary."),
+            assistantText: "original curation",
+        })
+        const saved = store.archiveCurationSession(sourceSession.id)
+        const replayThread = sourceThread()
+        replayThread.id = "refresh-replay-thread"
+        replayThread.turns[0].items.at(-1).text = "current result"
+        const replayEpisode = buildEpisodeSnapshot(replayThread, {
+            endItemId: "answer-1",
+            runtimeId: "codex-alpha",
+        })
+
+        const session = await manager.createRefreshSession({
+            datasetId,
+            caseId: saved.id,
+            episode: replayEpisode,
+            modelId: "gpt-5.6-sol",
+            effort: "high",
+        })
+        await manager.waitForIdle(session.id)
+
+        const persisted = store.getCurationSession(session.id)
+        const prompt = runtime.startedTurns.at(-1).text.at(-1).text
+        assert.equal(persisted.operation, "refresh")
+        assert.equal(persisted.targetCaseId, saved.id)
+        assert.equal(persisted.episode.source.threadId, "refresh-replay-thread")
+        assert.match(prompt, /historical[\s\S]*not current truth/iu)
+        assert.match(prompt, /Historical saved summary\./u)
+        assert.match(prompt, /immutable evaluation question/iu)
+    })
+
     it("drops high-frequency response deltas before copying the frozen calibration session", async () => {
         const datasetId = store.listDatasets()[0].id
         const sourceSession = store.createCurationSession({
