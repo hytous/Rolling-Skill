@@ -55,8 +55,27 @@ const translations = {
         rubricModel: "Default Rubric Agent model",
         judgeModel: "Default Judge model",
         automaticCapture: "Automatic capture",
-        automaticCaptureHelp: "Create a reviewable draft after each completed response. Nothing is saved until Done.",
-        captureModel: "Capture Curator model",
+        automaticCaptureHelp: "Scan new conversations on a daily or weekly schedule. Scheduled mode keeps candidates in Raw Cases; fully automatic mode saves only candidates that pass every gate.",
+        captureMode: "Mode",
+        autoCaptureModeOff: "Off",
+        autoCaptureScheduled: "Scheduled · keep in Raw Cases",
+        autoCaptureAutomatic: "Fully automatic · save gated Cases",
+        captureModel: "Analysis model",
+        captureCadence: "Cadence",
+        captureDaily: "Daily",
+        captureWeekly: "Weekly",
+        captureTime: "Local time",
+        captureWeekday: "Weekday",
+        weekdayMonday: "Monday",
+        weekdayTuesday: "Tuesday",
+        weekdayWednesday: "Wednesday",
+        weekdayThursday: "Thursday",
+        weekdayFriday: "Friday",
+        weekdaySaturday: "Saturday",
+        weekdaySunday: "Sunday",
+        preferredDataset: "Preferred dataset",
+        preferredDatasetHelp: "Used only when its Skill matches. Leave automatic routing selected to require one unambiguous dataset.",
+        automaticDatasetRouting: "Route automatically",
         selectSkill: "Select an enabled Skill",
         unavailableSkill: "Previously selected Skill is unavailable",
         datasetSkill: "Dataset Skill",
@@ -147,7 +166,12 @@ const translations = {
         discardDraftHelp: "The Curator task will be stopped and archived. No case will be saved.",
         discard: "Discard",
         autoCaptureOff: "Automatic capture is off",
-        autoCaptureOn: "Automatic capture is on",
+        autoCaptureRunning: "Scanning new conversations…",
+        autoCapturePending: "{count} candidates waiting in Raw Cases",
+        autoCaptureNextRun: "Next scan {time}",
+        autoCaptureError: "Capture needs attention: {message}",
+        autoCaptureLastSuccess: "Last successful scan {time}",
+        autoCaptureNeverRun: "No successful scan yet",
         runtimeDefault: "Runtime default",
         sourceOrRuntimeModel: "Source / runtime model",
         model: "Model",
@@ -765,8 +789,27 @@ const translations = {
         rubricModel: "Rubric Agent 默认模型",
         judgeModel: "Judge 默认模型",
         automaticCapture: "自动沉淀",
-        automaticCaptureHelp: "每次回答完成后自动创建待审核草稿；只有点击 Done 才会保存 Case。",
-        captureModel: "自动沉淀 Curator 模型",
+        automaticCaptureHelp: "每天或每周定时扫描新对话。定时发现只保留到 Raw Case；完全自动仅保存通过全部闸门的候选。",
+        captureMode: "模式",
+        autoCaptureModeOff: "关闭",
+        autoCaptureScheduled: "定时发现 · 保留到 Raw Case",
+        autoCaptureAutomatic: "完全自动 · 仅保存通过闸门的 Case",
+        captureModel: "分析模型",
+        captureCadence: "频率",
+        captureDaily: "每天",
+        captureWeekly: "每周",
+        captureTime: "本地时间",
+        captureWeekday: "星期",
+        weekdayMonday: "星期一",
+        weekdayTuesday: "星期二",
+        weekdayWednesday: "星期三",
+        weekdayThursday: "星期四",
+        weekdayFriday: "星期五",
+        weekdaySaturday: "星期六",
+        weekdaySunday: "星期日",
+        preferredDataset: "首选数据集",
+        preferredDatasetHelp: "仅在 Skill 匹配时使用；选择自动路由时，必须只有一个无歧义数据集才会自动保存。",
+        automaticDatasetRouting: "自动路由",
         selectSkill: "请选择一个已启用的 Skill",
         unavailableSkill: "之前选择的 Skill 当前不可用",
         datasetSkill: "数据集绑定的 Skill",
@@ -857,7 +900,12 @@ const translations = {
         discardDraftHelp: "Curator 任务会停止并归档，不会保存任何 Case。",
         discard: "丢弃",
         autoCaptureOff: "自动沉淀已关闭",
-        autoCaptureOn: "自动沉淀已开启",
+        autoCaptureRunning: "正在扫描新对话…",
+        autoCapturePending: "Raw Case 中有 {count} 个候选待处理",
+        autoCaptureNextRun: "下次扫描 {time}",
+        autoCaptureError: "自动沉淀需要处理：{message}",
+        autoCaptureLastSuccess: "上次成功扫描 {time}",
+        autoCaptureNeverRun: "尚未成功扫描",
         runtimeDefault: "运行时默认模型",
         sourceOrRuntimeModel: "沿用来源 / 运行时模型",
         model: "模型",
@@ -1467,6 +1515,14 @@ const state = {
     rawCaseEditingId: null,
     rawCaseDispatchingIds: new Set(),
     curatorProfile: {runtimePolicy: "active", modelId: null},
+    automaticCaptureStatus: {
+        mode: "off",
+        nextRunAt: null,
+        running: false,
+        pendingCount: 0,
+        lastSuccessAt: null,
+        error: null,
+    },
     settings: {
         autoCapture: false,
         language: "zh-CN",
@@ -1478,10 +1534,11 @@ const state = {
         judgeProfile: {runtimePolicy: "active", modelId: null, effort: null},
         autoCaptureProfile: {
             runtimePolicy: "active",
+            mode: "off",
+            schedule: {cadence: "daily", time: "09:00", weekday: 1},
             modelId: null,
             effort: null,
             datasetId: null,
-            caseType: "goodcase",
         },
     },
     models: [],
@@ -1714,11 +1771,18 @@ const elements = {
     settingsRubricEffort: document.querySelector("#settings-rubric-effort"),
     settingsJudgeModel: document.querySelector("#settings-judge-model"),
     settingsJudgeEffort: document.querySelector("#settings-judge-effort"),
-    settingsAutoCapture: document.querySelector("#settings-auto-capture"),
+    settingsAutoCaptureMode: document.querySelector("#settings-auto-capture-mode"),
+    settingsAutoCaptureSchedule: document.querySelector("#settings-auto-capture-schedule"),
+    settingsAutoCaptureCadence: document.querySelector("#settings-auto-capture-cadence"),
+    settingsAutoCaptureTime: document.querySelector("#settings-auto-capture-time"),
+    settingsAutoCaptureWeekday: document.querySelector("#settings-auto-capture-weekday"),
+    settingsAutoCaptureWeekdayField: document.querySelector("#settings-auto-capture-weekday-field"),
     settingsAutoCaptureModel: document.querySelector("#settings-auto-capture-model"),
     settingsAutoCaptureEffort: document.querySelector("#settings-auto-capture-effort"),
     settingsAutoCaptureDataset: document.querySelector("#settings-auto-capture-dataset"),
-    settingsAutoCaptureCaseType: document.querySelector("#settings-auto-capture-case-type"),
+    settingsAutoCaptureDatasetField: document.querySelector("#settings-auto-capture-dataset-field"),
+    settingsAutoCaptureStatus: document.querySelector("#settings-auto-capture-status"),
+    settingsAutoCaptureLastSuccess: document.querySelector("#settings-auto-capture-last-success"),
     discardDialog: document.querySelector("#discard-curation-dialog"),
     closeDiscardDialog: document.querySelector("#close-discard-dialog"),
     cancelDiscard: document.querySelector("#cancel-discard"),
@@ -2035,10 +2099,54 @@ function populateEffortSelect(
     select.dataset.effortSignature = signature
 }
 
+function formatCaptureDate(value) {
+    const date = value ? new Date(value) : null
+    if (!date || !Number.isFinite(date.getTime())) return null
+    return new Intl.DateTimeFormat(
+        state.settings.language === "en" ? "en-US" : "zh-CN",
+        {dateStyle: "medium", timeStyle: "short"},
+    ).format(date)
+}
+
+function captureStatusMessage(status = state.automaticCaptureStatus) {
+    if (status.error) return formatMessage("autoCaptureError", {message: status.error})
+    if (status.running) return t("autoCaptureRunning")
+    if (Number(status.pendingCount) > 0) {
+        return formatMessage("autoCapturePending", {count: status.pendingCount})
+    }
+    const nextRun = formatCaptureDate(status.nextRunAt)
+    if (status.mode !== "off" && nextRun) {
+        return formatMessage("autoCaptureNextRun", {time: nextRun})
+    }
+    return t("autoCaptureOff")
+}
+
 function renderCaptureStatus() {
-    const enabled = Boolean(state.settings.autoCapture)
-    elements.captureStatus.textContent = t(enabled ? "autoCaptureOn" : "autoCaptureOff")
-    elements.captureStatus.closest(".capture-note")?.classList.toggle("active", enabled)
+    const status = state.automaticCaptureStatus
+    const text = captureStatusMessage(status)
+    elements.captureStatus.textContent = text
+    const note = elements.captureStatus.closest(".capture-note")
+    note?.classList.toggle(
+        "active",
+        status.mode !== "off" || status.running || Number(status.pendingCount) > 0,
+    )
+    note?.classList.toggle("running", Boolean(status.running))
+    note?.classList.toggle("error", Boolean(status.error))
+    if (elements.settingsAutoCaptureStatus) {
+        elements.settingsAutoCaptureStatus.textContent = text
+        const settingsStatus = elements.settingsAutoCaptureStatus.closest(
+            ".automatic-capture-status",
+        )
+        settingsStatus?.classList.toggle("active", status.mode !== "off")
+        settingsStatus?.classList.toggle("running", Boolean(status.running))
+        settingsStatus?.classList.toggle("error", Boolean(status.error))
+    }
+    if (elements.settingsAutoCaptureLastSuccess) {
+        const lastSuccess = formatCaptureDate(status.lastSuccessAt)
+        elements.settingsAutoCaptureLastSuccess.textContent = lastSuccess
+            ? formatMessage("autoCaptureLastSuccess", {time: lastSuccess})
+            : t("autoCaptureNeverRun")
+    }
 }
 
 function applySettings(settings) {
@@ -2056,9 +2164,21 @@ function applySettings(settings) {
             effort: settings.judgeProfile?.effort ?? null,
         },
         autoCaptureProfile: {
-            ...settings.autoCaptureProfile,
+            runtimePolicy: "active",
+            mode: settings.autoCaptureProfile?.mode ?? (settings.autoCapture ? "scheduled" : "off"),
+            schedule: {
+                cadence: settings.autoCaptureProfile?.schedule?.cadence ?? "daily",
+                time: settings.autoCaptureProfile?.schedule?.time ?? "09:00",
+                weekday: settings.autoCaptureProfile?.schedule?.weekday ?? 1,
+            },
+            modelId: settings.autoCaptureProfile?.modelId ?? null,
             effort: settings.autoCaptureProfile?.effort ?? null,
+            datasetId: settings.autoCaptureProfile?.datasetId ?? null,
         },
+    }
+    state.automaticCaptureStatus = {
+        ...state.automaticCaptureStatus,
+        mode: state.settings.autoCaptureProfile.mode,
     }
     state.curatorProfile = settings.curatorProfile
     document.documentElement.dataset.theme = settings.theme
@@ -2228,6 +2348,21 @@ function renderCaseDatasetSkillStatus() {
     }
 }
 
+function renderAutomaticCaptureSettingsVisibility() {
+    const mode = elements.settingsAutoCaptureMode.value
+    const captureOff = mode === "off"
+    const weekly = elements.settingsAutoCaptureCadence.value === "weekly"
+    elements.settingsAutoCaptureSchedule.classList.toggle("hidden", captureOff)
+    for (const control of [
+        elements.settingsAutoCaptureCadence,
+        elements.settingsAutoCaptureTime,
+    ]) control.disabled = captureOff
+    elements.settingsAutoCaptureWeekdayField.classList.toggle("hidden", captureOff || !weekly)
+    elements.settingsAutoCaptureWeekday.disabled = captureOff || !weekly
+    elements.settingsAutoCaptureDatasetField.classList.toggle("hidden", mode !== "automatic")
+    elements.settingsAutoCaptureDataset.disabled = mode !== "automatic"
+}
+
 function renderSettingsForm() {
     const settings = state.settings
     elements.settingsLanguage.value = settings.language
@@ -2276,24 +2411,34 @@ function renderSettingsForm() {
     populateModelSelect(
         elements.settingsAutoCaptureModel,
         settings.autoCaptureProfile?.modelId,
-        t("sourceOrRuntimeModel"),
+        t("runtimeDefault"),
     )
     populateEffortSelect(
         elements.settingsAutoCaptureEffort,
         settings.autoCaptureProfile?.effort,
         settings.autoCaptureProfile?.modelId,
     )
-    elements.settingsAutoCapture.checked = Boolean(settings.autoCapture)
+    elements.settingsAutoCaptureMode.value = settings.autoCaptureProfile?.mode ?? "off"
+    elements.settingsAutoCaptureCadence.value =
+        settings.autoCaptureProfile?.schedule?.cadence ?? "daily"
+    elements.settingsAutoCaptureTime.value =
+        settings.autoCaptureProfile?.schedule?.time ?? "09:00"
+    elements.settingsAutoCaptureWeekday.value = String(
+        settings.autoCaptureProfile?.schedule?.weekday ?? 1,
+    )
     elements.settingsAutoCaptureDataset.replaceChildren()
+    const automatic = node("option", "", t("automaticDatasetRouting"))
+    automatic.value = ""
+    elements.settingsAutoCaptureDataset.append(automatic)
     for (const dataset of state.datasets) {
         const option = node("option", "", dataset.name)
         option.value = dataset.id
         elements.settingsAutoCaptureDataset.append(option)
     }
     elements.settingsAutoCaptureDataset.value =
-        settings.autoCaptureProfile?.datasetId ?? state.datasets[0]?.id ?? ""
-    elements.settingsAutoCaptureCaseType.value =
-        settings.autoCaptureProfile?.caseType ?? "goodcase"
+        settings.autoCaptureProfile?.datasetId ?? ""
+    renderAutomaticCaptureSettingsVisibility()
+    renderCaptureStatus()
 }
 
 function refreshOpenSettingsOptions() {
@@ -2316,7 +2461,7 @@ function refreshOpenSettingsOptions() {
     populateEffortSelect(elements.settingsRubricEffort, rubricEffort, rubricModel)
     populateModelSelect(elements.settingsJudgeModel, judgeModel)
     populateEffortSelect(elements.settingsJudgeEffort, judgeEffort, judgeModel)
-    populateModelSelect(elements.settingsAutoCaptureModel, captureModel, t("sourceOrRuntimeModel"))
+    populateModelSelect(elements.settingsAutoCaptureModel, captureModel)
     populateEffortSelect(elements.settingsAutoCaptureEffort, captureEffort, captureModel)
 }
 
@@ -2335,16 +2480,6 @@ async function openSettings() {
 async function saveSettings() {
     elements.saveSettings.disabled = true
     try {
-        const captureDataset = selectedDataset(elements.settingsAutoCaptureDataset.value)
-        if (
-            elements.settingsAutoCapture.checked &&
-            (
-                !runtimeSkillForReference(captureDataset?.skillReference) ||
-                !captureDataset?.activeRubricVersionId
-            )
-        ) {
-            throw new Error(t("autoCaptureDatasetRequired"))
-        }
         const settings = await window.rollingSkill.updateSettings({
             language: elements.settingsLanguage.value,
             theme: elements.settingsTheme.value,
@@ -2357,11 +2492,13 @@ async function saveSettings() {
             rubricEffort: elements.settingsRubricEffort.value,
             judgeModelId: elements.settingsJudgeModel.value,
             judgeEffort: elements.settingsJudgeEffort.value,
-            autoCapture: elements.settingsAutoCapture.checked,
+            autoCaptureMode: elements.settingsAutoCaptureMode.value,
+            autoCaptureCadence: elements.settingsAutoCaptureCadence.value,
+            autoCaptureTime: elements.settingsAutoCaptureTime.value,
+            autoCaptureWeekday: Number(elements.settingsAutoCaptureWeekday.value),
             autoCaptureModelId: elements.settingsAutoCaptureModel.value,
             autoCaptureEffort: elements.settingsAutoCaptureEffort.value,
             autoCaptureDatasetId: elements.settingsAutoCaptureDataset.value || null,
-            autoCaptureCaseType: elements.settingsAutoCaptureCaseType.value,
         })
         applySettings(settings)
         state.evaluationJudgeConfiguration = {
@@ -8459,6 +8596,14 @@ for (const [modelSelect, effortSelect] of [
         populateEffortSelect(effortSelect, effortSelect.value, modelSelect.value)
     })
 }
+elements.settingsAutoCaptureMode.addEventListener(
+    "change",
+    renderAutomaticCaptureSettingsVisibility,
+)
+elements.settingsAutoCaptureCadence.addEventListener(
+    "change",
+    renderAutomaticCaptureSettingsVisibility,
+)
 elements.archivedCurations.addEventListener("click", () => void toggleArchivedCurations())
 elements.showLocalData.addEventListener("click", () => window.rollingSkill.revealLocalData())
 elements.chooseRuntime.addEventListener("click", () => {
@@ -9099,6 +9244,13 @@ window.rollingSkill.onRawCasesChanged((rawCases) => {
     state.rawCases = rawCases ?? []
     renderRawCases()
 })
+window.rollingSkill.onAutomaticCaptureStatus((status) => {
+    state.automaticCaptureStatus = {
+        ...state.automaticCaptureStatus,
+        ...(status ?? {}),
+    }
+    renderCaptureStatus()
+})
 window.rollingSkill.onManagedSkillsChanged((overview) => {
     state.managedSkills = normalizedManagedSkills(overview)
     reconcileManagedSkillSelection()
@@ -9227,6 +9379,10 @@ async function bootstrap() {
         state.workspaceRoot = initial.workspaceRoot
         state.datasets = initial.datasets ?? []
         state.rawCases = initial.rawCases ?? []
+        state.automaticCaptureStatus = {
+            ...state.automaticCaptureStatus,
+            ...(initial.automaticCaptureStatus ?? {}),
+        }
         state.managedSkills = normalizedManagedSkills(initial.managedSkills)
         state.skillInstallations = normalizedSkillInstallationOverview(initial.skillInstallations)
         state.managedSkillError = initial.managedSkillStartupError ?? null

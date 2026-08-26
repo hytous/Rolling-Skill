@@ -689,17 +689,55 @@
                     <div class="settings-section-heading">
                         <div>
                             <h3 data-i18n="automaticCapture">Automatic capture</h3>
-                            <p data-i18n="automaticCaptureHelp">Create a reviewable draft after each completed response. Nothing is saved until Done.</p>
+                            <p data-i18n="automaticCaptureHelp">Scan new conversations on a daily or weekly schedule. Scheduled mode keeps candidates in Raw Cases; fully automatic mode saves only candidates that pass every gate.</p>
                         </div>
-                        <label class="switch">
-                            <input id="settings-auto-capture" type="checkbox" />
-                            <span aria-hidden="true"></span>
-                        </label>
+                    </div>
+                    <div class="automatic-capture-status" role="status">
+                        <span class="capture-dot" aria-hidden="true"></span>
+                        <div>
+                            <strong id="settings-auto-capture-status" data-i18n="autoCaptureOff">Automatic capture is off</strong>
+                            <small id="settings-auto-capture-last-success" data-i18n="autoCaptureNeverRun">No successful scan yet</small>
+                        </div>
                     </div>
                     <div class="settings-grid">
                         <label class="settings-field">
-                            <span data-i18n="captureModel">Capture Curator model</span>
+                            <span data-i18n="captureMode">Mode</span>
+                            <select id="settings-auto-capture-mode">
+                                <option value="off" data-i18n="autoCaptureModeOff">Off</option>
+                                <option value="scheduled" data-i18n="autoCaptureScheduled">Scheduled · keep in Raw Cases</option>
+                                <option value="automatic" data-i18n="autoCaptureAutomatic">Fully automatic · save gated Cases</option>
+                            </select>
+                        </label>
+                        <label class="settings-field">
+                            <span data-i18n="captureModel">Analysis model</span>
                             <select id="settings-auto-capture-model"></select>
+                        </label>
+                    </div>
+                    <div id="settings-auto-capture-schedule" class="settings-grid automatic-capture-schedule">
+                        <label class="settings-field">
+                            <span data-i18n="captureCadence">Cadence</span>
+                            <select id="settings-auto-capture-cadence">
+                                <option value="daily" data-i18n="captureDaily">Daily</option>
+                                <option value="weekly" data-i18n="captureWeekly">Weekly</option>
+                            </select>
+                        </label>
+                        <label class="settings-field">
+                            <span data-i18n="captureTime">Local time</span>
+                            <input id="settings-auto-capture-time" type="time" step="60" />
+                        </label>
+                    </div>
+                    <div class="settings-grid">
+                        <label id="settings-auto-capture-weekday-field" class="settings-field">
+                            <span data-i18n="captureWeekday">Weekday</span>
+                            <select id="settings-auto-capture-weekday">
+                                <option value="1" data-i18n="weekdayMonday">Monday</option>
+                                <option value="2" data-i18n="weekdayTuesday">Tuesday</option>
+                                <option value="3" data-i18n="weekdayWednesday">Wednesday</option>
+                                <option value="4" data-i18n="weekdayThursday">Thursday</option>
+                                <option value="5" data-i18n="weekdayFriday">Friday</option>
+                                <option value="6" data-i18n="weekdaySaturday">Saturday</option>
+                                <option value="0" data-i18n="weekdaySunday">Sunday</option>
+                            </select>
                         </label>
                         <label class="settings-field">
                             <span data-i18n="reasoningEffort">Reasoning effort</span>
@@ -707,16 +745,10 @@
                         </label>
                     </div>
                     <div class="settings-grid">
-                        <label class="settings-field">
-                            <span data-i18n="destinationDataset">Destination dataset</span>
+                        <label id="settings-auto-capture-dataset-field" class="settings-field automatic-capture-preferred">
+                            <span data-i18n="preferredDataset">Preferred dataset</span>
                             <select id="settings-auto-capture-dataset"></select>
-                        </label>
-                        <label class="settings-field">
-                            <span data-i18n="defaultClassification">Default classification</span>
-                            <select id="settings-auto-capture-case-type">
-                                <option value="goodcase">Goodcase</option>
-                                <option value="badcase">Badcase</option>
-                            </select>
+                            <small data-i18n="preferredDatasetHelp">Used only when its Skill matches. Leave automatic routing selected to require one unambiguous dataset.</small>
                         </label>
                     </div>
                 </section>

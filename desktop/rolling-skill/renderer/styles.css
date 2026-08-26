@@ -532,6 +532,14 @@ kbd {
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
+.capture-note.error {
+    color: var(--danger);
+}
+
+.capture-note.error .capture-dot {
+    background: var(--danger);
+}
+
 .workbench {
     position: relative;
     display: grid;
@@ -5525,6 +5533,64 @@ kbd {
     line-height: 1.5;
 }
 
+.automatic-capture-status {
+    display: flex;
+    min-height: 46px;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    align-items: flex-start;
+    gap: 9px;
+    background: var(--surface-raised);
+}
+
+.automatic-capture-status .capture-dot {
+    margin-top: 5px;
+    flex: 0 0 auto;
+}
+
+.automatic-capture-status > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.automatic-capture-status strong {
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 650;
+}
+
+.automatic-capture-status small {
+    color: var(--faint);
+    font-size: 9px;
+    line-height: 1.4;
+}
+
+.automatic-capture-status.active .capture-dot,
+.automatic-capture-status.running .capture-dot {
+    background: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.automatic-capture-status.error .capture-dot {
+    background: var(--danger);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.automatic-capture-status.error strong {
+    color: var(--danger);
+}
+
+.automatic-capture-schedule {
+    align-items: start;
+}
+
+.automatic-capture-preferred {
+    grid-column: 1 / -1;
+}
+
 .settings-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -5541,7 +5607,8 @@ kbd {
     font-weight: 580;
 }
 
-.settings-field select {
+.settings-field select,
+.settings-field input[type="time"] {
     width: 100%;
     height: 34px;
     padding: 0 30px 0 9px;
@@ -5553,7 +5620,12 @@ kbd {
     font-size: 10.5px;
 }
 
-.settings-field select:focus {
+.settings-field input[type="time"] {
+    padding-right: 9px;
+}
+
+.settings-field select:focus,
+.settings-field input[type="time"]:focus {
     border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 
@@ -5769,6 +5841,7 @@ kbd {
 
 :root[data-theme="codex-light"] .curation-followup textarea,
 :root[data-theme="codex-light"] .settings-field select,
+:root[data-theme="codex-light"] .settings-field input[type="time"],
 :root[data-theme="codex-light"] .field select,
 :root[data-theme="codex-light"] .field textarea,
 :root[data-theme="codex-light"] .new-dataset-row input {

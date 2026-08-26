@@ -353,7 +353,7 @@ describe("local-first desktop surface", () => {
         assert.match(html, /id="settings-dialog"/)
         assert.match(html, /id="settings-language"/)
         assert.match(html, /id="settings-theme"/)
-        assert.match(html, /id="settings-auto-capture"/)
+        assert.match(html, /id="settings-auto-capture-mode"/)
         assert.match(html, /id="settings-auto-capture-model"/)
         assert.doesNotMatch(html, /id="settings-auto-capture-skill"/)
         assert.doesNotMatch(html, /id="case-skill"/)
@@ -372,6 +372,58 @@ describe("local-first desktop surface", () => {
         assert.match(main, /settings:update/)
         assert.match(main, /curation:discard/)
         assert.doesNotMatch(main, /input\.skillPath/)
+    })
+
+    it("configures scheduled discovery and renders bilingual capture status without whole-page refresh", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        for (const id of [
+            "settings-auto-capture-mode",
+            "settings-auto-capture-cadence",
+            "settings-auto-capture-time",
+            "settings-auto-capture-weekday",
+            "settings-auto-capture-model",
+            "settings-auto-capture-effort",
+            "settings-auto-capture-dataset",
+            "settings-auto-capture-status",
+            "settings-auto-capture-last-success",
+        ]) assert.match(html, new RegExp(`id="${id}"`))
+
+        assert.doesNotMatch(html, /id="settings-auto-capture"\s+type="checkbox"/u)
+        assert.doesNotMatch(
+            `${html}\n${renderer}`,
+            /Create a reviewable draft after each completed response|每次回答完成后自动创建待审核草稿/u,
+        )
+        assert.match(renderer, /autoCaptureScheduled:\s*"Scheduled · keep in Raw Cases"/u)
+        assert.match(renderer, /autoCaptureScheduled:\s*"定时发现 · 保留到 Raw Case"/u)
+        assert.match(renderer, /autoCaptureAutomatic:\s*"Fully automatic · save gated Cases"/u)
+        assert.match(renderer, /autoCaptureAutomatic:\s*"完全自动 · 仅保存通过闸门的 Case"/u)
+        assert.match(renderer, /captureCadence:\s*"Cadence"/u)
+        assert.match(renderer, /captureCadence:\s*"频率"/u)
+        assert.match(renderer, /captureWeekday:\s*"Weekday"/u)
+        assert.match(renderer, /captureWeekday:\s*"星期"/u)
+        assert.match(renderer, /autoCaptureNextRun:\s*"Next scan \{time\}"/u)
+        assert.match(renderer, /autoCaptureNextRun:\s*"下次扫描 \{time\}"/u)
+        assert.match(renderer, /autoCaptureLastSuccess:\s*"Last successful scan \{time\}"/u)
+        assert.match(renderer, /autoCaptureLastSuccess:\s*"上次成功扫描 \{time\}"/u)
+        assert.match(renderer, /autoCaptureError:\s*"Capture needs attention: \{message\}"/u)
+        assert.match(renderer, /autoCaptureError:\s*"自动沉淀需要处理：\{message\}"/u)
+        assert.match(renderer, /onAutomaticCaptureStatus/u)
+        assert.match(renderer, /Intl\.DateTimeFormat/u)
+        assert.match(renderer, /autoCaptureMode:\s*elements\.settingsAutoCaptureMode\.value/u)
+        assert.match(renderer, /autoCaptureCadence:\s*elements\.settingsAutoCaptureCadence\.value/u)
+        assert.match(renderer, /autoCaptureTime:\s*elements\.settingsAutoCaptureTime\.value/u)
+        assert.match(renderer, /autoCaptureWeekday:\s*Number\(elements\.settingsAutoCaptureWeekday\.value\)/u)
+        assert.match(renderer, /settingsAutoCaptureWeekdayField\.classList\.toggle\("hidden"/u)
+        const statusStart = renderer.indexOf("function renderCaptureStatus()")
+        const statusEnd = renderer.indexOf("\nfunction ", statusStart + 1)
+        const statusRenderer = renderer.slice(statusStart, statusEnd)
+        assert.ok(statusStart >= 0 && statusEnd > statusStart)
+        assert.doesNotMatch(statusRenderer, /renderAll\s*\(/u)
+        assert.match(styles, /\.automatic-capture-status/u)
+        assert.match(styles, /\.automatic-capture-schedule/u)
     })
 
     it("keeps per-task model selection separate from the new-task default", () => {
