@@ -299,6 +299,14 @@
                 </section>
 
                 <section id="operator-workbench" class="operator-workbench hidden" aria-label="Operator self-operation" data-i18n-aria-label="operatorWorkbenchAria">
+                    <header class="operator-workbench-header">
+                        <div>
+                            <div class="drawer-eyebrow" data-i18n="operatorWorkbenchAria">SELF-OPERATION WORKBENCH</div>
+                            <h1 data-i18n="operatorWorkbenchTitle">Run scoped self-operation Jobs</h1>
+                            <p data-i18n="operatorWorkbenchHelp">Configure Runtime, scope, and hard budgets for durable local Agent work.</p>
+                        </div>
+                    </header>
+                    <div class="operator-grid">
                     <aside class="operator-job-panel">
                         <header class="operator-panel-header">
                             <div>
@@ -327,11 +335,11 @@
                                     </select>
                                 </label>
                             </header>
-                            <label class="operator-field operator-objective-field" data-step="01">
+                            <label class="operator-field operator-objective-field">
                                 <span data-i18n="operatorObjective">Objective</span>
                                 <textarea name="objective" rows="3" maxlength="32768" required placeholder="Describe the bounded outcome…" data-i18n-placeholder="operatorObjectivePlaceholder"></textarea>
                             </label>
-                            <section class="operator-setup-section operator-environment-section" data-step="02">
+                            <section class="operator-setup-section operator-environment-section">
                                 <h2 data-i18n="operatorEnvironment">Run environment</h2>
                                 <div class="operator-setup-row">
                                     <label class="operator-field">
@@ -348,7 +356,7 @@
                                     </label>
                                 </div>
                             </section>
-                            <section class="operator-setup-section operator-resource-section" data-step="03">
+                            <section class="operator-setup-section operator-resource-section">
                                 <h2 data-i18n="operatorResources">Resources and scope</h2>
                                 <div class="operator-setup-row two">
                                     <label class="operator-field">
@@ -491,6 +499,7 @@
                             <div id="operator-approval-queue" class="operator-side-list"></div>
                         </section>
                     </aside>
+                    </div>
                 </section>
             </main>
 

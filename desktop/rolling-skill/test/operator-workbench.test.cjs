@@ -63,7 +63,7 @@ function event(id, sessionId = "session-1", jobId = "job-1") {
 }
 
 describe("Operator workbench state", () => {
-    it("distinguishes Runtime versions and falls back to paths for true label collisions", () => {
+    it("shows the full Runtime identity so every selectable installation is distinguishable", () => {
         const codexA = {
             runtimeId: "codex:a",
             displayName: "Codex",
@@ -77,8 +77,14 @@ describe("Operator workbench state", () => {
             executablePath: "/usr/local/bin/codex",
         }
 
-        assert.equal(runtimeDisplayLabel(codexA, [codexA, codexB]), "Codex 0.149.0")
-        assert.equal(runtimeDisplayLabel(codexB, [codexA, codexB]), "Codex 0.148.0")
+        assert.equal(
+            runtimeDisplayLabel(codexA, [codexA, codexB]),
+            "Codex 0.149.0 · /Applications/ChatGPT.app/Contents/Resources/codex",
+        )
+        assert.equal(
+            runtimeDisplayLabel(codexB, [codexA, codexB]),
+            "Codex 0.148.0 · /usr/local/bin/codex",
+        )
 
         const duplicateA = {...codexA, runtimeId: "codex:duplicate-a", version: "0.149.0"}
         const duplicateB = {
@@ -100,7 +106,7 @@ describe("Operator workbench state", () => {
             runtimeId: "codex:versioned-name",
             displayName: "Codex 0.149.0",
             version: "0.149.0",
-        }), "Codex 0.149.0")
+        }), "Codex 0.149.0 · codex:versioned-name")
     })
 
     it("uses the host translation pipeline for dynamic Job statuses", () => {

@@ -29,9 +29,6 @@
 
     function runtimeDisplayLabel(runtime = {}, catalog = []) {
         const base = runtimeBaseLabel(runtime)
-        const duplicates = (Array.isArray(catalog) ? catalog : [])
-            .filter((entry) => runtimeBaseLabel(entry) === base)
-        if (duplicates.length < 2) return base
         const detail = [runtime.executablePath, runtime.source, runtime.runtimeId]
             .map((value) => String(value ?? "").trim())
             .find((value) => value && value !== base)
