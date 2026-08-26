@@ -591,13 +591,11 @@ kbd {
     overflow: hidden;
     min-width: 0;
     min-height: 0;
-    padding: 20px 24px 24px;
-    background:
-        radial-gradient(circle at 92% 4%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 30%),
-        var(--surface);
+    padding: 14px 20px 20px;
+    background: var(--surface);
     grid-row: 2 / -1;
-    grid-template-columns: minmax(190px, 0.68fr) minmax(360px, 1.75fr) minmax(245px, 0.86fr);
-    gap: 12px;
+    grid-template-columns: minmax(168px, 184px) minmax(480px, 1fr) minmax(218px, 238px);
+    gap: 0;
 }
 
 .workbench.operator-mode:has(> .error-banner:not(.hidden)) > .operator-workbench {
@@ -610,21 +608,29 @@ kbd {
     overflow: hidden;
     min-width: 0;
     min-height: 0;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    background: color-mix(in srgb, var(--surface-raised) 54%, var(--surface));
 }
 
 .operator-job-panel {
     display: grid;
+    padding: 12px 14px 12px 0;
+    background: transparent;
     grid-template-rows: auto minmax(0, 1fr);
 }
 
-.operator-panel-header,
+.operator-panel-header {
+    display: flex;
+    min-height: 48px;
+    padding: 2px 4px 12px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+}
+
 .operator-session-header {
     display: flex;
     min-height: 64px;
-    padding: 14px;
+    padding: 14px 20px;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
@@ -638,19 +644,33 @@ kbd {
 }
 
 .operator-panel-header strong {
-    font-size: 16px;
+    font-size: 15px;
+    letter-spacing: -0.015em;
+}
+
+.operator-panel-header .panel-kicker {
+    display: none;
 }
 
 .operator-panel-header button {
-    min-height: 28px;
-    padding: 0 9px;
+    min-height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
     border-radius: 7px;
-    font-size: 10.5px;
+    background: var(--surface);
+    font-size: 11px;
+    font-weight: 620;
+}
+
+.operator-panel-header button.primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
 }
 
 .operator-job-list {
     overflow-y: auto;
-    padding: 10px;
+    padding: 10px 4px 0 0;
 }
 
 .operator-job-item {
@@ -674,6 +694,11 @@ kbd {
 .operator-job-item.active {
     border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
     background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+}
+
+.operator-job-list .operator-empty {
+    padding: 18px 6px;
+    text-align: left;
 }
 
 .operator-job-title {
@@ -709,6 +734,7 @@ kbd {
     position: relative;
     display: grid;
     overflow: hidden;
+    border-inline: 1px solid var(--border);
     background: var(--surface);
     grid-template-rows: auto minmax(0, 1fr) auto;
 }
@@ -853,18 +879,24 @@ kbd {
 
 .operator-status-panel {
     overflow-y: auto;
-    padding: 14px;
+    padding: 12px 0 12px 16px;
+    background: transparent;
 }
 
 .operator-status-panel > section {
-    padding: 10px 2px 12px;
+    padding: 12px 4px 14px;
     border-bottom: 1px solid var(--border);
 }
 
+.operator-status-panel > section:last-child {
+    border-bottom: 0;
+}
+
 .operator-status-panel h2 {
-    margin: 0 0 7px;
-    font-size: 11.5px;
-    font-weight: 700;
+    margin: 0 0 6px;
+    font-size: 12px;
+    font-weight: 680;
+    letter-spacing: -0.01em;
 }
 
 .operator-compact-copy {
@@ -873,6 +905,14 @@ kbd {
     font-size: 11.5px;
     line-height: 1.45;
     overflow-wrap: anywhere;
+}
+
+.operator-status-panel.operator-panel-empty .operator-side-section {
+    display: none;
+}
+
+.operator-status-panel.operator-panel-empty .operator-compact-copy {
+    color: var(--faint);
 }
 
 .operator-side-list {
@@ -927,19 +967,20 @@ kbd {
 .operator-setup-form {
     overflow-y: auto;
     min-height: 0;
-    padding: 20px clamp(18px, 4vw, 44px);
+    padding: 28px clamp(28px, 4vw, 56px) 30px;
     grid-row: 1 / 3;
 }
 
 .operator-setup-form header {
-    margin-bottom: 16px;
+    margin-bottom: 22px;
 }
 
 .operator-setup-form header p {
-    margin: 5px 0 0;
+    max-width: 620px;
+    margin: 6px 0 0;
     color: var(--muted);
-    font-size: 11.5px;
-    line-height: 1.55;
+    font-size: 12px;
+    line-height: 1.6;
 }
 
 .operator-field,
@@ -954,7 +995,7 @@ kbd {
 .operator-field select,
 .operator-budget-grid input {
     width: 100%;
-    min-height: 36px;
+    min-height: 38px;
     padding: 8px 9px;
     border: 1px solid var(--border-strong);
     border-radius: 8px;
@@ -964,13 +1005,44 @@ kbd {
     font-size: 12px;
 }
 
+.operator-field textarea:focus,
+.operator-field select:focus,
+.operator-budget-grid input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .operator-objective-field {
+    margin-bottom: 0;
+}
+
+.operator-objective-field textarea {
+    min-height: 86px;
+    padding: 11px 12px;
+    line-height: 1.5;
+    resize: vertical;
+}
+
+.operator-setup-section {
+    margin-top: 20px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+}
+
+.operator-setup-section h2 {
+    margin: 0 0 12px;
+    font-size: 12px;
+    font-weight: 680;
+    letter-spacing: -0.01em;
+}
+
+.operator-job-kind-field {
     margin-bottom: 12px;
 }
 
 .operator-setup-row {
     display: grid;
-    margin-bottom: 12px;
+    margin-bottom: 0;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 9px;
 }
@@ -982,6 +1054,7 @@ kbd {
 .operator-optimization-fields {
     display: grid;
     gap: 12px;
+    margin-top: 20px;
     padding: 14px;
     border: 1px solid var(--border);
     border-radius: 13px;
@@ -1043,6 +1116,13 @@ kbd {
     border-radius: 9px;
 }
 
+.operator-target-fieldset {
+    margin: 14px 0 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+}
+
 .operator-fieldset legend,
 .operator-setup-details summary {
     color: var(--muted);
@@ -1075,16 +1155,64 @@ kbd {
     white-space: nowrap;
 }
 
-.operator-setup-details {
-    margin-bottom: 12px;
-    padding: 9px 10px 1px;
+.operator-target-card {
+    display: grid;
+    min-width: 0;
+    padding: 9px 10px;
     border: 1px solid var(--border);
-    border-radius: 9px;
-    background: color-mix(in srgb, var(--surface-raised) 52%, transparent);
+    border-radius: 8px;
+    background: var(--surface);
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 7px;
+    color: var(--muted);
+}
+
+.operator-target-card:hover {
+    border-color: var(--border-strong);
+    background: var(--surface-hover);
+}
+
+.operator-target-card:has(input:checked) {
+    border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+    background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+    color: var(--text);
+}
+
+.operator-target-card > input {
+    margin: 2px 0 0;
+    accent-color: var(--accent);
+}
+
+.operator-target-card .operator-target-runtime-options {
+    grid-column: 1 / -1;
+}
+
+.operator-setup-details {
+    margin: 20px 0 0;
+    padding: 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+}
+
+.operator-setup-details > summary {
+    min-height: 42px;
+    padding: 12px 2px;
+    color: var(--text);
+    cursor: default;
+    list-style-position: inside;
 }
 
 .operator-setup-details[open] > summary {
-    margin-bottom: 10px;
+    margin-bottom: 2px;
+    border-bottom: 1px solid var(--border);
+}
+
+.operator-setup-details > .operator-fieldset {
+    margin: 12px 0;
 }
 
 .operator-budget-grid {
@@ -1101,13 +1229,32 @@ kbd {
 
 .operator-setup-actions {
     display: flex;
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
     justify-content: flex-end;
+    gap: 8px;
 }
 
 .operator-setup-actions button {
-    min-height: 32px;
-    padding: 0 12px;
+    min-height: 36px;
+    padding: 0 14px;
+    border: 1px solid var(--border-strong);
     border-radius: 8px;
+    background: var(--surface);
+    font-size: 12px;
+    font-weight: 630;
+}
+
+.operator-setup-actions button.primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
+}
+
+.operator-session-panel:has(.operator-setup-form:not(.hidden)) .operator-transcript,
+.operator-session-panel:has(.operator-setup-form:not(.hidden)) .operator-composer-wrap {
+    display: none;
 }
 
 .skill-management-header {
@@ -5468,7 +5615,8 @@ kbd {
     }
 
     .operator-workbench {
-        grid-template-columns: minmax(150px, 0.55fr) minmax(300px, 1.5fr) minmax(190px, 0.75fr);
+        padding: 12px 16px 16px;
+        grid-template-columns: minmax(146px, 164px) minmax(360px, 1fr) minmax(186px, 204px);
     }
 
     .operator-transcript {
@@ -5476,13 +5624,20 @@ kbd {
         padding-left: 18px;
     }
 
-    .operator-setup-row,
+    .operator-setup-form {
+        padding: 24px 26px 28px;
+    }
+
+    .operator-setup-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .operator-setup-row.two {
-        grid-template-columns: minmax(0, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .operator-optimization-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .operator-check-grid.permission-grid,
@@ -5561,6 +5716,28 @@ kbd {
 
     .runtime-status span:last-child {
         display: none;
+    }
+
+    .operator-workbench {
+        overflow-y: auto;
+        grid-template-columns: minmax(146px, 164px) minmax(360px, 1fr);
+        grid-template-rows: minmax(520px, 1fr) auto;
+    }
+
+    .operator-job-panel {
+        grid-row: 1 / 3;
+    }
+
+    .operator-session-panel {
+        grid-column: 2;
+        grid-row: 1;
+    }
+
+    .operator-status-panel {
+        grid-column: 2;
+        grid-row: 2;
+        padding: 14px 18px 18px;
+        border-top: 1px solid var(--border);
     }
 
     .evaluation-workbench {
