@@ -2,6 +2,11 @@ const {createRollingSkillApplication} = require("./application.cjs")
 const {createAutomaticCaptureService} = require("./automatic-capture-service.cjs")
 const {createCaseServices} = require("./case-services.cjs")
 const {createEvaluationServices} = require("./evaluation-services.cjs")
+const {
+    detectLegacyElectronDataRoot,
+    importLegacyData,
+    inspectLegacyImport,
+} = require("./legacy-import.cjs")
 const {createOperatorRuntime, createOperatorServices} = require("./operator-services.cjs")
 const {createRuntimeServices} = require("./runtime-services.cjs")
 const {acquireRunLease} = require("./run-lease.cjs")
@@ -15,6 +20,9 @@ module.exports = {
     createAutomaticCaptureService,
     createCaseServices,
     createEvaluationServices,
+    detectLegacyElectronDataRoot,
+    importLegacyData,
+    inspectLegacyImport,
     createOperatorRuntime,
     createOperatorServices,
     createRollingSkillApplication,

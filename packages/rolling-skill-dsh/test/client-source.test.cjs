@@ -134,4 +134,14 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(automatic, /<RuntimeSelect/u)
         assert.match(workbench, /<AutomaticCapturePanel/u)
     })
+
+    it("ships an explicit copy-only legacy import panel", () => {
+        const panel = source("workbench/ImportPanel.tsx")
+        const workbench = source("workbench/Workbench.tsx")
+
+        assert.match(panel, /legacyImport\.status/u)
+        assert.match(panel, /legacyImport\.run/u)
+        assert.match(panel, /confirmImport/u)
+        assert.match(workbench, /<ImportPanel/u)
+    })
 })

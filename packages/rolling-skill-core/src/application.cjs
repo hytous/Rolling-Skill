@@ -46,6 +46,11 @@ const {createAutomaticCaptureService} = require("./automatic-capture-service.cjs
 const {RollingSkillConfigStore} = require("./config-store.cjs")
 const {ensureDataLayout, resolveDataPaths} = require("./data-root.cjs")
 const {createEvaluationServices} = require("./evaluation-services.cjs")
+const {
+    detectLegacyElectronDataRoot,
+    importLegacyData,
+    inspectLegacyImport,
+} = require("./legacy-import.cjs")
 const {createOperatorRuntime} = require("./operator-services.cjs")
 const {createRuntimeServices} = require("./runtime-services.cjs")
 const {createSkillServices} = require("./skill-services.cjs")
@@ -164,6 +169,7 @@ function workerOperatorRuntime() {
 
 function createRollingSkillApplication(options = {}) {
     const paths = ensureDataLayout(resolveDataPaths(options))
+    const legacySourceRoot = options.legacySourceRoot ?? detectLegacyElectronDataRoot()
     const store = new LocalEvaluationStore(paths.evaluationStore)
     const rawCaseStore = new RawCaseStore(paths.rawCaseEvents)
     const automaticCaptureStateStore = new AutomaticCaptureStateStore(
@@ -481,6 +487,19 @@ function createRollingSkillApplication(options = {}) {
         "scheduler.status": () => schedulerStatus(),
         "scheduler.enable": () => enableScheduler(),
         "scheduler.disable": () => disableScheduler(),
+        "legacyImport.status": () => inspectLegacyImport({
+            sourceRoot: legacySourceRoot,
+            destinationRoot: paths.root,
+        }),
+        "legacyImport.run": (input) => {
+            if (input.confirmed !== true || Object.keys(input).some((key) => key !== "confirmed")) {
+                throw new Error("Legacy import requires explicit confirmation")
+            }
+            return importLegacyData({
+                sourceRoot: legacySourceRoot,
+                destinationRoot: paths.root,
+            })
+        },
         "operators.summary": (input) => operatorServices.operatorSummary(input),
         "operators.get": (input) => operatorServices.operatorGet(input),
         "operators.start": (input) => operatorServices.operatorStart(input),
