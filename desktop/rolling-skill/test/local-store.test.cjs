@@ -124,10 +124,15 @@ describe("local evaluation store", () => {
         })
         assert.deepEqual(snapshot.settings.autoCaptureProfile, {
             runtimePolicy: "active",
+            mode: "off",
+            schedule: {
+                cadence: "daily",
+                time: "09:00",
+                weekday: 1,
+            },
             modelId: null,
             effort: null,
             datasetId: null,
-            caseType: "goodcase",
         })
         assert.equal(snapshot.datasets.length, 1)
         assert.equal(snapshot.datasets[0].name, "Skill evaluation cases")
@@ -300,7 +305,7 @@ describe("local evaluation store", () => {
         assert.equal(store.updateCuratorProfile({modelId: ""}).modelId, null)
     })
 
-    it("persists appearance, task model, and opt-in automatic capture settings", () => {
+    it("persists appearance, task model, and scheduled automatic capture settings", () => {
         const {store} = fixture()
         const dataset = store.listDatasets()[0]
 
@@ -311,10 +316,12 @@ describe("local evaluation store", () => {
             taskModelId: " gpt-5.6-sol ",
             judgeModelId: " gpt-5.6-sol-judge ",
             judgeEffort: "max",
-            autoCapture: true,
+            autoCaptureMode: "automatic",
+            autoCaptureCadence: "weekly",
+            autoCaptureTime: "18:35",
+            autoCaptureWeekday: 5,
             autoCaptureModelId: " gpt-5.6-terra ",
             autoCaptureDatasetId: dataset.id,
-            autoCaptureCaseType: "badcase",
         })
 
         assert.equal(settings.language, "en")
@@ -329,15 +336,50 @@ describe("local evaluation store", () => {
         assert.equal(settings.autoCapture, true)
         assert.deepEqual(settings.autoCaptureProfile, {
             runtimePolicy: "active",
+            mode: "automatic",
+            schedule: {
+                cadence: "weekly",
+                time: "18:35",
+                weekday: 5,
+            },
             modelId: "gpt-5.6-terra",
             effort: null,
             datasetId: dataset.id,
-            caseType: "badcase",
         })
         assert.throws(() => store.updateSettings({language: "fr"}), /language/i)
         assert.throws(() => store.updateSettings({theme: "neon"}), /theme/i)
         assert.throws(() => store.updateSettings({localAccess: "container"}), /local access/i)
         assert.throws(() => store.updateSettings({judgeEffort: "impossible"}), /effort/i)
+        assert.throws(() => store.updateSettings({autoCaptureMode: "always"}), /mode/i)
+        assert.throws(() => store.updateSettings({autoCaptureCadence: "hourly"}), /cadence/i)
+        assert.throws(() => store.updateSettings({autoCaptureTime: "25:10"}), /time/i)
+        assert.throws(() => store.updateSettings({autoCaptureWeekday: 7}), /weekday/i)
+    })
+
+    it("migrates a legacy enabled capture profile to scheduled discovery", () => {
+        const {path, store} = fixture()
+        const legacy = store.read()
+        legacy.settings.autoCapture = true
+        legacy.settings.autoCaptureProfile = {
+            runtimePolicy: "active",
+            modelId: "gpt-5.6-terra",
+            effort: "low",
+            datasetId: null,
+            caseType: "badcase",
+        }
+        writeFileSync(path, `${JSON.stringify(legacy, null, 2)}\n`)
+
+        const migrated = new LocalEvaluationStore(path).read().settings
+
+        assert.equal(migrated.autoCapture, true)
+        assert.deepEqual(migrated.autoCaptureProfile, {
+            runtimePolicy: "active",
+            mode: "scheduled",
+            schedule: {cadence: "daily", time: "09:00", weekday: 1},
+            modelId: "gpt-5.6-terra",
+            effort: "low",
+            datasetId: null,
+        })
     })
 
     it("migrates existing stores to full local access without changing other settings", () => {

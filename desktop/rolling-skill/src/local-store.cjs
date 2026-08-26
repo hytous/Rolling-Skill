@@ -37,6 +37,8 @@ const RUBRIC_STATUSES = new Set([
 const LANGUAGES = new Set(["zh-CN", "en"])
 const THEMES = new Set(["codex-light", "codex-dark", "graphite"])
 const LOCAL_ACCESS_POLICIES = new Set(["full", "workspace"])
+const AUTO_CAPTURE_MODES = new Set(["off", "scheduled", "automatic"])
+const AUTO_CAPTURE_CADENCES = new Set(["daily", "weekly"])
 const REASONING_EFFORTS = new Set([
     "minimal",
     "low",
@@ -95,6 +97,36 @@ function reasoningEffort(value, label = "Reasoning effort") {
     return normalized
 }
 
+function captureMode(value) {
+    const normalized = String(value ?? "").trim()
+    if (!AUTO_CAPTURE_MODES.has(normalized)) throw new Error("Automatic capture mode is invalid")
+    return normalized
+}
+
+function captureCadence(value) {
+    const normalized = String(value ?? "").trim()
+    if (!AUTO_CAPTURE_CADENCES.has(normalized)) {
+        throw new Error("Automatic capture cadence is invalid")
+    }
+    return normalized
+}
+
+function captureTime(value) {
+    const normalized = String(value ?? "")
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(normalized)) {
+        throw new Error("Automatic capture time is invalid")
+    }
+    return normalized
+}
+
+function captureWeekday(value) {
+    const normalized = Number(value)
+    if (!Number.isInteger(normalized) || normalized < 0 || normalized > 6) {
+        throw new Error("Automatic capture weekday is invalid")
+    }
+    return normalized
+}
+
 function defaultSettings() {
     return {
         autoCapture: false,
@@ -107,10 +139,11 @@ function defaultSettings() {
         judgeProfile: {runtimePolicy: "active", modelId: null, effort: null},
         autoCaptureProfile: {
             runtimePolicy: "active",
+            mode: "off",
+            schedule: {cadence: "daily", time: "09:00", weekday: 1},
             modelId: null,
             effort: null,
             datasetId: null,
-            caseType: "goodcase",
         },
     }
 }
@@ -178,14 +211,48 @@ function migrateState(input) {
         state.settings.judgeProfile = {runtimePolicy: "active", modelId: null, effort: null}
         changed = true
     }
-    if (!state.settings.autoCaptureProfile) {
-        state.settings.autoCaptureProfile = {
-            runtimePolicy: "active",
-            modelId: null,
-            effort: null,
-            datasetId: null,
-            caseType: "goodcase",
+    const legacyAutoCapture = state.settings.autoCapture === true
+    if (!state.settings.autoCaptureProfile || typeof state.settings.autoCaptureProfile !== "object") {
+        state.settings.autoCaptureProfile = defaultSettings().autoCaptureProfile
+        changed = true
+    }
+    const automatic = state.settings.autoCaptureProfile
+    if (!AUTO_CAPTURE_MODES.has(automatic.mode)) {
+        automatic.mode = legacyAutoCapture ? "scheduled" : "off"
+        changed = true
+    }
+    if (!automatic.schedule || typeof automatic.schedule !== "object") {
+        automatic.schedule = {cadence: "daily", time: "09:00", weekday: 1}
+        changed = true
+    }
+    if (!AUTO_CAPTURE_CADENCES.has(automatic.schedule.cadence)) {
+        automatic.schedule.cadence = "daily"
+        changed = true
+    }
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(String(automatic.schedule.time ?? ""))) {
+        automatic.schedule.time = "09:00"
+        changed = true
+    }
+    if (
+        !Number.isInteger(automatic.schedule.weekday) ||
+        automatic.schedule.weekday < 0 ||
+        automatic.schedule.weekday > 6
+    ) {
+        automatic.schedule.weekday = 1
+        changed = true
+    }
+    if (automatic.runtimePolicy !== "active") {
+        automatic.runtimePolicy = "active"
+        changed = true
+    }
+    for (const field of ["modelId", "effort", "datasetId"]) {
+        if (!(field in automatic)) {
+            automatic[field] = null
+            changed = true
         }
+    }
+    if ("caseType" in automatic) {
+        delete automatic.caseType
         changed = true
     }
     for (const legacyField of ["skillName", "skillPath"]) {
@@ -193,6 +260,11 @@ function migrateState(input) {
             delete state.settings.autoCaptureProfile[legacyField]
             changed = true
         }
+    }
+    const derivedAutoCapture = automatic.mode !== "off"
+    if (state.settings.autoCapture !== derivedAutoCapture) {
+        state.settings.autoCapture = derivedAutoCapture
+        changed = true
     }
     for (const profile of [
         state.settings.taskProfile,
@@ -999,7 +1071,6 @@ class LocalEvaluationStore {
         const automatic = state.settings.autoCaptureProfile
         if (automatic.datasetId === datasetId) {
             automatic.datasetId = null
-            state.settings.autoCapture = false
         }
 
         this.persist()
@@ -1114,8 +1185,24 @@ class LocalEvaluationStore {
                 "Judge reasoning effort",
             )
         }
-        if (input.autoCapture !== undefined) settings.autoCapture = Boolean(input.autoCapture)
         const automatic = {...settings.autoCaptureProfile, runtimePolicy: "active"}
+        automatic.schedule = {...settings.autoCaptureProfile.schedule}
+        if (input.autoCaptureMode !== undefined) {
+            automatic.mode = captureMode(input.autoCaptureMode)
+        } else if (input.autoCapture !== undefined) {
+            automatic.mode = Boolean(input.autoCapture)
+                ? automatic.mode === "off" ? "scheduled" : automatic.mode
+                : "off"
+        }
+        if (input.autoCaptureCadence !== undefined) {
+            automatic.schedule.cadence = captureCadence(input.autoCaptureCadence)
+        }
+        if (input.autoCaptureTime !== undefined) {
+            automatic.schedule.time = captureTime(input.autoCaptureTime)
+        }
+        if (input.autoCaptureWeekday !== undefined) {
+            automatic.schedule.weekday = captureWeekday(input.autoCaptureWeekday)
+        }
         if (input.autoCaptureModelId !== undefined) {
             automatic.modelId = modelId(input.autoCaptureModelId, "Automatic capture model id")
         }
@@ -1130,11 +1217,8 @@ class LocalEvaluationStore {
             if (datasetId) requireDataset(state, datasetId)
             automatic.datasetId = datasetId
         }
-        if (input.autoCaptureCaseType !== undefined) {
-            requireCaseType(input.autoCaptureCaseType)
-            automatic.caseType = input.autoCaptureCaseType
-        }
         settings.autoCaptureProfile = automatic
+        settings.autoCapture = automatic.mode !== "off"
         this.persist()
         return copy(settings)
     }
