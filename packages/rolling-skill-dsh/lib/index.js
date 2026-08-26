@@ -42,7 +42,7 @@ var require_automatic_capture_state_store = __commonJS({
       writeFileSync
     } = __require("node:fs");
     var { dirname } = __require("node:path");
-    var { randomUUID } = __require("node:crypto");
+    var { randomUUID: randomUUID2 } = __require("node:crypto");
     var STATE_SCHEMA = "rolling-skill-automatic-capture-state/v1";
     function copy(value) {
       return JSON.parse(JSON.stringify(value));
@@ -105,7 +105,7 @@ var require_automatic_capture_state_store = __commonJS({
       persist() {
         const directory = dirname(this.path);
         mkdirSync(directory, { recursive: true, mode: 448 });
-        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID()}`;
+        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID2()}`;
         writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}
 `, { mode: 384 });
         chmodSync(temporary, 384);
@@ -357,8 +357,8 @@ var require_dataset_rubric = __commonJS({
         automaticFailures
       });
     }
-    function extractJson(text) {
-      const source = String(text ?? "");
+    function extractJson(text2) {
+      const source = String(text2 ?? "");
       const blocks = [...source.matchAll(/```(?:json)?\s*([\s\S]*?)```/giu)];
       for (const match of blocks.reverse()) {
         try {
@@ -371,8 +371,8 @@ var require_dataset_rubric = __commonJS({
       if (start >= 0 && end > start) return JSON.parse(source.slice(start, end + 1));
       throw new Error("Rubric Agent response does not contain a JSON rubric");
     }
-    function parseDatasetRubric(text) {
-      return validateDatasetRubric(extractJson(text));
+    function parseDatasetRubric(text2) {
+      return validateDatasetRubric(extractJson(text2));
     }
     function buildDatasetRubricPrompt({ datasetName, skillReference, skillEvidence, baseVersion = null } = {}) {
       const baseRubric = baseVersion?.rubric ? validateDatasetRubric(baseVersion.rubric) : null;
@@ -432,7 +432,7 @@ Frozen Skill evidence (authoritative source for this rubric):
 ${baseRubric ? `Published base rubric to revise while preserving compatible ids:
 <base-rubric>${JSON.stringify(baseRubric)}</base-rubric>` : "This dataset has no published rubric yet."}`;
     }
-    function buildRubricFollowUpPrompt(text) {
+    function buildRubricFollowUpPrompt(text2) {
       return `Respond to the user's Rubric review message below.
 
 If the user asks a question, answer conversationally and do not return JSON. If the user requests a
@@ -440,7 +440,7 @@ change, return a short review note followed by exactly one complete ${DATASET_RU
 code block with scoringModel ${UNIFIED_SCORING_MODEL}. Never return a partial fragment. Preserve existing criterion ids unless their meaning is
 being intentionally removed. Never provide scores, points, verdicts, or pass/fail decisions.
 
-<user-review-message>${String(text ?? "").trim()}</user-review-message>`;
+<user-review-message>${String(text2 ?? "").trim()}</user-review-message>`;
     }
     module.exports = {
       DATASET_RUBRIC_SCHEMA,
@@ -475,29 +475,29 @@ var require_episode_curation = __commonJS({
       return Object.freeze(value);
     }
     function truncate(value, limit = MAX_ITEM_TEXT) {
-      const text = String(value ?? "");
-      return text.length <= limit ? text : `${text.slice(0, limit)}
+      const text2 = String(value ?? "");
+      return text2.length <= limit ? text2 : `${text2.slice(0, limit)}
 \u2026[truncated]`;
     }
     function truncateMiddle(value, limit) {
-      const text = String(value ?? "");
-      if (text.length <= limit) return text;
+      const text2 = String(value ?? "");
+      if (text2.length <= limit) return text2;
       const marker = "\n\u2026[output truncated]\u2026\n";
       const retained = Math.max(0, limit - marker.length);
       const headLength = Math.ceil(retained / 2);
       const tailLength = Math.floor(retained / 2);
-      return `${text.slice(0, headLength)}${marker}${text.slice(-tailLength)}`;
+      return `${text2.slice(0, headLength)}${marker}${text2.slice(-tailLength)}`;
     }
     function serialized(value, limit = MAX_ITEM_TEXT, keepTail = false) {
       if (value === void 0 || value === null) return null;
-      let text;
-      if (typeof value === "string") text = value;
+      let text2;
+      if (typeof value === "string") text2 = value;
       try {
-        text ??= JSON.stringify(value);
+        text2 ??= JSON.stringify(value);
       } catch {
         return "[unserializable]";
       }
-      return keepTail ? truncateMiddle(text, limit) : truncate(text, limit);
+      return keepTail ? truncateMiddle(text2, limit) : truncate(text2, limit);
     }
     function userMessageText(content) {
       return (content ?? []).map((part) => {
@@ -599,11 +599,11 @@ var require_episode_curation = __commonJS({
       });
     }
     function stripOuterQuotes(value) {
-      const text = String(value ?? "").trim();
-      if (text.length < 2) return text;
-      const first = text[0];
-      const last = text.at(-1);
-      return first === "'" && last === "'" || first === '"' && last === '"' ? text.slice(1, -1) : text;
+      const text2 = String(value ?? "").trim();
+      if (text2.length < 2) return text2;
+      const first = text2[0];
+      const last = text2.at(-1);
+      return first === "'" && last === "'" || first === '"' && last === '"' ? text2.slice(1, -1) : text2;
     }
     function unwrapShell(command) {
       const match = String(command ?? "").trim().match(/^(?:\S*\/)?(?:bash|zsh|sh|dash|ksh)\s+(?:-[a-z]*c[a-z]*|--command)\s+([\s\S]+)$/i);
@@ -614,14 +614,14 @@ var require_episode_curation = __commonJS({
       let current = "";
       let quote = null;
       let escaped = false;
-      const text = String(command ?? "");
+      const text2 = String(command ?? "");
       function flush() {
         const value = current.trim();
         if (value) parts.push(value);
         current = "";
       }
-      for (let index = 0; index < text.length; index += 1) {
-        const character = text[index];
+      for (let index = 0; index < text2.length; index += 1) {
+        const character = text2[index];
         if (escaped) {
           current += character;
           escaped = false;
@@ -642,7 +642,7 @@ var require_episode_curation = __commonJS({
           quote = character;
           continue;
         }
-        const pair = text.slice(index, index + 2);
+        const pair = text2.slice(index, index + 2);
         if (pair === "&&" || pair === "||") {
           flush();
           index += 1;
@@ -1124,8 +1124,8 @@ Optional issue description about the captured answer:
 Frozen episode evidence (compacted working view; full evidence remains archived):
 <episode-json>${JSON.stringify(curatorEvidence)}</episode-json>`;
     }
-    function extractJson(text) {
-      const source = String(text ?? "");
+    function extractJson(text2) {
+      const source = String(text2 ?? "");
       const blocks = [...source.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
       for (const match of blocks.reverse()) {
         try {
@@ -1334,8 +1334,8 @@ Frozen episode evidence (compacted working view; full evidence remains archived)
       validateBadCaseAnalysis(draft, { caseType, allowedSourceItems, gradingIds });
       return deepFreeze(draft);
     }
-    function parseCuratorDraft(text, options2) {
-      return validateCuratorDraft(extractJson(text), options2);
+    function parseCuratorDraft(text2, options2) {
+      return validateCuratorDraft(extractJson(text2), options2);
     }
     function bulletList(values, empty = "- None") {
       return values?.length ? values.map((value) => `- ${value}`).join("\n") : empty;
@@ -1796,7 +1796,7 @@ var require_local_store = __commonJS({
       writeFileSync
     } = __require("node:fs");
     var { dirname } = __require("node:path");
-    var { randomUUID } = __require("node:crypto");
+    var { randomUUID: randomUUID2 } = __require("node:crypto");
     var {
       UNIFIED_SCORING_MODEL,
       datasetRubricDigest,
@@ -1930,7 +1930,7 @@ var require_local_store = __commonJS({
         settings: defaultSettings(),
         datasets: [
           {
-            id: randomUUID(),
+            id: randomUUID2(),
             name: "Skill evaluation cases",
             skillReference: null,
             activeRubricVersionId: null,
@@ -2415,7 +2415,7 @@ var require_local_store = __commonJS({
       }
       const now = (/* @__PURE__ */ new Date()).toISOString();
       return {
-        id: randomUUID(),
+        id: randomUUID2(),
         datasetId: dataset.id,
         operation,
         targetCaseId,
@@ -2633,7 +2633,7 @@ var require_local_store = __commonJS({
       persist() {
         const directory = dirname(this.path);
         mkdirSync(directory, { recursive: true, mode: 448 });
-        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID()}`;
+        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID2()}`;
         writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}
 `, { mode: 384 });
         chmodSync(temporary, 384);
@@ -2664,7 +2664,7 @@ var require_local_store = __commonJS({
         if (!skillReference) throw new Error("Dataset Skill binding is required");
         const state = this.load();
         const dataset = {
-          id: randomUUID(),
+          id: randomUUID2(),
           name: trimmed,
           skillReference,
           activeRubricVersionId: null,
@@ -2944,7 +2944,7 @@ var require_local_store = __commonJS({
         }
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const session = {
-          id: randomUUID(),
+          id: randomUUID2(),
           datasetId: dataset.id,
           baseVersionId,
           status: "queued",
@@ -3010,7 +3010,7 @@ var require_local_store = __commonJS({
         if (!message) throw new Error("Rubric message text is required");
         if (message.length > 12e4) throw new Error("Rubric message is too large");
         session.conversation.push({
-          id: randomUUID(),
+          id: randomUUID2(),
           role: input.role,
           text: message,
           turnId: input.turnId ?? null,
@@ -3028,14 +3028,14 @@ var require_local_store = __commonJS({
         if (!assistantText) throw new Error("A Rubric Agent response is required");
         const now = (/* @__PURE__ */ new Date()).toISOString();
         session.conversation.push({
-          id: randomUUID(),
+          id: randomUUID2(),
           role: "assistant",
           text: assistantText,
           turnId: input.turnId ?? null,
           createdAt: now
         });
         session.revisions.push({
-          id: randomUUID(),
+          id: randomUUID2(),
           rubric,
           rubricDigest: datasetRubricDigest(rubric),
           turnId: input.turnId ?? null,
@@ -3102,7 +3102,7 @@ var require_local_store = __commonJS({
         const versionNumber = state.datasetRubricVersions.filter((entry) => entry.datasetId === dataset.id).reduce((highest, entry) => Math.max(highest, Number(entry.version) || 0), 0) + 1;
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const version = {
-          id: randomUUID(),
+          id: randomUUID2(),
           datasetId: dataset.id,
           version: versionNumber,
           rubric,
@@ -3182,7 +3182,7 @@ var require_local_store = __commonJS({
         const versionNumber = state.datasetRubricVersions.filter((entry) => entry.datasetId === dataset.id).reduce((highest, entry) => Math.max(highest, Number(entry.version) || 0), 0) + 1;
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const version = {
-          id: randomUUID(),
+          id: randomUUID2(),
           datasetId: dataset.id,
           version: versionNumber,
           rubric,
@@ -3220,7 +3220,7 @@ var require_local_store = __commonJS({
         if (!answer) throw new Error("Case answer is required");
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const entry = {
-          id: randomUUID(),
+          id: randomUUID2(),
           datasetId: input.datasetId,
           caseType: input.caseType,
           question,
@@ -3408,13 +3408,13 @@ var require_local_store = __commonJS({
         if (input.role !== "user" && input.role !== "assistant") {
           throw new Error("Curation message role must be user or assistant");
         }
-        const text = String(input.text ?? "").trim();
-        if (!text) throw new Error("Curation message text is required");
-        if (text.length > 12e4) throw new Error("Curation message is too large");
+        const text2 = String(input.text ?? "").trim();
+        if (!text2) throw new Error("Curation message text is required");
+        if (text2.length > 12e4) throw new Error("Curation message is too large");
         session.conversation.push({
-          id: randomUUID(),
+          id: randomUUID2(),
           role: input.role,
-          text,
+          text: text2,
           turnId: input.turnId ?? null,
           createdAt: (/* @__PURE__ */ new Date()).toISOString()
         });
@@ -3434,14 +3434,14 @@ var require_local_store = __commonJS({
         if (!assistantText) throw new Error("A Curator response is required");
         const now = (/* @__PURE__ */ new Date()).toISOString();
         session.conversation.push({
-          id: randomUUID(),
+          id: randomUUID2(),
           role: "assistant",
           text: assistantText,
           turnId: input.turnId ?? null,
           createdAt: now
         });
         const revision = {
-          id: randomUUID(),
+          id: randomUUID2(),
           draft,
           turnId: input.turnId ?? null,
           createdAt: now
@@ -3495,7 +3495,7 @@ var require_local_store = __commonJS({
           }
           if (!Array.isArray(target.refreshHistory)) target.refreshHistory = [];
           target.refreshHistory.push({
-            id: randomUUID(),
+            id: randomUUID2(),
             answer: target.answer,
             curated: copy(target.curated ?? null),
             issueDescription: target.issueDescription ?? "",
@@ -3570,7 +3570,7 @@ var require_local_store = __commonJS({
           const previousRubricVersionId = target.rubricVersionId ?? null;
           if (!Array.isArray(target.calibrationHistory)) target.calibrationHistory = [];
           target.calibrationHistory.push({
-            id: randomUUID(),
+            id: randomUUID2(),
             rubricVersionId: previousRubricVersionId,
             rubricCalibration: copy(target.rubricCalibration ?? null),
             skillReference: copy(target.skillReference ?? null),
@@ -3622,7 +3622,7 @@ var require_local_store = __commonJS({
           return copy(target);
         }
         const entry = {
-          id: randomUUID(),
+          id: randomUUID2(),
           datasetId: session.datasetId,
           caseType: session.caseType,
           question: session.episode.originalQuestion,
@@ -3788,7 +3788,7 @@ var require_local_store = __commonJS({
           }
         }
         const run = {
-          id: randomUUID(),
+          id: randomUUID2(),
           datasetId: input.datasetId,
           datasetSnapshot: copy(dataset),
           rubricVersionSnapshot,
@@ -3811,7 +3811,7 @@ var require_local_store = __commonJS({
         for (const configuration of runtimeConfigurations) {
           for (const caseSnapshot of caseSnapshots) {
             run.results.push({
-              id: randomUUID(),
+              id: randomUUID2(),
               caseId: caseSnapshot.id,
               runtimeId: configuration.runtimeId,
               caseSnapshot: copy(caseSnapshot),
@@ -4035,7 +4035,7 @@ var require_managed_skill_version_cursor = __commonJS({
 // ../../desktop/rolling-skill/src/managed-skill-store.cjs
 var require_managed_skill_store = __commonJS({
   "../../desktop/rolling-skill/src/managed-skill-store.cjs"(exports, module) {
-    var { randomUUID } = __require("node:crypto");
+    var { randomUUID: randomUUID2 } = __require("node:crypto");
     var {
       chmodSync,
       closeSync,
@@ -4255,7 +4255,7 @@ var require_managed_skill_store = __commonJS({
         if (!existsSync(this.path)) {
           this.state = initialManagedSkillState();
           this.persist();
-          this.catalogRevision = randomUUID();
+          this.catalogRevision = randomUUID2();
           this.versionOrderIndex = null;
           return this.state;
         }
@@ -4266,7 +4266,7 @@ var require_managed_skill_store = __commonJS({
           this.state = validateState(JSON.parse(readFileSync(this.path, "utf8")));
           chmodSync(dirname(this.path), 448);
           chmodSync(this.path, 384);
-          this.catalogRevision = randomUUID();
+          this.catalogRevision = randomUUID2();
           this.versionOrderIndex = null;
           return this.state;
         } catch (error) {
@@ -4278,7 +4278,7 @@ var require_managed_skill_store = __commonJS({
         const directory = dirname(this.path);
         mkdirSync(directory, { recursive: true, mode: 448 });
         chmodSync(directory, 448);
-        const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID()}`;
+        const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID2()}`;
         const descriptor = openSync(temporaryPath, "wx", 384);
         try {
           try {
@@ -4313,7 +4313,7 @@ var require_managed_skill_store = __commonJS({
         try {
           const result = operation();
           this.persist();
-          this.catalogRevision = randomUUID();
+          this.catalogRevision = randomUUID2();
           this.versionOrderIndex = null;
           return copy(result);
         } catch (error) {
@@ -4349,7 +4349,7 @@ var require_managed_skill_store = __commonJS({
         if (!SOURCE_KINDS.has(sourceKind)) throw new Error("Unsupported managed Skill source kind");
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const repository = {
-          id: randomUUID(),
+          id: randomUUID2(),
           displayName: requiredString(input.displayName, "Repository display name", 200),
           managedPath,
           defaultBranch: requiredString(input.defaultBranch, "Default branch", 200),
@@ -4407,7 +4407,7 @@ var require_managed_skill_store = __commonJS({
             );
           }
           return {
-            id: previous?.id ?? randomUUID(),
+            id: previous?.id ?? randomUUID2(),
             repositoryId: repository.id,
             name,
             description: input.description === null || input.description === void 0 ? null : requiredString(input.description, "Skill description", 1024),
@@ -4551,7 +4551,7 @@ var require_managed_skill_store = __commonJS({
           throw new Error("Managed Skill version already exists for this commit");
         }
         const version = {
-          id: randomUUID(),
+          id: randomUUID2(),
           repositoryId: repository.id,
           skillId: skill.id,
           skillRoot: skill.skillRoot,
@@ -7157,14 +7157,14 @@ var require_foldFlowLines = __commonJS({
     var FOLD_FLOW = "flow";
     var FOLD_BLOCK = "block";
     var FOLD_QUOTED = "quoted";
-    function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
+    function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
       if (!lineWidth || lineWidth < 0)
-        return text;
+        return text2;
       if (lineWidth < minContentWidth)
         minContentWidth = 0;
       const endStep = Math.max(1 + minContentWidth, 1 + lineWidth - indent.length);
-      if (text.length <= endStep)
-        return text;
+      if (text2.length <= endStep)
+        return text2;
       const folds = [];
       const escapedFolds = {};
       let end = lineWidth - indent.length;
@@ -7181,14 +7181,14 @@ var require_foldFlowLines = __commonJS({
       let escStart = -1;
       let escEnd = -1;
       if (mode === FOLD_BLOCK) {
-        i = consumeMoreIndentedLines(text, i, indent.length);
+        i = consumeMoreIndentedLines(text2, i, indent.length);
         if (i !== -1)
           end = i + endStep;
       }
-      for (let ch; ch = text[i += 1]; ) {
+      for (let ch; ch = text2[i += 1]; ) {
         if (mode === FOLD_QUOTED && ch === "\\") {
           escStart = i;
-          switch (text[i + 1]) {
+          switch (text2[i + 1]) {
             case "x":
               i += 3;
               break;
@@ -7205,12 +7205,12 @@ var require_foldFlowLines = __commonJS({
         }
         if (ch === "\n") {
           if (mode === FOLD_BLOCK)
-            i = consumeMoreIndentedLines(text, i, indent.length);
+            i = consumeMoreIndentedLines(text2, i, indent.length);
           end = i + indent.length + endStep;
           split = void 0;
         } else {
           if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
-            const next = text[i + 1];
+            const next = text2[i + 1];
             if (next && next !== " " && next !== "\n" && next !== "	")
               split = i;
           }
@@ -7222,12 +7222,12 @@ var require_foldFlowLines = __commonJS({
             } else if (mode === FOLD_QUOTED) {
               while (prev === " " || prev === "	") {
                 prev = ch;
-                ch = text[i += 1];
+                ch = text2[i += 1];
                 overflow = true;
               }
               const j = i > escEnd + 1 ? i - 2 : escStart - 1;
               if (escapedFolds[j])
-                return text;
+                return text2;
               folds.push(j);
               escapedFolds[j] = true;
               end = j + endStep;
@@ -7242,39 +7242,39 @@ var require_foldFlowLines = __commonJS({
       if (overflow && onOverflow)
         onOverflow();
       if (folds.length === 0)
-        return text;
+        return text2;
       if (onFold)
         onFold();
-      let res = text.slice(0, folds[0]);
+      let res = text2.slice(0, folds[0]);
       for (let i2 = 0; i2 < folds.length; ++i2) {
         const fold = folds[i2];
-        const end2 = folds[i2 + 1] || text.length;
+        const end2 = folds[i2 + 1] || text2.length;
         if (fold === 0)
           res = `
-${indent}${text.slice(0, end2)}`;
+${indent}${text2.slice(0, end2)}`;
         else {
           if (mode === FOLD_QUOTED && escapedFolds[fold])
-            res += `${text[fold]}\\`;
+            res += `${text2[fold]}\\`;
           res += `
-${indent}${text.slice(fold + 1, end2)}`;
+${indent}${text2.slice(fold + 1, end2)}`;
         }
       }
       return res;
     }
-    function consumeMoreIndentedLines(text, i, indent) {
+    function consumeMoreIndentedLines(text2, i, indent) {
       let end = i;
       let start = i + 1;
-      let ch = text[start];
+      let ch = text2[start];
       while (ch === " " || ch === "	") {
         if (i < start + indent) {
-          ch = text[++i];
+          ch = text2[++i];
         } else {
           do {
-            ch = text[++i];
+            ch = text2[++i];
           } while (ch && ch !== "\n");
           end = i;
           start = i + 1;
-          ch = text[start];
+          ch = text2[start];
         }
       }
       return end;
@@ -13653,13 +13653,13 @@ var require_managed_skill_snapshot = __commonJS({
     function readFrontmatter(manifestPath) {
       const warnings = [];
       let document = null;
-      let text;
+      let text2;
       try {
-        text = decodeUtf8(readFileSync(manifestPath), manifestPath).replace(/\r\n?/gu, "\n");
+        text2 = decodeUtf8(readFileSync(manifestPath), manifestPath).replace(/\r\n?/gu, "\n");
       } catch (error) {
         return { name: null, description: null, warnings: [error.message] };
       }
-      const match = text.match(/^---\n([\s\S]*?)\n---(?:\n|$)/u);
+      const match = text2.match(/^---\n([\s\S]*?)\n---(?:\n|$)/u);
       if (!match) {
         warnings.push("SKILL.md requires YAML frontmatter");
       } else {
@@ -13677,12 +13677,12 @@ var require_managed_skill_snapshot = __commonJS({
       if (!description || description.length > 1024) {
         warnings.push("Skill description must contain 1 to 1024 characters");
       }
-      return { name: name || null, description: description || null, warnings, text };
+      return { name: name || null, description: description || null, warnings, text: text2 };
     }
-    function validateManifestReferences(text, manifestPath, skillRoot) {
+    function validateManifestReferences(text2, manifestPath, skillRoot) {
       const warnings = [];
       const pattern = /\]\(([^)\n]+)\)/gu;
-      for (const match of text.matchAll(pattern)) {
+      for (const match of text2.matchAll(pattern)) {
         let target = match[1].trim();
         if (target.startsWith("<")) {
           const end = target.indexOf(">");
@@ -14216,7 +14216,7 @@ var require_managed_skill_git = __commonJS({
 // ../../desktop/rolling-skill/src/managed-skill-manager.cjs
 var require_managed_skill_manager = __commonJS({
   "../../desktop/rolling-skill/src/managed-skill-manager.cjs"(exports, module) {
-    var { randomUUID } = __require("node:crypto");
+    var { randomUUID: randomUUID2 } = __require("node:crypto");
     var {
       chmodSync,
       closeSync,
@@ -14455,7 +14455,7 @@ var require_managed_skill_manager = __commonJS({
         if (kind !== "git-url" && !isAbsolute(location)) {
           throw new Error("Local Skill source path must be absolute");
         }
-        const repositoryId = randomUUID();
+        const repositoryId = randomUUID2();
         const stagingPath = join(this.paths.repositoriesRoot, `.staging-${repositoryId}`);
         const managedPath = join(this.paths.repositoriesRoot, repositoryId);
         let repository = null;
@@ -14738,7 +14738,7 @@ var require_raw_case_store = __commonJS({
     } = __require("node:fs");
     var { homedir } = __require("node:os");
     var { dirname, join } = __require("node:path");
-    var { randomUUID } = __require("node:crypto");
+    var { randomUUID: randomUUID2 } = __require("node:crypto");
     var RAW_CASE_EVENT_SCHEMA = "rolling-skill-raw-case-event/v1";
     var MAX_QUESTION_LENGTH = 12e4;
     var MAX_BATCH_SIZE = 200;
@@ -14821,7 +14821,7 @@ var require_raw_case_store = __commonJS({
       }
       return note;
     }
-    function jsonCopy(value) {
+    function jsonCopy2(value) {
       return value === void 0 ? void 0 : JSON.parse(JSON.stringify(value));
     }
     function normalizeInput(input = {}) {
@@ -14829,7 +14829,7 @@ var require_raw_case_store = __commonJS({
         question: normalizeQuestion(input.question),
         skill: normalizeSkill(input.skill),
         note: normalizeNote(input.note),
-        source: jsonCopy(input.source ?? { kind: "unknown" })
+        source: jsonCopy2(input.source ?? { kind: "unknown" })
       };
     }
     function deduplicationKey(input) {
@@ -14913,7 +14913,7 @@ var require_raw_case_store = __commonJS({
       for (const event of events) {
         sequence += 1;
         if (event.type === "added" && event.rawCase?.id) {
-          const rawCase = jsonCopy(event.rawCase);
+          const rawCase = jsonCopy2(event.rawCase);
           records.set(event.rawCase.id, {
             ...rawCase,
             revision: recordRevision(rawCase.revision),
@@ -14934,7 +14934,7 @@ var require_raw_case_store = __commonJS({
           }
           records.set(id, {
             ...current,
-            ...jsonCopy(event.changes ?? {}),
+            ...jsonCopy2(event.changes ?? {}),
             id,
             createdAt: current.createdAt,
             updatedAt: event.occurredAt ?? current.updatedAt,
@@ -14951,7 +14951,7 @@ var require_raw_case_store = __commonJS({
     function publicRecord(record) {
       if (!record) return null;
       const { _lastAppliedEventId, _sequence, ...value } = record;
-      return jsonCopy(value);
+      return jsonCopy2(value);
     }
     var RawCaseStore = class {
       constructor(path = defaultRawCaseEventsPath()) {
@@ -14990,7 +14990,7 @@ var require_raw_case_store = __commonJS({
         }
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const rawCase = {
-          id: randomUUID(),
+          id: randomUUID2(),
           ...normalized,
           createdAt: now,
           updatedAt: now,
@@ -15117,12 +15117,12 @@ var require_raw_case_store = __commonJS({
         this.append({ type: "deleted", rawCaseId: current.id });
         return current;
       }
-      markDispatched(id, dispatch = {}) {
+      markDispatched(id, dispatch2 = {}) {
         const current = this.requireRecord(id);
         this.append({
           type: "dispatched",
           rawCaseId: current.id,
-          dispatch: jsonCopy(dispatch)
+          dispatch: jsonCopy2(dispatch2)
         });
         return current;
       }
@@ -15137,7 +15137,7 @@ var require_raw_case_store = __commonJS({
         chmodSync(directory, 448);
         const event = {
           schemaVersion: RAW_CASE_EVENT_SCHEMA,
-          eventId: randomUUID(),
+          eventId: randomUUID2(),
           occurredAt: (/* @__PURE__ */ new Date()).toISOString(),
           ...payload
         };
@@ -15405,8 +15405,8 @@ var require_command_activity = __commonJS({
         if (Array.isArray(value)) {
           return value.map((part) => String(part)).join(" ").trim();
         }
-        const text = String(value ?? "");
-        return text.trim() ? text : "";
+        const text2 = String(value ?? "");
+        return text2.trim() ? text2 : "";
       }
       function commandActivityDetail(item = {}) {
         const actions = Array.isArray(item.commandActions) ? item.commandActions.map((action) => commandText(action?.command)).filter(Boolean) : [];
@@ -15532,9 +15532,9 @@ var require_curation_manager = __commonJS({
       "error"
     ]);
     function compactActivityText(value, limit = ACTIVITY_SUMMARY_LIMIT) {
-      const text = String(value ?? "").replace(/\s+/gu, " ").trim();
-      if (text.length <= limit) return text;
-      return `${text.slice(0, Math.max(0, limit - 1))}\u2026`;
+      const text2 = String(value ?? "").replace(/\s+/gu, " ").trim();
+      if (text2.length <= limit) return text2;
+      return `${text2.slice(0, Math.max(0, limit - 1))}\u2026`;
     }
     function commandSummary(item) {
       return compactActivityText(commandActivityDetail(item).command);
@@ -15544,15 +15544,15 @@ var require_curation_manager = __commonJS({
         [item?.server, item?.tool ?? item?.name].filter(Boolean).join(" / ")
       );
     }
-    function looksLikeContractRevision(text) {
+    function looksLikeContractRevision(text2) {
       return /```json[\s\S]*(?:schemaVersion|referenceAnswer|hardRequirements|grading)/iu.test(
-        String(text ?? "")
+        String(text2 ?? "")
       );
     }
     function failureState(session) {
       return session.draft ? "needs_review" : "failed";
     }
-    function followUpPrompt(text, caseType, schemaVersion = CURATED_CASE_SCHEMA) {
+    function followUpPrompt(text2, caseType, schemaVersion = CURATED_CASE_SCHEMA) {
       const badcaseGuidance = caseType === "badcase" ? `This is a badcase. Keep every revision failure-led: diagnose the error, first divergence,
 root cause, and bounded recovery. Do not turn it into a polished goodcase reference answer. Preserve
 or improve the deductionRules that penalize the same or materially equivalent observable error.` : "";
@@ -15565,7 +15565,7 @@ Never return a partial contract fragment.
 
 ${badcaseGuidance}
 
-<user-review-message>${String(text ?? "").trim()}</user-review-message>`;
+<user-review-message>${String(text2 ?? "").trim()}</user-review-message>`;
     }
     function retryPrompt(originalQuestion, issueDescription, caseType, schemaVersion = CURATED_CASE_SCHEMA) {
       const badcaseGuidance = caseType === "badcase" ? `This is a badcase: lead with failure analysis and include executable deductionRules for
@@ -15998,14 +15998,14 @@ ${session.issueDescription}` : ""}`;
         }
         return false;
       }
-      async sendMessage(sessionId, text) {
+      async sendMessage(sessionId, text2) {
         let session = this.store.getCurationSession(sessionId);
         if (session.status === "archived" || session.status === "cancelled") {
           throw new Error("This curation session is no longer editable");
         }
         if (!session.curator.threadId) throw new Error("The Curator thread has not started");
         if (session.curator.currentTurnId) throw new Error("The Curator is already working");
-        session = this.store.appendCurationMessage(sessionId, { role: "user", text });
+        session = this.store.appendCurationMessage(sessionId, { role: "user", text: text2 });
         session = this.store.updateCurationSession(sessionId, { status: "running", error: null });
         this.emitChanged(session);
         this.emitActivity(session, { stage: "starting", summary: "" });
@@ -16024,7 +16024,7 @@ ${session.issueDescription}` : ""}`;
           const response = await runtime.startTurn(
             session.curator.threadId,
             followUpPrompt(
-              text,
+              text2,
               session.caseType,
               session.rubricVersionSnapshot ? CURATED_CASE_V2_SCHEMA : CURATED_CASE_SCHEMA
             ),
@@ -16156,8 +16156,8 @@ var require_rubric_manager = __commonJS({
       return (turn?.items ?? []).filter((item) => item.type === "agentMessage" && String(item.text ?? "").trim()).map((item) => String(item.text).trim()).join("\n\n");
     }
     function compact(value, limit = 240) {
-      const text = String(value ?? "").replace(/\s+/gu, " ").trim();
-      return text.length <= limit ? text : `${text.slice(0, limit - 1)}\u2026`;
+      const text2 = String(value ?? "").replace(/\s+/gu, " ").trim();
+      return text2.length <= limit ? text2 : `${text2.slice(0, limit - 1)}\u2026`;
     }
     function failureState(session) {
       return session.draft ? "needs_review" : "failed";
@@ -16424,14 +16424,14 @@ var require_rubric_manager = __commonJS({
         }
         return false;
       }
-      async sendMessage(sessionId, text) {
+      async sendMessage(sessionId, text2) {
         let session = this.store.getRubricSession(sessionId);
         if (session.status === "archived" || session.status === "cancelled") {
           throw new Error("This rubric session is no longer editable");
         }
         if (!session.rubricAgent.threadId) throw new Error("The Rubric Agent thread has not started");
         if (session.rubricAgent.currentTurnId) throw new Error("The Rubric Agent is already working");
-        session = this.store.appendRubricMessage(sessionId, { role: "user", text });
+        session = this.store.appendRubricMessage(sessionId, { role: "user", text: text2 });
         session = this.store.updateRubricSession(sessionId, { status: "running", error: null });
         this.emitChanged(session);
         this.emitActivity(session, { stage: "starting", summary: "Applying review message" });
@@ -16444,7 +16444,7 @@ var require_rubric_manager = __commonJS({
           });
           const response = await runtime.startTurn(
             session.rubricAgent.threadId,
-            buildRubricFollowUpPrompt(text),
+            buildRubricFollowUpPrompt(text2),
             {
               ...session.rubricAgent.modelId ? { model: session.rubricAgent.modelId } : {},
               ...session.rubricAgent.effort ? { effort: session.rubricAgent.effort } : {}
@@ -16675,7 +16675,7 @@ var require_evaluation_grading = __commonJS({
       return { schemaVersion: EVIDENCE_CATALOG_SCHEMA, entries };
     }
     function inferRequiredEvidenceGroups(entry, coverage = null) {
-      const text = [
+      const text2 = [
         entry?.title,
         entry?.criterion,
         ...Array.isArray(entry?.evidenceRequirements) ? entry.evidenceRequirements : [],
@@ -16683,7 +16683,7 @@ var require_evaluation_grading = __commonJS({
         coverage?.expectation,
         coverage?.evidenceBasis
       ].filter(Boolean).join("\n");
-      return REQUIRED_EVIDENCE_GROUPS.filter((group) => group.pattern.test(text)).map((group) => ({ id: group.id, kinds: [...group.kinds] }));
+      return REQUIRED_EVIDENCE_GROUPS.filter((group) => group.pattern.test(text2)).map((group) => ({ id: group.id, kinds: [...group.kinds] }));
     }
     function rubricCriterion(entry, coverage) {
       const anchors = Object.entries(entry.scoringAnchors).map(([rating, meaning]) => `${rating}: ${meaning}`).join("; ");
@@ -16992,8 +16992,8 @@ Typed Evidence Catalog:
       if (claimedDigest !== digest(withoutDigest)) throw new Error("Score contract digest does not match its content");
       return contract;
     }
-    function extractJson(text) {
-      const source = String(text ?? "");
+    function extractJson(text2) {
+      const source = String(text2 ?? "");
       const blocks = [...source.matchAll(/```(?:json)?\s*([\s\S]*?)```/giu)];
       for (const match of blocks.reverse()) {
         try {
@@ -17087,8 +17087,8 @@ Typed Evidence Catalog:
       }
       return deepFreeze(result);
     }
-    function parseJudgeResult(text, contract) {
-      return validateJudgeResult(extractJson(text), contract);
+    function parseJudgeResult(text2, contract) {
+      return validateJudgeResult(extractJson(text2), contract);
     }
     function rounded(value) {
       return Math.round((value + Number.EPSILON) * 10) / 10;
@@ -17251,11 +17251,11 @@ var require_evaluation_evidence_catalog = __commonJS({
       return structuredStrings(record, ["type", "method", "tool", "name"]).map((value) => value.toLowerCase());
     }
     function isMarkdownReadCommand(command, predicate) {
-      const text = String(command ?? "");
-      if (!/\b(?:cat|sed|head|tail|less|more|bat|rg|grep|awk|perl|python\d*)\b/iu.test(text)) {
+      const text2 = String(command ?? "");
+      if (!/\b(?:cat|sed|head|tail|less|more|bat|rg|grep|awk|perl|python\d*)\b/iu.test(text2)) {
         return false;
       }
-      const paths = text.match(/(?:^|[\s'"=])([^\s'";|&<>]+\.md)(?=$|[\s'";|&<>])/giu) ?? [];
+      const paths = text2.match(/(?:^|[\s'"=])([^\s'";|&<>]+\.md)(?=$|[\s'";|&<>])/giu) ?? [];
       return paths.some((value) => predicate(value.trim().replace(/^['"=\s]+|['"\s]+$/gu, "")));
     }
     function hasSkillMention(record) {
@@ -18741,20 +18741,20 @@ var require_skill_installation_protocol = __commonJS({
         INSTALL_RESULT_SENTINEL.close
       ].join("\n");
     }
-    function oneSentinelBody(text) {
-      text = String(text ?? "");
-      const firstOpen = text.indexOf(INSTALL_RESULT_SENTINEL.open);
-      const secondOpen = text.indexOf(INSTALL_RESULT_SENTINEL.open, firstOpen + 1);
-      const firstClose = text.indexOf(INSTALL_RESULT_SENTINEL.close);
-      const secondClose = text.indexOf(INSTALL_RESULT_SENTINEL.close, firstClose + 1);
+    function oneSentinelBody(text2) {
+      text2 = String(text2 ?? "");
+      const firstOpen = text2.indexOf(INSTALL_RESULT_SENTINEL.open);
+      const secondOpen = text2.indexOf(INSTALL_RESULT_SENTINEL.open, firstOpen + 1);
+      const firstClose = text2.indexOf(INSTALL_RESULT_SENTINEL.close);
+      const secondClose = text2.indexOf(INSTALL_RESULT_SENTINEL.close, firstClose + 1);
       if (firstOpen < 0 || firstClose < 0 || secondOpen >= 0 || secondClose >= 0 || firstClose < firstOpen) {
         throw new Error("Installation output must contain exactly one structured result block");
       }
-      return text.slice(firstOpen + INSTALL_RESULT_SENTINEL.open.length, firstClose).trim();
+      return text2.slice(firstOpen + INSTALL_RESULT_SENTINEL.open.length, firstClose).trim();
     }
-    function parseJsonBody(text) {
+    function parseJsonBody(text2) {
       try {
-        const parsed = JSON.parse(text);
+        const parsed = JSON.parse(text2);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object");
         return parsed;
       } catch {
@@ -18909,8 +18909,8 @@ var require_skill_installation_protocol = __commonJS({
       }
       return "experiment-removed";
     }
-    function parseSkillInstallationResult(text, request) {
-      const payload = parseJsonBody(oneSentinelBody(text));
+    function parseSkillInstallationResult(text2, request) {
+      const payload = parseJsonBody(oneSentinelBody(text2));
       if (payload.schema !== INSTALL_RESULT_SCHEMA) {
         throw new Error("Unsupported Skill installation result schema");
       }
@@ -19288,9 +19288,9 @@ var require_skill_installation_manager = __commonJS({
         this.emit(job.id);
         return job;
       }
-      async send(jobId, text) {
+      async send(jobId, text2) {
         const job = this.store.getJob(requiredText(jobId, "Installation job id", 200));
-        text = requiredText(text, "Installer message", 12e4);
+        text2 = requiredText(text2, "Installer message", 12e4);
         if (!TERMINAL_STATUSES.has(job.status) || !job.threadId) {
           throw new Error("The installer session is not ready for a follow-up");
         }
@@ -19300,8 +19300,8 @@ var require_skill_installation_manager = __commonJS({
         const key = `${job.runtime.runtimeId}\0${job.request.source.skillId}`;
         const previous = this.queueTails.get(key) ?? Promise.resolve();
         const operation = previous.then(
-          () => this.executeConversation(job.id, text),
-          () => this.executeConversation(job.id, text)
+          () => this.executeConversation(job.id, text2),
+          () => this.executeConversation(job.id, text2)
         );
         const tail = operation.catch(() => {
         }).finally(() => {
@@ -19483,8 +19483,8 @@ var require_skill_installation_manager = __commonJS({
         } catch (error) {
           const current = this.store.getJob(jobId);
           if (TERMINAL_STATUSES.has(current.status)) return current;
-          const cancelled = control.cancelRequested || error?.code === "INSTALLATION_CANCELLED";
-          if (cancelled && (job.operation === "inspect" || job.operation === "experiment_inspect")) {
+          const cancelled2 = control.cancelRequested || error?.code === "INSTALLATION_CANCELLED";
+          if (cancelled2 && (job.operation === "inspect" || job.operation === "experiment_inspect")) {
             return this.finish(jobId, "unverified", {
               traceReference: traceReferenceFor(client),
               error: {
@@ -19493,7 +19493,7 @@ var require_skill_installation_manager = __commonJS({
               }
             });
           }
-          if (cancelled && control.threadId && !control.inspecting) {
+          if (cancelled2 && control.threadId && !control.inspecting) {
             return this.inspectAfterCancellation({
               client,
               descriptor,
@@ -19509,9 +19509,9 @@ var require_skill_installation_manager = __commonJS({
               control
             });
           }
-          return this.finish(jobId, cancelled ? "cancelled" : "failed", {
+          return this.finish(jobId, cancelled2 ? "cancelled" : "failed", {
             traceReference: traceReferenceFor(client),
-            error: cancelled ? { code: "INSTALLATION_CANCELLED", message: "Installation cancelled by user" } : errorRecord(error)
+            error: cancelled2 ? { code: "INSTALLATION_CANCELLED", message: "Installation cancelled by user" } : errorRecord(error)
           });
         } finally {
           this.controls.delete(jobId);
@@ -19594,14 +19594,14 @@ var require_skill_installation_manager = __commonJS({
           });
         }
       }
-      async executeConversation(jobId, text) {
+      async executeConversation(jobId, text2) {
         const job = this.store.getJob(jobId);
         const descriptor = this.runtimeById(job.runtime.runtimeId);
         this.store.updateJob(jobId, {
           conversationStatus: "running",
           conversationError: null
         });
-        this.store.appendMessage(jobId, { role: "user", content: text });
+        this.store.appendMessage(jobId, { role: "user", content: text2 });
         this.emit(jobId);
         const { client, permission } = this.clientFor(job, descriptor);
         const control = {
@@ -19628,7 +19628,7 @@ var require_skill_installation_manager = __commonJS({
             client,
             jobId,
             threadId: job.threadId,
-            prompt: text,
+            prompt: text2,
             profile,
             control
           });
@@ -19757,12 +19757,12 @@ var require_skill_installation_manager = __commonJS({
           return this.store.getJob(job.id);
         }
         if (!control) {
-          const cancelled = this.store.completeJob(job.id, {
+          const cancelled2 = this.store.completeJob(job.id, {
             status: "cancelled",
             error: { code: "INSTALLATION_CANCELLED", message: "Installation cancelled before it started" }
           });
           this.emit(job.id);
-          return cancelled;
+          return cancelled2;
         }
         if (control.cancelRequested) return this.store.getJob(job.id);
         control.cancelRequested = true;
@@ -19794,7 +19794,7 @@ var require_skill_installation_manager = __commonJS({
 // ../../desktop/rolling-skill/src/skill-installation-store.cjs
 var require_skill_installation_store = __commonJS({
   "../../desktop/rolling-skill/src/skill-installation-store.cjs"(exports, module) {
-    var { randomUUID } = __require("node:crypto");
+    var { randomUUID: randomUUID2 } = __require("node:crypto");
     var {
       chmodSync,
       closeSync,
@@ -20086,7 +20086,7 @@ var require_skill_installation_store = __commonJS({
         const directory = dirname(this.path);
         mkdirSync(directory, { recursive: true, mode: 448 });
         chmodSync(directory, 448);
-        const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID()}`;
+        const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID2()}`;
         const descriptor = openSync(temporaryPath, "wx", 384);
         try {
           try {
@@ -20125,7 +20125,7 @@ var require_skill_installation_store = __commonJS({
       createJob(input = {}) {
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const job = {
-          id: randomUUID(),
+          id: randomUUID2(),
           operation: OPERATIONS.has(input.operation) ? input.operation : "install",
           parentJobId: nullableText(input.parentJobId, "Parent installation job id", 200),
           runtime: normalizeRuntime(input.runtime),
@@ -20265,7 +20265,7 @@ var require_skill_installation_store = __commonJS({
           if (status === "succeeded" && stored.request.purpose !== "optimization-experiment") {
             const result = input.parsedResult;
             this.state.installations.push({
-              id: randomUUID(),
+              id: randomUUID2(),
               jobId: stored.id,
               runtimeId: stored.runtime.runtimeId,
               providerId: stored.runtime.providerId,
@@ -20328,8 +20328,8 @@ var require_skill_installation_store = __commonJS({
 var require_dataset_csv_export = __commonJS({
   "../../desktop/rolling-skill/src/dataset-csv-export.cjs"(exports, module) {
     function csvCell(value) {
-      const text = String(value ?? "");
-      return /[",\r\n]/u.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+      const text2 = String(value ?? "");
+      return /[",\r\n]/u.test(text2) ? `"${text2.replaceAll('"', '""')}"` : text2;
     }
     function messageArray(role, content) {
       return JSON.stringify([{ role, content: String(content ?? "") }]);
@@ -20405,9 +20405,9 @@ var require_case_services = __commonJS({
       return JSON.parse(JSON.stringify(value));
     }
     function requiredText(value, label, maximum = 4096) {
-      const text = typeof value === "string" ? value.trim() : "";
-      if (!text || text.length > maximum) throw new Error(`${label} is required`);
-      return text;
+      const text2 = typeof value === "string" ? value.trim() : "";
+      if (!text2 || text2.length > maximum) throw new Error(`${label} is required`);
+      return text2;
     }
     function pageNumber(value, fallback, label, maximum) {
       const number = value === void 0 ? fallback : Number(value);
@@ -20584,11 +20584,11 @@ var require_case_services = __commonJS({
           () => rawCaseStore.delete(requiredText(input.id, "Raw Case id", 200))
         )
       };
-      async function dispatch(method, input = {}) {
+      async function dispatch2(method, input = {}) {
         if (!Object.hasOwn(methods, method)) throw new Error(`Unknown Case service method: ${method}`);
         return copy(await methods[method](copy(input)));
       }
-      return Object.freeze({ dispatch, methods: Object.freeze(methods), mutations: MUTATIONS });
+      return Object.freeze({ dispatch: dispatch2, methods: Object.freeze(methods), mutations: MUTATIONS });
     }
     function optionalRuntimeId(value) {
       return value === void 0 || value === null || value === "" ? null : requiredText(value, "Runtime id", 500);
@@ -20608,7 +20608,7 @@ var require_config_store = __commonJS({
       renameSync,
       writeFileSync
     } = __require("node:fs");
-    var { randomUUID } = __require("node:crypto");
+    var { randomUUID: randomUUID2 } = __require("node:crypto");
     var { dirname, isAbsolute } = __require("node:path");
     var CONFIG_SCHEMA = "rolling-skill-plugin-config/v1";
     var LOCALES = /* @__PURE__ */ new Set(["follow-harness", "zh-CN", "en"]);
@@ -20641,9 +20641,9 @@ var require_config_store = __commonJS({
       };
     }
     function requiredText(value, label, maximum = 4096) {
-      const text = typeof value === "string" ? value.trim() : "";
-      if (!text || text.length > maximum) throw new Error(`${label} is required`);
-      return text;
+      const text2 = typeof value === "string" ? value.trim() : "";
+      if (!text2 || text2.length > maximum) throw new Error(`${label} is required`);
+      return text2;
     }
     function optionalText(value, label, maximum) {
       if (value === null || value === void 0 || value === "") return null;
@@ -20729,7 +20729,7 @@ var require_config_store = __commonJS({
       }
       persist() {
         mkdirSync(dirname(this.path), { recursive: true, mode: 448 });
-        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID()}`;
+        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID2()}`;
         writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}
 `, { mode: 384 });
         chmodSync(temporary, 384);
@@ -20843,9 +20843,9 @@ var require_evaluation_services = __commonJS({
       return JSON.parse(JSON.stringify(value));
     }
     function requiredText(value, label, maximum = 200) {
-      const text = typeof value === "string" ? value.trim() : "";
-      if (!text || text.length > maximum) throw new Error(`${label} is required`);
-      return text;
+      const text2 = typeof value === "string" ? value.trim() : "";
+      if (!text2 || text2.length > maximum) throw new Error(`${label} is required`);
+      return text2;
     }
     function optionalText(value, label, maximum = 200) {
       if (value === null || value === void 0 || value === "") return null;
@@ -29186,8 +29186,8 @@ var require_lt = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
     var util = __importStar(require_util());
-    var capitalizeFirstCharacter = (text) => {
-      return text.charAt(0).toUpperCase() + text.slice(1);
+    var capitalizeFirstCharacter = (text2) => {
+      return text2.charAt(0).toUpperCase() + text2.slice(1);
     };
     function getUnitTypeFromNumber(number) {
       const abs = Math.abs(number);
@@ -39999,7 +39999,7 @@ var require_policy = __commonJS({
 // ../../desktop/rolling-skill/src/control-plane/control-plane.cjs
 var require_control_plane = __commonJS({
   "../../desktop/rolling-skill/src/control-plane/control-plane.cjs"(exports, module) {
-    var { createHash, randomUUID } = __require("node:crypto");
+    var { createHash, randomUUID: randomUUID2 } = __require("node:crypto");
     var { isAbsolute, resolve } = __require("node:path");
     var intrinsicPromiseResolve = Promise.resolve.bind(Promise);
     var intrinsicPromiseThen = Promise.prototype.then;
@@ -40793,7 +40793,7 @@ var require_control_plane = __commonJS({
             );
             assertOperatorRouteLive(state, operatorRoute);
             rawResult = await operatorRoute.execute(Object.freeze({
-              invocationId: randomUUID(),
+              invocationId: randomUUID2(),
               method,
               input,
               policyDecision: decision,
@@ -42945,7 +42945,7 @@ var require_socket_server = __commonJS({
     var fs = __require("node:fs");
     var net = __require("node:net");
     var path = __require("node:path");
-    var { createHash, randomBytes, randomUUID, timingSafeEqual } = __require("node:crypto");
+    var { createHash, randomBytes, randomUUID: randomUUID2, timingSafeEqual } = __require("node:crypto");
     var { JsonLineDecoder } = require_json_rpc();
     var { createPublicControlError, publicControlError } = require_contracts();
     var CONTROL_SOCKET_DIRECTORY = "control";
@@ -43174,7 +43174,7 @@ var require_socket_server = __commonJS({
     }
     function controlledSibling(candidate, prefix) {
       const directory = path.dirname(candidate);
-      const sibling = path.join(directory, `${prefix}${process.pid}-${randomUUID()}`);
+      const sibling = path.join(directory, `${prefix}${process.pid}-${randomUUID2()}`);
       if (path.dirname(sibling) !== directory || !path.basename(sibling).startsWith(prefix)) throw new Error("Control socket generated path is invalid");
       return sibling;
     }
@@ -44516,9 +44516,9 @@ var require_job_engine = __commonJS({
       }
       let remainingMs = totalMs;
       let handle = null;
-      let cancelled = false;
+      let cancelled2 = false;
       const arm = () => {
-        if (cancelled) return;
+        if (cancelled2) return;
         if (remainingMs === 0) {
           callback();
           return;
@@ -44532,7 +44532,7 @@ var require_job_engine = __commonJS({
       };
       arm();
       return () => {
-        cancelled = true;
+        cancelled2 = true;
         if (handle !== null) clearTimeout(handle);
       };
     }
@@ -45569,8 +45569,8 @@ var require_job_engine = __commonJS({
         if (recovery?.previousStatus === "cancelling") {
           this.#store.beginCancellation(jobId);
           this.#abortTree(jobId);
-          const cancelled = this.#store.cancelJobTree(jobId).job;
-          return { status: cancelled.status, jobId: cancelled.id };
+          const cancelled2 = this.#store.cancelJobTree(jobId).job;
+          return { status: cancelled2.status, jobId: cancelled2.id };
         }
         const steps = this.#store.listSteps({ jobId });
         for (let step of steps) {
@@ -45736,7 +45736,7 @@ var require_job_engine = __commonJS({
 // ../../desktop/rolling-skill/src/operator/job-store.cjs
 var require_job_store = __commonJS({
   "../../desktop/rolling-skill/src/operator/job-store.cjs"(exports, module) {
-    var { createHash, randomUUID } = __require("node:crypto");
+    var { createHash, randomUUID: randomUUID2 } = __require("node:crypto");
     var {
       constants,
       closeSync,
@@ -45814,7 +45814,7 @@ var require_job_store = __commonJS({
       if (!isPlainObject(value)) throw new Error(`${label} must be a plain object`);
       return value;
     }
-    function exactKeys(value, expected, label) {
+    function exactKeys2(value, expected, label) {
       requireObject(value, label);
       const actual = Object.keys(value).sort();
       const canonical = [...expected].sort();
@@ -45947,7 +45947,7 @@ var require_job_store = __commonJS({
       };
     }
     function canonicalRuntime(value) {
-      exactKeys(value, ["runtimeId", "providerId", "displayName", "version", "executablePath"], "Operator Runtime");
+      exactKeys2(value, ["runtimeId", "providerId", "displayName", "version", "executablePath"], "Operator Runtime");
       return {
         runtimeId: canonicalText(value.runtimeId, "Runtime id", 300),
         providerId: canonicalText(value.providerId, "Runtime provider id", 200),
@@ -45972,7 +45972,7 @@ var require_job_store = __commonJS({
       return normalized;
     }
     function canonicalBudget(value) {
-      exactKeys(value, BUDGET_FIELDS, "Operator Job budget");
+      exactKeys2(value, BUDGET_FIELDS, "Operator Job budget");
       return normalizeBudget(value);
     }
     function payloadFrom(input, reserved, label = "Envelope payload") {
@@ -45984,7 +45984,7 @@ var require_job_store = __commonJS({
       return boundedEnvelope(payload, label);
     }
     function canonicalTranscriptEntry(value) {
-      exactKeys(value, ["id", "sessionId", "sequence", "kind", "payload", "recordedAt"], "Operator transcript entry");
+      exactKeys2(value, ["id", "sessionId", "sequence", "kind", "payload", "recordedAt"], "Operator transcript entry");
       const entry = {
         id: canonicalText(value.id, "Operator transcript id", 200),
         sessionId: canonicalText(value.sessionId, "Operator transcript session id", 200),
@@ -45997,7 +45997,7 @@ var require_job_store = __commonJS({
       return entry;
     }
     function canonicalSession(value) {
-      exactKeys(value, [
+      exactKeys2(value, [
         "id",
         "runtime",
         "modelId",
@@ -46045,7 +46045,7 @@ var require_job_store = __commonJS({
       return session;
     }
     function canonicalJob(value) {
-      exactKeys(value, [
+      exactKeys2(value, [
         "id",
         "sessionId",
         "parentJobId",
@@ -46102,7 +46102,7 @@ var require_job_store = __commonJS({
       return job;
     }
     function canonicalStep(value) {
-      exactKeys(value, [
+      exactKeys2(value, [
         "id",
         "jobId",
         "sessionId",
@@ -46157,7 +46157,7 @@ var require_job_store = __commonJS({
     }
     function canonicalStepRequest(value) {
       const hasReservation = isPlainObject(value) && Object.hasOwn(value, "reservation");
-      exactKeys(
+      exactKeys2(
         value,
         hasReservation ? ["method", "params", "reservation"] : ["method", "params"],
         "Operator Step frozen request"
@@ -46182,7 +46182,7 @@ var require_job_store = __commonJS({
       if (isPlainObject(value) && Object.hasOwn(value, "requestedParams")) fields.push("requestedParams");
       if (isPlainObject(value) && Object.hasOwn(value, "requestedReservation")) fields.push("requestedReservation");
       if (isPlainObject(value) && Object.hasOwn(value, "trustedFacts")) fields.push("trustedFacts");
-      exactKeys(
+      exactKeys2(
         value,
         fields,
         "Operator Step creation event"
@@ -46223,7 +46223,7 @@ var require_job_store = __commonJS({
       return source;
     }
     function canonicalApproval(value) {
-      exactKeys(value, [
+      exactKeys2(value, [
         "id",
         "jobId",
         "sessionId",
@@ -46279,7 +46279,7 @@ var require_job_store = __commonJS({
       return `${id}-${artifactDigest}.artifact`;
     }
     function decodeInlineArtifact(inline, label) {
-      exactKeys(inline, ["encoding", "body"], label);
+      exactKeys2(inline, ["encoding", "body"], label);
       const encoding = canonicalText(inline.encoding, `${label} encoding`, 20);
       const body = typeof inline.body === "string" ? inline.body : null;
       if (body === null || !["utf8", "base64"].includes(encoding)) throw new Error(`${label} is invalid`);
@@ -46289,7 +46289,7 @@ var require_job_store = __commonJS({
       return { canonical: { encoding, body }, bytes: Buffer.from(body, encoding) };
     }
     function canonicalArtifact(value) {
-      exactKeys(value, [
+      exactKeys2(value, [
         "id",
         "jobId",
         "kind",
@@ -46334,7 +46334,7 @@ var require_job_store = __commonJS({
       return artifact;
     }
     function canonicalEvent(value) {
-      exactKeys(value, ["id", "jobId", "sequence", "kind", "payload", "occurredAt"], "Operator event");
+      exactKeys2(value, ["id", "jobId", "sequence", "kind", "payload", "occurredAt"], "Operator event");
       const event = {
         id: canonicalText(value.id, "Operator event id", 200),
         jobId: canonicalText(value.jobId, "Operator event Job id", 200),
@@ -46412,7 +46412,7 @@ var require_job_store = __commonJS({
     }
     function migrateV1State(value, artifactDirectory) {
       const stateFields = ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"];
-      exactKeys(value, stateFields, "Operator Job store");
+      exactKeys2(value, stateFields, "Operator Job store");
       if (value.schemaVersion !== LEGACY_OPERATOR_JOB_STORE_SCHEMA) {
         return { state: value, migrated: false };
       }
@@ -46460,7 +46460,7 @@ var require_job_store = __commonJS({
       return { state, migrated: true };
     }
     function canonicalState(value) {
-      exactKeys(value, ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"], "Operator Job store");
+      exactKeys2(value, ["schemaVersion", "sessions", "jobs", "steps", "approvals", "artifacts", "events"], "Operator Job store");
       if (value.schemaVersion !== OPERATOR_JOB_STORE_SCHEMA) throw new Error("Unsupported Operator Job store schema");
       for (const field of ["sessions", "jobs", "steps", "approvals", "artifacts", "events"]) {
         if (!Array.isArray(value[field])) throw new Error(`Operator Job store ${field} must be an array`);
@@ -46531,7 +46531,7 @@ var require_job_store = __commonJS({
           throw new Error("Operator Job event sequence is invalid");
         }
         if (TERMINAL_JOB_STATUSES.has(job.status)) {
-          exactKeys(job.terminalSnapshot, Object.keys(terminalSnapshotFrom(job)), "Operator Job terminal snapshot");
+          exactKeys2(job.terminalSnapshot, Object.keys(terminalSnapshotFrom(job)), "Operator Job terminal snapshot");
           if (!equalJson(job.terminalSnapshot, terminalSnapshotFrom(job))) {
             throw new Error("Operator Job terminal snapshot does not match the Job");
           }
@@ -46589,7 +46589,7 @@ var require_job_store = __commonJS({
             throw new Error("Pending Operator approval requires a waiting_approval Step status");
           }
           const creation = stepCreationEvents.get(step.id);
-          exactKeys(
+          exactKeys2(
             approval.proposedMutation,
             ["method", "params", "idempotencyKey", "reservation"],
             "Operator approval frozen Step mutation"
@@ -46706,7 +46706,7 @@ var require_job_store = __commonJS({
       const directory = dirname(filePath);
       secureDirectory(directory, { create: true });
       if (pathEntryExists(filePath)) secureFileMetadata(filePath, directory, Number.MAX_SAFE_INTEGER, "Private file");
-      const temporaryPath = join(directory, `.${basename(filePath)}.tmp-${process.pid}-${randomUUID()}`);
+      const temporaryPath = join(directory, `.${basename(filePath)}.tmp-${process.pid}-${randomUUID2()}`);
       const descriptor = openSync(
         temporaryPath,
         constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | NOFOLLOW,
@@ -46892,7 +46892,7 @@ var require_job_store = __commonJS({
       if (!backend) {
         backend = {
           state: null,
-          generation: randomUUID(),
+          generation: randomUUID2(),
           revision: 0,
           references: 0,
           coordinationKey: Object.freeze({}),
@@ -47083,7 +47083,7 @@ var require_job_store = __commonJS({
       createSession(input = {}) {
         const now = nowTimestamp();
         const session = {
-          id: randomUUID(),
+          id: randomUUID2(),
           runtime: normalizeRuntime(input.runtime),
           modelId: nullableText(input.modelId, "Operator model id", 300),
           effort: nullableText(input.effort, "Operator effort", 100),
@@ -47114,7 +47114,7 @@ var require_job_store = __commonJS({
         const parentJobId = nullableText(input.parentJobId, "Parent Operator Job id", 200);
         const now = nowTimestamp();
         const job = {
-          id: randomUUID(),
+          id: randomUUID2(),
           sessionId,
           parentJobId,
           type: requiredText(input.type, "Operator Job type", 200),
@@ -47200,7 +47200,7 @@ var require_job_store = __commonJS({
         })));
         const now = nowTimestamp();
         const step = {
-          id: randomUUID(),
+          id: randomUUID2(),
           jobId: requiredText(jobId, "Operator Step Job id", 200),
           sessionId: "",
           method,
@@ -47240,7 +47240,7 @@ var require_job_store = __commonJS({
           job.eventSequence += 1;
           job.updatedAt = now;
           state.events.push({
-            id: randomUUID(),
+            id: randomUUID2(),
             jobId: job.id,
             sequence: job.eventSequence,
             kind: "operator_step_created",
@@ -47377,7 +47377,7 @@ var require_job_store = __commonJS({
           if (job.eventSequence < MAX_JOB_EVENTS) {
             job.eventSequence += 1;
             state.events.push({
-              id: randomUUID(),
+              id: randomUUID2(),
               jobId: job.id,
               sequence: job.eventSequence,
               kind: "operator_cancellation_requested",
@@ -47429,7 +47429,7 @@ var require_job_store = __commonJS({
           if (job.eventSequence < MAX_JOB_EVENTS) {
             job.eventSequence += 1;
             state.events.push({
-              id: randomUUID(),
+              id: randomUUID2(),
               jobId: job.id,
               sequence: job.eventSequence,
               kind: "recovery_required",
@@ -47530,7 +47530,7 @@ var require_job_store = __commonJS({
           if (job.eventSequence >= MAX_JOB_EVENTS) throw new Error("Operator Job reached the 10,000 event limit");
           const now = nowTimestamp();
           const event = {
-            id: randomUUID(),
+            id: randomUUID2(),
             jobId,
             sequence: job.eventSequence + 1,
             kind,
@@ -47590,7 +47590,7 @@ var require_job_store = __commonJS({
           throw new Error("Operator artifact body is required");
         }
         if (body.byteLength > MAX_ARTIFACT_BYTES) throw new Error("Operator artifact exceeds its 64 MiB byte limit");
-        const id = randomUUID();
+        const id = randomUUID2();
         const artifactDigest = sha256(body);
         const artifact = {
           id,
@@ -47657,7 +47657,7 @@ var require_job_store = __commonJS({
           throw new Error("Operator Job must be waiting_approval before creating an approval");
         }
         const approval = {
-          id: randomUUID(),
+          id: randomUUID2(),
           jobId,
           sessionId: job.sessionId,
           stepId: nullableText(approvalInput.stepId, "Operator approval Step id", 200),
@@ -47732,7 +47732,7 @@ var require_job_store = __commonJS({
           }
           const now = nowTimestamp();
           const entry = {
-            id: randomUUID(),
+            id: randomUUID2(),
             sessionId,
             sequence: session.transcriptSequence + 1,
             kind,
@@ -47764,7 +47764,7 @@ var require_job_store = __commonJS({
           if (job.eventSequence < MAX_JOB_EVENTS) {
             job.eventSequence += 1;
             this.#state.events.push({
-              id: randomUUID(),
+              id: randomUUID2(),
               jobId: job.id,
               sequence: job.eventSequence,
               kind: "recovery_required",
@@ -48001,8 +48001,8 @@ var require_operator_tool_transport = __commonJS({
     function redactOperatorSecrets(value, childEnvironment = {}) {
       const secrets = operatorSecretPatterns(childEnvironment);
       if (secrets.length === 0) return value;
-      const redactText = (text) => {
-        let result = text;
+      const redactText = (text2) => {
+        let result = text2;
         for (const secret of secrets) result = result.replaceAll(secret, REDACTED);
         return result;
       };
@@ -48204,7 +48204,7 @@ var require_operator_tool_transport = __commonJS({
 // ../../desktop/rolling-skill/src/operator/operator-session-manager.cjs
 var require_operator_session_manager = __commonJS({
   "../../desktop/rolling-skill/src/operator/operator-session-manager.cjs"(exports, module) {
-    var { createHash, randomUUID } = __require("node:crypto");
+    var { createHash, randomUUID: randomUUID2 } = __require("node:crypto");
     var { isAbsolute, resolve } = __require("node:path");
     var {
       OPERATOR_PROTOCOL,
@@ -48260,9 +48260,9 @@ var require_operator_session_manager = __commonJS({
       return value;
     }
     function boundedText(value, maximum = MAX_TRANSCRIPT_TEXT) {
-      const text = typeof value === "string" ? value : "";
-      if (text.length <= maximum) return text;
-      return `${text.slice(0, maximum - 1)}\u2026`;
+      const text2 = typeof value === "string" ? value : "";
+      if (text2.length <= maximum) return text2;
+      return `${text2.slice(0, maximum - 1)}\u2026`;
     }
     function operatorRuntime(runtime) {
       if (!plainObject(runtime)) throw new TypeError("Operator Runtime is invalid");
@@ -48398,7 +48398,7 @@ var require_operator_session_manager = __commonJS({
     }
     function compactActivity(item) {
       const activity = {
-        itemId: requiredText(item.id ?? `item-${randomUUID()}`, "Operator activity id", 500),
+        itemId: requiredText(item.id ?? `item-${randomUUID2()}`, "Operator activity id", 500),
         type: requiredText(item.type ?? "runtimeActivity", "Operator activity type", 300)
       };
       for (const key of ["status", "name", "title"]) {
@@ -48604,7 +48604,7 @@ var require_operator_session_manager = __commonJS({
         if (!Array.isArray(actions) || actions.some((action) => !OPERATOR_CONTROL_ACTION_SET.has(action))) {
           throw new Error("Operator action is not exposed to the Runtime Tool");
         }
-        const authoritySessionId = `operator-${randomUUID()}`;
+        const authoritySessionId = `operator-${randomUUID2()}`;
         const grant = await this.#capabilities.issue({
           sessionId: authoritySessionId,
           actions: clone(actions, "Operator actions"),
@@ -49393,15 +49393,15 @@ var require_operator_session_manager = __commonJS({
           state: TERMINAL_JOB_STATUSES.has(parentJob.status) ? "stopped" : sessionIsPaused(session) ? "paused" : parentJob.status
         };
       }
-      async followUp(sessionId, text) {
+      async followUp(sessionId, text2) {
         const id = requiredText(sessionId, "Operator session id");
         if (this.#blockedSessions.has(id)) throw new Error("Operator session is stopped");
         const control = this.#control(id);
         if (!control) throw new Error("Operator session must be resumed before messaging");
         if (control.stopped) throw new Error("Operator session is stopped");
-        const content = messageText(text);
+        const content = messageText(text2);
         if (control.boundaryQueue.length >= MAX_PENDING_BOUNDARIES) throw new Error("Operator message queue is full");
-        const boundaryId = `boundary-${randomUUID()}`;
+        const boundaryId = `boundary-${randomUUID2()}`;
         this.#append(control, "operator_boundary_enqueued", {
           boundaryId,
           boundaryKind: "user",
@@ -49414,8 +49414,8 @@ var require_operator_session_manager = __commonJS({
         void this.#drainBoundary(control);
         return { queued };
       }
-      sendMessage(sessionId, text) {
-        return this.followUp(sessionId, text);
+      sendMessage(sessionId, text2) {
+        return this.followUp(sessionId, text2);
       }
       async #drainBoundary(control) {
         if (control.draining || control.stopped || control.paused || control.phase !== "idle") return;
@@ -49464,7 +49464,7 @@ var require_operator_session_manager = __commonJS({
         if (control.pendingChildIds.has(child.id)) return { queued: true, duplicate: true };
         if (control.boundaryQueue.length >= MAX_PENDING_BOUNDARIES) throw new Error("Operator message queue is full");
         const artifactIds = this.#store.listArtifacts(child.id).map((artifact) => artifact.id).slice(0, 1e3);
-        const text = messageText([
+        const text2 = messageText([
           "Rolling Skill environment update:",
           `Child jobId ${child.id} completed with status ${child.status}.`,
           `Artifact IDs: ${JSON.stringify(artifactIds)}`,
@@ -49475,19 +49475,19 @@ var require_operator_session_manager = __commonJS({
           status: child.status,
           artifactIds
         });
-        const boundaryId = `boundary-${randomUUID()}`;
+        const boundaryId = `boundary-${randomUUID2()}`;
         this.#append(control, "operator_boundary_enqueued", {
           boundaryId,
           boundaryKind: "environment",
           childJobId: child.id,
-          content: text
+          content: text2
         });
         control.pendingChildIds.add(child.id);
         control.boundaryQueue.push({
           id: boundaryId,
           kind: "environment",
           childJobId: child.id,
-          input: [{ type: "operatorContext", protocol: OPERATOR_PROTOCOL, text }]
+          input: [{ type: "operatorContext", protocol: OPERATOR_PROTOCOL, text: text2 }]
         });
         const queued = control.phase !== "idle" || control.paused || control.draining;
         void this.#drainBoundary(control);
@@ -50003,7 +50003,7 @@ var require_optimization_contract = __commonJS({
     function rejectDangerousKey(key, label) {
       if (DANGEROUS_KEYS.has(key)) throw new Error(`${label} contains an unsafe field`);
     }
-    function exactKeys(value, required, optional, label) {
+    function exactKeys2(value, required, optional, label) {
       requireObject(value, label);
       const requiredSet = new Set(required);
       const allowed = /* @__PURE__ */ new Set([...required, ...optional]);
@@ -50104,7 +50104,7 @@ var require_optimization_contract = __commonJS({
       return boundedInteger(value, label, 0, maximum);
     }
     function runtimeSelection(value, label) {
-      exactKeys(value, ["runtimeId", "modelId"], ["effort"], label);
+      exactKeys2(value, ["runtimeId", "modelId"], ["effort"], label);
       const effort = nullableText(value.effort, `${label} effort`, 100);
       if (effort !== null && !EFFORTS.has(effort)) throw new Error(`${label} effort is unsupported`);
       return {
@@ -50114,7 +50114,7 @@ var require_optimization_contract = __commonJS({
       };
     }
     function limits(value) {
-      exactKeys(
+      exactKeys2(
         value,
         ["maxEpochs", "maxDurationMs", "patience", "minimumImprovement"],
         ["maxTurns", "maxTokens", "maxCostMicros"],
@@ -50151,7 +50151,7 @@ var require_optimization_contract = __commonJS({
       };
     }
     function target(value) {
-      exactKeys(
+      exactKeys2(
         value,
         ["minimumScore", "minimumPassRate", "requireCriticalCases"],
         [],
@@ -50167,7 +50167,7 @@ var require_optimization_contract = __commonJS({
       };
     }
     function telemetry(value) {
-      exactKeys(value, ["tokens", "cost"], [], "Optimization telemetry");
+      exactKeys2(value, ["tokens", "cost"], [], "Optimization telemetry");
       if (typeof value.tokens !== "boolean" || typeof value.cost !== "boolean") {
         throw new Error("Optimization telemetry capabilities must be boolean");
       }
@@ -50175,7 +50175,7 @@ var require_optimization_contract = __commonJS({
     }
     function parseOptimizationConfig(value) {
       const source = cloneJson(value, "Optimization config");
-      exactKeys(
+      exactKeys2(
         source,
         [
           "skillId",
@@ -50251,7 +50251,7 @@ var require_optimization_contract = __commonJS({
       }
     }
     function decisionObservation(value, index) {
-      exactKeys(
+      exactKeys2(
         value,
         ["kind", "summary"],
         ["artifactId"],
@@ -50276,7 +50276,7 @@ var require_optimization_contract = __commonJS({
     }
     function parseOptimizationDecision(value) {
       const source = cloneJson(parseJsonText(value, "Optimization decision"), "Optimization decision");
-      exactKeys(
+      exactKeys2(
         source,
         ["schemaVersion", "action", "rationale"],
         ["observations"],
@@ -50313,7 +50313,7 @@ var require_optimization_contract = __commonJS({
       return root;
     }
     function baselineSnapshot(value, { releasedFact = true } = {}) {
-      exactKeys(
+      exactKeys2(
         value,
         ["repositoryId", "skillId", "versionId", "commit", "skillRoot", "contentDigest"],
         releasedFact ? ["state"] : [],
@@ -50334,7 +50334,7 @@ var require_optimization_contract = __commonJS({
       };
     }
     function caseRevision(value, index) {
-      exactKeys(
+      exactKeys2(
         value,
         ["caseId", "revision", "rubricVersionId", "calibrationStatus"],
         [],
@@ -50365,7 +50365,7 @@ var require_optimization_contract = __commonJS({
       };
     }
     function datasetSnapshot(value, { bindingFact = true } = {}) {
-      exactKeys(
+      exactKeys2(
         value,
         ["id", "revision", "caseRevisions", "digest", "repositoryId"],
         bindingFact ? ["skillId"] : [],
@@ -50391,7 +50391,7 @@ var require_optimization_contract = __commonJS({
     }
     function rubricSnapshot(value, { publishedFact = true } = {}) {
       if (!isPlainObject(value)) throw new Error("A published Rubric is required for optimization");
-      exactKeys(
+      exactKeys2(
         value,
         ["id", "version", "scoringModel", "digest"],
         publishedFact ? ["datasetId", "publishedAt"] : [],
@@ -50460,7 +50460,7 @@ var require_optimization_contract = __commonJS({
     }
     function freezeOptimizationRun(value) {
       const source = cloneJson(value, "Optimization frozen-run input");
-      exactKeys(
+      exactKeys2(
         source,
         ["baseline", "dataset", "rubric", "skillEvidence", "config", "createdAt"],
         [],
@@ -50477,7 +50477,7 @@ var require_optimization_contract = __commonJS({
     }
     function validateFrozenOptimizationRun(value) {
       const source = cloneJson(value, "Frozen optimization run");
-      exactKeys(
+      exactKeys2(
         source,
         [
           "schemaVersion",
@@ -50732,9 +50732,9 @@ var require_optimization_control_service = __commonJS({
       return value;
     }
     function requiredText(value, label, maximum = 300) {
-      const text = typeof value === "string" ? value.trim() : "";
-      if (!text || text.length > maximum) throw new Error(`${label} is required`);
-      return text;
+      const text2 = typeof value === "string" ? value.trim() : "";
+      if (!text2 || text2.length > maximum) throw new Error(`${label} is required`);
+      return text2;
     }
     function normalizedConfig(value) {
       const { schemaVersion: _schemaVersion, ...config } = parseOptimizationConfig(value);
@@ -52466,7 +52466,7 @@ var require_optimization_runner = __commonJS({
 // ../../desktop/rolling-skill/src/optimization/optimization-store.cjs
 var require_optimization_store = __commonJS({
   "../../desktop/rolling-skill/src/optimization/optimization-store.cjs"(exports, module) {
-    var { randomUUID } = __require("node:crypto");
+    var { randomUUID: randomUUID2 } = __require("node:crypto");
     var {
       constants,
       closeSync,
@@ -52598,7 +52598,7 @@ var require_optimization_store = __commonJS({
       if (!isPlainObject(value)) throw new Error(`${label} must be a plain object`);
       return value;
     }
-    function exactKeys(value, required, optional, label) {
+    function exactKeys2(value, required, optional, label) {
       requireObject(value, label);
       const allowed = /* @__PURE__ */ new Set([...required, ...optional]);
       for (const key of Object.keys(value)) {
@@ -52815,7 +52815,7 @@ var require_optimization_store = __commonJS({
       if (pathEntryExists(filePath)) {
         secureFileMetadata(filePath, directory, Number.MAX_SAFE_INTEGER, "Optimization store");
       }
-      const temporaryPath = join(directory, `.${basename(filePath)}.tmp-${process.pid}-${randomUUID()}`);
+      const temporaryPath = join(directory, `.${basename(filePath)}.tmp-${process.pid}-${randomUUID2()}`);
       const descriptor = openSync(
         temporaryPath,
         constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | NOFOLLOW,
@@ -52867,7 +52867,7 @@ var require_optimization_store = __commonJS({
         "Optimization ownership lock"
       );
       const value = JSON.parse(record.body.toString("utf8"));
-      exactKeys(value, ["schemaVersion", "pid", "token"], [], "Optimization ownership lock");
+      exactKeys2(value, ["schemaVersion", "pid", "token"], [], "Optimization ownership lock");
       if (value.schemaVersion !== OWNERSHIP_SCHEMA) throw new Error("Optimization ownership lock schema is invalid");
       return {
         schemaVersion: OWNERSHIP_SCHEMA,
@@ -52941,7 +52941,7 @@ var require_optimization_store = __commonJS({
         "Optimization takeover claim"
       );
       const value = JSON.parse(record.body.toString("utf8"));
-      exactKeys(
+      exactKeys2(
         value,
         ["schemaVersion", "pid", "token", "ownerToken", "ownerDev", "ownerIno"],
         [],
@@ -52964,7 +52964,7 @@ var require_optimization_store = __commonJS({
       };
     }
     function createTakeover(path, owner) {
-      const token = randomUUID();
+      const token = randomUUID2();
       return createControlFile(path, {
         schemaVersion: TAKEOVER_SCHEMA,
         pid: process.pid,
@@ -52986,7 +52986,7 @@ var require_optimization_store = __commonJS({
       fsyncDirectoryBestEffort(dirname(path));
     }
     function verifiedUnlink(path, expected, reader, label, sameIdentity = sameControlIdentity) {
-      const retiredPath = `${path}.retired-${process.pid}-${randomUUID()}`;
+      const retiredPath = `${path}.retired-${process.pid}-${randomUUID2()}`;
       try {
         renameSync(path, retiredPath);
       } catch (error) {
@@ -53026,7 +53026,7 @@ var require_optimization_store = __commonJS({
           throw new Error("Optimization takeover claim changed before ownership creation");
         }
       }
-      const token = randomUUID();
+      const token = randomUUID2();
       const ownership = createControlFile(path, {
         schemaVersion: OWNERSHIP_SCHEMA,
         pid: process.pid,
@@ -53158,14 +53158,14 @@ var require_optimization_store = __commonJS({
     function initialState() {
       return {
         schemaVersion: OPTIMIZATION_STORE_SCHEMA,
-        generation: randomUUID(),
+        generation: randomUUID2(),
         revision: 0,
         runs: [],
         creationKeys: []
       };
     }
     function canonicalEpoch(value) {
-      exactKeys(value, [
+      exactKeys2(value, [
         "id",
         "number",
         "status",
@@ -53202,7 +53202,7 @@ var require_optimization_store = __commonJS({
       return epoch;
     }
     function canonicalRunMutationResult(value) {
-      exactKeys(
+      exactKeys2(
         value,
         ["runId", "state", "revision", "updatedAt"],
         [],
@@ -53218,7 +53218,7 @@ var require_optimization_store = __commonJS({
       };
     }
     function canonicalEpochMutationResult(value) {
-      exactKeys(
+      exactKeys2(
         value,
         ["runId", "epochId", "index", "status", "revision", "updatedAt"],
         [],
@@ -53236,7 +53236,7 @@ var require_optimization_store = __commonJS({
       };
     }
     function canonicalOperation(value) {
-      exactKeys(value, ["key", "kind", "inputDigest", "result"], [], "Optimization operation");
+      exactKeys2(value, ["key", "kind", "inputDigest", "result"], [], "Optimization operation");
       const inputDigest = requiredText(value.inputDigest, "Optimization operation input digest", 80);
       if (!/^sha256:[a-f0-9]{64}$/u.test(inputDigest)) {
         throw new Error("Optimization operation input digest is invalid");
@@ -53252,7 +53252,7 @@ var require_optimization_store = __commonJS({
     }
     function canonicalRecovery(value) {
       if (value === null) return null;
-      exactKeys(
+      exactKeys2(
         value,
         ["previousState", "reason", "recoveredAt"],
         [],
@@ -53271,7 +53271,7 @@ var require_optimization_store = __commonJS({
       };
     }
     function canonicalRun(value) {
-      exactKeys(value, [
+      exactKeys2(value, [
         "id",
         "state",
         "revision",
@@ -53392,7 +53392,7 @@ var require_optimization_store = __commonJS({
       return run;
     }
     function canonicalCreationKey(value) {
-      exactKeys(value, ["key", "inputDigest", "result"], [], "Optimization creation idempotency record");
+      exactKeys2(value, ["key", "inputDigest", "result"], [], "Optimization creation idempotency record");
       const inputDigest = requiredText(value.inputDigest, "Optimization creation input digest", 80);
       if (!/^sha256:[a-f0-9]{64}$/u.test(inputDigest)) {
         throw new Error("Optimization creation input digest is invalid");
@@ -53408,7 +53408,7 @@ var require_optimization_store = __commonJS({
       if (value.schemaVersion !== OPTIMIZATION_STORE_SCHEMA) {
         throw new Error(`Unsupported Optimization store schema: ${value.schemaVersion}`);
       }
-      exactKeys(
+      exactKeys2(
         value,
         ["schemaVersion", "generation", "revision", "runs", "creationKeys"],
         [],
@@ -53449,7 +53449,7 @@ var require_optimization_store = __commonJS({
     function operationOptions(patch, options2) {
       const normalizedPatch = cloneJson(patch, "Optimization mutation patch");
       const normalizedOptions = cloneJson(options2, "Optimization mutation options");
-      exactKeys(normalizedOptions, [], ["expectedRevision", "idempotencyKey"], "Optimization mutation options");
+      exactKeys2(normalizedOptions, [], ["expectedRevision", "idempotencyKey"], "Optimization mutation options");
       return { patch: normalizedPatch, options: normalizedOptions };
     }
     function publicRunSummary(run) {
@@ -53676,7 +53676,7 @@ var require_optimization_store = __commonJS({
         this.#requireOpen();
         const frozen = validateFrozenOptimizationRun(snapshot);
         const normalizedOptions = cloneJson(options2, "Optimization create options");
-        exactKeys(
+        exactKeys2(
           normalizedOptions,
           [],
           ["id", "idempotencyKey", "expectedRevision"],
@@ -53702,7 +53702,7 @@ var require_optimization_store = __commonJS({
         if (this.#state.runs.length >= MAX_RUNS) throw new Error("Optimization store reached its run limit");
         const now = nowTimestamp();
         const run = {
-          id: normalizedOptions.id === void 0 ? randomUUID() : publicId(normalizedOptions.id, "Optimization run id"),
+          id: normalizedOptions.id === void 0 ? randomUUID2() : publicId(normalizedOptions.id, "Optimization run id"),
           state: "preflight",
           revision: 0,
           snapshot: cloneJson(frozen),
@@ -53752,7 +53752,7 @@ var require_optimization_store = __commonJS({
           "Optimization checkpoint patch"
         );
         const normalizedOptions = cloneJson(options2, "Optimization checkpoint options");
-        exactKeys(
+        exactKeys2(
           normalizedOptions,
           [],
           ["expectedRevision"],
@@ -53777,7 +53777,7 @@ var require_optimization_store = __commonJS({
         nextState = requiredText(nextState, "Optimization next state", 40);
         if (!RUN_STATES.has(nextState)) throw new Error("Optimization next state is invalid");
         const normalized = operationOptions(patch, options2);
-        exactKeys(normalized.patch, [], ["checkpoint", "error"], "Optimization transition patch");
+        exactKeys2(normalized.patch, [], ["checkpoint", "error"], "Optimization transition patch");
         const inputDigest = canonicalOptimizationDigest({ nextState, patch: normalized.patch });
         const current = this.#requireRun(runId);
         const existing = this.#existingOperation(
@@ -53871,9 +53871,9 @@ var require_optimization_store = __commonJS({
       createEpoch(runId, input = {}, options2 = {}) {
         this.#requireOpen();
         const source = cloneJson(input, "Optimization epoch input");
-        exactKeys(source, [], ["id", "candidateArtifactId"], "Optimization epoch input");
+        exactKeys2(source, [], ["id", "candidateArtifactId"], "Optimization epoch input");
         const normalizedOptions = cloneJson(options2, "Optimization epoch options");
-        exactKeys(
+        exactKeys2(
           normalizedOptions,
           [],
           ["expectedRevision", "idempotencyKey"],
@@ -53905,7 +53905,7 @@ var require_optimization_store = __commonJS({
           const run = this.#requireRun(runId, state);
           const now = nowTimestamp();
           const epoch = {
-            id: source.id === void 0 ? randomUUID() : publicId(source.id, "Optimization epoch id"),
+            id: source.id === void 0 ? randomUUID2() : publicId(source.id, "Optimization epoch id"),
             number: run.epochs.length + 1,
             status: "editing",
             candidateArtifactId: source.candidateArtifactId === void 0 ? null : artifactId(source.candidateArtifactId, "Candidate artifact id"),
@@ -53934,7 +53934,7 @@ var require_optimization_store = __commonJS({
         this.#requireOpen();
         epochId = publicId(epochId, "Optimization epoch id");
         const normalized = operationOptions(patch, options2);
-        exactKeys(normalized.patch, [], [
+        exactKeys2(normalized.patch, [], [
           "status",
           "candidateArtifactId",
           "installArtifactIds",
@@ -54118,7 +54118,7 @@ var require_optimization_workspace = __commonJS({
     function isContained(root, candidate) {
       return candidate === root || candidate.startsWith(`${root}${sep}`);
     }
-    function exactKeys(value, required, label) {
+    function exactKeys2(value, required, label) {
       if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error(`${label} must be an object`);
       }
@@ -54195,7 +54195,7 @@ var require_optimization_workspace = __commonJS({
           if (!run || typeof run !== "object" || Array.isArray(run)) {
             throw new Error("Optimization Run is required");
           }
-          exactKeys(
+          exactKeys2(
             expectedWorkspace,
             [
               "runId",
@@ -54324,7 +54324,7 @@ var require_optimization_workspace = __commonJS({
         return this.enqueue(() => this.#createCandidate(input));
       }
       async #createCandidate(input) {
-        exactKeys(input, ["runId", "epoch", "message"], "Optimization Candidate input");
+        exactKeys2(input, ["runId", "epoch", "message"], "Optimization Candidate input");
         const runId = requiredId(input.runId, "Optimization Run");
         const epoch = requiredEpoch(input.epoch);
         const message = requiredText(input.message, "Candidate commit message", 2e3);
@@ -54448,11 +54448,11 @@ var require_operator_services = __commonJS({
     var MAX_TEXT = 32 * 1024;
     var MAX_ARRAY = 1e4;
     function requiredText(value, label, maximum = 300) {
-      const text = typeof value === "string" ? value.trim() : "";
-      if (!text || text.length > maximum) throw new Error(`${label} is required`);
-      return text;
+      const text2 = typeof value === "string" ? value.trim() : "";
+      if (!text2 || text2.length > maximum) throw new Error(`${label} is required`);
+      return text2;
     }
-    function exactKeys(value, allowed, label) {
+    function exactKeys2(value, allowed, label) {
       if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error(`${label} must be an object`);
       }
@@ -54478,11 +54478,11 @@ var require_operator_services = __commonJS({
       return output;
     }
     function sessionId(input) {
-      exactKeys(input, /* @__PURE__ */ new Set(["sessionId"]), "Operator session request");
+      exactKeys2(input, /* @__PURE__ */ new Set(["sessionId"]), "Operator session request");
       return requiredText(input.sessionId, "Operator session id", 200);
     }
     function runId(input) {
-      exactKeys(input, /* @__PURE__ */ new Set(["runId"]), "Optimization request");
+      exactKeys2(input, /* @__PURE__ */ new Set(["runId"]), "Optimization request");
       return requiredText(input.runId, "Optimization Run id", 200);
     }
     function createOperatorServices({
@@ -54514,7 +54514,7 @@ var require_operator_services = __commonJS({
       }
       return Object.freeze({
         operatorSummary(input = {}) {
-          exactKeys(input, /* @__PURE__ */ new Set(["cursor", "limit"]), "Operator summary request");
+          exactKeys2(input, /* @__PURE__ */ new Set(["cursor", "limit"]), "Operator summary request");
           const limit = input.limit === void 0 ? 100 : Number(input.limit);
           if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
             throw new Error("Operator summary limit is invalid");
@@ -54525,13 +54525,13 @@ var require_operator_services = __commonJS({
           }));
         },
         operatorArtifacts(input = {}) {
-          exactKeys(input, /* @__PURE__ */ new Set(["jobId"]), "Operator artifact request");
+          exactKeys2(input, /* @__PURE__ */ new Set(["jobId"]), "Operator artifact request");
           return publicValue(jobStore.listArtifacts(
             requiredText(input.jobId, "Operator Job id", 200)
           ));
         },
         async operatorStart(input = {}) {
-          exactKeys(input, /* @__PURE__ */ new Set([
+          exactKeys2(input, /* @__PURE__ */ new Set([
             "runtimeId",
             "modelId",
             "effort",
@@ -54558,14 +54558,14 @@ var require_operator_services = __commonJS({
           return Promise.resolve(sessionManager.stop(sessionId(input))).then(publicValue);
         },
         operatorSend(input = {}) {
-          exactKeys(input, /* @__PURE__ */ new Set(["sessionId", "text"]), "Operator message request");
+          exactKeys2(input, /* @__PURE__ */ new Set(["sessionId", "text"]), "Operator message request");
           return Promise.resolve(sessionManager.sendMessage(
             requiredText(input.sessionId, "Operator session id", 200),
             requiredText(input.text, "Operator message", 32e3)
           )).then(publicValue);
         },
         async operatorApprove(input = {}) {
-          exactKeys(
+          exactKeys2(
             input,
             /* @__PURE__ */ new Set(["sessionId", "approvalId", "decision", "scope"]),
             "Operator approval request"
@@ -55259,17 +55259,17 @@ var require_trace_recorder = __commonJS({
       return true;
     }
     function compactText(value, limit) {
-      const text = String(value);
-      if (text.length <= limit) return { text, omitted: 0 };
+      const text2 = String(value);
+      if (text2.length <= limit) return { text: text2, omitted: 0 };
       const marker = `
-\u2026 [${text.length - limit} characters compacted] \u2026
+\u2026 [${text2.length - limit} characters compacted] \u2026
 `;
       const available = Math.max(0, limit - marker.length);
       const head = Math.ceil(available * 0.7);
       const tail = available - head;
       return {
-        text: `${text.slice(0, head)}${marker}${tail ? text.slice(-tail) : ""}`,
-        omitted: text.length - limit
+        text: `${text2.slice(0, head)}${marker}${tail ? text2.slice(-tail) : ""}`,
+        omitted: text2.length - limit
       };
     }
     function isProtectedCommandPath(path) {
@@ -55734,10 +55734,10 @@ var require_codex_app_server = __commonJS({
       }
       emitStderr(output) {
         for (const value of output) {
-          const text = value.trim();
-          if (!text) continue;
-          this.recorder?.record("stderr", { text });
-          this.emitRuntimeLog(text);
+          const text2 = value.trim();
+          if (!text2) continue;
+          this.recorder?.record("stderr", { text: text2 });
+          this.emitRuntimeLog(text2);
         }
       }
       flushStderr() {
@@ -55916,9 +55916,9 @@ var require_codex_app_server = __commonJS({
         state.phase = TERMINAL_TURN_NOTIFICATIONS.has(message.method) ? "terminal" : "active";
       }
       dynamicToolResult(payload, success) {
-        const text = JSON.stringify(payload);
+        const text2 = JSON.stringify(payload);
         return {
-          contentItems: [{ type: "inputText", text }],
+          contentItems: [{ type: "inputText", text: text2 }],
           success
         };
       }
@@ -56183,8 +56183,8 @@ var require_codex_app_server = __commonJS({
           throw error;
         }
       }
-      async startTurn(threadId, text, options2 = {}) {
-        const input = Array.isArray(text) ? text : [{ type: "text", text, text_elements: [] }];
+      async startTurn(threadId, text2, options2 = {}) {
+        const input = Array.isArray(text2) ? text2 : [{ type: "text", text: text2, text_elements: [] }];
         const params = {
           threadId,
           input,
@@ -56614,7 +56614,7 @@ ${serverResult.stderr ?? ""}`;
 // ../../desktop/rolling-skill/src/codebuddy-acp-client.cjs
 var require_codebuddy_acp_client = __commonJS({
   "../../desktop/rolling-skill/src/codebuddy-acp-client.cjs"(exports, module) {
-    var { randomUUID } = __require("node:crypto");
+    var { randomUUID: randomUUID2 } = __require("node:crypto");
     var { EventEmitter } = __require("node:events");
     var { spawn } = __require("node:child_process");
     var { dirname } = __require("node:path");
@@ -56686,10 +56686,10 @@ var require_codebuddy_acp_client = __commonJS({
       }
       emitStderr(output) {
         for (const value of output) {
-          const text = value.trim();
-          if (!text) continue;
-          this.recorder?.record("stderr", { text });
-          this.emitRuntimeLog(text);
+          const text2 = value.trim();
+          if (!text2) continue;
+          this.recorder?.record("stderr", { text: text2 });
+          this.emitRuntimeLog(text2);
         }
       }
       flushStderr() {
@@ -57084,32 +57084,32 @@ var require_codebuddy_acp_client = __commonJS({
         if (options2.model) thread.model = options2.model;
         if (options2.effort) thread.effort = options2.effort;
         if (options2.permissionMode) thread.permissionMode = options2.permissionMode;
-        const text = Array.isArray(value) ? value.map(
+        const text2 = Array.isArray(value) ? value.map(
           (part) => part.type === "skill" ? `/${part.name}` : part.type === "text" ? part.text : ""
         ).filter(Boolean).join("\n\n") : String(value);
         const turn = {
-          id: randomUUID(),
+          id: randomUUID2(),
           status: "inProgress",
           items: [
             {
-              id: randomUUID(),
+              id: randomUUID2(),
               type: "userMessage",
-              content: [{ type: "text", text, text_elements: [] }]
+              content: [{ type: "text", text: text2, text_elements: [] }]
             }
           ]
         };
-        const item = { id: randomUUID(), type: "agentMessage", text: "" };
-        const reasoning = { id: randomUUID(), type: "reasoning", text: "", summary: [] };
+        const item = { id: randomUUID2(), type: "agentMessage", text: "" };
+        const reasoning = { id: randomUUID2(), type: "reasoning", text: "", summary: [] };
         turn.items.push(item);
         thread.turns.push(turn);
-        thread.preview ||= text.slice(0, 160);
+        thread.preview ||= text2.slice(0, 160);
         thread.status = { type: "active" };
         thread.updatedAt = Date.now() / 1e3;
         this.pendingTurns.set(threadId, { turn, item, reasoning });
         this.emitNotification("turn/started", { threadId, turn: JSON.parse(JSON.stringify(turn)) });
         void this.request("session/prompt", {
           sessionId: threadId,
-          prompt: [{ type: "text", text }]
+          prompt: [{ type: "text", text: text2 }]
         }).then(
           () => this.completeTurn(threadId),
           (error) => this.failTurn(threadId, error)
@@ -57535,7 +57535,7 @@ ${helpResult.stderr ?? ""}`;
 // ../../desktop/rolling-skill/src/deepseek-harness-client.cjs
 var require_deepseek_harness_client = __commonJS({
   "../../desktop/rolling-skill/src/deepseek-harness-client.cjs"(exports, module) {
-    var { randomUUID } = __require("node:crypto");
+    var { randomUUID: randomUUID2 } = __require("node:crypto");
     var { EventEmitter } = __require("node:events");
     var { spawn } = __require("node:child_process");
     var { dirname } = __require("node:path");
@@ -57561,12 +57561,12 @@ var require_deepseek_harness_client = __commonJS({
       return `${provider}/${model}`;
     }
     function decodeModelId(value) {
-      const text = String(value ?? "");
-      const separator = text.indexOf("/");
-      if (separator <= 0 || separator === text.length - 1) {
+      const text2 = String(value ?? "");
+      const separator = text2.indexOf("/");
+      if (separator <= 0 || separator === text2.length - 1) {
         throw new Error("DeepSeek Harness requires a provider-qualified model id");
       }
-      return { provider: text.slice(0, separator), model: text.slice(separator + 1) };
+      return { provider: text2.slice(0, separator), model: text2.slice(separator + 1) };
     }
     function textBlocks(content) {
       return (content ?? []).filter((block) => block?.type === "text" || block?.type === "reasoning").map((block) => String(block.text ?? "")).filter(Boolean);
@@ -57667,8 +57667,8 @@ var require_deepseek_harness_client = __commonJS({
         const turnNumber = event.data?.turn ?? activeTurn;
         if (event.type === "user/message") {
           if (event.data?.source?.kind !== "user" || turnNumber === null) continue;
-          const text = textBlocks(event.data.content).join("\n");
-          preview ||= text.slice(0, 160);
+          const text2 = textBlocks(event.data.content).join("\n");
+          preview ||= text2.slice(0, 160);
           ensureTurn(turnNumber).items.push({
             id: event.data.id ?? `dsh-user-${event.seq}`,
             type: "userMessage",
@@ -57691,7 +57691,7 @@ var require_deepseek_harness_client = __commonJS({
         if (event.type === "assistant/message") {
           const turn = ensureTurn(event.data.turn);
           const reasoning = (event.data.message?.content ?? []).filter((block) => block?.type === "reasoning").map((block) => String(block.text ?? "")).filter(Boolean).join("\n");
-          const text = (event.data.message?.content ?? []).filter((block) => block?.type === "text").map((block) => String(block.text ?? "")).filter(Boolean).join("\n");
+          const text2 = (event.data.message?.content ?? []).filter((block) => block?.type === "text").map((block) => String(block.text ?? "")).filter(Boolean).join("\n");
           if (reasoning) {
             turn.items.push({
               id: `dsh-assistant-${event.data.turn}-${event.data.step}-reasoning`,
@@ -57700,11 +57700,11 @@ var require_deepseek_harness_client = __commonJS({
               summary: [reasoning]
             });
           }
-          if (text) {
+          if (text2) {
             turn.items.push({
               id: `dsh-assistant-${event.data.turn}-${event.data.step}-text`,
               type: "agentMessage",
-              text
+              text: text2
             });
           }
           continue;
@@ -57837,8 +57837,8 @@ var require_deepseek_harness_client = __commonJS({
       }
       emitStderr(output) {
         for (const value of output) {
-          const text = value.trim();
-          if (text) this.emitRuntimeLog(text);
+          const text2 = value.trim();
+          if (text2) this.emitRuntimeLog(text2);
         }
       }
       flushStderr() {
@@ -57981,7 +57981,7 @@ var require_deepseek_harness_client = __commonJS({
       }
       async request(method, payload = {}, { timeoutMs = null } = {}) {
         if (!this.baseUrl) throw new Error("DeepSeek Harness Host is not running");
-        const rpcId = randomUUID();
+        const rpcId = randomUUID2();
         const envelope = { type: "client-request", rpcId, method, payload };
         this.recordTrace("outbound", { method, params: payload, rpcId });
         const boundedTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0 ? Math.max(1, Number(timeoutMs)) : null;
@@ -58678,16 +58678,16 @@ var require_deepseek_harness_client = __commonJS({
             const key = `${event.data.step}:${chunk.index}`;
             const current = pending.chunks.get(key) ?? "";
             if (chunk.type === "reasoning-delta") {
-              const text = current + String(chunk.text ?? "");
-              pending.chunks.set(key, text);
+              const text2 = current + String(chunk.text ?? "");
+              pending.chunks.set(key, text2);
               this.emitNotification("item/started", {
                 threadId: pending.threadId,
                 turnId: pending.turnId,
                 item: {
                   id: `dsh-assistant-${event.data.turn}-${event.data.step}-reasoning`,
                   type: "reasoning",
-                  text,
-                  summary: [text]
+                  text: text2,
+                  summary: [text2]
                 }
               });
             } else if (chunk.type === "text-delta") {
@@ -58725,7 +58725,7 @@ var require_deepseek_harness_client = __commonJS({
           if (event.type === "assistant/message" && event.data.turn === pending.turnNumber) {
             const content = event.data.message?.content ?? [];
             const reasoning = content.filter((block) => block?.type === "reasoning").map((block) => block.text).join("\n");
-            const text = content.filter((block) => block?.type === "text").map((block) => block.text).join("\n");
+            const text2 = content.filter((block) => block?.type === "text").map((block) => block.text).join("\n");
             if (reasoning) {
               this.emitNotification("item/completed", {
                 threadId: pending.threadId,
@@ -58738,14 +58738,14 @@ var require_deepseek_harness_client = __commonJS({
                 }
               });
             }
-            if (text) {
+            if (text2) {
               this.emitNotification("item/completed", {
                 threadId: pending.threadId,
                 turnId: pending.turnId,
                 item: {
                   id: `dsh-assistant-${event.data.turn}-${event.data.step}-text`,
                   type: "agentMessage",
-                  text
+                  text: text2
                 }
               });
             }
@@ -59296,9 +59296,9 @@ var require_skill_services = __commonJS({
       return JSON.parse(JSON.stringify(value));
     }
     function requiredText(value, label, maximum = 4096) {
-      const text = typeof value === "string" ? value.trim() : "";
-      if (!text || text.length > maximum) throw new Error(`${label} is required`);
-      return text;
+      const text2 = typeof value === "string" ? value.trim() : "";
+      if (!text2 || text2.length > maximum) throw new Error(`${label} is required`);
+      return text2;
     }
     function createSkillServices({ manager, installationManager, installationStore, runtimeServices }) {
       if (!manager || !installationManager || !installationStore || !runtimeServices) {
@@ -59328,9 +59328,9 @@ var require_skill_services = __commonJS({
         inspectInstallation: ({ jobId }) => installationManager.inspect(
           requiredText(jobId, "Installation Job id", 200)
         ),
-        sendInstallation: ({ jobId, text }) => installationManager.send(
+        sendInstallation: ({ jobId, text: text2 }) => installationManager.send(
           requiredText(jobId, "Installation Job id", 200),
-          requiredText(text, "Installer message", 12e4)
+          requiredText(text2, "Installer message", 12e4)
         )
       });
     }
@@ -59428,7 +59428,7 @@ var require_application = __commonJS({
       }
       ancestors.delete(value);
     }
-    function jsonCopy(value) {
+    function jsonCopy2(value) {
       return JSON.parse(JSON.stringify(value));
     }
     function checkedInput(method, input) {
@@ -59705,26 +59705,26 @@ var require_application = __commonJS({
       ]);
       async function snapshot() {
         if (closed) throw new Error("Rolling Skill application is closed");
-        return jsonCopy(dashboardSnapshot());
+        return jsonCopy2(dashboardSnapshot());
       }
       async function publish() {
         if (subscribers.size === 0) return;
         const value = dashboardSnapshot();
         for (const listener of subscribers) {
           try {
-            listener(jsonCopy(value));
+            listener(jsonCopy2(value));
           } catch {
           }
         }
       }
-      async function dispatch(method, input = {}) {
+      async function dispatch2(method, input = {}) {
         if (closed) throw new Error("Rolling Skill application is closed");
         if (typeof method !== "string" || !Object.hasOwn(methods, method)) {
           throw new Error(`Unknown Rolling Skill method: ${String(method ?? "")}`);
         }
         const value = await methods[method](checkedInput(method, input));
         if (mutations.has(method)) await publish();
-        return jsonCopy(value);
+        return jsonCopy2(value);
       }
       function subscribe(listener) {
         if (closed) throw new Error("Rolling Skill application is closed");
@@ -59744,7 +59744,7 @@ var require_application = __commonJS({
         await operatorRuntime.close();
         await runtimeServices.close();
       }
-      return Object.freeze({ close, dispatch, snapshot, subscribe });
+      return Object.freeze({ close, dispatch: dispatch2, snapshot, subscribe });
     }
     module.exports = {
       MAX_DISPATCH_BYTES,
@@ -59925,18 +59925,157 @@ var require_api2 = __commonJS({
 // src/host/index.js
 var import_src = __toESM(require_src(), 1);
 var import_api = __toESM(require_api2(), 1);
+
+// src/host/tools.js
+import { randomUUID } from "node:crypto";
+import { defineTool } from "@deepseek-ai/dsh-tools";
+var PRIVATE_ERROR = /(?:[A-Za-z]:[\\/][^\s]+|\/(?:[^\s/]+\/)+[^\s]+|(?:token|secret|credential|password)\s*[=:]\s*[^\s]+)/giu;
+function jsonCopy(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+function exactKeys(value, allowed) {
+  const unknown = Object.keys(value ?? {}).find((key) => !allowed.has(key));
+  if (unknown) throw new Error(`Rolling Skill tool received an unknown field: ${unknown}`);
+}
+function cancelled(signal) {
+  if (!signal?.aborted) return;
+  throw Object.assign(new Error("Rolling Skill tool was cancelled"), { code: "ABORTED" });
+}
+function safeError(error) {
+  const message = String(error?.message ?? error ?? "Rolling Skill tool failed").replace(PRIVATE_ERROR, "[private value omitted]").slice(0, 2e3);
+  return Object.assign(new Error(message || "Rolling Skill tool failed"), {
+    code: typeof error?.code === "string" ? error.code.slice(0, 100) : "ROLLING_SKILL_TOOL_FAILED"
+  });
+}
+async function dispatch(application, method, input, signal) {
+  cancelled(signal);
+  try {
+    const value = await application.dispatch(method, input);
+    cancelled(signal);
+    return jsonCopy(value);
+  } catch (error) {
+    throw safeError(error);
+  }
+}
+function closedDefinition(options2, allowed) {
+  const definition = defineTool(options2);
+  definition.parameters.additionalProperties = false;
+  const execute = definition.execute;
+  definition.execute = async (args, exec) => {
+    exactKeys(args, allowed);
+    return execute(args, exec);
+  };
+  return definition;
+}
+function text(value) {
+  return [{ type: "text", text: value }];
+}
+function createRollingSkillTools(application) {
+  return [
+    closedDefinition({
+      name: "rolling_skill_status",
+      description: "Read Rolling Skill Dataset, Case, Evaluation, Operator, and automatic-capture status.",
+      parameters: {},
+      output: {
+        schema: { type: "json" },
+        render: (_args, value) => text([
+          "Rolling Skill status",
+          `Datasets: ${value?.counts?.datasets ?? 0}`,
+          `Cases: ${value?.counts?.cases ?? 0}`,
+          `Raw Cases: ${value?.counts?.rawCases ?? 0}`
+        ].join(" \xB7 "))
+      },
+      isConcurrencySafe: () => true,
+      execute: (_args, exec) => dispatch(application, "dashboard.get", {}, exec.signal)
+    }, /* @__PURE__ */ new Set()),
+    closedDefinition({
+      name: "rolling_skill_add_raw_case",
+      description: "Add one user question to Rolling Skill Raw Cases for later curation.",
+      parameters: {
+        question: { type: "string", required: true, description: "The complete user question." },
+        skillName: { type: "string", description: "Skill name associated with the question." },
+        note: { type: "string", description: "Optional short curation note." }
+      },
+      output: {
+        schema: { type: "json" },
+        render: (_args, value) => text(`Raw Case recorded${value?.id ? `: ${value.id}` : ""}.`)
+      },
+      execute: (args, exec) => dispatch(application, "rawCases.add", {
+        question: args.question,
+        skill: { name: args.skillName || "rolling-skill" },
+        note: args.note || "",
+        source: { kind: "dsh-tool" }
+      }, exec.signal)
+    }, /* @__PURE__ */ new Set(["question", "skillName", "note"])),
+    closedDefinition({
+      name: "rolling_skill_start_evaluation",
+      description: "Start a Rolling Skill evaluation for one Dataset and an exact installed Runtime identity.",
+      parameters: {
+        datasetId: { type: "string", required: true, description: "Dataset id." },
+        runtimeId: { type: "string", required: true, description: "Exact Runtime id from Rolling Skill inventory." },
+        modelId: { type: "string", description: "Optional Runtime model id." },
+        effort: { type: "string", description: "Optional reasoning effort." }
+      },
+      output: {
+        schema: { type: "json" },
+        render: (_args, value) => text(`Rolling Skill evaluation ${value?.id ?? "started"}: ${value?.status ?? "queued"}.`)
+      },
+      execute: (args, exec) => dispatch(application, "evaluations.start", {
+        datasetId: args.datasetId,
+        selectionMode: "dataset",
+        activationMode: "explicit",
+        targets: [{
+          runtimeId: args.runtimeId,
+          modelId: args.modelId || null,
+          effort: args.effort || null
+        }],
+        judge: {
+          runtimeId: args.runtimeId,
+          modelId: args.modelId || null,
+          effort: args.effort || null
+        },
+        idempotencyKey: `dsh-tool-${randomUUID()}`
+      }, exec.signal)
+    }, /* @__PURE__ */ new Set(["datasetId", "runtimeId", "modelId", "effort"])),
+    closedDefinition({
+      name: "rolling_skill_run_capture",
+      description: "Run one due or manual Rolling Skill conversation-capture pass with the configured Runtime.",
+      parameters: {
+        slot: { type: "string", description: "Optional stable schedule slot; omit for a manual run." }
+      },
+      output: {
+        schema: { type: "json" },
+        render: (_args, value) => text(`Rolling Skill capture ${value?.status ?? "completed"}.`)
+      },
+      execute: (args, exec) => dispatch(application, "automatic.runOnce", {
+        slot: args.slot || "manual",
+        idempotencyKey: `dsh-tool-${randomUUID()}`
+      }, exec.signal)
+    }, /* @__PURE__ */ new Set(["slot"]))
+  ];
+}
+function registerRollingSkillTools(ctx, application) {
+  const disposers = createRollingSkillTools(application).map((definition) => ctx.tools.register(definition));
+  return () => {
+    for (const dispose of disposers.reverse()) dispose();
+  };
+}
+
+// src/host/index.js
 var { createRollingSkillApplication } = import_src.default;
 var { createRollingSkillApiHandler } = import_api.default;
 var inject = ["webServer", "tools"];
 function apply(ctx, config = {}) {
   const application = createRollingSkillApplication({ dataRoot: config.dataRoot });
   ctx.effect(() => {
+    const disposeTools = registerRollingSkillTools(ctx, application);
     const disposeRoute = ctx.webServer.register({
       kind: "exact",
       path: "/rolling-skill/api",
       handler: createRollingSkillApiHandler(application)
     });
     return async () => {
+      disposeTools();
       disposeRoute();
       await application.close();
     };

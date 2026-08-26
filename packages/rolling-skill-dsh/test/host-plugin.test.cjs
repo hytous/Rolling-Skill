@@ -11,7 +11,14 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
     const effects = []
     let registeredRoute = null
     let routeDisposed = false
+    const toolNames = []
     const context = {
+        tools: {
+            register(definition) {
+                toolNames.push(definition.name)
+                return () => {}
+            },
+        },
         webServer: {
             register(route) {
                 registeredRoute = route
@@ -36,6 +43,12 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
     assert.equal(registeredRoute.path, "/rolling-skill/api")
     assert.equal(typeof registeredRoute.handler, "function")
     assert.equal(effects[0].label, "rolling-skill: host service")
+    assert.deepEqual(toolNames, [
+        "rolling_skill_status",
+        "rolling_skill_add_raw_case",
+        "rolling_skill_start_evaluation",
+        "rolling_skill_run_capture",
+    ])
 
     await effects[0].dispose()
     assert.equal(routeDisposed, true)
