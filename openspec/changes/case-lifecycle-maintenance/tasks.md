@@ -1,9 +1,9 @@
 ## 1. Delete Recovery Foundation
 
-- [ ] 1.1 Add focused LocalEvaluationStore deletion preflight snapshots and tests for active blockers and immutable recovery inputs
-- [ ] 1.2 Implement CaseRecycleService with Raw Case mapping, duplicate acceptance, 200-entry chunking, and fail-before-delete ordering
-- [ ] 1.3 Wire Case and dataset delete recovery options through main IPC and preload with focused handler tests
-- [ ] 1.4 Add localized default-on recovery controls and counts to both delete dialogs and cover their renderer behavior
+- [x] 1.1 Add focused LocalEvaluationStore deletion preflight snapshots and tests for active blockers and immutable recovery inputs
+- [x] 1.2 Implement CaseRecycleService with Raw Case mapping, duplicate acceptance, 200-entry chunking, and fail-before-delete ordering
+- [x] 1.3 Wire Case and dataset delete recovery options through main IPC and preload with focused handler tests
+- [x] 1.4 Add localized default-on recovery controls and counts to both delete dialogs and cover their renderer behavior
 
 ## 2. Case Refresh Domain
 

@@ -733,6 +733,14 @@
                     <button id="close-delete-case-dialog" class="icon-button large" type="button">×</button>
                 </div>
                 <p data-i18n="deleteCaseHelp">The Case will be removed from the dataset. Existing run snapshots stay available.</p>
+                <label class="confirm-preserve-option">
+                    <input id="recover-deleted-case-question" type="checkbox" checked />
+                    <span>
+                        <strong data-i18n="recoverDeleteQuestions">Preserve questions in Raw Cases</strong>
+                        <small data-i18n="recoverDeleteCaseHelp">Only the question, Skill, type, and source are preserved. The answer is not copied.</small>
+                    </span>
+                </label>
+                <p id="delete-case-error" class="confirm-dialog-error hidden" role="alert"></p>
                 <div class="dialog-footer">
                     <span></span>
                     <button id="cancel-delete-case" type="button" data-i18n="cancel">Cancel</button>
@@ -748,6 +756,13 @@
                     <button id="close-delete-dataset-dialog" class="icon-button large" type="button" data-i18n-title="close" data-i18n-aria-label="close" title="Close" aria-label="Close">×</button>
                 </div>
                 <p data-i18n="deleteDatasetHelp">All Cases and finished draft records in this dataset will be removed. Unfinished drafts block deletion; evaluation records keep their snapshots.</p>
+                <label class="confirm-preserve-option">
+                    <input id="recover-deleted-dataset-questions" type="checkbox" checked />
+                    <span>
+                        <strong data-i18n="recoverDeleteQuestions">Preserve questions in Raw Cases</strong>
+                        <small id="recover-deleted-dataset-count">0 questions will be preserved. Answers are not copied.</small>
+                    </span>
+                </label>
                 <p id="delete-dataset-error" class="confirm-dialog-error hidden" role="alert"></p>
                 <div class="dialog-footer">
                     <span></span>

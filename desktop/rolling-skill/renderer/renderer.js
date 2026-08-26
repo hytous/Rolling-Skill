@@ -648,6 +648,10 @@ const translations = {
         deleteCaseHelp: "The Case will be removed from the dataset. Existing run snapshots stay available.",
         deleteDataset: "Delete dataset?",
         deleteDatasetHelp: "All Cases and finished draft records in this dataset will be removed. Unfinished drafts block deletion; evaluation records keep their snapshots.",
+        recoverDeleteQuestions: "Preserve questions in Raw Cases",
+        recoverDeleteCaseHelp: "Only the question, Skill, type, and source are preserved. The answer is not copied.",
+        recoverDeleteDatasetCount: "{count} questions will be preserved. Answers are not copied.",
+        deleteRecoveryFailed: "Questions could not be preserved, so nothing was deleted. {message}",
         deleteEvaluationRun: "Delete evaluation record?",
         deleteEvaluationRunHelp: "This saved run, its results, and embedded snapshots will be permanently removed. Trace files are not deleted.",
         cancelEvaluationRun: "Stop evaluation?",
@@ -658,7 +662,9 @@ const translations = {
         evaluationRunNotActive: "This evaluation is no longer active.",
         delete: "Delete",
         caseDeleted: "Case deleted",
+        caseDeletedWithRecovery: "Case deleted and its question was preserved in Raw Cases",
         datasetDeleted: "Dataset deleted",
+        datasetDeletedWithRecovery: "Dataset deleted and {count} questions were preserved in Raw Cases",
         evaluationRunDeleted: "Evaluation record deleted",
         unfinishedDraftBlocksDatasetDelete: "Finish or discard the dataset's active Case drafts before deleting it.",
         activeRunCannotDelete: "Wait for this evaluation run to finish before deleting it.",
@@ -1326,6 +1332,10 @@ const translations = {
         deleteCaseHelp: "该 Case 会从数据集中移除；已有评测记录中的快照仍会保留。",
         deleteDataset: "删除数据集？",
         deleteDatasetHelp: "该数据集中的所有 Case 和已结束草稿记录都会被删除；未结束草稿会阻止删除，已有评测记录仍保留快照。",
+        recoverDeleteQuestions: "删除前将问题保留到 Raw Case",
+        recoverDeleteCaseHelp: "只保留问题、Skill、类型和来源，不复制回答。",
+        recoverDeleteDatasetCount: "将保留 {count} 个问题，不复制回答。",
+        deleteRecoveryFailed: "问题未能保留，因此没有删除任何内容。{message}",
         deleteEvaluationRun: "删除评测记录？",
         deleteEvaluationRunHelp: "本次评测、结果及内嵌快照会被永久删除；对应的原始 Trace 文件不会删除。",
         cancelEvaluationRun: "停止评测？",
@@ -1336,7 +1346,9 @@ const translations = {
         evaluationRunNotActive: "这次评测已经不在运行。",
         delete: "删除",
         caseDeleted: "Case 已删除",
+        caseDeletedWithRecovery: "Case 已删除，问题已保留到 Raw Case",
         datasetDeleted: "数据集已删除",
+        datasetDeletedWithRecovery: "数据集已删除，{count} 个问题已保留到 Raw Case",
         evaluationRunDeleted: "评测记录已删除",
         unfinishedDraftBlocksDatasetDelete: "请先完成或丢弃这个数据集中的活动 Case 草稿，再删除数据集。",
         activeRunCannotDelete: "请等待本次评测结束后再删除这条记录。",
@@ -1661,10 +1673,14 @@ const elements = {
     closeDeleteCaseDialog: document.querySelector("#close-delete-case-dialog"),
     cancelDeleteCase: document.querySelector("#cancel-delete-case"),
     confirmDeleteCase: document.querySelector("#confirm-delete-case"),
+    recoverDeletedCaseQuestion: document.querySelector("#recover-deleted-case-question"),
+    deleteCaseError: document.querySelector("#delete-case-error"),
     deleteDatasetDialog: document.querySelector("#delete-dataset-dialog"),
     closeDeleteDatasetDialog: document.querySelector("#close-delete-dataset-dialog"),
     cancelDeleteDataset: document.querySelector("#cancel-delete-dataset"),
     confirmDeleteDataset: document.querySelector("#confirm-delete-dataset"),
+    recoverDeletedDatasetQuestions: document.querySelector("#recover-deleted-dataset-questions"),
+    recoverDeletedDatasetCount: document.querySelector("#recover-deleted-dataset-count"),
     deleteDatasetError: document.querySelector("#delete-dataset-error"),
     deleteEvaluationRunDialog: document.querySelector("#delete-evaluation-run-dialog"),
     closeDeleteEvaluationRunDialog: document.querySelector("#close-delete-evaluation-run-dialog"),
@@ -6398,11 +6414,22 @@ function openExportDatasetDialog() {
 
 function openDeleteCaseDialog(caseId) {
     state.deleteCaseId = caseId
+    elements.recoverDeletedCaseQuestion.checked = true
+    elements.deleteCaseError.textContent = ""
+    elements.deleteCaseError.classList.add("hidden")
     elements.deleteCaseDialog.showModal()
 }
 
 function openDeleteDatasetDialog(datasetId) {
     state.deleteDatasetId = datasetId
+    const dataset = state.datasets.find((entry) => entry.id === datasetId)
+    const caseCount = dataset?.caseCount ?? 0
+    elements.recoverDeletedDatasetQuestions.checked = true
+    elements.recoverDeletedDatasetQuestions.disabled = caseCount === 0
+    elements.recoverDeletedDatasetCount.textContent = formatMessage(
+        "recoverDeleteDatasetCount",
+        {count: caseCount},
+    )
     elements.deleteDatasetError.textContent = ""
     elements.deleteDatasetError.classList.add("hidden")
     elements.deleteDatasetDialog.showModal()
@@ -6413,7 +6440,11 @@ async function deleteEvaluationDataset() {
     elements.confirmDeleteDataset.disabled = true
     try {
         const datasetId = state.deleteDatasetId
-        const deleted = await window.rollingSkill.deleteDataset(datasetId)
+        const dataset = state.datasets.find((entry) => entry.id === datasetId)
+        const caseCount = dataset?.caseCount ?? 0
+        const recoverQuestions = elements.recoverDeletedDatasetQuestions.checked
+        const deleted = await window.rollingSkill.deleteDataset(datasetId,
+            elements.recoverDeletedDatasetQuestions.checked)
         if (deleted.settings) applySettings(deleted.settings)
         state.deleteDatasetId = null
         if (state.evaluationDatasetId === datasetId) {
@@ -6422,12 +6453,16 @@ async function deleteEvaluationDataset() {
         }
         elements.deleteDatasetDialog.close()
         await loadEvaluationWorkbench(false)
-        showToast(t("datasetDeleted"))
+        showToast(recoverQuestions && caseCount > 0
+            ? formatMessage("datasetDeletedWithRecovery", {count: caseCount})
+            : t("datasetDeleted"))
     } catch (error) {
         const message = error?.message || String(error)
         elements.deleteDatasetError.textContent = /unfinished Curator draft|capture in progress/i.test(message)
             ? t("unfinishedDraftBlocksDatasetDelete")
-            : message
+            : /Raw Case recovery failed/i.test(message)
+              ? formatMessage("deleteRecoveryFailed", {message})
+              : message
         elements.deleteDatasetError.classList.remove("hidden")
     } finally {
         elements.confirmDeleteDataset.disabled = false
@@ -6507,15 +6542,19 @@ async function deleteEvaluationCase() {
     if (!state.deleteCaseId || !state.evaluationDatasetId) return
     elements.confirmDeleteCase.disabled = true
     try {
-        await window.rollingSkill.deleteCase(state.evaluationDatasetId, state.deleteCaseId)
+        const recoverQuestions = elements.recoverDeletedCaseQuestion.checked
+        await window.rollingSkill.deleteCase(state.evaluationDatasetId, state.deleteCaseId,
+            elements.recoverDeletedCaseQuestion.checked)
         state.deleteCaseId = null
         elements.deleteCaseDialog.close()
         await loadEvaluationWorkbench(false)
-        showToast(t("caseDeleted"))
+        showToast(t(recoverQuestions ? "caseDeletedWithRecovery" : "caseDeleted"))
     } catch (error) {
-        state.deleteCaseId = null
-        elements.deleteCaseDialog.close()
-        showToast(error?.message || String(error))
+        const message = error?.message || String(error)
+        elements.deleteCaseError.textContent = /Raw Case recovery failed/i.test(message)
+            ? formatMessage("deleteRecoveryFailed", {message})
+            : message
+        elements.deleteCaseError.classList.remove("hidden")
     } finally {
         elements.confirmDeleteCase.disabled = false
     }

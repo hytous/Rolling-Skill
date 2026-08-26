@@ -170,6 +170,28 @@ describe("desktop main/preload bridge", () => {
         assert.match(store, /targetCaseId/)
     })
 
+    it("routes optional delete recovery through the Case recycle service", async () => {
+        const main = source("src/main.cjs")
+        const {api, calls} = preloadBridge(() => ({deleted: true}))
+
+        await api.deleteCase("dataset-1", "case-1", false)
+        await api.deleteDataset("dataset-1", true)
+
+        assert.deepEqual(plain(calls), [
+            {
+                channel: "datasets:delete-case",
+                payload: {datasetId: "dataset-1", caseId: "case-1", recoverQuestions: false},
+            },
+            {
+                channel: "datasets:delete",
+                payload: {datasetId: "dataset-1", recoverQuestions: true},
+            },
+        ])
+        assert.match(main, /new CaseRecycleService\(\{store, rawCaseStore\}\)/u)
+        assert.match(main, /caseRecycleService\.deleteCase/u)
+        assert.match(main, /caseRecycleService\.deleteDataset/u)
+    })
+
     it("exports a selectable dataset subset and output source as JSON-array CSV", () => {
         const main = source("src/main.cjs")
         const preload = source("src/preload.cjs")

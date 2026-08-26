@@ -451,6 +451,40 @@ function requireCase(state, datasetId, caseId) {
     return entry
 }
 
+function assertCaseDeletable(state, datasetId, caseId) {
+    const unfinishedCalibration = state.curationSessions.some(
+        (entry) =>
+            entry.datasetId === datasetId &&
+            entry.operation === "calibration" &&
+            entry.targetCaseId === caseId &&
+            entry.status !== "archived" &&
+            entry.status !== "cancelled",
+    )
+    if (unfinishedCalibration) {
+        throw new Error("Discard or finish the active Case calibration before deleting it")
+    }
+}
+
+function assertDatasetDeletable(state, datasetReservations, datasetId) {
+    if ((datasetReservations.get(datasetId) ?? 0) > 0) {
+        throw new Error("Dataset has an unfinished Curator draft or capture in progress")
+    }
+    const unfinishedCurations = state.curationSessions.some(
+        (entry) =>
+            entry.datasetId === datasetId &&
+            entry.status !== "archived" &&
+            entry.status !== "cancelled",
+    )
+    if (unfinishedCurations) throw new Error("Dataset has unfinished Curator drafts")
+    const unfinishedRubrics = state.rubricSessions.some(
+        (entry) =>
+            entry.datasetId === datasetId &&
+            entry.status !== "archived" &&
+            entry.status !== "cancelled",
+    )
+    if (unfinishedRubrics) throw new Error("Dataset has unfinished Rubric Agent sessions")
+}
+
 function requireCurationSession(state, id) {
     const session = state.curationSessions.find((entry) => entry.id === id)
     if (!session) throw new Error("Unknown curation session")
@@ -896,27 +930,7 @@ class LocalEvaluationStore {
     deleteDataset(datasetId) {
         const state = this.load()
         requireDataset(state, datasetId)
-        if ((this.datasetReservations.get(datasetId) ?? 0) > 0) {
-            throw new Error("Dataset has an unfinished Curator draft or capture in progress")
-        }
-        const unfinishedCurations = state.curationSessions.filter(
-            (entry) =>
-                entry.datasetId === datasetId &&
-                entry.status !== "archived" &&
-                entry.status !== "cancelled",
-        )
-        if (unfinishedCurations.length) {
-            throw new Error("Dataset has unfinished Curator drafts")
-        }
-        const unfinishedRubrics = state.rubricSessions.filter(
-            (entry) =>
-                entry.datasetId === datasetId &&
-                entry.status !== "archived" &&
-                entry.status !== "cancelled",
-        )
-        if (unfinishedRubrics.length) {
-            throw new Error("Dataset has unfinished Rubric Agent sessions")
-        }
+        assertDatasetDeletable(state, this.datasetReservations, datasetId)
 
         const dataset = state.datasets.find((entry) => entry.id === datasetId)
         const deletedCaseCount = state.cases.filter(
@@ -962,6 +976,16 @@ class LocalEvaluationStore {
             deletedRubricVersionCount,
             preservedEvaluationRunCount,
             settings: state.settings,
+        })
+    }
+
+    prepareDatasetDeletion(datasetId) {
+        const state = this.load()
+        const dataset = requireDataset(state, datasetId)
+        assertDatasetDeletable(state, this.datasetReservations, datasetId)
+        return copy({
+            dataset,
+            cases: state.cases.filter((entry) => entry.datasetId === datasetId),
         })
     }
 
@@ -1835,16 +1859,7 @@ class LocalEvaluationStore {
     deleteCase(datasetId, caseId) {
         const state = this.load()
         requireDataset(state, datasetId)
-        const unfinishedCalibration = state.curationSessions.some(
-            (entry) =>
-                entry.operation === "calibration" &&
-                entry.targetCaseId === caseId &&
-                entry.status !== "archived" &&
-                entry.status !== "cancelled",
-        )
-        if (unfinishedCalibration) {
-            throw new Error("Discard or finish the active Case calibration before deleting it")
-        }
+        assertCaseDeletable(state, datasetId, caseId)
         const index = state.cases.findIndex(
             (entry) => entry.datasetId === datasetId && entry.id === caseId,
         )
@@ -1852,6 +1867,14 @@ class LocalEvaluationStore {
         const [deleted] = state.cases.splice(index, 1)
         this.persist()
         return copy(deleted)
+    }
+
+    prepareCaseDeletion(datasetId, caseId) {
+        const state = this.load()
+        const dataset = requireDataset(state, datasetId)
+        const target = requireCase(state, datasetId, caseId)
+        assertCaseDeletable(state, datasetId, caseId)
+        return copy({dataset, cases: [target]})
     }
 
     createEvaluationRun(input = {}, options = {}) {

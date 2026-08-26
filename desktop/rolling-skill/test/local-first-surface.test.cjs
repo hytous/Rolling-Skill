@@ -197,6 +197,27 @@ describe("local-first desktop surface", () => {
         assert.doesNotMatch(renderer, /defaultEffort \? `\$\{t\("runtimeDefaultEffort"\)\} · \$\{defaultEffort\}`/)
     })
 
+    it("offers bilingual Raw Case recovery before Case and dataset deletion", () => {
+        const html = source("renderer/index.html")
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        assert.match(html, /id="recover-deleted-case-question"[^>]*checked/u)
+        assert.match(html, /id="recover-deleted-dataset-questions"[^>]*checked/u)
+        assert.match(html, /id="recover-deleted-dataset-count"/u)
+        assert.match(renderer, /recoverDeleteQuestions:\s*"Preserve questions in Raw Cases"/u)
+        assert.match(renderer, /recoverDeleteQuestions:\s*"删除前将问题保留到 Raw Case"/u)
+        assert.match(
+            renderer,
+            /deleteDataset\(datasetId,\s*elements\.recoverDeletedDatasetQuestions\.checked\)/u,
+        )
+        assert.match(
+            renderer,
+            /deleteCase\([^,]+,\s*[^,]+,\s*elements\.recoverDeletedCaseQuestion\.checked\)/u,
+        )
+        assert.match(styles, /\.confirm-preserve-option/u)
+    })
+
     it("contains no bundled agent runtime dependency", () => {
         const packageJson = source("package.json")
         assert.doesNotMatch(packageJson, /@openai\/codex|codex-runtime|extraResources/)

@@ -84,6 +84,21 @@ function skillReference(path = "/skills/billing/SKILL.md", name = "billing-cost-
     }
 }
 
+function saveCuratedCase(store, datasetId, question) {
+    const session = store.createCurationSession({
+        datasetId,
+        caseType: "goodcase",
+        episode: episode(question),
+        curator: {runtimeId: "codex:curator"},
+    })
+    store.recordCurationRevision(session.id, {
+        draft: curatedDraft(),
+        assistantText: "Curated replacement contract",
+        turnId: "turn-curator",
+    })
+    return store.archiveCurationSession(session.id)
+}
+
 describe("local evaluation store", () => {
     it("starts with manual capture disabled and a default dataset", () => {
         const {store} = fixture()
@@ -764,5 +779,27 @@ describe("local evaluation store", () => {
         assert.equal(store.read().cases.length, 0)
         assert.equal(store.hasCurationForSource("thread-source", "agent-2"), true)
         assert.equal(store.listCurationSessions().some((entry) => entry.id === session.id), false)
+    })
+
+    it("preflights Case and dataset deletion with frozen recovery inputs", () => {
+        const {store} = fixture()
+        const dataset = store.bindDatasetSkill(store.listDatasets()[0].id, skillReference())
+        const first = saveCuratedCase(store, dataset.id, "question one  \n")
+        const second = saveCuratedCase(store, dataset.id, "question two")
+
+        const single = store.prepareCaseDeletion(dataset.id, first.id)
+        assert.equal(single.dataset.id, dataset.id)
+        assert.deepEqual(single.cases.map((entry) => entry.id), [first.id])
+        assert.equal(single.cases[0].question, "question one  \n")
+
+        const all = store.prepareDatasetDeletion(dataset.id)
+        assert.deepEqual(all.cases.map((entry) => entry.id), [first.id, second.id])
+        assert.deepEqual(all.cases.map((entry) => entry.question), ["question one  \n", "question two"])
+
+        single.cases[0].question = "mutated copy"
+        assert.equal(
+            store.listCases(dataset.id).find((entry) => entry.id === first.id).question,
+            "question one  \n",
+        )
     })
 })

@@ -33,6 +33,7 @@ const {CodeBuddyRuntimeProvider} = require("./codebuddy-runtime-provider.cjs")
 const {DeepSeekHarnessRuntimeProvider} = require("./deepseek-harness-runtime-provider.cjs")
 const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
+const {CaseRecycleService} = require("./case-recycle-service.cjs")
 const {RubricManager} = require("./rubric-manager.cjs")
 const {EvaluationRunner} = require("./evaluation-runner.cjs")
 const {EvaluationPowerGuard} = require("./evaluation-power-guard.cjs")
@@ -185,6 +186,7 @@ let automaticCaptureManager = null
 let evaluationRunner = null
 let activityStore = null
 let rawCaseStore = null
+let caseRecycleService = null
 let managedSkillStore = null
 let managedSkillManager = null
 let managedSkillStartupError = null
@@ -3116,8 +3118,11 @@ function installIpc() {
             await currentRuntimeSkillReference(input.skillReference),
         ),
     )
-    ipcMain.handle("datasets:delete", (_event, datasetId) =>
-        store.deleteDataset(requireIdentifier(datasetId, "dataset")),
+    ipcMain.handle("datasets:delete", (_event, input = {}) =>
+        caseRecycleService.deleteDataset({
+            datasetId: requireIdentifier(input.datasetId, "dataset"),
+            recoverQuestions: input.recoverQuestions !== false,
+        }),
     )
     ipcMain.handle("datasets:export-csv", async (_event, requestedInput) => {
         const input = typeof requestedInput === "string"
@@ -3157,10 +3162,11 @@ function installIpc() {
         }
     })
     ipcMain.handle("datasets:delete-case", (_event, input = {}) =>
-        store.deleteCase(
-            requireIdentifier(input.datasetId, "dataset"),
-            requireIdentifier(input.caseId, "Case"),
-        ),
+        caseRecycleService.deleteCase({
+            datasetId: requireIdentifier(input.datasetId, "dataset"),
+            caseId: requireIdentifier(input.caseId, "Case"),
+            recoverQuestions: input.recoverQuestions !== false,
+        }),
     )
     ipcMain.handle("datasets:reveal", revealLocalData)
     ipcMain.handle("settings:update", (_event, input) => {
@@ -3540,6 +3546,7 @@ if (!hasLock) {
         })
         rawCaseStore = new RawCaseStore()
         rawCaseStore.subscribe((rawCases) => send("raw-cases:changed", rawCases))
+        caseRecycleService = new CaseRecycleService({store, rawCaseStore})
         activityStore = new ThreadActivityStore(
             join(app.getPath("userData"), "thread-activity-store.json"),
         )
