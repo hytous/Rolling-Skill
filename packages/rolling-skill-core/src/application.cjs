@@ -123,6 +123,44 @@ function defaultSkillReference(paths) {
     }
 }
 
+function workerOperatorRuntime() {
+    const unavailable = () => {
+        throw new Error("Operator and Optimization services are unavailable in Worker mode")
+    }
+    const services = {
+        operatorSummary: () => ({
+            generation: null,
+            revision: 0,
+            sessions: [],
+            jobs: [],
+            steps: [],
+            approvals: [],
+            totals: {sessions: 0, jobs: 0, steps: 0, approvals: 0},
+            truncated: false,
+            nextCursor: null,
+        }),
+        optimizationList: () => [],
+    }
+    for (const method of [
+        "operatorGet",
+        "operatorStart",
+        "operatorPause",
+        "operatorResume",
+        "operatorCancel",
+        "operatorApprove",
+        "operatorArtifacts",
+        "operatorSend",
+        "optimizationGet",
+        "optimizationPreflight",
+        "optimizationStart",
+        "optimizationPause",
+        "optimizationResume",
+        "optimizationCancel",
+        "optimizationReport",
+    ]) services[method] = unavailable
+    return Object.freeze({services: Object.freeze(services), close: async () => {}})
+}
+
 function createRollingSkillApplication(options = {}) {
     const paths = ensureDataLayout(resolveDataPaths(options))
     const store = new LocalEvaluationStore(paths.evaluationStore)
@@ -237,7 +275,9 @@ function createRollingSkillApplication(options = {}) {
         onChanged: () => publish(),
         ...(options.snapshotSkill ? {snapshotSkill: options.snapshotSkill} : {}),
     })
-    const operatorRuntime = options.operatorRuntime ?? createOperatorRuntime({
+    const operatorRuntime = options.operatorRuntime ?? (options.workerMode
+        ? workerOperatorRuntime()
+        : createOperatorRuntime({
         paths,
         store,
         rawCaseStore,
@@ -255,7 +295,7 @@ function createRollingSkillApplication(options = {}) {
         requestQuestion: options.requestRuntimeQuestion ?? null,
         operatorToolPath: options.operatorToolPath ?? null,
         onChanged: () => publish(),
-    })
+        }))
     const operatorServices = operatorRuntime.services
     const subscribers = new Set()
     let closed = false

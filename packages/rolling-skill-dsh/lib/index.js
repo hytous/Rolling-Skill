@@ -59453,6 +59453,44 @@ var require_application = __commonJS({
         confirmedAt: (/* @__PURE__ */ new Date()).toISOString()
       };
     }
+    function workerOperatorRuntime() {
+      const unavailable = () => {
+        throw new Error("Operator and Optimization services are unavailable in Worker mode");
+      };
+      const services = {
+        operatorSummary: () => ({
+          generation: null,
+          revision: 0,
+          sessions: [],
+          jobs: [],
+          steps: [],
+          approvals: [],
+          totals: { sessions: 0, jobs: 0, steps: 0, approvals: 0 },
+          truncated: false,
+          nextCursor: null
+        }),
+        optimizationList: () => []
+      };
+      for (const method of [
+        "operatorGet",
+        "operatorStart",
+        "operatorPause",
+        "operatorResume",
+        "operatorCancel",
+        "operatorApprove",
+        "operatorArtifacts",
+        "operatorSend",
+        "optimizationGet",
+        "optimizationPreflight",
+        "optimizationStart",
+        "optimizationPause",
+        "optimizationResume",
+        "optimizationCancel",
+        "optimizationReport"
+      ]) services[method] = unavailable;
+      return Object.freeze({ services: Object.freeze(services), close: async () => {
+      } });
+    }
     function createRollingSkillApplication2(options2 = {}) {
       const paths = ensureDataLayout(resolveDataPaths(options2));
       const store = new LocalEvaluationStore(paths.evaluationStore);
@@ -59564,7 +59602,7 @@ var require_application = __commonJS({
         onChanged: () => publish(),
         ...options2.snapshotSkill ? { snapshotSkill: options2.snapshotSkill } : {}
       });
-      const operatorRuntime = options2.operatorRuntime ?? createOperatorRuntime({
+      const operatorRuntime = options2.operatorRuntime ?? (options2.workerMode ? workerOperatorRuntime() : createOperatorRuntime({
         paths,
         store,
         rawCaseStore,
@@ -59582,7 +59620,7 @@ var require_application = __commonJS({
         requestQuestion: options2.requestRuntimeQuestion ?? null,
         operatorToolPath: options2.operatorToolPath ?? null,
         onChanged: () => publish()
-      });
+      }));
       const operatorServices = operatorRuntime.services;
       const subscribers = /* @__PURE__ */ new Set();
       let closed = false;
@@ -59753,6 +59791,150 @@ var require_application = __commonJS({
   }
 });
 
+// ../rolling-skill-core/src/run-lease.cjs
+var require_run_lease = __commonJS({
+  "../rolling-skill-core/src/run-lease.cjs"(exports, module) {
+    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var {
+      chmodSync,
+      closeSync,
+      mkdirSync,
+      openSync,
+      readFileSync,
+      renameSync,
+      unlinkSync,
+      writeFileSync
+    } = __require("node:fs");
+    var { isAbsolute, join } = __require("node:path");
+    var LEASE_SCHEMA = "rolling-skill-run-lease/v1";
+    var LEASE_FILENAME = "automatic-capture.lock";
+    var DEFAULT_STALE_AFTER_MS = 6 * 60 * 60 * 1e3;
+    function timestamp(value, label) {
+      const date = value instanceof Date ? value : new Date(value);
+      if (!Number.isFinite(date.getTime())) throw new Error(`${label} is invalid`);
+      return date.toISOString();
+    }
+    function liveProcess(pid) {
+      if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        return error?.code === "EPERM";
+      }
+    }
+    function busy(record = null) {
+      return Object.assign(new Error("Rolling Skill automatic capture is already running"), {
+        code: "LEASE_BUSY",
+        ...record?.slot ? { slot: record.slot } : {}
+      });
+    }
+    function readLease(path) {
+      try {
+        const value = JSON.parse(readFileSync(path, "utf8"));
+        if (value?.schemaVersion !== LEASE_SCHEMA || typeof value.token !== "string" || !value.token || typeof value.slot !== "string" || !value.slot || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.acquiredAt !== "string") return null;
+        timestamp(value.acquiredAt, "Run lease acquisition time");
+        return value;
+      } catch {
+        return null;
+      }
+    }
+    async function acquireRunLease(lockDirectory, {
+      slot,
+      pid = process.pid,
+      now = () => /* @__PURE__ */ new Date(),
+      isProcessAlive = liveProcess,
+      staleAfterMs = DEFAULT_STALE_AFTER_MS
+    } = {}) {
+      if (typeof lockDirectory !== "string" || !isAbsolute(lockDirectory)) {
+        throw new Error("Rolling Skill lock directory must be absolute");
+      }
+      const normalizedSlot = timestamp(slot, "Run lease slot");
+      if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Run lease pid is invalid");
+      if (!Number.isSafeInteger(staleAfterMs) || staleAfterMs < 1) {
+        throw new Error("Run lease stale timeout is invalid");
+      }
+      mkdirSync(lockDirectory, { recursive: true, mode: 448 });
+      chmodSync(lockDirectory, 448);
+      const path = join(lockDirectory, LEASE_FILENAME);
+      const token = randomUUID2();
+      let recovered = false;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const acquiredAt = timestamp(now(), "Run lease clock");
+        const record = {
+          schemaVersion: LEASE_SCHEMA,
+          token,
+          slot: normalizedSlot,
+          pid,
+          acquiredAt
+        };
+        let descriptor;
+        try {
+          descriptor = openSync(path, "wx", 384);
+          writeFileSync(descriptor, `${JSON.stringify(record)}
+`, "utf8");
+          closeSync(descriptor);
+          chmodSync(path, 384);
+        } catch (error) {
+          if (descriptor !== void 0) {
+            try {
+              closeSync(descriptor);
+            } catch {
+            }
+          }
+          if (error?.code !== "EEXIST") throw error;
+          const current = readLease(path);
+          if (!current) throw busy();
+          const age = Date.parse(acquiredAt) - Date.parse(current.acquiredAt);
+          const stale = age >= staleAfterMs || !isProcessAlive(current.pid);
+          if (!stale) throw busy(current);
+          const quarantine = join(lockDirectory, `${LEASE_FILENAME}.stale-${randomUUID2()}`);
+          try {
+            renameSync(path, quarantine);
+            recovered = true;
+            try {
+              unlinkSync(quarantine);
+            } catch {
+            }
+            continue;
+          } catch (renameError) {
+            if (["ENOENT", "EEXIST"].includes(renameError?.code)) continue;
+            throw renameError;
+          }
+        }
+        let released = false;
+        return Object.freeze({
+          path,
+          slot: normalizedSlot,
+          pid,
+          acquiredAt,
+          recovered,
+          async release() {
+            if (released) return false;
+            const current = readLease(path);
+            if (current?.token !== token) return false;
+            try {
+              unlinkSync(path);
+              released = true;
+              return true;
+            } catch (error) {
+              if (error?.code === "ENOENT") return false;
+              throw error;
+            }
+          }
+        });
+      }
+      throw busy();
+    }
+    module.exports = {
+      DEFAULT_STALE_AFTER_MS,
+      LEASE_FILENAME,
+      LEASE_SCHEMA,
+      acquireRunLease
+    };
+  }
+});
+
 // ../rolling-skill-core/src/index.cjs
 var require_src = __commonJS({
   "../rolling-skill-core/src/index.cjs"(exports, module) {
@@ -59761,11 +59943,13 @@ var require_src = __commonJS({
     var { createEvaluationServices } = require_evaluation_services();
     var { createOperatorRuntime, createOperatorServices } = require_operator_services();
     var { createRuntimeServices } = require_runtime_services();
+    var { acquireRunLease } = require_run_lease();
     var { createSkillServices } = require_skill_services();
     var { RollingSkillConfigStore } = require_config_store();
     var { ensureDataLayout, resolveDataPaths } = require_data_root();
     module.exports = {
       RollingSkillConfigStore,
+      acquireRunLease,
       createCaseServices,
       createEvaluationServices,
       createOperatorRuntime,
