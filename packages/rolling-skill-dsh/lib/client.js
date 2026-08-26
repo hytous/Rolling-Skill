@@ -26,8 +26,8 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 
 // src/client/workbench/Workbench.tsx
-var import_dsh_client_ui_primitives5 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react5 = require("react");
+var import_dsh_client_ui_primitives6 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react6 = require("react");
 
 // src/client/api.ts
 var ROLLING_SKILL_API_PATH = "/rolling-skill/api";
@@ -642,8 +642,152 @@ function RawCasesPanel({ t, revision, onChanged }) {
   ] });
 }
 
-// src/client/workbench/Workbench.tsx
+// src/client/workbench/SkillsPanel.tsx
+var import_dsh_client_ui_primitives5 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react5 = require("react");
 var import_jsx_runtime6 = require("react/jsx-runtime");
+function SkillsPanel({ t }) {
+  const [catalog, setCatalog] = (0, import_react5.useState)({ repositories: [], skills: [] });
+  const [detail, setDetail] = (0, import_react5.useState)(null);
+  const [runtimes, setRuntimes] = (0, import_react5.useState)([]);
+  const [runtimeId, setRuntimeId] = (0, import_react5.useState)("");
+  const [sourceKind, setSourceKind] = (0, import_react5.useState)("folder");
+  const [sourceLocation, setSourceLocation] = (0, import_react5.useState)("");
+  const [candidateMessage, setCandidateMessage] = (0, import_react5.useState)("Update Skill workflow");
+  const [releaseLabel, setReleaseLabel] = (0, import_react5.useState)("");
+  const [installations, setInstallations] = (0, import_react5.useState)({ jobs: [] });
+  const [busy, setBusy] = (0, import_react5.useState)(false);
+  const [error, setError] = (0, import_react5.useState)(null);
+  const [revision, setRevision] = (0, import_react5.useState)(0);
+  (0, import_react5.useEffect)(() => {
+    const controller = new AbortController();
+    Promise.all([
+      requestRollingSkill("skills.catalog", {}, controller.signal),
+      requestRollingSkill("installations.targets", {}, controller.signal),
+      requestRollingSkill("installations.list", {}, controller.signal)
+    ]).then(([nextCatalog, runtimeItems, jobs]) => {
+      setCatalog(nextCatalog);
+      setRuntimes(runtimeItems);
+      setRuntimeId((current) => current || runtimeItems[0]?.runtimeId || "");
+      setInstallations(jobs);
+      if (!detail && nextCatalog.skills[0]) void loadSkill(nextCatalog.skills[0].id, controller.signal);
+    }).catch((reason) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
+    });
+    return () => controller.abort();
+  }, [revision]);
+  const loadSkill = async (skillId, signal) => {
+    const next = await requestRollingSkill("skills.get", { skillId }, signal);
+    setDetail(next);
+    setInstallations(await requestRollingSkill("installations.list", { skillId }, signal));
+  };
+  const mutate = async (operation) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await operation();
+      setRevision((value) => value + 1);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("loadError"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const candidate = detail?.versions.find((version) => version.state === "candidate") ?? null;
+  const released = (0, import_react5.useMemo)(() => detail?.versions.find((version) => version.state === "released" && !version.versionLabel?.startsWith("deprecated")) ?? null, [detail]);
+  const createCandidate = () => mutate(async () => {
+    if (!detail) return;
+    const expectedBase = await requestRollingSkill("skills.candidateBase", { skillId: detail.skill.id });
+    await requestRollingSkill("skills.createCandidate", { skillId: detail.skill.id, message: candidateMessage, expectedBase });
+  });
+  const release = () => mutate(() => requestRollingSkill("skills.release", {
+    versionId: candidate?.id,
+    versionLabel: releaseLabel,
+    expectedCandidate: candidate ? {
+      commit: candidate.commit,
+      contentDigest: candidate.contentDigest,
+      state: candidate.state,
+      versionLabel: releaseLabel
+    } : null
+  }));
+  const install = () => mutate(() => requestRollingSkill("installations.start", {
+    skillId: detail?.skill.id,
+    versionId: released?.id,
+    targets: [{ runtimeId, modelId: null, effort: "high", permissionMode: null }]
+  }));
+  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-data-stack", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h3", { children: t("skillRepositories") }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { children: t("skillRepositoriesDescription") })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("skills.rescan", {})), children: t("rescan") })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-form-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("select", { className: "rolling-skill-select", value: sourceKind, onChange: (event) => setSourceKind(event.target.value), children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("option", { value: "folder", children: "folder" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("option", { value: "local-git", children: "local-git" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("option", { value: "git-url", children: "git-url" }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("option", { value: "zip", children: "zip" })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Input, { value: sourceLocation, placeholder: t("skillSourceLocation"), onChange: (event) => setSourceLocation(event.target.value) }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "outline", size: "sm", disabled: busy || !sourceLocation.trim(), onClick: () => void mutate(() => requestRollingSkill("skills.import", { kind: sourceKind, location: sourceLocation })), children: t("importSkill") })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-list", children: [
+        catalog.skills.map((skill) => /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("button", { type: "button", className: "rolling-skill-skill-row", onClick: () => void loadSkill(skill.id), children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: skill.name }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: skill.description || skill.status })
+        ] }, skill.id)),
+        catalog.skills.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { children: t("emptySkills") }) : null
+      ] })
+    ] }),
+    detail ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h3", { children: detail.skill.name }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { children: detail.skill.description || detail.skill.status })
+      ] }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("pre", { className: "rolling-skill-manifest", children: detail.manifest }),
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-grid", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-subpanel", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h4", { children: t("candidateVersion") }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Input, { value: candidateMessage, onChange: (event) => setCandidateMessage(event.target.value) }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "outline", size: "sm", disabled: busy, onClick: () => void createCandidate(), children: t("createCandidate") })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-subpanel", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h4", { children: t("releaseVersion") }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Input, { value: releaseLabel, placeholder: "1.0.0", onChange: (event) => setReleaseLabel(event.target.value) }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "outline", size: "sm", disabled: busy || !candidate || !releaseLabel.trim(), onClick: () => void release(), children: t("release") })
+        ] })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(RuntimeSelect, { t, runtimes, value: runtimeId, onChange: setRuntimeId, label: t("installationRuntime") }),
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "outline", disabled: busy || !released || !runtimeId, onClick: () => void install(), children: t("installReleased") })
+    ] }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h3", { children: t("installationJobs") }),
+      error ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "rolling-skill-list", children: installations.jobs.map((job) => /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("article", { className: "rolling-skill-list-row", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: job.status }),
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("span", { children: [
+            job.runtime.displayName,
+            " ",
+            job.runtime.version || "",
+            " \xB7 ",
+            job.id
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("installations.inspect", { jobId: job.id })), children: t("inspect") }),
+          ["queued", "running", "awaiting_permission", "awaiting_confirmation"].includes(job.status) ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "ghost", size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("installations.cancel", { jobId: job.id })), children: t("cancelRun") }) : null
+        ] })
+      ] }, job.id)) })
+    ] })
+  ] });
+}
+
+// src/client/workbench/Workbench.tsx
+var import_jsx_runtime7 = require("react/jsx-runtime");
 var TABS = [
   { id: "overview", label: "overview" },
   { id: "cases", label: "cases" },
@@ -659,16 +803,16 @@ function dateTime(value, fallback) {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : fallback;
 }
 function Workbench({ locale, t }) {
-  (0, import_react5.useSyncExternalStore)(
+  (0, import_react6.useSyncExternalStore)(
     (listener) => locale.subscribe(listener),
     () => locale.getSnapshot().revision,
     () => 0
   );
-  const [activeTab, setActiveTab] = (0, import_react5.useState)("overview");
-  const [reloadRevision, setReloadRevision] = (0, import_react5.useState)(0);
-  const [dataRevision, setDataRevision] = (0, import_react5.useState)(0);
-  const [state, setState] = (0, import_react5.useState)({ status: "loading" });
-  (0, import_react5.useEffect)(() => {
+  const [activeTab, setActiveTab] = (0, import_react6.useState)("overview");
+  const [reloadRevision, setReloadRevision] = (0, import_react6.useState)(0);
+  const [dataRevision, setDataRevision] = (0, import_react6.useState)(0);
+  const [state, setState] = (0, import_react6.useState)({ status: "loading" });
+  (0, import_react6.useEffect)(() => {
     const controller = new AbortController();
     setState({ status: "loading" });
     requestRollingSkill("dashboard.get", {}, controller.signal).then((dashboard) => setState({ status: "ready", dashboard })).catch((error) => {
@@ -681,16 +825,16 @@ function Workbench({ locale, t }) {
     return () => controller.abort();
   }, [reloadRevision]);
   const reload = () => setReloadRevision((revision) => revision + 1);
-  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: "rolling-skill-workbench", "aria-labelledby": "rolling-skill-title", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("header", { className: "rolling-skill-header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h2", { id: "rolling-skill-title", children: t("title") }),
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { children: t("subtitle") })
+  return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "rolling-skill-workbench", "aria-labelledby": "rolling-skill-title", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("header", { className: "rolling-skill-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h2", { id: "rolling-skill-title", children: t("title") }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: t("subtitle") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "outline", size: "sm", onClick: reload, disabled: state.status === "loading", children: t("refresh") })
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "outline", size: "sm", onClick: reload, disabled: state.status === "loading", children: t("refresh") })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("nav", { className: "rolling-skill-tabs", "aria-label": t("title"), children: TABS.map((tab) => /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(
-      import_dsh_client_ui_primitives5.Button,
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("nav", { className: "rolling-skill-tabs", "aria-label": t("title"), children: TABS.map((tab) => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
+      import_dsh_client_ui_primitives6.Button,
       {
         variant: activeTab === tab.id ? "outline" : "ghost",
         size: "sm",
@@ -700,18 +844,18 @@ function Workbench({ locale, t }) {
       },
       tab.id
     )) }),
-    state.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") }) : state.status === "error" ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: t("loadError") }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: state.message }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(import_dsh_client_ui_primitives5.Button, { variant: "outline", size: "sm", onClick: reload, children: t("retry") })
-    ] }) : activeTab === "cases" ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-data-stack", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(DatasetsPanel, { t, onChanged: () => setDataRevision((value) => value + 1) }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(CasesPanel, { t, revision: dataRevision, onChanged: () => setDataRevision((value) => value + 1) }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(RawCasesPanel, { t, revision: dataRevision, onChanged: () => setDataRevision((value) => value + 1) })
-    ] }) : activeTab === "evaluations" ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(EvaluationsPanel, { t }) : activeTab !== "overview" ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h3", { children: t(TABS.find((tab) => tab.id === activeTab)?.label ?? "overview") }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { children: t("comingSoon") })
-    ] }) : /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(Overview, { dashboard: state.dashboard, t })
+    state.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") }) : state.status === "error" ? /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: t("loadError") }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { children: state.message }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(import_dsh_client_ui_primitives6.Button, { variant: "outline", size: "sm", onClick: reload, children: t("retry") })
+    ] }) : activeTab === "cases" ? /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-data-stack", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(DatasetsPanel, { t, onChanged: () => setDataRevision((value) => value + 1) }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(CasesPanel, { t, revision: dataRevision, onChanged: () => setDataRevision((value) => value + 1) }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(RawCasesPanel, { t, revision: dataRevision, onChanged: () => setDataRevision((value) => value + 1) })
+    ] }) : activeTab === "evaluations" ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(EvaluationsPanel, { t }) : activeTab === "skills" ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(SkillsPanel, { t }) : activeTab !== "overview" ? /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: t(TABS.find((tab) => tab.id === activeTab)?.label ?? "overview") }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: t("comingSoon") })
+    ] }) : /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Overview, { dashboard: state.dashboard, t })
   ] });
 }
 function Overview({ dashboard, t }) {
@@ -723,46 +867,46 @@ function Overview({ dashboard, t }) {
     { key: "managedSkills", label: "managedSkillsCount" }
   ];
   const runtime = dashboard.settings.plugin.runtime;
-  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-overview", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "rolling-skill-counts", children: counts.map((count) => /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-count", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: dashboard.counts[count.key] }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { children: t(count.label) })
+  return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-overview", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("div", { className: "rolling-skill-counts", children: counts.map((count) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-count", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: dashboard.counts[count.key] }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("span", { children: t(count.label) })
     ] }, count.key)) }),
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-grid", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: "rolling-skill-panel", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h3", { children: t("automaticStatus") }),
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("dl", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("dt", { children: t("nextRun") }),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("dd", { children: t("notAvailable") })
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-grid", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "rolling-skill-panel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: t("automaticStatus") }),
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("dl", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dt", { children: t("nextRun") }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dd", { children: t("notAvailable") })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("dt", { children: t("lastSuccess") }),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("dd", { children: dateTime(dashboard.automaticCapture.lastSuccessAt, t("notAvailable")) })
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dt", { children: t("lastSuccess") }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dd", { children: dateTime(dashboard.automaticCapture.lastSuccessAt, t("notAvailable")) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("dt", { children: t("lastError") }),
-            /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("dd", { children: dashboard.automaticCapture.lastError?.message ?? t("noError") })
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dt", { children: t("lastError") }),
+            /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("dd", { children: dashboard.automaticCapture.lastError?.message ?? t("noError") })
           ] })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: "rolling-skill-panel", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h3", { children: t("runtime") }),
-        runtime ? /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "rolling-skill-runtime", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("strong", { children: [runtime.displayName ?? runtime.runtimeId, runtime.version].filter(Boolean).join(" ") }),
-          /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("code", { children: runtime.executablePath })
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("p", { children: t("noRuntime") })
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "rolling-skill-panel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: t("runtime") }),
+        runtime ? /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("div", { className: "rolling-skill-runtime", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("strong", { children: [runtime.displayName ?? runtime.runtimeId, runtime.version].filter(Boolean).join(" ") }),
+          /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: runtime.executablePath })
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: t("noRuntime") })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: "rolling-skill-panel rolling-skill-path", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("h3", { children: t("dataDirectory") }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("code", { children: dashboard.dataRoot })
+    /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("section", { className: "rolling-skill-panel rolling-skill-path", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("h3", { children: t("dataDirectory") }),
+      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("code", { children: dashboard.dataRoot })
     ] })
   ] });
 }
 
 // src/client/workbench/workbench.css
-var workbench_default = ".rolling-skill-workbench {\n    box-sizing: border-box;\n    color: var(--dsw-alias-label-primary);\n    display: grid;\n    gap: 20px;\n    min-width: 0;\n    padding: 4px 0 24px;\n}\n\n.rolling-skill-header {\n    align-items: flex-start;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n}\n\n.rolling-skill-header h2,\n.rolling-skill-panel h3 {\n    margin: 0;\n}\n\n.rolling-skill-header p,\n.rolling-skill-panel p {\n    color: var(--dsw-alias-label-secondary);\n    margin: 6px 0 0;\n}\n\n.rolling-skill-tabs {\n    align-items: center;\n    border-bottom: 1px solid var(--dsw-alias-border-l2);\n    display: flex;\n    flex-wrap: wrap;\n    gap: 4px;\n    padding-bottom: 10px;\n}\n\n.rolling-skill-counts {\n    display: grid;\n    gap: 10px;\n    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));\n}\n\n.rolling-skill-count,\n.rolling-skill-panel,\n.rolling-skill-state {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 10px;\n}\n\n.rolling-skill-count {\n    display: grid;\n    gap: 4px;\n    padding: 14px;\n}\n\n.rolling-skill-count strong {\n    font-size: 22px;\n    line-height: 28px;\n}\n\n.rolling-skill-count span,\n.rolling-skill-panel dt {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-overview {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-grid {\n    display: grid;\n    gap: 12px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-panel,\n.rolling-skill-state {\n    min-width: 0;\n    padding: 16px;\n}\n\n.rolling-skill-panel dl {\n    display: grid;\n    gap: 10px;\n    margin: 14px 0 0;\n}\n\n.rolling-skill-panel dl > div {\n    align-items: baseline;\n    display: flex;\n    gap: 12px;\n    justify-content: space-between;\n}\n\n.rolling-skill-panel dd {\n    margin: 0;\n    max-width: 68%;\n    overflow-wrap: anywhere;\n    text-align: right;\n}\n\n.rolling-skill-runtime,\n.rolling-skill-state {\n    display: grid;\n    gap: 8px;\n}\n\n.rolling-skill-runtime {\n    margin-top: 14px;\n}\n\n.rolling-skill-runtime code,\n.rolling-skill-path code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-path code {\n    display: block;\n    margin-top: 10px;\n}\n\n.rolling-skill-error {\n    border-color: var(--dsw-alias-state-error-primary);\n    color: var(--dsw-alias-label-error);\n}\n\n.rolling-skill-data-stack,\n.rolling-skill-form-stack,\n.rolling-skill-list {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row,\n.rolling-skill-form-row,\n.rolling-skill-actions {\n    align-items: center;\n    display: flex;\n    gap: 10px;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    justify-content: space-between;\n}\n\n.rolling-skill-form-row,\n.rolling-skill-list {\n    margin-top: 14px;\n}\n\n.rolling-skill-form-row > :first-child {\n    flex: 1;\n}\n\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-list-row > div:first-child,\n.rolling-skill-case-copy {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-list-row span,\n.rolling-skill-case-copy p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-case-copy p {\n    margin: 0;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-select,\n.rolling-skill-form-stack textarea {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 7px;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    padding: 8px 10px;\n}\n\n.rolling-skill-select {\n    margin-top: 14px;\n    max-width: 360px;\n    width: 100%;\n}\n\n.rolling-skill-form-stack label {\n    display: grid;\n    gap: 6px;\n}\n\n.rolling-skill-form-stack textarea {\n    min-height: 120px;\n    resize: vertical;\n}\n\n.rolling-skill-check {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    margin-top: 12px;\n}\n\n.rolling-skill-badge {\n    color: var(--dsw-alias-state-business-primary);\n    font-size: 11px;\n    font-weight: 600;\n}\n\n.rolling-skill-inline-error {\n    color: var(--dsw-alias-label-error) !important;\n}\n\n.rolling-skill-runtime-select {\n    border: 0;\n    display: grid;\n    gap: 8px;\n    margin: 16px 0;\n    min-width: 0;\n    padding: 0;\n}\n\n.rolling-skill-runtime-select legend,\n.rolling-skill-field > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    font-weight: 600;\n}\n\n.rolling-skill-runtime-list {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-runtime-option {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    display: flex;\n    gap: 9px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-runtime-option:has(input:checked) {\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-runtime-option > span,\n.rolling-skill-field {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-runtime-option code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 11px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-field .rolling-skill-select {\n    margin-top: 0;\n}\n\n@media (max-width: 760px) {\n    .rolling-skill-panel-header,\n    .rolling-skill-list-row,\n    .rolling-skill-case-row,\n    .rolling-skill-form-row {\n        align-items: stretch;\n        flex-direction: column;\n    }\n}\n\n@media (max-width: 640px) {\n    .rolling-skill-header {\n        align-items: stretch;\n        flex-direction: column;\n    }\n}\n";
+var workbench_default = ".rolling-skill-workbench {\n    box-sizing: border-box;\n    color: var(--dsw-alias-label-primary);\n    display: grid;\n    gap: 20px;\n    min-width: 0;\n    padding: 4px 0 24px;\n}\n\n.rolling-skill-header {\n    align-items: flex-start;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n}\n\n.rolling-skill-header h2,\n.rolling-skill-panel h3 {\n    margin: 0;\n}\n\n.rolling-skill-header p,\n.rolling-skill-panel p {\n    color: var(--dsw-alias-label-secondary);\n    margin: 6px 0 0;\n}\n\n.rolling-skill-tabs {\n    align-items: center;\n    border-bottom: 1px solid var(--dsw-alias-border-l2);\n    display: flex;\n    flex-wrap: wrap;\n    gap: 4px;\n    padding-bottom: 10px;\n}\n\n.rolling-skill-counts {\n    display: grid;\n    gap: 10px;\n    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));\n}\n\n.rolling-skill-count,\n.rolling-skill-panel,\n.rolling-skill-state {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 10px;\n}\n\n.rolling-skill-count {\n    display: grid;\n    gap: 4px;\n    padding: 14px;\n}\n\n.rolling-skill-count strong {\n    font-size: 22px;\n    line-height: 28px;\n}\n\n.rolling-skill-count span,\n.rolling-skill-panel dt {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-overview {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-grid {\n    display: grid;\n    gap: 12px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-panel,\n.rolling-skill-state {\n    min-width: 0;\n    padding: 16px;\n}\n\n.rolling-skill-panel dl {\n    display: grid;\n    gap: 10px;\n    margin: 14px 0 0;\n}\n\n.rolling-skill-panel dl > div {\n    align-items: baseline;\n    display: flex;\n    gap: 12px;\n    justify-content: space-between;\n}\n\n.rolling-skill-panel dd {\n    margin: 0;\n    max-width: 68%;\n    overflow-wrap: anywhere;\n    text-align: right;\n}\n\n.rolling-skill-runtime,\n.rolling-skill-state {\n    display: grid;\n    gap: 8px;\n}\n\n.rolling-skill-runtime {\n    margin-top: 14px;\n}\n\n.rolling-skill-runtime code,\n.rolling-skill-path code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-path code {\n    display: block;\n    margin-top: 10px;\n}\n\n.rolling-skill-error {\n    border-color: var(--dsw-alias-state-error-primary);\n    color: var(--dsw-alias-label-error);\n}\n\n.rolling-skill-data-stack,\n.rolling-skill-form-stack,\n.rolling-skill-list {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row,\n.rolling-skill-form-row,\n.rolling-skill-actions {\n    align-items: center;\n    display: flex;\n    gap: 10px;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    justify-content: space-between;\n}\n\n.rolling-skill-form-row,\n.rolling-skill-list {\n    margin-top: 14px;\n}\n\n.rolling-skill-form-row > :first-child {\n    flex: 1;\n}\n\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-list-row > div:first-child,\n.rolling-skill-case-copy {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-list-row span,\n.rolling-skill-case-copy p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-case-copy p {\n    margin: 0;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-select,\n.rolling-skill-form-stack textarea {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 7px;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    padding: 8px 10px;\n}\n\n.rolling-skill-select {\n    margin-top: 14px;\n    max-width: 360px;\n    width: 100%;\n}\n\n.rolling-skill-form-stack label {\n    display: grid;\n    gap: 6px;\n}\n\n.rolling-skill-form-stack textarea {\n    min-height: 120px;\n    resize: vertical;\n}\n\n.rolling-skill-check {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    margin-top: 12px;\n}\n\n.rolling-skill-badge {\n    color: var(--dsw-alias-state-business-primary);\n    font-size: 11px;\n    font-weight: 600;\n}\n\n.rolling-skill-inline-error {\n    color: var(--dsw-alias-label-error) !important;\n}\n\n.rolling-skill-runtime-select {\n    border: 0;\n    display: grid;\n    gap: 8px;\n    margin: 16px 0;\n    min-width: 0;\n    padding: 0;\n}\n\n.rolling-skill-runtime-select legend,\n.rolling-skill-field > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    font-weight: 600;\n}\n\n.rolling-skill-runtime-list {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-runtime-option {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    display: flex;\n    gap: 9px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-runtime-option:has(input:checked) {\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-runtime-option > span,\n.rolling-skill-field {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-runtime-option code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 11px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-field .rolling-skill-select {\n    margin-top: 0;\n}\n\n.rolling-skill-skill-row {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: grid;\n    gap: 4px;\n    padding: 11px;\n    text-align: left;\n}\n\n.rolling-skill-skill-row span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-manifest {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-secondary);\n    max-height: 240px;\n    overflow: auto;\n    padding: 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-subpanel {\n    display: grid;\n    gap: 9px;\n}\n\n.rolling-skill-subpanel h4 {\n    margin: 0;\n}\n\n@media (max-width: 760px) {\n    .rolling-skill-panel-header,\n    .rolling-skill-list-row,\n    .rolling-skill-case-row,\n    .rolling-skill-form-row {\n        align-items: stretch;\n        flex-direction: column;\n    }\n}\n\n@media (max-width: 640px) {\n    .rolling-skill-header {\n        align-items: stretch;\n        flex-direction: column;\n    }\n}\n";
 
 // src/client/locale.ts
 var LOCALE_NAMESPACE = "rolling-skill";
@@ -844,7 +988,21 @@ var zh = {
   cancelRun: "\u53D6\u6D88\u8FD0\u884C",
   emptyEvaluations: "\u6682\u65E0\u8BC4\u6D4B\u8BB0\u5F55",
   evaluationDetail: "\u8BC4\u6D4B\u8BE6\u60C5",
-  close: "\u5173\u95ED"
+  close: "\u5173\u95ED",
+  skillRepositories: "Managed Skill",
+  skillRepositoriesDescription: "\u5BFC\u5165\u3001\u53D1\u5E03\u5E76\u5B89\u88C5\u4E0D\u53EF\u53D8 Skill \u7248\u672C\u3002",
+  rescan: "\u91CD\u65B0\u626B\u63CF",
+  skillSourceLocation: "\u7EDD\u5BF9\u8DEF\u5F84\u6216 Git URL",
+  importSkill: "\u5BFC\u5165",
+  emptySkills: "\u6682\u65E0 Managed Skill",
+  candidateVersion: "Candidate",
+  createCandidate: "\u521B\u5EFA Candidate",
+  releaseVersion: "Release",
+  release: "\u53D1\u5E03",
+  installationRuntime: "\u5B89\u88C5\u76EE\u6807 Runtime",
+  installReleased: "\u5B89\u88C5\u5DF2\u53D1\u5E03\u7248\u672C",
+  installationJobs: "\u5B89\u88C5 Job",
+  inspect: "\u68C0\u67E5"
 };
 var en = {
   nav: "Rolling Skill",
@@ -924,12 +1082,26 @@ var en = {
   cancelRun: "Cancel Run",
   emptyEvaluations: "No evaluation runs",
   evaluationDetail: "Evaluation Detail",
-  close: "Close"
+  close: "Close",
+  skillRepositories: "Managed Skills",
+  skillRepositoriesDescription: "Import, release, and install immutable Skill versions.",
+  rescan: "Rescan",
+  skillSourceLocation: "Absolute path or Git URL",
+  importSkill: "Import",
+  emptySkills: "No Managed Skills",
+  candidateVersion: "Candidate",
+  createCandidate: "Create Candidate",
+  releaseVersion: "Release",
+  release: "Release",
+  installationRuntime: "Installation Target Runtime",
+  installReleased: "Install Released Version",
+  installationJobs: "Installation Jobs",
+  inspect: "Inspect"
 };
 var DICTIONARIES = { zh, en };
 
 // src/client/index.tsx
-var import_jsx_runtime7 = require("react/jsx-runtime");
+var import_jsx_runtime8 = require("react/jsx-runtime");
 var inject = ["slots", "locale"];
 function apply(ctx) {
   ctx.effect(
@@ -944,7 +1116,7 @@ function apply(ctx) {
     document.head.appendChild(style);
     return () => style.remove();
   }, "rolling-skill: workbench styles");
-  const RollingSkillSection = () => /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(Workbench, { locale: ctx.locale, t });
+  const RollingSkillSection = () => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(Workbench, { locale: ctx.locale, t });
   ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "rolling-skill",

@@ -7,6 +7,7 @@ import {CasesPanel} from "./CasesPanel"
 import {DatasetsPanel} from "./DatasetsPanel"
 import {EvaluationsPanel} from "./EvaluationsPanel"
 import {RawCasesPanel} from "./RawCasesPanel"
+import {SkillsPanel} from "./SkillsPanel"
 
 interface DashboardSnapshot {
     counts: {
@@ -135,6 +136,8 @@ export function Workbench({locale, t}: WorkbenchProps) {
                 </div>
             ) : activeTab === "evaluations" ? (
                 <EvaluationsPanel t={t}/>
+            ) : activeTab === "skills" ? (
+                <SkillsPanel t={t}/>
             ) : activeTab !== "overview" ? (
                 <div className="rolling-skill-panel">
                     <h3>{t(TABS.find((tab) => tab.id === activeTab)?.label ?? "overview")}</h3>

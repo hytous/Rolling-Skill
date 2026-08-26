@@ -288,6 +288,43 @@
     margin-top: 0;
 }
 
+.rolling-skill-skill-row {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    color: var(--dsw-alias-label-primary);
+    cursor: pointer;
+    display: grid;
+    gap: 4px;
+    padding: 11px;
+    text-align: left;
+}
+
+.rolling-skill-skill-row span {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+}
+
+.rolling-skill-manifest {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    color: var(--dsw-alias-label-secondary);
+    max-height: 240px;
+    overflow: auto;
+    padding: 12px;
+    white-space: pre-wrap;
+}
+
+.rolling-skill-subpanel {
+    display: grid;
+    gap: 9px;
+}
+
+.rolling-skill-subpanel h4 {
+    margin: 0;
+}
+
 @media (max-width: 760px) {
     .rolling-skill-panel-header,
     .rolling-skill-list-row,

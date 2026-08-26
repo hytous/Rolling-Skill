@@ -823,22 +823,22 @@ var require_episode_curation = __commonJS({
         })
       );
     }
-    function buildEpisodeSnapshot(thread, options = {}) {
+    function buildEpisodeSnapshot(thread, options2 = {}) {
       const flattened = flattenThread(thread);
       const endIndex = messageBoundaryIndex(flattened, {
-        itemId: options.endItemId,
-        turnId: options.endTurnId,
-        messageOrdinal: options.endMessageOrdinal,
-        messagePosition: options.endMessagePosition,
+        itemId: options2.endItemId,
+        turnId: options2.endTurnId,
+        messageOrdinal: options2.endMessageOrdinal,
+        messagePosition: options2.endMessagePosition,
         type: "agentMessage"
       });
       if (endIndex < 0) {
         throw new Error("Episode end must be an assistant message in the source thread");
       }
-      let startIndex = options.startItemId ? messageBoundaryIndex(flattened, {
-        itemId: options.startItemId,
-        turnId: options.startTurnId,
-        messageOrdinal: options.startMessageOrdinal,
+      let startIndex = options2.startItemId ? messageBoundaryIndex(flattened, {
+        itemId: options2.startItemId,
+        turnId: options2.startTurnId,
+        messageOrdinal: options2.startMessageOrdinal,
         type: "userMessage"
       }) : -1;
       if (startIndex < 0) {
@@ -853,7 +853,7 @@ var require_episode_curation = __commonJS({
         throw new Error("Episode start must be a user message before the selected answer");
       }
       const items = flattened.slice(startIndex, endIndex + 1).map(({ turnId, item }) => normalizeItem(item, turnId));
-      const originalQuestion = options.originalQuestionOverride === void 0 ? items[0].text : String(options.originalQuestionOverride);
+      const originalQuestion = options2.originalQuestionOverride === void 0 ? items[0].text : String(options2.originalQuestionOverride);
       if (!originalQuestion?.trim()) throw new Error("The selected source question is empty");
       const episode = {
         schemaVersion: "rolling-skill-episode/v1",
@@ -865,10 +865,10 @@ var require_episode_curation = __commonJS({
           startItemId: flattened[startIndex].item.id,
           endTurnId: flattened[endIndex].turnId,
           endItemId: flattened[endIndex].item.id,
-          runtimeId: options.runtimeId ?? null,
+          runtimeId: options2.runtimeId ?? null,
           modelProvider: thread.modelProvider ?? null,
-          modelId: options.modelId ?? null,
-          traceReference: options.traceReference ?? null
+          modelId: options2.modelId ?? null,
+          traceReference: options2.traceReference ?? null
         },
         items,
         toolActivity: summarizeToolActivity(items),
@@ -1334,8 +1334,8 @@ Frozen episode evidence (compacted working view; full evidence remains archived)
       validateBadCaseAnalysis(draft, { caseType, allowedSourceItems, gradingIds });
       return deepFreeze(draft);
     }
-    function parseCuratorDraft(text, options) {
-      return validateCuratorDraft(extractJson(text), options);
+    function parseCuratorDraft(text, options2) {
+      return validateCuratorDraft(extractJson(text), options2);
     }
     function bulletList(values, empty = "- None") {
       return values?.length ? values.map((value) => `- ${value}`).join("\n") : empty;
@@ -1591,16 +1591,16 @@ var require_evaluation_skill_evidence = __commonJS({
       }
       return Object.freeze(snapshot);
     }
-    function snapshotSkillEvidence(skillReference, options = {}) {
+    function snapshotSkillEvidence(skillReference, options2 = {}) {
       const name = String(skillReference?.name ?? "").trim();
       const selectedPath = String(skillReference?.path ?? "").trim();
       if (!name || !isAbsolute(selectedPath)) {
         throw new Error("A Skill name and absolute SKILL.md path are required");
       }
       const limits = {
-        maxFiles: Math.max(1, Number(options.maxFiles) || DEFAULT_LIMITS.maxFiles),
-        maxFileBytes: Math.max(1, Number(options.maxFileBytes) || DEFAULT_LIMITS.maxFileBytes),
-        maxTotalBytes: Math.max(1, Number(options.maxTotalBytes) || DEFAULT_LIMITS.maxTotalBytes)
+        maxFiles: Math.max(1, Number(options2.maxFiles) || DEFAULT_LIMITS.maxFiles),
+        maxFileBytes: Math.max(1, Number(options2.maxFileBytes) || DEFAULT_LIMITS.maxFileBytes),
+        maxTotalBytes: Math.max(1, Number(options2.maxTotalBytes) || DEFAULT_LIMITS.maxTotalBytes)
       };
       const root = realpathSync(dirname(selectedPath));
       const skillPath = realpathSync(selectedPath);
@@ -1675,7 +1675,7 @@ var require_evaluation_skill_evidence = __commonJS({
       };
       return Object.freeze({ ...snapshot, digest: sha256(canonicalJson(snapshot)) });
     }
-    async function snapshotManagedSkillEvidence(source = {}, options = {}) {
+    async function snapshotManagedSkillEvidence(source = {}, options2 = {}) {
       const name = String(source.name ?? "").trim();
       const repositoryId = String(source.repositoryId ?? "").trim();
       const skillId = String(source.skillId ?? "").trim();
@@ -1684,7 +1684,7 @@ var require_evaluation_skill_evidence = __commonJS({
       const commit = String(source.commit ?? "").trim();
       const skillRoot = String(source.skillRoot ?? "").trim().replace(/\\/gu, "/");
       const contentDigest = String(source.contentDigest ?? "").trim();
-      const git = options.git;
+      const git = options2.git;
       if (!name || !repositoryId || !skillId || !versionId || !isAbsolute(repositoryPath)) {
         throw new Error("Managed Skill evidence requires a name and absolute repository path");
       }
@@ -1698,9 +1698,9 @@ var require_evaluation_skill_evidence = __commonJS({
         throw new Error("Managed Skill Git reader is required");
       }
       const limits = {
-        maxFiles: Math.max(1, Number(options.maxFiles) || DEFAULT_LIMITS.maxFiles),
-        maxFileBytes: Math.max(1, Number(options.maxFileBytes) || DEFAULT_LIMITS.maxFileBytes),
-        maxTotalBytes: Math.max(1, Number(options.maxTotalBytes) || DEFAULT_LIMITS.maxTotalBytes)
+        maxFiles: Math.max(1, Number(options2.maxFiles) || DEFAULT_LIMITS.maxFiles),
+        maxFileBytes: Math.max(1, Number(options2.maxFileBytes) || DEFAULT_LIMITS.maxFileBytes),
+        maxTotalBytes: Math.max(1, Number(options2.maxTotalBytes) || DEFAULT_LIMITS.maxTotalBytes)
       };
       const managed = await git.snapshotSkill(repositoryPath, commit, skillRoot);
       if (managed.digest !== contentDigest) {
@@ -3697,7 +3697,7 @@ var require_local_store = __commonJS({
         assertCaseDeletable(state, datasetId, caseId);
         return copy({ dataset, cases: [target] });
       }
-      createEvaluationRun(input = {}, options = {}) {
+      createEvaluationRun(input = {}, options2 = {}) {
         const state = this.load();
         const dataset = requireDataset(state, input.datasetId);
         const datasetSkillReference = copy(requireDatasetSkill(dataset));
@@ -3746,7 +3746,7 @@ var require_local_store = __commonJS({
         }
         let managedVersionSnapshot = null;
         if (input.managedVersionSnapshot !== void 0 && input.managedVersionSnapshot !== null) {
-          if (options.optimizationAuthorized !== true) {
+          if (options2.optimizationAuthorized !== true) {
             throw new Error("Managed Candidate evaluation requires an internal Optimization capability");
           }
           managedVersionSnapshot = managedEvaluationVersionSnapshot(
@@ -4366,12 +4366,12 @@ var require_managed_skill_store = __commonJS({
           return repository;
         });
       }
-      removeRepository(repositoryId, options = {}) {
+      removeRepository(repositoryId, options2 = {}) {
         const repository = this.getRepository(repositoryId);
         const skills = this.state.skills.filter((entry) => entry.repositoryId === repository.id);
         const skillIds = new Set(skills.map((entry) => entry.id));
         const versions = this.state.versions.filter((entry) => skillIds.has(entry.skillId));
-        if (versions.length && !options.cascade) {
+        if (versions.length && !options2.cascade) {
           throw new Error("Managed Skill repository has versions and cannot be removed");
         }
         return this.mutate(() => {
@@ -4608,6 +4608,10118 @@ var require_managed_skill_store = __commonJS({
       MANAGED_SKILL_SCHEMA,
       ManagedSkillStore,
       initialManagedSkillState
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/pend/index.js
+var require_pend = __commonJS({
+  "../../desktop/rolling-skill/node_modules/pend/index.js"(exports, module) {
+    module.exports = Pend;
+    function Pend() {
+      this.pending = 0;
+      this.max = Infinity;
+      this.listeners = [];
+      this.waiting = [];
+      this.error = null;
+    }
+    Pend.prototype.go = function(fn) {
+      if (this.pending < this.max) {
+        pendGo(this, fn);
+      } else {
+        this.waiting.push(fn);
+      }
+    };
+    Pend.prototype.wait = function(cb) {
+      if (this.pending === 0) {
+        cb(this.error);
+      } else {
+        this.listeners.push(cb);
+      }
+    };
+    Pend.prototype.hold = function() {
+      return pendHold(this);
+    };
+    function pendHold(self) {
+      self.pending += 1;
+      var called = false;
+      return onCb;
+      function onCb(err) {
+        if (called) throw new Error("callback called twice");
+        called = true;
+        self.error = self.error || err;
+        self.pending -= 1;
+        if (self.waiting.length > 0 && self.pending < self.max) {
+          pendGo(self, self.waiting.shift());
+        } else if (self.pending === 0) {
+          var listeners = self.listeners;
+          self.listeners = [];
+          listeners.forEach(cbListener);
+        }
+      }
+      function cbListener(listener) {
+        listener(self.error);
+      }
+    }
+    function pendGo(self, fn) {
+      fn(pendHold(self));
+    }
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yauzl/fd-slicer.js
+var require_fd_slicer = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yauzl/fd-slicer.js"(exports) {
+    var fs = __require("fs");
+    var util = __require("util");
+    var stream = __require("stream");
+    var Readable = stream.Readable;
+    var PassThrough = stream.PassThrough;
+    var Pend = require_pend();
+    var EventEmitter = __require("events").EventEmitter;
+    exports.BufferSlicer = BufferSlicer;
+    exports.FdSlicer = FdSlicer;
+    util.inherits(FdSlicer, EventEmitter);
+    function FdSlicer(fd) {
+      EventEmitter.call(this);
+      this.fd = fd;
+      this.pend = new Pend();
+      this.pend.max = 1;
+      this.refCount = 0;
+    }
+    FdSlicer.prototype.read = function(buffer, offset, length, position, callback) {
+      var self = this;
+      self.pend.go(function(cb) {
+        fs.read(self.fd, buffer, offset, length, position, function(err, bytesRead, buffer2) {
+          cb();
+          callback(err, bytesRead, buffer2);
+        });
+      });
+    };
+    FdSlicer.prototype.createReadStream = function(options2) {
+      return new ReadStream(this, options2);
+    };
+    FdSlicer.prototype.ref = function() {
+      this.refCount += 1;
+    };
+    FdSlicer.prototype.unref = function() {
+      var self = this;
+      self.refCount -= 1;
+      if (self.refCount < 0) throw new Error("invalid unref");
+      if (self.refCount > 0) return;
+      fs.close(self.fd, onCloseDone);
+      function onCloseDone(err) {
+        if (err) {
+          self.emit("error", err);
+        } else {
+          self.emit("close");
+        }
+      }
+    };
+    util.inherits(ReadStream, Readable);
+    function ReadStream(context, options2) {
+      options2 = options2 || {};
+      Readable.call(this, options2);
+      this.context = context;
+      this.context.ref();
+      this.start = options2.start || 0;
+      this.endOffset = options2.end;
+      this.pos = this.start;
+    }
+    ReadStream.prototype._read = function(n) {
+      var self = this;
+      var toRead = Math.min(self._readableState.highWaterMark, n);
+      if (self.endOffset != null) {
+        toRead = Math.min(toRead, self.endOffset - self.pos);
+      }
+      if (toRead <= 0) {
+        self.push(null);
+        this._cleanup();
+        return;
+      }
+      self.context.pend.go(function(cb) {
+        var buffer = Buffer.allocUnsafe(toRead);
+        fs.read(self.context.fd, buffer, 0, toRead, self.pos, function(err, bytesRead) {
+          if (err) {
+            self.destroy(err);
+          } else if (bytesRead === 0) {
+            self.push(null);
+            self._cleanup();
+          } else {
+            self.pos += bytesRead;
+            self.push(buffer.slice(0, bytesRead));
+          }
+          cb();
+        });
+      });
+    };
+    ReadStream.prototype._destroy = function(err, cb) {
+      this._cleanup();
+      cb(err);
+    };
+    ReadStream.prototype._cleanup = function() {
+      if (this.context != null) {
+        this.context.unref();
+        this.context = null;
+      }
+    };
+    util.inherits(BufferSlicer, EventEmitter);
+    function BufferSlicer(buffer) {
+      EventEmitter.call(this);
+      this.refCount = 0;
+      this.buffer = buffer;
+    }
+    BufferSlicer.prototype.read = function(buffer, offset, length, position, callback) {
+      if (!(0 <= offset && offset <= buffer.length)) throw new RangeError("offset outside buffer: 0 <= " + offset + " <= " + buffer.length);
+      if (position < 0) throw new RangeError("position is negative: " + position);
+      if (offset + length > buffer.length) {
+        length = buffer.length - offset;
+      }
+      if (position + length > this.buffer.length) {
+        length = this.buffer.length - position;
+      }
+      if (length <= 0) {
+        setImmediate(function() {
+          callback(null, 0);
+        });
+        return;
+      }
+      this.buffer.copy(buffer, offset, position, position + length);
+      setImmediate(function() {
+        callback(null, length);
+      });
+    };
+    BufferSlicer.prototype.createReadStream = function(options2) {
+      options2 = options2 || {};
+      var readStream = new PassThrough(options2);
+      readStream.start = options2.start || 0;
+      readStream.endOffset = options2.end;
+      readStream.pos = readStream.endOffset || this.buffer.length;
+      var entireSlice = this.buffer.slice(readStream.start, readStream.pos);
+      var maxChunkSize = 65536;
+      var offset = 0;
+      while (true) {
+        var nextOffset = offset + maxChunkSize;
+        if (nextOffset >= entireSlice.length) {
+          if (offset < entireSlice.length) {
+            readStream.write(entireSlice.slice(offset, entireSlice.length));
+          }
+          break;
+        }
+        readStream.write(entireSlice.slice(offset, nextOffset));
+        offset = nextOffset;
+      }
+      readStream.end();
+      return readStream;
+    };
+    BufferSlicer.prototype.ref = function() {
+      this.refCount += 1;
+    };
+    BufferSlicer.prototype.unref = function() {
+      this.refCount -= 1;
+      if (this.refCount < 0) {
+        throw new Error("invalid unref");
+      }
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yauzl/crc32.js
+var require_crc32 = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yauzl/crc32.js"(exports, module) {
+    var CRC_TABLE = new Int32Array([
+      0,
+      1996959894,
+      3993919788,
+      2567524794,
+      124634137,
+      1886057615,
+      3915621685,
+      2657392035,
+      249268274,
+      2044508324,
+      3772115230,
+      2547177864,
+      162941995,
+      2125561021,
+      3887607047,
+      2428444049,
+      498536548,
+      1789927666,
+      4089016648,
+      2227061214,
+      450548861,
+      1843258603,
+      4107580753,
+      2211677639,
+      325883990,
+      1684777152,
+      4251122042,
+      2321926636,
+      335633487,
+      1661365465,
+      4195302755,
+      2366115317,
+      997073096,
+      1281953886,
+      3579855332,
+      2724688242,
+      1006888145,
+      1258607687,
+      3524101629,
+      2768942443,
+      901097722,
+      1119000684,
+      3686517206,
+      2898065728,
+      853044451,
+      1172266101,
+      3705015759,
+      2882616665,
+      651767980,
+      1373503546,
+      3369554304,
+      3218104598,
+      565507253,
+      1454621731,
+      3485111705,
+      3099436303,
+      671266974,
+      1594198024,
+      3322730930,
+      2970347812,
+      795835527,
+      1483230225,
+      3244367275,
+      3060149565,
+      1994146192,
+      31158534,
+      2563907772,
+      4023717930,
+      1907459465,
+      112637215,
+      2680153253,
+      3904427059,
+      2013776290,
+      251722036,
+      2517215374,
+      3775830040,
+      2137656763,
+      141376813,
+      2439277719,
+      3865271297,
+      1802195444,
+      476864866,
+      2238001368,
+      4066508878,
+      1812370925,
+      453092731,
+      2181625025,
+      4111451223,
+      1706088902,
+      314042704,
+      2344532202,
+      4240017532,
+      1658658271,
+      366619977,
+      2362670323,
+      4224994405,
+      1303535960,
+      984961486,
+      2747007092,
+      3569037538,
+      1256170817,
+      1037604311,
+      2765210733,
+      3554079995,
+      1131014506,
+      879679996,
+      2909243462,
+      3663771856,
+      1141124467,
+      855842277,
+      2852801631,
+      3708648649,
+      1342533948,
+      654459306,
+      3188396048,
+      3373015174,
+      1466479909,
+      544179635,
+      3110523913,
+      3462522015,
+      1591671054,
+      702138776,
+      2966460450,
+      3352799412,
+      1504918807,
+      783551873,
+      3082640443,
+      3233442989,
+      3988292384,
+      2596254646,
+      62317068,
+      1957810842,
+      3939845945,
+      2647816111,
+      81470997,
+      1943803523,
+      3814918930,
+      2489596804,
+      225274430,
+      2053790376,
+      3826175755,
+      2466906013,
+      167816743,
+      2097651377,
+      4027552580,
+      2265490386,
+      503444072,
+      1762050814,
+      4150417245,
+      2154129355,
+      426522225,
+      1852507879,
+      4275313526,
+      2312317920,
+      282753626,
+      1742555852,
+      4189708143,
+      2394877945,
+      397917763,
+      1622183637,
+      3604390888,
+      2714866558,
+      953729732,
+      1340076626,
+      3518719985,
+      2797360999,
+      1068828381,
+      1219638859,
+      3624741850,
+      2936675148,
+      906185462,
+      1090812512,
+      3747672003,
+      2825379669,
+      829329135,
+      1181335161,
+      3412177804,
+      3160834842,
+      628085408,
+      1382605366,
+      3423369109,
+      3138078467,
+      570562233,
+      1426400815,
+      3317316542,
+      2998733608,
+      733239954,
+      1555261956,
+      3268935591,
+      3050360625,
+      752459403,
+      1541320221,
+      2607071920,
+      3965973030,
+      1969922972,
+      40735498,
+      2617837225,
+      3943577151,
+      1913087877,
+      83908371,
+      2512341634,
+      3803740692,
+      2075208622,
+      213261112,
+      2463272603,
+      3855990285,
+      2094854071,
+      198958881,
+      2262029012,
+      4057260610,
+      1759359992,
+      534414190,
+      2176718541,
+      4139329115,
+      1873836001,
+      414664567,
+      2282248934,
+      4279200368,
+      1711684554,
+      285281116,
+      2405801727,
+      4167216745,
+      1634467795,
+      376229701,
+      2685067896,
+      3608007406,
+      1308918612,
+      956543938,
+      2808555105,
+      3495958263,
+      1231636301,
+      1047427035,
+      2932959818,
+      3654703836,
+      1088359270,
+      936918e3,
+      2847714899,
+      3736837829,
+      1202900863,
+      817233897,
+      3183342108,
+      3401237130,
+      1404277552,
+      615818150,
+      3134207493,
+      3453421203,
+      1423857449,
+      601450431,
+      3009837614,
+      3294710456,
+      1567103746,
+      711928724,
+      3020668471,
+      3272380065,
+      1510334235,
+      755167117
+    ]);
+    function crc32(buf) {
+      let crc = -1;
+      for (let x of buf) {
+        crc = CRC_TABLE[(crc ^ x) & 255] ^ crc >>> 8;
+      }
+      return (crc ^ -1) >>> 0;
+    }
+    module.exports = crc32;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yauzl/index.js
+var require_yauzl = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yauzl/index.js"(exports) {
+    var fs = __require("fs");
+    var zlib = __require("zlib");
+    var fd_slicer = require_fd_slicer();
+    var util = __require("util");
+    var EventEmitter = __require("events").EventEmitter;
+    var Transform = __require("stream").Transform;
+    var PassThrough = __require("stream").PassThrough;
+    var Writable = __require("stream").Writable;
+    var crc32 = typeof zlib.crc32 === "function" ? zlib.crc32 : require_crc32();
+    exports.open = open;
+    exports.fromFd = fromFd;
+    exports.fromBuffer = fromBuffer;
+    exports.fromRandomAccessReader = fromRandomAccessReader;
+    exports.openPromise = openPromise;
+    exports.fromFdPromise = fromFdPromise;
+    exports.fromBufferPromise = fromBufferPromise;
+    exports.fromRandomAccessReaderPromise = fromRandomAccessReaderPromise;
+    exports.dosDateTimeToDate = dosDateTimeToDate;
+    exports.getFileNameLowLevel = getFileNameLowLevel;
+    exports.validateFileName = validateFileName;
+    exports.parseExtraFields = parseExtraFields;
+    exports.ZipFile = ZipFile;
+    exports.Entry = Entry;
+    exports.LocalFileHeader = LocalFileHeader;
+    exports.RandomAccessReader = RandomAccessReader;
+    function openPromise(path, options2) {
+      return new Promise((resolve, reject) => {
+        open(path, { ...options2, lazyEntries: true }, function(err, zipfile) {
+          if (err) return reject(err);
+          resolve(zipfile);
+        });
+      });
+    }
+    function fromFdPromise(fd, options2) {
+      return new Promise((resolve, reject) => {
+        fromFd(fd, { ...options2, lazyEntries: true }, function(err, zipfile) {
+          if (err) return reject(err);
+          resolve(zipfile);
+        });
+      });
+    }
+    function fromBufferPromise(buffer, options2) {
+      return new Promise((resolve, reject) => {
+        fromBuffer(buffer, { ...options2, lazyEntries: true }, function(err, zipfile) {
+          if (err) return reject(err);
+          resolve(zipfile);
+        });
+      });
+    }
+    function fromRandomAccessReaderPromise(reader, totalSize, options2) {
+      return new Promise((resolve, reject) => {
+        fromRandomAccessReader(reader, totalSize, { ...options2, lazyEntries: true }, function(err, zipfile) {
+          if (err) return reject(err);
+          resolve(zipfile);
+        });
+      });
+    }
+    function open(path, options2, callback) {
+      if (typeof options2 === "function") {
+        callback = options2;
+        options2 = null;
+      }
+      if (options2 == null) options2 = {};
+      if (options2.autoClose == null) options2.autoClose = true;
+      if (options2.lazyEntries == null) options2.lazyEntries = false;
+      if (options2.decodeStrings == null) options2.decodeStrings = true;
+      if (options2.validateEntrySizes == null) options2.validateEntrySizes = true;
+      if (options2.strictFileNames == null) options2.strictFileNames = false;
+      if (callback == null) callback = defaultCallback;
+      fs.open(path, "r", function(err, fd) {
+        if (err) return callback(err);
+        fromFd(fd, options2, function(err2, zipfile) {
+          if (err2) fs.close(fd, defaultCallback);
+          callback(err2, zipfile);
+        });
+      });
+    }
+    function fromFd(fd, options2, callback) {
+      if (typeof options2 === "function") {
+        callback = options2;
+        options2 = null;
+      }
+      if (options2 == null) options2 = {};
+      if (options2.autoClose == null) options2.autoClose = false;
+      if (options2.lazyEntries == null) options2.lazyEntries = false;
+      if (options2.decodeStrings == null) options2.decodeStrings = true;
+      if (options2.validateEntrySizes == null) options2.validateEntrySizes = true;
+      if (options2.strictFileNames == null) options2.strictFileNames = false;
+      if (callback == null) callback = defaultCallback;
+      fs.fstat(fd, function(err, stats) {
+        if (err) return callback(err);
+        var reader = new fd_slicer.FdSlicer(fd);
+        fromRandomAccessReader(reader, stats.size, options2, callback);
+      });
+    }
+    function fromBuffer(buffer, options2, callback) {
+      if (typeof options2 === "function") {
+        callback = options2;
+        options2 = null;
+      }
+      if (options2 == null) options2 = {};
+      options2.autoClose = false;
+      if (options2.lazyEntries == null) options2.lazyEntries = false;
+      if (options2.decodeStrings == null) options2.decodeStrings = true;
+      if (options2.validateEntrySizes == null) options2.validateEntrySizes = true;
+      if (options2.strictFileNames == null) options2.strictFileNames = false;
+      var reader = new fd_slicer.BufferSlicer(buffer);
+      fromRandomAccessReader(reader, buffer.length, options2, callback);
+    }
+    function fromRandomAccessReader(reader, totalSize, options2, callback) {
+      if (typeof options2 === "function") {
+        callback = options2;
+        options2 = null;
+      }
+      if (options2 == null) options2 = {};
+      if (options2.autoClose == null) options2.autoClose = true;
+      if (options2.lazyEntries == null) options2.lazyEntries = false;
+      if (options2.decodeStrings == null) options2.decodeStrings = true;
+      var decodeStrings = !!options2.decodeStrings;
+      if (options2.validateEntrySizes == null) options2.validateEntrySizes = true;
+      if (options2.strictFileNames == null) options2.strictFileNames = false;
+      if (callback == null) callback = defaultCallback;
+      if (typeof totalSize !== "number") throw new Error("expected totalSize parameter to be a number");
+      if (totalSize > Number.MAX_SAFE_INTEGER) {
+        throw new Error("zip file too large. only file sizes up to 2^52 are supported due to JavaScript's Number type being an IEEE 754 double.");
+      }
+      reader.ref();
+      var eocdrWithoutCommentSize = 22;
+      var zip64EocdlSize = 20;
+      var maxCommentSize = 65535;
+      var bufferSize = Math.min(zip64EocdlSize + eocdrWithoutCommentSize + maxCommentSize, totalSize);
+      var buffer = newBuffer(bufferSize);
+      var bufferReadStart = totalSize - buffer.length;
+      readAndAssertNoEof(reader, buffer, 0, bufferSize, bufferReadStart, function(err) {
+        if (err) return callback(err);
+        for (var i = bufferSize - eocdrWithoutCommentSize; i >= 0; i -= 1) {
+          if (buffer.readUInt32LE(i) !== 101010256) continue;
+          var eocdrBuffer = buffer.subarray(i);
+          var diskNumber = eocdrBuffer.readUInt16LE(4);
+          var entryCount = eocdrBuffer.readUInt16LE(10);
+          var centralDirectoryOffset = eocdrBuffer.readUInt32LE(16);
+          var commentLength = eocdrBuffer.readUInt16LE(20);
+          var expectedCommentLength = eocdrBuffer.length - eocdrWithoutCommentSize;
+          if (commentLength !== expectedCommentLength) {
+            return callback(new Error("Invalid comment length. Expected: " + expectedCommentLength + ". Found: " + commentLength + ". Are there extra bytes at the end of the file? Or is the end of central dir signature `PK\u263A\u263B` in the comment?"));
+          }
+          var comment = decodeStrings ? decodeBuffer(eocdrBuffer.subarray(22), false) : eocdrBuffer.subarray(22);
+          if (i - zip64EocdlSize >= 0 && buffer.readUInt32LE(i - zip64EocdlSize) === 117853008) {
+            var zip64EocdlBuffer = buffer.subarray(i - zip64EocdlSize, i - zip64EocdlSize + zip64EocdlSize);
+            var zip64EocdrOffset = readUInt64LE(zip64EocdlBuffer, 8);
+            var zip64EocdrBuffer = newBuffer(56);
+            return readAndAssertNoEof(reader, zip64EocdrBuffer, 0, zip64EocdrBuffer.length, zip64EocdrOffset, function(err2) {
+              if (err2) return callback(err2);
+              if (zip64EocdrBuffer.readUInt32LE(0) !== 101075792) {
+                return callback(new Error("invalid zip64 end of central directory record signature"));
+              }
+              diskNumber = zip64EocdrBuffer.readUInt32LE(16);
+              if (diskNumber !== 0) {
+                return callback(new Error("multi-disk zip files are not supported: found disk number: " + diskNumber));
+              }
+              entryCount = readUInt64LE(zip64EocdrBuffer, 32);
+              centralDirectoryOffset = readUInt64LE(zip64EocdrBuffer, 48);
+              return callback(null, new ZipFile(reader, centralDirectoryOffset, totalSize, entryCount, comment, options2.autoClose, options2.lazyEntries, decodeStrings, options2.validateEntrySizes, options2.strictFileNames));
+            });
+          }
+          if (diskNumber !== 0) {
+            return callback(new Error("multi-disk zip files are not supported: found disk number: " + diskNumber));
+          }
+          return callback(null, new ZipFile(reader, centralDirectoryOffset, totalSize, entryCount, comment, options2.autoClose, options2.lazyEntries, decodeStrings, options2.validateEntrySizes, options2.strictFileNames));
+        }
+        callback(new Error("End of central directory record signature not found. Either not a zip file, or file is truncated."));
+      });
+    }
+    util.inherits(ZipFile, EventEmitter);
+    function ZipFile(reader, centralDirectoryOffset, fileSize, entryCount, comment, autoClose, lazyEntries, decodeStrings, validateEntrySizes, strictFileNames) {
+      var self = this;
+      EventEmitter.call(self);
+      self.reader = reader;
+      self.reader.on("error", function(err) {
+        emitError(self, err);
+      });
+      self.reader.once("close", function() {
+        self.emit("close");
+      });
+      self.readEntryCursor = centralDirectoryOffset;
+      self.fileSize = fileSize;
+      self.entryCount = entryCount;
+      self.comment = comment;
+      self.entriesRead = 0;
+      self.autoClose = !!autoClose;
+      self.lazyEntries = !!lazyEntries;
+      self.decodeStrings = !!decodeStrings;
+      self.validateEntrySizes = !!validateEntrySizes;
+      self.strictFileNames = !!strictFileNames;
+      self.isOpen = true;
+      self.emittedError = false;
+      self.hasEachEntryBeenCalled = false;
+      if (!self.lazyEntries) self._readEntry();
+    }
+    ZipFile.prototype.close = function() {
+      if (!this.isOpen) return;
+      this.isOpen = false;
+      this.reader.unref();
+    };
+    function emitErrorAndAutoClose(self, err) {
+      if (self.autoClose) self.close();
+      emitError(self, err);
+    }
+    function emitError(self, err) {
+      if (self.emittedError) return;
+      self.emittedError = true;
+      self.emit("error", err);
+    }
+    ZipFile.prototype.readEntry = function() {
+      if (!this.lazyEntries) throw new Error("readEntry() called without lazyEntries:true");
+      this._readEntry();
+    };
+    ZipFile.prototype._readEntry = function() {
+      var self = this;
+      if (self.entryCount === self.entriesRead) {
+        setImmediate(function() {
+          if (self.autoClose) self.close();
+          if (self.emittedError) return;
+          self.emit("end");
+        });
+        return;
+      }
+      if (self.emittedError) return;
+      var buffer = newBuffer(46);
+      readAndAssertNoEof(self.reader, buffer, 0, buffer.length, self.readEntryCursor, function(err) {
+        if (err) return emitErrorAndAutoClose(self, err);
+        if (self.emittedError) return;
+        var entry = new Entry();
+        var signature = buffer.readUInt32LE(0);
+        if (signature !== 33639248) return emitErrorAndAutoClose(self, new Error("invalid central directory file header signature: 0x" + signature.toString(16)));
+        entry.versionMadeBy = buffer.readUInt16LE(4);
+        entry.versionNeededToExtract = buffer.readUInt16LE(6);
+        entry.generalPurposeBitFlag = buffer.readUInt16LE(8);
+        entry.compressionMethod = buffer.readUInt16LE(10);
+        entry.lastModFileTime = buffer.readUInt16LE(12);
+        entry.lastModFileDate = buffer.readUInt16LE(14);
+        entry.crc32 = buffer.readUInt32LE(16);
+        entry.compressedSize = buffer.readUInt32LE(20);
+        entry.uncompressedSize = buffer.readUInt32LE(24);
+        entry.fileNameLength = buffer.readUInt16LE(28);
+        entry.extraFieldLength = buffer.readUInt16LE(30);
+        entry.fileCommentLength = buffer.readUInt16LE(32);
+        entry.internalFileAttributes = buffer.readUInt16LE(36);
+        entry.externalFileAttributes = buffer.readUInt32LE(38);
+        entry.relativeOffsetOfLocalHeader = buffer.readUInt32LE(42);
+        if (entry.generalPurposeBitFlag & 64) return emitErrorAndAutoClose(self, new Error("strong encryption is not supported"));
+        self.readEntryCursor += 46;
+        buffer = newBuffer(entry.fileNameLength + entry.extraFieldLength + entry.fileCommentLength);
+        readAndAssertNoEof(self.reader, buffer, 0, buffer.length, self.readEntryCursor, function(err2) {
+          if (err2) return emitErrorAndAutoClose(self, err2);
+          if (self.emittedError) return;
+          entry.fileNameRaw = buffer.subarray(0, entry.fileNameLength);
+          var fileCommentStart = entry.fileNameLength + entry.extraFieldLength;
+          entry.extraFieldRaw = buffer.subarray(entry.fileNameLength, fileCommentStart);
+          entry.fileCommentRaw = buffer.subarray(fileCommentStart, fileCommentStart + entry.fileCommentLength);
+          try {
+            entry.extraFields = parseExtraFields(entry.extraFieldRaw);
+          } catch (err3) {
+            return emitErrorAndAutoClose(self, err3);
+          }
+          if (self.decodeStrings) {
+            var isUtf8 = (entry.generalPurposeBitFlag & 2048) !== 0;
+            entry.fileComment = decodeBuffer(entry.fileCommentRaw, isUtf8);
+            entry.fileName = getFileNameLowLevel(entry.generalPurposeBitFlag, entry.fileNameRaw, entry.extraFields, self.strictFileNames);
+            var errorMessage = validateFileName(entry.fileName);
+            if (errorMessage != null) return emitErrorAndAutoClose(self, new Error(errorMessage));
+          } else {
+            entry.fileComment = entry.fileCommentRaw;
+            entry.fileName = entry.fileNameRaw;
+          }
+          entry.comment = entry.fileComment;
+          self.readEntryCursor += buffer.length;
+          self.entriesRead += 1;
+          for (var i = 0; i < entry.extraFields.length; i++) {
+            var extraField = entry.extraFields[i];
+            if (extraField.id !== 1) continue;
+            var zip64EiefBuffer = extraField.data;
+            var index = 0;
+            if (entry.uncompressedSize === 4294967295) {
+              if (index + 8 > zip64EiefBuffer.length) {
+                return emitErrorAndAutoClose(self, new Error("zip64 extended information extra field does not include uncompressed size"));
+              }
+              entry.uncompressedSize = readUInt64LE(zip64EiefBuffer, index);
+              index += 8;
+            }
+            if (entry.compressedSize === 4294967295) {
+              if (index + 8 > zip64EiefBuffer.length) {
+                return emitErrorAndAutoClose(self, new Error("zip64 extended information extra field does not include compressed size"));
+              }
+              entry.compressedSize = readUInt64LE(zip64EiefBuffer, index);
+              index += 8;
+            }
+            if (entry.relativeOffsetOfLocalHeader === 4294967295) {
+              if (index + 8 > zip64EiefBuffer.length) {
+                return emitErrorAndAutoClose(self, new Error("zip64 extended information extra field does not include relative header offset"));
+              }
+              entry.relativeOffsetOfLocalHeader = readUInt64LE(zip64EiefBuffer, index);
+              index += 8;
+            }
+            break;
+          }
+          if (self.validateEntrySizes && entry.compressionMethod === 0) {
+            var expectedCompressedSize = entry.uncompressedSize;
+            if (entry.isEncrypted()) {
+              expectedCompressedSize += 12;
+            }
+            if (entry.compressedSize !== expectedCompressedSize) {
+              var msg = "compressed/uncompressed size mismatch for stored file: " + entry.compressedSize + " != " + entry.uncompressedSize;
+              return emitErrorAndAutoClose(self, new Error(msg));
+            }
+          }
+          self.emit("entry", entry);
+          if (!self.lazyEntries) self._readEntry();
+        });
+      });
+    };
+    ZipFile.prototype.eachEntry = function() {
+      const self = this;
+      if (!self.lazyEntries) throw new Error("eachEntry() requires lazyEntries: true");
+      if (self.hasEachEntryBeenCalled) throw new Error("eachEntry() must only be called once per ZipFile");
+      self.hasEachEntryBeenCalled = true;
+      let pendingResolveReject = null;
+      self.on("entry", onEntry);
+      self.on("end", onEnd);
+      self.on("error", onError);
+      function cleanup() {
+        self.removeListener("entry", onEntry);
+        self.removeListener("end", onEnd);
+        self.removeListener("error", onError);
+        if (self.autoClose) self.close();
+      }
+      function onEntry(entry) {
+        let { resolve } = pendingResolveReject;
+        pendingResolveReject = null;
+        resolve({ value: entry });
+      }
+      function onEnd() {
+        let { resolve } = pendingResolveReject;
+        pendingResolveReject = null;
+        cleanup();
+        resolve({ done: true });
+      }
+      function onError(err) {
+        let { reject } = pendingResolveReject;
+        pendingResolveReject = null;
+        cleanup();
+        reject(err);
+      }
+      return {
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        next() {
+          const promise = new Promise((resolve, reject) => {
+            if (pendingResolveReject != null) throw new Error("next() called before previous Promise was resolved.");
+            pendingResolveReject = { resolve, reject };
+          });
+          self.readEntry();
+          return promise;
+        },
+        return(value) {
+          cleanup();
+          return Promise.resolve({ done: true, value });
+        },
+        throw(value) {
+          cleanup();
+          return Promise.reject(value);
+        }
+      };
+    };
+    ZipFile.prototype.openReadStream = function(entry, options2, callback) {
+      var self = this;
+      var relativeStart = 0;
+      var relativeEnd = entry.compressedSize;
+      if (callback == null) {
+        callback = options2;
+        options2 = null;
+      }
+      if (options2 == null) {
+        options2 = {};
+      } else {
+        if (options2.decodeFileData === false) {
+          if (options2.decrypt != null) {
+            throw new Error("cannot use options.decrypt when options.decodeFileData === false");
+          }
+          if (options2.decompress != null) {
+            throw new Error("cannot use options.decompress when options.decodeFileData === false");
+          }
+        } else {
+          if (options2.decrypt != null) {
+            if (!entry.isEncrypted()) {
+              throw new Error("options.decrypt can only be specified for encrypted entries. See also option decodeFileData.");
+            }
+            if (options2.decrypt !== false) throw new Error("invalid options.decrypt value: " + options2.decrypt);
+            if (entry.isCompressed()) {
+              if (options2.decompress !== false) throw new Error("entry is encrypted and compressed, and options.decompress !== false. See also option decodeFileData.");
+            }
+          }
+          if (options2.decompress != null) {
+            if (!entry.isCompressed()) {
+              throw new Error("options.decompress can only be specified for compressed entries. See also option decodeFileData.");
+            }
+            if (!(options2.decompress === false || options2.decompress === true)) {
+              throw new Error("invalid options.decompress value: " + options2.decompress);
+            }
+            decompress = options2.decompress;
+          }
+        }
+        if (options2.start != null) {
+          relativeStart = options2.start;
+          if (relativeStart < 0) throw new Error("options.start < 0");
+          if (relativeStart > entry.compressedSize) throw new Error("options.start > entry.compressedSize");
+        }
+        if (options2.end != null) {
+          relativeEnd = options2.end;
+          if (relativeEnd < 0) throw new Error("options.end < 0");
+          if (relativeEnd > entry.compressedSize) throw new Error("options.end > entry.compressedSize");
+          if (relativeEnd < relativeStart) throw new Error("options.end < options.start");
+        }
+      }
+      var rawMode = options2.decodeFileData === false || // Explicitly requested raw.
+      (entry.compressionMethod === 0 || // Naturally without compression.
+      entry.compressionMethod === 8 && options2.decompress === false) && (!entry.isEncrypted() || // Naturally without encryption.
+      options2.decrypt === false);
+      if (options2.start != null || options2.end != null) {
+        if (!rawMode) throw new Error("start/end range require options.decodeFileData === false for non-trivial encoded entries.");
+      }
+      if (!self.isOpen) return callback(new Error("closed"));
+      if (entry.isEncrypted() && !rawMode) {
+        if (options2.decrypt !== false) return callback(new Error("entry is encrypted, and options.decodeFileData !== false"));
+      }
+      var decompress;
+      if (rawMode) {
+        decompress = false;
+      } else if (entry.compressionMethod === 8) {
+        decompress = options2.decodeFileData !== true;
+      } else {
+        return callback(new Error("unsupported compression method: " + entry.compressionMethod));
+      }
+      self.readLocalFileHeader(entry, { minimal: true }, function(err, localFileHeader) {
+        if (err) return callback(err);
+        self.openReadStreamLowLevel(
+          localFileHeader.fileDataStart,
+          entry.compressedSize,
+          relativeStart,
+          relativeEnd,
+          decompress,
+          entry.uncompressedSize,
+          callback
+        );
+      });
+    };
+    ZipFile.prototype.openReadStreamLowLevel = function(fileDataStart, compressedSize, relativeStart, relativeEnd, decompress, uncompressedSize, callback) {
+      var self = this;
+      var fileDataEnd = fileDataStart + compressedSize;
+      var readStream = self.reader.createReadStream({
+        start: fileDataStart + relativeStart,
+        end: fileDataStart + relativeEnd
+      });
+      var endpointStream = readStream;
+      if (decompress) {
+        var destroyed = false;
+        var inflateFilter = zlib.createInflateRaw();
+        readStream.on("error", function(err) {
+          setImmediate(function() {
+            if (!destroyed) inflateFilter.emit("error", err);
+          });
+        });
+        readStream.pipe(inflateFilter);
+        if (self.validateEntrySizes) {
+          endpointStream = new AssertByteCountStream(uncompressedSize);
+          inflateFilter.on("error", function(err) {
+            setImmediate(function() {
+              if (!destroyed) endpointStream.emit("error", err);
+            });
+          });
+          inflateFilter.pipe(endpointStream);
+        } else {
+          endpointStream = inflateFilter;
+        }
+        installDestroyFn(endpointStream, function() {
+          destroyed = true;
+          if (inflateFilter !== endpointStream) inflateFilter.unpipe(endpointStream);
+          readStream.unpipe(inflateFilter);
+          readStream.destroy();
+        });
+      }
+      callback(null, endpointStream);
+    };
+    ZipFile.prototype.readLocalFileHeader = function(entry, options2, callback) {
+      var self = this;
+      if (callback == null) {
+        callback = options2;
+        options2 = null;
+      }
+      if (options2 == null) options2 = {};
+      self.reader.ref();
+      var buffer = newBuffer(30);
+      readAndAssertNoEof(self.reader, buffer, 0, buffer.length, entry.relativeOffsetOfLocalHeader, function(err) {
+        try {
+          if (err) return callback(err);
+          var signature = buffer.readUInt32LE(0);
+          if (signature !== 67324752) {
+            return callback(new Error("invalid local file header signature: 0x" + signature.toString(16)));
+          }
+          var fileNameLength = buffer.readUInt16LE(26);
+          var extraFieldLength = buffer.readUInt16LE(28);
+          var fileDataStart = entry.relativeOffsetOfLocalHeader + 30 + fileNameLength + extraFieldLength;
+          if (fileDataStart + entry.compressedSize > self.fileSize) {
+            return callback(new Error("file data overflows file bounds: " + fileDataStart + " + " + entry.compressedSize + " > " + self.fileSize));
+          }
+          if (options2.minimal) {
+            return callback(null, { fileDataStart });
+          }
+          var localFileHeader = new LocalFileHeader();
+          localFileHeader.fileDataStart = fileDataStart;
+          localFileHeader.versionNeededToExtract = buffer.readUInt16LE(4);
+          localFileHeader.generalPurposeBitFlag = buffer.readUInt16LE(6);
+          localFileHeader.compressionMethod = buffer.readUInt16LE(8);
+          localFileHeader.lastModFileTime = buffer.readUInt16LE(10);
+          localFileHeader.lastModFileDate = buffer.readUInt16LE(12);
+          localFileHeader.crc32 = buffer.readUInt32LE(14);
+          localFileHeader.compressedSize = buffer.readUInt32LE(18);
+          localFileHeader.uncompressedSize = buffer.readUInt32LE(22);
+          localFileHeader.fileNameLength = fileNameLength;
+          localFileHeader.extraFieldLength = extraFieldLength;
+          buffer = newBuffer(fileNameLength + extraFieldLength);
+          self.reader.ref();
+          readAndAssertNoEof(self.reader, buffer, 0, buffer.length, entry.relativeOffsetOfLocalHeader + 30, function(err2) {
+            try {
+              if (err2) return callback(err2);
+              localFileHeader.fileName = buffer.subarray(0, fileNameLength);
+              localFileHeader.extraField = buffer.subarray(fileNameLength);
+              return callback(null, localFileHeader);
+            } finally {
+              self.reader.unref();
+            }
+          });
+        } finally {
+          self.reader.unref();
+        }
+      });
+    };
+    ZipFile.prototype.openReadStreamPromise = function(entry, options2) {
+      return new Promise((resolve, reject) => {
+        this.openReadStream(entry, options2, function(err, readStream) {
+          if (err) return reject(err);
+          resolve(readStream);
+        });
+      });
+    };
+    ZipFile.prototype.openReadStreamLowLevelPromise = function(fileDataStart, compressedSize, relativeStart, relativeEnd, decompress, uncompressedSize) {
+      return new Promise((resolve, reject) => {
+        this.openReadStream(fileDataStart, compressedSize, relativeStart, relativeEnd, decompress, uncompressedSize, function(err, readStream) {
+          if (err) return reject(err);
+          resolve(readStream);
+        });
+      });
+    };
+    ZipFile.prototype.readLocalFileHeaderPromise = function(entry, options2) {
+      return new Promise((resolve, reject) => {
+        this.readLocalFileHeader(entry, options2, function(err, localFileHeader) {
+          if (err) return reject(err);
+          resolve(localFileHeader);
+        });
+      });
+    };
+    function Entry() {
+    }
+    Entry.prototype.getLastModDate = function(options2) {
+      if (options2 == null) options2 = {};
+      if (!options2.forceDosFormat) {
+        for (var i = 0; i < this.extraFields.length; i++) {
+          var extraField = this.extraFields[i];
+          if (extraField.id === 21589) {
+            var data = extraField.data;
+            if (data.length < 5) continue;
+            var flags = data[0];
+            var HAS_MTIME = 1;
+            if (!(flags & HAS_MTIME)) continue;
+            var posixTimestamp = data.readInt32LE(1);
+            return new Date(posixTimestamp * 1e3);
+          } else if (extraField.id === 10) {
+            var data = extraField.data;
+            if (data.length !== 32) continue;
+            if (data.readUInt16LE(4) !== 1) continue;
+            if (data.readUInt16LE(6) !== 24) continue;
+            var hundredNanoSecondsSince1601 = data.readUInt32LE(8) + 4294967296 * data.readInt32LE(12);
+            var millisecondsSince1970 = hundredNanoSecondsSince1601 / 1e4 - 116444736e5;
+            return new Date(millisecondsSince1970);
+          }
+        }
+      }
+      return dosDateTimeToDate(this.lastModFileDate, this.lastModFileTime, options2.timezone);
+    };
+    Entry.prototype.canDecodeFileData = function() {
+      return !this.isEncrypted() && (this.compressionMethod === 0 || this.compressionMethod === 8);
+    };
+    Entry.prototype.isEncrypted = function() {
+      return (this.generalPurposeBitFlag & 1) !== 0;
+    };
+    Entry.prototype.isCompressed = function() {
+      return this.compressionMethod === 8;
+    };
+    function LocalFileHeader() {
+    }
+    function dosDateTimeToDate(date, time, timezone) {
+      var day = date & 31;
+      var month = (date >> 5 & 15) - 1;
+      var year = (date >> 9 & 127) + 1980;
+      var millisecond = 0;
+      var second = (time & 31) * 2;
+      var minute = time >> 5 & 63;
+      var hour = time >> 11 & 31;
+      if (timezone == null || timezone === "local") {
+        return new Date(year, month, day, hour, minute, second, millisecond);
+      } else if (timezone === "UTC") {
+        return new Date(Date.UTC(year, month, day, hour, minute, second, millisecond));
+      } else {
+        throw new Error("unrecognized options.timezone: " + options.timezone);
+      }
+    }
+    function getFileNameLowLevel(generalPurposeBitFlag, fileNameBuffer, extraFields, strictFileNames) {
+      var fileName = null;
+      for (var i = 0; i < extraFields.length; i++) {
+        var extraField = extraFields[i];
+        if (extraField.id === 28789) {
+          if (extraField.data.length < 6) {
+            continue;
+          }
+          if (extraField.data.readUInt8(0) !== 1) {
+            continue;
+          }
+          var oldNameCrc32 = extraField.data.readUInt32LE(1);
+          if (crc32(fileNameBuffer) !== oldNameCrc32) {
+            continue;
+          }
+          fileName = decodeBuffer(extraField.data.subarray(5), true);
+          break;
+        }
+      }
+      if (fileName == null) {
+        var isUtf8 = (generalPurposeBitFlag & 2048) !== 0;
+        fileName = decodeBuffer(fileNameBuffer, isUtf8);
+      }
+      if (!strictFileNames) {
+        fileName = fileName.replace(/\\/g, "/");
+      }
+      return fileName;
+    }
+    function validateFileName(fileName) {
+      if (fileName.indexOf("\\") !== -1) {
+        return "invalid characters in fileName: " + fileName;
+      }
+      if (/^[a-zA-Z]:/.test(fileName) || /^\//.test(fileName)) {
+        return "absolute path: " + fileName;
+      }
+      if (fileName.split("/").indexOf("..") !== -1) {
+        return "invalid relative path: " + fileName;
+      }
+      return null;
+    }
+    function parseExtraFields(extraFieldBuffer) {
+      var extraFields = [];
+      var i = 0;
+      while (i < extraFieldBuffer.length - 3) {
+        var headerId = extraFieldBuffer.readUInt16LE(i + 0);
+        var dataSize = extraFieldBuffer.readUInt16LE(i + 2);
+        var dataStart = i + 4;
+        var dataEnd = dataStart + dataSize;
+        if (dataEnd > extraFieldBuffer.length) throw new Error("extra field length exceeds extra field buffer size");
+        var dataBuffer = extraFieldBuffer.subarray(dataStart, dataEnd);
+        extraFields.push({
+          id: headerId,
+          data: dataBuffer
+        });
+        i = dataEnd;
+      }
+      return extraFields;
+    }
+    function readAndAssertNoEof(reader, buffer, offset, length, position, callback) {
+      if (length === 0) {
+        return setImmediate(function() {
+          callback(null, newBuffer(0));
+        });
+      }
+      reader.read(buffer, offset, length, position, function(err, bytesRead) {
+        if (err) return callback(err);
+        if (bytesRead < length) {
+          return callback(new Error("unexpected EOF"));
+        }
+        callback();
+      });
+    }
+    util.inherits(AssertByteCountStream, Transform);
+    function AssertByteCountStream(byteCount) {
+      Transform.call(this);
+      this.actualByteCount = 0;
+      this.expectedByteCount = byteCount;
+    }
+    AssertByteCountStream.prototype._transform = function(chunk, encoding, cb) {
+      this.actualByteCount += chunk.length;
+      if (this.actualByteCount > this.expectedByteCount) {
+        var msg = "too many bytes in the stream. expected " + this.expectedByteCount + ". got at least " + this.actualByteCount;
+        return cb(new Error(msg));
+      }
+      cb(null, chunk);
+    };
+    AssertByteCountStream.prototype._flush = function(cb) {
+      if (this.actualByteCount < this.expectedByteCount) {
+        var msg = "not enough bytes in the stream. expected " + this.expectedByteCount + ". got only " + this.actualByteCount;
+        return cb(new Error(msg));
+      }
+      cb();
+    };
+    util.inherits(RandomAccessReader, EventEmitter);
+    function RandomAccessReader() {
+      EventEmitter.call(this);
+      this.refCount = 0;
+    }
+    RandomAccessReader.prototype.ref = function() {
+      this.refCount += 1;
+    };
+    RandomAccessReader.prototype.unref = function() {
+      var self = this;
+      self.refCount -= 1;
+      if (self.refCount > 0) return;
+      if (self.refCount < 0) throw new Error("invalid unref");
+      self.close(onCloseDone);
+      function onCloseDone(err) {
+        if (err) return self.emit("error", err);
+        self.emit("close");
+      }
+    };
+    RandomAccessReader.prototype.createReadStream = function(options2) {
+      if (options2 == null) options2 = {};
+      var start = options2.start;
+      var end = options2.end;
+      if (start === end) {
+        var emptyStream = new PassThrough();
+        setImmediate(function() {
+          emptyStream.end();
+        });
+        return emptyStream;
+      }
+      var stream = this._readStreamForRange(start, end);
+      var destroyed = false;
+      var refUnrefFilter = new RefUnrefFilter(this);
+      stream.on("error", function(err) {
+        setImmediate(function() {
+          if (!destroyed) refUnrefFilter.emit("error", err);
+        });
+      });
+      installDestroyFn(refUnrefFilter, function() {
+        stream.unpipe(refUnrefFilter);
+        refUnrefFilter.unref();
+        stream.destroy();
+      });
+      var byteCounter = new AssertByteCountStream(end - start);
+      refUnrefFilter.on("error", function(err) {
+        setImmediate(function() {
+          if (!destroyed) byteCounter.emit("error", err);
+        });
+      });
+      installDestroyFn(byteCounter, function() {
+        destroyed = true;
+        refUnrefFilter.unpipe(byteCounter);
+        refUnrefFilter.destroy();
+      });
+      return stream.pipe(refUnrefFilter).pipe(byteCounter);
+    };
+    RandomAccessReader.prototype._readStreamForRange = function(start, end) {
+      throw new Error("not implemented");
+    };
+    RandomAccessReader.prototype.read = function(buffer, offset, length, position, callback) {
+      var readStream = this.createReadStream({ start: position, end: position + length });
+      var writeStream = new Writable();
+      var written = 0;
+      writeStream._write = function(chunk, encoding, cb) {
+        chunk.copy(buffer, offset + written, 0, chunk.length);
+        written += chunk.length;
+        cb();
+      };
+      writeStream.on("finish", callback);
+      readStream.on("error", function(error) {
+        callback(error);
+      });
+      readStream.pipe(writeStream);
+    };
+    RandomAccessReader.prototype.close = function(callback) {
+      setImmediate(callback);
+    };
+    util.inherits(RefUnrefFilter, PassThrough);
+    function RefUnrefFilter(context) {
+      PassThrough.call(this);
+      this.context = context;
+      this.context.ref();
+      this.unreffedYet = false;
+    }
+    RefUnrefFilter.prototype._flush = function(cb) {
+      this.unref();
+      cb();
+    };
+    RefUnrefFilter.prototype.unref = function(cb) {
+      if (this.unreffedYet) return;
+      this.unreffedYet = true;
+      this.context.unref();
+    };
+    var cp437 = "\0\u263A\u263B\u2665\u2666\u2663\u2660\u2022\u25D8\u25CB\u25D9\u2642\u2640\u266A\u266B\u263C\u25BA\u25C4\u2195\u203C\xB6\xA7\u25AC\u21A8\u2191\u2193\u2192\u2190\u221F\u2194\u25B2\u25BC !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\u2302\xC7\xFC\xE9\xE2\xE4\xE0\xE5\xE7\xEA\xEB\xE8\xEF\xEE\xEC\xC4\xC5\xC9\xE6\xC6\xF4\xF6\xF2\xFB\xF9\xFF\xD6\xDC\xA2\xA3\xA5\u20A7\u0192\xE1\xED\xF3\xFA\xF1\xD1\xAA\xBA\xBF\u2310\xAC\xBD\xBC\xA1\xAB\xBB\u2591\u2592\u2593\u2502\u2524\u2561\u2562\u2556\u2555\u2563\u2551\u2557\u255D\u255C\u255B\u2510\u2514\u2534\u252C\u251C\u2500\u253C\u255E\u255F\u255A\u2554\u2569\u2566\u2560\u2550\u256C\u2567\u2568\u2564\u2565\u2559\u2558\u2552\u2553\u256B\u256A\u2518\u250C\u2588\u2584\u258C\u2590\u2580\u03B1\xDF\u0393\u03C0\u03A3\u03C3\xB5\u03C4\u03A6\u0398\u03A9\u03B4\u221E\u03C6\u03B5\u2229\u2261\xB1\u2265\u2264\u2320\u2321\xF7\u2248\xB0\u2219\xB7\u221A\u207F\xB2\u25A0\xA0";
+    function decodeBuffer(buffer, isUtf8) {
+      if (isUtf8) {
+        return buffer.toString("utf8");
+      } else {
+        var result = "";
+        for (var i = 0; i < buffer.length; i++) {
+          result += cp437[buffer[i]];
+        }
+        return result;
+      }
+    }
+    function readUInt64LE(buffer, offset) {
+      var lower32 = buffer.readUInt32LE(offset);
+      var upper32 = buffer.readUInt32LE(offset + 4);
+      return upper32 * 4294967296 + lower32;
+    }
+    var newBuffer;
+    if (typeof Buffer.allocUnsafe === "function") {
+      newBuffer = function(len) {
+        return Buffer.allocUnsafe(len);
+      };
+    } else {
+      newBuffer = function(len) {
+        return new Buffer(len);
+      };
+    }
+    function installDestroyFn(stream, fn) {
+      if (typeof stream.destroy === "function") {
+        stream._destroy = function(err, cb) {
+          fn();
+          if (cb != null) cb(err);
+        };
+      } else {
+        stream.destroy = fn;
+      }
+    }
+    function defaultCallback(err) {
+      if (err) throw err;
+    }
+  }
+});
+
+// ../../desktop/rolling-skill/src/managed-skill-archive.cjs
+var require_managed_skill_archive = __commonJS({
+  "../../desktop/rolling-skill/src/managed-skill-archive.cjs"(exports, module) {
+    var {
+      chmodSync,
+      createWriteStream,
+      existsSync,
+      mkdirSync,
+      rmSync,
+      symlinkSync
+    } = __require("node:fs");
+    var { dirname, isAbsolute, posix, resolve, sep } = __require("node:path");
+    var { pipeline } = __require("node:stream/promises");
+    var { Transform } = __require("node:stream");
+    var yauzl = require_yauzl();
+    var DEFAULT_ARCHIVE_LIMITS = Object.freeze({
+      maxFiles: 1e4,
+      maxTotalBytes: 256 * 1024 * 1024,
+      maxFileBytes: 32 * 1024 * 1024,
+      maxCompressionRatio: 1e3
+    });
+    function normalizedLimits(input = {}) {
+      const result = { ...DEFAULT_ARCHIVE_LIMITS };
+      for (const key of Object.keys(result)) {
+        if (input[key] === void 0) continue;
+        const value = Number(input[key]);
+        if (!Number.isFinite(value) || value <= 0) throw new Error(`${key} must be positive`);
+        result[key] = value;
+      }
+      return result;
+    }
+    function isContained(root, candidate) {
+      return candidate === root || candidate.startsWith(`${root}${sep}`);
+    }
+    function normalizedEntryPath(value) {
+      if (typeof value !== "string" || !value || value.includes("\0")) {
+        throw new Error("ZIP contains an invalid entry name");
+      }
+      if (value.includes("\\")) throw new Error(`ZIP entry uses an unsafe separator: ${value}`);
+      if (value.startsWith("/") || /^[A-Za-z]:\//u.test(value)) {
+        throw new Error(`ZIP entry uses an absolute or drive-prefixed path: ${value}`);
+      }
+      const withoutTrailingSlash = value.replace(/\/+$/u, "");
+      const segments = withoutTrailingSlash.split("/");
+      if (!withoutTrailingSlash || segments.some((segment) => !segment || segment === "." || segment === "..")) {
+        throw new Error(`ZIP entry uses an unsafe relative path: ${value}`);
+      }
+      const normalized = posix.normalize(withoutTrailingSlash);
+      if (normalized === ".." || normalized.startsWith("../")) {
+        throw new Error(`ZIP entry escapes the destination: ${value}`);
+      }
+      return normalized;
+    }
+    function unixMode(entry) {
+      return entry.externalFileAttributes >>> 16 & 65535;
+    }
+    function entryKind(entry) {
+      const mode = unixMode(entry);
+      const type = mode & 61440;
+      if (type === 40960) return "symlink";
+      if (type === 16384 || entry.fileName.endsWith("/")) return "directory";
+      if (type === 0 || type === 32768) return "file";
+      throw new Error(`ZIP contains an unsupported special file: ${entry.fileName}`);
+    }
+    function openZip(path) {
+      return new Promise((resolvePromise, reject) => {
+        yauzl.open(
+          path,
+          {
+            lazyEntries: true,
+            validateEntrySizes: true,
+            strictFileNames: true
+          },
+          (error, zip) => error ? reject(error) : resolvePromise(zip)
+        );
+      });
+    }
+    function openEntryStream(zip, entry) {
+      return new Promise((resolvePromise, reject) => {
+        zip.openReadStream(
+          entry,
+          (error, stream) => error ? reject(error) : resolvePromise(stream)
+        );
+      });
+    }
+    async function readEntryBuffer(zip, entry, maxBytes) {
+      const stream = await openEntryStream(zip, entry);
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of stream) {
+        size += chunk.length;
+        if (size > maxBytes) throw new Error(`ZIP entry exceeds single-file limit: ${entry.fileName}`);
+        chunks.push(chunk);
+      }
+      return Buffer.concat(chunks, size);
+    }
+    function decodeLinkTarget(buffer, path) {
+      let target;
+      try {
+        target = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+      } catch {
+        throw new Error(`ZIP symbolic link target is not valid UTF-8: ${path}`);
+      }
+      if (!target || target.includes("\0") || isAbsolute(target)) {
+        throw new Error(`ZIP symbolic link points outside the extraction root: ${path}`);
+      }
+      return target;
+    }
+    async function extractManagedSkillZip(zipPath, destination, inputLimits = {}) {
+      const limits = normalizedLimits(inputLimits);
+      destination = resolve(destination);
+      if (existsSync(destination)) throw new Error("ZIP extraction destination already exists");
+      mkdirSync(destination, { recursive: true, mode: 448 });
+      chmodSync(destination, 448);
+      let zip = null;
+      try {
+        zip = await openZip(zipPath);
+        const seen = /* @__PURE__ */ new Set();
+        const files = [];
+        const deferredLinks = [];
+        let entryCount = 0;
+        let fileCount = 0;
+        let totalBytes = 0;
+        const completed = new Promise((resolvePromise, reject) => {
+          let settled = false;
+          const fail = (error) => {
+            if (settled) return;
+            settled = true;
+            reject(error);
+          };
+          zip.once("error", fail);
+          zip.once("end", () => {
+            if (settled) return;
+            settled = true;
+            resolvePromise();
+          });
+          zip.on("entry", (entry) => {
+            void (async () => {
+              const relativePath = normalizedEntryPath(entry.fileName);
+              entryCount += 1;
+              if (entryCount > limits.maxFiles) {
+                throw new Error(`ZIP file count limit exceeded at ${relativePath}`);
+              }
+              if (relativePath.split("/").some((segment) => segment.toLowerCase() === ".git")) {
+                zip.readEntry();
+                return;
+              }
+              if (seen.has(relativePath)) throw new Error(`ZIP contains duplicate path: ${relativePath}`);
+              seen.add(relativePath);
+              const kind = entryKind(entry);
+              const absolutePath = resolve(destination, ...relativePath.split("/"));
+              if (!isContained(destination, absolutePath)) {
+                throw new Error(`ZIP entry escapes the destination: ${relativePath}`);
+              }
+              if (kind === "directory") {
+                mkdirSync(absolutePath, { recursive: true, mode: 448 });
+                chmodSync(absolutePath, 448);
+                zip.readEntry();
+                return;
+              }
+              fileCount += 1;
+              if (entry.uncompressedSize > limits.maxFileBytes) {
+                throw new Error(`ZIP single-file limit exceeded at ${relativePath}`);
+              }
+              if (totalBytes + entry.uncompressedSize > limits.maxTotalBytes) {
+                throw new Error(`ZIP total byte limit exceeded at ${relativePath}`);
+              }
+              const ratio = entry.uncompressedSize === 0 ? 0 : entry.uncompressedSize / Math.max(1, entry.compressedSize);
+              if (ratio > limits.maxCompressionRatio) {
+                throw new Error(`ZIP compression ratio limit exceeded at ${relativePath}`);
+              }
+              totalBytes += entry.uncompressedSize;
+              mkdirSync(dirname(absolutePath), { recursive: true, mode: 448 });
+              if (kind === "symlink") {
+                const contents = await readEntryBuffer(zip, entry, limits.maxFileBytes);
+                deferredLinks.push({
+                  absolutePath,
+                  relativePath,
+                  target: decodeLinkTarget(contents, relativePath)
+                });
+                files.push(relativePath);
+                zip.readEntry();
+                return;
+              }
+              const stream = await openEntryStream(zip, entry);
+              let actualBytes = 0;
+              const counter = new Transform({
+                transform(chunk, _encoding, callback) {
+                  actualBytes += chunk.length;
+                  if (actualBytes > entry.uncompressedSize || actualBytes > limits.maxFileBytes) {
+                    callback(new Error(`ZIP single-file limit exceeded at ${relativePath}`));
+                    return;
+                  }
+                  callback(null, chunk);
+                }
+              });
+              const executable = Boolean(unixMode(entry) & 73);
+              const output = createWriteStream(absolutePath, {
+                flags: "wx",
+                mode: executable ? 493 : 420
+              });
+              await pipeline(stream, counter, output);
+              chmodSync(absolutePath, executable ? 493 : 420);
+              files.push(relativePath);
+              zip.readEntry();
+            })().catch(fail);
+          });
+          zip.readEntry();
+        });
+        await completed;
+        for (const link of deferredLinks.sort(
+          (left, right) => left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0
+        )) {
+          const targetPath = resolve(dirname(link.absolutePath), link.target);
+          if (!isContained(destination, targetPath)) {
+            throw new Error(`ZIP symbolic link points outside the extraction root: ${link.relativePath}`);
+          }
+          symlinkSync(link.target, link.absolutePath);
+        }
+        files.sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+        return { files, fileCount, entryCount, totalBytes };
+      } catch (error) {
+        try {
+          zip?.close();
+        } catch {
+        }
+        rmSync(destination, { recursive: true, force: true });
+        throw error;
+      }
+    }
+    module.exports = {
+      DEFAULT_ARCHIVE_LIMITS,
+      extractManagedSkillZip
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/nodes/identity.js
+var require_identity = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/nodes/identity.js"(exports) {
+    "use strict";
+    var ALIAS = Symbol.for("yaml.alias");
+    var DOC = Symbol.for("yaml.document");
+    var MAP = Symbol.for("yaml.map");
+    var PAIR = Symbol.for("yaml.pair");
+    var SCALAR = Symbol.for("yaml.scalar");
+    var SEQ = Symbol.for("yaml.seq");
+    var NODE_TYPE = Symbol.for("yaml.node.type");
+    var isAlias = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === ALIAS;
+    var isDocument = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === DOC;
+    var isMap = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === MAP;
+    var isPair = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === PAIR;
+    var isScalar = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === SCALAR;
+    var isSeq = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === SEQ;
+    function isCollection(node) {
+      if (node && typeof node === "object")
+        switch (node[NODE_TYPE]) {
+          case MAP:
+          case SEQ:
+            return true;
+        }
+      return false;
+    }
+    function isNode(node) {
+      if (node && typeof node === "object")
+        switch (node[NODE_TYPE]) {
+          case ALIAS:
+          case MAP:
+          case SCALAR:
+          case SEQ:
+            return true;
+        }
+      return false;
+    }
+    var hasAnchor = (node) => (isScalar(node) || isCollection(node)) && !!node.anchor;
+    exports.ALIAS = ALIAS;
+    exports.DOC = DOC;
+    exports.MAP = MAP;
+    exports.NODE_TYPE = NODE_TYPE;
+    exports.PAIR = PAIR;
+    exports.SCALAR = SCALAR;
+    exports.SEQ = SEQ;
+    exports.hasAnchor = hasAnchor;
+    exports.isAlias = isAlias;
+    exports.isCollection = isCollection;
+    exports.isDocument = isDocument;
+    exports.isMap = isMap;
+    exports.isNode = isNode;
+    exports.isPair = isPair;
+    exports.isScalar = isScalar;
+    exports.isSeq = isSeq;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/visit.js
+var require_visit = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/visit.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var BREAK = Symbol("break visit");
+    var SKIP = Symbol("skip children");
+    var REMOVE = Symbol("remove node");
+    function visit(node, visitor) {
+      const visitor_ = initVisitor(visitor);
+      if (identity.isDocument(node)) {
+        const cd = visit_(null, node.contents, visitor_, Object.freeze([node]));
+        if (cd === REMOVE)
+          node.contents = null;
+      } else
+        visit_(null, node, visitor_, Object.freeze([]));
+    }
+    visit.BREAK = BREAK;
+    visit.SKIP = SKIP;
+    visit.REMOVE = REMOVE;
+    function visit_(key, node, visitor, path) {
+      const ctrl = callVisitor(key, node, visitor, path);
+      if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
+        replaceNode(key, path, ctrl);
+        return visit_(key, ctrl, visitor, path);
+      }
+      if (typeof ctrl !== "symbol") {
+        if (identity.isCollection(node)) {
+          path = Object.freeze(path.concat(node));
+          for (let i = 0; i < node.items.length; ++i) {
+            const ci = visit_(i, node.items[i], visitor, path);
+            if (typeof ci === "number")
+              i = ci - 1;
+            else if (ci === BREAK)
+              return BREAK;
+            else if (ci === REMOVE) {
+              node.items.splice(i, 1);
+              i -= 1;
+            }
+          }
+        } else if (identity.isPair(node)) {
+          path = Object.freeze(path.concat(node));
+          const ck = visit_("key", node.key, visitor, path);
+          if (ck === BREAK)
+            return BREAK;
+          else if (ck === REMOVE)
+            node.key = null;
+          const cv = visit_("value", node.value, visitor, path);
+          if (cv === BREAK)
+            return BREAK;
+          else if (cv === REMOVE)
+            node.value = null;
+        }
+      }
+      return ctrl;
+    }
+    async function visitAsync(node, visitor) {
+      const visitor_ = initVisitor(visitor);
+      if (identity.isDocument(node)) {
+        const cd = await visitAsync_(null, node.contents, visitor_, Object.freeze([node]));
+        if (cd === REMOVE)
+          node.contents = null;
+      } else
+        await visitAsync_(null, node, visitor_, Object.freeze([]));
+    }
+    visitAsync.BREAK = BREAK;
+    visitAsync.SKIP = SKIP;
+    visitAsync.REMOVE = REMOVE;
+    async function visitAsync_(key, node, visitor, path) {
+      const ctrl = await callVisitor(key, node, visitor, path);
+      if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
+        replaceNode(key, path, ctrl);
+        return visitAsync_(key, ctrl, visitor, path);
+      }
+      if (typeof ctrl !== "symbol") {
+        if (identity.isCollection(node)) {
+          path = Object.freeze(path.concat(node));
+          for (let i = 0; i < node.items.length; ++i) {
+            const ci = await visitAsync_(i, node.items[i], visitor, path);
+            if (typeof ci === "number")
+              i = ci - 1;
+            else if (ci === BREAK)
+              return BREAK;
+            else if (ci === REMOVE) {
+              node.items.splice(i, 1);
+              i -= 1;
+            }
+          }
+        } else if (identity.isPair(node)) {
+          path = Object.freeze(path.concat(node));
+          const ck = await visitAsync_("key", node.key, visitor, path);
+          if (ck === BREAK)
+            return BREAK;
+          else if (ck === REMOVE)
+            node.key = null;
+          const cv = await visitAsync_("value", node.value, visitor, path);
+          if (cv === BREAK)
+            return BREAK;
+          else if (cv === REMOVE)
+            node.value = null;
+        }
+      }
+      return ctrl;
+    }
+    function initVisitor(visitor) {
+      if (typeof visitor === "object" && (visitor.Collection || visitor.Node || visitor.Value)) {
+        return Object.assign({
+          Alias: visitor.Node,
+          Map: visitor.Node,
+          Scalar: visitor.Node,
+          Seq: visitor.Node
+        }, visitor.Value && {
+          Map: visitor.Value,
+          Scalar: visitor.Value,
+          Seq: visitor.Value
+        }, visitor.Collection && {
+          Map: visitor.Collection,
+          Seq: visitor.Collection
+        }, visitor);
+      }
+      return visitor;
+    }
+    function callVisitor(key, node, visitor, path) {
+      if (typeof visitor === "function")
+        return visitor(key, node, path);
+      if (identity.isMap(node))
+        return visitor.Map?.(key, node, path);
+      if (identity.isSeq(node))
+        return visitor.Seq?.(key, node, path);
+      if (identity.isPair(node))
+        return visitor.Pair?.(key, node, path);
+      if (identity.isScalar(node))
+        return visitor.Scalar?.(key, node, path);
+      if (identity.isAlias(node))
+        return visitor.Alias?.(key, node, path);
+      return void 0;
+    }
+    function replaceNode(key, path, node) {
+      const parent = path[path.length - 1];
+      if (identity.isCollection(parent)) {
+        parent.items[key] = node;
+      } else if (identity.isPair(parent)) {
+        if (key === "key")
+          parent.key = node;
+        else
+          parent.value = node;
+      } else if (identity.isDocument(parent)) {
+        parent.contents = node;
+      } else {
+        const pt = identity.isAlias(parent) ? "alias" : "scalar";
+        throw new Error(`Cannot replace node with ${pt} parent`);
+      }
+    }
+    exports.visit = visit;
+    exports.visitAsync = visitAsync;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/doc/directives.js
+var require_directives = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/doc/directives.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var visit = require_visit();
+    var escapeChars = {
+      "!": "%21",
+      ",": "%2C",
+      "[": "%5B",
+      "]": "%5D",
+      "{": "%7B",
+      "}": "%7D"
+    };
+    var escapeTagName = (tn) => tn.replace(/[!,[\]{}]/g, (ch) => escapeChars[ch]);
+    var Directives = class _Directives {
+      constructor(yaml, tags) {
+        this.docStart = null;
+        this.docEnd = false;
+        this.yaml = Object.assign({}, _Directives.defaultYaml, yaml);
+        this.tags = Object.assign({}, _Directives.defaultTags, tags);
+      }
+      clone() {
+        const copy = new _Directives(this.yaml, this.tags);
+        copy.docStart = this.docStart;
+        return copy;
+      }
+      /**
+       * During parsing, get a Directives instance for the current document and
+       * update the stream state according to the current version's spec.
+       */
+      atDocument() {
+        const res = new _Directives(this.yaml, this.tags);
+        switch (this.yaml.version) {
+          case "1.1":
+            this.atNextDocument = true;
+            break;
+          case "1.2":
+            this.atNextDocument = false;
+            this.yaml = {
+              explicit: _Directives.defaultYaml.explicit,
+              version: "1.2"
+            };
+            this.tags = Object.assign({}, _Directives.defaultTags);
+            break;
+        }
+        return res;
+      }
+      /**
+       * @param onError - May be called even if the action was successful
+       * @returns `true` on success
+       */
+      add(line, onError) {
+        if (this.atNextDocument) {
+          this.yaml = { explicit: _Directives.defaultYaml.explicit, version: "1.1" };
+          this.tags = Object.assign({}, _Directives.defaultTags);
+          this.atNextDocument = false;
+        }
+        const parts = line.trim().split(/[ \t]+/);
+        const name = parts.shift();
+        switch (name) {
+          case "%TAG": {
+            if (parts.length !== 2) {
+              onError(0, "%TAG directive should contain exactly two parts");
+              if (parts.length < 2)
+                return false;
+            }
+            const [handle, prefix] = parts;
+            this.tags[handle] = prefix;
+            return true;
+          }
+          case "%YAML": {
+            this.yaml.explicit = true;
+            if (parts.length !== 1) {
+              onError(0, "%YAML directive should contain exactly one part");
+              return false;
+            }
+            const [version] = parts;
+            if (version === "1.1" || version === "1.2") {
+              this.yaml.version = version;
+              return true;
+            } else {
+              const isValid = /^\d+\.\d+$/.test(version);
+              onError(6, `Unsupported YAML version ${version}`, isValid);
+              return false;
+            }
+          }
+          default:
+            onError(0, `Unknown directive ${name}`, true);
+            return false;
+        }
+      }
+      /**
+       * Resolves a tag, matching handles to those defined in %TAG directives.
+       *
+       * @returns Resolved tag, which may also be the non-specific tag `'!'` or a
+       *   `'!local'` tag, or `null` if unresolvable.
+       */
+      tagName(source, onError) {
+        if (source === "!")
+          return "!";
+        if (source[0] !== "!") {
+          onError(`Not a valid tag: ${source}`);
+          return null;
+        }
+        if (source[1] === "<") {
+          const verbatim = source.slice(2, -1);
+          if (verbatim === "!" || verbatim === "!!") {
+            onError(`Verbatim tags aren't resolved, so ${source} is invalid.`);
+            return null;
+          }
+          if (source[source.length - 1] !== ">")
+            onError("Verbatim tags must end with a >");
+          return verbatim;
+        }
+        const [, handle, suffix] = source.match(/^(.*!)([^!]*)$/s);
+        if (!suffix)
+          onError(`The ${source} tag has no suffix`);
+        const prefix = this.tags[handle];
+        if (prefix) {
+          try {
+            return prefix + decodeURIComponent(suffix);
+          } catch (error) {
+            onError(String(error));
+            return null;
+          }
+        }
+        if (handle === "!")
+          return source;
+        onError(`Could not resolve tag: ${source}`);
+        return null;
+      }
+      /**
+       * Given a fully resolved tag, returns its printable string form,
+       * taking into account current tag prefixes and defaults.
+       */
+      tagString(tag) {
+        for (const [handle, prefix] of Object.entries(this.tags)) {
+          if (tag.startsWith(prefix))
+            return handle + escapeTagName(tag.substring(prefix.length));
+        }
+        return tag[0] === "!" ? tag : `!<${tag}>`;
+      }
+      toString(doc) {
+        const lines = this.yaml.explicit ? [`%YAML ${this.yaml.version || "1.2"}`] : [];
+        const tagEntries = Object.entries(this.tags);
+        let tagNames;
+        if (doc && tagEntries.length > 0 && identity.isNode(doc.contents)) {
+          const tags = {};
+          visit.visit(doc.contents, (_key, node) => {
+            if (identity.isNode(node) && node.tag)
+              tags[node.tag] = true;
+          });
+          tagNames = Object.keys(tags);
+        } else
+          tagNames = [];
+        for (const [handle, prefix] of tagEntries) {
+          if (handle === "!!" && prefix === "tag:yaml.org,2002:")
+            continue;
+          if (!doc || tagNames.some((tn) => tn.startsWith(prefix)))
+            lines.push(`%TAG ${handle} ${prefix}`);
+        }
+        return lines.join("\n");
+      }
+    };
+    Directives.defaultYaml = { explicit: false, version: "1.2" };
+    Directives.defaultTags = { "!!": "tag:yaml.org,2002:" };
+    exports.Directives = Directives;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/doc/anchors.js
+var require_anchors = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/doc/anchors.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var visit = require_visit();
+    function anchorIsValid(anchor) {
+      if (/[\x00-\x19\s,[\]{}]/.test(anchor)) {
+        const sa = JSON.stringify(anchor);
+        const msg = `Anchor must not contain whitespace or control characters: ${sa}`;
+        throw new Error(msg);
+      }
+      return true;
+    }
+    function anchorNames(root) {
+      const anchors = /* @__PURE__ */ new Set();
+      visit.visit(root, {
+        Value(_key, node) {
+          if (node.anchor)
+            anchors.add(node.anchor);
+        }
+      });
+      return anchors;
+    }
+    function findNewAnchor(prefix, exclude) {
+      for (let i = 1; true; ++i) {
+        const name = `${prefix}${i}`;
+        if (!exclude.has(name))
+          return name;
+      }
+    }
+    function createNodeAnchors(doc, prefix) {
+      const aliasObjects = [];
+      const sourceObjects = /* @__PURE__ */ new Map();
+      let prevAnchors = null;
+      return {
+        onAnchor: (source) => {
+          aliasObjects.push(source);
+          prevAnchors ?? (prevAnchors = anchorNames(doc));
+          const anchor = findNewAnchor(prefix, prevAnchors);
+          prevAnchors.add(anchor);
+          return anchor;
+        },
+        /**
+         * With circular references, the source node is only resolved after all
+         * of its child nodes are. This is why anchors are set only after all of
+         * the nodes have been created.
+         */
+        setAnchors: () => {
+          for (const source of aliasObjects) {
+            const ref = sourceObjects.get(source);
+            if (typeof ref === "object" && ref.anchor && (identity.isScalar(ref.node) || identity.isCollection(ref.node))) {
+              ref.node.anchor = ref.anchor;
+            } else {
+              const error = new Error("Failed to resolve repeated object (this should not happen)");
+              error.source = source;
+              throw error;
+            }
+          }
+        },
+        sourceObjects
+      };
+    }
+    exports.anchorIsValid = anchorIsValid;
+    exports.anchorNames = anchorNames;
+    exports.createNodeAnchors = createNodeAnchors;
+    exports.findNewAnchor = findNewAnchor;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/doc/applyReviver.js
+var require_applyReviver = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/doc/applyReviver.js"(exports) {
+    "use strict";
+    function applyReviver(reviver, obj, key, val) {
+      if (val && typeof val === "object") {
+        if (Array.isArray(val)) {
+          for (let i = 0, len = val.length; i < len; ++i) {
+            const v0 = val[i];
+            const v1 = applyReviver(reviver, val, String(i), v0);
+            if (v1 === void 0)
+              delete val[i];
+            else if (v1 !== v0)
+              val[i] = v1;
+          }
+        } else if (val instanceof Map) {
+          for (const k of Array.from(val.keys())) {
+            const v0 = val.get(k);
+            const v1 = applyReviver(reviver, val, k, v0);
+            if (v1 === void 0)
+              val.delete(k);
+            else if (v1 !== v0)
+              val.set(k, v1);
+          }
+        } else if (val instanceof Set) {
+          for (const v0 of Array.from(val)) {
+            const v1 = applyReviver(reviver, val, v0, v0);
+            if (v1 === void 0)
+              val.delete(v0);
+            else if (v1 !== v0) {
+              val.delete(v0);
+              val.add(v1);
+            }
+          }
+        } else {
+          for (const [k, v0] of Object.entries(val)) {
+            const v1 = applyReviver(reviver, val, k, v0);
+            if (v1 === void 0)
+              delete val[k];
+            else if (v1 !== v0)
+              val[k] = v1;
+          }
+        }
+      }
+      return reviver.call(obj, key, val);
+    }
+    exports.applyReviver = applyReviver;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/nodes/toJS.js
+var require_toJS = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/nodes/toJS.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    function toJS(value, arg, ctx) {
+      if (Array.isArray(value))
+        return value.map((v, i) => toJS(v, String(i), ctx));
+      if (value && typeof value.toJSON === "function") {
+        if (!ctx || !identity.hasAnchor(value))
+          return value.toJSON(arg, ctx);
+        const data = { aliasCount: 0, count: 1, res: void 0 };
+        ctx.anchors.set(value, data);
+        ctx.onCreate = (res2) => {
+          data.res = res2;
+          delete ctx.onCreate;
+        };
+        const res = value.toJSON(arg, ctx);
+        if (ctx.onCreate)
+          ctx.onCreate(res);
+        return res;
+      }
+      if (typeof value === "bigint" && !ctx?.keep)
+        return Number(value);
+      return value;
+    }
+    exports.toJS = toJS;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/nodes/Node.js
+var require_Node = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/nodes/Node.js"(exports) {
+    "use strict";
+    var applyReviver = require_applyReviver();
+    var identity = require_identity();
+    var toJS = require_toJS();
+    var NodeBase = class {
+      constructor(type) {
+        Object.defineProperty(this, identity.NODE_TYPE, { value: type });
+      }
+      /** Create a copy of this node.  */
+      clone() {
+        const copy = Object.create(Object.getPrototypeOf(this), Object.getOwnPropertyDescriptors(this));
+        if (this.range)
+          copy.range = this.range.slice();
+        return copy;
+      }
+      /** A plain JavaScript representation of this node. */
+      toJS(doc, { mapAsMap, maxAliasCount, onAnchor, reviver } = {}) {
+        if (!identity.isDocument(doc))
+          throw new TypeError("A document argument is required");
+        const ctx = {
+          anchors: /* @__PURE__ */ new Map(),
+          doc,
+          keep: true,
+          mapAsMap: mapAsMap === true,
+          mapKeyWarned: false,
+          maxAliasCount: typeof maxAliasCount === "number" ? maxAliasCount : 100
+        };
+        const res = toJS.toJS(this, "", ctx);
+        if (typeof onAnchor === "function")
+          for (const { count, res: res2 } of ctx.anchors.values())
+            onAnchor(res2, count);
+        return typeof reviver === "function" ? applyReviver.applyReviver(reviver, { "": res }, "", res) : res;
+      }
+    };
+    exports.NodeBase = NodeBase;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/nodes/Alias.js
+var require_Alias = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/nodes/Alias.js"(exports) {
+    "use strict";
+    var anchors = require_anchors();
+    var visit = require_visit();
+    var identity = require_identity();
+    var Node = require_Node();
+    var toJS = require_toJS();
+    var Alias = class extends Node.NodeBase {
+      constructor(source) {
+        super(identity.ALIAS);
+        this.source = source;
+        Object.defineProperty(this, "tag", {
+          set() {
+            throw new Error("Alias nodes cannot have tags");
+          }
+        });
+      }
+      /**
+       * Resolve the value of this alias within `doc`, finding the last
+       * instance of the `source` anchor before this node.
+       */
+      resolve(doc, ctx) {
+        if (ctx?.maxAliasCount === 0)
+          throw new ReferenceError("Alias resolution is disabled");
+        let nodes;
+        if (ctx?.aliasResolveCache) {
+          nodes = ctx.aliasResolveCache;
+        } else {
+          nodes = [];
+          visit.visit(doc, {
+            Node: (_key, node) => {
+              if (identity.isAlias(node) || identity.hasAnchor(node))
+                nodes.push(node);
+            }
+          });
+          if (ctx)
+            ctx.aliasResolveCache = nodes;
+        }
+        let found = void 0;
+        for (const node of nodes) {
+          if (node === this)
+            break;
+          if (node.anchor === this.source)
+            found = node;
+        }
+        return found;
+      }
+      toJSON(_arg, ctx) {
+        if (!ctx)
+          return { source: this.source };
+        const { anchors: anchors2, doc, maxAliasCount } = ctx;
+        const source = this.resolve(doc, ctx);
+        if (!source) {
+          const msg = `Unresolved alias (the anchor must be set before the alias): ${this.source}`;
+          throw new ReferenceError(msg);
+        }
+        let data = anchors2.get(source);
+        if (!data) {
+          toJS.toJS(source, null, ctx);
+          data = anchors2.get(source);
+        }
+        if (data?.res === void 0) {
+          const msg = "This should not happen: Alias anchor was not resolved?";
+          throw new ReferenceError(msg);
+        }
+        if (maxAliasCount >= 0) {
+          data.count += 1;
+          if (data.aliasCount === 0)
+            data.aliasCount = getAliasCount(doc, source, anchors2);
+          if (data.count * data.aliasCount > maxAliasCount) {
+            const msg = "Excessive alias count indicates a resource exhaustion attack";
+            throw new ReferenceError(msg);
+          }
+        }
+        return data.res;
+      }
+      toString(ctx, _onComment, _onChompKeep) {
+        const src = `*${this.source}`;
+        if (ctx) {
+          anchors.anchorIsValid(this.source);
+          if (ctx.options.verifyAliasOrder && !ctx.anchors.has(this.source)) {
+            const msg = `Unresolved alias (the anchor must be set before the alias): ${this.source}`;
+            throw new Error(msg);
+          }
+          if (ctx.implicitKey)
+            return `${src} `;
+        }
+        return src;
+      }
+    };
+    function getAliasCount(doc, node, anchors2) {
+      if (identity.isAlias(node)) {
+        const source = node.resolve(doc);
+        const anchor = anchors2 && source && anchors2.get(source);
+        return anchor ? anchor.count * anchor.aliasCount : 0;
+      } else if (identity.isCollection(node)) {
+        let count = 0;
+        for (const item of node.items) {
+          const c = getAliasCount(doc, item, anchors2);
+          if (c > count)
+            count = c;
+        }
+        return count;
+      } else if (identity.isPair(node)) {
+        const kc = getAliasCount(doc, node.key, anchors2);
+        const vc = getAliasCount(doc, node.value, anchors2);
+        return Math.max(kc, vc);
+      }
+      return 1;
+    }
+    exports.Alias = Alias;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/nodes/Scalar.js
+var require_Scalar = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/nodes/Scalar.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var Node = require_Node();
+    var toJS = require_toJS();
+    var isScalarValue = (value) => !value || typeof value !== "function" && typeof value !== "object";
+    var Scalar = class extends Node.NodeBase {
+      constructor(value) {
+        super(identity.SCALAR);
+        this.value = value;
+      }
+      toJSON(arg, ctx) {
+        return ctx?.keep ? this.value : toJS.toJS(this.value, arg, ctx);
+      }
+      toString() {
+        return String(this.value);
+      }
+    };
+    Scalar.BLOCK_FOLDED = "BLOCK_FOLDED";
+    Scalar.BLOCK_LITERAL = "BLOCK_LITERAL";
+    Scalar.PLAIN = "PLAIN";
+    Scalar.QUOTE_DOUBLE = "QUOTE_DOUBLE";
+    Scalar.QUOTE_SINGLE = "QUOTE_SINGLE";
+    exports.Scalar = Scalar;
+    exports.isScalarValue = isScalarValue;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/doc/createNode.js
+var require_createNode = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/doc/createNode.js"(exports) {
+    "use strict";
+    var Alias = require_Alias();
+    var identity = require_identity();
+    var Scalar = require_Scalar();
+    var defaultTagPrefix = "tag:yaml.org,2002:";
+    function findTagObject(value, tagName, tags) {
+      if (tagName) {
+        const match = tags.filter((t) => t.tag === tagName);
+        const tagObj = match.find((t) => !t.format) ?? match[0];
+        if (!tagObj)
+          throw new Error(`Tag ${tagName} not found`);
+        return tagObj;
+      }
+      return tags.find((t) => t.identify?.(value) && !t.format);
+    }
+    function createNode(value, tagName, ctx) {
+      if (identity.isDocument(value))
+        value = value.contents;
+      if (identity.isNode(value))
+        return value;
+      if (identity.isPair(value)) {
+        const map = ctx.schema[identity.MAP].createNode?.(ctx.schema, null, ctx);
+        map.items.push(value);
+        return map;
+      }
+      if (value instanceof String || value instanceof Number || value instanceof Boolean || typeof BigInt !== "undefined" && value instanceof BigInt) {
+        value = value.valueOf();
+      }
+      const { aliasDuplicateObjects, onAnchor, onTagObj, schema, sourceObjects } = ctx;
+      let ref = void 0;
+      if (aliasDuplicateObjects && value && typeof value === "object") {
+        ref = sourceObjects.get(value);
+        if (ref) {
+          ref.anchor ?? (ref.anchor = onAnchor(value));
+          return new Alias.Alias(ref.anchor);
+        } else {
+          ref = { anchor: null, node: null };
+          sourceObjects.set(value, ref);
+        }
+      }
+      if (tagName?.startsWith("!!"))
+        tagName = defaultTagPrefix + tagName.slice(2);
+      let tagObj = findTagObject(value, tagName, schema.tags);
+      if (!tagObj) {
+        if (value && typeof value.toJSON === "function") {
+          value = value.toJSON();
+        }
+        if (!value || typeof value !== "object") {
+          const node2 = new Scalar.Scalar(value);
+          if (ref)
+            ref.node = node2;
+          return node2;
+        }
+        tagObj = value instanceof Map ? schema[identity.MAP] : Symbol.iterator in Object(value) ? schema[identity.SEQ] : schema[identity.MAP];
+      }
+      if (onTagObj) {
+        onTagObj(tagObj);
+        delete ctx.onTagObj;
+      }
+      const node = tagObj?.createNode ? tagObj.createNode(ctx.schema, value, ctx) : typeof tagObj?.nodeClass?.from === "function" ? tagObj.nodeClass.from(ctx.schema, value, ctx) : new Scalar.Scalar(value);
+      if (tagName)
+        node.tag = tagName;
+      else if (!tagObj.default)
+        node.tag = tagObj.tag;
+      if (ref)
+        ref.node = node;
+      return node;
+    }
+    exports.createNode = createNode;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/nodes/Collection.js
+var require_Collection = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/nodes/Collection.js"(exports) {
+    "use strict";
+    var createNode = require_createNode();
+    var identity = require_identity();
+    var Node = require_Node();
+    function collectionFromPath(schema, path, value) {
+      let v = value;
+      for (let i = path.length - 1; i >= 0; --i) {
+        const k = path[i];
+        if (typeof k === "number" && Number.isInteger(k) && k >= 0) {
+          const a = [];
+          a[k] = v;
+          v = a;
+        } else {
+          v = /* @__PURE__ */ new Map([[k, v]]);
+        }
+      }
+      return createNode.createNode(v, void 0, {
+        aliasDuplicateObjects: false,
+        keepUndefined: false,
+        onAnchor: () => {
+          throw new Error("This should not happen, please report a bug.");
+        },
+        schema,
+        sourceObjects: /* @__PURE__ */ new Map()
+      });
+    }
+    var isEmptyPath = (path) => path == null || typeof path === "object" && !!path[Symbol.iterator]().next().done;
+    var Collection = class extends Node.NodeBase {
+      constructor(type, schema) {
+        super(type);
+        Object.defineProperty(this, "schema", {
+          value: schema,
+          configurable: true,
+          enumerable: false,
+          writable: true
+        });
+      }
+      /**
+       * Create a copy of this collection.
+       *
+       * @param schema - If defined, overwrites the original's schema
+       */
+      clone(schema) {
+        const copy = Object.create(Object.getPrototypeOf(this), Object.getOwnPropertyDescriptors(this));
+        if (schema)
+          copy.schema = schema;
+        copy.items = copy.items.map((it) => identity.isNode(it) || identity.isPair(it) ? it.clone(schema) : it);
+        if (this.range)
+          copy.range = this.range.slice();
+        return copy;
+      }
+      /**
+       * Adds a value to the collection. For `!!map` and `!!omap` the value must
+       * be a Pair instance or a `{ key, value }` object, which may not have a key
+       * that already exists in the map.
+       */
+      addIn(path, value) {
+        if (isEmptyPath(path))
+          this.add(value);
+        else {
+          const [key, ...rest] = path;
+          const node = this.get(key, true);
+          if (identity.isCollection(node))
+            node.addIn(rest, value);
+          else if (node === void 0 && this.schema)
+            this.set(key, collectionFromPath(this.schema, rest, value));
+          else
+            throw new Error(`Expected YAML collection at ${key}. Remaining path: ${rest}`);
+        }
+      }
+      /**
+       * Removes a value from the collection.
+       * @returns `true` if the item was found and removed.
+       */
+      deleteIn(path) {
+        const [key, ...rest] = path;
+        if (rest.length === 0)
+          return this.delete(key);
+        const node = this.get(key, true);
+        if (identity.isCollection(node))
+          return node.deleteIn(rest);
+        else
+          throw new Error(`Expected YAML collection at ${key}. Remaining path: ${rest}`);
+      }
+      /**
+       * Returns item at `key`, or `undefined` if not found. By default unwraps
+       * scalar values from their surrounding node; to disable set `keepScalar` to
+       * `true` (collections are always returned intact).
+       */
+      getIn(path, keepScalar) {
+        const [key, ...rest] = path;
+        const node = this.get(key, true);
+        if (rest.length === 0)
+          return !keepScalar && identity.isScalar(node) ? node.value : node;
+        else
+          return identity.isCollection(node) ? node.getIn(rest, keepScalar) : void 0;
+      }
+      hasAllNullValues(allowScalar) {
+        return this.items.every((node) => {
+          if (!identity.isPair(node))
+            return false;
+          const n = node.value;
+          return n == null || allowScalar && identity.isScalar(n) && n.value == null && !n.commentBefore && !n.comment && !n.tag;
+        });
+      }
+      /**
+       * Checks if the collection includes a value with the key `key`.
+       */
+      hasIn(path) {
+        const [key, ...rest] = path;
+        if (rest.length === 0)
+          return this.has(key);
+        const node = this.get(key, true);
+        return identity.isCollection(node) ? node.hasIn(rest) : false;
+      }
+      /**
+       * Sets a value in this collection. For `!!set`, `value` needs to be a
+       * boolean to add/remove the item from the set.
+       */
+      setIn(path, value) {
+        const [key, ...rest] = path;
+        if (rest.length === 0) {
+          this.set(key, value);
+        } else {
+          const node = this.get(key, true);
+          if (identity.isCollection(node))
+            node.setIn(rest, value);
+          else if (node === void 0 && this.schema)
+            this.set(key, collectionFromPath(this.schema, rest, value));
+          else
+            throw new Error(`Expected YAML collection at ${key}. Remaining path: ${rest}`);
+        }
+      }
+    };
+    exports.Collection = Collection;
+    exports.collectionFromPath = collectionFromPath;
+    exports.isEmptyPath = isEmptyPath;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringifyComment.js
+var require_stringifyComment = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringifyComment.js"(exports) {
+    "use strict";
+    var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
+    function indentComment(comment, indent) {
+      if (/^\n+$/.test(comment))
+        return comment.substring(1);
+      return indent ? comment.replace(/^(?! *$)/gm, indent) : comment;
+    }
+    var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str.endsWith(" ") ? "" : " ") + comment;
+    exports.indentComment = indentComment;
+    exports.lineComment = lineComment;
+    exports.stringifyComment = stringifyComment;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/stringify/foldFlowLines.js
+var require_foldFlowLines = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/stringify/foldFlowLines.js"(exports) {
+    "use strict";
+    var FOLD_FLOW = "flow";
+    var FOLD_BLOCK = "block";
+    var FOLD_QUOTED = "quoted";
+    function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
+      if (!lineWidth || lineWidth < 0)
+        return text;
+      if (lineWidth < minContentWidth)
+        minContentWidth = 0;
+      const endStep = Math.max(1 + minContentWidth, 1 + lineWidth - indent.length);
+      if (text.length <= endStep)
+        return text;
+      const folds = [];
+      const escapedFolds = {};
+      let end = lineWidth - indent.length;
+      if (typeof indentAtStart === "number") {
+        if (indentAtStart > lineWidth - Math.max(2, minContentWidth))
+          folds.push(0);
+        else
+          end = lineWidth - indentAtStart;
+      }
+      let split = void 0;
+      let prev = void 0;
+      let overflow = false;
+      let i = -1;
+      let escStart = -1;
+      let escEnd = -1;
+      if (mode === FOLD_BLOCK) {
+        i = consumeMoreIndentedLines(text, i, indent.length);
+        if (i !== -1)
+          end = i + endStep;
+      }
+      for (let ch; ch = text[i += 1]; ) {
+        if (mode === FOLD_QUOTED && ch === "\\") {
+          escStart = i;
+          switch (text[i + 1]) {
+            case "x":
+              i += 3;
+              break;
+            case "u":
+              i += 5;
+              break;
+            case "U":
+              i += 9;
+              break;
+            default:
+              i += 1;
+          }
+          escEnd = i;
+        }
+        if (ch === "\n") {
+          if (mode === FOLD_BLOCK)
+            i = consumeMoreIndentedLines(text, i, indent.length);
+          end = i + indent.length + endStep;
+          split = void 0;
+        } else {
+          if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
+            const next = text[i + 1];
+            if (next && next !== " " && next !== "\n" && next !== "	")
+              split = i;
+          }
+          if (i >= end) {
+            if (split) {
+              folds.push(split);
+              end = split + endStep;
+              split = void 0;
+            } else if (mode === FOLD_QUOTED) {
+              while (prev === " " || prev === "	") {
+                prev = ch;
+                ch = text[i += 1];
+                overflow = true;
+              }
+              const j = i > escEnd + 1 ? i - 2 : escStart - 1;
+              if (escapedFolds[j])
+                return text;
+              folds.push(j);
+              escapedFolds[j] = true;
+              end = j + endStep;
+              split = void 0;
+            } else {
+              overflow = true;
+            }
+          }
+        }
+        prev = ch;
+      }
+      if (overflow && onOverflow)
+        onOverflow();
+      if (folds.length === 0)
+        return text;
+      if (onFold)
+        onFold();
+      let res = text.slice(0, folds[0]);
+      for (let i2 = 0; i2 < folds.length; ++i2) {
+        const fold = folds[i2];
+        const end2 = folds[i2 + 1] || text.length;
+        if (fold === 0)
+          res = `
+${indent}${text.slice(0, end2)}`;
+        else {
+          if (mode === FOLD_QUOTED && escapedFolds[fold])
+            res += `${text[fold]}\\`;
+          res += `
+${indent}${text.slice(fold + 1, end2)}`;
+        }
+      }
+      return res;
+    }
+    function consumeMoreIndentedLines(text, i, indent) {
+      let end = i;
+      let start = i + 1;
+      let ch = text[start];
+      while (ch === " " || ch === "	") {
+        if (i < start + indent) {
+          ch = text[++i];
+        } else {
+          do {
+            ch = text[++i];
+          } while (ch && ch !== "\n");
+          end = i;
+          start = i + 1;
+          ch = text[start];
+        }
+      }
+      return end;
+    }
+    exports.FOLD_BLOCK = FOLD_BLOCK;
+    exports.FOLD_FLOW = FOLD_FLOW;
+    exports.FOLD_QUOTED = FOLD_QUOTED;
+    exports.foldFlowLines = foldFlowLines;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringifyString.js
+var require_stringifyString = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringifyString.js"(exports) {
+    "use strict";
+    var Scalar = require_Scalar();
+    var foldFlowLines = require_foldFlowLines();
+    var getFoldOptions = (ctx, isBlock) => ({
+      indentAtStart: isBlock ? ctx.indent.length : ctx.indentAtStart,
+      lineWidth: ctx.options.lineWidth,
+      minContentWidth: ctx.options.minContentWidth
+    });
+    var containsDocumentMarker = (str) => /^(%|---|\.\.\.)/m.test(str);
+    function lineLengthOverLimit(str, lineWidth, indentLength) {
+      if (!lineWidth || lineWidth < 0)
+        return false;
+      const limit = lineWidth - indentLength;
+      const strLen = str.length;
+      if (strLen <= limit)
+        return false;
+      for (let i = 0, start = 0; i < strLen; ++i) {
+        if (str[i] === "\n") {
+          if (i - start > limit)
+            return true;
+          start = i + 1;
+          if (strLen - start <= limit)
+            return false;
+        }
+      }
+      return true;
+    }
+    function doubleQuotedString(value, ctx) {
+      const json = JSON.stringify(value);
+      if (ctx.options.doubleQuotedAsJSON)
+        return json;
+      const { implicitKey } = ctx;
+      const minMultiLineLength = ctx.options.doubleQuotedMinMultiLineLength;
+      const indent = ctx.indent || (containsDocumentMarker(value) ? "  " : "");
+      let str = "";
+      let start = 0;
+      for (let i = 0, ch = json[i]; ch; ch = json[++i]) {
+        if (ch === " " && json[i + 1] === "\\" && json[i + 2] === "n") {
+          str += json.slice(start, i) + "\\ ";
+          i += 1;
+          start = i;
+          ch = "\\";
+        }
+        if (ch === "\\")
+          switch (json[i + 1]) {
+            case "u":
+              {
+                str += json.slice(start, i);
+                const code = json.substr(i + 2, 4);
+                switch (code) {
+                  case "0000":
+                    str += "\\0";
+                    break;
+                  case "0007":
+                    str += "\\a";
+                    break;
+                  case "000b":
+                    str += "\\v";
+                    break;
+                  case "001b":
+                    str += "\\e";
+                    break;
+                  case "0085":
+                    str += "\\N";
+                    break;
+                  case "00a0":
+                    str += "\\_";
+                    break;
+                  case "2028":
+                    str += "\\L";
+                    break;
+                  case "2029":
+                    str += "\\P";
+                    break;
+                  default:
+                    if (code.substr(0, 2) === "00")
+                      str += "\\x" + code.substr(2);
+                    else
+                      str += json.substr(i, 6);
+                }
+                i += 5;
+                start = i + 1;
+              }
+              break;
+            case "n":
+              if (implicitKey || json[i + 2] === '"' || json.length < minMultiLineLength) {
+                i += 1;
+              } else {
+                str += json.slice(start, i) + "\n\n";
+                while (json[i + 2] === "\\" && json[i + 3] === "n" && json[i + 4] !== '"') {
+                  str += "\n";
+                  i += 2;
+                }
+                str += indent;
+                if (json[i + 2] === " ")
+                  str += "\\";
+                i += 1;
+                start = i + 1;
+              }
+              break;
+            default:
+              i += 1;
+          }
+      }
+      str = start ? str + json.slice(start) : json;
+      return implicitKey ? str : foldFlowLines.foldFlowLines(str, indent, foldFlowLines.FOLD_QUOTED, getFoldOptions(ctx, false));
+    }
+    function singleQuotedString(value, ctx) {
+      if (ctx.options.singleQuote === false || ctx.implicitKey && value.includes("\n") || /[ \t]\n|\n[ \t]/.test(value))
+        return doubleQuotedString(value, ctx);
+      const indent = ctx.indent || (containsDocumentMarker(value) ? "  " : "");
+      const res = "'" + value.replace(/'/g, "''").replace(/\n+/g, `$&
+${indent}`) + "'";
+      return ctx.implicitKey ? res : foldFlowLines.foldFlowLines(res, indent, foldFlowLines.FOLD_FLOW, getFoldOptions(ctx, false));
+    }
+    function quotedString(value, ctx) {
+      const { singleQuote } = ctx.options;
+      let qs;
+      if (singleQuote === false)
+        qs = doubleQuotedString;
+      else {
+        const hasDouble = value.includes('"');
+        const hasSingle = value.includes("'");
+        if (hasDouble && !hasSingle)
+          qs = singleQuotedString;
+        else if (hasSingle && !hasDouble)
+          qs = doubleQuotedString;
+        else
+          qs = singleQuote ? singleQuotedString : doubleQuotedString;
+      }
+      return qs(value, ctx);
+    }
+    var blockEndNewlines;
+    try {
+      blockEndNewlines = new RegExp("(^|(?<!\n))\n+(?!\n|$)", "g");
+    } catch {
+      blockEndNewlines = /\n+(?!\n|$)/g;
+    }
+    function blockString({ comment, type, value }, ctx, onComment, onChompKeep) {
+      const { blockQuote, commentString, lineWidth } = ctx.options;
+      if (!blockQuote || /\n[\t ]+$/.test(value)) {
+        return quotedString(value, ctx);
+      }
+      const indent = ctx.indent || (ctx.forceBlockIndent || containsDocumentMarker(value) ? "  " : "");
+      const literal = blockQuote === "literal" ? true : blockQuote === "folded" || type === Scalar.Scalar.BLOCK_FOLDED ? false : type === Scalar.Scalar.BLOCK_LITERAL ? true : !lineLengthOverLimit(value, lineWidth, indent.length);
+      if (!value)
+        return literal ? "|\n" : ">\n";
+      let chomp;
+      let endStart;
+      for (endStart = value.length; endStart > 0; --endStart) {
+        const ch = value[endStart - 1];
+        if (ch !== "\n" && ch !== "	" && ch !== " ")
+          break;
+      }
+      let end = value.substring(endStart);
+      const endNlPos = end.indexOf("\n");
+      if (endNlPos === -1) {
+        chomp = "-";
+      } else if (value === end || endNlPos !== end.length - 1) {
+        chomp = "+";
+        if (onChompKeep)
+          onChompKeep();
+      } else {
+        chomp = "";
+      }
+      if (end) {
+        value = value.slice(0, -end.length);
+        if (end[end.length - 1] === "\n")
+          end = end.slice(0, -1);
+        end = end.replace(blockEndNewlines, `$&${indent}`);
+      }
+      let startWithSpace = false;
+      let startEnd;
+      let startNlPos = -1;
+      for (startEnd = 0; startEnd < value.length; ++startEnd) {
+        const ch = value[startEnd];
+        if (ch === " ")
+          startWithSpace = true;
+        else if (ch === "\n")
+          startNlPos = startEnd;
+        else
+          break;
+      }
+      let start = value.substring(0, startNlPos < startEnd ? startNlPos + 1 : startEnd);
+      if (start) {
+        value = value.substring(start.length);
+        start = start.replace(/\n+/g, `$&${indent}`);
+      }
+      const indentSize = indent ? "2" : "1";
+      let header = (startWithSpace ? indentSize : "") + chomp;
+      if (comment) {
+        header += " " + commentString(comment.replace(/ ?[\r\n]+/g, " "));
+        if (onComment)
+          onComment();
+      }
+      if (!literal) {
+        const foldedValue = value.replace(/\n+/g, "\n$&").replace(/(?:^|\n)([\t ].*)(?:([\n\t ]*)\n(?![\n\t ]))?/g, "$1$2").replace(/\n+/g, `$&${indent}`);
+        let literalFallback = false;
+        const foldOptions = getFoldOptions(ctx, true);
+        if (blockQuote !== "folded" && type !== Scalar.Scalar.BLOCK_FOLDED) {
+          foldOptions.onOverflow = () => {
+            literalFallback = true;
+          };
+        }
+        const body = foldFlowLines.foldFlowLines(`${start}${foldedValue}${end}`, indent, foldFlowLines.FOLD_BLOCK, foldOptions);
+        if (!literalFallback)
+          return `>${header}
+${indent}${body}`;
+      }
+      value = value.replace(/\n+/g, `$&${indent}`);
+      return `|${header}
+${indent}${start}${value}${end}`;
+    }
+    function plainString(item, ctx, onComment, onChompKeep) {
+      const { type, value } = item;
+      const { actualString, implicitKey, indent, indentStep, inFlow } = ctx;
+      if (implicitKey && value.includes("\n") || inFlow && /[[\]{},]/.test(value)) {
+        return quotedString(value, ctx);
+      }
+      if (/^[\n\t ,[\]{}#&*!|>'"%@`]|^[?-]$|^[?-][ \t]|[\n:][ \t]|[ \t]\n|[\n\t ]#|[\n\t :]$/.test(value)) {
+        return implicitKey || inFlow || !value.includes("\n") ? quotedString(value, ctx) : blockString(item, ctx, onComment, onChompKeep);
+      }
+      if (!implicitKey && !inFlow && type !== Scalar.Scalar.PLAIN && value.includes("\n")) {
+        return blockString(item, ctx, onComment, onChompKeep);
+      }
+      if (containsDocumentMarker(value)) {
+        if (indent === "") {
+          ctx.forceBlockIndent = true;
+          return blockString(item, ctx, onComment, onChompKeep);
+        } else if (implicitKey && indent === indentStep) {
+          return quotedString(value, ctx);
+        }
+      }
+      const str = value.replace(/\n+/g, `$&
+${indent}`);
+      if (actualString) {
+        const test = (tag) => tag.default && tag.tag !== "tag:yaml.org,2002:str" && tag.test?.test(str);
+        const { compat, tags } = ctx.doc.schema;
+        if (tags.some(test) || compat?.some(test))
+          return quotedString(value, ctx);
+      }
+      return implicitKey ? str : foldFlowLines.foldFlowLines(str, indent, foldFlowLines.FOLD_FLOW, getFoldOptions(ctx, false));
+    }
+    function stringifyString(item, ctx, onComment, onChompKeep) {
+      const { implicitKey, inFlow } = ctx;
+      const ss = typeof item.value === "string" ? item : Object.assign({}, item, { value: String(item.value) });
+      let { type } = item;
+      if (type !== Scalar.Scalar.QUOTE_DOUBLE) {
+        if (/[\x00-\x08\x0b-\x1f\x7f-\x9f\u{D800}-\u{DFFF}]/u.test(ss.value))
+          type = Scalar.Scalar.QUOTE_DOUBLE;
+      }
+      const _stringify = (_type) => {
+        switch (_type) {
+          case Scalar.Scalar.BLOCK_FOLDED:
+          case Scalar.Scalar.BLOCK_LITERAL:
+            return implicitKey || inFlow ? quotedString(ss.value, ctx) : blockString(ss, ctx, onComment, onChompKeep);
+          case Scalar.Scalar.QUOTE_DOUBLE:
+            return doubleQuotedString(ss.value, ctx);
+          case Scalar.Scalar.QUOTE_SINGLE:
+            return singleQuotedString(ss.value, ctx);
+          case Scalar.Scalar.PLAIN:
+            return plainString(ss, ctx, onComment, onChompKeep);
+          default:
+            return null;
+        }
+      };
+      let res = _stringify(type);
+      if (res === null) {
+        const { defaultKeyType, defaultStringType } = ctx.options;
+        const t = implicitKey && defaultKeyType || defaultStringType;
+        res = _stringify(t);
+        if (res === null)
+          throw new Error(`Unsupported default string type ${t}`);
+      }
+      return res;
+    }
+    exports.stringifyString = stringifyString;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringify.js
+var require_stringify = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringify.js"(exports) {
+    "use strict";
+    var anchors = require_anchors();
+    var identity = require_identity();
+    var stringifyComment = require_stringifyComment();
+    var stringifyString = require_stringifyString();
+    function createStringifyContext(doc, options2) {
+      const opt = Object.assign({
+        blockQuote: true,
+        commentString: stringifyComment.stringifyComment,
+        defaultKeyType: null,
+        defaultStringType: "PLAIN",
+        directives: null,
+        doubleQuotedAsJSON: false,
+        doubleQuotedMinMultiLineLength: 40,
+        falseStr: "false",
+        flowCollectionPadding: true,
+        indentSeq: true,
+        lineWidth: 80,
+        minContentWidth: 20,
+        nullStr: "null",
+        simpleKeys: false,
+        singleQuote: null,
+        trailingComma: false,
+        trueStr: "true",
+        verifyAliasOrder: true
+      }, doc.schema.toStringOptions, options2);
+      let inFlow;
+      switch (opt.collectionStyle) {
+        case "block":
+          inFlow = false;
+          break;
+        case "flow":
+          inFlow = true;
+          break;
+        default:
+          inFlow = null;
+      }
+      return {
+        anchors: /* @__PURE__ */ new Set(),
+        doc,
+        flowCollectionPadding: opt.flowCollectionPadding ? " " : "",
+        indent: "",
+        indentStep: typeof opt.indent === "number" ? " ".repeat(opt.indent) : "  ",
+        inFlow,
+        options: opt
+      };
+    }
+    function getTagObject(tags, item) {
+      if (item.tag) {
+        const match = tags.filter((t) => t.tag === item.tag);
+        if (match.length > 0)
+          return match.find((t) => t.format === item.format) ?? match[0];
+      }
+      let tagObj = void 0;
+      let obj;
+      if (identity.isScalar(item)) {
+        obj = item.value;
+        let match = tags.filter((t) => t.identify?.(obj));
+        if (match.length > 1) {
+          const testMatch = match.filter((t) => t.test);
+          if (testMatch.length > 0)
+            match = testMatch;
+        }
+        tagObj = match.find((t) => t.format === item.format) ?? match.find((t) => !t.format);
+      } else {
+        obj = item;
+        tagObj = tags.find((t) => t.nodeClass && obj instanceof t.nodeClass);
+      }
+      if (!tagObj) {
+        const name = obj?.constructor?.name ?? (obj === null ? "null" : typeof obj);
+        throw new Error(`Tag not resolved for ${name} value`);
+      }
+      return tagObj;
+    }
+    function stringifyProps(node, tagObj, { anchors: anchors$1, doc }) {
+      if (!doc.directives)
+        return "";
+      const props = [];
+      const anchor = (identity.isScalar(node) || identity.isCollection(node)) && node.anchor;
+      if (anchor && anchors.anchorIsValid(anchor)) {
+        anchors$1.add(anchor);
+        props.push(`&${anchor}`);
+      }
+      const tag = node.tag ?? (tagObj.default ? null : tagObj.tag);
+      if (tag)
+        props.push(doc.directives.tagString(tag));
+      return props.join(" ");
+    }
+    function stringify(item, ctx, onComment, onChompKeep) {
+      if (identity.isPair(item))
+        return item.toString(ctx, onComment, onChompKeep);
+      if (identity.isAlias(item)) {
+        if (ctx.doc.directives)
+          return item.toString(ctx);
+        if (ctx.resolvedAliases?.has(item)) {
+          throw new TypeError(`Cannot stringify circular structure without alias nodes`);
+        } else {
+          if (ctx.resolvedAliases)
+            ctx.resolvedAliases.add(item);
+          else
+            ctx.resolvedAliases = /* @__PURE__ */ new Set([item]);
+          item = item.resolve(ctx.doc);
+        }
+      }
+      let tagObj = void 0;
+      const node = identity.isNode(item) ? item : ctx.doc.createNode(item, { onTagObj: (o) => tagObj = o });
+      tagObj ?? (tagObj = getTagObject(ctx.doc.schema.tags, node));
+      const props = stringifyProps(node, tagObj, ctx);
+      if (props.length > 0)
+        ctx.indentAtStart = (ctx.indentAtStart ?? 0) + props.length + 1;
+      const str = typeof tagObj.stringify === "function" ? tagObj.stringify(node, ctx, onComment, onChompKeep) : identity.isScalar(node) ? stringifyString.stringifyString(node, ctx, onComment, onChompKeep) : node.toString(ctx, onComment, onChompKeep);
+      if (!props)
+        return str;
+      return identity.isScalar(node) || str[0] === "{" || str[0] === "[" ? `${props} ${str}` : `${props}
+${ctx.indent}${str}`;
+    }
+    exports.createStringifyContext = createStringifyContext;
+    exports.stringify = stringify;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringifyPair.js
+var require_stringifyPair = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringifyPair.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var Scalar = require_Scalar();
+    var stringify = require_stringify();
+    var stringifyComment = require_stringifyComment();
+    function stringifyPair({ key, value }, ctx, onComment, onChompKeep) {
+      const { allNullValues, doc, indent, indentStep, options: { commentString, indentSeq, simpleKeys } } = ctx;
+      let keyComment = identity.isNode(key) && key.comment || null;
+      if (simpleKeys) {
+        if (keyComment) {
+          throw new Error("With simple keys, key nodes cannot have comments");
+        }
+        if (identity.isCollection(key) || !identity.isNode(key) && typeof key === "object") {
+          const msg = "With simple keys, collection cannot be used as a key value";
+          throw new Error(msg);
+        }
+      }
+      let explicitKey = !simpleKeys && (!key || keyComment && value == null && !ctx.inFlow || identity.isCollection(key) || (identity.isScalar(key) ? key.type === Scalar.Scalar.BLOCK_FOLDED || key.type === Scalar.Scalar.BLOCK_LITERAL : typeof key === "object"));
+      ctx = Object.assign({}, ctx, {
+        allNullValues: false,
+        implicitKey: !explicitKey && (simpleKeys || !allNullValues),
+        indent: indent + indentStep
+      });
+      let keyCommentDone = false;
+      let chompKeep = false;
+      let str = stringify.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
+      if (!explicitKey && !ctx.inFlow && str.length > 1024) {
+        if (simpleKeys)
+          throw new Error("With simple keys, single line scalar must not span more than 1024 characters");
+        explicitKey = true;
+      }
+      if (ctx.inFlow) {
+        if (allNullValues || value == null) {
+          if (keyCommentDone && onComment)
+            onComment();
+          return str === "" ? "?" : explicitKey ? `? ${str}` : str;
+        }
+      } else if (allNullValues && !simpleKeys || value == null && explicitKey) {
+        str = `? ${str}`;
+        if (keyComment && !keyCommentDone) {
+          str += stringifyComment.lineComment(str, ctx.indent, commentString(keyComment));
+        } else if (chompKeep && onChompKeep)
+          onChompKeep();
+        return str;
+      }
+      if (keyCommentDone)
+        keyComment = null;
+      if (explicitKey) {
+        if (keyComment)
+          str += stringifyComment.lineComment(str, ctx.indent, commentString(keyComment));
+        str = `? ${str}
+${indent}:`;
+      } else {
+        str = `${str}:`;
+        if (keyComment)
+          str += stringifyComment.lineComment(str, ctx.indent, commentString(keyComment));
+      }
+      let vsb, vcb, valueComment;
+      if (identity.isNode(value)) {
+        vsb = !!value.spaceBefore;
+        vcb = value.commentBefore;
+        valueComment = value.comment;
+      } else {
+        vsb = false;
+        vcb = null;
+        valueComment = null;
+        if (value && typeof value === "object")
+          value = doc.createNode(value);
+      }
+      ctx.implicitKey = false;
+      if (!explicitKey && !keyComment && identity.isScalar(value))
+        ctx.indentAtStart = str.length + 1;
+      chompKeep = false;
+      if (!indentSeq && indentStep.length >= 2 && !ctx.inFlow && !explicitKey && identity.isSeq(value) && !value.flow && !value.tag && !value.anchor) {
+        ctx.indent = ctx.indent.substring(2);
+      }
+      let valueCommentDone = false;
+      const valueStr = stringify.stringify(value, ctx, () => valueCommentDone = true, () => chompKeep = true);
+      let ws = " ";
+      if (keyComment || vsb || vcb) {
+        ws = vsb ? "\n" : "";
+        if (vcb) {
+          const cs = commentString(vcb);
+          ws += `
+${stringifyComment.indentComment(cs, ctx.indent)}`;
+        }
+        if (valueStr === "" && !ctx.inFlow) {
+          if (ws === "\n" && valueComment)
+            ws = "\n\n";
+        } else {
+          ws += `
+${ctx.indent}`;
+        }
+      } else if (!explicitKey && identity.isCollection(value)) {
+        const vs0 = valueStr[0];
+        const nl0 = valueStr.indexOf("\n");
+        const hasNewline = nl0 !== -1;
+        const flow = ctx.inFlow ?? value.flow ?? value.items.length === 0;
+        if (hasNewline || !flow) {
+          let hasPropsLine = false;
+          if (hasNewline && (vs0 === "&" || vs0 === "!")) {
+            let sp0 = valueStr.indexOf(" ");
+            if (vs0 === "&" && sp0 !== -1 && sp0 < nl0 && valueStr[sp0 + 1] === "!") {
+              sp0 = valueStr.indexOf(" ", sp0 + 1);
+            }
+            if (sp0 === -1 || nl0 < sp0)
+              hasPropsLine = true;
+          }
+          if (!hasPropsLine)
+            ws = `
+${ctx.indent}`;
+        }
+      } else if (valueStr === "" || valueStr[0] === "\n") {
+        ws = "";
+      }
+      str += ws + valueStr;
+      if (ctx.inFlow) {
+        if (valueCommentDone && onComment)
+          onComment();
+      } else if (valueComment && !valueCommentDone) {
+        str += stringifyComment.lineComment(str, ctx.indent, commentString(valueComment));
+      } else if (chompKeep && onChompKeep) {
+        onChompKeep();
+      }
+      return str;
+    }
+    exports.stringifyPair = stringifyPair;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/log.js
+var require_log = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/log.js"(exports) {
+    "use strict";
+    var node_process = __require("process");
+    function debug(logLevel, ...messages) {
+      if (logLevel === "debug")
+        console.log(...messages);
+    }
+    function warn(logLevel, warning) {
+      if (logLevel === "debug" || logLevel === "warn") {
+        if (typeof node_process.emitWarning === "function")
+          node_process.emitWarning(warning);
+        else
+          console.warn(warning);
+      }
+    }
+    exports.debug = debug;
+    exports.warn = warn;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/merge.js
+var require_merge = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/merge.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var Scalar = require_Scalar();
+    var MERGE_KEY = "<<";
+    var merge = {
+      identify: (value) => value === MERGE_KEY || typeof value === "symbol" && value.description === MERGE_KEY,
+      default: "key",
+      tag: "tag:yaml.org,2002:merge",
+      test: /^<<$/,
+      resolve: () => Object.assign(new Scalar.Scalar(Symbol(MERGE_KEY)), {
+        addToJSMap: addMergeToJSMap
+      }),
+      stringify: () => MERGE_KEY
+    };
+    var isMergeKey = (ctx, key) => (merge.identify(key) || identity.isScalar(key) && (!key.type || key.type === Scalar.Scalar.PLAIN) && merge.identify(key.value)) && ctx?.doc.schema.tags.some((tag) => tag.tag === merge.tag && tag.default);
+    function addMergeToJSMap(ctx, map, value) {
+      const source = resolveAliasValue(ctx, value);
+      if (identity.isSeq(source))
+        for (const it of source.items)
+          mergeValue(ctx, map, it);
+      else if (Array.isArray(source))
+        for (const it of source)
+          mergeValue(ctx, map, it);
+      else
+        mergeValue(ctx, map, source);
+    }
+    function mergeValue(ctx, map, value) {
+      const source = resolveAliasValue(ctx, value);
+      if (!identity.isMap(source))
+        throw new Error("Merge sources must be maps or map aliases");
+      const srcMap = source.toJSON(null, ctx, Map);
+      for (const [key, value2] of srcMap) {
+        if (map instanceof Map) {
+          if (!map.has(key))
+            map.set(key, value2);
+        } else if (map instanceof Set) {
+          map.add(key);
+        } else if (!Object.prototype.hasOwnProperty.call(map, key)) {
+          Object.defineProperty(map, key, {
+            value: value2,
+            writable: true,
+            enumerable: true,
+            configurable: true
+          });
+        }
+      }
+      return map;
+    }
+    function resolveAliasValue(ctx, value) {
+      return ctx && identity.isAlias(value) ? value.resolve(ctx.doc, ctx) : value;
+    }
+    exports.addMergeToJSMap = addMergeToJSMap;
+    exports.isMergeKey = isMergeKey;
+    exports.merge = merge;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/nodes/addPairToJSMap.js
+var require_addPairToJSMap = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/nodes/addPairToJSMap.js"(exports) {
+    "use strict";
+    var log = require_log();
+    var merge = require_merge();
+    var stringify = require_stringify();
+    var identity = require_identity();
+    var toJS = require_toJS();
+    function addPairToJSMap(ctx, map, { key, value }) {
+      if (identity.isNode(key) && key.addToJSMap)
+        key.addToJSMap(ctx, map, value);
+      else if (merge.isMergeKey(ctx, key))
+        merge.addMergeToJSMap(ctx, map, value);
+      else {
+        const jsKey = toJS.toJS(key, "", ctx);
+        if (map instanceof Map) {
+          map.set(jsKey, toJS.toJS(value, jsKey, ctx));
+        } else if (map instanceof Set) {
+          map.add(jsKey);
+        } else {
+          const stringKey = stringifyKey(key, jsKey, ctx);
+          const jsValue = toJS.toJS(value, stringKey, ctx);
+          if (stringKey in map)
+            Object.defineProperty(map, stringKey, {
+              value: jsValue,
+              writable: true,
+              enumerable: true,
+              configurable: true
+            });
+          else
+            map[stringKey] = jsValue;
+        }
+      }
+      return map;
+    }
+    function stringifyKey(key, jsKey, ctx) {
+      if (jsKey === null)
+        return "";
+      if (typeof jsKey !== "object")
+        return String(jsKey);
+      if (identity.isNode(key) && ctx?.doc) {
+        const strCtx = stringify.createStringifyContext(ctx.doc, {});
+        strCtx.anchors = /* @__PURE__ */ new Set();
+        for (const node of ctx.anchors.keys())
+          strCtx.anchors.add(node.anchor);
+        strCtx.inFlow = true;
+        strCtx.inStringifyKey = true;
+        const strKey = key.toString(strCtx);
+        if (!ctx.mapKeyWarned) {
+          let jsonStr = JSON.stringify(strKey);
+          if (jsonStr.length > 40)
+            jsonStr = jsonStr.substring(0, 36) + '..."';
+          log.warn(ctx.doc.options.logLevel, `Keys with collection values will be stringified due to JS Object restrictions: ${jsonStr}. Set mapAsMap: true to use object keys.`);
+          ctx.mapKeyWarned = true;
+        }
+        return strKey;
+      }
+      return JSON.stringify(jsKey);
+    }
+    exports.addPairToJSMap = addPairToJSMap;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/nodes/Pair.js
+var require_Pair = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/nodes/Pair.js"(exports) {
+    "use strict";
+    var createNode = require_createNode();
+    var stringifyPair = require_stringifyPair();
+    var addPairToJSMap = require_addPairToJSMap();
+    var identity = require_identity();
+    function createPair(key, value, ctx) {
+      const k = createNode.createNode(key, void 0, ctx);
+      const v = createNode.createNode(value, void 0, ctx);
+      return new Pair(k, v);
+    }
+    var Pair = class _Pair {
+      constructor(key, value = null) {
+        Object.defineProperty(this, identity.NODE_TYPE, { value: identity.PAIR });
+        this.key = key;
+        this.value = value;
+      }
+      clone(schema) {
+        let { key, value } = this;
+        if (identity.isNode(key))
+          key = key.clone(schema);
+        if (identity.isNode(value))
+          value = value.clone(schema);
+        return new _Pair(key, value);
+      }
+      toJSON(_, ctx) {
+        const pair = ctx?.mapAsMap ? /* @__PURE__ */ new Map() : {};
+        return addPairToJSMap.addPairToJSMap(ctx, pair, this);
+      }
+      toString(ctx, onComment, onChompKeep) {
+        return ctx?.doc ? stringifyPair.stringifyPair(this, ctx, onComment, onChompKeep) : JSON.stringify(this);
+      }
+    };
+    exports.Pair = Pair;
+    exports.createPair = createPair;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringifyCollection.js
+var require_stringifyCollection = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringifyCollection.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var stringify = require_stringify();
+    var stringifyComment = require_stringifyComment();
+    function stringifyCollection(collection, ctx, options2) {
+      const flow = ctx.inFlow ?? collection.flow;
+      const stringify2 = flow ? stringifyFlowCollection : stringifyBlockCollection;
+      return stringify2(collection, ctx, options2);
+    }
+    function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, flowChars, itemIndent, onChompKeep, onComment }) {
+      const { indent, options: { commentString } } = ctx;
+      const itemCtx = Object.assign({}, ctx, { indent: itemIndent, type: null });
+      let chompKeep = false;
+      const lines = [];
+      for (let i = 0; i < items.length; ++i) {
+        const item = items[i];
+        let comment2 = null;
+        if (identity.isNode(item)) {
+          if (!chompKeep && item.spaceBefore)
+            lines.push("");
+          addCommentBefore(ctx, lines, item.commentBefore, chompKeep);
+          if (item.comment)
+            comment2 = item.comment;
+        } else if (identity.isPair(item)) {
+          const ik = identity.isNode(item.key) ? item.key : null;
+          if (ik) {
+            if (!chompKeep && ik.spaceBefore)
+              lines.push("");
+            addCommentBefore(ctx, lines, ik.commentBefore, chompKeep);
+          }
+        }
+        chompKeep = false;
+        let str2 = stringify.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
+        if (comment2)
+          str2 += stringifyComment.lineComment(str2, itemIndent, commentString(comment2));
+        if (chompKeep && comment2)
+          chompKeep = false;
+        lines.push(blockItemPrefix + str2);
+      }
+      let str;
+      if (lines.length === 0) {
+        str = flowChars.start + flowChars.end;
+      } else {
+        str = lines[0];
+        for (let i = 1; i < lines.length; ++i) {
+          const line = lines[i];
+          str += line ? `
+${indent}${line}` : "\n";
+        }
+      }
+      if (comment) {
+        str += "\n" + stringifyComment.indentComment(commentString(comment), indent);
+        if (onComment)
+          onComment();
+      } else if (chompKeep && onChompKeep)
+        onChompKeep();
+      return str;
+    }
+    function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
+      const { indent, indentStep, flowCollectionPadding: fcPadding, options: { commentString } } = ctx;
+      itemIndent += indentStep;
+      const itemCtx = Object.assign({}, ctx, {
+        indent: itemIndent,
+        inFlow: true,
+        type: null
+      });
+      let reqNewline = false;
+      let linesAtValue = 0;
+      const lines = [];
+      for (let i = 0; i < items.length; ++i) {
+        const item = items[i];
+        let comment = null;
+        if (identity.isNode(item)) {
+          if (item.spaceBefore)
+            lines.push("");
+          addCommentBefore(ctx, lines, item.commentBefore, false);
+          if (item.comment)
+            comment = item.comment;
+        } else if (identity.isPair(item)) {
+          const ik = identity.isNode(item.key) ? item.key : null;
+          if (ik) {
+            if (ik.spaceBefore)
+              lines.push("");
+            addCommentBefore(ctx, lines, ik.commentBefore, false);
+            if (ik.comment)
+              reqNewline = true;
+          }
+          const iv = identity.isNode(item.value) ? item.value : null;
+          if (iv) {
+            if (iv.comment)
+              comment = iv.comment;
+            if (iv.commentBefore)
+              reqNewline = true;
+          } else if (item.value == null && ik?.comment) {
+            comment = ik.comment;
+          }
+        }
+        if (comment)
+          reqNewline = true;
+        let str = stringify.stringify(item, itemCtx, () => comment = null);
+        reqNewline || (reqNewline = lines.length > linesAtValue || str.includes("\n"));
+        if (i < items.length - 1) {
+          str += ",";
+        } else if (ctx.options.trailingComma) {
+          if (ctx.options.lineWidth > 0) {
+            reqNewline || (reqNewline = lines.reduce((sum, line) => sum + line.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
+          }
+          if (reqNewline) {
+            str += ",";
+          }
+        }
+        if (comment)
+          str += stringifyComment.lineComment(str, itemIndent, commentString(comment));
+        lines.push(str);
+        linesAtValue = lines.length;
+      }
+      const { start, end } = flowChars;
+      if (lines.length === 0) {
+        return start + end;
+      } else {
+        if (!reqNewline) {
+          const len = lines.reduce((sum, line) => sum + line.length + 2, 2);
+          reqNewline = ctx.options.lineWidth > 0 && len > ctx.options.lineWidth;
+        }
+        if (reqNewline) {
+          let str = start;
+          for (const line of lines)
+            str += line ? `
+${indentStep}${indent}${line}` : "\n";
+          return `${str}
+${indent}${end}`;
+        } else {
+          return `${start}${fcPadding}${lines.join(" ")}${fcPadding}${end}`;
+        }
+      }
+    }
+    function addCommentBefore({ indent, options: { commentString } }, lines, comment, chompKeep) {
+      if (comment && chompKeep)
+        comment = comment.replace(/^\n+/, "");
+      if (comment) {
+        const ic = stringifyComment.indentComment(commentString(comment), indent);
+        lines.push(ic.trimStart());
+      }
+    }
+    exports.stringifyCollection = stringifyCollection;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/nodes/YAMLMap.js
+var require_YAMLMap = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/nodes/YAMLMap.js"(exports) {
+    "use strict";
+    var stringifyCollection = require_stringifyCollection();
+    var addPairToJSMap = require_addPairToJSMap();
+    var Collection = require_Collection();
+    var identity = require_identity();
+    var Pair = require_Pair();
+    var Scalar = require_Scalar();
+    function findPair(items, key) {
+      const k = identity.isScalar(key) ? key.value : key;
+      for (const it of items) {
+        if (identity.isPair(it)) {
+          if (it.key === key || it.key === k)
+            return it;
+          if (identity.isScalar(it.key) && it.key.value === k)
+            return it;
+        }
+      }
+      return void 0;
+    }
+    var YAMLMap = class extends Collection.Collection {
+      static get tagName() {
+        return "tag:yaml.org,2002:map";
+      }
+      constructor(schema) {
+        super(identity.MAP, schema);
+        this.items = [];
+      }
+      /**
+       * A generic collection parsing method that can be extended
+       * to other node classes that inherit from YAMLMap
+       */
+      static from(schema, obj, ctx) {
+        const { keepUndefined, replacer } = ctx;
+        const map = new this(schema);
+        const add = (key, value) => {
+          if (typeof replacer === "function")
+            value = replacer.call(obj, key, value);
+          else if (Array.isArray(replacer) && !replacer.includes(key))
+            return;
+          if (value !== void 0 || keepUndefined)
+            map.items.push(Pair.createPair(key, value, ctx));
+        };
+        if (obj instanceof Map) {
+          for (const [key, value] of obj)
+            add(key, value);
+        } else if (obj && typeof obj === "object") {
+          for (const key of Object.keys(obj))
+            add(key, obj[key]);
+        }
+        if (typeof schema.sortMapEntries === "function") {
+          map.items.sort(schema.sortMapEntries);
+        }
+        return map;
+      }
+      /**
+       * Adds a value to the collection.
+       *
+       * @param overwrite - If not set `true`, using a key that is already in the
+       *   collection will throw. Otherwise, overwrites the previous value.
+       */
+      add(pair, overwrite) {
+        let _pair;
+        if (identity.isPair(pair))
+          _pair = pair;
+        else if (!pair || typeof pair !== "object" || !("key" in pair)) {
+          _pair = new Pair.Pair(pair, pair?.value);
+        } else
+          _pair = new Pair.Pair(pair.key, pair.value);
+        const prev = findPair(this.items, _pair.key);
+        const sortEntries = this.schema?.sortMapEntries;
+        if (prev) {
+          if (!overwrite)
+            throw new Error(`Key ${_pair.key} already set`);
+          if (identity.isScalar(prev.value) && Scalar.isScalarValue(_pair.value))
+            prev.value.value = _pair.value;
+          else
+            prev.value = _pair.value;
+        } else if (sortEntries) {
+          const i = this.items.findIndex((item) => sortEntries(_pair, item) < 0);
+          if (i === -1)
+            this.items.push(_pair);
+          else
+            this.items.splice(i, 0, _pair);
+        } else {
+          this.items.push(_pair);
+        }
+      }
+      delete(key) {
+        const it = findPair(this.items, key);
+        if (!it)
+          return false;
+        const del = this.items.splice(this.items.indexOf(it), 1);
+        return del.length > 0;
+      }
+      get(key, keepScalar) {
+        const it = findPair(this.items, key);
+        const node = it?.value;
+        return (!keepScalar && identity.isScalar(node) ? node.value : node) ?? void 0;
+      }
+      has(key) {
+        return !!findPair(this.items, key);
+      }
+      set(key, value) {
+        this.add(new Pair.Pair(key, value), true);
+      }
+      /**
+       * @param ctx - Conversion context, originally set in Document#toJS()
+       * @param {Class} Type - If set, forces the returned collection type
+       * @returns Instance of Type, Map, or Object
+       */
+      toJSON(_, ctx, Type) {
+        const map = Type ? new Type() : ctx?.mapAsMap ? /* @__PURE__ */ new Map() : {};
+        if (ctx?.onCreate)
+          ctx.onCreate(map);
+        for (const item of this.items)
+          addPairToJSMap.addPairToJSMap(ctx, map, item);
+        return map;
+      }
+      toString(ctx, onComment, onChompKeep) {
+        if (!ctx)
+          return JSON.stringify(this);
+        for (const item of this.items) {
+          if (!identity.isPair(item))
+            throw new Error(`Map items must all be pairs; found ${JSON.stringify(item)} instead`);
+        }
+        if (!ctx.allNullValues && this.hasAllNullValues(false))
+          ctx = Object.assign({}, ctx, { allNullValues: true });
+        return stringifyCollection.stringifyCollection(this, ctx, {
+          blockItemPrefix: "",
+          flowChars: { start: "{", end: "}" },
+          itemIndent: ctx.indent || "",
+          onChompKeep,
+          onComment
+        });
+      }
+    };
+    exports.YAMLMap = YAMLMap;
+    exports.findPair = findPair;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/common/map.js
+var require_map = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/common/map.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var YAMLMap = require_YAMLMap();
+    var map = {
+      collection: "map",
+      default: true,
+      nodeClass: YAMLMap.YAMLMap,
+      tag: "tag:yaml.org,2002:map",
+      resolve(map2, onError) {
+        if (!identity.isMap(map2))
+          onError("Expected a mapping for this tag");
+        return map2;
+      },
+      createNode: (schema, obj, ctx) => YAMLMap.YAMLMap.from(schema, obj, ctx)
+    };
+    exports.map = map;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/nodes/YAMLSeq.js
+var require_YAMLSeq = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/nodes/YAMLSeq.js"(exports) {
+    "use strict";
+    var createNode = require_createNode();
+    var stringifyCollection = require_stringifyCollection();
+    var Collection = require_Collection();
+    var identity = require_identity();
+    var Scalar = require_Scalar();
+    var toJS = require_toJS();
+    var YAMLSeq = class extends Collection.Collection {
+      static get tagName() {
+        return "tag:yaml.org,2002:seq";
+      }
+      constructor(schema) {
+        super(identity.SEQ, schema);
+        this.items = [];
+      }
+      add(value) {
+        this.items.push(value);
+      }
+      /**
+       * Removes a value from the collection.
+       *
+       * `key` must contain a representation of an integer for this to succeed.
+       * It may be wrapped in a `Scalar`.
+       *
+       * @returns `true` if the item was found and removed.
+       */
+      delete(key) {
+        const idx = asItemIndex(key);
+        if (typeof idx !== "number")
+          return false;
+        const del = this.items.splice(idx, 1);
+        return del.length > 0;
+      }
+      get(key, keepScalar) {
+        const idx = asItemIndex(key);
+        if (typeof idx !== "number")
+          return void 0;
+        const it = this.items[idx];
+        return !keepScalar && identity.isScalar(it) ? it.value : it;
+      }
+      /**
+       * Checks if the collection includes a value with the key `key`.
+       *
+       * `key` must contain a representation of an integer for this to succeed.
+       * It may be wrapped in a `Scalar`.
+       */
+      has(key) {
+        const idx = asItemIndex(key);
+        return typeof idx === "number" && idx < this.items.length;
+      }
+      /**
+       * Sets a value in this collection. For `!!set`, `value` needs to be a
+       * boolean to add/remove the item from the set.
+       *
+       * If `key` does not contain a representation of an integer, this will throw.
+       * It may be wrapped in a `Scalar`.
+       */
+      set(key, value) {
+        const idx = asItemIndex(key);
+        if (typeof idx !== "number")
+          throw new Error(`Expected a valid index, not ${key}.`);
+        const prev = this.items[idx];
+        if (identity.isScalar(prev) && Scalar.isScalarValue(value))
+          prev.value = value;
+        else
+          this.items[idx] = value;
+      }
+      toJSON(_, ctx) {
+        const seq = [];
+        if (ctx?.onCreate)
+          ctx.onCreate(seq);
+        let i = 0;
+        for (const item of this.items)
+          seq.push(toJS.toJS(item, String(i++), ctx));
+        return seq;
+      }
+      toString(ctx, onComment, onChompKeep) {
+        if (!ctx)
+          return JSON.stringify(this);
+        return stringifyCollection.stringifyCollection(this, ctx, {
+          blockItemPrefix: "- ",
+          flowChars: { start: "[", end: "]" },
+          itemIndent: (ctx.indent || "") + "  ",
+          onChompKeep,
+          onComment
+        });
+      }
+      static from(schema, obj, ctx) {
+        const { replacer } = ctx;
+        const seq = new this(schema);
+        if (obj && Symbol.iterator in Object(obj)) {
+          let i = 0;
+          for (let it of obj) {
+            if (typeof replacer === "function") {
+              const key = obj instanceof Set ? it : String(i++);
+              it = replacer.call(obj, key, it);
+            }
+            seq.items.push(createNode.createNode(it, void 0, ctx));
+          }
+        }
+        return seq;
+      }
+    };
+    function asItemIndex(key) {
+      let idx = identity.isScalar(key) ? key.value : key;
+      if (idx && typeof idx === "string")
+        idx = Number(idx);
+      return typeof idx === "number" && Number.isInteger(idx) && idx >= 0 ? idx : null;
+    }
+    exports.YAMLSeq = YAMLSeq;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/common/seq.js
+var require_seq = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/common/seq.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var YAMLSeq = require_YAMLSeq();
+    var seq = {
+      collection: "seq",
+      default: true,
+      nodeClass: YAMLSeq.YAMLSeq,
+      tag: "tag:yaml.org,2002:seq",
+      resolve(seq2, onError) {
+        if (!identity.isSeq(seq2))
+          onError("Expected a sequence for this tag");
+        return seq2;
+      },
+      createNode: (schema, obj, ctx) => YAMLSeq.YAMLSeq.from(schema, obj, ctx)
+    };
+    exports.seq = seq;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/common/string.js
+var require_string = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/common/string.js"(exports) {
+    "use strict";
+    var stringifyString = require_stringifyString();
+    var string = {
+      identify: (value) => typeof value === "string",
+      default: true,
+      tag: "tag:yaml.org,2002:str",
+      resolve: (str) => str,
+      stringify(item, ctx, onComment, onChompKeep) {
+        ctx = Object.assign({ actualString: true }, ctx);
+        return stringifyString.stringifyString(item, ctx, onComment, onChompKeep);
+      }
+    };
+    exports.string = string;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/common/null.js
+var require_null = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/common/null.js"(exports) {
+    "use strict";
+    var Scalar = require_Scalar();
+    var nullTag = {
+      identify: (value) => value == null,
+      createNode: () => new Scalar.Scalar(null),
+      default: true,
+      tag: "tag:yaml.org,2002:null",
+      test: /^(?:~|[Nn]ull|NULL)?$/,
+      resolve: () => new Scalar.Scalar(null),
+      stringify: ({ source }, ctx) => typeof source === "string" && nullTag.test.test(source) ? source : ctx.options.nullStr
+    };
+    exports.nullTag = nullTag;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/core/bool.js
+var require_bool = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/core/bool.js"(exports) {
+    "use strict";
+    var Scalar = require_Scalar();
+    var boolTag = {
+      identify: (value) => typeof value === "boolean",
+      default: true,
+      tag: "tag:yaml.org,2002:bool",
+      test: /^(?:[Tt]rue|TRUE|[Ff]alse|FALSE)$/,
+      resolve: (str) => new Scalar.Scalar(str[0] === "t" || str[0] === "T"),
+      stringify({ source, value }, ctx) {
+        if (source && boolTag.test.test(source)) {
+          const sv = source[0] === "t" || source[0] === "T";
+          if (value === sv)
+            return source;
+        }
+        return value ? ctx.options.trueStr : ctx.options.falseStr;
+      }
+    };
+    exports.boolTag = boolTag;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringifyNumber.js
+var require_stringifyNumber = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringifyNumber.js"(exports) {
+    "use strict";
+    function stringifyNumber({ format, minFractionDigits, tag, value }) {
+      if (typeof value === "bigint")
+        return String(value);
+      const num = typeof value === "number" ? value : Number(value);
+      if (!isFinite(num))
+        return isNaN(num) ? ".nan" : num < 0 ? "-.inf" : ".inf";
+      let n = Object.is(value, -0) ? "-0" : JSON.stringify(value);
+      if (!format && minFractionDigits && (!tag || tag === "tag:yaml.org,2002:float") && /^-?\d/.test(n) && !n.includes("e")) {
+        let i = n.indexOf(".");
+        if (i < 0) {
+          i = n.length;
+          n += ".";
+        }
+        let d = minFractionDigits - (n.length - i - 1);
+        while (d-- > 0)
+          n += "0";
+      }
+      return n;
+    }
+    exports.stringifyNumber = stringifyNumber;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/core/float.js
+var require_float = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/core/float.js"(exports) {
+    "use strict";
+    var Scalar = require_Scalar();
+    var stringifyNumber = require_stringifyNumber();
+    var floatNaN = {
+      identify: (value) => typeof value === "number",
+      default: true,
+      tag: "tag:yaml.org,2002:float",
+      test: /^(?:[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$/,
+      resolve: (str) => str.slice(-3).toLowerCase() === "nan" ? NaN : str[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+      stringify: stringifyNumber.stringifyNumber
+    };
+    var floatExp = {
+      identify: (value) => typeof value === "number",
+      default: true,
+      tag: "tag:yaml.org,2002:float",
+      format: "EXP",
+      test: /^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+$/,
+      resolve: (str) => parseFloat(str),
+      stringify(node) {
+        const num = Number(node.value);
+        return isFinite(num) ? num.toExponential() : stringifyNumber.stringifyNumber(node);
+      }
+    };
+    var float = {
+      identify: (value) => typeof value === "number",
+      default: true,
+      tag: "tag:yaml.org,2002:float",
+      test: /^[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*)$/,
+      resolve(str) {
+        const node = new Scalar.Scalar(parseFloat(str));
+        const dot = str.indexOf(".");
+        if (dot !== -1 && str[str.length - 1] === "0")
+          node.minFractionDigits = str.length - dot - 1;
+        return node;
+      },
+      stringify: stringifyNumber.stringifyNumber
+    };
+    exports.float = float;
+    exports.floatExp = floatExp;
+    exports.floatNaN = floatNaN;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/core/int.js
+var require_int = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/core/int.js"(exports) {
+    "use strict";
+    var stringifyNumber = require_stringifyNumber();
+    var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
+    var intResolve = (str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix);
+    function intStringify(node, radix, prefix) {
+      const { value } = node;
+      if (intIdentify(value) && value >= 0)
+        return prefix + value.toString(radix);
+      return stringifyNumber.stringifyNumber(node);
+    }
+    var intOct = {
+      identify: (value) => intIdentify(value) && value >= 0,
+      default: true,
+      tag: "tag:yaml.org,2002:int",
+      format: "OCT",
+      test: /^0o[0-7]+$/,
+      resolve: (str, _onError, opt) => intResolve(str, 2, 8, opt),
+      stringify: (node) => intStringify(node, 8, "0o")
+    };
+    var int = {
+      identify: intIdentify,
+      default: true,
+      tag: "tag:yaml.org,2002:int",
+      test: /^[-+]?[0-9]+$/,
+      resolve: (str, _onError, opt) => intResolve(str, 0, 10, opt),
+      stringify: stringifyNumber.stringifyNumber
+    };
+    var intHex = {
+      identify: (value) => intIdentify(value) && value >= 0,
+      default: true,
+      tag: "tag:yaml.org,2002:int",
+      format: "HEX",
+      test: /^0x[0-9a-fA-F]+$/,
+      resolve: (str, _onError, opt) => intResolve(str, 2, 16, opt),
+      stringify: (node) => intStringify(node, 16, "0x")
+    };
+    exports.int = int;
+    exports.intHex = intHex;
+    exports.intOct = intOct;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/core/schema.js
+var require_schema = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/core/schema.js"(exports) {
+    "use strict";
+    var map = require_map();
+    var _null = require_null();
+    var seq = require_seq();
+    var string = require_string();
+    var bool = require_bool();
+    var float = require_float();
+    var int = require_int();
+    var schema = [
+      map.map,
+      seq.seq,
+      string.string,
+      _null.nullTag,
+      bool.boolTag,
+      int.intOct,
+      int.int,
+      int.intHex,
+      float.floatNaN,
+      float.floatExp,
+      float.float
+    ];
+    exports.schema = schema;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/json/schema.js
+var require_schema2 = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/json/schema.js"(exports) {
+    "use strict";
+    var Scalar = require_Scalar();
+    var map = require_map();
+    var seq = require_seq();
+    function intIdentify(value) {
+      return typeof value === "bigint" || Number.isInteger(value);
+    }
+    var stringifyJSON = ({ value }) => JSON.stringify(value);
+    var jsonScalars = [
+      {
+        identify: (value) => typeof value === "string",
+        default: true,
+        tag: "tag:yaml.org,2002:str",
+        resolve: (str) => str,
+        stringify: stringifyJSON
+      },
+      {
+        identify: (value) => value == null,
+        createNode: () => new Scalar.Scalar(null),
+        default: true,
+        tag: "tag:yaml.org,2002:null",
+        test: /^null$/,
+        resolve: () => null,
+        stringify: stringifyJSON
+      },
+      {
+        identify: (value) => typeof value === "boolean",
+        default: true,
+        tag: "tag:yaml.org,2002:bool",
+        test: /^true$|^false$/,
+        resolve: (str) => str === "true",
+        stringify: stringifyJSON
+      },
+      {
+        identify: intIdentify,
+        default: true,
+        tag: "tag:yaml.org,2002:int",
+        test: /^-?(?:0|[1-9][0-9]*)$/,
+        resolve: (str, _onError, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str, 10),
+        stringify: ({ value }) => intIdentify(value) ? value.toString() : JSON.stringify(value)
+      },
+      {
+        identify: (value) => typeof value === "number",
+        default: true,
+        tag: "tag:yaml.org,2002:float",
+        test: /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?$/,
+        resolve: (str) => parseFloat(str),
+        stringify: stringifyJSON
+      }
+    ];
+    var jsonError = {
+      default: true,
+      tag: "",
+      test: /^/,
+      resolve(str, onError) {
+        onError(`Unresolved plain scalar ${JSON.stringify(str)}`);
+        return str;
+      }
+    };
+    var schema = [map.map, seq.seq].concat(jsonScalars, jsonError);
+    exports.schema = schema;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/binary.js
+var require_binary = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/binary.js"(exports) {
+    "use strict";
+    var node_buffer = __require("buffer");
+    var Scalar = require_Scalar();
+    var stringifyString = require_stringifyString();
+    var binary = {
+      identify: (value) => value instanceof Uint8Array,
+      // Buffer inherits from Uint8Array
+      default: false,
+      tag: "tag:yaml.org,2002:binary",
+      /**
+       * Returns a Buffer in node and an Uint8Array in browsers
+       *
+       * To use the resulting buffer as an image, you'll want to do something like:
+       *
+       *   const blob = new Blob([buffer], { type: 'image/jpeg' })
+       *   document.querySelector('#photo').src = URL.createObjectURL(blob)
+       */
+      resolve(src, onError) {
+        if (typeof node_buffer.Buffer === "function") {
+          return node_buffer.Buffer.from(src, "base64");
+        } else if (typeof atob === "function") {
+          const str = atob(src.replace(/[\n\r]/g, ""));
+          const buffer = new Uint8Array(str.length);
+          for (let i = 0; i < str.length; ++i)
+            buffer[i] = str.charCodeAt(i);
+          return buffer;
+        } else {
+          onError("This environment does not support reading binary tags; either Buffer or atob is required");
+          return src;
+        }
+      },
+      stringify({ comment, type, value }, ctx, onComment, onChompKeep) {
+        if (!value)
+          return "";
+        const buf = value;
+        let str;
+        if (typeof node_buffer.Buffer === "function") {
+          str = buf instanceof node_buffer.Buffer ? buf.toString("base64") : node_buffer.Buffer.from(buf.buffer).toString("base64");
+        } else if (typeof btoa === "function") {
+          let s = "";
+          for (let i = 0; i < buf.length; ++i)
+            s += String.fromCharCode(buf[i]);
+          str = btoa(s);
+        } else {
+          throw new Error("This environment does not support writing binary tags; either Buffer or btoa is required");
+        }
+        type ?? (type = Scalar.Scalar.BLOCK_LITERAL);
+        if (type !== Scalar.Scalar.QUOTE_DOUBLE) {
+          const lineWidth = Math.max(ctx.options.lineWidth - ctx.indent.length, ctx.options.minContentWidth);
+          const n = Math.ceil(str.length / lineWidth);
+          const lines = new Array(n);
+          for (let i = 0, o = 0; i < n; ++i, o += lineWidth) {
+            lines[i] = str.substr(o, lineWidth);
+          }
+          str = lines.join(type === Scalar.Scalar.BLOCK_LITERAL ? "\n" : " ");
+        }
+        return stringifyString.stringifyString({ comment, type, value: str }, ctx, onComment, onChompKeep);
+      }
+    };
+    exports.binary = binary;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/pairs.js
+var require_pairs = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/pairs.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var Pair = require_Pair();
+    var Scalar = require_Scalar();
+    var YAMLSeq = require_YAMLSeq();
+    function resolvePairs(seq, onError) {
+      if (identity.isSeq(seq)) {
+        for (let i = 0; i < seq.items.length; ++i) {
+          let item = seq.items[i];
+          if (identity.isPair(item))
+            continue;
+          else if (identity.isMap(item)) {
+            if (item.items.length > 1)
+              onError("Each pair must have its own sequence indicator");
+            const pair = item.items[0] || new Pair.Pair(new Scalar.Scalar(null));
+            if (item.commentBefore)
+              pair.key.commentBefore = pair.key.commentBefore ? `${item.commentBefore}
+${pair.key.commentBefore}` : item.commentBefore;
+            if (item.comment) {
+              const cn = pair.value ?? pair.key;
+              cn.comment = cn.comment ? `${item.comment}
+${cn.comment}` : item.comment;
+            }
+            item = pair;
+          }
+          seq.items[i] = identity.isPair(item) ? item : new Pair.Pair(item);
+        }
+      } else
+        onError("Expected a sequence for this tag");
+      return seq;
+    }
+    function createPairs(schema, iterable, ctx) {
+      const { replacer } = ctx;
+      const pairs2 = new YAMLSeq.YAMLSeq(schema);
+      pairs2.tag = "tag:yaml.org,2002:pairs";
+      let i = 0;
+      if (iterable && Symbol.iterator in Object(iterable))
+        for (let it of iterable) {
+          if (typeof replacer === "function")
+            it = replacer.call(iterable, String(i++), it);
+          let key, value;
+          if (Array.isArray(it)) {
+            if (it.length === 2) {
+              key = it[0];
+              value = it[1];
+            } else
+              throw new TypeError(`Expected [key, value] tuple: ${it}`);
+          } else if (it && it instanceof Object) {
+            const keys = Object.keys(it);
+            if (keys.length === 1) {
+              key = keys[0];
+              value = it[key];
+            } else {
+              throw new TypeError(`Expected tuple with one key, not ${keys.length} keys`);
+            }
+          } else {
+            key = it;
+          }
+          pairs2.items.push(Pair.createPair(key, value, ctx));
+        }
+      return pairs2;
+    }
+    var pairs = {
+      collection: "seq",
+      default: false,
+      tag: "tag:yaml.org,2002:pairs",
+      resolve: resolvePairs,
+      createNode: createPairs
+    };
+    exports.createPairs = createPairs;
+    exports.pairs = pairs;
+    exports.resolvePairs = resolvePairs;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/omap.js
+var require_omap = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/omap.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var toJS = require_toJS();
+    var YAMLMap = require_YAMLMap();
+    var YAMLSeq = require_YAMLSeq();
+    var pairs = require_pairs();
+    var YAMLOMap = class _YAMLOMap extends YAMLSeq.YAMLSeq {
+      constructor() {
+        super();
+        this.add = YAMLMap.YAMLMap.prototype.add.bind(this);
+        this.delete = YAMLMap.YAMLMap.prototype.delete.bind(this);
+        this.get = YAMLMap.YAMLMap.prototype.get.bind(this);
+        this.has = YAMLMap.YAMLMap.prototype.has.bind(this);
+        this.set = YAMLMap.YAMLMap.prototype.set.bind(this);
+        this.tag = _YAMLOMap.tag;
+      }
+      /**
+       * If `ctx` is given, the return type is actually `Map<unknown, unknown>`,
+       * but TypeScript won't allow widening the signature of a child method.
+       */
+      toJSON(_, ctx) {
+        if (!ctx)
+          return super.toJSON(_);
+        const map = /* @__PURE__ */ new Map();
+        if (ctx?.onCreate)
+          ctx.onCreate(map);
+        for (const pair of this.items) {
+          let key, value;
+          if (identity.isPair(pair)) {
+            key = toJS.toJS(pair.key, "", ctx);
+            value = toJS.toJS(pair.value, key, ctx);
+          } else {
+            key = toJS.toJS(pair, "", ctx);
+          }
+          if (map.has(key))
+            throw new Error("Ordered maps must not include duplicate keys");
+          map.set(key, value);
+        }
+        return map;
+      }
+      static from(schema, iterable, ctx) {
+        const pairs$1 = pairs.createPairs(schema, iterable, ctx);
+        const omap2 = new this();
+        omap2.items = pairs$1.items;
+        return omap2;
+      }
+    };
+    YAMLOMap.tag = "tag:yaml.org,2002:omap";
+    var omap = {
+      collection: "seq",
+      identify: (value) => value instanceof Map,
+      nodeClass: YAMLOMap,
+      default: false,
+      tag: "tag:yaml.org,2002:omap",
+      resolve(seq, onError) {
+        const pairs$1 = pairs.resolvePairs(seq, onError);
+        const seenKeys = [];
+        for (const { key } of pairs$1.items) {
+          if (identity.isScalar(key)) {
+            if (seenKeys.includes(key.value)) {
+              onError(`Ordered maps must not include duplicate keys: ${key.value}`);
+            } else {
+              seenKeys.push(key.value);
+            }
+          }
+        }
+        return Object.assign(new YAMLOMap(), pairs$1);
+      },
+      createNode: (schema, iterable, ctx) => YAMLOMap.from(schema, iterable, ctx)
+    };
+    exports.YAMLOMap = YAMLOMap;
+    exports.omap = omap;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/bool.js
+var require_bool2 = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/bool.js"(exports) {
+    "use strict";
+    var Scalar = require_Scalar();
+    function boolStringify({ value, source }, ctx) {
+      const boolObj = value ? trueTag : falseTag;
+      if (source && boolObj.test.test(source))
+        return source;
+      return value ? ctx.options.trueStr : ctx.options.falseStr;
+    }
+    var trueTag = {
+      identify: (value) => value === true,
+      default: true,
+      tag: "tag:yaml.org,2002:bool",
+      test: /^(?:Y|y|[Yy]es|YES|[Tt]rue|TRUE|[Oo]n|ON)$/,
+      resolve: () => new Scalar.Scalar(true),
+      stringify: boolStringify
+    };
+    var falseTag = {
+      identify: (value) => value === false,
+      default: true,
+      tag: "tag:yaml.org,2002:bool",
+      test: /^(?:N|n|[Nn]o|NO|[Ff]alse|FALSE|[Oo]ff|OFF)$/,
+      resolve: () => new Scalar.Scalar(false),
+      stringify: boolStringify
+    };
+    exports.falseTag = falseTag;
+    exports.trueTag = trueTag;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/float.js
+var require_float2 = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/float.js"(exports) {
+    "use strict";
+    var Scalar = require_Scalar();
+    var stringifyNumber = require_stringifyNumber();
+    var floatNaN = {
+      identify: (value) => typeof value === "number",
+      default: true,
+      tag: "tag:yaml.org,2002:float",
+      test: /^(?:[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$/,
+      resolve: (str) => str.slice(-3).toLowerCase() === "nan" ? NaN : str[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+      stringify: stringifyNumber.stringifyNumber
+    };
+    var floatExp = {
+      identify: (value) => typeof value === "number",
+      default: true,
+      tag: "tag:yaml.org,2002:float",
+      format: "EXP",
+      test: /^[-+]?(?:[0-9][0-9_]*)?(?:\.[0-9_]*)?[eE][-+]?[0-9]+$/,
+      resolve: (str) => parseFloat(str.replace(/_/g, "")),
+      stringify(node) {
+        const num = Number(node.value);
+        return isFinite(num) ? num.toExponential() : stringifyNumber.stringifyNumber(node);
+      }
+    };
+    var float = {
+      identify: (value) => typeof value === "number",
+      default: true,
+      tag: "tag:yaml.org,2002:float",
+      test: /^[-+]?(?:[0-9][0-9_]*)?\.[0-9_]*$/,
+      resolve(str) {
+        const node = new Scalar.Scalar(parseFloat(str.replace(/_/g, "")));
+        const dot = str.indexOf(".");
+        if (dot !== -1) {
+          const f = str.substring(dot + 1).replace(/_/g, "");
+          if (f[f.length - 1] === "0")
+            node.minFractionDigits = f.length;
+        }
+        return node;
+      },
+      stringify: stringifyNumber.stringifyNumber
+    };
+    exports.float = float;
+    exports.floatExp = floatExp;
+    exports.floatNaN = floatNaN;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/int.js
+var require_int2 = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/int.js"(exports) {
+    "use strict";
+    var stringifyNumber = require_stringifyNumber();
+    var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
+    function intResolve(str, offset, radix, { intAsBigInt }) {
+      const sign = str[0];
+      if (sign === "-" || sign === "+")
+        offset += 1;
+      str = str.substring(offset).replace(/_/g, "");
+      if (intAsBigInt) {
+        switch (radix) {
+          case 2:
+            str = `0b${str}`;
+            break;
+          case 8:
+            str = `0o${str}`;
+            break;
+          case 16:
+            str = `0x${str}`;
+            break;
+        }
+        const n2 = BigInt(str);
+        return sign === "-" ? BigInt(-1) * n2 : n2;
+      }
+      const n = parseInt(str, radix);
+      return sign === "-" ? -1 * n : n;
+    }
+    function intStringify(node, radix, prefix) {
+      const { value } = node;
+      if (intIdentify(value)) {
+        const str = value.toString(radix);
+        return value < 0 ? "-" + prefix + str.substr(1) : prefix + str;
+      }
+      return stringifyNumber.stringifyNumber(node);
+    }
+    var intBin = {
+      identify: intIdentify,
+      default: true,
+      tag: "tag:yaml.org,2002:int",
+      format: "BIN",
+      test: /^[-+]?0b[0-1_]+$/,
+      resolve: (str, _onError, opt) => intResolve(str, 2, 2, opt),
+      stringify: (node) => intStringify(node, 2, "0b")
+    };
+    var intOct = {
+      identify: intIdentify,
+      default: true,
+      tag: "tag:yaml.org,2002:int",
+      format: "OCT",
+      test: /^[-+]?0[0-7_]+$/,
+      resolve: (str, _onError, opt) => intResolve(str, 1, 8, opt),
+      stringify: (node) => intStringify(node, 8, "0")
+    };
+    var int = {
+      identify: intIdentify,
+      default: true,
+      tag: "tag:yaml.org,2002:int",
+      test: /^[-+]?[0-9][0-9_]*$/,
+      resolve: (str, _onError, opt) => intResolve(str, 0, 10, opt),
+      stringify: stringifyNumber.stringifyNumber
+    };
+    var intHex = {
+      identify: intIdentify,
+      default: true,
+      tag: "tag:yaml.org,2002:int",
+      format: "HEX",
+      test: /^[-+]?0x[0-9a-fA-F_]+$/,
+      resolve: (str, _onError, opt) => intResolve(str, 2, 16, opt),
+      stringify: (node) => intStringify(node, 16, "0x")
+    };
+    exports.int = int;
+    exports.intBin = intBin;
+    exports.intHex = intHex;
+    exports.intOct = intOct;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/set.js
+var require_set = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/set.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var Pair = require_Pair();
+    var YAMLMap = require_YAMLMap();
+    var YAMLSet = class _YAMLSet extends YAMLMap.YAMLMap {
+      constructor(schema) {
+        super(schema);
+        this.tag = _YAMLSet.tag;
+      }
+      add(key) {
+        let pair;
+        if (identity.isPair(key))
+          pair = key;
+        else if (key && typeof key === "object" && "key" in key && "value" in key && key.value === null)
+          pair = new Pair.Pair(key.key, null);
+        else
+          pair = new Pair.Pair(key, null);
+        const prev = YAMLMap.findPair(this.items, pair.key);
+        if (!prev)
+          this.items.push(pair);
+      }
+      /**
+       * If `keepPair` is `true`, returns the Pair matching `key`.
+       * Otherwise, returns the value of that Pair's key.
+       */
+      get(key, keepPair) {
+        const pair = YAMLMap.findPair(this.items, key);
+        return !keepPair && identity.isPair(pair) ? identity.isScalar(pair.key) ? pair.key.value : pair.key : pair;
+      }
+      set(key, value) {
+        if (typeof value !== "boolean")
+          throw new Error(`Expected boolean value for set(key, value) in a YAML set, not ${typeof value}`);
+        const prev = YAMLMap.findPair(this.items, key);
+        if (prev && !value) {
+          this.items.splice(this.items.indexOf(prev), 1);
+        } else if (!prev && value) {
+          this.items.push(new Pair.Pair(key));
+        }
+      }
+      toJSON(_, ctx) {
+        return super.toJSON(_, ctx, Set);
+      }
+      toString(ctx, onComment, onChompKeep) {
+        if (!ctx)
+          return JSON.stringify(this);
+        if (this.hasAllNullValues(true))
+          return super.toString(Object.assign({}, ctx, { allNullValues: true }), onComment, onChompKeep);
+        else
+          throw new Error("Set items must all have null values");
+      }
+      static from(schema, iterable, ctx) {
+        const { replacer } = ctx;
+        const set2 = new this(schema);
+        if (iterable && Symbol.iterator in Object(iterable))
+          for (let value of iterable) {
+            if (typeof replacer === "function")
+              value = replacer.call(iterable, value, value);
+            set2.items.push(Pair.createPair(value, null, ctx));
+          }
+        return set2;
+      }
+    };
+    YAMLSet.tag = "tag:yaml.org,2002:set";
+    var set = {
+      collection: "map",
+      identify: (value) => value instanceof Set,
+      nodeClass: YAMLSet,
+      default: false,
+      tag: "tag:yaml.org,2002:set",
+      createNode: (schema, iterable, ctx) => YAMLSet.from(schema, iterable, ctx),
+      resolve(map, onError) {
+        if (identity.isMap(map)) {
+          if (map.hasAllNullValues(true))
+            return Object.assign(new YAMLSet(), map);
+          else
+            onError("Set items must all have null values");
+        } else
+          onError("Expected a mapping for this tag");
+        return map;
+      }
+    };
+    exports.YAMLSet = YAMLSet;
+    exports.set = set;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/timestamp.js
+var require_timestamp = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/timestamp.js"(exports) {
+    "use strict";
+    var stringifyNumber = require_stringifyNumber();
+    function parseSexagesimal(str, asBigInt) {
+      const sign = str[0];
+      const parts = sign === "-" || sign === "+" ? str.substring(1) : str;
+      const num = (n) => asBigInt ? BigInt(n) : Number(n);
+      const res = parts.replace(/_/g, "").split(":").reduce((res2, p) => res2 * num(60) + num(p), num(0));
+      return sign === "-" ? num(-1) * res : res;
+    }
+    function stringifySexagesimal(node) {
+      let { value } = node;
+      let num = (n) => n;
+      if (typeof value === "bigint")
+        num = (n) => BigInt(n);
+      else if (isNaN(value) || !isFinite(value))
+        return stringifyNumber.stringifyNumber(node);
+      let sign = "";
+      if (value < 0) {
+        sign = "-";
+        value *= num(-1);
+      }
+      const _60 = num(60);
+      const parts = [value % _60];
+      if (value < 60) {
+        parts.unshift(0);
+      } else {
+        value = (value - parts[0]) / _60;
+        parts.unshift(value % _60);
+        if (value >= 60) {
+          value = (value - parts[0]) / _60;
+          parts.unshift(value);
+        }
+      }
+      return sign + parts.map((n) => String(n).padStart(2, "0")).join(":").replace(/000000\d*$/, "");
+    }
+    var intTime = {
+      identify: (value) => typeof value === "bigint" || Number.isInteger(value),
+      default: true,
+      tag: "tag:yaml.org,2002:int",
+      format: "TIME",
+      test: /^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+$/,
+      resolve: (str, _onError, { intAsBigInt }) => parseSexagesimal(str, intAsBigInt),
+      stringify: stringifySexagesimal
+    };
+    var floatTime = {
+      identify: (value) => typeof value === "number",
+      default: true,
+      tag: "tag:yaml.org,2002:float",
+      format: "TIME",
+      test: /^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*$/,
+      resolve: (str) => parseSexagesimal(str, false),
+      stringify: stringifySexagesimal
+    };
+    var timestamp = {
+      identify: (value) => value instanceof Date,
+      default: true,
+      tag: "tag:yaml.org,2002:timestamp",
+      // If the time zone is omitted, the timestamp is assumed to be specified in UTC. The time part
+      // may be omitted altogether, resulting in a date format. In such a case, the time part is
+      // assumed to be 00:00:00Z (start of day, UTC).
+      test: RegExp("^([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})(?:(?:t|T|[ \\t]+)([0-9]{1,2}):([0-9]{1,2}):([0-9]{1,2}(\\.[0-9]+)?)(?:[ \\t]*(Z|[-+][012]?[0-9](?::[0-9]{2})?))?)?$"),
+      resolve(str) {
+        const match = str.match(timestamp.test);
+        if (!match)
+          throw new Error("!!timestamp expects a date, starting with yyyy-mm-dd");
+        const [, year, month, day, hour, minute, second] = match.map(Number);
+        const millisec = match[7] ? Number((match[7] + "00").substr(1, 3)) : 0;
+        let date = Date.UTC(year, month - 1, day, hour || 0, minute || 0, second || 0, millisec);
+        const tz = match[8];
+        if (tz && tz !== "Z") {
+          let d = parseSexagesimal(tz, false);
+          if (Math.abs(d) < 30)
+            d *= 60;
+          date -= 6e4 * d;
+        }
+        return new Date(date);
+      },
+      stringify: ({ value }) => value?.toISOString().replace(/(T00:00:00)?\.000Z$/, "") ?? ""
+    };
+    exports.floatTime = floatTime;
+    exports.intTime = intTime;
+    exports.timestamp = timestamp;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/schema.js
+var require_schema3 = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/yaml-1.1/schema.js"(exports) {
+    "use strict";
+    var map = require_map();
+    var _null = require_null();
+    var seq = require_seq();
+    var string = require_string();
+    var binary = require_binary();
+    var bool = require_bool2();
+    var float = require_float2();
+    var int = require_int2();
+    var merge = require_merge();
+    var omap = require_omap();
+    var pairs = require_pairs();
+    var set = require_set();
+    var timestamp = require_timestamp();
+    var schema = [
+      map.map,
+      seq.seq,
+      string.string,
+      _null.nullTag,
+      bool.trueTag,
+      bool.falseTag,
+      int.intBin,
+      int.intOct,
+      int.int,
+      int.intHex,
+      float.floatNaN,
+      float.floatExp,
+      float.float,
+      binary.binary,
+      merge.merge,
+      omap.omap,
+      pairs.pairs,
+      set.set,
+      timestamp.intTime,
+      timestamp.floatTime,
+      timestamp.timestamp
+    ];
+    exports.schema = schema;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/tags.js
+var require_tags = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/tags.js"(exports) {
+    "use strict";
+    var map = require_map();
+    var _null = require_null();
+    var seq = require_seq();
+    var string = require_string();
+    var bool = require_bool();
+    var float = require_float();
+    var int = require_int();
+    var schema = require_schema();
+    var schema$1 = require_schema2();
+    var binary = require_binary();
+    var merge = require_merge();
+    var omap = require_omap();
+    var pairs = require_pairs();
+    var schema$2 = require_schema3();
+    var set = require_set();
+    var timestamp = require_timestamp();
+    var schemas = /* @__PURE__ */ new Map([
+      ["core", schema.schema],
+      ["failsafe", [map.map, seq.seq, string.string]],
+      ["json", schema$1.schema],
+      ["yaml11", schema$2.schema],
+      ["yaml-1.1", schema$2.schema]
+    ]);
+    var tagsByName = {
+      binary: binary.binary,
+      bool: bool.boolTag,
+      float: float.float,
+      floatExp: float.floatExp,
+      floatNaN: float.floatNaN,
+      floatTime: timestamp.floatTime,
+      int: int.int,
+      intHex: int.intHex,
+      intOct: int.intOct,
+      intTime: timestamp.intTime,
+      map: map.map,
+      merge: merge.merge,
+      null: _null.nullTag,
+      omap: omap.omap,
+      pairs: pairs.pairs,
+      seq: seq.seq,
+      set: set.set,
+      timestamp: timestamp.timestamp
+    };
+    var coreKnownTags = {
+      "tag:yaml.org,2002:binary": binary.binary,
+      "tag:yaml.org,2002:merge": merge.merge,
+      "tag:yaml.org,2002:omap": omap.omap,
+      "tag:yaml.org,2002:pairs": pairs.pairs,
+      "tag:yaml.org,2002:set": set.set,
+      "tag:yaml.org,2002:timestamp": timestamp.timestamp
+    };
+    function getTags(customTags, schemaName, addMergeTag) {
+      const schemaTags = schemas.get(schemaName);
+      if (schemaTags && !customTags) {
+        return addMergeTag && !schemaTags.includes(merge.merge) ? schemaTags.concat(merge.merge) : schemaTags.slice();
+      }
+      let tags = schemaTags;
+      if (!tags) {
+        if (Array.isArray(customTags))
+          tags = [];
+        else {
+          const keys = Array.from(schemas.keys()).filter((key) => key !== "yaml11").map((key) => JSON.stringify(key)).join(", ");
+          throw new Error(`Unknown schema "${schemaName}"; use one of ${keys} or define customTags array`);
+        }
+      }
+      if (Array.isArray(customTags)) {
+        for (const tag of customTags)
+          tags = tags.concat(tag);
+      } else if (typeof customTags === "function") {
+        tags = customTags(tags.slice());
+      }
+      if (addMergeTag)
+        tags = tags.concat(merge.merge);
+      return tags.reduce((tags2, tag) => {
+        const tagObj = typeof tag === "string" ? tagsByName[tag] : tag;
+        if (!tagObj) {
+          const tagName = JSON.stringify(tag);
+          const keys = Object.keys(tagsByName).map((key) => JSON.stringify(key)).join(", ");
+          throw new Error(`Unknown custom tag ${tagName}; use one of ${keys}`);
+        }
+        if (!tags2.includes(tagObj))
+          tags2.push(tagObj);
+        return tags2;
+      }, []);
+    }
+    exports.coreKnownTags = coreKnownTags;
+    exports.getTags = getTags;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/schema/Schema.js
+var require_Schema = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/schema/Schema.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var map = require_map();
+    var seq = require_seq();
+    var string = require_string();
+    var tags = require_tags();
+    var sortMapEntriesByKey = (a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+    var Schema = class _Schema {
+      constructor({ compat, customTags, merge, resolveKnownTags, schema, sortMapEntries, toStringDefaults }) {
+        this.compat = Array.isArray(compat) ? tags.getTags(compat, "compat") : compat ? tags.getTags(null, compat) : null;
+        this.name = typeof schema === "string" && schema || "core";
+        this.knownTags = resolveKnownTags ? tags.coreKnownTags : {};
+        this.tags = tags.getTags(customTags, this.name, merge);
+        this.toStringOptions = toStringDefaults ?? null;
+        Object.defineProperty(this, identity.MAP, { value: map.map });
+        Object.defineProperty(this, identity.SCALAR, { value: string.string });
+        Object.defineProperty(this, identity.SEQ, { value: seq.seq });
+        this.sortMapEntries = typeof sortMapEntries === "function" ? sortMapEntries : sortMapEntries === true ? sortMapEntriesByKey : null;
+      }
+      clone() {
+        const copy = Object.create(_Schema.prototype, Object.getOwnPropertyDescriptors(this));
+        copy.tags = this.tags.slice();
+        return copy;
+      }
+    };
+    exports.Schema = Schema;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringifyDocument.js
+var require_stringifyDocument = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/stringify/stringifyDocument.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var stringify = require_stringify();
+    var stringifyComment = require_stringifyComment();
+    function stringifyDocument(doc, options2) {
+      const lines = [];
+      let hasDirectives = options2.directives === true;
+      if (options2.directives !== false && doc.directives) {
+        const dir = doc.directives.toString(doc);
+        if (dir) {
+          lines.push(dir);
+          hasDirectives = true;
+        } else if (doc.directives.docStart)
+          hasDirectives = true;
+      }
+      if (hasDirectives)
+        lines.push("---");
+      const ctx = stringify.createStringifyContext(doc, options2);
+      const { commentString } = ctx.options;
+      if (doc.commentBefore) {
+        if (lines.length !== 1)
+          lines.unshift("");
+        const cs = commentString(doc.commentBefore);
+        lines.unshift(stringifyComment.indentComment(cs, ""));
+      }
+      let chompKeep = false;
+      let contentComment = null;
+      if (doc.contents) {
+        if (identity.isNode(doc.contents)) {
+          if (doc.contents.spaceBefore && hasDirectives)
+            lines.push("");
+          if (doc.contents.commentBefore) {
+            const cs = commentString(doc.contents.commentBefore);
+            lines.push(stringifyComment.indentComment(cs, ""));
+          }
+          ctx.forceBlockIndent = !!doc.comment;
+          contentComment = doc.contents.comment;
+        }
+        const onChompKeep = contentComment ? void 0 : () => chompKeep = true;
+        let body = stringify.stringify(doc.contents, ctx, () => contentComment = null, onChompKeep);
+        if (contentComment)
+          body += stringifyComment.lineComment(body, "", commentString(contentComment));
+        if ((body[0] === "|" || body[0] === ">") && lines[lines.length - 1] === "---") {
+          lines[lines.length - 1] = `--- ${body}`;
+        } else
+          lines.push(body);
+      } else {
+        lines.push(stringify.stringify(doc.contents, ctx));
+      }
+      if (doc.directives?.docEnd) {
+        if (doc.comment) {
+          const cs = commentString(doc.comment);
+          if (cs.includes("\n")) {
+            lines.push("...");
+            lines.push(stringifyComment.indentComment(cs, ""));
+          } else {
+            lines.push(`... ${cs}`);
+          }
+        } else {
+          lines.push("...");
+        }
+      } else {
+        let dc = doc.comment;
+        if (dc && chompKeep)
+          dc = dc.replace(/^\n+/, "");
+        if (dc) {
+          if ((!chompKeep || contentComment) && lines[lines.length - 1] !== "")
+            lines.push("");
+          lines.push(stringifyComment.indentComment(commentString(dc), ""));
+        }
+      }
+      return lines.join("\n") + "\n";
+    }
+    exports.stringifyDocument = stringifyDocument;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/doc/Document.js
+var require_Document = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/doc/Document.js"(exports) {
+    "use strict";
+    var Alias = require_Alias();
+    var Collection = require_Collection();
+    var identity = require_identity();
+    var Pair = require_Pair();
+    var toJS = require_toJS();
+    var Schema = require_Schema();
+    var stringifyDocument = require_stringifyDocument();
+    var anchors = require_anchors();
+    var applyReviver = require_applyReviver();
+    var createNode = require_createNode();
+    var directives = require_directives();
+    var Document = class _Document {
+      constructor(value, replacer, options2) {
+        this.commentBefore = null;
+        this.comment = null;
+        this.errors = [];
+        this.warnings = [];
+        Object.defineProperty(this, identity.NODE_TYPE, { value: identity.DOC });
+        let _replacer = null;
+        if (typeof replacer === "function" || Array.isArray(replacer)) {
+          _replacer = replacer;
+        } else if (options2 === void 0 && replacer) {
+          options2 = replacer;
+          replacer = void 0;
+        }
+        const opt = Object.assign({
+          intAsBigInt: false,
+          keepSourceTokens: false,
+          logLevel: "warn",
+          prettyErrors: true,
+          strict: true,
+          stringKeys: false,
+          uniqueKeys: true,
+          version: "1.2"
+        }, options2);
+        this.options = opt;
+        let { version } = opt;
+        if (options2?._directives) {
+          this.directives = options2._directives.atDocument();
+          if (this.directives.yaml.explicit)
+            version = this.directives.yaml.version;
+        } else
+          this.directives = new directives.Directives({ version });
+        this.setSchema(version, options2);
+        this.contents = value === void 0 ? null : this.createNode(value, _replacer, options2);
+      }
+      /**
+       * Create a deep copy of this Document and its contents.
+       *
+       * Custom Node values that inherit from `Object` still refer to their original instances.
+       */
+      clone() {
+        const copy = Object.create(_Document.prototype, {
+          [identity.NODE_TYPE]: { value: identity.DOC }
+        });
+        copy.commentBefore = this.commentBefore;
+        copy.comment = this.comment;
+        copy.errors = this.errors.slice();
+        copy.warnings = this.warnings.slice();
+        copy.options = Object.assign({}, this.options);
+        if (this.directives)
+          copy.directives = this.directives.clone();
+        copy.schema = this.schema.clone();
+        copy.contents = identity.isNode(this.contents) ? this.contents.clone(copy.schema) : this.contents;
+        if (this.range)
+          copy.range = this.range.slice();
+        return copy;
+      }
+      /** Adds a value to the document. */
+      add(value) {
+        if (assertCollection(this.contents))
+          this.contents.add(value);
+      }
+      /** Adds a value to the document. */
+      addIn(path, value) {
+        if (assertCollection(this.contents))
+          this.contents.addIn(path, value);
+      }
+      /**
+       * Create a new `Alias` node, ensuring that the target `node` has the required anchor.
+       *
+       * If `node` already has an anchor, `name` is ignored.
+       * Otherwise, the `node.anchor` value will be set to `name`,
+       * or if an anchor with that name is already present in the document,
+       * `name` will be used as a prefix for a new unique anchor.
+       * If `name` is undefined, the generated anchor will use 'a' as a prefix.
+       */
+      createAlias(node, name) {
+        if (!node.anchor) {
+          const prev = anchors.anchorNames(this);
+          node.anchor = // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+          !name || prev.has(name) ? anchors.findNewAnchor(name || "a", prev) : name;
+        }
+        return new Alias.Alias(node.anchor);
+      }
+      createNode(value, replacer, options2) {
+        let _replacer = void 0;
+        if (typeof replacer === "function") {
+          value = replacer.call({ "": value }, "", value);
+          _replacer = replacer;
+        } else if (Array.isArray(replacer)) {
+          const keyToStr = (v) => typeof v === "number" || v instanceof String || v instanceof Number;
+          const asStr = replacer.filter(keyToStr).map(String);
+          if (asStr.length > 0)
+            replacer = replacer.concat(asStr);
+          _replacer = replacer;
+        } else if (options2 === void 0 && replacer) {
+          options2 = replacer;
+          replacer = void 0;
+        }
+        const { aliasDuplicateObjects, anchorPrefix, flow, keepUndefined, onTagObj, tag } = options2 ?? {};
+        const { onAnchor, setAnchors, sourceObjects } = anchors.createNodeAnchors(
+          this,
+          // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
+          anchorPrefix || "a"
+        );
+        const ctx = {
+          aliasDuplicateObjects: aliasDuplicateObjects ?? true,
+          keepUndefined: keepUndefined ?? false,
+          onAnchor,
+          onTagObj,
+          replacer: _replacer,
+          schema: this.schema,
+          sourceObjects
+        };
+        const node = createNode.createNode(value, tag, ctx);
+        if (flow && identity.isCollection(node))
+          node.flow = true;
+        setAnchors();
+        return node;
+      }
+      /**
+       * Convert a key and a value into a `Pair` using the current schema,
+       * recursively wrapping all values as `Scalar` or `Collection` nodes.
+       */
+      createPair(key, value, options2 = {}) {
+        const k = this.createNode(key, null, options2);
+        const v = this.createNode(value, null, options2);
+        return new Pair.Pair(k, v);
+      }
+      /**
+       * Removes a value from the document.
+       * @returns `true` if the item was found and removed.
+       */
+      delete(key) {
+        return assertCollection(this.contents) ? this.contents.delete(key) : false;
+      }
+      /**
+       * Removes a value from the document.
+       * @returns `true` if the item was found and removed.
+       */
+      deleteIn(path) {
+        if (Collection.isEmptyPath(path)) {
+          if (this.contents == null)
+            return false;
+          this.contents = null;
+          return true;
+        }
+        return assertCollection(this.contents) ? this.contents.deleteIn(path) : false;
+      }
+      /**
+       * Returns item at `key`, or `undefined` if not found. By default unwraps
+       * scalar values from their surrounding node; to disable set `keepScalar` to
+       * `true` (collections are always returned intact).
+       */
+      get(key, keepScalar) {
+        return identity.isCollection(this.contents) ? this.contents.get(key, keepScalar) : void 0;
+      }
+      /**
+       * Returns item at `path`, or `undefined` if not found. By default unwraps
+       * scalar values from their surrounding node; to disable set `keepScalar` to
+       * `true` (collections are always returned intact).
+       */
+      getIn(path, keepScalar) {
+        if (Collection.isEmptyPath(path))
+          return !keepScalar && identity.isScalar(this.contents) ? this.contents.value : this.contents;
+        return identity.isCollection(this.contents) ? this.contents.getIn(path, keepScalar) : void 0;
+      }
+      /**
+       * Checks if the document includes a value with the key `key`.
+       */
+      has(key) {
+        return identity.isCollection(this.contents) ? this.contents.has(key) : false;
+      }
+      /**
+       * Checks if the document includes a value at `path`.
+       */
+      hasIn(path) {
+        if (Collection.isEmptyPath(path))
+          return this.contents !== void 0;
+        return identity.isCollection(this.contents) ? this.contents.hasIn(path) : false;
+      }
+      /**
+       * Sets a value in this document. For `!!set`, `value` needs to be a
+       * boolean to add/remove the item from the set.
+       */
+      set(key, value) {
+        if (this.contents == null) {
+          this.contents = Collection.collectionFromPath(this.schema, [key], value);
+        } else if (assertCollection(this.contents)) {
+          this.contents.set(key, value);
+        }
+      }
+      /**
+       * Sets a value in this document. For `!!set`, `value` needs to be a
+       * boolean to add/remove the item from the set.
+       */
+      setIn(path, value) {
+        if (Collection.isEmptyPath(path)) {
+          this.contents = value;
+        } else if (this.contents == null) {
+          this.contents = Collection.collectionFromPath(this.schema, Array.from(path), value);
+        } else if (assertCollection(this.contents)) {
+          this.contents.setIn(path, value);
+        }
+      }
+      /**
+       * Change the YAML version and schema used by the document.
+       * A `null` version disables support for directives, explicit tags, anchors, and aliases.
+       * It also requires the `schema` option to be given as a `Schema` instance value.
+       *
+       * Overrides all previously set schema options.
+       */
+      setSchema(version, options2 = {}) {
+        if (typeof version === "number")
+          version = String(version);
+        let opt;
+        switch (version) {
+          case "1.1":
+            if (this.directives)
+              this.directives.yaml.version = "1.1";
+            else
+              this.directives = new directives.Directives({ version: "1.1" });
+            opt = { resolveKnownTags: false, schema: "yaml-1.1" };
+            break;
+          case "1.2":
+          case "next":
+            if (this.directives)
+              this.directives.yaml.version = version;
+            else
+              this.directives = new directives.Directives({ version });
+            opt = { resolveKnownTags: true, schema: "core" };
+            break;
+          case null:
+            if (this.directives)
+              delete this.directives;
+            opt = null;
+            break;
+          default: {
+            const sv = JSON.stringify(version);
+            throw new Error(`Expected '1.1', '1.2' or null as first argument, but found: ${sv}`);
+          }
+        }
+        if (options2.schema instanceof Object)
+          this.schema = options2.schema;
+        else if (opt)
+          this.schema = new Schema.Schema(Object.assign(opt, options2));
+        else
+          throw new Error(`With a null YAML version, the { schema: Schema } option is required`);
+      }
+      // json & jsonArg are only used from toJSON()
+      toJS({ json, jsonArg, mapAsMap, maxAliasCount, onAnchor, reviver } = {}) {
+        const ctx = {
+          anchors: /* @__PURE__ */ new Map(),
+          doc: this,
+          keep: !json,
+          mapAsMap: mapAsMap === true,
+          mapKeyWarned: false,
+          maxAliasCount: typeof maxAliasCount === "number" ? maxAliasCount : 100
+        };
+        const res = toJS.toJS(this.contents, jsonArg ?? "", ctx);
+        if (typeof onAnchor === "function")
+          for (const { count, res: res2 } of ctx.anchors.values())
+            onAnchor(res2, count);
+        return typeof reviver === "function" ? applyReviver.applyReviver(reviver, { "": res }, "", res) : res;
+      }
+      /**
+       * A JSON representation of the document `contents`.
+       *
+       * @param jsonArg Used by `JSON.stringify` to indicate the array index or
+       *   property name.
+       */
+      toJSON(jsonArg, onAnchor) {
+        return this.toJS({ json: true, jsonArg, mapAsMap: false, onAnchor });
+      }
+      /** A YAML representation of the document. */
+      toString(options2 = {}) {
+        if (this.errors.length > 0)
+          throw new Error("Document with errors cannot be stringified");
+        if ("indent" in options2 && (!Number.isInteger(options2.indent) || Number(options2.indent) <= 0)) {
+          const s = JSON.stringify(options2.indent);
+          throw new Error(`"indent" option must be a positive integer, not ${s}`);
+        }
+        return stringifyDocument.stringifyDocument(this, options2);
+      }
+    };
+    function assertCollection(contents) {
+      if (identity.isCollection(contents))
+        return true;
+      throw new Error("Expected a YAML collection as document contents");
+    }
+    exports.Document = Document;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/errors.js
+var require_errors = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/errors.js"(exports) {
+    "use strict";
+    var YAMLError = class extends Error {
+      constructor(name, pos, code, message) {
+        super();
+        this.name = name;
+        this.code = code;
+        this.message = message;
+        this.pos = pos;
+      }
+    };
+    var YAMLParseError = class extends YAMLError {
+      constructor(pos, code, message) {
+        super("YAMLParseError", pos, code, message);
+      }
+    };
+    var YAMLWarning = class extends YAMLError {
+      constructor(pos, code, message) {
+        super("YAMLWarning", pos, code, message);
+      }
+    };
+    var prettifyError = (src, lc) => (error) => {
+      if (error.pos[0] === -1)
+        return;
+      error.linePos = error.pos.map((pos) => lc.linePos(pos));
+      const { line, col } = error.linePos[0];
+      error.message += ` at line ${line}, column ${col}`;
+      let ci = col - 1;
+      let lineStr = src.substring(lc.lineStarts[line - 1], lc.lineStarts[line]).replace(/[\n\r]+$/, "");
+      if (ci >= 60 && lineStr.length > 80) {
+        const trimStart = Math.min(ci - 39, lineStr.length - 79);
+        lineStr = "\u2026" + lineStr.substring(trimStart);
+        ci -= trimStart - 1;
+      }
+      if (lineStr.length > 80)
+        lineStr = lineStr.substring(0, 79) + "\u2026";
+      if (line > 1 && /^ *$/.test(lineStr.substring(0, ci))) {
+        let prev = src.substring(lc.lineStarts[line - 2], lc.lineStarts[line - 1]);
+        if (prev.length > 80)
+          prev = prev.substring(0, 79) + "\u2026\n";
+        lineStr = prev + lineStr;
+      }
+      if (/[^ ]/.test(lineStr)) {
+        let count = 1;
+        const end = error.linePos[1];
+        if (end?.line === line && end.col > col) {
+          count = Math.max(1, Math.min(end.col - col, 80 - ci));
+        }
+        const pointer = " ".repeat(ci) + "^".repeat(count);
+        error.message += `:
+
+${lineStr}
+${pointer}
+`;
+      }
+    };
+    exports.YAMLError = YAMLError;
+    exports.YAMLParseError = YAMLParseError;
+    exports.YAMLWarning = YAMLWarning;
+    exports.prettifyError = prettifyError;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-props.js
+var require_resolve_props = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-props.js"(exports) {
+    "use strict";
+    function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIndent, startOnNewline }) {
+      let spaceBefore = false;
+      let atNewline = startOnNewline;
+      let hasSpace = startOnNewline;
+      let comment = "";
+      let commentSep = "";
+      let hasNewline = false;
+      let reqSpace = false;
+      let tab = null;
+      let anchor = null;
+      let tag = null;
+      let newlineAfterProp = null;
+      let comma = null;
+      let found = null;
+      let start = null;
+      for (const token of tokens) {
+        if (reqSpace) {
+          if (token.type !== "space" && token.type !== "newline" && token.type !== "comma")
+            onError(token.offset, "MISSING_CHAR", "Tags and anchors must be separated from the next token by white space");
+          reqSpace = false;
+        }
+        if (tab) {
+          if (atNewline && token.type !== "comment" && token.type !== "newline") {
+            onError(tab, "TAB_AS_INDENT", "Tabs are not allowed as indentation");
+          }
+          tab = null;
+        }
+        switch (token.type) {
+          case "space":
+            if (!flow && (indicator !== "doc-start" || next?.type !== "flow-collection") && token.source.includes("	")) {
+              tab = token;
+            }
+            hasSpace = true;
+            break;
+          case "comment": {
+            if (!hasSpace)
+              onError(token, "MISSING_CHAR", "Comments must be separated from other tokens by white space characters");
+            const cb = token.source.substring(1) || " ";
+            if (!comment)
+              comment = cb;
+            else
+              comment += commentSep + cb;
+            commentSep = "";
+            atNewline = false;
+            break;
+          }
+          case "newline":
+            if (atNewline) {
+              if (comment)
+                comment += token.source;
+              else if (!found || indicator !== "seq-item-ind")
+                spaceBefore = true;
+            } else
+              commentSep += token.source;
+            atNewline = true;
+            hasNewline = true;
+            if (anchor || tag)
+              newlineAfterProp = token;
+            hasSpace = true;
+            break;
+          case "anchor":
+            if (anchor)
+              onError(token, "MULTIPLE_ANCHORS", "A node can have at most one anchor");
+            if (token.source.endsWith(":"))
+              onError(token.offset + token.source.length - 1, "BAD_ALIAS", "Anchor ending in : is ambiguous", true);
+            anchor = token;
+            start ?? (start = token.offset);
+            atNewline = false;
+            hasSpace = false;
+            reqSpace = true;
+            break;
+          case "tag": {
+            if (tag)
+              onError(token, "MULTIPLE_TAGS", "A node can have at most one tag");
+            tag = token;
+            start ?? (start = token.offset);
+            atNewline = false;
+            hasSpace = false;
+            reqSpace = true;
+            break;
+          }
+          case indicator:
+            if (anchor || tag)
+              onError(token, "BAD_PROP_ORDER", `Anchors and tags must be after the ${token.source} indicator`);
+            if (found)
+              onError(token, "UNEXPECTED_TOKEN", `Unexpected ${token.source} in ${flow ?? "collection"}`);
+            found = token;
+            atNewline = indicator === "seq-item-ind" || indicator === "explicit-key-ind";
+            hasSpace = false;
+            break;
+          case "comma":
+            if (flow) {
+              if (comma)
+                onError(token, "UNEXPECTED_TOKEN", `Unexpected , in ${flow}`);
+              comma = token;
+              atNewline = false;
+              hasSpace = false;
+              break;
+            }
+          // else fallthrough
+          default:
+            onError(token, "UNEXPECTED_TOKEN", `Unexpected ${token.type} token`);
+            atNewline = false;
+            hasSpace = false;
+        }
+      }
+      const last = tokens[tokens.length - 1];
+      const end = last ? last.offset + last.source.length : offset;
+      if (reqSpace && next && next.type !== "space" && next.type !== "newline" && next.type !== "comma" && (next.type !== "scalar" || next.source !== "")) {
+        onError(next.offset, "MISSING_CHAR", "Tags and anchors must be separated from the next token by white space");
+      }
+      if (tab && (atNewline && tab.indent <= parentIndent || next?.type === "block-map" || next?.type === "block-seq"))
+        onError(tab, "TAB_AS_INDENT", "Tabs are not allowed as indentation");
+      return {
+        comma,
+        found,
+        spaceBefore,
+        comment,
+        hasNewline,
+        anchor,
+        tag,
+        newlineAfterProp,
+        end,
+        start: start ?? end
+      };
+    }
+    exports.resolveProps = resolveProps;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/util-contains-newline.js
+var require_util_contains_newline = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/util-contains-newline.js"(exports) {
+    "use strict";
+    function containsNewline(key) {
+      if (!key)
+        return null;
+      switch (key.type) {
+        case "alias":
+        case "scalar":
+        case "double-quoted-scalar":
+        case "single-quoted-scalar":
+          if (key.source.includes("\n"))
+            return true;
+          if (key.end) {
+            for (const st of key.end)
+              if (st.type === "newline")
+                return true;
+          }
+          return false;
+        case "flow-collection":
+          for (const it of key.items) {
+            for (const st of it.start)
+              if (st.type === "newline")
+                return true;
+            if (it.sep) {
+              for (const st of it.sep)
+                if (st.type === "newline")
+                  return true;
+            }
+            if (containsNewline(it.key) || containsNewline(it.value))
+              return true;
+          }
+          return false;
+        default:
+          return true;
+      }
+    }
+    exports.containsNewline = containsNewline;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/util-flow-indent-check.js
+var require_util_flow_indent_check = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/util-flow-indent-check.js"(exports) {
+    "use strict";
+    var utilContainsNewline = require_util_contains_newline();
+    function flowIndentCheck(indent, fc, onError) {
+      if (fc?.type === "flow-collection") {
+        const end = fc.end[0];
+        if (end.indent === indent && (end.source === "]" || end.source === "}") && utilContainsNewline.containsNewline(fc)) {
+          const msg = "Flow end indicator should be more indented than parent";
+          onError(end, "BAD_INDENT", msg, true);
+        }
+      }
+    }
+    exports.flowIndentCheck = flowIndentCheck;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/util-map-includes.js
+var require_util_map_includes = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/util-map-includes.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    function mapIncludes(ctx, items, search) {
+      const { uniqueKeys } = ctx.options;
+      if (uniqueKeys === false)
+        return false;
+      const isEqual = typeof uniqueKeys === "function" ? uniqueKeys : (a, b) => a === b || identity.isScalar(a) && identity.isScalar(b) && a.value === b.value;
+      return items.some((pair) => isEqual(pair.key, search));
+    }
+    exports.mapIncludes = mapIncludes;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-block-map.js
+var require_resolve_block_map = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-block-map.js"(exports) {
+    "use strict";
+    var Pair = require_Pair();
+    var YAMLMap = require_YAMLMap();
+    var resolveProps = require_resolve_props();
+    var utilContainsNewline = require_util_contains_newline();
+    var utilFlowIndentCheck = require_util_flow_indent_check();
+    var utilMapIncludes = require_util_map_includes();
+    var startColMsg = "All mapping items must start at the same column";
+    function resolveBlockMap({ composeNode, composeEmptyNode }, ctx, bm, onError, tag) {
+      const NodeClass = tag?.nodeClass ?? YAMLMap.YAMLMap;
+      const map = new NodeClass(ctx.schema);
+      if (ctx.atRoot)
+        ctx.atRoot = false;
+      let offset = bm.offset;
+      let commentEnd = null;
+      for (const collItem of bm.items) {
+        const { start, key, sep, value } = collItem;
+        const keyProps = resolveProps.resolveProps(start, {
+          indicator: "explicit-key-ind",
+          next: key ?? sep?.[0],
+          offset,
+          onError,
+          parentIndent: bm.indent,
+          startOnNewline: true
+        });
+        const implicitKey = !keyProps.found;
+        if (implicitKey) {
+          if (key) {
+            if (key.type === "block-seq")
+              onError(offset, "BLOCK_AS_IMPLICIT_KEY", "A block sequence may not be used as an implicit map key");
+            else if ("indent" in key && key.indent !== bm.indent)
+              onError(offset, "BAD_INDENT", startColMsg);
+          }
+          if (!keyProps.anchor && !keyProps.tag && !sep) {
+            commentEnd = keyProps.end;
+            if (keyProps.comment) {
+              if (map.comment)
+                map.comment += "\n" + keyProps.comment;
+              else
+                map.comment = keyProps.comment;
+            }
+            continue;
+          }
+          if (keyProps.newlineAfterProp || utilContainsNewline.containsNewline(key)) {
+            onError(key ?? start[start.length - 1], "MULTILINE_IMPLICIT_KEY", "Implicit keys need to be on a single line");
+          }
+        } else if (keyProps.found?.indent !== bm.indent) {
+          onError(offset, "BAD_INDENT", startColMsg);
+        }
+        ctx.atKey = true;
+        const keyStart = keyProps.end;
+        const keyNode = key ? composeNode(ctx, key, keyProps, onError) : composeEmptyNode(ctx, keyStart, start, null, keyProps, onError);
+        if (ctx.schema.compat)
+          utilFlowIndentCheck.flowIndentCheck(bm.indent, key, onError);
+        ctx.atKey = false;
+        if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
+          onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
+        const valueProps = resolveProps.resolveProps(sep ?? [], {
+          indicator: "map-value-ind",
+          next: value,
+          offset: keyNode.range[2],
+          onError,
+          parentIndent: bm.indent,
+          startOnNewline: !key || key.type === "block-scalar"
+        });
+        offset = valueProps.end;
+        if (valueProps.found) {
+          if (implicitKey) {
+            if (value?.type === "block-map" && !valueProps.hasNewline)
+              onError(offset, "BLOCK_AS_IMPLICIT_KEY", "Nested mappings are not allowed in compact mappings");
+            if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
+              onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
+          }
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep, null, valueProps, onError);
+          if (ctx.schema.compat)
+            utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
+          offset = valueNode.range[2];
+          const pair = new Pair.Pair(keyNode, valueNode);
+          if (ctx.options.keepSourceTokens)
+            pair.srcToken = collItem;
+          map.items.push(pair);
+        } else {
+          if (implicitKey)
+            onError(keyNode.range, "MISSING_CHAR", "Implicit map keys need to be followed by map values");
+          if (valueProps.comment) {
+            if (keyNode.comment)
+              keyNode.comment += "\n" + valueProps.comment;
+            else
+              keyNode.comment = valueProps.comment;
+          }
+          const pair = new Pair.Pair(keyNode);
+          if (ctx.options.keepSourceTokens)
+            pair.srcToken = collItem;
+          map.items.push(pair);
+        }
+      }
+      if (commentEnd && commentEnd < offset)
+        onError(commentEnd, "IMPOSSIBLE", "Map comment with trailing content");
+      map.range = [bm.offset, offset, commentEnd ?? offset];
+      return map;
+    }
+    exports.resolveBlockMap = resolveBlockMap;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-block-seq.js
+var require_resolve_block_seq = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-block-seq.js"(exports) {
+    "use strict";
+    var YAMLSeq = require_YAMLSeq();
+    var resolveProps = require_resolve_props();
+    var utilFlowIndentCheck = require_util_flow_indent_check();
+    function resolveBlockSeq({ composeNode, composeEmptyNode }, ctx, bs, onError, tag) {
+      const NodeClass = tag?.nodeClass ?? YAMLSeq.YAMLSeq;
+      const seq = new NodeClass(ctx.schema);
+      if (ctx.atRoot)
+        ctx.atRoot = false;
+      if (ctx.atKey)
+        ctx.atKey = false;
+      let offset = bs.offset;
+      let commentEnd = null;
+      for (const { start, value } of bs.items) {
+        const props = resolveProps.resolveProps(start, {
+          indicator: "seq-item-ind",
+          next: value,
+          offset,
+          onError,
+          parentIndent: bs.indent,
+          startOnNewline: true
+        });
+        if (!props.found) {
+          if (props.anchor || props.tag || value) {
+            if (value?.type === "block-seq")
+              onError(props.end, "BAD_INDENT", "All sequence items must start at the same column");
+            else
+              onError(offset, "MISSING_CHAR", "Sequence item without - indicator");
+          } else {
+            commentEnd = props.end;
+            if (props.comment)
+              seq.comment = props.comment;
+            continue;
+          }
+        }
+        const node = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, start, null, props, onError);
+        if (ctx.schema.compat)
+          utilFlowIndentCheck.flowIndentCheck(bs.indent, value, onError);
+        offset = node.range[2];
+        seq.items.push(node);
+      }
+      seq.range = [bs.offset, offset, commentEnd ?? offset];
+      return seq;
+    }
+    exports.resolveBlockSeq = resolveBlockSeq;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-end.js
+var require_resolve_end = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-end.js"(exports) {
+    "use strict";
+    function resolveEnd(end, offset, reqSpace, onError) {
+      let comment = "";
+      if (end) {
+        let hasSpace = false;
+        let sep = "";
+        for (const token of end) {
+          const { source, type } = token;
+          switch (type) {
+            case "space":
+              hasSpace = true;
+              break;
+            case "comment": {
+              if (reqSpace && !hasSpace)
+                onError(token, "MISSING_CHAR", "Comments must be separated from other tokens by white space characters");
+              const cb = source.substring(1) || " ";
+              if (!comment)
+                comment = cb;
+              else
+                comment += sep + cb;
+              sep = "";
+              break;
+            }
+            case "newline":
+              if (comment)
+                sep += source;
+              hasSpace = true;
+              break;
+            default:
+              onError(token, "UNEXPECTED_TOKEN", `Unexpected ${type} at node end`);
+          }
+          offset += source.length;
+        }
+      }
+      return { comment, offset };
+    }
+    exports.resolveEnd = resolveEnd;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-flow-collection.js
+var require_resolve_flow_collection = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-flow-collection.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var Pair = require_Pair();
+    var YAMLMap = require_YAMLMap();
+    var YAMLSeq = require_YAMLSeq();
+    var resolveEnd = require_resolve_end();
+    var resolveProps = require_resolve_props();
+    var utilContainsNewline = require_util_contains_newline();
+    var utilMapIncludes = require_util_map_includes();
+    var blockMsg = "Block collections are not allowed within flow collections";
+    var isBlock = (token) => token && (token.type === "block-map" || token.type === "block-seq");
+    function resolveFlowCollection({ composeNode, composeEmptyNode }, ctx, fc, onError, tag) {
+      const isMap = fc.start.source === "{";
+      const fcName = isMap ? "flow map" : "flow sequence";
+      const NodeClass = tag?.nodeClass ?? (isMap ? YAMLMap.YAMLMap : YAMLSeq.YAMLSeq);
+      const coll = new NodeClass(ctx.schema);
+      coll.flow = true;
+      const atRoot = ctx.atRoot;
+      if (atRoot)
+        ctx.atRoot = false;
+      if (ctx.atKey)
+        ctx.atKey = false;
+      let offset = fc.offset + fc.start.source.length;
+      for (let i = 0; i < fc.items.length; ++i) {
+        const collItem = fc.items[i];
+        const { start, key, sep, value } = collItem;
+        const props = resolveProps.resolveProps(start, {
+          flow: fcName,
+          indicator: "explicit-key-ind",
+          next: key ?? sep?.[0],
+          offset,
+          onError,
+          parentIndent: fc.indent,
+          startOnNewline: false
+        });
+        if (!props.found) {
+          if (!props.anchor && !props.tag && !sep && !value) {
+            if (i === 0 && props.comma)
+              onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
+            else if (i < fc.items.length - 1)
+              onError(props.start, "UNEXPECTED_TOKEN", `Unexpected empty item in ${fcName}`);
+            if (props.comment) {
+              if (coll.comment)
+                coll.comment += "\n" + props.comment;
+              else
+                coll.comment = props.comment;
+            }
+            offset = props.end;
+            continue;
+          }
+          if (!isMap && ctx.options.strict && utilContainsNewline.containsNewline(key))
+            onError(
+              key,
+              // checked by containsNewline()
+              "MULTILINE_IMPLICIT_KEY",
+              "Implicit keys of flow sequence pairs need to be on a single line"
+            );
+        }
+        if (i === 0) {
+          if (props.comma)
+            onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
+        } else {
+          if (!props.comma)
+            onError(props.start, "MISSING_CHAR", `Missing , between ${fcName} items`);
+          if (props.comment) {
+            let prevItemComment = "";
+            loop: for (const st of start) {
+              switch (st.type) {
+                case "comma":
+                case "space":
+                  break;
+                case "comment":
+                  prevItemComment = st.source.substring(1);
+                  break loop;
+                default:
+                  break loop;
+              }
+            }
+            if (prevItemComment) {
+              let prev = coll.items[coll.items.length - 1];
+              if (identity.isPair(prev))
+                prev = prev.value ?? prev.key;
+              if (prev.comment)
+                prev.comment += "\n" + prevItemComment;
+              else
+                prev.comment = prevItemComment;
+              props.comment = props.comment.substring(prevItemComment.length + 1);
+            }
+          }
+        }
+        if (!isMap && !sep && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
+          coll.items.push(valueNode);
+          offset = valueNode.range[2];
+          if (isBlock(value))
+            onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
+        } else {
+          ctx.atKey = true;
+          const keyStart = props.end;
+          const keyNode = key ? composeNode(ctx, key, props, onError) : composeEmptyNode(ctx, keyStart, start, null, props, onError);
+          if (isBlock(key))
+            onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
+          ctx.atKey = false;
+          const valueProps = resolveProps.resolveProps(sep ?? [], {
+            flow: fcName,
+            indicator: "map-value-ind",
+            next: value,
+            offset: keyNode.range[2],
+            onError,
+            parentIndent: fc.indent,
+            startOnNewline: false
+          });
+          if (valueProps.found) {
+            if (!isMap && !props.found && ctx.options.strict) {
+              if (sep)
+                for (const st of sep) {
+                  if (st === valueProps.found)
+                    break;
+                  if (st.type === "newline") {
+                    onError(st, "MULTILINE_IMPLICIT_KEY", "Implicit keys of flow sequence pairs need to be on a single line");
+                    break;
+                  }
+                }
+              if (props.start < valueProps.found.offset - 1024)
+                onError(valueProps.found, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit flow sequence key");
+            }
+          } else if (value) {
+            if ("source" in value && value.source?.[0] === ":")
+              onError(value, "MISSING_CHAR", `Missing space after : in ${fcName}`);
+            else
+              onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
+          }
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep, null, valueProps, onError) : null;
+          if (valueNode) {
+            if (isBlock(value))
+              onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
+          } else if (valueProps.comment) {
+            if (keyNode.comment)
+              keyNode.comment += "\n" + valueProps.comment;
+            else
+              keyNode.comment = valueProps.comment;
+          }
+          const pair = new Pair.Pair(keyNode, valueNode);
+          if (ctx.options.keepSourceTokens)
+            pair.srcToken = collItem;
+          if (isMap) {
+            const map = coll;
+            if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
+              onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
+            map.items.push(pair);
+          } else {
+            const map = new YAMLMap.YAMLMap(ctx.schema);
+            map.flow = true;
+            map.items.push(pair);
+            const endRange = (valueNode ?? keyNode).range;
+            map.range = [keyNode.range[0], endRange[1], endRange[2]];
+            coll.items.push(map);
+          }
+          offset = valueNode ? valueNode.range[2] : valueProps.end;
+        }
+      }
+      const expectedEnd = isMap ? "}" : "]";
+      const [ce, ...ee] = fc.end;
+      let cePos = offset;
+      if (ce?.source === expectedEnd)
+        cePos = ce.offset + ce.source.length;
+      else {
+        const name = fcName[0].toUpperCase() + fcName.substring(1);
+        const msg = atRoot ? `${name} must end with a ${expectedEnd}` : `${name} in block collection must be sufficiently indented and end with a ${expectedEnd}`;
+        onError(offset, atRoot ? "MISSING_CHAR" : "BAD_INDENT", msg);
+        if (ce && ce.source.length !== 1)
+          ee.unshift(ce);
+      }
+      if (ee.length > 0) {
+        const end = resolveEnd.resolveEnd(ee, cePos, ctx.options.strict, onError);
+        if (end.comment) {
+          if (coll.comment)
+            coll.comment += "\n" + end.comment;
+          else
+            coll.comment = end.comment;
+        }
+        coll.range = [fc.offset, cePos, end.offset];
+      } else {
+        coll.range = [fc.offset, cePos, cePos];
+      }
+      return coll;
+    }
+    exports.resolveFlowCollection = resolveFlowCollection;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/compose-collection.js
+var require_compose_collection = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/compose-collection.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var Scalar = require_Scalar();
+    var YAMLMap = require_YAMLMap();
+    var YAMLSeq = require_YAMLSeq();
+    var resolveBlockMap = require_resolve_block_map();
+    var resolveBlockSeq = require_resolve_block_seq();
+    var resolveFlowCollection = require_resolve_flow_collection();
+    function resolveCollection(CN, ctx, token, onError, tagName, tag) {
+      const coll = token.type === "block-map" ? resolveBlockMap.resolveBlockMap(CN, ctx, token, onError, tag) : token.type === "block-seq" ? resolveBlockSeq.resolveBlockSeq(CN, ctx, token, onError, tag) : resolveFlowCollection.resolveFlowCollection(CN, ctx, token, onError, tag);
+      const Coll = coll.constructor;
+      if (tagName === "!" || tagName === Coll.tagName) {
+        coll.tag = Coll.tagName;
+        return coll;
+      }
+      if (tagName)
+        coll.tag = tagName;
+      return coll;
+    }
+    function composeCollection(CN, ctx, token, props, onError) {
+      const tagToken = props.tag;
+      const tagName = !tagToken ? null : ctx.directives.tagName(tagToken.source, (msg) => onError(tagToken, "TAG_RESOLVE_FAILED", msg));
+      if (token.type === "block-seq") {
+        const { anchor, newlineAfterProp: nl } = props;
+        const lastProp = anchor && tagToken ? anchor.offset > tagToken.offset ? anchor : tagToken : anchor ?? tagToken;
+        if (lastProp && (!nl || nl.offset < lastProp.offset)) {
+          const message = "Missing newline after block sequence props";
+          onError(lastProp, "MISSING_CHAR", message);
+        }
+      }
+      const expType = token.type === "block-map" ? "map" : token.type === "block-seq" ? "seq" : token.start.source === "{" ? "map" : "seq";
+      if (!tagToken || !tagName || tagName === "!" || tagName === YAMLMap.YAMLMap.tagName && expType === "map" || tagName === YAMLSeq.YAMLSeq.tagName && expType === "seq") {
+        return resolveCollection(CN, ctx, token, onError, tagName);
+      }
+      let tag = ctx.schema.tags.find((t) => t.tag === tagName && t.collection === expType);
+      if (!tag) {
+        const kt = ctx.schema.knownTags[tagName];
+        if (kt?.collection === expType) {
+          ctx.schema.tags.push(Object.assign({}, kt, { default: false }));
+          tag = kt;
+        } else {
+          if (kt) {
+            onError(tagToken, "BAD_COLLECTION_TYPE", `${kt.tag} used for ${expType} collection, but expects ${kt.collection ?? "scalar"}`, true);
+          } else {
+            onError(tagToken, "TAG_RESOLVE_FAILED", `Unresolved tag: ${tagName}`, true);
+          }
+          return resolveCollection(CN, ctx, token, onError, tagName);
+        }
+      }
+      const coll = resolveCollection(CN, ctx, token, onError, tagName, tag);
+      const res = tag.resolve?.(coll, (msg) => onError(tagToken, "TAG_RESOLVE_FAILED", msg), ctx.options) ?? coll;
+      const node = identity.isNode(res) ? res : new Scalar.Scalar(res);
+      node.range = coll.range;
+      node.tag = tagName;
+      if (tag?.format)
+        node.format = tag.format;
+      return node;
+    }
+    exports.composeCollection = composeCollection;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-block-scalar.js
+var require_resolve_block_scalar = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-block-scalar.js"(exports) {
+    "use strict";
+    var Scalar = require_Scalar();
+    function resolveBlockScalar(ctx, scalar, onError) {
+      const start = scalar.offset;
+      const header = parseBlockScalarHeader(scalar, ctx.options.strict, onError);
+      if (!header)
+        return { value: "", type: null, comment: "", range: [start, start, start] };
+      const type = header.mode === ">" ? Scalar.Scalar.BLOCK_FOLDED : Scalar.Scalar.BLOCK_LITERAL;
+      const lines = scalar.source ? splitLines(scalar.source) : [];
+      let chompStart = lines.length;
+      for (let i = lines.length - 1; i >= 0; --i) {
+        const content = lines[i][1];
+        if (content === "" || content === "\r")
+          chompStart = i;
+        else
+          break;
+      }
+      if (chompStart === 0) {
+        const value2 = header.chomp === "+" && lines.length > 0 ? "\n".repeat(Math.max(1, lines.length - 1)) : "";
+        let end2 = start + header.length;
+        if (scalar.source)
+          end2 += scalar.source.length;
+        return { value: value2, type, comment: header.comment, range: [start, end2, end2] };
+      }
+      let trimIndent = scalar.indent + header.indent;
+      let offset = scalar.offset + header.length;
+      let contentStart = 0;
+      for (let i = 0; i < chompStart; ++i) {
+        const [indent, content] = lines[i];
+        if (content === "" || content === "\r") {
+          if (header.indent === 0 && indent.length > trimIndent)
+            trimIndent = indent.length;
+        } else {
+          if (indent.length < trimIndent) {
+            const message = "Block scalars with more-indented leading empty lines must use an explicit indentation indicator";
+            onError(offset + indent.length, "MISSING_CHAR", message);
+          }
+          if (header.indent === 0)
+            trimIndent = indent.length;
+          contentStart = i;
+          if (trimIndent === 0 && !ctx.atRoot) {
+            const message = "Block scalar values in collections must be indented";
+            onError(offset, "BAD_INDENT", message);
+          }
+          break;
+        }
+        offset += indent.length + content.length + 1;
+      }
+      for (let i = lines.length - 1; i >= chompStart; --i) {
+        if (lines[i][0].length > trimIndent)
+          chompStart = i + 1;
+      }
+      let value = "";
+      let sep = "";
+      let prevMoreIndented = false;
+      for (let i = 0; i < contentStart; ++i)
+        value += lines[i][0].slice(trimIndent) + "\n";
+      for (let i = contentStart; i < chompStart; ++i) {
+        let [indent, content] = lines[i];
+        offset += indent.length + content.length + 1;
+        const crlf = content[content.length - 1] === "\r";
+        if (crlf)
+          content = content.slice(0, -1);
+        if (content && indent.length < trimIndent) {
+          const src = header.indent ? "explicit indentation indicator" : "first line";
+          const message = `Block scalar lines must not be less indented than their ${src}`;
+          onError(offset - content.length - (crlf ? 2 : 1), "BAD_INDENT", message);
+          indent = "";
+        }
+        if (type === Scalar.Scalar.BLOCK_LITERAL) {
+          value += sep + indent.slice(trimIndent) + content;
+          sep = "\n";
+        } else if (indent.length > trimIndent || content[0] === "	") {
+          if (sep === " ")
+            sep = "\n";
+          else if (!prevMoreIndented && sep === "\n")
+            sep = "\n\n";
+          value += sep + indent.slice(trimIndent) + content;
+          sep = "\n";
+          prevMoreIndented = true;
+        } else if (content === "") {
+          if (sep === "\n")
+            value += "\n";
+          else
+            sep = "\n";
+        } else {
+          value += sep + content;
+          sep = " ";
+          prevMoreIndented = false;
+        }
+      }
+      switch (header.chomp) {
+        case "-":
+          break;
+        case "+":
+          for (let i = chompStart; i < lines.length; ++i)
+            value += "\n" + lines[i][0].slice(trimIndent);
+          if (value[value.length - 1] !== "\n")
+            value += "\n";
+          break;
+        default:
+          value += "\n";
+      }
+      const end = start + header.length + scalar.source.length;
+      return { value, type, comment: header.comment, range: [start, end, end] };
+    }
+    function parseBlockScalarHeader({ offset, props }, strict, onError) {
+      if (props[0].type !== "block-scalar-header") {
+        onError(props[0], "IMPOSSIBLE", "Block scalar header not found");
+        return null;
+      }
+      const { source } = props[0];
+      const mode = source[0];
+      let indent = 0;
+      let chomp = "";
+      let error = -1;
+      for (let i = 1; i < source.length; ++i) {
+        const ch = source[i];
+        if (!chomp && (ch === "-" || ch === "+"))
+          chomp = ch;
+        else {
+          const n = Number(ch);
+          if (!indent && n)
+            indent = n;
+          else if (error === -1)
+            error = offset + i;
+        }
+      }
+      if (error !== -1)
+        onError(error, "UNEXPECTED_TOKEN", `Block scalar header includes extra characters: ${source}`);
+      let hasSpace = false;
+      let comment = "";
+      let length = source.length;
+      for (let i = 1; i < props.length; ++i) {
+        const token = props[i];
+        switch (token.type) {
+          case "space":
+            hasSpace = true;
+          // fallthrough
+          case "newline":
+            length += token.source.length;
+            break;
+          case "comment":
+            if (strict && !hasSpace) {
+              const message = "Comments must be separated from other tokens by white space characters";
+              onError(token, "MISSING_CHAR", message);
+            }
+            length += token.source.length;
+            comment = token.source.substring(1);
+            break;
+          case "error":
+            onError(token, "UNEXPECTED_TOKEN", token.message);
+            length += token.source.length;
+            break;
+          /* istanbul ignore next should not happen */
+          default: {
+            const message = `Unexpected token in block scalar header: ${token.type}`;
+            onError(token, "UNEXPECTED_TOKEN", message);
+            const ts = token.source;
+            if (ts && typeof ts === "string")
+              length += ts.length;
+          }
+        }
+      }
+      return { mode, indent, chomp, comment, length };
+    }
+    function splitLines(source) {
+      const split = source.split(/\n( *)/);
+      const first = split[0];
+      const m = first.match(/^( *)/);
+      const line0 = m?.[1] ? [m[1], first.slice(m[1].length)] : ["", first];
+      const lines = [line0];
+      for (let i = 1; i < split.length; i += 2)
+        lines.push([split[i], split[i + 1]]);
+      return lines;
+    }
+    exports.resolveBlockScalar = resolveBlockScalar;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-flow-scalar.js
+var require_resolve_flow_scalar = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/resolve-flow-scalar.js"(exports) {
+    "use strict";
+    var Scalar = require_Scalar();
+    var resolveEnd = require_resolve_end();
+    function resolveFlowScalar(scalar, strict, onError) {
+      const { offset, type, source, end } = scalar;
+      let _type;
+      let value;
+      const _onError = (rel, code, msg) => onError(offset + rel, code, msg);
+      switch (type) {
+        case "scalar":
+          _type = Scalar.Scalar.PLAIN;
+          value = plainValue(source, _onError);
+          break;
+        case "single-quoted-scalar":
+          _type = Scalar.Scalar.QUOTE_SINGLE;
+          value = singleQuotedValue(source, _onError);
+          break;
+        case "double-quoted-scalar":
+          _type = Scalar.Scalar.QUOTE_DOUBLE;
+          value = doubleQuotedValue(source, _onError);
+          break;
+        /* istanbul ignore next should not happen */
+        default:
+          onError(scalar, "UNEXPECTED_TOKEN", `Expected a flow scalar value, but found: ${type}`);
+          return {
+            value: "",
+            type: null,
+            comment: "",
+            range: [offset, offset + source.length, offset + source.length]
+          };
+      }
+      const valueEnd = offset + source.length;
+      const re = resolveEnd.resolveEnd(end, valueEnd, strict, onError);
+      return {
+        value,
+        type: _type,
+        comment: re.comment,
+        range: [offset, valueEnd, re.offset]
+      };
+    }
+    function plainValue(source, onError) {
+      let badChar = "";
+      switch (source[0]) {
+        /* istanbul ignore next should not happen */
+        case "	":
+          badChar = "a tab character";
+          break;
+        case ",":
+          badChar = "flow indicator character ,";
+          break;
+        case "%":
+          badChar = "directive indicator character %";
+          break;
+        case "|":
+        case ">": {
+          badChar = `block scalar indicator ${source[0]}`;
+          break;
+        }
+        case "@":
+        case "`": {
+          badChar = `reserved character ${source[0]}`;
+          break;
+        }
+      }
+      if (badChar)
+        onError(0, "BAD_SCALAR_START", `Plain value cannot start with ${badChar}`);
+      return foldLines(source);
+    }
+    function singleQuotedValue(source, onError) {
+      if (source[source.length - 1] !== "'" || source.length === 1)
+        onError(source.length, "MISSING_CHAR", "Missing closing 'quote");
+      return foldLines(source.slice(1, -1)).replace(/''/g, "'");
+    }
+    function foldLines(source) {
+      let first, line;
+      try {
+        first = new RegExp("(.*?)(?<![ 	])[ 	]*\r?\n", "sy");
+        line = new RegExp("[ 	]*(.*?)(?:(?<![ 	])[ 	]*)?\r?\n", "sy");
+      } catch {
+        first = /(.*?)[ \t]*\r?\n/sy;
+        line = /[ \t]*(.*?)[ \t]*\r?\n/sy;
+      }
+      let match = first.exec(source);
+      if (!match)
+        return source;
+      let res = match[1];
+      let sep = " ";
+      let pos = first.lastIndex;
+      line.lastIndex = pos;
+      while (match = line.exec(source)) {
+        if (match[1] === "") {
+          if (sep === "\n")
+            res += sep;
+          else
+            sep = "\n";
+        } else {
+          res += sep + match[1];
+          sep = " ";
+        }
+        pos = line.lastIndex;
+      }
+      const last = /[ \t]*(.*)/sy;
+      last.lastIndex = pos;
+      match = last.exec(source);
+      return res + sep + (match?.[1] ?? "");
+    }
+    function doubleQuotedValue(source, onError) {
+      let res = "";
+      for (let i = 1; i < source.length - 1; ++i) {
+        const ch = source[i];
+        if (ch === "\r" && source[i + 1] === "\n")
+          continue;
+        if (ch === "\n") {
+          const { fold, offset } = foldNewline(source, i);
+          res += fold;
+          i = offset;
+        } else if (ch === "\\") {
+          let next = source[++i];
+          const cc = escapeCodes[next];
+          if (cc)
+            res += cc;
+          else if (next === "\n") {
+            next = source[i + 1];
+            while (next === " " || next === "	")
+              next = source[++i + 1];
+          } else if (next === "\r" && source[i + 1] === "\n") {
+            next = source[++i + 1];
+            while (next === " " || next === "	")
+              next = source[++i + 1];
+          } else if (next === "x" || next === "u" || next === "U") {
+            const length = next === "x" ? 2 : next === "u" ? 4 : 8;
+            res += parseCharCode(source, i + 1, length, onError);
+            i += length;
+          } else {
+            const raw = source.substr(i - 1, 2);
+            onError(i - 1, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw}`);
+            res += raw;
+          }
+        } else if (ch === " " || ch === "	") {
+          const wsStart = i;
+          let next = source[i + 1];
+          while (next === " " || next === "	")
+            next = source[++i + 1];
+          if (next !== "\n" && !(next === "\r" && source[i + 2] === "\n"))
+            res += i > wsStart ? source.slice(wsStart, i + 1) : ch;
+        } else {
+          res += ch;
+        }
+      }
+      if (source[source.length - 1] !== '"' || source.length === 1)
+        onError(source.length, "MISSING_CHAR", 'Missing closing "quote');
+      return res;
+    }
+    function foldNewline(source, offset) {
+      let fold = "";
+      let ch = source[offset + 1];
+      while (ch === " " || ch === "	" || ch === "\n" || ch === "\r") {
+        if (ch === "\r" && source[offset + 2] !== "\n")
+          break;
+        if (ch === "\n")
+          fold += "\n";
+        offset += 1;
+        ch = source[offset + 1];
+      }
+      if (!fold)
+        fold = " ";
+      return { fold, offset };
+    }
+    var escapeCodes = {
+      "0": "\0",
+      // null character
+      a: "\x07",
+      // bell character
+      b: "\b",
+      // backspace
+      e: "\x1B",
+      // escape character
+      f: "\f",
+      // form feed
+      n: "\n",
+      // line feed
+      r: "\r",
+      // carriage return
+      t: "	",
+      // horizontal tab
+      v: "\v",
+      // vertical tab
+      N: "\x85",
+      // Unicode next line
+      _: "\xA0",
+      // Unicode non-breaking space
+      L: "\u2028",
+      // Unicode line separator
+      P: "\u2029",
+      // Unicode paragraph separator
+      " ": " ",
+      '"': '"',
+      "/": "/",
+      "\\": "\\",
+      "	": "	"
+    };
+    function parseCharCode(source, offset, length, onError) {
+      const cc = source.substr(offset, length);
+      const ok = cc.length === length && /^[0-9a-fA-F]+$/.test(cc);
+      const code = ok ? parseInt(cc, 16) : NaN;
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        const raw = source.substr(offset - 2, length + 2);
+        onError(offset - 2, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw}`);
+        return raw;
+      }
+    }
+    exports.resolveFlowScalar = resolveFlowScalar;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/compose-scalar.js
+var require_compose_scalar = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/compose-scalar.js"(exports) {
+    "use strict";
+    var identity = require_identity();
+    var Scalar = require_Scalar();
+    var resolveBlockScalar = require_resolve_block_scalar();
+    var resolveFlowScalar = require_resolve_flow_scalar();
+    function composeScalar(ctx, token, tagToken, onError) {
+      const { value, type, comment, range } = token.type === "block-scalar" ? resolveBlockScalar.resolveBlockScalar(ctx, token, onError) : resolveFlowScalar.resolveFlowScalar(token, ctx.options.strict, onError);
+      const tagName = tagToken ? ctx.directives.tagName(tagToken.source, (msg) => onError(tagToken, "TAG_RESOLVE_FAILED", msg)) : null;
+      let tag;
+      if (ctx.options.stringKeys && ctx.atKey) {
+        tag = ctx.schema[identity.SCALAR];
+      } else if (tagName)
+        tag = findScalarTagByName(ctx.schema, value, tagName, tagToken, onError);
+      else if (token.type === "scalar")
+        tag = findScalarTagByTest(ctx, value, token, onError);
+      else
+        tag = ctx.schema[identity.SCALAR];
+      let scalar;
+      try {
+        const res = tag.resolve(value, (msg) => onError(tagToken ?? token, "TAG_RESOLVE_FAILED", msg), ctx.options);
+        scalar = identity.isScalar(res) ? res : new Scalar.Scalar(res);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        onError(tagToken ?? token, "TAG_RESOLVE_FAILED", msg);
+        scalar = new Scalar.Scalar(value);
+      }
+      scalar.range = range;
+      scalar.source = value;
+      if (type)
+        scalar.type = type;
+      if (tagName)
+        scalar.tag = tagName;
+      if (tag.format)
+        scalar.format = tag.format;
+      if (comment)
+        scalar.comment = comment;
+      return scalar;
+    }
+    function findScalarTagByName(schema, value, tagName, tagToken, onError) {
+      if (tagName === "!")
+        return schema[identity.SCALAR];
+      const matchWithTest = [];
+      for (const tag of schema.tags) {
+        if (!tag.collection && tag.tag === tagName) {
+          if (tag.default && tag.test)
+            matchWithTest.push(tag);
+          else
+            return tag;
+        }
+      }
+      for (const tag of matchWithTest)
+        if (tag.test?.test(value))
+          return tag;
+      const kt = schema.knownTags[tagName];
+      if (kt && !kt.collection) {
+        schema.tags.push(Object.assign({}, kt, { default: false, test: void 0 }));
+        return kt;
+      }
+      onError(tagToken, "TAG_RESOLVE_FAILED", `Unresolved tag: ${tagName}`, tagName !== "tag:yaml.org,2002:str");
+      return schema[identity.SCALAR];
+    }
+    function findScalarTagByTest({ atKey, directives, schema }, value, token, onError) {
+      const tag = schema.tags.find((tag2) => (tag2.default === true || atKey && tag2.default === "key") && tag2.test?.test(value)) || schema[identity.SCALAR];
+      if (schema.compat) {
+        const compat = schema.compat.find((tag2) => tag2.default && tag2.test?.test(value)) ?? schema[identity.SCALAR];
+        if (tag.tag !== compat.tag) {
+          const ts = directives.tagString(tag.tag);
+          const cs = directives.tagString(compat.tag);
+          const msg = `Value may be parsed as either ${ts} or ${cs}`;
+          onError(token, "TAG_RESOLVE_FAILED", msg, true);
+        }
+      }
+      return tag;
+    }
+    exports.composeScalar = composeScalar;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/util-empty-scalar-position.js
+var require_util_empty_scalar_position = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/util-empty-scalar-position.js"(exports) {
+    "use strict";
+    function emptyScalarPosition(offset, before, pos) {
+      if (before) {
+        pos ?? (pos = before.length);
+        for (let i = pos - 1; i >= 0; --i) {
+          let st = before[i];
+          switch (st.type) {
+            case "space":
+            case "comment":
+            case "newline":
+              offset -= st.source.length;
+              continue;
+          }
+          st = before[++i];
+          while (st?.type === "space") {
+            offset += st.source.length;
+            st = before[++i];
+          }
+          break;
+        }
+      }
+      return offset;
+    }
+    exports.emptyScalarPosition = emptyScalarPosition;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/compose-node.js
+var require_compose_node = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/compose-node.js"(exports) {
+    "use strict";
+    var Alias = require_Alias();
+    var identity = require_identity();
+    var composeCollection = require_compose_collection();
+    var composeScalar = require_compose_scalar();
+    var resolveEnd = require_resolve_end();
+    var utilEmptyScalarPosition = require_util_empty_scalar_position();
+    var CN = { composeNode, composeEmptyNode };
+    function composeNode(ctx, token, props, onError) {
+      const atKey = ctx.atKey;
+      const { spaceBefore, comment, anchor, tag } = props;
+      let node;
+      let isSrcToken = true;
+      switch (token.type) {
+        case "alias":
+          node = composeAlias(ctx, token, onError);
+          if (anchor || tag)
+            onError(token, "ALIAS_PROPS", "An alias node must not specify any properties");
+          break;
+        case "scalar":
+        case "single-quoted-scalar":
+        case "double-quoted-scalar":
+        case "block-scalar":
+          node = composeScalar.composeScalar(ctx, token, tag, onError);
+          if (anchor)
+            node.anchor = anchor.source.substring(1);
+          break;
+        case "block-map":
+        case "block-seq":
+        case "flow-collection":
+          try {
+            node = composeCollection.composeCollection(CN, ctx, token, props, onError);
+            if (anchor)
+              node.anchor = anchor.source.substring(1);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            onError(token, "RESOURCE_EXHAUSTION", message);
+          }
+          break;
+        default: {
+          const message = token.type === "error" ? token.message : `Unsupported token (type: ${token.type})`;
+          onError(token, "UNEXPECTED_TOKEN", message);
+          isSrcToken = false;
+        }
+      }
+      node ?? (node = composeEmptyNode(ctx, token.offset, void 0, null, props, onError));
+      if (anchor && node.anchor === "")
+        onError(anchor, "BAD_ALIAS", "Anchor cannot be an empty string");
+      if (atKey && ctx.options.stringKeys && (!identity.isScalar(node) || typeof node.value !== "string" || node.tag && node.tag !== "tag:yaml.org,2002:str")) {
+        const msg = "With stringKeys, all keys must be strings";
+        onError(tag ?? token, "NON_STRING_KEY", msg);
+      }
+      if (spaceBefore)
+        node.spaceBefore = true;
+      if (comment) {
+        if (token.type === "scalar" && token.source === "")
+          node.comment = comment;
+        else
+          node.commentBefore = comment;
+      }
+      if (ctx.options.keepSourceTokens && isSrcToken)
+        node.srcToken = token;
+      return node;
+    }
+    function composeEmptyNode(ctx, offset, before, pos, { spaceBefore, comment, anchor, tag, end }, onError) {
+      const token = {
+        type: "scalar",
+        offset: utilEmptyScalarPosition.emptyScalarPosition(offset, before, pos),
+        indent: -1,
+        source: ""
+      };
+      const node = composeScalar.composeScalar(ctx, token, tag, onError);
+      if (anchor) {
+        node.anchor = anchor.source.substring(1);
+        if (node.anchor === "")
+          onError(anchor, "BAD_ALIAS", "Anchor cannot be an empty string");
+      }
+      if (spaceBefore)
+        node.spaceBefore = true;
+      if (comment) {
+        node.comment = comment;
+        node.range[2] = end;
+      }
+      return node;
+    }
+    function composeAlias({ options: options2 }, { offset, source, end }, onError) {
+      const alias = new Alias.Alias(source.substring(1));
+      if (alias.source === "")
+        onError(offset, "BAD_ALIAS", "Alias cannot be an empty string");
+      if (alias.source.endsWith(":"))
+        onError(offset + source.length - 1, "BAD_ALIAS", "Alias ending in : is ambiguous", true);
+      const valueEnd = offset + source.length;
+      const re = resolveEnd.resolveEnd(end, valueEnd, options2.strict, onError);
+      alias.range = [offset, valueEnd, re.offset];
+      if (re.comment)
+        alias.comment = re.comment;
+      return alias;
+    }
+    exports.composeEmptyNode = composeEmptyNode;
+    exports.composeNode = composeNode;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/compose-doc.js
+var require_compose_doc = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/compose-doc.js"(exports) {
+    "use strict";
+    var Document = require_Document();
+    var composeNode = require_compose_node();
+    var resolveEnd = require_resolve_end();
+    var resolveProps = require_resolve_props();
+    function composeDoc(options2, directives, { offset, start, value, end }, onError) {
+      const opts = Object.assign({ _directives: directives }, options2);
+      const doc = new Document.Document(void 0, opts);
+      const ctx = {
+        atKey: false,
+        atRoot: true,
+        directives: doc.directives,
+        options: doc.options,
+        schema: doc.schema
+      };
+      const props = resolveProps.resolveProps(start, {
+        indicator: "doc-start",
+        next: value ?? end?.[0],
+        offset,
+        onError,
+        parentIndent: 0,
+        startOnNewline: true
+      });
+      if (props.found) {
+        doc.directives.docStart = true;
+        if (value && (value.type === "block-map" || value.type === "block-seq") && !props.hasNewline)
+          onError(props.end, "MISSING_CHAR", "Block collection cannot start on same line with directives-end marker");
+      }
+      doc.contents = value ? composeNode.composeNode(ctx, value, props, onError) : composeNode.composeEmptyNode(ctx, props.end, start, null, props, onError);
+      const contentEnd = doc.contents.range[2];
+      const re = resolveEnd.resolveEnd(end, contentEnd, false, onError);
+      if (re.comment)
+        doc.comment = re.comment;
+      doc.range = [offset, contentEnd, re.offset];
+      return doc;
+    }
+    exports.composeDoc = composeDoc;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/compose/composer.js
+var require_composer = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/compose/composer.js"(exports) {
+    "use strict";
+    var node_process = __require("process");
+    var directives = require_directives();
+    var Document = require_Document();
+    var errors = require_errors();
+    var identity = require_identity();
+    var composeDoc = require_compose_doc();
+    var resolveEnd = require_resolve_end();
+    function getErrorPos(src) {
+      if (typeof src === "number")
+        return [src, src + 1];
+      if (Array.isArray(src))
+        return src.length === 2 ? src : [src[0], src[1]];
+      const { offset, source } = src;
+      return [offset, offset + (typeof source === "string" ? source.length : 1)];
+    }
+    function parsePrelude(prelude) {
+      let comment = "";
+      let atComment = false;
+      let afterEmptyLine = false;
+      for (let i = 0; i < prelude.length; ++i) {
+        const source = prelude[i];
+        switch (source[0]) {
+          case "#":
+            comment += (comment === "" ? "" : afterEmptyLine ? "\n\n" : "\n") + (source.substring(1) || " ");
+            atComment = true;
+            afterEmptyLine = false;
+            break;
+          case "%":
+            if (prelude[i + 1]?.[0] !== "#")
+              i += 1;
+            atComment = false;
+            break;
+          default:
+            if (!atComment)
+              afterEmptyLine = true;
+            atComment = false;
+        }
+      }
+      return { comment, afterEmptyLine };
+    }
+    var Composer = class {
+      constructor(options2 = {}) {
+        this.doc = null;
+        this.atDirectives = false;
+        this.prelude = [];
+        this.errors = [];
+        this.warnings = [];
+        this.onError = (source, code, message, warning) => {
+          const pos = getErrorPos(source);
+          if (warning)
+            this.warnings.push(new errors.YAMLWarning(pos, code, message));
+          else
+            this.errors.push(new errors.YAMLParseError(pos, code, message));
+        };
+        this.directives = new directives.Directives({ version: options2.version || "1.2" });
+        this.options = options2;
+      }
+      decorate(doc, afterDoc) {
+        const { comment, afterEmptyLine } = parsePrelude(this.prelude);
+        if (comment) {
+          const dc = doc.contents;
+          if (afterDoc) {
+            doc.comment = doc.comment ? `${doc.comment}
+${comment}` : comment;
+          } else if (afterEmptyLine || doc.directives.docStart || !dc) {
+            doc.commentBefore = comment;
+          } else if (identity.isCollection(dc) && !dc.flow && dc.items.length > 0) {
+            let it = dc.items[0];
+            if (identity.isPair(it))
+              it = it.key;
+            const cb = it.commentBefore;
+            it.commentBefore = cb ? `${comment}
+${cb}` : comment;
+          } else {
+            const cb = dc.commentBefore;
+            dc.commentBefore = cb ? `${comment}
+${cb}` : comment;
+          }
+        }
+        if (afterDoc) {
+          for (let i = 0; i < this.errors.length; ++i)
+            doc.errors.push(this.errors[i]);
+          for (let i = 0; i < this.warnings.length; ++i)
+            doc.warnings.push(this.warnings[i]);
+        } else {
+          doc.errors = this.errors;
+          doc.warnings = this.warnings;
+        }
+        this.prelude = [];
+        this.errors = [];
+        this.warnings = [];
+      }
+      /**
+       * Current stream status information.
+       *
+       * Mostly useful at the end of input for an empty stream.
+       */
+      streamInfo() {
+        return {
+          comment: parsePrelude(this.prelude).comment,
+          directives: this.directives,
+          errors: this.errors,
+          warnings: this.warnings
+        };
+      }
+      /**
+       * Compose tokens into documents.
+       *
+       * @param forceDoc - If the stream contains no document, still emit a final document including any comments and directives that would be applied to a subsequent document.
+       * @param endOffset - Should be set if `forceDoc` is also set, to set the document range end and to indicate errors correctly.
+       */
+      *compose(tokens, forceDoc = false, endOffset = -1) {
+        for (const token of tokens)
+          yield* this.next(token);
+        yield* this.end(forceDoc, endOffset);
+      }
+      /** Advance the composer by one CST token. */
+      *next(token) {
+        if (node_process.env.LOG_STREAM)
+          console.dir(token, { depth: null });
+        switch (token.type) {
+          case "directive":
+            this.directives.add(token.source, (offset, message, warning) => {
+              const pos = getErrorPos(token);
+              pos[0] += offset;
+              this.onError(pos, "BAD_DIRECTIVE", message, warning);
+            });
+            this.prelude.push(token.source);
+            this.atDirectives = true;
+            break;
+          case "document": {
+            const doc = composeDoc.composeDoc(this.options, this.directives, token, this.onError);
+            if (this.atDirectives && !doc.directives.docStart)
+              this.onError(token, "MISSING_CHAR", "Missing directives-end/doc-start indicator line");
+            this.decorate(doc, false);
+            if (this.doc)
+              yield this.doc;
+            this.doc = doc;
+            this.atDirectives = false;
+            break;
+          }
+          case "byte-order-mark":
+          case "space":
+            break;
+          case "comment":
+          case "newline":
+            this.prelude.push(token.source);
+            break;
+          case "error": {
+            const msg = token.source ? `${token.message}: ${JSON.stringify(token.source)}` : token.message;
+            const error = new errors.YAMLParseError(getErrorPos(token), "UNEXPECTED_TOKEN", msg);
+            if (this.atDirectives || !this.doc)
+              this.errors.push(error);
+            else
+              this.doc.errors.push(error);
+            break;
+          }
+          case "doc-end": {
+            if (!this.doc) {
+              const msg = "Unexpected doc-end without preceding document";
+              this.errors.push(new errors.YAMLParseError(getErrorPos(token), "UNEXPECTED_TOKEN", msg));
+              break;
+            }
+            this.doc.directives.docEnd = true;
+            const end = resolveEnd.resolveEnd(token.end, token.offset + token.source.length, this.doc.options.strict, this.onError);
+            this.decorate(this.doc, true);
+            if (end.comment) {
+              const dc = this.doc.comment;
+              this.doc.comment = dc ? `${dc}
+${end.comment}` : end.comment;
+            }
+            this.doc.range[2] = end.offset;
+            break;
+          }
+          default:
+            this.errors.push(new errors.YAMLParseError(getErrorPos(token), "UNEXPECTED_TOKEN", `Unsupported token ${token.type}`));
+        }
+      }
+      /**
+       * Call at end of input to yield any remaining document.
+       *
+       * @param forceDoc - If the stream contains no document, still emit a final document including any comments and directives that would be applied to a subsequent document.
+       * @param endOffset - Should be set if `forceDoc` is also set, to set the document range end and to indicate errors correctly.
+       */
+      *end(forceDoc = false, endOffset = -1) {
+        if (this.doc) {
+          this.decorate(this.doc, true);
+          yield this.doc;
+          this.doc = null;
+        } else if (forceDoc) {
+          const opts = Object.assign({ _directives: this.directives }, this.options);
+          const doc = new Document.Document(void 0, opts);
+          if (this.atDirectives)
+            this.onError(endOffset, "MISSING_CHAR", "Missing directives-end indicator line");
+          doc.range = [0, endOffset, endOffset];
+          this.decorate(doc, false);
+          yield doc;
+        }
+      }
+    };
+    exports.Composer = Composer;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/parse/cst-scalar.js
+var require_cst_scalar = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/parse/cst-scalar.js"(exports) {
+    "use strict";
+    var resolveBlockScalar = require_resolve_block_scalar();
+    var resolveFlowScalar = require_resolve_flow_scalar();
+    var errors = require_errors();
+    var stringifyString = require_stringifyString();
+    function resolveAsScalar(token, strict = true, onError) {
+      if (token) {
+        const _onError = (pos, code, message) => {
+          const offset = typeof pos === "number" ? pos : Array.isArray(pos) ? pos[0] : pos.offset;
+          if (onError)
+            onError(offset, code, message);
+          else
+            throw new errors.YAMLParseError([offset, offset + 1], code, message);
+        };
+        switch (token.type) {
+          case "scalar":
+          case "single-quoted-scalar":
+          case "double-quoted-scalar":
+            return resolveFlowScalar.resolveFlowScalar(token, strict, _onError);
+          case "block-scalar":
+            return resolveBlockScalar.resolveBlockScalar({ options: { strict } }, token, _onError);
+        }
+      }
+      return null;
+    }
+    function createScalarToken(value, context) {
+      const { implicitKey = false, indent, inFlow = false, offset = -1, type = "PLAIN" } = context;
+      const source = stringifyString.stringifyString({ type, value }, {
+        implicitKey,
+        indent: indent > 0 ? " ".repeat(indent) : "",
+        inFlow,
+        options: { blockQuote: true, lineWidth: -1 }
+      });
+      const end = context.end ?? [
+        { type: "newline", offset: -1, indent, source: "\n" }
+      ];
+      switch (source[0]) {
+        case "|":
+        case ">": {
+          const he = source.indexOf("\n");
+          const head = source.substring(0, he);
+          const body = source.substring(he + 1) + "\n";
+          const props = [
+            { type: "block-scalar-header", offset, indent, source: head }
+          ];
+          if (!addEndtoBlockProps(props, end))
+            props.push({ type: "newline", offset: -1, indent, source: "\n" });
+          return { type: "block-scalar", offset, indent, props, source: body };
+        }
+        case '"':
+          return { type: "double-quoted-scalar", offset, indent, source, end };
+        case "'":
+          return { type: "single-quoted-scalar", offset, indent, source, end };
+        default:
+          return { type: "scalar", offset, indent, source, end };
+      }
+    }
+    function setScalarValue(token, value, context = {}) {
+      let { afterKey = false, implicitKey = false, inFlow = false, type } = context;
+      let indent = "indent" in token ? token.indent : null;
+      if (afterKey && typeof indent === "number")
+        indent += 2;
+      if (!type)
+        switch (token.type) {
+          case "single-quoted-scalar":
+            type = "QUOTE_SINGLE";
+            break;
+          case "double-quoted-scalar":
+            type = "QUOTE_DOUBLE";
+            break;
+          case "block-scalar": {
+            const header = token.props[0];
+            if (header.type !== "block-scalar-header")
+              throw new Error("Invalid block scalar header");
+            type = header.source[0] === ">" ? "BLOCK_FOLDED" : "BLOCK_LITERAL";
+            break;
+          }
+          default:
+            type = "PLAIN";
+        }
+      const source = stringifyString.stringifyString({ type, value }, {
+        implicitKey: implicitKey || indent === null,
+        indent: indent !== null && indent > 0 ? " ".repeat(indent) : "",
+        inFlow,
+        options: { blockQuote: true, lineWidth: -1 }
+      });
+      switch (source[0]) {
+        case "|":
+        case ">":
+          setBlockScalarValue(token, source);
+          break;
+        case '"':
+          setFlowScalarValue(token, source, "double-quoted-scalar");
+          break;
+        case "'":
+          setFlowScalarValue(token, source, "single-quoted-scalar");
+          break;
+        default:
+          setFlowScalarValue(token, source, "scalar");
+      }
+    }
+    function setBlockScalarValue(token, source) {
+      const he = source.indexOf("\n");
+      const head = source.substring(0, he);
+      const body = source.substring(he + 1) + "\n";
+      if (token.type === "block-scalar") {
+        const header = token.props[0];
+        if (header.type !== "block-scalar-header")
+          throw new Error("Invalid block scalar header");
+        header.source = head;
+        token.source = body;
+      } else {
+        const { offset } = token;
+        const indent = "indent" in token ? token.indent : -1;
+        const props = [
+          { type: "block-scalar-header", offset, indent, source: head }
+        ];
+        if (!addEndtoBlockProps(props, "end" in token ? token.end : void 0))
+          props.push({ type: "newline", offset: -1, indent, source: "\n" });
+        for (const key of Object.keys(token))
+          if (key !== "type" && key !== "offset")
+            delete token[key];
+        Object.assign(token, { type: "block-scalar", indent, props, source: body });
+      }
+    }
+    function addEndtoBlockProps(props, end) {
+      if (end)
+        for (const st of end)
+          switch (st.type) {
+            case "space":
+            case "comment":
+              props.push(st);
+              break;
+            case "newline":
+              props.push(st);
+              return true;
+          }
+      return false;
+    }
+    function setFlowScalarValue(token, source, type) {
+      switch (token.type) {
+        case "scalar":
+        case "double-quoted-scalar":
+        case "single-quoted-scalar":
+          token.type = type;
+          token.source = source;
+          break;
+        case "block-scalar": {
+          const end = token.props.slice(1);
+          let oa = source.length;
+          if (token.props[0].type === "block-scalar-header")
+            oa -= token.props[0].source.length;
+          for (const tok of end)
+            tok.offset += oa;
+          delete token.props;
+          Object.assign(token, { type, source, end });
+          break;
+        }
+        case "block-map":
+        case "block-seq": {
+          const offset = token.offset + source.length;
+          const nl = { type: "newline", offset, indent: token.indent, source: "\n" };
+          delete token.items;
+          Object.assign(token, { type, source, end: [nl] });
+          break;
+        }
+        default: {
+          const indent = "indent" in token ? token.indent : -1;
+          const end = "end" in token && Array.isArray(token.end) ? token.end.filter((st) => st.type === "space" || st.type === "comment" || st.type === "newline") : [];
+          for (const key of Object.keys(token))
+            if (key !== "type" && key !== "offset")
+              delete token[key];
+          Object.assign(token, { type, indent, source, end });
+        }
+      }
+    }
+    exports.createScalarToken = createScalarToken;
+    exports.resolveAsScalar = resolveAsScalar;
+    exports.setScalarValue = setScalarValue;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/parse/cst-stringify.js
+var require_cst_stringify = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/parse/cst-stringify.js"(exports) {
+    "use strict";
+    var stringify = (cst) => "type" in cst ? stringifyToken(cst) : stringifyItem(cst);
+    function stringifyToken(token) {
+      switch (token.type) {
+        case "block-scalar": {
+          let res = "";
+          for (const tok of token.props)
+            res += stringifyToken(tok);
+          return res + token.source;
+        }
+        case "block-map":
+        case "block-seq": {
+          let res = "";
+          for (const item of token.items)
+            res += stringifyItem(item);
+          return res;
+        }
+        case "flow-collection": {
+          let res = token.start.source;
+          for (const item of token.items)
+            res += stringifyItem(item);
+          for (const st of token.end)
+            res += st.source;
+          return res;
+        }
+        case "document": {
+          let res = stringifyItem(token);
+          if (token.end)
+            for (const st of token.end)
+              res += st.source;
+          return res;
+        }
+        default: {
+          let res = token.source;
+          if ("end" in token && token.end)
+            for (const st of token.end)
+              res += st.source;
+          return res;
+        }
+      }
+    }
+    function stringifyItem({ start, key, sep, value }) {
+      let res = "";
+      for (const st of start)
+        res += st.source;
+      if (key)
+        res += stringifyToken(key);
+      if (sep)
+        for (const st of sep)
+          res += st.source;
+      if (value)
+        res += stringifyToken(value);
+      return res;
+    }
+    exports.stringify = stringify;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/parse/cst-visit.js
+var require_cst_visit = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/parse/cst-visit.js"(exports) {
+    "use strict";
+    var BREAK = Symbol("break visit");
+    var SKIP = Symbol("skip children");
+    var REMOVE = Symbol("remove item");
+    function visit(cst, visitor) {
+      if ("type" in cst && cst.type === "document")
+        cst = { start: cst.start, value: cst.value };
+      _visit(Object.freeze([]), cst, visitor);
+    }
+    visit.BREAK = BREAK;
+    visit.SKIP = SKIP;
+    visit.REMOVE = REMOVE;
+    visit.itemAtPath = (cst, path) => {
+      let item = cst;
+      for (const [field, index] of path) {
+        const tok = item?.[field];
+        if (tok && "items" in tok) {
+          item = tok.items[index];
+        } else
+          return void 0;
+      }
+      return item;
+    };
+    visit.parentCollection = (cst, path) => {
+      const parent = visit.itemAtPath(cst, path.slice(0, -1));
+      const field = path[path.length - 1][0];
+      const coll = parent?.[field];
+      if (coll && "items" in coll)
+        return coll;
+      throw new Error("Parent collection not found");
+    };
+    function _visit(path, item, visitor) {
+      let ctrl = visitor(item, path);
+      if (typeof ctrl === "symbol")
+        return ctrl;
+      for (const field of ["key", "value"]) {
+        const token = item[field];
+        if (token && "items" in token) {
+          for (let i = 0; i < token.items.length; ++i) {
+            const ci = _visit(Object.freeze(path.concat([[field, i]])), token.items[i], visitor);
+            if (typeof ci === "number")
+              i = ci - 1;
+            else if (ci === BREAK)
+              return BREAK;
+            else if (ci === REMOVE) {
+              token.items.splice(i, 1);
+              i -= 1;
+            }
+          }
+          if (typeof ctrl === "function" && field === "key")
+            ctrl = ctrl(item, path);
+        }
+      }
+      return typeof ctrl === "function" ? ctrl(item, path) : ctrl;
+    }
+    exports.visit = visit;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/parse/cst.js
+var require_cst = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/parse/cst.js"(exports) {
+    "use strict";
+    var cstScalar = require_cst_scalar();
+    var cstStringify = require_cst_stringify();
+    var cstVisit = require_cst_visit();
+    var BOM = "\uFEFF";
+    var DOCUMENT = "";
+    var FLOW_END = "";
+    var SCALAR = "";
+    var isCollection = (token) => !!token && "items" in token;
+    var isScalar = (token) => !!token && (token.type === "scalar" || token.type === "single-quoted-scalar" || token.type === "double-quoted-scalar" || token.type === "block-scalar");
+    function prettyToken(token) {
+      switch (token) {
+        case BOM:
+          return "<BOM>";
+        case DOCUMENT:
+          return "<DOC>";
+        case FLOW_END:
+          return "<FLOW_END>";
+        case SCALAR:
+          return "<SCALAR>";
+        default:
+          return JSON.stringify(token);
+      }
+    }
+    function tokenType(source) {
+      switch (source) {
+        case BOM:
+          return "byte-order-mark";
+        case DOCUMENT:
+          return "doc-mode";
+        case FLOW_END:
+          return "flow-error-end";
+        case SCALAR:
+          return "scalar";
+        case "---":
+          return "doc-start";
+        case "...":
+          return "doc-end";
+        case "":
+        case "\n":
+        case "\r\n":
+          return "newline";
+        case "-":
+          return "seq-item-ind";
+        case "?":
+          return "explicit-key-ind";
+        case ":":
+          return "map-value-ind";
+        case "{":
+          return "flow-map-start";
+        case "}":
+          return "flow-map-end";
+        case "[":
+          return "flow-seq-start";
+        case "]":
+          return "flow-seq-end";
+        case ",":
+          return "comma";
+      }
+      switch (source[0]) {
+        case " ":
+        case "	":
+          return "space";
+        case "#":
+          return "comment";
+        case "%":
+          return "directive-line";
+        case "*":
+          return "alias";
+        case "&":
+          return "anchor";
+        case "!":
+          return "tag";
+        case "'":
+          return "single-quoted-scalar";
+        case '"':
+          return "double-quoted-scalar";
+        case "|":
+        case ">":
+          return "block-scalar-header";
+      }
+      return null;
+    }
+    exports.createScalarToken = cstScalar.createScalarToken;
+    exports.resolveAsScalar = cstScalar.resolveAsScalar;
+    exports.setScalarValue = cstScalar.setScalarValue;
+    exports.stringify = cstStringify.stringify;
+    exports.visit = cstVisit.visit;
+    exports.BOM = BOM;
+    exports.DOCUMENT = DOCUMENT;
+    exports.FLOW_END = FLOW_END;
+    exports.SCALAR = SCALAR;
+    exports.isCollection = isCollection;
+    exports.isScalar = isScalar;
+    exports.prettyToken = prettyToken;
+    exports.tokenType = tokenType;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/parse/lexer.js
+var require_lexer = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/parse/lexer.js"(exports) {
+    "use strict";
+    var cst = require_cst();
+    function isEmpty(ch) {
+      switch (ch) {
+        case void 0:
+        case " ":
+        case "\n":
+        case "\r":
+        case "	":
+          return true;
+        default:
+          return false;
+      }
+    }
+    var hexDigits = new Set("0123456789ABCDEFabcdef");
+    var tagChars = new Set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-#;/?:@&=+$_.!~*'()");
+    var flowIndicatorChars = new Set(",[]{}");
+    var invalidAnchorChars = new Set(" ,[]{}\n\r	");
+    var isNotAnchorChar = (ch) => !ch || invalidAnchorChars.has(ch);
+    var Lexer = class {
+      constructor() {
+        this.atEnd = false;
+        this.blockScalarIndent = -1;
+        this.blockScalarKeep = false;
+        this.buffer = "";
+        this.flowKey = false;
+        this.flowLevel = 0;
+        this.indentNext = 0;
+        this.indentValue = 0;
+        this.lineEndPos = null;
+        this.next = null;
+        this.pos = 0;
+      }
+      /**
+       * Generate YAML tokens from the `source` string. If `incomplete`,
+       * a part of the last line may be left as a buffer for the next call.
+       *
+       * @returns A generator of lexical tokens
+       */
+      *lex(source, incomplete = false) {
+        if (source) {
+          if (typeof source !== "string")
+            throw TypeError("source is not a string");
+          this.buffer = this.buffer ? this.buffer + source : source;
+          this.lineEndPos = null;
+        }
+        this.atEnd = !incomplete;
+        let next = this.next ?? "stream";
+        while (next && (incomplete || this.hasChars(1)))
+          next = yield* this.parseNext(next);
+      }
+      atLineEnd() {
+        let i = this.pos;
+        let ch = this.buffer[i];
+        while (ch === " " || ch === "	")
+          ch = this.buffer[++i];
+        if (!ch || ch === "#" || ch === "\n")
+          return true;
+        if (ch === "\r")
+          return this.buffer[i + 1] === "\n";
+        return false;
+      }
+      charAt(n) {
+        return this.buffer[this.pos + n];
+      }
+      continueScalar(offset) {
+        let ch = this.buffer[offset];
+        if (this.indentNext > 0) {
+          let indent = 0;
+          while (ch === " ")
+            ch = this.buffer[++indent + offset];
+          if (ch === "\r") {
+            const next = this.buffer[indent + offset + 1];
+            if (next === "\n" || !next && !this.atEnd)
+              return offset + indent + 1;
+          }
+          return ch === "\n" || indent >= this.indentNext || !ch && !this.atEnd ? offset + indent : -1;
+        }
+        if (ch === "-" || ch === ".") {
+          const dt = this.buffer.substr(offset, 3);
+          if ((dt === "---" || dt === "...") && isEmpty(this.buffer[offset + 3]))
+            return -1;
+        }
+        return offset;
+      }
+      getLine() {
+        let end = this.lineEndPos;
+        if (typeof end !== "number" || end !== -1 && end < this.pos) {
+          end = this.buffer.indexOf("\n", this.pos);
+          this.lineEndPos = end;
+        }
+        if (end === -1)
+          return this.atEnd ? this.buffer.substring(this.pos) : null;
+        if (this.buffer[end - 1] === "\r")
+          end -= 1;
+        return this.buffer.substring(this.pos, end);
+      }
+      hasChars(n) {
+        return this.pos + n <= this.buffer.length;
+      }
+      setNext(state) {
+        this.buffer = this.buffer.substring(this.pos);
+        this.pos = 0;
+        this.lineEndPos = null;
+        this.next = state;
+        return null;
+      }
+      peek(n) {
+        return this.buffer.substr(this.pos, n);
+      }
+      *parseNext(next) {
+        switch (next) {
+          case "stream":
+            return yield* this.parseStream();
+          case "line-start":
+            return yield* this.parseLineStart();
+          case "block-start":
+            return yield* this.parseBlockStart();
+          case "doc":
+            return yield* this.parseDocument();
+          case "flow":
+            return yield* this.parseFlowCollection();
+          case "quoted-scalar":
+            return yield* this.parseQuotedScalar();
+          case "block-scalar":
+            return yield* this.parseBlockScalar();
+          case "plain-scalar":
+            return yield* this.parsePlainScalar();
+        }
+      }
+      *parseStream() {
+        let line = this.getLine();
+        if (line === null)
+          return this.setNext("stream");
+        if (line[0] === cst.BOM) {
+          yield* this.pushCount(1);
+          line = line.substring(1);
+        }
+        if (line[0] === "%") {
+          let dirEnd = line.length;
+          let cs = line.indexOf("#");
+          while (cs !== -1) {
+            const ch = line[cs - 1];
+            if (ch === " " || ch === "	") {
+              dirEnd = cs - 1;
+              break;
+            } else {
+              cs = line.indexOf("#", cs + 1);
+            }
+          }
+          while (true) {
+            const ch = line[dirEnd - 1];
+            if (ch === " " || ch === "	")
+              dirEnd -= 1;
+            else
+              break;
+          }
+          const n = (yield* this.pushCount(dirEnd)) + (yield* this.pushSpaces(true));
+          yield* this.pushCount(line.length - n);
+          this.pushNewline();
+          return "stream";
+        }
+        if (this.atLineEnd()) {
+          const sp = yield* this.pushSpaces(true);
+          yield* this.pushCount(line.length - sp);
+          yield* this.pushNewline();
+          return "stream";
+        }
+        yield cst.DOCUMENT;
+        return yield* this.parseLineStart();
+      }
+      *parseLineStart() {
+        const ch = this.charAt(0);
+        if (!ch && !this.atEnd)
+          return this.setNext("line-start");
+        if (ch === "-" || ch === ".") {
+          if (!this.atEnd && !this.hasChars(4))
+            return this.setNext("line-start");
+          const s = this.peek(3);
+          if ((s === "---" || s === "...") && isEmpty(this.charAt(3))) {
+            yield* this.pushCount(3);
+            this.indentValue = 0;
+            this.indentNext = 0;
+            return s === "---" ? "doc" : "stream";
+          }
+        }
+        this.indentValue = yield* this.pushSpaces(false);
+        if (this.indentNext > this.indentValue && !isEmpty(this.charAt(1)))
+          this.indentNext = this.indentValue;
+        return yield* this.parseBlockStart();
+      }
+      *parseBlockStart() {
+        const [ch0, ch1] = this.peek(2);
+        if (!ch1 && !this.atEnd)
+          return this.setNext("block-start");
+        if ((ch0 === "-" || ch0 === "?" || ch0 === ":") && isEmpty(ch1)) {
+          const n = (yield* this.pushCount(1)) + (yield* this.pushSpaces(true));
+          this.indentNext = this.indentValue + 1;
+          this.indentValue += n;
+          return "block-start";
+        }
+        return "doc";
+      }
+      *parseDocument() {
+        yield* this.pushSpaces(true);
+        const line = this.getLine();
+        if (line === null)
+          return this.setNext("doc");
+        let n = yield* this.pushIndicators();
+        switch (line[n]) {
+          case "#":
+            yield* this.pushCount(line.length - n);
+          // fallthrough
+          case void 0:
+            yield* this.pushNewline();
+            return yield* this.parseLineStart();
+          case "{":
+          case "[":
+            yield* this.pushCount(1);
+            this.flowKey = false;
+            this.flowLevel = 1;
+            return "flow";
+          case "}":
+          case "]":
+            yield* this.pushCount(1);
+            return "doc";
+          case "*":
+            yield* this.pushUntil(isNotAnchorChar);
+            return "doc";
+          case '"':
+          case "'":
+            return yield* this.parseQuotedScalar();
+          case "|":
+          case ">":
+            n += yield* this.parseBlockScalarHeader();
+            n += yield* this.pushSpaces(true);
+            yield* this.pushCount(line.length - n);
+            yield* this.pushNewline();
+            return yield* this.parseBlockScalar();
+          default:
+            return yield* this.parsePlainScalar();
+        }
+      }
+      *parseFlowCollection() {
+        let nl, sp;
+        let indent = -1;
+        do {
+          nl = yield* this.pushNewline();
+          if (nl > 0) {
+            sp = yield* this.pushSpaces(false);
+            this.indentValue = indent = sp;
+          } else {
+            sp = 0;
+          }
+          sp += yield* this.pushSpaces(true);
+        } while (nl + sp > 0);
+        const line = this.getLine();
+        if (line === null)
+          return this.setNext("flow");
+        if (indent !== -1 && indent < this.indentNext && line[0] !== "#" || indent === 0 && (line.startsWith("---") || line.startsWith("...")) && isEmpty(line[3])) {
+          const atFlowEndMarker = indent === this.indentNext - 1 && this.flowLevel === 1 && (line[0] === "]" || line[0] === "}");
+          if (!atFlowEndMarker) {
+            this.flowLevel = 0;
+            yield cst.FLOW_END;
+            return yield* this.parseLineStart();
+          }
+        }
+        let n = 0;
+        while (line[n] === ",") {
+          n += yield* this.pushCount(1);
+          n += yield* this.pushSpaces(true);
+          this.flowKey = false;
+        }
+        n += yield* this.pushIndicators();
+        switch (line[n]) {
+          case void 0:
+            return "flow";
+          case "#":
+            yield* this.pushCount(line.length - n);
+            return "flow";
+          case "{":
+          case "[":
+            yield* this.pushCount(1);
+            this.flowKey = false;
+            this.flowLevel += 1;
+            return "flow";
+          case "}":
+          case "]":
+            yield* this.pushCount(1);
+            this.flowKey = true;
+            this.flowLevel -= 1;
+            return this.flowLevel ? "flow" : "doc";
+          case "*":
+            yield* this.pushUntil(isNotAnchorChar);
+            return "flow";
+          case '"':
+          case "'":
+            this.flowKey = true;
+            return yield* this.parseQuotedScalar();
+          case ":": {
+            const next = this.charAt(1);
+            if (this.flowKey || isEmpty(next) || next === ",") {
+              this.flowKey = false;
+              yield* this.pushCount(1);
+              yield* this.pushSpaces(true);
+              return "flow";
+            }
+          }
+          // fallthrough
+          default:
+            this.flowKey = false;
+            return yield* this.parsePlainScalar();
+        }
+      }
+      *parseQuotedScalar() {
+        const quote = this.charAt(0);
+        let end = this.buffer.indexOf(quote, this.pos + 1);
+        if (quote === "'") {
+          while (end !== -1 && this.buffer[end + 1] === "'")
+            end = this.buffer.indexOf("'", end + 2);
+        } else {
+          while (end !== -1) {
+            let n = 0;
+            while (this.buffer[end - 1 - n] === "\\")
+              n += 1;
+            if (n % 2 === 0)
+              break;
+            end = this.buffer.indexOf('"', end + 1);
+          }
+        }
+        const qb = this.buffer.substring(0, end);
+        let nl = qb.indexOf("\n", this.pos);
+        if (nl !== -1) {
+          while (nl !== -1) {
+            const cs = this.continueScalar(nl + 1);
+            if (cs === -1)
+              break;
+            nl = qb.indexOf("\n", cs);
+          }
+          if (nl !== -1) {
+            end = nl - (qb[nl - 1] === "\r" ? 2 : 1);
+          }
+        }
+        if (end === -1) {
+          if (!this.atEnd)
+            return this.setNext("quoted-scalar");
+          end = this.buffer.length;
+        }
+        yield* this.pushToIndex(end + 1, false);
+        return this.flowLevel ? "flow" : "doc";
+      }
+      *parseBlockScalarHeader() {
+        this.blockScalarIndent = -1;
+        this.blockScalarKeep = false;
+        let i = this.pos;
+        while (true) {
+          const ch = this.buffer[++i];
+          if (ch === "+")
+            this.blockScalarKeep = true;
+          else if (ch > "0" && ch <= "9")
+            this.blockScalarIndent = Number(ch) - 1;
+          else if (ch !== "-")
+            break;
+        }
+        return yield* this.pushUntil((ch) => isEmpty(ch) || ch === "#");
+      }
+      *parseBlockScalar() {
+        let nl = this.pos - 1;
+        let indent = 0;
+        let ch;
+        loop: for (let i2 = this.pos; ch = this.buffer[i2]; ++i2) {
+          switch (ch) {
+            case " ":
+              indent += 1;
+              break;
+            case "\n":
+              nl = i2;
+              indent = 0;
+              break;
+            case "\r": {
+              const next = this.buffer[i2 + 1];
+              if (!next && !this.atEnd)
+                return this.setNext("block-scalar");
+              if (next === "\n")
+                break;
+            }
+            // fallthrough
+            default:
+              break loop;
+          }
+        }
+        if (!ch && !this.atEnd)
+          return this.setNext("block-scalar");
+        if (indent >= this.indentNext) {
+          if (this.blockScalarIndent === -1)
+            this.indentNext = indent;
+          else {
+            this.indentNext = this.blockScalarIndent + (this.indentNext === 0 ? 1 : this.indentNext);
+          }
+          do {
+            const cs = this.continueScalar(nl + 1);
+            if (cs === -1)
+              break;
+            nl = this.buffer.indexOf("\n", cs);
+          } while (nl !== -1);
+          if (nl === -1) {
+            if (!this.atEnd)
+              return this.setNext("block-scalar");
+            nl = this.buffer.length;
+          }
+        }
+        let i = nl + 1;
+        ch = this.buffer[i];
+        while (ch === " ")
+          ch = this.buffer[++i];
+        if (ch === "	") {
+          while (ch === "	" || ch === " " || ch === "\r" || ch === "\n")
+            ch = this.buffer[++i];
+          nl = i - 1;
+        } else if (!this.blockScalarKeep) {
+          do {
+            let i2 = nl - 1;
+            let ch2 = this.buffer[i2];
+            if (ch2 === "\r")
+              ch2 = this.buffer[--i2];
+            const lastChar = i2;
+            while (ch2 === " ")
+              ch2 = this.buffer[--i2];
+            if (ch2 === "\n" && i2 >= this.pos && i2 + 1 + indent > lastChar)
+              nl = i2;
+            else
+              break;
+          } while (true);
+        }
+        yield cst.SCALAR;
+        yield* this.pushToIndex(nl + 1, true);
+        return yield* this.parseLineStart();
+      }
+      *parsePlainScalar() {
+        const inFlow = this.flowLevel > 0;
+        let end = this.pos - 1;
+        let i = this.pos - 1;
+        let ch;
+        while (ch = this.buffer[++i]) {
+          if (ch === ":") {
+            const next = this.buffer[i + 1];
+            if (isEmpty(next) || inFlow && flowIndicatorChars.has(next))
+              break;
+            end = i;
+          } else if (isEmpty(ch)) {
+            let next = this.buffer[i + 1];
+            if (ch === "\r") {
+              if (next === "\n") {
+                i += 1;
+                ch = "\n";
+                next = this.buffer[i + 1];
+              } else
+                end = i;
+            }
+            if (next === "#" || inFlow && flowIndicatorChars.has(next))
+              break;
+            if (ch === "\n") {
+              const cs = this.continueScalar(i + 1);
+              if (cs === -1)
+                break;
+              i = Math.max(i, cs - 2);
+            }
+          } else {
+            if (inFlow && flowIndicatorChars.has(ch))
+              break;
+            end = i;
+          }
+        }
+        if (!ch && !this.atEnd)
+          return this.setNext("plain-scalar");
+        yield cst.SCALAR;
+        yield* this.pushToIndex(end + 1, true);
+        return inFlow ? "flow" : "doc";
+      }
+      *pushCount(n) {
+        if (n > 0) {
+          yield this.buffer.substr(this.pos, n);
+          this.pos += n;
+          return n;
+        }
+        return 0;
+      }
+      *pushToIndex(i, allowEmpty) {
+        const s = this.buffer.slice(this.pos, i);
+        if (s) {
+          yield s;
+          this.pos += s.length;
+          return s.length;
+        } else if (allowEmpty)
+          yield "";
+        return 0;
+      }
+      *pushIndicators() {
+        let n = 0;
+        loop: while (true) {
+          switch (this.charAt(0)) {
+            case "!":
+              n += yield* this.pushTag();
+              n += yield* this.pushSpaces(true);
+              continue loop;
+            case "&":
+              n += yield* this.pushUntil(isNotAnchorChar);
+              n += yield* this.pushSpaces(true);
+              continue loop;
+            case "-":
+            // this is an error
+            case "?":
+            // this is an error outside flow collections
+            case ":": {
+              const inFlow = this.flowLevel > 0;
+              const ch1 = this.charAt(1);
+              if (isEmpty(ch1) || inFlow && flowIndicatorChars.has(ch1)) {
+                if (!inFlow)
+                  this.indentNext = this.indentValue + 1;
+                else if (this.flowKey)
+                  this.flowKey = false;
+                n += yield* this.pushCount(1);
+                n += yield* this.pushSpaces(true);
+                continue loop;
+              }
+            }
+          }
+          break loop;
+        }
+        return n;
+      }
+      *pushTag() {
+        if (this.charAt(1) === "<") {
+          let i = this.pos + 2;
+          let ch = this.buffer[i];
+          while (!isEmpty(ch) && ch !== ">")
+            ch = this.buffer[++i];
+          return yield* this.pushToIndex(ch === ">" ? i + 1 : i, false);
+        } else {
+          let i = this.pos + 1;
+          let ch = this.buffer[i];
+          while (ch) {
+            if (tagChars.has(ch))
+              ch = this.buffer[++i];
+            else if (ch === "%" && hexDigits.has(this.buffer[i + 1]) && hexDigits.has(this.buffer[i + 2])) {
+              ch = this.buffer[i += 3];
+            } else
+              break;
+          }
+          return yield* this.pushToIndex(i, false);
+        }
+      }
+      *pushNewline() {
+        const ch = this.buffer[this.pos];
+        if (ch === "\n")
+          return yield* this.pushCount(1);
+        else if (ch === "\r" && this.charAt(1) === "\n")
+          return yield* this.pushCount(2);
+        else
+          return 0;
+      }
+      *pushSpaces(allowTabs) {
+        let i = this.pos - 1;
+        let ch;
+        do {
+          ch = this.buffer[++i];
+        } while (ch === " " || allowTabs && ch === "	");
+        const n = i - this.pos;
+        if (n > 0) {
+          yield this.buffer.substr(this.pos, n);
+          this.pos = i;
+        }
+        return n;
+      }
+      *pushUntil(test) {
+        let i = this.pos;
+        let ch = this.buffer[i];
+        while (!test(ch))
+          ch = this.buffer[++i];
+        return yield* this.pushToIndex(i, false);
+      }
+    };
+    exports.Lexer = Lexer;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/parse/line-counter.js
+var require_line_counter = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/parse/line-counter.js"(exports) {
+    "use strict";
+    var LineCounter = class {
+      constructor() {
+        this.lineStarts = [];
+        this.addNewLine = (offset) => this.lineStarts.push(offset);
+        this.linePos = (offset) => {
+          let low = 0;
+          let high = this.lineStarts.length;
+          while (low < high) {
+            const mid = low + high >> 1;
+            if (this.lineStarts[mid] < offset)
+              low = mid + 1;
+            else
+              high = mid;
+          }
+          if (this.lineStarts[low] === offset)
+            return { line: low + 1, col: 1 };
+          if (low === 0)
+            return { line: 0, col: offset };
+          const start = this.lineStarts[low - 1];
+          return { line: low, col: offset - start + 1 };
+        };
+      }
+    };
+    exports.LineCounter = LineCounter;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/parse/parser.js
+var require_parser = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/parse/parser.js"(exports) {
+    "use strict";
+    var node_process = __require("process");
+    var cst = require_cst();
+    var lexer = require_lexer();
+    function includesToken(list, type) {
+      for (let i = 0; i < list.length; ++i)
+        if (list[i].type === type)
+          return true;
+      return false;
+    }
+    function findNonEmptyIndex(list) {
+      for (let i = 0; i < list.length; ++i) {
+        switch (list[i].type) {
+          case "space":
+          case "comment":
+          case "newline":
+            break;
+          default:
+            return i;
+        }
+      }
+      return -1;
+    }
+    function isFlowToken(token) {
+      switch (token?.type) {
+        case "alias":
+        case "scalar":
+        case "single-quoted-scalar":
+        case "double-quoted-scalar":
+        case "flow-collection":
+          return true;
+        default:
+          return false;
+      }
+    }
+    function getPrevProps(parent) {
+      switch (parent.type) {
+        case "document":
+          return parent.start;
+        case "block-map": {
+          const it = parent.items[parent.items.length - 1];
+          return it.sep ?? it.start;
+        }
+        case "block-seq":
+          return parent.items[parent.items.length - 1].start;
+        /* istanbul ignore next should not happen */
+        default:
+          return [];
+      }
+    }
+    function getFirstKeyStartProps(prev) {
+      if (prev.length === 0)
+        return [];
+      let i = prev.length;
+      loop: while (--i >= 0) {
+        switch (prev[i].type) {
+          case "doc-start":
+          case "explicit-key-ind":
+          case "map-value-ind":
+          case "seq-item-ind":
+          case "newline":
+            break loop;
+        }
+      }
+      while (prev[++i]?.type === "space") {
+      }
+      return prev.splice(i, prev.length);
+    }
+    function arrayPushArray(target, source) {
+      if (source.length < 1e5)
+        Array.prototype.push.apply(target, source);
+      else
+        for (let i = 0; i < source.length; ++i)
+          target.push(source[i]);
+    }
+    function fixFlowSeqItems(fc) {
+      if (fc.start.type === "flow-seq-start") {
+        for (const it of fc.items) {
+          if (it.sep && !it.value && !includesToken(it.start, "explicit-key-ind") && !includesToken(it.sep, "map-value-ind")) {
+            if (it.key)
+              it.value = it.key;
+            delete it.key;
+            if (isFlowToken(it.value)) {
+              if (it.value.end)
+                arrayPushArray(it.value.end, it.sep);
+              else
+                it.value.end = it.sep;
+            } else
+              arrayPushArray(it.start, it.sep);
+            delete it.sep;
+          }
+        }
+      }
+    }
+    var Parser = class {
+      /**
+       * @param onNewLine - If defined, called separately with the start position of
+       *   each new line (in `parse()`, including the start of input).
+       */
+      constructor(onNewLine) {
+        this.atNewLine = true;
+        this.atScalar = false;
+        this.indent = 0;
+        this.offset = 0;
+        this.onKeyLine = false;
+        this.stack = [];
+        this.source = "";
+        this.type = "";
+        this.lexer = new lexer.Lexer();
+        this.onNewLine = onNewLine;
+      }
+      /**
+       * Parse `source` as a YAML stream.
+       * If `incomplete`, a part of the last line may be left as a buffer for the next call.
+       *
+       * Errors are not thrown, but yielded as `{ type: 'error', message }` tokens.
+       *
+       * @returns A generator of tokens representing each directive, document, and other structure.
+       */
+      *parse(source, incomplete = false) {
+        if (this.onNewLine && this.offset === 0)
+          this.onNewLine(0);
+        for (const lexeme of this.lexer.lex(source, incomplete))
+          yield* this.next(lexeme);
+        if (!incomplete)
+          yield* this.end();
+      }
+      /**
+       * Advance the parser by the `source` of one lexical token.
+       */
+      *next(source) {
+        this.source = source;
+        if (node_process.env.LOG_TOKENS)
+          console.log("|", cst.prettyToken(source));
+        if (this.atScalar) {
+          this.atScalar = false;
+          yield* this.step();
+          this.offset += source.length;
+          return;
+        }
+        const type = cst.tokenType(source);
+        if (!type) {
+          const message = `Not a YAML token: ${source}`;
+          yield* this.pop({ type: "error", offset: this.offset, message, source });
+          this.offset += source.length;
+        } else if (type === "scalar") {
+          this.atNewLine = false;
+          this.atScalar = true;
+          this.type = "scalar";
+        } else {
+          this.type = type;
+          yield* this.step();
+          switch (type) {
+            case "newline":
+              this.atNewLine = true;
+              this.indent = 0;
+              if (this.onNewLine)
+                this.onNewLine(this.offset + source.length);
+              break;
+            case "space":
+              if (this.atNewLine && source[0] === " ")
+                this.indent += source.length;
+              break;
+            case "explicit-key-ind":
+            case "map-value-ind":
+            case "seq-item-ind":
+              if (this.atNewLine)
+                this.indent += source.length;
+              break;
+            case "doc-mode":
+            case "flow-error-end":
+              return;
+            default:
+              this.atNewLine = false;
+          }
+          this.offset += source.length;
+        }
+      }
+      /** Call at end of input to push out any remaining constructions */
+      *end() {
+        while (this.stack.length > 0)
+          yield* this.pop();
+      }
+      get sourceToken() {
+        const st = {
+          type: this.type,
+          offset: this.offset,
+          indent: this.indent,
+          source: this.source
+        };
+        return st;
+      }
+      *step() {
+        const top = this.peek(1);
+        if (this.type === "doc-end" && top?.type !== "doc-end") {
+          while (this.stack.length > 0)
+            yield* this.pop();
+          this.stack.push({
+            type: "doc-end",
+            offset: this.offset,
+            source: this.source
+          });
+          return;
+        }
+        if (!top)
+          return yield* this.stream();
+        switch (top.type) {
+          case "document":
+            return yield* this.document(top);
+          case "alias":
+          case "scalar":
+          case "single-quoted-scalar":
+          case "double-quoted-scalar":
+            return yield* this.scalar(top);
+          case "block-scalar":
+            return yield* this.blockScalar(top);
+          case "block-map":
+            return yield* this.blockMap(top);
+          case "block-seq":
+            return yield* this.blockSequence(top);
+          case "flow-collection":
+            return yield* this.flowCollection(top);
+          case "doc-end":
+            return yield* this.documentEnd(top);
+        }
+        yield* this.pop();
+      }
+      peek(n) {
+        return this.stack[this.stack.length - n];
+      }
+      *pop(error) {
+        const token = error ?? this.stack.pop();
+        if (!token) {
+          const message = "Tried to pop an empty stack";
+          yield { type: "error", offset: this.offset, source: "", message };
+        } else if (this.stack.length === 0) {
+          yield token;
+        } else {
+          const top = this.peek(1);
+          if (token.type === "block-scalar") {
+            token.indent = "indent" in top ? top.indent : 0;
+          } else if (token.type === "flow-collection" && top.type === "document") {
+            token.indent = 0;
+          }
+          if (token.type === "flow-collection")
+            fixFlowSeqItems(token);
+          switch (top.type) {
+            case "document":
+              top.value = token;
+              break;
+            case "block-scalar":
+              top.props.push(token);
+              break;
+            case "block-map": {
+              const it = top.items[top.items.length - 1];
+              if (it.value) {
+                top.items.push({ start: [], key: token, sep: [] });
+                this.onKeyLine = true;
+                return;
+              } else if (it.sep) {
+                it.value = token;
+              } else {
+                Object.assign(it, { key: token, sep: [] });
+                this.onKeyLine = !it.explicitKey;
+                return;
+              }
+              break;
+            }
+            case "block-seq": {
+              const it = top.items[top.items.length - 1];
+              if (it.value)
+                top.items.push({ start: [], value: token });
+              else
+                it.value = token;
+              break;
+            }
+            case "flow-collection": {
+              const it = top.items[top.items.length - 1];
+              if (!it || it.value)
+                top.items.push({ start: [], key: token, sep: [] });
+              else if (it.sep)
+                it.value = token;
+              else
+                Object.assign(it, { key: token, sep: [] });
+              return;
+            }
+            /* istanbul ignore next should not happen */
+            default:
+              yield* this.pop();
+              yield* this.pop(token);
+          }
+          if ((top.type === "document" || top.type === "block-map" || top.type === "block-seq") && (token.type === "block-map" || token.type === "block-seq")) {
+            const last = token.items[token.items.length - 1];
+            if (last && !last.sep && !last.value && last.start.length > 0 && findNonEmptyIndex(last.start) === -1 && (token.indent === 0 || last.start.every((st) => st.type !== "comment" || st.indent < token.indent))) {
+              if (top.type === "document")
+                top.end = last.start;
+              else
+                top.items.push({ start: last.start });
+              token.items.splice(-1, 1);
+            }
+          }
+        }
+      }
+      *stream() {
+        switch (this.type) {
+          case "directive-line":
+            yield { type: "directive", offset: this.offset, source: this.source };
+            return;
+          case "byte-order-mark":
+          case "space":
+          case "comment":
+          case "newline":
+            yield this.sourceToken;
+            return;
+          case "doc-mode":
+          case "doc-start": {
+            const doc = {
+              type: "document",
+              offset: this.offset,
+              start: []
+            };
+            if (this.type === "doc-start")
+              doc.start.push(this.sourceToken);
+            this.stack.push(doc);
+            return;
+          }
+        }
+        yield {
+          type: "error",
+          offset: this.offset,
+          message: `Unexpected ${this.type} token in YAML stream`,
+          source: this.source
+        };
+      }
+      *document(doc) {
+        if (doc.value)
+          return yield* this.lineEnd(doc);
+        switch (this.type) {
+          case "doc-start": {
+            if (findNonEmptyIndex(doc.start) !== -1) {
+              yield* this.pop();
+              yield* this.step();
+            } else
+              doc.start.push(this.sourceToken);
+            return;
+          }
+          case "anchor":
+          case "tag":
+          case "space":
+          case "comment":
+          case "newline":
+            doc.start.push(this.sourceToken);
+            return;
+        }
+        const bv = this.startBlockValue(doc);
+        if (bv)
+          this.stack.push(bv);
+        else {
+          yield {
+            type: "error",
+            offset: this.offset,
+            message: `Unexpected ${this.type} token in YAML document`,
+            source: this.source
+          };
+        }
+      }
+      *scalar(scalar) {
+        if (this.type === "map-value-ind") {
+          const prev = getPrevProps(this.peek(2));
+          const start = getFirstKeyStartProps(prev);
+          let sep;
+          if (scalar.end) {
+            sep = scalar.end;
+            sep.push(this.sourceToken);
+            delete scalar.end;
+          } else
+            sep = [this.sourceToken];
+          const map = {
+            type: "block-map",
+            offset: scalar.offset,
+            indent: scalar.indent,
+            items: [{ start, key: scalar, sep }]
+          };
+          this.onKeyLine = true;
+          this.stack[this.stack.length - 1] = map;
+        } else
+          yield* this.lineEnd(scalar);
+      }
+      *blockScalar(scalar) {
+        switch (this.type) {
+          case "space":
+          case "comment":
+          case "newline":
+            scalar.props.push(this.sourceToken);
+            return;
+          case "scalar":
+            scalar.source = this.source;
+            this.atNewLine = true;
+            this.indent = 0;
+            if (this.onNewLine) {
+              let nl = this.source.indexOf("\n") + 1;
+              while (nl !== 0) {
+                this.onNewLine(this.offset + nl);
+                nl = this.source.indexOf("\n", nl) + 1;
+              }
+            }
+            yield* this.pop();
+            break;
+          /* istanbul ignore next should not happen */
+          default:
+            yield* this.pop();
+            yield* this.step();
+        }
+      }
+      *blockMap(map) {
+        const it = map.items[map.items.length - 1];
+        switch (this.type) {
+          case "newline":
+            this.onKeyLine = false;
+            if (it.value) {
+              const end = "end" in it.value ? it.value.end : void 0;
+              const last = Array.isArray(end) ? end[end.length - 1] : void 0;
+              if (last?.type === "comment")
+                end?.push(this.sourceToken);
+              else
+                map.items.push({ start: [this.sourceToken] });
+            } else if (it.sep) {
+              it.sep.push(this.sourceToken);
+            } else {
+              it.start.push(this.sourceToken);
+            }
+            return;
+          case "space":
+          case "comment":
+            if (it.value) {
+              map.items.push({ start: [this.sourceToken] });
+            } else if (it.sep) {
+              it.sep.push(this.sourceToken);
+            } else {
+              if (this.atIndentedComment(it.start, map.indent)) {
+                const prev = map.items[map.items.length - 2];
+                const end = prev?.value?.end;
+                if (Array.isArray(end)) {
+                  arrayPushArray(end, it.start);
+                  end.push(this.sourceToken);
+                  map.items.pop();
+                  return;
+                }
+              }
+              it.start.push(this.sourceToken);
+            }
+            return;
+        }
+        if (this.indent >= map.indent) {
+          const atMapIndent = !this.onKeyLine && this.indent === map.indent;
+          const atNextItem = atMapIndent && (it.sep || it.explicitKey) && this.type !== "seq-item-ind";
+          let start = [];
+          if (atNextItem && it.sep && !it.value) {
+            const nl = [];
+            for (let i = 0; i < it.sep.length; ++i) {
+              const st = it.sep[i];
+              switch (st.type) {
+                case "newline":
+                  nl.push(i);
+                  break;
+                case "space":
+                  break;
+                case "comment":
+                  if (st.indent > map.indent)
+                    nl.length = 0;
+                  break;
+                default:
+                  nl.length = 0;
+              }
+            }
+            if (nl.length >= 2)
+              start = it.sep.splice(nl[1]);
+          }
+          switch (this.type) {
+            case "anchor":
+            case "tag":
+              if (atNextItem || it.value) {
+                start.push(this.sourceToken);
+                map.items.push({ start });
+                this.onKeyLine = true;
+              } else if (it.sep) {
+                it.sep.push(this.sourceToken);
+              } else {
+                it.start.push(this.sourceToken);
+              }
+              return;
+            case "explicit-key-ind":
+              if (!it.sep && !it.explicitKey) {
+                it.start.push(this.sourceToken);
+                it.explicitKey = true;
+              } else if (atNextItem || it.value) {
+                start.push(this.sourceToken);
+                map.items.push({ start, explicitKey: true });
+              } else {
+                this.stack.push({
+                  type: "block-map",
+                  offset: this.offset,
+                  indent: this.indent,
+                  items: [{ start: [this.sourceToken], explicitKey: true }]
+                });
+              }
+              this.onKeyLine = true;
+              return;
+            case "map-value-ind":
+              if (it.explicitKey) {
+                if (!it.sep) {
+                  if (includesToken(it.start, "newline")) {
+                    Object.assign(it, { key: null, sep: [this.sourceToken] });
+                  } else {
+                    const start2 = getFirstKeyStartProps(it.start);
+                    this.stack.push({
+                      type: "block-map",
+                      offset: this.offset,
+                      indent: this.indent,
+                      items: [{ start: start2, key: null, sep: [this.sourceToken] }]
+                    });
+                  }
+                } else if (it.value) {
+                  map.items.push({ start: [], key: null, sep: [this.sourceToken] });
+                } else if (includesToken(it.sep, "map-value-ind")) {
+                  this.stack.push({
+                    type: "block-map",
+                    offset: this.offset,
+                    indent: this.indent,
+                    items: [{ start, key: null, sep: [this.sourceToken] }]
+                  });
+                } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
+                  const start2 = getFirstKeyStartProps(it.start);
+                  const key = it.key;
+                  const sep = it.sep;
+                  sep.push(this.sourceToken);
+                  delete it.key;
+                  delete it.sep;
+                  this.stack.push({
+                    type: "block-map",
+                    offset: this.offset,
+                    indent: this.indent,
+                    items: [{ start: start2, key, sep }]
+                  });
+                } else if (start.length > 0) {
+                  it.sep = it.sep.concat(start, this.sourceToken);
+                } else {
+                  it.sep.push(this.sourceToken);
+                }
+              } else {
+                if (!it.sep) {
+                  Object.assign(it, { key: null, sep: [this.sourceToken] });
+                } else if (it.value || atNextItem) {
+                  map.items.push({ start, key: null, sep: [this.sourceToken] });
+                } else if (includesToken(it.sep, "map-value-ind")) {
+                  this.stack.push({
+                    type: "block-map",
+                    offset: this.offset,
+                    indent: this.indent,
+                    items: [{ start: [], key: null, sep: [this.sourceToken] }]
+                  });
+                } else {
+                  it.sep.push(this.sourceToken);
+                }
+              }
+              this.onKeyLine = true;
+              return;
+            case "alias":
+            case "scalar":
+            case "single-quoted-scalar":
+            case "double-quoted-scalar": {
+              const fs = this.flowScalar(this.type);
+              if (atNextItem || it.value) {
+                map.items.push({ start, key: fs, sep: [] });
+                this.onKeyLine = true;
+              } else if (it.sep) {
+                this.stack.push(fs);
+              } else {
+                Object.assign(it, { key: fs, sep: [] });
+                this.onKeyLine = true;
+              }
+              return;
+            }
+            default: {
+              const bv = this.startBlockValue(map);
+              if (bv) {
+                if (bv.type === "block-seq") {
+                  if (!it.explicitKey && it.sep && !includesToken(it.sep, "newline")) {
+                    yield* this.pop({
+                      type: "error",
+                      offset: this.offset,
+                      message: "Unexpected block-seq-ind on same line with key",
+                      source: this.source
+                    });
+                    return;
+                  }
+                } else if (atMapIndent) {
+                  map.items.push({ start });
+                }
+                this.stack.push(bv);
+                return;
+              }
+            }
+          }
+        }
+        yield* this.pop();
+        yield* this.step();
+      }
+      *blockSequence(seq) {
+        const it = seq.items[seq.items.length - 1];
+        switch (this.type) {
+          case "newline":
+            if (it.value) {
+              const end = "end" in it.value ? it.value.end : void 0;
+              const last = Array.isArray(end) ? end[end.length - 1] : void 0;
+              if (last?.type === "comment")
+                end?.push(this.sourceToken);
+              else
+                seq.items.push({ start: [this.sourceToken] });
+            } else
+              it.start.push(this.sourceToken);
+            return;
+          case "space":
+          case "comment":
+            if (it.value)
+              seq.items.push({ start: [this.sourceToken] });
+            else {
+              if (this.atIndentedComment(it.start, seq.indent)) {
+                const prev = seq.items[seq.items.length - 2];
+                const end = prev?.value?.end;
+                if (Array.isArray(end)) {
+                  arrayPushArray(end, it.start);
+                  end.push(this.sourceToken);
+                  seq.items.pop();
+                  return;
+                }
+              }
+              it.start.push(this.sourceToken);
+            }
+            return;
+          case "anchor":
+          case "tag":
+            if (it.value || this.indent <= seq.indent)
+              break;
+            it.start.push(this.sourceToken);
+            return;
+          case "seq-item-ind":
+            if (this.indent !== seq.indent)
+              break;
+            if (it.value || includesToken(it.start, "seq-item-ind"))
+              seq.items.push({ start: [this.sourceToken] });
+            else
+              it.start.push(this.sourceToken);
+            return;
+        }
+        if (this.indent > seq.indent) {
+          const bv = this.startBlockValue(seq);
+          if (bv) {
+            this.stack.push(bv);
+            return;
+          }
+        }
+        yield* this.pop();
+        yield* this.step();
+      }
+      *flowCollection(fc) {
+        const it = fc.items[fc.items.length - 1];
+        if (this.type === "flow-error-end") {
+          let top;
+          do {
+            yield* this.pop();
+            top = this.peek(1);
+          } while (top?.type === "flow-collection");
+        } else if (fc.end.length === 0) {
+          switch (this.type) {
+            case "comma":
+            case "explicit-key-ind":
+              if (!it || it.sep)
+                fc.items.push({ start: [this.sourceToken] });
+              else
+                it.start.push(this.sourceToken);
+              return;
+            case "map-value-ind":
+              if (!it || it.value)
+                fc.items.push({ start: [], key: null, sep: [this.sourceToken] });
+              else if (it.sep)
+                it.sep.push(this.sourceToken);
+              else
+                Object.assign(it, { key: null, sep: [this.sourceToken] });
+              return;
+            case "space":
+            case "comment":
+            case "newline":
+            case "anchor":
+            case "tag":
+              if (!it || it.value)
+                fc.items.push({ start: [this.sourceToken] });
+              else if (it.sep)
+                it.sep.push(this.sourceToken);
+              else
+                it.start.push(this.sourceToken);
+              return;
+            case "alias":
+            case "scalar":
+            case "single-quoted-scalar":
+            case "double-quoted-scalar": {
+              const fs = this.flowScalar(this.type);
+              if (!it || it.value)
+                fc.items.push({ start: [], key: fs, sep: [] });
+              else if (it.sep)
+                this.stack.push(fs);
+              else
+                Object.assign(it, { key: fs, sep: [] });
+              return;
+            }
+            case "flow-map-end":
+            case "flow-seq-end":
+              fc.end.push(this.sourceToken);
+              return;
+          }
+          const bv = this.startBlockValue(fc);
+          if (bv)
+            this.stack.push(bv);
+          else {
+            yield* this.pop();
+            yield* this.step();
+          }
+        } else {
+          const parent = this.peek(2);
+          if (parent.type === "block-map" && (this.type === "map-value-ind" && parent.indent === fc.indent || this.type === "newline" && !parent.items[parent.items.length - 1].sep)) {
+            yield* this.pop();
+            yield* this.step();
+          } else if (this.type === "map-value-ind" && parent.type !== "flow-collection") {
+            const prev = getPrevProps(parent);
+            const start = getFirstKeyStartProps(prev);
+            fixFlowSeqItems(fc);
+            const sep = fc.end.splice(1, fc.end.length);
+            sep.push(this.sourceToken);
+            const map = {
+              type: "block-map",
+              offset: fc.offset,
+              indent: fc.indent,
+              items: [{ start, key: fc, sep }]
+            };
+            this.onKeyLine = true;
+            this.stack[this.stack.length - 1] = map;
+          } else {
+            yield* this.lineEnd(fc);
+          }
+        }
+      }
+      flowScalar(type) {
+        if (this.onNewLine) {
+          let nl = this.source.indexOf("\n") + 1;
+          while (nl !== 0) {
+            this.onNewLine(this.offset + nl);
+            nl = this.source.indexOf("\n", nl) + 1;
+          }
+        }
+        return {
+          type,
+          offset: this.offset,
+          indent: this.indent,
+          source: this.source
+        };
+      }
+      startBlockValue(parent) {
+        switch (this.type) {
+          case "alias":
+          case "scalar":
+          case "single-quoted-scalar":
+          case "double-quoted-scalar":
+            return this.flowScalar(this.type);
+          case "block-scalar-header":
+            return {
+              type: "block-scalar",
+              offset: this.offset,
+              indent: this.indent,
+              props: [this.sourceToken],
+              source: ""
+            };
+          case "flow-map-start":
+          case "flow-seq-start":
+            return {
+              type: "flow-collection",
+              offset: this.offset,
+              indent: this.indent,
+              start: this.sourceToken,
+              items: [],
+              end: []
+            };
+          case "seq-item-ind":
+            return {
+              type: "block-seq",
+              offset: this.offset,
+              indent: this.indent,
+              items: [{ start: [this.sourceToken] }]
+            };
+          case "explicit-key-ind": {
+            this.onKeyLine = true;
+            const prev = getPrevProps(parent);
+            const start = getFirstKeyStartProps(prev);
+            start.push(this.sourceToken);
+            return {
+              type: "block-map",
+              offset: this.offset,
+              indent: this.indent,
+              items: [{ start, explicitKey: true }]
+            };
+          }
+          case "map-value-ind": {
+            this.onKeyLine = true;
+            const prev = getPrevProps(parent);
+            const start = getFirstKeyStartProps(prev);
+            return {
+              type: "block-map",
+              offset: this.offset,
+              indent: this.indent,
+              items: [{ start, key: null, sep: [this.sourceToken] }]
+            };
+          }
+        }
+        return null;
+      }
+      atIndentedComment(start, indent) {
+        if (this.type !== "comment")
+          return false;
+        if (this.indent <= indent)
+          return false;
+        return start.every((st) => st.type === "newline" || st.type === "space");
+      }
+      *documentEnd(docEnd) {
+        if (this.type !== "doc-mode") {
+          if (docEnd.end)
+            docEnd.end.push(this.sourceToken);
+          else
+            docEnd.end = [this.sourceToken];
+          if (this.type === "newline")
+            yield* this.pop();
+        }
+      }
+      *lineEnd(token) {
+        switch (this.type) {
+          case "comma":
+          case "doc-start":
+          case "doc-end":
+          case "flow-seq-end":
+          case "flow-map-end":
+          case "map-value-ind":
+            yield* this.pop();
+            yield* this.step();
+            break;
+          case "newline":
+            this.onKeyLine = false;
+          // fallthrough
+          case "space":
+          case "comment":
+          default:
+            if (token.end)
+              token.end.push(this.sourceToken);
+            else
+              token.end = [this.sourceToken];
+            if (this.type === "newline")
+              yield* this.pop();
+        }
+      }
+    };
+    exports.Parser = Parser;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/public-api.js
+var require_public_api = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/public-api.js"(exports) {
+    "use strict";
+    var composer = require_composer();
+    var Document = require_Document();
+    var errors = require_errors();
+    var log = require_log();
+    var identity = require_identity();
+    var lineCounter = require_line_counter();
+    var parser = require_parser();
+    function parseOptions(options2) {
+      const prettyErrors = options2.prettyErrors !== false;
+      const lineCounter$1 = options2.lineCounter || prettyErrors && new lineCounter.LineCounter() || null;
+      return { lineCounter: lineCounter$1, prettyErrors };
+    }
+    function parseAllDocuments(source, options2 = {}) {
+      const { lineCounter: lineCounter2, prettyErrors } = parseOptions(options2);
+      const parser$1 = new parser.Parser(lineCounter2?.addNewLine);
+      const composer$1 = new composer.Composer(options2);
+      const docs = Array.from(composer$1.compose(parser$1.parse(source)));
+      if (prettyErrors && lineCounter2)
+        for (const doc of docs) {
+          doc.errors.forEach(errors.prettifyError(source, lineCounter2));
+          doc.warnings.forEach(errors.prettifyError(source, lineCounter2));
+        }
+      if (docs.length > 0)
+        return docs;
+      return Object.assign([], { empty: true }, composer$1.streamInfo());
+    }
+    function parseDocument(source, options2 = {}) {
+      const { lineCounter: lineCounter2, prettyErrors } = parseOptions(options2);
+      const parser$1 = new parser.Parser(lineCounter2?.addNewLine);
+      const composer$1 = new composer.Composer(options2);
+      let doc = null;
+      for (const _doc of composer$1.compose(parser$1.parse(source), true, source.length)) {
+        if (!doc)
+          doc = _doc;
+        else if (doc.options.logLevel !== "silent") {
+          doc.errors.push(new errors.YAMLParseError(_doc.range.slice(0, 2), "MULTIPLE_DOCS", "Source contains multiple documents; please use YAML.parseAllDocuments()"));
+          break;
+        }
+      }
+      if (prettyErrors && lineCounter2) {
+        doc.errors.forEach(errors.prettifyError(source, lineCounter2));
+        doc.warnings.forEach(errors.prettifyError(source, lineCounter2));
+      }
+      return doc;
+    }
+    function parse(src, reviver, options2) {
+      let _reviver = void 0;
+      if (typeof reviver === "function") {
+        _reviver = reviver;
+      } else if (options2 === void 0 && reviver && typeof reviver === "object") {
+        options2 = reviver;
+      }
+      const doc = parseDocument(src, options2);
+      if (!doc)
+        return null;
+      doc.warnings.forEach((warning) => log.warn(doc.options.logLevel, warning));
+      if (doc.errors.length > 0) {
+        if (doc.options.logLevel !== "silent")
+          throw doc.errors[0];
+        else
+          doc.errors = [];
+      }
+      return doc.toJS(Object.assign({ reviver: _reviver }, options2));
+    }
+    function stringify(value, replacer, options2) {
+      let _replacer = null;
+      if (typeof replacer === "function" || Array.isArray(replacer)) {
+        _replacer = replacer;
+      } else if (options2 === void 0 && replacer) {
+        options2 = replacer;
+      }
+      if (typeof options2 === "string")
+        options2 = options2.length;
+      if (typeof options2 === "number") {
+        const indent = Math.round(options2);
+        options2 = indent < 1 ? void 0 : indent > 8 ? { indent: 8 } : { indent };
+      }
+      if (value === void 0) {
+        const { keepUndefined } = options2 ?? replacer ?? {};
+        if (!keepUndefined)
+          return void 0;
+      }
+      if (identity.isDocument(value) && !_replacer)
+        return value.toString(options2);
+      return new Document.Document(value, _replacer, options2).toString(options2);
+    }
+    exports.parse = parse;
+    exports.parseAllDocuments = parseAllDocuments;
+    exports.parseDocument = parseDocument;
+    exports.stringify = stringify;
+  }
+});
+
+// ../../desktop/rolling-skill/node_modules/yaml/dist/index.js
+var require_dist = __commonJS({
+  "../../desktop/rolling-skill/node_modules/yaml/dist/index.js"(exports) {
+    "use strict";
+    var composer = require_composer();
+    var Document = require_Document();
+    var Schema = require_Schema();
+    var errors = require_errors();
+    var Alias = require_Alias();
+    var identity = require_identity();
+    var Pair = require_Pair();
+    var Scalar = require_Scalar();
+    var YAMLMap = require_YAMLMap();
+    var YAMLSeq = require_YAMLSeq();
+    var cst = require_cst();
+    var lexer = require_lexer();
+    var lineCounter = require_line_counter();
+    var parser = require_parser();
+    var publicApi = require_public_api();
+    var visit = require_visit();
+    exports.Composer = composer.Composer;
+    exports.Document = Document.Document;
+    exports.Schema = Schema.Schema;
+    exports.YAMLError = errors.YAMLError;
+    exports.YAMLParseError = errors.YAMLParseError;
+    exports.YAMLWarning = errors.YAMLWarning;
+    exports.Alias = Alias.Alias;
+    exports.isAlias = identity.isAlias;
+    exports.isCollection = identity.isCollection;
+    exports.isDocument = identity.isDocument;
+    exports.isMap = identity.isMap;
+    exports.isNode = identity.isNode;
+    exports.isPair = identity.isPair;
+    exports.isScalar = identity.isScalar;
+    exports.isSeq = identity.isSeq;
+    exports.Pair = Pair.Pair;
+    exports.Scalar = Scalar.Scalar;
+    exports.YAMLMap = YAMLMap.YAMLMap;
+    exports.YAMLSeq = YAMLSeq.YAMLSeq;
+    exports.CST = cst;
+    exports.Lexer = lexer.Lexer;
+    exports.LineCounter = lineCounter.LineCounter;
+    exports.Parser = parser.Parser;
+    exports.parse = publicApi.parse;
+    exports.parseAllDocuments = publicApi.parseAllDocuments;
+    exports.parseDocument = publicApi.parseDocument;
+    exports.stringify = publicApi.stringify;
+    exports.visit = visit.visit;
+    exports.visitAsync = visit.visitAsync;
+  }
+});
+
+// ../../desktop/rolling-skill/src/managed-skill-snapshot.cjs
+var require_managed_skill_snapshot = __commonJS({
+  "../../desktop/rolling-skill/src/managed-skill-snapshot.cjs"(exports, module) {
+    var { createHash } = __require("node:crypto");
+    var {
+      lstatSync,
+      existsSync,
+      readFileSync,
+      readdirSync,
+      readlinkSync,
+      realpathSync
+    } = __require("node:fs");
+    var { basename, dirname, isAbsolute, relative, resolve, sep } = __require("node:path");
+    var YAML = require_dist();
+    var MANAGED_INSTALL_MARKER = ".rolling-skill-managed.json";
+    var DEFAULT_SCAN_LIMITS = Object.freeze({
+      maxFiles: 1e4,
+      maxTotalBytes: 256 * 1024 * 1024,
+      maxFileBytes: 32 * 1024 * 1024
+    });
+    function normalizedLimits(input = {}) {
+      const result = { ...DEFAULT_SCAN_LIMITS };
+      for (const key of Object.keys(result)) {
+        if (input[key] === void 0) continue;
+        const value = Number(input[key]);
+        if (!Number.isSafeInteger(value) || value <= 0) {
+          throw new Error(`${key} must be a positive integer`);
+        }
+        result[key] = value;
+      }
+      return result;
+    }
+    function posixPath(value) {
+      return String(value).split(sep).join("/") || ".";
+    }
+    function comparePaths(left, right) {
+      return left < right ? -1 : left > right ? 1 : 0;
+    }
+    function isContained(root, candidate) {
+      return candidate === root || candidate.startsWith(`${root}${sep}`);
+    }
+    function safeRealRoot(path, label) {
+      const root = realpathSync(path);
+      if (!lstatSync(root).isDirectory()) throw new Error(`${label} must be a directory`);
+      return root;
+    }
+    function walkTree(path, options2 = {}) {
+      const root = safeRealRoot(path, options2.label ?? "Skill root");
+      const containmentLabel = options2.containmentLabel ?? "Skill root";
+      const limits = normalizedLimits(options2.limits);
+      const records = [];
+      let entryCount = 0;
+      let totalBytes = 0;
+      function account(relativePath, size) {
+        if (size > limits.maxFileBytes) {
+          throw new Error(`Managed Skill single-file limit exceeded at ${relativePath}`);
+        }
+        if (totalBytes + size > limits.maxTotalBytes) {
+          throw new Error(`Managed Skill total byte limit exceeded at ${relativePath}`);
+        }
+        totalBytes += size;
+      }
+      function visit(directory, relativeDirectory = "") {
+        const entries = readdirSync(directory, { withFileTypes: true }).sort((left, right) => comparePaths(left.name, right.name));
+        for (const entry of entries) {
+          if (entry.name.toLowerCase() === ".git") continue;
+          const absolutePath = resolve(directory, entry.name);
+          const relativePath = posixPath(relative(root, absolutePath));
+          entryCount += 1;
+          if (entryCount > limits.maxFiles) {
+            throw new Error(`Managed Skill file count limit exceeded at ${relativePath}`);
+          }
+          const stat = lstatSync(absolutePath);
+          if (stat.isDirectory()) {
+            visit(absolutePath, relativePath);
+            continue;
+          }
+          if (stat.isSymbolicLink()) {
+            const linkTarget = readlinkSync(absolutePath);
+            if (isAbsolute(linkTarget)) {
+              throw new Error(
+                `Symbolic link ${relativePath} points outside the ${containmentLabel}`
+              );
+            }
+            let resolvedTarget;
+            try {
+              resolvedTarget = realpathSync(resolve(dirname(absolutePath), linkTarget));
+            } catch {
+              throw new Error(`Symbolic link ${relativePath} has a missing target`);
+            }
+            if (!isContained(root, resolvedTarget)) {
+              throw new Error(
+                `Symbolic link ${relativePath} points outside the ${containmentLabel}`
+              );
+            }
+            const size = Buffer.byteLength(linkTarget);
+            account(relativePath, size);
+            records.push({
+              absolutePath,
+              path: relativePath,
+              type: "symlink",
+              executable: false,
+              size,
+              linkTarget
+            });
+            continue;
+          }
+          if (!stat.isFile()) {
+            throw new Error(`Unsupported special file in managed Skill: ${relativePath}`);
+          }
+          account(relativePath, stat.size);
+          records.push({
+            absolutePath,
+            path: relativePath,
+            type: "file",
+            executable: Boolean(stat.mode & 73),
+            size: stat.size
+          });
+        }
+      }
+      visit(root);
+      records.sort((left, right) => comparePaths(left.path, right.path));
+      return { root, records, entryCount, totalBytes, limits };
+    }
+    function decodeUtf8(buffer, path) {
+      try {
+        return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+      } catch {
+        throw new Error(`${path} must contain valid UTF-8 text`);
+      }
+    }
+    function readFrontmatter(manifestPath) {
+      const warnings = [];
+      let document = null;
+      let text;
+      try {
+        text = decodeUtf8(readFileSync(manifestPath), manifestPath).replace(/\r\n?/gu, "\n");
+      } catch (error) {
+        return { name: null, description: null, warnings: [error.message] };
+      }
+      const match = text.match(/^---\n([\s\S]*?)\n---(?:\n|$)/u);
+      if (!match) {
+        warnings.push("SKILL.md requires YAML frontmatter");
+      } else {
+        try {
+          document = YAML.parse(match[1]);
+        } catch (error) {
+          warnings.push(`SKILL.md frontmatter is invalid YAML: ${error.message}`);
+        }
+      }
+      const name = typeof document?.name === "string" ? document.name.trim() : "";
+      const description = typeof document?.description === "string" ? document.description.trim() : "";
+      if (!name || name.length > 64 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name)) {
+        warnings.push("Skill name must use lowercase letters, digits, and single hyphens");
+      }
+      if (!description || description.length > 1024) {
+        warnings.push("Skill description must contain 1 to 1024 characters");
+      }
+      return { name: name || null, description: description || null, warnings, text };
+    }
+    function validateManifestReferences(text, manifestPath, skillRoot) {
+      const warnings = [];
+      const pattern = /\]\(([^)\n]+)\)/gu;
+      for (const match of text.matchAll(pattern)) {
+        let target = match[1].trim();
+        if (target.startsWith("<")) {
+          const end = target.indexOf(">");
+          target = end > 0 ? target.slice(1, end) : target;
+        } else {
+          target = target.split(/\s+/u)[0];
+        }
+        if (!target || target.startsWith("#") || target.startsWith("//")) continue;
+        if (/^[a-z][a-z0-9+.-]*:/iu.test(target)) continue;
+        target = target.split(/[?#]/u)[0];
+        try {
+          target = decodeURIComponent(target);
+        } catch {
+          warnings.push(`Skill reference has invalid URL encoding: ${match[1].trim()}`);
+          continue;
+        }
+        if (!target) continue;
+        if (isAbsolute(target) || /^[A-Za-z]:[\\/]/u.test(target)) {
+          warnings.push(`Skill reference must be relative: ${target}`);
+          continue;
+        }
+        const resolvedTarget = resolve(dirname(manifestPath), target);
+        if (!isContained(skillRoot, resolvedTarget)) {
+          warnings.push(`Skill reference points outside the Skill root: ${target}`);
+          continue;
+        }
+        if (!existsSync(resolvedTarget)) {
+          warnings.push(`Skill reference does not exist: ${target}`);
+        }
+      }
+      return warnings;
+    }
+    function publicFile(record) {
+      const result = {
+        path: record.path,
+        type: record.type,
+        executable: record.executable,
+        size: record.size
+      };
+      if (record.type === "symlink") result.linkTarget = record.linkTarget;
+      return result;
+    }
+    function snapshotManagedSkill(skillRoot, limits = {}) {
+      const walked = walkTree(skillRoot, {
+        label: "Skill root",
+        containmentLabel: "Skill root",
+        limits
+      });
+      const hash = createHash("sha256");
+      const digestRecords = walked.records.filter((record) => record.path !== MANAGED_INSTALL_MARKER);
+      for (const record of digestRecords) {
+        const data = record.type === "file" ? readFileSync(record.absolutePath) : Buffer.from(record.linkTarget, "utf8");
+        hash.update(`${record.type}\0${record.path}\0${record.executable ? "1" : "0"}\0${data.length}\0`);
+        hash.update(data);
+        hash.update("\0");
+      }
+      return {
+        digest: `sha256:${hash.digest("hex")}`,
+        files: digestRecords.map(publicFile),
+        totalBytes: walked.totalBytes
+      };
+    }
+    function scanManagedSkillRepository(repositoryRoot, limits = {}) {
+      const walked = walkTree(repositoryRoot, {
+        label: "Repository root",
+        containmentLabel: "repository",
+        limits
+      });
+      const manifests = walked.records.filter(
+        (record) => record.type === "file" && basename(record.path) === "SKILL.md"
+      );
+      const skills = manifests.map((manifest) => {
+        const skillRoot = posixPath(dirname(manifest.path));
+        const parsed = readFrontmatter(manifest.absolutePath);
+        const absoluteSkillRoot = dirname(manifest.absolutePath);
+        if (skillRoot !== "." && parsed.name && basename(skillRoot) !== parsed.name) {
+          parsed.warnings.push("Skill directory name must match the frontmatter name");
+        }
+        parsed.warnings.push(...validateManifestReferences(
+          parsed.text ?? "",
+          manifest.absolutePath,
+          absoluteSkillRoot
+        ));
+        const snapshot = snapshotManagedSkill(absoluteSkillRoot, limits);
+        return {
+          name: parsed.name ?? (skillRoot === "." ? "invalid-skill" : basename(skillRoot)),
+          description: parsed.description,
+          skillRoot,
+          manifestPath: manifest.path,
+          status: parsed.warnings.length ? "invalid" : "valid",
+          warnings: parsed.warnings,
+          executableFiles: snapshot.files.filter((entry) => entry.type === "file" && entry.executable).map((entry) => entry.path)
+        };
+      });
+      return {
+        skills,
+        warnings: manifests.length ? [] : ["Repository does not contain a SKILL.md"],
+        stats: {
+          fileCount: walked.records.length,
+          entryCount: walked.entryCount,
+          totalBytes: walked.totalBytes
+        }
+      };
+    }
+    module.exports = {
+      DEFAULT_SCAN_LIMITS,
+      scanManagedSkillRepository,
+      snapshotManagedSkill
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/managed-skill-git.cjs
+var require_managed_skill_git = __commonJS({
+  "../../desktop/rolling-skill/src/managed-skill-git.cjs"(exports, module) {
+    var { createHash } = __require("node:crypto");
+    var { execFile } = __require("node:child_process");
+    var { realpathSync } = __require("node:fs");
+    var { basename, isAbsolute, posix, resolve: resolvePath } = __require("node:path");
+    var { DEFAULT_SCAN_LIMITS } = require_managed_skill_snapshot();
+    var MAX_GIT_OUTPUT = 8 * 1024 * 1024;
+    function requiredText(value, label, maxLength = 4096) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized || normalized.length > maxLength) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function redactGitLocation(value) {
+      const location = requiredText(value, "Git location", 8192);
+      if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(location)) {
+        try {
+          const url = new URL(location);
+          if (url.protocol === "file:") return basename(url.pathname) || "local-git-repository";
+          url.username = "";
+          url.password = "";
+          url.search = "";
+          url.hash = "";
+          return url.toString().replace(/\/$/u, "");
+        } catch {
+        }
+      }
+      const scp = location.match(/^(?:[^@/\s]+@)?([^:/\s]+):([^?#]+)(?:[?#].*)?$/u);
+      if (scp) return `${scp[1]}:${scp[2]}`;
+      return basename(location.replace(/[?#].*$/u, "")) || "local-git-repository";
+    }
+    function redactGitError(value, locations = []) {
+      let message = String(value ?? "Git operation failed");
+      for (const location of locations) {
+        if (!location) continue;
+        message = message.split(String(location)).join(redactGitLocation(location));
+      }
+      message = message.replace(/(https?:\/\/)[^/@\s]+@/giu, "$1");
+      message = message.replace(/([?&](?:token|access_token|password|key)=)[^&#\s]+/giu, "$1[redacted]");
+      return message.trim();
+    }
+    function requireGitSourceLocation(value) {
+      const location = requiredText(value, "Git URL", 8192);
+      if (location.startsWith("-")) {
+        throw new Error("Git URL must use HTTPS, SSH, or SCP syntax");
+      }
+      if (!location.includes("://") && /^(?:[^@/\s]+@)?[^:/\s]+:[^\s]+$/u.test(location)) return location;
+      let url;
+      try {
+        url = new URL(location);
+      } catch {
+        throw new Error("Git URL must use HTTPS, SSH, or SCP syntax");
+      }
+      if (!(/* @__PURE__ */ new Set(["https:", "ssh:"])).has(url.protocol)) {
+        throw new Error("Git URL must use HTTPS, SSH, or SCP syntax");
+      }
+      return location;
+    }
+    function normalizedSnapshotLimits(input = {}) {
+      const limits = { ...DEFAULT_SCAN_LIMITS };
+      for (const key of Object.keys(limits)) {
+        if (input[key] === void 0) continue;
+        const value = Number(input[key]);
+        if (!Number.isSafeInteger(value) || value <= 0) {
+          throw new Error(`${key} must be a positive integer`);
+        }
+        limits[key] = value;
+      }
+      return limits;
+    }
+    function normalizedSkillRoot(value) {
+      const skillRoot = requiredText(value, "Skill root", 4096).replace(/\\/gu, "/");
+      if (isAbsolute(skillRoot) || skillRoot !== "." && (posix.normalize(skillRoot) !== skillRoot || skillRoot.split("/").some((segment) => !segment || segment === "." || segment === ".."))) {
+        throw new Error("Skill root must be a normalized repository-relative path");
+      }
+      return skillRoot;
+    }
+    var ManagedSkillGit = class {
+      constructor(options2 = {}) {
+        this.gitExecutable = options2.gitExecutable ?? "git";
+        this.environment = { ...process.env, ...options2.environment ?? {} };
+        this.execFile = options2.execFile ?? execFile;
+      }
+      run(args, options2 = {}) {
+        const baseArgs = [
+          "-c",
+          "core.hooksPath=/dev/null",
+          "-c",
+          "user.name=Rolling Skill",
+          "-c",
+          "user.email=rolling-skill@localhost",
+          "-c",
+          "tag.gpgSign=false"
+        ];
+        const allowed = new Set(options2.allowExitCodes ?? [0]);
+        return new Promise((resolve, reject) => {
+          this.execFile(
+            this.gitExecutable,
+            [...baseArgs, ...args],
+            {
+              cwd: options2.cwd,
+              env: {
+                ...this.environment,
+                GIT_CONFIG_NOSYSTEM: "1",
+                GIT_TERMINAL_PROMPT: "0"
+              },
+              encoding: "utf8",
+              maxBuffer: MAX_GIT_OUTPUT
+            },
+            (error, stdout = "", stderr = "") => {
+              const exitCode = Number.isInteger(error?.code) ? error.code : error ? null : 0;
+              if (!error || allowed.has(exitCode)) {
+                resolve({
+                  exitCode: exitCode ?? 0,
+                  stdout: String(stdout).trim(),
+                  stderr: String(stderr).trim()
+                });
+                return;
+              }
+              const detail = stderr || stdout || error.message;
+              const failure = new Error(redactGitError(detail, options2.redactLocations));
+              failure.code = "MANAGED_SKILL_GIT_FAILED";
+              failure.exitCode = exitCode;
+              reject(failure);
+            }
+          );
+        });
+      }
+      runRaw(args, options2 = {}) {
+        const baseArgs = [
+          "-c",
+          "core.hooksPath=/dev/null",
+          "-c",
+          "user.name=Rolling Skill",
+          "-c",
+          "user.email=rolling-skill@localhost",
+          "-c",
+          "tag.gpgSign=false"
+        ];
+        return new Promise((resolve, reject) => {
+          this.execFile(
+            this.gitExecutable,
+            [...baseArgs, ...args],
+            {
+              cwd: options2.cwd,
+              env: {
+                ...this.environment,
+                GIT_CONFIG_NOSYSTEM: "1",
+                GIT_TERMINAL_PROMPT: "0"
+              },
+              encoding: null,
+              maxBuffer: options2.maxBuffer ?? MAX_GIT_OUTPUT
+            },
+            (error, stdout = Buffer.alloc(0), stderr = Buffer.alloc(0)) => {
+              if (!error) {
+                resolve(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
+                return;
+              }
+              const detail = Buffer.isBuffer(stderr) && stderr.length ? stderr.toString("utf8") : Buffer.isBuffer(stdout) && stdout.length ? stdout.toString("utf8") : error.message;
+              const failure = new Error(redactGitError(detail, options2.redactLocations));
+              failure.code = "MANAGED_SKILL_GIT_FAILED";
+              reject(failure);
+            }
+          );
+        });
+      }
+      async initialize(repositoryPath) {
+        await this.run(["init", "-b", "main", "."], { cwd: repositoryPath });
+        return this.headOrNull(repositoryPath);
+      }
+      async cloneLocal(sourcePath, destinationPath) {
+        await this.run(
+          ["clone", "--no-recurse-submodules", "--no-local", "--", sourcePath, destinationPath],
+          { redactLocations: [sourcePath] }
+        );
+        await this.run(["remote", "remove", "origin"], { cwd: destinationPath });
+        return this.head(destinationPath);
+      }
+      async cloneUrl(location, destinationPath) {
+        location = requiredText(location, "Git URL", 8192);
+        await this.run(
+          ["clone", "--no-recurse-submodules", "--", location, destinationPath],
+          { redactLocations: [location] }
+        );
+        await this.run(["remote", "remove", "origin"], { cwd: destinationPath });
+        return this.head(destinationPath);
+      }
+      async headOrNull(repositoryPath) {
+        const result = await this.run(
+          ["rev-parse", "--verify", "HEAD^{commit}"],
+          { cwd: repositoryPath, allowExitCodes: [0, 128] }
+        );
+        return result.exitCode === 0 ? result.stdout : null;
+      }
+      async head(repositoryPath) {
+        const commit = await this.headOrNull(repositoryPath);
+        if (!commit || !/^[a-f0-9]{40}$/u.test(commit)) {
+          throw new Error("Managed Skill repository does not have a valid HEAD commit");
+        }
+        return commit;
+      }
+      async resolve(repositoryPath, reference) {
+        reference = requiredText(reference, "Git reference", 500);
+        const commitReference = reference.endsWith("^{commit}") ? reference : `${reference}^{commit}`;
+        const result = await this.run(
+          ["rev-parse", "--verify", commitReference],
+          { cwd: repositoryPath }
+        );
+        if (!/^[a-f0-9]{40}$/u.test(result.stdout)) throw new Error("Git reference is not a commit");
+        return result.stdout;
+      }
+      async defaultBranch(repositoryPath) {
+        const result = await this.run(["symbolic-ref", "--short", "HEAD"], { cwd: repositoryPath });
+        return requiredText(result.stdout, "Default branch", 200);
+      }
+      async status(repositoryPath) {
+        const result = await this.run(
+          ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+          { cwd: repositoryPath }
+        );
+        const entries = result.stdout.split("\0").filter(Boolean);
+        return { dirty: entries.length > 0, entries };
+      }
+      async createWorktree(repositoryPath, workspacePath, branchName, baselineCommit) {
+        repositoryPath = resolvePath(requiredText(repositoryPath, "Managed repository path", 8192));
+        workspacePath = resolvePath(requiredText(workspacePath, "Optimization workspace path", 8192));
+        branchName = requiredText(branchName, "Optimization branch", 500);
+        await this.run(["check-ref-format", `refs/heads/${branchName}`], { cwd: repositoryPath });
+        baselineCommit = await this.resolve(
+          repositoryPath,
+          requiredText(baselineCommit, "Optimization baseline commit", 500)
+        );
+        const existing = await this.run(
+          ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
+          { cwd: repositoryPath, allowExitCodes: [0, 1] }
+        );
+        if (existing.exitCode === 0) throw new Error("Optimization branch already exists");
+        await this.run(
+          ["worktree", "add", "-b", branchName, "--", workspacePath, baselineCommit],
+          { cwd: repositoryPath }
+        );
+        return {
+          workspacePath,
+          branchName,
+          commit: await this.worktreeHead(workspacePath)
+        };
+      }
+      async worktreeHead(workspacePath) {
+        return this.head(resolvePath(requiredText(workspacePath, "Optimization workspace path", 8192)));
+      }
+      async isAncestor(repositoryPath, ancestorCommit, descendantCommit) {
+        repositoryPath = resolvePath(requiredText(repositoryPath, "Managed repository path", 8192));
+        ancestorCommit = await this.resolve(repositoryPath, ancestorCommit);
+        descendantCommit = await this.resolve(repositoryPath, descendantCommit);
+        const result = await this.run(
+          ["merge-base", "--is-ancestor", ancestorCommit, descendantCommit],
+          { cwd: repositoryPath, allowExitCodes: [0, 1] }
+        );
+        return result.exitCode === 0;
+      }
+      async removeWorktree(repositoryPath, workspacePath) {
+        repositoryPath = resolvePath(requiredText(repositoryPath, "Managed repository path", 8192));
+        workspacePath = resolvePath(requiredText(workspacePath, "Optimization workspace path", 8192));
+        try {
+          workspacePath = realpathSync(workspacePath);
+        } catch {
+          throw new Error("Optimization path is not a registered Git worktree");
+        }
+        const listed = await this.run(["worktree", "list", "--porcelain", "-z"], {
+          cwd: repositoryPath
+        });
+        const registered = listed.stdout.split("\0\0").flatMap((record) => record.split("\0")).some((field) => field === `worktree ${workspacePath}`);
+        if (!registered) throw new Error("Optimization path is not a registered Git worktree");
+        await this.run(["worktree", "remove", "--force", "--", workspacePath], {
+          cwd: repositoryPath
+        });
+        return { workspacePath };
+      }
+      async commitAll(repositoryPath, message, options2 = {}) {
+        message = requiredText(message, "Commit message", 2e3);
+        await this.run(["add", "-A", "--", "."], { cwd: repositoryPath });
+        const forcePaths = [...new Set((options2.forcePaths ?? []).map(normalizedSkillRoot))];
+        if (forcePaths.length) {
+          await this.run(["add", "-f", "-A", "--", ...forcePaths], { cwd: repositoryPath });
+        }
+        const staged = await this.run(
+          ["diff", "--cached", "--quiet", "--exit-code"],
+          { cwd: repositoryPath, allowExitCodes: [0, 1] }
+        );
+        if (staged.exitCode === 0) {
+          throw new Error("Managed Skill repository has no working changes to commit");
+        }
+        await this.run(["commit", "--no-gpg-sign", "-m", message], { cwd: repositoryPath });
+        return this.head(repositoryPath);
+      }
+      async snapshotSkill(repositoryPath, commit, inputSkillRoot, inputLimits = {}) {
+        commit = await this.resolve(repositoryPath, requiredText(commit, "Commit", 500));
+        const skillRoot = normalizedSkillRoot(inputSkillRoot);
+        const limits = normalizedSnapshotLimits(inputLimits);
+        const tree = await this.run(
+          ["ls-tree", "-rlz", "--full-tree", commit],
+          { cwd: repositoryPath }
+        );
+        const records = [];
+        let totalBytes = 0;
+        for (const raw of tree.stdout.split("\0").filter(Boolean)) {
+          const tab = raw.indexOf("	");
+          if (tab < 0 || raw.includes("\uFFFD")) throw new Error("Git tree contains an invalid path");
+          const [mode, type, objectId, sizeText] = raw.slice(0, tab).trim().split(/\s+/u);
+          const repositoryPathName = raw.slice(tab + 1);
+          const inside = skillRoot === "." ? repositoryPathName : repositoryPathName.startsWith(`${skillRoot}/`) ? repositoryPathName.slice(skillRoot.length + 1) : null;
+          if (!inside) continue;
+          if (inside === ".rolling-skill-managed.json") continue;
+          if (inside.split("/").some((segment) => segment.toLowerCase() === ".git")) continue;
+          if (type !== "blob" || !(/* @__PURE__ */ new Set(["100644", "100755", "120000"])).has(mode)) {
+            throw new Error(`Unsupported Git tree entry in managed Skill: ${repositoryPathName}`);
+          }
+          const size = Number(sizeText);
+          if (!Number.isSafeInteger(size) || size < 0) throw new Error("Git tree entry size is invalid");
+          if (records.length + 1 > limits.maxFiles) {
+            throw new Error(`Managed Skill file count limit exceeded at ${inside}`);
+          }
+          if (size > limits.maxFileBytes) {
+            throw new Error(`Managed Skill single-file limit exceeded at ${inside}`);
+          }
+          if (totalBytes + size > limits.maxTotalBytes) {
+            throw new Error(`Managed Skill total byte limit exceeded at ${inside}`);
+          }
+          totalBytes += size;
+          records.push({
+            path: inside,
+            objectId,
+            size,
+            type: mode === "120000" ? "symlink" : "file",
+            executable: mode === "100755"
+          });
+        }
+        records.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+        const hash = createHash("sha256");
+        const files = [];
+        for (const record of records) {
+          const data = await this.runRaw(["cat-file", "blob", record.objectId], {
+            cwd: repositoryPath,
+            maxBuffer: Math.max(MAX_GIT_OUTPUT, record.size + 1024)
+          });
+          if (data.length !== record.size) throw new Error(`Git blob size changed for ${record.path}`);
+          hash.update(`${record.type}\0${record.path}\0${record.executable ? "1" : "0"}\0${data.length}\0`);
+          hash.update(data);
+          hash.update("\0");
+          const file = {
+            path: record.path,
+            type: record.type,
+            executable: record.executable,
+            size: data.length
+          };
+          if (record.type === "symlink") {
+            const linkTarget = new TextDecoder("utf-8", { fatal: true }).decode(data);
+            const resolvedTarget = posix.normalize(posix.join(
+              posix.dirname(record.path),
+              linkTarget
+            ));
+            if (!linkTarget || linkTarget.includes("\0") || isAbsolute(linkTarget) || /^[A-Za-z]:[\\/]/u.test(linkTarget) || resolvedTarget === ".." || resolvedTarget.startsWith("../")) {
+              throw new Error(`Git symbolic link points outside the Skill root: ${record.path}`);
+            }
+            file.linkTarget = linkTarget;
+          }
+          files.push(file);
+        }
+        return { digest: `sha256:${hash.digest("hex")}`, files, totalBytes };
+      }
+      async readSkillFile(repositoryPath, commit, inputSkillRoot, inputPath) {
+        commit = await this.resolve(repositoryPath, requiredText(commit, "Commit", 500));
+        const skillRoot = normalizedSkillRoot(inputSkillRoot);
+        const path = requiredText(inputPath, "Skill file path", 4096).replace(/\\/gu, "/");
+        if (isAbsolute(path) || posix.normalize(path) !== path || path.split("/").some((segment) => !segment || segment === "." || segment === "..")) {
+          throw new Error("Skill file path must stay inside the Skill root");
+        }
+        const repositoryFile = skillRoot === "." ? path : `${skillRoot}/${path}`;
+        return this.runRaw(["show", `${commit}:${repositoryFile}`], {
+          cwd: repositoryPath,
+          maxBuffer: MAX_GIT_OUTPUT
+        });
+      }
+      async createAnnotatedTag(repositoryPath, tagName, message, commit) {
+        tagName = requiredText(tagName, "Release tag", 500);
+        message = requiredText(message, "Release tag message", 2e3);
+        commit = requiredText(commit, "Release commit", 40);
+        await this.run(["check-ref-format", `refs/tags/${tagName}`], { cwd: repositoryPath });
+        const existing = await this.run(
+          ["show-ref", "--verify", "--quiet", `refs/tags/${tagName}`],
+          { cwd: repositoryPath, allowExitCodes: [0, 1] }
+        );
+        if (existing.exitCode === 0) throw new Error(`Release tag already exists: ${tagName}`);
+        await this.run(["tag", "-a", tagName, "-m", message, commit], { cwd: repositoryPath });
+        return this.resolve(repositoryPath, tagName);
+      }
+      async deleteTag(repositoryPath, tagName) {
+        tagName = requiredText(tagName, "Release tag", 500);
+        await this.run(["check-ref-format", `refs/tags/${tagName}`], { cwd: repositoryPath });
+        await this.run(["tag", "-d", tagName], { cwd: repositoryPath });
+      }
+      async subject(repositoryPath, commit = "HEAD") {
+        const result = await this.run(
+          ["show", "-s", "--format=%s", requiredText(commit, "Commit", 500)],
+          { cwd: repositoryPath }
+        );
+        return result.stdout;
+      }
+    };
+    module.exports = {
+      ManagedSkillGit,
+      redactGitLocation,
+      requireGitSourceLocation
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/managed-skill-manager.cjs
+var require_managed_skill_manager = __commonJS({
+  "../../desktop/rolling-skill/src/managed-skill-manager.cjs"(exports, module) {
+    var { randomUUID } = __require("node:crypto");
+    var {
+      chmodSync,
+      closeSync,
+      constants,
+      fstatSync,
+      lstatSync,
+      mkdirSync,
+      openSync,
+      readFileSync,
+      readlinkSync,
+      readdirSync,
+      readSync,
+      realpathSync,
+      renameSync,
+      rmSync,
+      symlinkSync,
+      writeSync
+    } = __require("node:fs");
+    var { basename, dirname, isAbsolute, join, relative, resolve, sep } = __require("node:path");
+    var { extractManagedSkillZip } = require_managed_skill_archive();
+    var { ManagedSkillGit, redactGitLocation } = require_managed_skill_git();
+    var {
+      DEFAULT_SCAN_LIMITS,
+      scanManagedSkillRepository,
+      snapshotManagedSkill
+    } = require_managed_skill_snapshot();
+    var SOURCE_KINDS = /* @__PURE__ */ new Set(["zip", "folder", "local-git", "git-url"]);
+    function requiredText(value, label, maxLength = 4096) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized || normalized.length > maxLength) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function isContained(root, candidate) {
+      return candidate === root || candidate.startsWith(`${root}${sep}`);
+    }
+    function compareText(left, right) {
+      return left < right ? -1 : left > right ? 1 : 0;
+    }
+    function defaultManagedSkillPaths({ applicationSupportDirectory }) {
+      const root = resolve(requiredText(applicationSupportDirectory, "Application Support directory"));
+      return {
+        applicationSupportDirectory: root,
+        registryPath: join(root, "skill-registry.json"),
+        repositoriesRoot: join(root, "repositories")
+      };
+    }
+    function safeSourceLocation(kind, location) {
+      return kind === "git-url" ? redactGitLocation(location) : basename(location);
+    }
+    function displayNameForSource(location, fallback) {
+      const redacted = redactGitLocation(location);
+      const withoutSuffix = redacted.replace(/\.(?:git|zip)$/iu, "");
+      return withoutSuffix || fallback || "Imported Skill";
+    }
+    function publicRepository(repository) {
+      const { managedPath: _managedPath, ...publicFields } = repository;
+      return publicFields;
+    }
+    async function candidateBaseSnapshot(manager, skill, repository) {
+      const scan = scanManagedSkillRepository(repository.managedPath, manager.scanLimits);
+      const currentSkill = scan.skills.find((entry) => entry.skillRoot === skill.skillRoot);
+      if (!currentSkill || currentSkill.status !== "valid") {
+        throw new Error("Selected Skill is not valid in the current Working tree");
+      }
+      const snapshot = snapshotManagedSkill(
+        join(repository.managedPath, currentSkill.skillRoot),
+        manager.scanLimits
+      );
+      const status = await manager.git.status(repository.managedPath);
+      return {
+        repositoryId: repository.id,
+        skillId: skill.id,
+        commit: await manager.git.headOrNull(repository.managedPath),
+        contentDigest: snapshot.digest,
+        dirty: status.dirty === true
+      };
+    }
+    function copyFolderWithoutGit(source, destination, limits = DEFAULT_SCAN_LIMITS) {
+      const sourceRoot = realpathSync(source);
+      if (!lstatSync(sourceRoot).isDirectory()) throw new Error("Skill folder source must be a directory");
+      mkdirSync(destination, { mode: 448 });
+      let entryCount = 0;
+      let totalBytes = 0;
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      function account(relativePath, size) {
+        entryCount += 1;
+        if (entryCount > limits.maxFiles) {
+          throw new Error(`Managed Skill file count limit exceeded at ${relativePath}`);
+        }
+        if (size > limits.maxFileBytes) {
+          throw new Error(`Managed Skill single-file limit exceeded at ${relativePath}`);
+        }
+        if (totalBytes + size > limits.maxTotalBytes) {
+          throw new Error(`Managed Skill total byte limit exceeded at ${relativePath}`);
+        }
+        totalBytes += size;
+      }
+      function copyFileBounded(sourcePath, destinationPath, relativePath, mode, declaredSize) {
+        account(relativePath, declaredSize);
+        const sourceDescriptor = openSync(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+        let destinationDescriptor = null;
+        try {
+          const opened = fstatSync(sourceDescriptor);
+          if (!opened.isFile() || opened.size !== declaredSize) {
+            throw new Error(`Skill folder changed while importing ${relativePath}`);
+          }
+          destinationDescriptor = openSync(
+            destinationPath,
+            constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+            mode
+          );
+          let copied = 0;
+          while (true) {
+            const count = readSync(sourceDescriptor, buffer, 0, buffer.length, null);
+            if (!count) break;
+            copied += count;
+            if (copied > declaredSize || copied > limits.maxFileBytes) {
+              throw new Error(`Skill folder changed while importing ${relativePath}`);
+            }
+            let offset = 0;
+            while (offset < count) {
+              offset += writeSync(destinationDescriptor, buffer, offset, count - offset);
+            }
+          }
+          if (copied !== declaredSize) {
+            throw new Error(`Skill folder changed while importing ${relativePath}`);
+          }
+        } finally {
+          if (destinationDescriptor !== null) closeSync(destinationDescriptor);
+          closeSync(sourceDescriptor);
+        }
+        chmodSync(destinationPath, mode);
+      }
+      function visit(sourceDirectory, destinationDirectory) {
+        const entries = readdirSync(sourceDirectory, { withFileTypes: true }).sort((left, right) => compareText(left.name, right.name));
+        for (const entry of entries) {
+          if (entry.name.toLowerCase() === ".git") continue;
+          const sourcePath = join(sourceDirectory, entry.name);
+          const destinationPath = join(destinationDirectory, entry.name);
+          const relativePath = relative(sourceRoot, sourcePath).split(sep).join("/");
+          const stat = lstatSync(sourcePath);
+          if (stat.isDirectory()) {
+            account(relativePath, 0);
+            mkdirSync(destinationPath, { mode: 448 });
+            visit(sourcePath, destinationPath);
+            continue;
+          }
+          if (stat.isSymbolicLink()) {
+            const linkTarget = readlinkSync(sourcePath);
+            let resolvedTarget;
+            try {
+              resolvedTarget = realpathSync(resolve(dirname(sourcePath), linkTarget));
+            } catch {
+              throw new Error(`Symbolic link ${relativePath} has a missing target`);
+            }
+            if (isAbsolute(linkTarget) || !isContained(sourceRoot, resolvedTarget)) {
+              throw new Error(`Symbolic link ${relativePath} points outside the source folder`);
+            }
+            account(relativePath, Buffer.byteLength(linkTarget));
+            symlinkSync(linkTarget, destinationPath);
+            continue;
+          }
+          if (!stat.isFile()) {
+            throw new Error(`Unsupported special file in managed Skill: ${relativePath}`);
+          }
+          copyFileBounded(
+            sourcePath,
+            destinationPath,
+            relativePath,
+            stat.mode & 73 ? 493 : 420,
+            stat.size
+          );
+        }
+      }
+      visit(sourceRoot, destination);
+    }
+    var ManagedSkillManager = class {
+      constructor(options2 = {}) {
+        this.paths = defaultManagedSkillPaths(options2);
+        this.store = options2.store;
+        if (!this.store) throw new Error("Managed Skill store is required");
+        this.git = options2.git ?? new ManagedSkillGit();
+        this.scanLimits = { ...DEFAULT_SCAN_LIMITS, ...options2.scanLimits ?? {} };
+        this.operationTail = Promise.resolve();
+        mkdirSync(this.paths.repositoriesRoot, { recursive: true, mode: 448 });
+        chmodSync(this.paths.repositoriesRoot, 448);
+      }
+      enqueue(operation) {
+        const result = this.operationTail.then(operation, operation);
+        this.operationTail = result.catch(() => {
+        });
+        return result;
+      }
+      overview() {
+        return {
+          ...this.catalog(),
+          versions: this.store.listVersions()
+        };
+      }
+      catalog() {
+        return {
+          repositories: this.store.listRepositories().map(publicRepository),
+          skills: this.store.listSkills()
+        };
+      }
+      listVersionPage(input = {}) {
+        return this.store.listVersionPage(input);
+      }
+      importSource(input = {}) {
+        return this.enqueue(() => this.performImport(input));
+      }
+      rescanAll() {
+        return this.enqueue(() => {
+          const failures = [];
+          for (const repository of this.store.listRepositories()) {
+            try {
+              const scan = scanManagedSkillRepository(
+                repository.managedPath,
+                this.scanLimits
+              );
+              this.store.replaceRepositorySkills(repository.id, scan.skills);
+            } catch (error) {
+              failures.push({
+                repositoryId: repository.id,
+                message: error instanceof Error ? error.message : String(error)
+              });
+            }
+          }
+          return { ...this.overview(), failures };
+        });
+      }
+      async performImport(input) {
+        const kind = requiredText(input.kind, "Skill source kind", 40);
+        if (!SOURCE_KINDS.has(kind)) throw new Error("Unsupported managed Skill source kind");
+        const location = requiredText(input.location, "Skill source location", 8192);
+        if (kind !== "git-url" && !isAbsolute(location)) {
+          throw new Error("Local Skill source path must be absolute");
+        }
+        const repositoryId = randomUUID();
+        const stagingPath = join(this.paths.repositoriesRoot, `.staging-${repositoryId}`);
+        const managedPath = join(this.paths.repositoriesRoot, repositoryId);
+        let repository = null;
+        let moved = false;
+        try {
+          if (kind === "folder") {
+            copyFolderWithoutGit(location, stagingPath, this.scanLimits);
+          } else if (kind === "zip") {
+            await extractManagedSkillZip(location, stagingPath, this.scanLimits);
+          } else if (kind === "local-git") {
+            await this.git.cloneLocal(location, stagingPath);
+          } else {
+            await this.git.cloneUrl(location, stagingPath);
+          }
+          const scan = scanManagedSkillRepository(stagingPath, this.scanLimits);
+          const validSkills = scan.skills.filter((skill) => skill.status === "valid");
+          if (!validSkills.length) {
+            throw new Error("Imported repository must contain at least one valid SKILL.md");
+          }
+          let commit;
+          let defaultBranch;
+          if (kind === "folder" || kind === "zip") {
+            await this.git.initialize(stagingPath);
+            commit = await this.git.commitAll(stagingPath, "Import Skill source", {
+              forcePaths: validSkills.map((entry) => entry.skillRoot)
+            });
+            defaultBranch = "main";
+          } else {
+            commit = await this.git.head(stagingPath);
+            defaultBranch = await this.git.defaultBranch(stagingPath);
+          }
+          const snapshots = /* @__PURE__ */ new Map();
+          for (const skill of validSkills) {
+            snapshots.set(skill.skillRoot, await this.git.snapshotSkill(
+              stagingPath,
+              commit,
+              skill.skillRoot,
+              this.scanLimits
+            ));
+          }
+          renameSync(stagingPath, managedPath);
+          moved = true;
+          return this.store.transaction(() => {
+            repository = this.store.addRepository({
+              displayName: requiredText(
+                input.displayName ?? displayNameForSource(location, validSkills[0].name),
+                "Repository display name",
+                200
+              ),
+              managedPath,
+              defaultBranch,
+              source: {
+                kind,
+                location: safeSourceLocation(kind, location)
+              }
+            });
+            const skills = this.store.replaceRepositorySkills(repository.id, scan.skills);
+            const versions = skills.filter((entry) => entry.status === "valid").map((skill) => this.store.addVersion({
+              repositoryId: repository.id,
+              skillId: skill.id,
+              commit,
+              contentDigest: snapshots.get(skill.skillRoot).digest,
+              state: "candidate",
+              createdBy: "import"
+            }));
+            return { repository, skills, versions };
+          });
+        } catch (error) {
+          if (repository) {
+            try {
+              this.store.removeRepository(repository.id, { cascade: true });
+            } catch {
+            }
+          }
+          for (const path of [stagingPath, moved ? managedPath : null]) {
+            if (!path) continue;
+            const resolvedPath = resolve(path);
+            if (isContained(this.paths.repositoriesRoot, resolvedPath)) {
+              rmSync(resolvedPath, { recursive: true, force: true });
+            }
+          }
+          throw error;
+        }
+      }
+      readSkill(skillId, { includeVersions = true } = {}) {
+        if (typeof includeVersions !== "boolean") {
+          throw new Error("includeVersions must be a boolean");
+        }
+        const skill = this.store.getSkill(requiredText(skillId, "Skill id", 200));
+        const repository = this.store.getRepository(skill.repositoryId);
+        const repositoryRoot = realpathSync(repository.managedPath);
+        const skillRoot = realpathSync(join(repositoryRoot, skill.skillRoot));
+        if (!isContained(repositoryRoot, skillRoot)) {
+          throw new Error("Registered Skill root escapes its managed repository");
+        }
+        const manifestPath = realpathSync(join(repositoryRoot, skill.manifestPath));
+        if (!isContained(skillRoot, manifestPath)) {
+          throw new Error("Registered Skill manifest escapes its Skill root");
+        }
+        const detail = {
+          repository,
+          skill,
+          manifest: readFileSync(manifestPath, "utf8"),
+          snapshot: snapshotManagedSkill(skillRoot, this.scanLimits)
+        };
+        if (includeVersions) detail.versions = this.store.listVersions(skill.id);
+        return detail;
+      }
+      candidateBase(skillId) {
+        return this.enqueue(async () => {
+          const skill = this.store.getSkill(requiredText(skillId, "Skill id", 200));
+          const repository = this.store.getRepository(skill.repositoryId);
+          return candidateBaseSnapshot(this, skill, repository);
+        });
+      }
+      createCandidate(input = {}) {
+        return this.enqueue(async () => {
+          const skill = this.store.getSkill(requiredText(input.skillId, "Skill id", 200));
+          const repository = this.store.getRepository(skill.repositoryId);
+          if (input.expectedBase !== void 0) {
+            const expected = input.expectedBase;
+            if (!expected || typeof expected !== "object" || Array.isArray(expected) || Object.keys(expected).sort().join(",") !== "commit,contentDigest,dirty") {
+              throw new Error("Expected Candidate base is invalid");
+            }
+            const actual = await candidateBaseSnapshot(this, skill, repository);
+            if (actual.commit !== expected.commit || actual.contentDigest !== expected.contentDigest || actual.dirty !== expected.dirty) {
+              throw Object.assign(new Error("Managed Skill Candidate base changed"), {
+                code: "RESOURCE_CHANGED"
+              });
+            }
+          }
+          const scan = scanManagedSkillRepository(repository.managedPath, this.scanLimits);
+          const existingByRoot = new Map(
+            this.store.listSkills(repository.id).map((entry) => [entry.skillRoot, entry])
+          );
+          for (const scanned of scan.skills) {
+            const existing = existingByRoot.get(scanned.skillRoot);
+            if (existing && existing.name !== scanned.name) {
+              throw new Error(
+                "Managed Skill rename requires an explicit identity migration"
+              );
+            }
+          }
+          const currentSkill = scan.skills.find((entry) => entry.skillRoot === skill.skillRoot);
+          if (!currentSkill || currentSkill.status !== "valid") {
+            throw new Error("Selected Skill is not valid in the current Working tree");
+          }
+          const selectedSnapshot = snapshotManagedSkill(
+            join(repository.managedPath, currentSkill.skillRoot),
+            this.scanLimits
+          );
+          if (this.store.listVersions(skill.id).some(
+            (entry) => entry.contentDigest === selectedSnapshot.digest
+          )) {
+            throw new Error("Selected Skill content has not changed from a recorded version");
+          }
+          const status = await this.git.status(repository.managedPath);
+          const commit = status.dirty ? await this.git.commitAll(
+            repository.managedPath,
+            requiredText(input.message, "Candidate commit message", 2e3),
+            { forcePaths: scan.skills.filter((entry) => entry.status === "valid").map((entry) => entry.skillRoot) }
+          ) : await this.git.head(repository.managedPath);
+          const committedScan = scanManagedSkillRepository(
+            repository.managedPath,
+            this.scanLimits
+          );
+          if ((await this.git.status(repository.managedPath)).dirty) {
+            throw new Error("Managed Skill Working tree changed while the Candidate was created");
+          }
+          const snapshots = /* @__PURE__ */ new Map();
+          for (const scannedSkill of committedScan.skills.filter((entry) => entry.status === "valid")) {
+            snapshots.set(scannedSkill.skillRoot, await this.git.snapshotSkill(
+              repository.managedPath,
+              commit,
+              scannedSkill.skillRoot,
+              this.scanLimits
+            ));
+          }
+          const { storedSkills, createdVersions } = this.store.transaction(() => {
+            const storedSkills2 = this.store.replaceRepositorySkills(
+              repository.id,
+              committedScan.skills
+            );
+            const createdVersions2 = [];
+            for (const storedSkill of storedSkills2.filter((entry) => entry.status === "valid")) {
+              const snapshot = snapshots.get(storedSkill.skillRoot);
+              if (this.store.listVersions(storedSkill.id).some(
+                (entry) => entry.contentDigest === snapshot.digest
+              )) continue;
+              createdVersions2.push(this.store.addVersion({
+                repositoryId: repository.id,
+                skillId: storedSkill.id,
+                commit,
+                contentDigest: snapshot.digest,
+                state: "candidate",
+                createdBy: input.createdBy ?? "user",
+                optimizationRoundId: input.optimizationRoundId ?? null
+              }));
+            }
+            return { storedSkills: storedSkills2, createdVersions: createdVersions2 };
+          });
+          const selected = createdVersions.find((entry) => entry.skillId === skill.id);
+          if (!selected) throw new Error("Selected Skill did not produce a Candidate version");
+          return { ...selected, relatedVersionIds: createdVersions.map((entry) => entry.id) };
+        });
+      }
+      releaseVersion(input = {}) {
+        return this.enqueue(async () => {
+          const version = this.store.getVersion(requiredText(input.versionId, "Version id", 200));
+          if (input.expectedCandidate !== void 0) {
+            const expected = input.expectedCandidate;
+            if (!expected || typeof expected !== "object" || Array.isArray(expected) || Object.keys(expected).sort().join(",") !== "commit,contentDigest,state,versionLabel" || version.commit !== expected.commit || version.contentDigest !== expected.contentDigest || version.state !== expected.state || input.versionLabel !== expected.versionLabel) {
+              throw Object.assign(new Error("Managed Skill release Candidate changed"), {
+                code: "RESOURCE_CHANGED"
+              });
+            }
+          }
+          if (version.state !== "candidate") throw new Error("Only Candidate versions can be released");
+          const skill = this.store.getSkill(version.skillId);
+          const repository = this.store.getRepository(version.repositoryId);
+          const versionLabel = requiredText(input.versionLabel, "Version label", 64);
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(versionLabel)) {
+            throw new Error("Version label contains unsupported characters");
+          }
+          if (this.store.listVersions(skill.id).some(
+            (entry) => entry.id !== version.id && entry.versionLabel === versionLabel
+          )) {
+            throw new Error("Managed Skill version label already exists");
+          }
+          const resolvedCommit = await this.git.resolve(repository.managedPath, version.commit);
+          if (resolvedCommit !== version.commit) throw new Error("Candidate commit is unavailable");
+          const tagName = `rolling-skill/${skill.name}/${versionLabel}`;
+          await this.git.createAnnotatedTag(
+            repository.managedPath,
+            tagName,
+            `Release ${skill.name} ${versionLabel}`,
+            version.commit
+          );
+          try {
+            return this.store.releaseVersion(version.id, versionLabel);
+          } catch (error) {
+            await this.git.deleteTag(repository.managedPath, tagName).catch(() => {
+            });
+            throw error;
+          }
+        });
+      }
+      deprecateVersion(input = {}) {
+        return this.enqueue(() => this.store.deprecateVersion(
+          requiredText(input.versionId, "Version id", 200)
+        ));
+      }
+      repositoryPath(repositoryId) {
+        const repository = this.store.getRepository(requiredText(repositoryId, "Repository id", 200));
+        const path = realpathSync(repository.managedPath);
+        if (!isContained(this.paths.repositoriesRoot, path)) {
+          throw new Error("Managed repository path is outside Application Support");
+        }
+        return path;
+      }
+    };
+    module.exports = {
+      ManagedSkillManager,
+      defaultManagedSkillPaths
     };
   }
 });
@@ -5672,7 +15784,7 @@ ${badcaseGuidance}`;
           const runtime = await this.getRuntime();
           session = this.store.getCurationSession(sessionId);
           if (session.status === "cancelled") return session;
-          const options = {
+          const options2 = {
             sandbox: "read-only",
             approvalPolicy: "never",
             ephemeral: false,
@@ -5680,7 +15792,7 @@ ${badcaseGuidance}`;
             ...session.curator.modelId ? { model: session.curator.modelId } : {},
             ...session.curator.effort ? { effort: session.curator.effort } : {}
           };
-          const response = await runtime.startThread(options);
+          const response = await runtime.startThread(options2);
           this.threadSessions.set(response.thread.id, sessionId);
           session = this.store.getCurationSession(sessionId);
           if (session.status === "cancelled") {
@@ -6103,11 +16215,11 @@ var require_evaluation_grading = __commonJS({
     function digest(value) {
       return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
     }
-    function normalizeCuratedCase(caseEntry, options = {}) {
+    function normalizeCuratedCase(caseEntry, options2 = {}) {
       const curated = caseEntry?.curated ?? caseEntry;
       if (!curated || typeof curated !== "object") throw new Error("A curated Case is required");
       if (curated.schemaVersion === "rolling-skill-curated-case/v2") {
-        const rubricVersion = options.rubricVersion;
+        const rubricVersion = options2.rubricVersion;
         if (!rubricVersion?.rubric) {
           throw new Error("A curated v2 Case requires its frozen dataset rubric version");
         }
@@ -6202,8 +16314,8 @@ var require_evaluation_grading = __commonJS({
         criticalFailure: true
       };
     }
-    function buildScoreContract(caseEntry, options = {}) {
-      const { curated, grading, rubric, rubricVersion, version } = normalizeCuratedCase(caseEntry, options);
+    function buildScoreContract(caseEntry, options2 = {}) {
+      const { curated, grading, rubric, rubricVersion, version } = normalizeCuratedCase(caseEntry, options2);
       let criteria = [];
       if (version === 2) {
         const coverageById = new Map(
@@ -6299,9 +16411,9 @@ var require_evaluation_grading = __commonJS({
         }
       }
       assertUniqueIds(criteria, "Score criterion");
-      const evidenceCatalog = compactEvidenceCatalog(options.evidenceCatalog);
+      const evidenceCatalog = compactEvidenceCatalog(options2.evidenceCatalog);
       const evidenceRefs = [...new Set(
-        evidenceCatalog?.entries.map((entry) => entry.id) ?? options.evidenceRefs ?? ["response"]
+        evidenceCatalog?.entries.map((entry) => entry.id) ?? options2.evidenceRefs ?? ["response"]
       )];
       if (!evidenceRefs.length || evidenceRefs.some((entry) => typeof entry !== "string" || !entry)) {
         throw new Error("Score contract evidence references must be non-empty strings");
@@ -7788,6 +17900,2037 @@ var require_execution_policy = __commonJS({
   }
 });
 
+// ../../desktop/rolling-skill/src/skill-installation-protocol.cjs
+var require_skill_installation_protocol = __commonJS({
+  "../../desktop/rolling-skill/src/skill-installation-protocol.cjs"(exports, module) {
+    var { isAbsolute, posix } = __require("node:path");
+    var INSTALL_MARKER_SCHEMA = "rolling-skill-install/v1";
+    var EXPERIMENT_MARKER_SCHEMA = "rolling-skill-experiment/v1";
+    var EXPERIMENT_MARKER_FILE = ".rolling-skill-experiment.json";
+    var INSTALL_RESULT_SCHEMA = "rolling-skill-install-result/v2";
+    var INSTALL_RESULT_SENTINEL = Object.freeze({
+      open: "<rolling-skill-install-result>",
+      close: "</rolling-skill-install-result>"
+    });
+    var STATUSES = /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled", "unverified", "needs_recovery"]);
+    var ORDINARY_OPERATIONS = /* @__PURE__ */ new Set(["install", "update", "overwrite", "inspect"]);
+    var EXPERIMENT_OPERATIONS = /* @__PURE__ */ new Set([
+      "experiment_install",
+      "experiment_restore",
+      "experiment_remove",
+      "experiment_inspect"
+    ]);
+    var OPERATIONS = /* @__PURE__ */ new Set([...ORDINARY_OPERATIONS, ...EXPERIMENT_OPERATIONS]);
+    var CLASSIFICATIONS = /* @__PURE__ */ new Set([
+      "absent",
+      "managed-clean",
+      "managed-drifted",
+      "unmanaged",
+      "conflict",
+      "uncertain"
+    ]);
+    var DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/u;
+    var COMMIT_PATTERN = /^[a-f0-9]{40}$/u;
+    var DIGEST_ALGORITHM = "rolling-skill-tree-sha256/v1";
+    function requiredText(value, label, maxLength = 4096) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized || normalized.length > maxLength) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function nullableText(value, label, maxLength = 4096) {
+      if (value === null || value === void 0) return null;
+      return requiredText(value, label, maxLength);
+    }
+    function relativeSkillRoot(value) {
+      const root = requiredText(value, "Skill root").replace(/\\/gu, "/");
+      if (isAbsolute(root) || root !== "." && (posix.normalize(root) !== root || root.split("/").some((segment) => !segment || segment === "." || segment === ".."))) throw new Error("Skill root must be repository-relative");
+      return root;
+    }
+    function deepFreeze(value) {
+      if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+      for (const child of Object.values(value)) deepFreeze(child);
+      return Object.freeze(value);
+    }
+    function versionSource(version, label) {
+      const commit = requiredText(version?.commit, `${label} commit`, 40);
+      if (!COMMIT_PATTERN.test(commit)) throw new Error(`${label} commit must be a full SHA-1`);
+      const expectedDigest = requiredText(version?.contentDigest, `${label} content digest`, 80);
+      if (!DIGEST_PATTERN.test(expectedDigest)) throw new Error(`${label} content digest must be SHA-256`);
+      return {
+        repositoryId: requiredText(version?.repositoryId, `${label} repository id`, 200),
+        skillId: requiredText(version?.skillId, `${label} Skill id`, 200),
+        versionId: requiredText(version?.id, `${label} version id`, 200),
+        commit,
+        skillRoot: relativeSkillRoot(version?.skillRoot),
+        expectedDigest
+      };
+    }
+    function experimentMarker(runId, epoch, source) {
+      return {
+        schema: EXPERIMENT_MARKER_SCHEMA,
+        runId,
+        epoch,
+        skillId: source.skillId,
+        versionId: source.versionId,
+        commit: source.commit,
+        contentDigest: source.expectedDigest
+      };
+    }
+    function freezeSkillInstallationRequest(input = {}) {
+      const repositoryId = requiredText(input.repository?.id, "Repository id", 200);
+      const repositoryPath = requiredText(input.repository?.managedPath, "Managed repository path");
+      if (!isAbsolute(repositoryPath)) throw new Error("Managed repository path must be absolute");
+      const skillId = requiredText(input.skill?.id, "Skill id", 200);
+      const skillName = requiredText(input.skill?.name, "Skill name", 200);
+      const skillRoot = relativeSkillRoot(input.skill?.skillRoot);
+      const versionId = requiredText(input.version?.id, "Version id", 200);
+      if (input.version?.state !== "released") {
+        throw new Error("Only a Released Skill version can be installed");
+      }
+      if (input.version?.repositoryId !== repositoryId || input.version?.skillId !== skillId) {
+        throw new Error("Released version does not belong to the selected Skill");
+      }
+      const commit = requiredText(input.version?.commit, "Released commit", 40);
+      if (!COMMIT_PATTERN.test(commit)) throw new Error("Released commit must be a full SHA-1");
+      const expectedDigest = requiredText(input.version?.contentDigest, "Released content digest", 80);
+      if (!DIGEST_PATTERN.test(expectedDigest)) {
+        throw new Error("Released content digest must be SHA-256");
+      }
+      const versionLabel = requiredText(input.version?.versionLabel, "Released version label", 64);
+      return deepFreeze({
+        schema: "rolling-skill-install-request/v1",
+        purpose: "managed-installation",
+        markerSchema: INSTALL_MARKER_SCHEMA,
+        repositoryPath,
+        skillName,
+        versionLabel,
+        source: {
+          repositoryId,
+          skillId,
+          versionId,
+          commit,
+          skillRoot,
+          expectedDigest
+        }
+      });
+    }
+    function freezeInitialState(value, baselineSource) {
+      if (value === null || value === void 0) return null;
+      const classification = requireEnum(value.classification, CLASSIFICATIONS, "initial classification");
+      if (!(/* @__PURE__ */ new Set(["absent", "managed-clean"])).has(classification)) {
+        throw new Error("Optimization experiment initial state must be absent or managed-clean");
+      }
+      if (classification === "absent") {
+        if (value.destination !== null && value.destination !== void 0) {
+          throw new Error("An absent optimization target cannot have a destination");
+        }
+        return { classification, destination: null };
+      }
+      const destination = requiredText(value.destination, "Initial managed destination");
+      if (!isAbsolute(destination)) throw new Error("Initial managed destination must be absolute");
+      if (value.versionId !== baselineSource.versionId || value.commit !== baselineSource.commit || value.contentDigest !== baselineSource.expectedDigest) {
+        throw new Error("Initial managed target must exactly match the frozen baseline");
+      }
+      return {
+        classification,
+        destination,
+        versionId: baselineSource.versionId,
+        commit: baselineSource.commit,
+        contentDigest: baselineSource.expectedDigest
+      };
+    }
+    function freezeSkillExperimentRequest(input = {}) {
+      const operation = requiredText(input.operation, "Optimization experiment operation", 80);
+      if (!EXPERIMENT_OPERATIONS.has(operation)) {
+        throw new Error("Unsupported optimization experiment operation");
+      }
+      const runId = requiredText(input.run?.id, "Optimization Run id", 200);
+      const snapshotDigest = requiredText(input.run?.snapshot?.digest, "Optimization Run snapshot digest", 80);
+      if (!DIGEST_PATTERN.test(snapshotDigest)) {
+        throw new Error("Optimization Run snapshot digest must be SHA-256");
+      }
+      const epoch = Number(input.epoch);
+      if (!Number.isSafeInteger(epoch) || epoch < 1 || epoch > 100) {
+        throw new Error("Optimization Epoch must be between 1 and 100");
+      }
+      const repositoryId = requiredText(input.repository?.id, "Repository id", 200);
+      const repositoryPath = requiredText(input.repository?.managedPath, "Managed repository path");
+      if (!isAbsolute(repositoryPath)) throw new Error("Managed repository path must be absolute");
+      const skillId = requiredText(input.skill?.id, "Skill id", 200);
+      const skillName = requiredText(input.skill?.name, "Skill name", 200);
+      const skillRoot = relativeSkillRoot(input.skill?.skillRoot);
+      if (input.skill?.repositoryId !== repositoryId) {
+        throw new Error("Optimization Skill does not belong to the selected repository");
+      }
+      if (input.baseline?.state !== "released") {
+        throw new Error("Optimization experiment requires a Released baseline");
+      }
+      const baseline = versionSource(input.baseline, "Optimization baseline");
+      const frozenBaseline = input.run?.snapshot?.baseline ?? {};
+      if (baseline.repositoryId !== repositoryId || baseline.skillId !== skillId || baseline.skillRoot !== skillRoot || frozenBaseline.repositoryId !== baseline.repositoryId || frozenBaseline.skillId !== baseline.skillId || frozenBaseline.versionId !== baseline.versionId || frozenBaseline.commit !== baseline.commit || frozenBaseline.skillRoot !== baseline.skillRoot || frozenBaseline.contentDigest !== baseline.expectedDigest) {
+        throw new Error("Optimization baseline does not match the frozen Run");
+      }
+      if (input.candidate?.state !== "candidate" || input.candidate?.createdBy !== "optimization") {
+        throw new Error("Optimization experiment requires an immutable optimization Candidate");
+      }
+      const source = versionSource(input.candidate, "Optimization Candidate");
+      if (source.repositoryId !== repositoryId || source.skillId !== skillId || source.skillRoot !== skillRoot) {
+        throw new Error("Optimization Candidate does not belong to the frozen Skill");
+      }
+      if (input.candidate.optimizationRunId !== runId || input.candidate.optimizationEpoch !== epoch) {
+        throw new Error("Optimization Candidate does not match the frozen Run and Epoch");
+      }
+      let previous = null;
+      if (epoch > 1) {
+        if (!input.previousCandidate) {
+          throw new Error("A later Optimization Epoch requires the previous Candidate");
+        }
+        if (input.previousCandidate.state !== "candidate" || input.previousCandidate.createdBy !== "optimization" || input.previousCandidate.optimizationRunId !== runId || input.previousCandidate.optimizationEpoch !== epoch - 1) {
+          throw new Error("Optimization previous Candidate does not match the prior Run Epoch");
+        }
+        previous = versionSource(input.previousCandidate, "Optimization previous Candidate");
+        if (previous.repositoryId !== repositoryId || previous.skillId !== skillId || previous.skillRoot !== skillRoot) {
+          throw new Error("Optimization previous Candidate does not belong to the frozen Skill");
+        }
+        previous.marker = experimentMarker(runId, epoch - 1, previous);
+      } else if (input.previousCandidate !== null && input.previousCandidate !== void 0) {
+        throw new Error("The first Optimization Epoch cannot have a previous Candidate");
+      }
+      const initial = freezeInitialState(input.initial, baseline);
+      if (operation !== "experiment_inspect" && !initial) {
+        throw new Error("Optimization mutation requires a frozen initial target state");
+      }
+      if (operation === "experiment_restore" && initial?.classification !== "managed-clean") {
+        throw new Error("Optimization restore requires a managed-clean initial baseline");
+      }
+      if (operation === "experiment_remove" && initial?.classification !== "absent") {
+        throw new Error("Optimization removal requires an initially absent target");
+      }
+      const restoration = initial === null ? null : initial.classification === "absent" ? { mode: "remove", source: null } : { mode: "restore", source: { ...baseline } };
+      return deepFreeze({
+        schema: "rolling-skill-experiment-request/v1",
+        purpose: "optimization-experiment",
+        operation,
+        markerSchema: EXPERIMENT_MARKER_SCHEMA,
+        repositoryPath,
+        skillName,
+        versionLabel: `Candidate Epoch ${epoch}`,
+        source,
+        experiment: {
+          runId,
+          epoch,
+          snapshotDigest,
+          inspectionMode: operation === "experiment_inspect" ? "preflight" : null,
+          marker: experimentMarker(runId, epoch, source),
+          baseline,
+          initial,
+          restoration,
+          previous
+        }
+      });
+    }
+    function freezeSkillExperimentRecoveryInspectionRequest(request) {
+      if (request?.purpose !== "optimization-experiment" || !EXPERIMENT_OPERATIONS.has(request.operation) || !request.experiment || !sameMarker(request.experiment.marker, experimentMarker(
+        request.experiment.runId,
+        request.experiment.epoch,
+        request.source
+      ))) {
+        throw new Error("A frozen optimization experiment request is required for recovery inspection");
+      }
+      return deepFreeze({
+        ...request,
+        operation: "experiment_inspect",
+        experiment: {
+          ...request.experiment,
+          inspectionMode: "recovery"
+        }
+      });
+    }
+    function buildSkillInstallationPrompt(request, options2 = {}) {
+      const experiment = request?.purpose === "optimization-experiment";
+      if (!experiment) {
+        request = freezeSkillInstallationRequest({
+          repository: { id: request.source.repositoryId, managedPath: request.repositoryPath },
+          skill: { id: request.source.skillId, name: request.skillName, skillRoot: request.source.skillRoot },
+          version: {
+            id: request.source.versionId,
+            repositoryId: request.source.repositoryId,
+            skillId: request.source.skillId,
+            state: "released",
+            commit: request.source.commit,
+            contentDigest: request.source.expectedDigest,
+            versionLabel: request.versionLabel
+          }
+        });
+      }
+      const operation = experiment ? request.operation : ORDINARY_OPERATIONS.has(options2.operation) ? options2.operation : "install";
+      const requestedPermission = nullableText(
+        options2.requestedPermission,
+        "Requested permission",
+        100
+      );
+      const priorInstallation = options2.priorInstallation && typeof options2.priorInstallation === "object" ? options2.priorInstallation : null;
+      let experimentResult = null;
+      let destinationExample = "/absolute/path/reported/by/the/runtime";
+      if (experiment) {
+        const currentMarker = request.experiment.marker;
+        if (operation === "experiment_inspect" && request.experiment.inspectionMode !== "recovery") {
+          destinationExample = null;
+          experimentResult = {
+            actualDigest: null,
+            markerWritten: false,
+            runtimeDiscovered: "true | false | null",
+            beforeDigest: null,
+            mutationPerformed: false,
+            markerBefore: null,
+            markerAfter: null
+          };
+        } else if (operation === "experiment_inspect") {
+          experimentResult = {
+            actualDigest: request.source.expectedDigest,
+            markerWritten: true,
+            runtimeDiscovered: "true | false | null",
+            beforeDigest: request.source.expectedDigest,
+            mutationPerformed: false,
+            markerBefore: currentMarker,
+            markerAfter: currentMarker
+          };
+        } else if (operation === "experiment_restore") {
+          experimentResult = {
+            actualDigest: request.experiment.baseline.expectedDigest,
+            markerWritten: true,
+            runtimeDiscovered: "true | false | null",
+            beforeDigest: request.source.expectedDigest,
+            mutationPerformed: true,
+            markerBefore: currentMarker,
+            markerAfter: null
+          };
+        } else if (operation === "experiment_remove") {
+          experimentResult = {
+            actualDigest: null,
+            markerWritten: false,
+            runtimeDiscovered: false,
+            beforeDigest: request.source.expectedDigest,
+            mutationPerformed: true,
+            markerBefore: currentMarker,
+            markerAfter: null
+          };
+        } else {
+          const previous = request.experiment.previous;
+          const beforeDigest = previous?.expectedDigest ?? (request.experiment.initial?.classification === "managed-clean" ? request.experiment.baseline.expectedDigest : null);
+          experimentResult = {
+            actualDigest: request.source.expectedDigest,
+            markerWritten: true,
+            runtimeDiscovered: "true | false | null",
+            beforeDigest,
+            mutationPerformed: true,
+            markerBefore: previous?.marker ?? null,
+            markerAfter: currentMarker
+          };
+        }
+      }
+      const finalShape = {
+        schema: INSTALL_RESULT_SCHEMA,
+        purpose: experiment ? "optimization-experiment" : "managed-installation",
+        status: experiment ? "succeeded | failed | cancelled | unverified | needs_recovery" : "succeeded | failed | cancelled | unverified",
+        operation: experiment ? "experiment_install | experiment_restore | experiment_remove | experiment_inspect" : "install | update | overwrite | inspect",
+        classificationBefore: "absent | managed-clean | managed-drifted | unmanaged | conflict | uncertain",
+        destination: destinationExample,
+        source: request.source,
+        permission: { requested: requestedPermission, effective: null },
+        result: experimentResult ?? {
+          actualDigest: request.source.expectedDigest,
+          markerWritten: true,
+          runtimeDiscovered: "true | false | null"
+        },
+        warnings: [],
+        error: null
+      };
+      let procedure;
+      if (experiment) {
+        const common = [
+          "1. This is an optimization experiment. Verify the repository, frozen Run, exact commit, Skill identity, digest, and operation before touching any Runtime target.",
+          "2. Export only source.skillRoot from the exact frozen commit. Never use the managed Working tree or implicit HEAD, and never run code from the Skill.",
+          "3. Discover the exact Runtime target yourself. Refuse symlinks, broad destinations, ambiguous identity boundaries, or any path you cannot prove is the one Skill target.",
+          "4. Inspect the current target, deterministic digest, management marker, and rolling-skill-experiment/v1 marker before any mutation."
+        ];
+        if (operation === "experiment_inspect") {
+          procedure = request.experiment.inspectionMode === "recovery" ? [
+            ...common,
+            "5. This is a strict read-only recovery inspection. Do not create, edit, move, delete, overwrite, or chmod any target or marker, and do not request write permission.",
+            "6. Inspect for the exact current Candidate marker and digest, the exact frozen Released baseline without an experiment marker, or the exact absent state. Any partial or mismatched state must report needs_recovery with mutationPerformed=false.",
+            "7. Report mutationPerformed=false and identical before/after marker evidence because no mutation is permitted.",
+            "8. Finish with exactly one result block using the schema below."
+          ] : [
+            ...common,
+            "5. This is strict read-only preflight. Do not create, edit, move, delete, overwrite, or chmod any target or marker, and do not request write permission.",
+            "6. Epoch 1 enrollment succeeds only when the target is absent or is managed-clean at the exact frozen Released baseline digest and identity. managed-drifted, unmanaged, conflict, and uncertain must fail preflight.",
+            "7. Report mutationPerformed=false and exact before-state evidence. Never claim an experiment marker was written.",
+            "8. Finish with exactly one result block using the schema below."
+          ];
+        } else if (operation === "experiment_install") {
+          procedure = [
+            ...common,
+            "5. For Epoch 1, continue only from the frozen initial absent state or the exact managed-clean frozen baseline. For later Epochs, require the exact current Run marker and previous Candidate digest shown in the request.",
+            "6. If the target, previous Candidate digest, or marker differs, do not delete or overwrite anything. Report needs_recovery with mutationPerformed=false.",
+            `7. Install the exact Candidate and write the exact rolling-skill-experiment/v1 marker from experiment.marker to ${EXPERIMENT_MARKER_FILE}. Do not represent it as a formal Released installation.`,
+            "8. Recompute the installed digest and verify the exact marker. Report the before and after evidence and whether Runtime inventory discovered it.",
+            "9. Finish with exactly one result block using the schema below."
+          ];
+        } else if (operation === "experiment_restore") {
+          procedure = [
+            ...common,
+            "5. Before restoration, require the exact current Run marker and current Candidate digest. On any mismatch, do not delete or overwrite anything; report needs_recovery with mutationPerformed=false.",
+            "6. Export and reinstall only the exact frozen Released source in experiment.restoration.source, then write its normal management marker and remove the experiment marker.",
+            "7. Re-inspect the target and require the frozen baseline digest, matching management identity, and no experiment marker.",
+            "8. Finish with exactly one result block using the schema below."
+          ];
+        } else {
+          procedure = [
+            ...common,
+            "5. Before removal, require the exact current Run marker and current Candidate digest. On any mismatch, do not delete or overwrite anything; report needs_recovery with mutationPerformed=false.",
+            "6. Because the frozen initial state was absent, remove only that exact target after all identity checks. Never delete a parent, sibling, symlink target, or path outside the exact target.",
+            "7. Re-inspect and require the exact target to be absent with no experiment marker.",
+            "8. Finish with exactly one result block using the schema below."
+          ];
+        }
+      } else if (operation === "inspect") {
+        procedure = [
+          "1. Verify the repository and exact commit. Export only source.skillRoot from that commit into a temporary directory. Never read install bytes from the current working tree.",
+          "2. Compute the deterministic source Skill SHA-256 digest, excluding .rolling-skill-managed.json, and require it to equal source.expectedDigest.",
+          "3. Discover the Skill root actually used by this Runtime and select only the exact target for skillName. Do not assume a provider-specific path supplied by this prompt.",
+          "4. Inspect the target, its digest, symlinks, and .rolling-skill-managed.json. Classify the current state exactly as one of: absent, managed-clean, managed-drifted, unmanaged, conflict, uncertain.",
+          "5. This is an inspect-only recovery turn. Do not create, edit, move, delete, overwrite, or chmod any target or marker. Do not request write permission.",
+          "6. Query this Runtime's own Skill inventory when supported. If inventory cannot prove discovery, report runtimeDiscovered as null, not true.",
+          "7. Report succeeded only when the installed target already matches source.expectedDigest and contains the matching management marker. Otherwise report failed, cancelled, or unverified with a structured error.",
+          "8. Finish with exactly one result block using the schema below. Natural-language progress may appear before it, but never emit a second result block."
+        ];
+      } else {
+        procedure = [
+          "1. Verify the repository and exact commit. Export only source.skillRoot from that commit into a temporary directory. Never copy the current working tree.",
+          "2. Compute the deterministic Skill content SHA-256 digest, excluding .rolling-skill-managed.json, and require it to equal source.expectedDigest before touching a target.",
+          "3. Discover the Skill root actually used by this Runtime and select only the exact target for skillName. Do not assume a provider-specific path supplied by this prompt.",
+          "4. Inspect the target, its digest, symlinks, and .rolling-skill-managed.json. Classify the pre-state exactly as one of: absent, managed-clean, managed-drifted, unmanaged, conflict, uncertain.",
+          "5. Only absent and managed-clean may continue without an additional overwrite confirmation. For managed-drifted, unmanaged, conflict, or uncertain, pause and ask the user through the Runtime interaction UI. Show the destination, evidence, and exact directory that would be changed. Offer Continue overwrite, I will install manually, and Cancel.",
+          "6. Refuse a symlink target, a broad/dangerous destination, an identity boundary you cannot prove, or any operation that would delete outside the exact target, even if broad permission is available.",
+          "7. If authorized, install/update the exact target and write .rolling-skill-managed.json with schema, repositoryId, skillId, versionId, commit, contentDigest, and installedAt. The marker is excluded from the content digest.",
+          "8. Recompute the installed digest, then refresh or query this Runtime's own Skill inventory when supported. If inventory cannot prove discovery, report runtimeDiscovered as null, not true.",
+          "9. If permission is insufficient, request it through the Runtime. Never elevate silently. If the user refuses, stop without pretending success.",
+          "10. Finish with exactly one result block using the schema below. Natural-language progress may appear before it, but never emit a second result block."
+        ];
+      }
+      return [
+        experiment ? "You are running a bounded optimization experiment installation task inside your own local Runtime." : "You are running a managed Skill installation task inside your own local Runtime.",
+        operation === "inspect" || operation === "experiment_inspect" ? "Perform every inspection yourself through Bash/tool calls. This recovery turn is strictly read-only." : "Perform every inspection and filesystem change yourself through Bash/tool calls. Do not ask the host application to copy, delete, or discover paths for you.",
+        "Do not run scripts from the managed Skill. Do not install from the working tree or implicit HEAD.",
+        "",
+        "Frozen installation request (immutable):",
+        JSON.stringify({
+          operation,
+          purpose: request.purpose,
+          markerSchema: request.markerSchema,
+          digestAlgorithm: DIGEST_ALGORITHM,
+          repositoryPath: request.repositoryPath,
+          skillName: request.skillName,
+          versionLabel: request.versionLabel,
+          source: request.source,
+          priorInstallation,
+          ...experiment ? { experiment: request.experiment } : {}
+        }, null, 2),
+        "",
+        `Digest algorithm ${DIGEST_ALGORITHM}: enumerate every file and symbolic link below the Skill root; exclude the root .rolling-skill-managed.json${experiment ? ` and ${EXPERIMENT_MARKER_FILE}` : ""}; sort relative POSIX paths lexicographically; and for each entry hash UTF-8 header type\\0path\\0executable-bit\\0byte-length\\0, then the exact blob/link-target bytes, then one NUL byte. type is file or symlink; executable-bit is 1 only for executable regular files.`,
+        "",
+        "Required procedure:",
+        ...procedure,
+        "",
+        INSTALL_RESULT_SENTINEL.open,
+        JSON.stringify(finalShape, null, 2),
+        INSTALL_RESULT_SENTINEL.close
+      ].join("\n");
+    }
+    function oneSentinelBody(text) {
+      text = String(text ?? "");
+      const firstOpen = text.indexOf(INSTALL_RESULT_SENTINEL.open);
+      const secondOpen = text.indexOf(INSTALL_RESULT_SENTINEL.open, firstOpen + 1);
+      const firstClose = text.indexOf(INSTALL_RESULT_SENTINEL.close);
+      const secondClose = text.indexOf(INSTALL_RESULT_SENTINEL.close, firstClose + 1);
+      if (firstOpen < 0 || firstClose < 0 || secondOpen >= 0 || secondClose >= 0 || firstClose < firstOpen) {
+        throw new Error("Installation output must contain exactly one structured result block");
+      }
+      return text.slice(firstOpen + INSTALL_RESULT_SENTINEL.open.length, firstClose).trim();
+    }
+    function parseJsonBody(text) {
+      try {
+        const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object");
+        return parsed;
+      } catch {
+        throw new Error("Installation result must be valid JSON");
+      }
+    }
+    function requireEnum(value, values, label) {
+      const normalized = requiredText(value, label, 80);
+      if (!values.has(normalized)) throw new Error(`Installation result ${label} is invalid`);
+      return normalized;
+    }
+    function validateSource(actual, expected) {
+      if (!actual || typeof actual !== "object" || Array.isArray(actual)) {
+        throw new Error("Installation result source does not match the frozen source");
+      }
+      for (const [key, expectedValue] of Object.entries(expected)) {
+        if (actual[key] !== expectedValue) {
+          throw new Error("Installation result source does not match the frozen source");
+        }
+      }
+    }
+    function normalizeError(value, required) {
+      if (!required && (value === null || value === void 0)) return null;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Installation result error is required");
+      }
+      return {
+        code: requiredText(value.code, "Installation error code", 200),
+        message: requiredText(value.message, "Installation error message", 8192)
+      };
+    }
+    function normalizeExperimentMarker(value, label) {
+      if (value === null || value === void 0) return null;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} experiment marker is invalid`);
+      }
+      const epoch = Number(value.epoch);
+      if (!Number.isSafeInteger(epoch) || epoch < 1 || epoch > 100) {
+        throw new Error(`${label} experiment marker is invalid`);
+      }
+      const commit = requiredText(value.commit, `${label} experiment marker commit`, 40);
+      const contentDigest = requiredText(
+        value.contentDigest,
+        `${label} experiment marker digest`,
+        80
+      );
+      if (value.schema !== EXPERIMENT_MARKER_SCHEMA || !COMMIT_PATTERN.test(commit) || !DIGEST_PATTERN.test(contentDigest)) {
+        throw new Error(`${label} experiment marker is invalid`);
+      }
+      return {
+        schema: EXPERIMENT_MARKER_SCHEMA,
+        runId: requiredText(value.runId, `${label} experiment marker Run id`, 200),
+        epoch,
+        skillId: requiredText(value.skillId, `${label} experiment marker Skill id`, 200),
+        versionId: requiredText(value.versionId, `${label} experiment marker version id`, 200),
+        commit,
+        contentDigest
+      };
+    }
+    function sameMarker(actual, expected) {
+      if (actual === null || expected === null) return actual === expected;
+      return Object.keys(expected).every((key) => actual[key] === expected[key]) && Object.keys(actual).every((key) => Object.hasOwn(expected, key));
+    }
+    function experimentVerification({
+      actualDigest,
+      beforeDigest,
+      classificationBefore,
+      destination,
+      markerAfter,
+      markerBefore,
+      markerWritten,
+      mutationPerformed,
+      operation,
+      request
+    }) {
+      if (operation === "experiment_inspect") {
+        if (mutationPerformed) throw new Error("Optimization experiment preflight must not mutate the target");
+        if (request.experiment.inspectionMode === "recovery") {
+          if (classificationBefore === "managed-clean" && actualDigest === request.source.expectedDigest && beforeDigest === request.source.expectedDigest && markerWritten && destination && sameMarker(markerBefore, request.experiment.marker) && sameMarker(markerAfter, request.experiment.marker)) {
+            return "experiment-inspection";
+          }
+          if (classificationBefore === "managed-clean" && actualDigest === request.experiment.baseline.expectedDigest && beforeDigest === request.experiment.baseline.expectedDigest && markerWritten && destination && markerBefore === null && markerAfter === null) {
+            return "experiment-inspection";
+          }
+          if (classificationBefore === "absent" && actualDigest === null && beforeDigest === null && !markerWritten && destination === null && markerBefore === null && markerAfter === null) {
+            return "experiment-inspection";
+          }
+          throw new Error("Optimization recovery inspection does not match a known safe target state");
+        }
+        if (!(/* @__PURE__ */ new Set(["absent", "managed-clean"])).has(classificationBefore)) {
+          throw new Error("Optimization experiment preflight rejected the unsafe target classification");
+        }
+        if (markerBefore !== null || markerAfter !== null) {
+          throw new Error("Optimization experiment preflight found an unexpected experiment marker");
+        }
+        if (classificationBefore === "absent") {
+          if (destination !== null || actualDigest !== null || markerWritten) {
+            throw new Error("Optimization experiment absent preflight evidence is inconsistent");
+          }
+        } else if (actualDigest !== request.experiment.baseline.expectedDigest || !markerWritten || !destination) {
+          throw new Error("Optimization experiment managed-clean preflight does not match the baseline");
+        }
+        return "experiment-preflight";
+      }
+      if (!mutationPerformed) {
+        throw new Error("A successful optimization experiment mutation must report its mutation");
+      }
+      let expectedBeforeDigest;
+      let expectedBeforeMarker;
+      if (operation === "experiment_install" && request.experiment.previous) {
+        expectedBeforeDigest = request.experiment.previous.expectedDigest;
+        expectedBeforeMarker = request.experiment.previous.marker;
+        if (actualDigest !== request.source.expectedDigest) {
+          throw new Error("Installed Candidate digest does not match the frozen Candidate");
+        }
+        if (!markerWritten || !sameMarker(markerAfter, request.experiment.marker)) {
+          throw new Error("Installed Candidate experiment marker does not match the frozen marker");
+        }
+        if (beforeDigest !== expectedBeforeDigest) {
+          throw new Error("Installed target does not match the previous Candidate digest");
+        }
+        if (!sameMarker(markerBefore, expectedBeforeMarker)) {
+          throw new Error("Installed target does not match the previous Candidate experiment marker");
+        }
+        return "experiment-marker";
+      }
+      if (operation === "experiment_install") {
+        const initial = request.experiment.initial;
+        expectedBeforeDigest = initial.classification === "absent" ? null : request.experiment.baseline.expectedDigest;
+        if (beforeDigest !== expectedBeforeDigest || markerBefore !== null) {
+          throw new Error("Epoch 1 target does not match the frozen experiment initial state");
+        }
+        if (classificationBefore !== initial.classification) {
+          throw new Error("Epoch 1 target classification changed after preflight");
+        }
+        if (actualDigest !== request.source.expectedDigest || !markerWritten || !sameMarker(markerAfter, request.experiment.marker)) {
+          throw new Error("Installed Candidate experiment marker or digest does not match");
+        }
+        return "experiment-marker";
+      }
+      if (beforeDigest !== request.source.expectedDigest || !sameMarker(markerBefore, request.experiment.marker)) {
+        throw new Error("Restoration target does not match the current Candidate experiment marker and digest");
+      }
+      if (operation === "experiment_restore") {
+        if (request.experiment.restoration?.mode !== "restore" || actualDigest !== request.experiment.baseline.expectedDigest || !markerWritten || markerAfter !== null || !destination) {
+          throw new Error("Restored target does not match the frozen Released baseline");
+        }
+        return "experiment-restored";
+      }
+      if (request.experiment.restoration?.mode !== "remove" || actualDigest !== null || markerWritten || markerAfter !== null || !destination) {
+        throw new Error("Removed experiment target is not proven absent");
+      }
+      return "experiment-removed";
+    }
+    function parseSkillInstallationResult(text, request) {
+      const payload = parseJsonBody(oneSentinelBody(text));
+      if (payload.schema !== INSTALL_RESULT_SCHEMA) {
+        throw new Error("Unsupported Skill installation result schema");
+      }
+      const status = requireEnum(payload.status, STATUSES, "status");
+      const operation = requireEnum(payload.operation, OPERATIONS, "operation");
+      const experiment = request?.purpose === "optimization-experiment";
+      const purpose = payload.purpose === void 0 && !experiment ? "managed-installation" : requiredText(payload.purpose, "Installation purpose", 100);
+      if (purpose !== request?.purpose || !(experiment ? EXPERIMENT_OPERATIONS : ORDINARY_OPERATIONS).has(operation)) {
+        throw new Error("Installation result purpose or operation does not match the frozen request");
+      }
+      if (experiment && operation !== request.operation) {
+        throw new Error("Optimization experiment result operation does not match the frozen request");
+      }
+      if (!experiment && status === "needs_recovery") {
+        throw new Error("Ordinary installation cannot report optimization recovery state");
+      }
+      const classificationBefore = requireEnum(
+        payload.classificationBefore,
+        CLASSIFICATIONS,
+        "classification"
+      );
+      validateSource(payload.source, request.source);
+      const destination = nullableText(payload.destination, "Installation destination");
+      if (destination && !isAbsolute(destination)) {
+        throw new Error("Installation destination must be absolute");
+      }
+      if (status === "succeeded" && !destination && !(experiment && (operation === "experiment_inspect" && classificationBefore === "absent"))) {
+        throw new Error("Successful installation requires an absolute destination");
+      }
+      const result = payload.result && typeof payload.result === "object" && !Array.isArray(payload.result) ? payload.result : {};
+      const actualDigest = nullableText(result.actualDigest, "Actual installation digest", 80);
+      if (actualDigest && !DIGEST_PATTERN.test(actualDigest)) {
+        throw new Error("Actual installation digest is invalid");
+      }
+      const markerWritten = result.markerWritten === true;
+      const runtimeDiscovered = result.runtimeDiscovered === true ? true : result.runtimeDiscovered === false ? false : null;
+      let beforeDigest = null;
+      let mutationPerformed = false;
+      let markerBefore = null;
+      let markerAfter = null;
+      let verification;
+      if (experiment) {
+        beforeDigest = nullableText(result.beforeDigest, "Experiment before digest", 80);
+        if (beforeDigest && !DIGEST_PATTERN.test(beforeDigest)) {
+          throw new Error("Experiment before digest is invalid");
+        }
+        mutationPerformed = result.mutationPerformed === true;
+        markerBefore = normalizeExperimentMarker(result.markerBefore, "Before");
+        markerAfter = normalizeExperimentMarker(result.markerAfter, "After");
+        if (status === "needs_recovery") {
+          if (mutationPerformed) {
+            throw new Error("A needs_recovery result must not mutate the experiment target");
+          }
+          verification = "none";
+        } else if (status === "succeeded") {
+          verification = experimentVerification({
+            actualDigest,
+            beforeDigest,
+            classificationBefore,
+            destination,
+            markerAfter,
+            markerBefore,
+            markerWritten,
+            mutationPerformed,
+            operation,
+            request
+          });
+        } else {
+          verification = "none";
+        }
+      } else {
+        if (status === "succeeded" && actualDigest !== request.source.expectedDigest) {
+          throw new Error("Successful installation digest does not match the frozen digest");
+        }
+        if (status === "succeeded" && !markerWritten) {
+          throw new Error("Successful installation must write the management marker");
+        }
+        verification = runtimeDiscovered === true ? "runtime-inventory" : actualDigest === request.source.expectedDigest && markerWritten ? "filesystem-only" : "none";
+        if (status === "succeeded" && verification === "none") {
+          throw new Error("Successful installation has no reliable verification");
+        }
+      }
+      const warnings = Array.isArray(payload.warnings) ? payload.warnings.map((warning) => requiredText(warning, "Installation warning", 4096)) : [];
+      const error = normalizeError(payload.error, status !== "succeeded");
+      return deepFreeze({
+        schema: INSTALL_RESULT_SCHEMA,
+        purpose,
+        status,
+        operation,
+        classificationBefore,
+        destination,
+        source: { ...request.source },
+        permission: {
+          requested: nullableText(payload.permission?.requested, "Requested permission", 100),
+          effective: nullableText(payload.permission?.effective, "Effective permission", 100)
+        },
+        result: {
+          actualDigest,
+          markerWritten,
+          runtimeDiscovered,
+          ...experiment ? {
+            beforeDigest,
+            mutationPerformed,
+            markerBefore,
+            markerAfter
+          } : {}
+        },
+        warnings,
+        error,
+        verification,
+        trusted: status === "succeeded" && verification !== "none"
+      });
+    }
+    module.exports = {
+      EXPERIMENT_MARKER_SCHEMA,
+      INSTALL_MARKER_SCHEMA,
+      INSTALL_RESULT_SCHEMA,
+      INSTALL_RESULT_SENTINEL,
+      DIGEST_ALGORITHM,
+      buildSkillInstallationPrompt,
+      freezeSkillExperimentRequest,
+      freezeSkillExperimentRecoveryInspectionRequest,
+      freezeSkillInstallationRequest,
+      parseSkillInstallationResult
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/skill-installation-manager.cjs
+var require_skill_installation_manager = __commonJS({
+  "../../desktop/rolling-skill/src/skill-installation-manager.cjs"(exports, module) {
+    var { join } = __require("node:path");
+    var {
+      buildSkillInstallationPrompt,
+      freezeSkillExperimentRecoveryInspectionRequest,
+      freezeSkillExperimentRequest,
+      freezeSkillInstallationRequest,
+      parseSkillInstallationResult
+    } = require_skill_installation_protocol();
+    var TERMINAL_STATUSES = /* @__PURE__ */ new Set([
+      "succeeded",
+      "failed",
+      "cancelled",
+      "unverified",
+      "needs_recovery"
+    ]);
+    var EXPERIMENT_OPERATIONS = /* @__PURE__ */ new Set([
+      "experiment_install",
+      "experiment_restore",
+      "experiment_remove",
+      "experiment_inspect"
+    ]);
+    var ACTIVITY_TYPES = /* @__PURE__ */ new Set([
+      "commandExecution",
+      "fileChange",
+      "mcpToolCall",
+      "dynamicToolCall",
+      "toolCall",
+      "webSearch"
+    ]);
+    function requiredText(value, label, maxLength = 4096) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized || normalized.length > maxLength) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function optionalText(value, label, maxLength = 4096) {
+      if (value === null || value === void 0 || value === "") return null;
+      return requiredText(value, label, maxLength);
+    }
+    function errorRecord(error, fallbackCode = "INSTALLATION_FAILED") {
+      return {
+        code: optionalText(error?.code, "Installation error code", 200) ?? fallbackCode,
+        message: optionalText(error?.message, "Installation error message", 16384) ?? String(error)
+      };
+    }
+    function publicRuntime(descriptor = {}) {
+      return {
+        runtimeId: requiredText(descriptor.runtimeId, "Runtime id", 300),
+        providerId: requiredText(descriptor.providerId, "Provider id", 100),
+        displayName: requiredText(descriptor.displayName ?? descriptor.providerId, "Runtime name", 300),
+        version: optionalText(descriptor.version, "Runtime version", 200),
+        executablePath: optionalText(descriptor.executablePath, "Runtime executable", 8192)
+      };
+    }
+    function activityFromItem(item = {}) {
+      const activity = {
+        itemId: optionalText(item.id, "Activity item id", 300),
+        type: requiredText(item.type, "Activity type", 100),
+        status: optionalText(item.status, "Activity status", 100)
+      };
+      const command = item.command ?? item.rawInput?.command ?? item.input?.command;
+      if (typeof command === "string" && command.trim()) activity.command = command.slice(0, 32768);
+      else if (Array.isArray(command)) activity.command = command.map(String).join(" ").slice(0, 32768);
+      const name = item.name ?? item.toolName ?? item.server;
+      if (typeof name === "string" && name.trim()) activity.name = name.slice(0, 1024);
+      return activity;
+    }
+    function traceReferenceFor(client) {
+      return client?.recorder?.latestReference ?? client?.state?.()?.traceReference ?? null;
+    }
+    function readOnlyPermissionMode(providerId) {
+      if (providerId === "codex" || providerId === "deepseek-harness") return "read-only";
+      if (providerId === "codebuddy") return "plan";
+      return null;
+    }
+    var SkillInstallationManager = class {
+      constructor(options2 = {}) {
+        this.store = options2.store;
+        this.managedSkillStore = options2.managedSkillStore;
+        this.managedSkillManager = options2.managedSkillManager;
+        this.runtimeRegistry = options2.runtimeRegistry;
+        this.getRuntimes = options2.getRuntimes ?? (() => []);
+        this.workspaceRoot = options2.workspaceRoot;
+        this.traceDirectory = options2.traceDirectory;
+        this.requestPermission = options2.requestPermission ?? null;
+        this.requestQuestion = options2.requestQuestion ?? null;
+        this.resolvePermission = options2.resolvePermission ?? ((_providerId, mode) => ({
+          permissionMode: mode
+        }));
+        this.onChanged = options2.onChanged ?? (() => {
+        });
+        this.timeoutMs = options2.timeoutMs ?? 30 * 60 * 1e3;
+        this.queueTails = /* @__PURE__ */ new Map();
+        this.operations = /* @__PURE__ */ new Map();
+        this.controls = /* @__PURE__ */ new Map();
+        if (!this.store || !this.managedSkillStore || !this.managedSkillManager) {
+          throw new Error("Skill installation stores and manager are required");
+        }
+        if (!this.runtimeRegistry || typeof this.runtimeRegistry.createClient !== "function") {
+          throw new Error("Runtime registry is required");
+        }
+      }
+      emit(jobId) {
+        const job = this.store.getJob(jobId);
+        this.onChanged(job);
+        return job;
+      }
+      frozenRequest(skillId, versionId) {
+        const skill = this.managedSkillStore.getSkill(requiredText(skillId, "Skill id", 200));
+        const version = this.managedSkillStore.getVersion(requiredText(versionId, "Version id", 200));
+        if (version.state !== "released") throw new Error("Only a Released Skill version can be installed");
+        if (version.skillId !== skill.id || version.repositoryId !== skill.repositoryId) {
+          throw new Error("Released version does not belong to the selected Skill");
+        }
+        const repository = this.managedSkillStore.getRepository(skill.repositoryId);
+        return freezeSkillInstallationRequest({
+          repository: {
+            ...repository,
+            managedPath: this.managedSkillManager.repositoryPath(repository.id)
+          },
+          skill,
+          version
+        });
+      }
+      frozenExperimentRequest(input, target) {
+        const runId = requiredText(input.run?.id, "Optimization Run id", 200);
+        const epoch = Number(input.epoch);
+        const baselineIdentity = input.run?.snapshot?.baseline ?? {};
+        const skill = this.managedSkillStore.getSkill(
+          requiredText(baselineIdentity.skillId, "Optimization Skill id", 200)
+        );
+        const repository = this.managedSkillStore.getRepository(skill.repositoryId);
+        const baseline = this.managedSkillStore.getVersion(
+          requiredText(baselineIdentity.versionId, "Optimization baseline version id", 200)
+        );
+        const candidate = this.managedSkillStore.getVersion(
+          requiredText(input.candidateVersionId, "Optimization Candidate version id", 200)
+        );
+        const previousCandidate = input.previousCandidateVersionId ? this.managedSkillStore.getVersion(requiredText(
+          input.previousCandidateVersionId,
+          "Previous Optimization Candidate version id",
+          200
+        )) : null;
+        return freezeSkillExperimentRequest({
+          operation: input.operation,
+          run: { ...input.run, id: runId },
+          epoch,
+          repository: {
+            ...repository,
+            managedPath: this.managedSkillManager.repositoryPath(repository.id)
+          },
+          skill,
+          baseline,
+          candidate,
+          previousCandidate,
+          initial: input.operation === "experiment_inspect" ? null : target.initial
+        });
+      }
+      runtimeById(runtimeId) {
+        runtimeId = requiredText(runtimeId, "Runtime id", 300);
+        const descriptor = this.getRuntimes().find((entry) => entry.runtimeId === runtimeId);
+        if (!descriptor) throw new Error("The selected local Runtime is no longer available");
+        return descriptor;
+      }
+      async start(input = {}) {
+        const request = this.frozenRequest(input.skillId, input.versionId);
+        if (!Array.isArray(input.targets) || !input.targets.length || input.targets.length > 20) {
+          throw new Error("Select between one and twenty Runtime installation targets");
+        }
+        const seen = /* @__PURE__ */ new Set();
+        const jobs = [];
+        for (const target of input.targets) {
+          const descriptor = this.runtimeById(target.runtimeId);
+          if (seen.has(descriptor.runtimeId)) throw new Error("Duplicate Runtime installation target");
+          seen.add(descriptor.runtimeId);
+          const job = this.store.createJob({
+            operation: "install",
+            runtime: publicRuntime(descriptor),
+            request,
+            modelId: optionalText(target.modelId, "Installation model", 300),
+            effort: optionalText(target.effort, "Installation effort", 100),
+            permissionMode: optionalText(target.permissionMode, "Installation permission", 100)
+          });
+          jobs.push(job);
+          this.schedule(job);
+          this.emit(job.id);
+        }
+        return jobs;
+      }
+      // This entry point is intentionally not exposed through Renderer IPC. OptimizationRunner
+      // supplies the frozen Run and immutable Candidate IDs from the control plane.
+      async startOptimizationExperiment(input = {}) {
+        const operation = requiredText(input.operation, "Optimization experiment operation", 80);
+        if (!EXPERIMENT_OPERATIONS.has(operation)) {
+          throw new Error("Unsupported optimization experiment operation");
+        }
+        if (!Array.isArray(input.targets) || !input.targets.length || input.targets.length > 20) {
+          throw new Error("Select between one and twenty Runtime experiment targets");
+        }
+        const seen = /* @__PURE__ */ new Set();
+        const prepared = input.targets.map((target) => {
+          const descriptor = this.runtimeById(target.runtimeId);
+          if (seen.has(descriptor.runtimeId)) throw new Error("Duplicate Runtime experiment target");
+          seen.add(descriptor.runtimeId);
+          const request = this.frozenExperimentRequest(input, target);
+          const permissionMode = operation === "experiment_inspect" ? readOnlyPermissionMode(descriptor.providerId) : optionalText(target.permissionMode, "Installation permission", 100);
+          if (operation === "experiment_inspect" && !permissionMode) {
+            throw new Error("This Runtime has no supported read-only permission mode");
+          }
+          return { descriptor, permissionMode, request, target };
+        });
+        const jobs = prepared.map(({ descriptor, permissionMode, request, target }) => {
+          const job = this.store.createJob({
+            operation,
+            runtime: publicRuntime(descriptor),
+            request,
+            modelId: optionalText(target.modelId, "Installation model", 300),
+            effort: optionalText(target.effort, "Installation effort", 100),
+            permissionMode
+          });
+          this.schedule(job);
+          this.emit(job.id);
+          return job;
+        });
+        return jobs;
+      }
+      async inspect(jobId) {
+        const parent = this.store.getJob(requiredText(jobId, "Installation job id", 200));
+        const descriptor = this.runtimeById(parent.runtime.runtimeId);
+        const permissionMode = readOnlyPermissionMode(descriptor.providerId);
+        if (!permissionMode) throw new Error("This Runtime has no supported read-only permission mode");
+        const experiment = parent.request.purpose === "optimization-experiment";
+        const request = experiment ? freezeSkillExperimentRecoveryInspectionRequest(parent.request) : parent.request;
+        const job = this.store.createJob({
+          operation: experiment ? "experiment_inspect" : "inspect",
+          parentJobId: parent.id,
+          threadId: parent.threadId,
+          runtime: publicRuntime(descriptor),
+          request,
+          modelId: parent.modelId,
+          effort: parent.effort,
+          permissionMode
+        });
+        this.schedule(job);
+        this.emit(job.id);
+        return job;
+      }
+      async send(jobId, text) {
+        const job = this.store.getJob(requiredText(jobId, "Installation job id", 200));
+        text = requiredText(text, "Installer message", 12e4);
+        if (!TERMINAL_STATUSES.has(job.status) || !job.threadId) {
+          throw new Error("The installer session is not ready for a follow-up");
+        }
+        if (this.operations.has(job.id) || job.conversationStatus === "running") {
+          throw new Error("The installer session is already running");
+        }
+        const key = `${job.runtime.runtimeId}\0${job.request.source.skillId}`;
+        const previous = this.queueTails.get(key) ?? Promise.resolve();
+        const operation = previous.then(
+          () => this.executeConversation(job.id, text),
+          () => this.executeConversation(job.id, text)
+        );
+        const tail = operation.catch(() => {
+        }).finally(() => {
+          if (this.queueTails.get(key) === tail) this.queueTails.delete(key);
+        });
+        this.queueTails.set(key, tail);
+        const tracked = operation.finally(() => {
+          if (this.operations.get(job.id) === tracked) this.operations.delete(job.id);
+        });
+        this.operations.set(job.id, tracked);
+        return this.store.getJob(job.id);
+      }
+      schedule(job) {
+        const key = `${job.runtime.runtimeId}\0${job.request.source.skillId}`;
+        const previous = this.queueTails.get(key) ?? Promise.resolve();
+        const operation = previous.then(() => this.execute(job.id), () => this.execute(job.id));
+        const tail = operation.catch(() => {
+        }).finally(() => {
+          if (this.queueTails.get(key) === tail) this.queueTails.delete(key);
+        });
+        this.queueTails.set(key, tail);
+        this.operations.set(job.id, operation.finally(() => {
+          this.operations.delete(job.id);
+        }));
+      }
+      isRunning(jobId) {
+        return this.controls.has(jobId);
+      }
+      wait(jobId) {
+        requiredText(jobId, "Installation job id", 200);
+        return this.operations.get(jobId) ?? Promise.resolve(this.store.getJob(jobId));
+      }
+      async interaction(jobId, status, callback, request) {
+        const job = this.store.getJob(jobId);
+        if (TERMINAL_STATUSES.has(job.status)) {
+          if (job.conversationStatus !== "running" || typeof callback !== "function") return null;
+          return callback({
+            ...request,
+            jobId,
+            runtime: job.runtime,
+            threadId: request.sessionId ?? request.params?.sessionId ?? job.threadId
+          });
+        }
+        this.store.updateJob(jobId, { status });
+        this.emit(jobId);
+        try {
+          if (typeof callback !== "function") return null;
+          return await callback({
+            ...request,
+            jobId,
+            runtime: job.runtime,
+            threadId: request.sessionId ?? request.params?.sessionId ?? job.threadId
+          });
+        } finally {
+          const current = this.store.getJob(jobId);
+          if (!TERMINAL_STATUSES.has(current.status) && current.status === status) {
+            this.store.updateJob(jobId, { status: "running" });
+            this.emit(jobId);
+          }
+        }
+      }
+      clientFor(job, descriptor) {
+        const permission = this.resolvePermission(descriptor.providerId, job.permissionMode) ?? {};
+        let client = null;
+        client = this.runtimeRegistry.createClient(descriptor, {
+          workspaceRoot: this.workspaceRoot,
+          traceDirectory: join(this.traceDirectory, job.id),
+          executionPolicy: permission,
+          nonInteractive: false,
+          installationRequest: job.request,
+          requestPermission: (request) => this.interaction(
+            job.id,
+            "awaiting_permission",
+            this.requestPermission,
+            { ...request, sourceClient: client }
+          ),
+          requestQuestion: (request) => this.interaction(
+            job.id,
+            "awaiting_confirmation",
+            this.requestQuestion,
+            { ...request, sourceClient: client }
+          )
+        });
+        return { client, permission };
+      }
+      async execute(jobId) {
+        let job = this.store.getJob(jobId);
+        if (job.status !== "queued") return job;
+        const descriptor = this.runtimeById(job.runtime.runtimeId);
+        this.store.updateJob(jobId, { status: "running" });
+        this.store.appendMessage(jobId, {
+          role: "user",
+          content: job.operation === "inspect" || job.operation === "experiment_inspect" ? `Inspect ${job.request.skillName} ${job.request.versionLabel} in ${job.runtime.displayName}` : `${job.operation.startsWith("experiment_") ? "Experiment" : "Install"} ${job.request.skillName} ${job.request.versionLabel} in ${job.runtime.displayName}`
+        });
+        this.emit(jobId);
+        job = this.store.getJob(jobId);
+        const { client, permission } = this.clientFor(job, descriptor);
+        const control = {
+          client,
+          threadId: null,
+          turnId: null,
+          cancelRequested: false,
+          cancelWake: null,
+          inspecting: false
+        };
+        this.controls.set(jobId, control);
+        try {
+          await client.start();
+          if (control.cancelRequested) throw Object.assign(new Error("Installation cancelled"), {
+            code: "INSTALLATION_CANCELLED"
+          });
+          const profile = {
+            ...job.modelId ? { model: job.modelId } : {},
+            ...job.effort ? { effort: job.effort } : {},
+            ...permission,
+            threadSource: "subagent",
+            ephemeral: false
+          };
+          const threadResponse = (job.operation === "inspect" || job.operation === "experiment_inspect") && job.threadId ? await client.resumeThread(job.threadId, profile) : await client.startThread(profile);
+          control.threadId = requiredText(threadResponse?.thread?.id, "Installer thread id", 300);
+          this.store.updateJob(jobId, {
+            threadId: control.threadId,
+            effectiveModelId: threadResponse?.thread?.model ?? threadResponse?.model ?? job.modelId,
+            effectiveEffort: threadResponse?.thread?.effort ?? threadResponse?.reasoningEffort ?? job.effort,
+            effectivePermissionMode: threadResponse?.thread?.permissionMode ?? permission.permissionMode ?? job.permissionMode
+          });
+          this.emit(jobId);
+          const prompt = buildSkillInstallationPrompt(job.request, {
+            operation: job.operation,
+            requestedPermission: job.permissionMode,
+            priorInstallation: this.store.installationMatrix(job.request.source.skillId).find((entry) => entry.runtimeId === job.runtime.runtimeId) ?? null
+          });
+          const output = await this.runTurn({ client, jobId, threadId: control.threadId, prompt, profile, control });
+          if (control.cancelRequested || output.turnStatus === "interrupted" || output.turnStatus === "cancelled") {
+            if (job.operation === "inspect" || job.operation === "experiment_inspect") {
+              return this.finish(jobId, "unverified", {
+                rawResult: output.response,
+                traceReference: traceReferenceFor(client),
+                error: {
+                  code: "INSPECTION_CANCELLED",
+                  message: "Read-only inspection was cancelled before verification completed"
+                }
+              });
+            }
+            return this.inspectAfterCancellation({
+              client,
+              descriptor,
+              jobId,
+              threadId: control.threadId,
+              profile,
+              control
+            });
+          }
+          this.store.updateJob(jobId, { status: "verifying", rawResult: output.response });
+          this.emit(jobId);
+          let parsed;
+          try {
+            parsed = parseSkillInstallationResult(output.response, job.request);
+            if (job.operation === "inspect" && parsed.operation !== "inspect") {
+              throw new Error("Inspection result must report an inspect operation");
+            }
+            if (job.operation === "experiment_inspect" && parsed.operation !== "experiment_inspect") {
+              throw new Error("Experiment inspection result must report an experiment_inspect operation");
+            }
+          } catch (error) {
+            return this.finish(jobId, "unverified", {
+              rawResult: output.response,
+              traceReference: traceReferenceFor(client),
+              error: errorRecord(error, "INSTALLATION_RESULT_INVALID")
+            });
+          }
+          const status = parsed.status;
+          return this.finish(jobId, status, {
+            parsedResult: parsed,
+            rawResult: output.response,
+            traceReference: traceReferenceFor(client),
+            error: parsed.error
+          });
+        } catch (error) {
+          const current = this.store.getJob(jobId);
+          if (TERMINAL_STATUSES.has(current.status)) return current;
+          const cancelled = control.cancelRequested || error?.code === "INSTALLATION_CANCELLED";
+          if (cancelled && (job.operation === "inspect" || job.operation === "experiment_inspect")) {
+            return this.finish(jobId, "unverified", {
+              traceReference: traceReferenceFor(client),
+              error: {
+                code: "INSPECTION_CANCELLED",
+                message: "Read-only inspection was cancelled before verification completed"
+              }
+            });
+          }
+          if (cancelled && control.threadId && !control.inspecting) {
+            return this.inspectAfterCancellation({
+              client,
+              descriptor,
+              jobId,
+              threadId: control.threadId,
+              profile: {
+                ...job.modelId ? { model: job.modelId } : {},
+                ...job.effort ? { effort: job.effort } : {},
+                ...permission,
+                threadSource: "subagent",
+                ephemeral: false
+              },
+              control
+            });
+          }
+          return this.finish(jobId, cancelled ? "cancelled" : "failed", {
+            traceReference: traceReferenceFor(client),
+            error: cancelled ? { code: "INSTALLATION_CANCELLED", message: "Installation cancelled by user" } : errorRecord(error)
+          });
+        } finally {
+          this.controls.delete(jobId);
+          await client.stop?.().catch(() => {
+          });
+        }
+      }
+      async inspectAfterCancellation({ client, descriptor, jobId, threadId, profile, control }) {
+        control.inspecting = true;
+        control.turnId = null;
+        const current = this.store.getJob(jobId);
+        if (TERMINAL_STATUSES.has(current.status)) return current;
+        if (current.status !== "verifying") {
+          this.store.updateJob(jobId, { status: "verifying" });
+        }
+        this.store.appendMessage(jobId, {
+          role: "user",
+          content: "The installation was interrupted. Inspect the target read-only and report its current state."
+        });
+        this.emit(jobId);
+        const permissionMode = readOnlyPermissionMode(descriptor.providerId);
+        if (!permissionMode) {
+          return this.finish(jobId, "unverified", {
+            traceReference: traceReferenceFor(client),
+            error: {
+              code: "POST_CANCEL_INSPECTION_UNSUPPORTED",
+              message: "This Runtime has no supported read-only permission mode"
+            }
+          });
+        }
+        let inspectPermission;
+        try {
+          inspectPermission = this.resolvePermission(descriptor.providerId, permissionMode) ?? {};
+        } catch (error) {
+          return this.finish(jobId, "unverified", {
+            traceReference: traceReferenceFor(client),
+            error: errorRecord(error, "POST_CANCEL_INSPECTION_PERMISSION_FAILED")
+          });
+        }
+        const originalRequest = this.store.getJob(jobId).request;
+        const experiment = originalRequest.purpose === "optimization-experiment";
+        const request = experiment ? freezeSkillExperimentRecoveryInspectionRequest(originalRequest) : originalRequest;
+        const prompt = buildSkillInstallationPrompt(request, {
+          operation: experiment ? "experiment_inspect" : "inspect",
+          requestedPermission: permissionMode,
+          priorInstallation: this.store.installationMatrix(request.source.skillId).find((entry) => entry.runtimeId === descriptor.runtimeId) ?? null
+        });
+        try {
+          const output = await this.runTurn({
+            client,
+            jobId,
+            threadId,
+            prompt,
+            profile: { ...profile, ...inspectPermission },
+            control
+          });
+          if (output.turnStatus === "interrupted" || output.turnStatus === "cancelled") {
+            throw Object.assign(new Error("Read-only inspection was interrupted"), {
+              code: "POST_CANCEL_INSPECTION_INTERRUPTED"
+            });
+          }
+          const parsed = parseSkillInstallationResult(output.response, request);
+          const expectedOperation = experiment ? "experiment_inspect" : "inspect";
+          if (parsed.operation !== expectedOperation) {
+            throw new Error(`Post-cancellation result must report an ${expectedOperation} operation`);
+          }
+          return this.finish(jobId, "cancelled", {
+            parsedResult: parsed,
+            rawResult: output.response,
+            traceReference: traceReferenceFor(client),
+            error: {
+              code: "INSTALLATION_CANCELLED",
+              message: "Installation cancelled by user; the target was inspected read-only"
+            }
+          });
+        } catch (error) {
+          return this.finish(jobId, "unverified", {
+            traceReference: traceReferenceFor(client),
+            error: errorRecord(error, "POST_CANCEL_INSPECTION_FAILED")
+          });
+        }
+      }
+      async executeConversation(jobId, text) {
+        const job = this.store.getJob(jobId);
+        const descriptor = this.runtimeById(job.runtime.runtimeId);
+        this.store.updateJob(jobId, {
+          conversationStatus: "running",
+          conversationError: null
+        });
+        this.store.appendMessage(jobId, { role: "user", content: text });
+        this.emit(jobId);
+        const { client, permission } = this.clientFor(job, descriptor);
+        const control = {
+          client,
+          threadId: job.threadId,
+          turnId: null,
+          cancelRequested: false,
+          cancelWake: null,
+          inspecting: false,
+          conversation: true
+        };
+        this.controls.set(jobId, control);
+        try {
+          await client.start();
+          const profile = {
+            ...job.modelId ? { model: job.modelId } : {},
+            ...job.effort ? { effort: job.effort } : {},
+            ...permission,
+            threadSource: "subagent",
+            ephemeral: false
+          };
+          await client.resumeThread(job.threadId, profile);
+          const output = await this.runTurn({
+            client,
+            jobId,
+            threadId: job.threadId,
+            prompt: text,
+            profile,
+            control
+          });
+          this.store.updateJob(jobId, {
+            conversationStatus: "idle",
+            conversationError: output.turnStatus === "interrupted" || output.turnStatus === "cancelled" ? { code: "INSTALLER_CONVERSATION_CANCELLED", message: "Installer follow-up cancelled" } : null
+          });
+          return this.emit(jobId);
+        } catch (error) {
+          this.store.updateJob(jobId, {
+            conversationStatus: "failed",
+            conversationError: errorRecord(error, "INSTALLER_CONVERSATION_FAILED")
+          });
+          return this.emit(jobId);
+        } finally {
+          this.controls.delete(jobId);
+          await client.stop?.().catch(() => {
+          });
+        }
+      }
+      finish(jobId, status, input) {
+        const completed = this.store.completeJob(jobId, { status, ...input });
+        this.emit(jobId);
+        return completed;
+      }
+      runTurn({ client, jobId, threadId, prompt, profile, control }) {
+        return new Promise((resolve, reject) => {
+          const assistantTexts = [];
+          const seenItems = /* @__PURE__ */ new Set();
+          let settled = false;
+          let timer = null;
+          const finish = (operation, value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (control.cancelWake === cancelWake) control.cancelWake = null;
+            client.off("notification", onNotification);
+            client.off("state", onState);
+            client.off("runtimeError", onRuntimeError);
+            operation(value);
+          };
+          const cancelWake = () => finish(resolve, {
+            response: assistantTexts.join("\n\n"),
+            turnStatus: "interrupted"
+          });
+          const onRuntimeError = (error) => finish(reject, error);
+          const onState = (state) => {
+            if (state?.status === "stopped" || state?.status === "error") {
+              finish(reject, new Error("Installation Runtime stopped before the turn completed"));
+            }
+          };
+          const onNotification = (message) => {
+            const params = message?.params ?? {};
+            if ((params.threadId ?? params.thread?.id) !== threadId) return;
+            if (message.method === "turn/started") {
+              const turnId = params.turn?.id ?? params.turnId ?? null;
+              if (turnId) {
+                control.turnId = turnId;
+                this.store.updateJob(jobId, { turnId });
+                this.emit(jobId);
+              }
+              return;
+            }
+            if (message.method === "item/completed") {
+              const item = params.item ?? {};
+              const itemId = item.id ?? `${item.type}:${seenItems.size}`;
+              if (seenItems.has(itemId)) return;
+              seenItems.add(itemId);
+              if (item.type === "agentMessage" && typeof item.text === "string" && item.text) {
+                assistantTexts.push(item.text);
+                this.store.appendMessage(jobId, {
+                  role: "assistant",
+                  itemId,
+                  content: item.text
+                });
+                this.emit(jobId);
+              } else if (ACTIVITY_TYPES.has(item.type)) {
+                this.store.appendActivity(jobId, activityFromItem(item));
+                this.emit(jobId);
+              }
+              return;
+            }
+            if (message.method === "turn/completed") {
+              const turn = params.turn ?? {};
+              if (control.turnId && turn.id && turn.id !== control.turnId) return;
+              finish(resolve, {
+                response: assistantTexts.join("\n\n"),
+                turnStatus: turn.status ?? "completed"
+              });
+            } else if (message.method === "error" && !params.willRetry) {
+              finish(reject, new Error(params.error?.message ?? params.message ?? "Installation turn failed"));
+            }
+          };
+          client.on("notification", onNotification);
+          client.on("state", onState);
+          client.on("runtimeError", onRuntimeError);
+          control.cancelWake = cancelWake;
+          timer = setTimeout(() => {
+            if (control.turnId) void client.interruptTurn?.(threadId, control.turnId).catch(() => {
+            });
+            finish(reject, Object.assign(new Error("Installation turn timed out"), {
+              code: "INSTALLATION_TURN_TIMEOUT"
+            }));
+          }, this.timeoutMs);
+          void client.startTurn(threadId, prompt, profile).then((response) => {
+            const turnId = response?.turn?.id ?? null;
+            if (turnId && !control.turnId) {
+              control.turnId = turnId;
+              this.store.updateJob(jobId, { turnId });
+              this.emit(jobId);
+            }
+          }, (error) => finish(reject, error));
+        });
+      }
+      async cancel(jobId) {
+        const job = this.store.getJob(requiredText(jobId, "Installation job id", 200));
+        const control = this.controls.get(job.id);
+        if (TERMINAL_STATUSES.has(job.status)) {
+          if (!control) return job;
+          if (control.cancelRequested) return this.store.getJob(job.id);
+          control.cancelRequested = true;
+          if (control.threadId && control.turnId) {
+            await control.client.interruptTurn(control.threadId, control.turnId);
+          }
+          control.cancelWake?.();
+          return this.store.getJob(job.id);
+        }
+        if (!control) {
+          const cancelled = this.store.completeJob(job.id, {
+            status: "cancelled",
+            error: { code: "INSTALLATION_CANCELLED", message: "Installation cancelled before it started" }
+          });
+          this.emit(job.id);
+          return cancelled;
+        }
+        if (control.cancelRequested) return this.store.getJob(job.id);
+        control.cancelRequested = true;
+        if (job.status !== "verifying") {
+          this.store.updateJob(job.id, { status: "verifying" });
+          this.emit(job.id);
+        }
+        if (control.threadId && control.turnId) {
+          await control.client.interruptTurn(control.threadId, control.turnId);
+        }
+        control.cancelWake?.();
+        return this.store.getJob(job.id);
+      }
+      overview(skillId = null) {
+        return {
+          jobs: this.store.listJobs(skillId ? { skillId } : {}),
+          matrix: skillId ? this.store.installationMatrix(skillId) : []
+        };
+      }
+      async stopAll() {
+        await Promise.allSettled([...this.controls.keys()].map((jobId) => this.cancel(jobId)));
+        await Promise.allSettled([...this.operations.values()]);
+      }
+    };
+    module.exports = { SkillInstallationManager };
+  }
+});
+
+// ../../desktop/rolling-skill/src/skill-installation-store.cjs
+var require_skill_installation_store = __commonJS({
+  "../../desktop/rolling-skill/src/skill-installation-store.cjs"(exports, module) {
+    var { randomUUID } = __require("node:crypto");
+    var {
+      chmodSync,
+      closeSync,
+      existsSync,
+      fsyncSync,
+      mkdirSync,
+      openSync,
+      readFileSync,
+      renameSync,
+      statSync,
+      unlinkSync,
+      writeFileSync
+    } = __require("node:fs");
+    var { dirname, resolve } = __require("node:path");
+    var SKILL_INSTALLATION_STORE_SCHEMA = "rolling-skill-installations/v1";
+    var MAX_STORE_BYTES = 24 * 1024 * 1024;
+    var MAX_ENTRY_BYTES = 128 * 1024;
+    var MAX_TIMELINE_ENTRIES = 2e3;
+    var EXPERIMENT_OPERATIONS = /* @__PURE__ */ new Set([
+      "experiment_install",
+      "experiment_restore",
+      "experiment_remove",
+      "experiment_inspect"
+    ]);
+    var OPERATIONS = /* @__PURE__ */ new Set(["install", "inspect", ...EXPERIMENT_OPERATIONS]);
+    var CONVERSATION_STATUSES = /* @__PURE__ */ new Set(["idle", "running", "failed"]);
+    var TERMINAL_STATUSES = /* @__PURE__ */ new Set([
+      "succeeded",
+      "failed",
+      "cancelled",
+      "unverified",
+      "needs_recovery"
+    ]);
+    var NONTERMINAL_STATUSES = /* @__PURE__ */ new Set([
+      "queued",
+      "running",
+      "awaiting_permission",
+      "awaiting_confirmation",
+      "verifying"
+    ]);
+    var ALL_STATUSES = /* @__PURE__ */ new Set([...NONTERMINAL_STATUSES, ...TERMINAL_STATUSES]);
+    var TRANSITIONS = /* @__PURE__ */ new Map([
+      ["queued", /* @__PURE__ */ new Set(["running", "cancelled", "failed", "unverified"])],
+      ["running", /* @__PURE__ */ new Set([
+        "awaiting_permission",
+        "awaiting_confirmation",
+        "verifying",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "unverified",
+        "needs_recovery"
+      ])],
+      ["awaiting_permission", /* @__PURE__ */ new Set([
+        "running",
+        "verifying",
+        "failed",
+        "cancelled",
+        "unverified",
+        "needs_recovery"
+      ])],
+      ["awaiting_confirmation", /* @__PURE__ */ new Set([
+        "running",
+        "verifying",
+        "failed",
+        "cancelled",
+        "unverified",
+        "needs_recovery"
+      ])],
+      ["verifying", /* @__PURE__ */ new Set(["succeeded", "failed", "cancelled", "unverified", "needs_recovery"])]
+    ]);
+    function copy(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+    function requiredText(value, label, maxLength = 4096) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized || normalized.length > maxLength) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function nullableText(value, label, maxLength = 4096) {
+      if (value === null || value === void 0 || value === "") return null;
+      return requiredText(value, label, maxLength);
+    }
+    function initialSkillInstallationState() {
+      return {
+        schemaVersion: SKILL_INSTALLATION_STORE_SCHEMA,
+        jobs: [],
+        installations: []
+      };
+    }
+    function normalizeError(value) {
+      if (!value) return null;
+      return {
+        code: requiredText(value.code ?? "INSTALLATION_FAILED", "Installation error code", 200),
+        message: requiredText(value.message ?? String(value), "Installation error message", 16384)
+      };
+    }
+    function normalizeRuntime(runtime = {}) {
+      return {
+        runtimeId: requiredText(runtime.runtimeId, "Runtime id", 300),
+        providerId: requiredText(runtime.providerId, "Provider id", 100),
+        displayName: requiredText(runtime.displayName ?? runtime.providerId, "Runtime name", 300),
+        version: nullableText(runtime.version, "Runtime version", 200),
+        executablePath: nullableText(runtime.executablePath, "Runtime executable", 8192)
+      };
+    }
+    function normalizeRequest(request = {}) {
+      const source = request.source ?? {};
+      const purpose = request.purpose ?? "managed-installation";
+      const normalized = {
+        schema: requiredText(request.schema, "Installation request schema", 100),
+        purpose: requiredText(purpose, "Installation purpose", 100),
+        markerSchema: requiredText(request.markerSchema, "Installation marker schema", 100),
+        repositoryPath: requiredText(request.repositoryPath, "Managed repository path", 8192),
+        skillName: requiredText(request.skillName, "Skill name", 200),
+        versionLabel: requiredText(request.versionLabel, "Version label", 100),
+        source: {
+          repositoryId: requiredText(source.repositoryId, "Repository id", 200),
+          skillId: requiredText(source.skillId, "Skill id", 200),
+          versionId: requiredText(source.versionId, "Version id", 200),
+          commit: requiredText(source.commit, "Commit", 40),
+          skillRoot: requiredText(source.skillRoot, "Skill root", 4096),
+          expectedDigest: requiredText(source.expectedDigest, "Expected digest", 80)
+        }
+      };
+      if (purpose === "managed-installation") return normalized;
+      if (purpose !== "optimization-experiment") {
+        throw new Error("Skill installation purpose is invalid");
+      }
+      const experiment = request.experiment;
+      if (!experiment || typeof experiment !== "object" || Array.isArray(experiment)) {
+        throw new Error("Optimization experiment evidence is required");
+      }
+      normalized.operation = requiredText(request.operation, "Optimization experiment operation", 80);
+      if (!EXPERIMENT_OPERATIONS.has(normalized.operation)) {
+        throw new Error("Optimization experiment operation is invalid");
+      }
+      normalized.experiment = copy(experiment);
+      requiredText(experiment.runId, "Optimization Run id", 200);
+      if (!Number.isSafeInteger(experiment.epoch) || experiment.epoch < 1 || experiment.epoch > 100) {
+        throw new Error("Optimization Epoch is invalid");
+      }
+      requiredText(experiment.snapshotDigest, "Optimization snapshot digest", 80);
+      if (!experiment.marker || typeof experiment.marker !== "object") {
+        throw new Error("Optimization experiment marker is required");
+      }
+      requiredText(experiment.marker.runId, "Optimization marker Run id", 200);
+      requiredText(experiment.marker.versionId, "Optimization marker version id", 200);
+      requiredText(experiment.baseline?.versionId, "Optimization baseline version id", 200);
+      if (experiment.initial !== null) {
+        const classification = requiredText(
+          experiment.initial?.classification,
+          "Optimization initial classification",
+          80
+        );
+        if (!(/* @__PURE__ */ new Set(["absent", "managed-clean"])).has(classification)) {
+          throw new Error("Optimization initial classification is invalid");
+        }
+      }
+      return normalized;
+    }
+    function validateTimelineEntry(value, label) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} is required`);
+      }
+      let encoded;
+      try {
+        encoded = JSON.stringify(value);
+      } catch {
+        throw new Error(`${label} is invalid`);
+      }
+      if (Buffer.byteLength(encoded) > MAX_ENTRY_BYTES) throw new Error(`${label} is too large`);
+      return copy(value);
+    }
+    function validateState(state) {
+      if (!state || typeof state !== "object" || state.schemaVersion !== SKILL_INSTALLATION_STORE_SCHEMA) {
+        throw new Error("Unsupported Skill installation store schema");
+      }
+      if (!Array.isArray(state.jobs) || !Array.isArray(state.installations)) {
+        throw new Error("Skill installation store is invalid");
+      }
+      const jobIds = /* @__PURE__ */ new Set();
+      for (const job of state.jobs) {
+        const id = requiredText(job.id, "Installation job id", 200);
+        if (jobIds.has(id)) throw new Error("Duplicate Skill installation job");
+        jobIds.add(id);
+        normalizeRuntime(job.runtime);
+        const request = normalizeRequest(job.request);
+        if (!OPERATIONS.has(job.operation)) throw new Error("Skill installation operation is invalid");
+        if (request.purpose === "optimization-experiment" !== EXPERIMENT_OPERATIONS.has(job.operation) || request.purpose === "optimization-experiment" && request.operation !== job.operation) {
+          throw new Error("Skill installation Job operation does not match its frozen request");
+        }
+        nullableText(job.parentJobId, "Parent installation job id", 200);
+        if (!CONVERSATION_STATUSES.has(job.conversationStatus)) {
+          throw new Error("Skill installation conversation status is invalid");
+        }
+        normalizeError(job.conversationError);
+        if (!ALL_STATUSES.has(job.status)) throw new Error("Skill installation job status is invalid");
+        if (!Array.isArray(job.messages) || !Array.isArray(job.activities) || !Array.isArray(job.timeline)) {
+          throw new Error("Skill installation timeline is invalid");
+        }
+        if (job.messages.length > MAX_TIMELINE_ENTRIES || job.activities.length > MAX_TIMELINE_ENTRIES || job.timeline.length > MAX_TIMELINE_ENTRIES) {
+          throw new Error("Skill installation timeline exceeds its limit");
+        }
+        job.messages.forEach((entry) => validateTimelineEntry(entry, "Installation message"));
+        job.activities.forEach((entry) => validateTimelineEntry(entry, "Installation activity"));
+        job.timeline.forEach((entry) => validateTimelineEntry(entry, "Installation timeline entry"));
+      }
+      for (const installation of state.installations) {
+        requiredText(installation.id, "Installation record id", 200);
+        requiredText(installation.runtimeId, "Runtime id", 300);
+        requiredText(installation.skillId, "Skill id", 200);
+        requiredText(installation.versionId, "Version id", 200);
+        requiredText(installation.jobId, "Installation job id", 200);
+        if (!jobIds.has(installation.jobId)) {
+          throw new Error("Trusted installation references an unknown job");
+        }
+      }
+      return state;
+    }
+    function canTransition(from, to) {
+      if (from === to) return true;
+      if (TERMINAL_STATUSES.has(from)) return false;
+      return TRANSITIONS.get(from)?.has(to) ?? false;
+    }
+    var SkillInstallationStore = class {
+      constructor(path) {
+        this.path = resolve(requiredText(path, "Skill installation store path"));
+        this.state = null;
+        this.load();
+      }
+      load() {
+        if (!existsSync(this.path)) {
+          this.state = initialSkillInstallationState();
+          this.persist();
+          return this.read();
+        }
+        if (statSync(this.path).size > MAX_STORE_BYTES) {
+          throw new Error("Skill installation store exceeds its byte limit");
+        }
+        try {
+          const parsed = JSON.parse(readFileSync(this.path, "utf8"));
+          for (const job of parsed.jobs ?? []) {
+            job.operation ??= "install";
+            job.parentJobId ??= null;
+            job.conversationStatus ??= "idle";
+            job.conversationError ??= null;
+            if (Array.isArray(job.timeline)) continue;
+            job.timeline = [
+              ...(job.messages ?? []).map((entry) => ({ ...entry, kind: "message" })),
+              ...(job.activities ?? []).map((entry) => ({ ...entry, kind: "activity" }))
+            ].sort((left, right) => String(left.recordedAt ?? "").localeCompare(
+              String(right.recordedAt ?? "")
+            ));
+          }
+          this.state = validateState(parsed);
+        } catch (error) {
+          throw new Error(`Could not read Skill installation store: ${error.message}`);
+        }
+        chmodSync(dirname(this.path), 448);
+        chmodSync(this.path, 384);
+        const now = (/* @__PURE__ */ new Date()).toISOString();
+        let recovered = false;
+        for (const job of this.state.jobs) {
+          if (!NONTERMINAL_STATUSES.has(job.status)) continue;
+          job.status = "unverified";
+          job.error = {
+            code: "INSTALLER_PROCESS_INTERRUPTED",
+            message: "Rolling Skill stopped before the installation task reached a verified result"
+          };
+          job.completedAt = now;
+          job.updatedAt = now;
+          recovered = true;
+        }
+        for (const job of this.state.jobs) {
+          if (job.conversationStatus !== "running") continue;
+          job.conversationStatus = "failed";
+          job.conversationError = {
+            code: "INSTALLER_CONVERSATION_INTERRUPTED",
+            message: "Rolling Skill stopped before the installer follow-up completed"
+          };
+          job.updatedAt = now;
+          recovered = true;
+        }
+        if (recovered) this.persist();
+        return this.read();
+      }
+      persist() {
+        const directory = dirname(this.path);
+        mkdirSync(directory, { recursive: true, mode: 448 });
+        chmodSync(directory, 448);
+        const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID()}`;
+        const descriptor = openSync(temporaryPath, "wx", 384);
+        try {
+          try {
+            writeFileSync(descriptor, `${JSON.stringify(this.state, null, 2)}
+`, "utf8");
+            fsyncSync(descriptor);
+          } finally {
+            closeSync(descriptor);
+          }
+          renameSync(temporaryPath, this.path);
+          chmodSync(this.path, 384);
+        } catch (error) {
+          try {
+            unlinkSync(temporaryPath);
+          } catch {
+          }
+          throw error;
+        }
+      }
+      mutate(operation) {
+        const previous = this.state;
+        this.state = copy(previous);
+        try {
+          const result = operation();
+          validateState(this.state);
+          this.persist();
+          return copy(result);
+        } catch (error) {
+          this.state = previous;
+          throw error;
+        }
+      }
+      read() {
+        return copy(this.state);
+      }
+      createJob(input = {}) {
+        const now = (/* @__PURE__ */ new Date()).toISOString();
+        const job = {
+          id: randomUUID(),
+          operation: OPERATIONS.has(input.operation) ? input.operation : "install",
+          parentJobId: nullableText(input.parentJobId, "Parent installation job id", 200),
+          runtime: normalizeRuntime(input.runtime),
+          request: normalizeRequest(input.request),
+          modelId: nullableText(input.modelId, "Installation model", 300),
+          effort: nullableText(input.effort, "Installation effort", 100),
+          permissionMode: nullableText(input.permissionMode, "Installation permission", 100),
+          effectiveModelId: null,
+          effectiveEffort: null,
+          effectivePermissionMode: null,
+          status: "queued",
+          threadId: nullableText(input.threadId, "Installer thread id", 300),
+          turnId: null,
+          conversationStatus: "idle",
+          conversationError: null,
+          messages: [],
+          activities: [],
+          timeline: [],
+          parsedResult: null,
+          rawResult: null,
+          traceReference: null,
+          error: null,
+          createdAt: now,
+          startedAt: null,
+          updatedAt: now,
+          completedAt: null
+        };
+        return this.mutate(() => {
+          this.state.jobs.push(job);
+          return job;
+        });
+      }
+      getJob(jobId) {
+        jobId = requiredText(jobId, "Installation job id", 200);
+        const job = this.state.jobs.find((entry) => entry.id === jobId);
+        if (!job) throw new Error("Unknown Skill installation job");
+        return copy(job);
+      }
+      listJobs(filters = {}) {
+        return copy(this.state.jobs.filter((job) => !filters.skillId || job.request.source.skillId === filters.skillId).filter((job) => !filters.runtimeId || job.runtime.runtimeId === filters.runtimeId).sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)));
+      }
+      updateJob(jobId, patch = {}) {
+        const current = this.getJob(jobId);
+        const nextStatus = patch.status ?? current.status;
+        if (!ALL_STATUSES.has(nextStatus)) throw new Error("Skill installation status is invalid");
+        if (!canTransition(current.status, nextStatus)) {
+          throw new Error(`Invalid Skill installation transition from ${current.status} to ${nextStatus}`);
+        }
+        const allowed = /* @__PURE__ */ new Set([
+          "status",
+          "threadId",
+          "turnId",
+          "effectiveModelId",
+          "effectiveEffort",
+          "effectivePermissionMode",
+          "traceReference",
+          "rawResult",
+          "parsedResult",
+          "error",
+          "conversationStatus",
+          "conversationError"
+        ]);
+        for (const key of Object.keys(patch)) {
+          if (!allowed.has(key)) throw new Error(`Unsupported Skill installation job field: ${key}`);
+        }
+        return this.mutate(() => {
+          const job = this.state.jobs.find((entry) => entry.id === current.id);
+          job.status = nextStatus;
+          if (!job.startedAt && nextStatus !== "queued") job.startedAt = (/* @__PURE__ */ new Date()).toISOString();
+          for (const key of allowed) {
+            if (!Object.hasOwn(patch, key) || key === "status") continue;
+            job[key] = key === "error" || key === "conversationError" ? normalizeError(patch[key]) : copy(patch[key]);
+          }
+          if (!CONVERSATION_STATUSES.has(job.conversationStatus)) {
+            throw new Error("Skill installation conversation status is invalid");
+          }
+          job.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+          if (TERMINAL_STATUSES.has(nextStatus) && !job.completedAt) job.completedAt = job.updatedAt;
+          return job;
+        });
+      }
+      appendMessage(jobId, value) {
+        const entry = validateTimelineEntry(value, "Installation message");
+        const current = this.getJob(jobId);
+        return this.mutate(() => {
+          const job = this.state.jobs.find((candidate) => candidate.id === current.id);
+          const recorded = { ...entry, recordedAt: entry.recordedAt ?? (/* @__PURE__ */ new Date()).toISOString() };
+          job.messages.push(recorded);
+          job.timeline.push({ ...recorded, kind: "message" });
+          if (job.messages.length > MAX_TIMELINE_ENTRIES) {
+            job.messages.splice(0, job.messages.length - MAX_TIMELINE_ENTRIES);
+          }
+          if (job.timeline.length > MAX_TIMELINE_ENTRIES) {
+            job.timeline.splice(0, job.timeline.length - MAX_TIMELINE_ENTRIES);
+          }
+          job.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+          return job;
+        });
+      }
+      appendActivity(jobId, value) {
+        const entry = validateTimelineEntry(value, "Installation activity");
+        const current = this.getJob(jobId);
+        return this.mutate(() => {
+          const job = this.state.jobs.find((candidate) => candidate.id === current.id);
+          const recorded = { ...entry, recordedAt: entry.recordedAt ?? (/* @__PURE__ */ new Date()).toISOString() };
+          job.activities.push(recorded);
+          job.timeline.push({ ...recorded, kind: "activity" });
+          if (job.activities.length > MAX_TIMELINE_ENTRIES) {
+            job.activities.splice(0, job.activities.length - MAX_TIMELINE_ENTRIES);
+          }
+          if (job.timeline.length > MAX_TIMELINE_ENTRIES) {
+            job.timeline.splice(0, job.timeline.length - MAX_TIMELINE_ENTRIES);
+          }
+          job.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+          return job;
+        });
+      }
+      completeJob(jobId, input = {}) {
+        const job = this.getJob(jobId);
+        const status = requiredText(input.status, "Installation completion status", 80);
+        if (!TERMINAL_STATUSES.has(status)) throw new Error("Installation completion must be terminal");
+        if (status === "succeeded" && input.parsedResult?.trusted !== true) {
+          throw new Error("A successful installation requires a trusted protocol result");
+        }
+        return this.mutate(() => {
+          const stored = this.state.jobs.find((entry) => entry.id === job.id);
+          if (!canTransition(stored.status, status)) {
+            throw new Error(`Invalid Skill installation transition from ${stored.status} to ${status}`);
+          }
+          stored.status = status;
+          stored.parsedResult = input.parsedResult ? copy(input.parsedResult) : null;
+          stored.rawResult = nullableText(input.rawResult, "Raw installation result", 256 * 1024);
+          stored.traceReference = nullableText(input.traceReference, "Trace reference", 8192);
+          stored.error = normalizeError(input.error ?? input.parsedResult?.error);
+          stored.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+          stored.completedAt = stored.updatedAt;
+          if (status === "succeeded" && stored.request.purpose !== "optimization-experiment") {
+            const result = input.parsedResult;
+            this.state.installations.push({
+              id: randomUUID(),
+              jobId: stored.id,
+              runtimeId: stored.runtime.runtimeId,
+              providerId: stored.runtime.providerId,
+              skillId: stored.request.source.skillId,
+              repositoryId: stored.request.source.repositoryId,
+              versionId: stored.request.source.versionId,
+              commit: stored.request.source.commit,
+              contentDigest: stored.request.source.expectedDigest,
+              destination: result.destination,
+              verification: result.verification,
+              installedAt: stored.completedAt
+            });
+          }
+          return stored;
+        });
+      }
+      installationMatrix(skillId) {
+        skillId = requiredText(skillId, "Skill id", 200);
+        const installations = /* @__PURE__ */ new Map();
+        for (const installation of this.state.installations) {
+          if (installation.skillId === skillId) installations.set(installation.runtimeId, installation);
+        }
+        const lastJobs = /* @__PURE__ */ new Map();
+        for (const job of this.state.jobs) {
+          if (job.request.purpose === "optimization-experiment") continue;
+          if (job.request.source.skillId === skillId) lastJobs.set(job.runtime.runtimeId, job);
+        }
+        const runtimeIds = /* @__PURE__ */ new Set([...installations.keys(), ...lastJobs.keys()]);
+        return [...runtimeIds].sort().map((runtimeId) => {
+          const installation = installations.get(runtimeId) ?? null;
+          const lastJob = lastJobs.get(runtimeId) ?? null;
+          return {
+            runtimeId,
+            providerId: lastJob?.runtime.providerId ?? installation?.providerId ?? null,
+            displayName: lastJob?.runtime.displayName ?? runtimeId,
+            skillId,
+            versionId: installation?.versionId ?? null,
+            commit: installation?.commit ?? null,
+            contentDigest: installation?.contentDigest ?? null,
+            destination: installation?.destination ?? null,
+            verification: installation?.verification ?? "none",
+            installedAt: installation?.installedAt ?? null,
+            trustedJobId: installation?.jobId ?? null,
+            lastJobId: lastJob?.id ?? null,
+            lastJobStatus: lastJob?.status ?? null,
+            lastJobUpdatedAt: lastJob?.updatedAt ?? null
+          };
+        });
+      }
+    };
+    module.exports = {
+      SKILL_INSTALLATION_STORE_SCHEMA,
+      SkillInstallationStore,
+      initialSkillInstallationState
+    };
+  }
+});
+
 // ../../desktop/rolling-skill/src/dataset-csv-export.cjs
 var require_dataset_csv_export = __commonJS({
   "../../desktop/rolling-skill/src/dataset-csv-export.cjs"(exports, module) {
@@ -7798,9 +19941,9 @@ var require_dataset_csv_export = __commonJS({
     function messageArray(role, content) {
       return JSON.stringify([{ role, content: String(content ?? "") }]);
     }
-    function normalizeExportOptions(options = {}) {
-      const caseScope = options.caseScope ?? "all";
-      const outputMode = options.outputMode ?? "curated";
+    function normalizeExportOptions(options2 = {}) {
+      const caseScope = options2.caseScope ?? "all";
+      const outputMode = options2.outputMode ?? "curated";
       if (caseScope !== "all" && caseScope !== "goodcase") {
         throw new Error("Dataset export case scope is unsupported");
       }
@@ -7819,9 +19962,9 @@ var require_dataset_csv_export = __commonJS({
       }
       return [];
     }
-    function buildDatasetCsv(cases = [], options = {}) {
+    function buildDatasetCsv(cases = [], options2 = {}) {
       if (!Array.isArray(cases)) throw new Error("Dataset Cases must be an array");
-      const { caseScope, outputMode } = normalizeExportOptions(options);
+      const { caseScope, outputMode } = normalizeExportOptions(options2);
       const rows = [["input", "output"]];
       const selectedCases = caseScope === "goodcase" ? cases.filter((entry) => entry?.caseType === "goodcase") : cases;
       for (const entry of selectedCases) {
@@ -7835,8 +19978,8 @@ var require_dataset_csv_export = __commonJS({
       return `${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}\r
 `;
     }
-    function datasetExportFilename(name, options = {}) {
-      const { caseScope, outputMode } = normalizeExportOptions(options);
+    function datasetExportFilename(name, options2 = {}) {
+      const { caseScope, outputMode } = normalizeExportOptions(options2);
       const safe = String(name ?? "").trim().replace(/[\\/:：*?"<>|]+/gu, "-").replace(/\s+/gu, "-").replace(/-+/gu, "-").replace(/^-|-$/gu, "");
       const suffix = [
         caseScope === "goodcase" ? "goodcases" : null,
@@ -8014,10 +20157,10 @@ var require_case_services = __commonJS({
           const dataset = store.getDataset(normalizedDatasetId);
           const allCases = store.listCases(normalizedDatasetId);
           const selected = caseScope === "goodcase" ? allCases.filter((entry) => entry.caseType === "goodcase") : allCases;
-          const options = { caseScope, outputMode };
+          const options2 = { caseScope, outputMode };
           return {
-            filename: datasetExportFilename(dataset.name, options),
-            content: buildDatasetCsv(allCases, options),
+            filename: datasetExportFilename(dataset.name, options2),
+            content: buildDatasetCsv(allCases, options2),
             caseCount: selected.length,
             missingOriginalCount: outputMode === "original" ? selected.filter((entry) => !originalFinalAssistantMessages(entry).length).length : 0
           };
@@ -9364,7 +21507,7 @@ var require_util = __commonJS({
 });
 
 // ../../desktop/rolling-skill/node_modules/zod/v4/core/errors.cjs
-var require_errors = __commonJS({
+var require_errors2 = __commonJS({
   "../../desktop/rolling-skill/node_modules/zod/v4/core/errors.cjs"(exports) {
     "use strict";
     var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m, k, k2) {
@@ -9577,7 +21720,7 @@ var require_parse = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.safeDecodeAsync = exports._safeDecodeAsync = exports.safeEncodeAsync = exports._safeEncodeAsync = exports.safeDecode = exports._safeDecode = exports.safeEncode = exports._safeEncode = exports.decodeAsync = exports._decodeAsync = exports.encodeAsync = exports._encodeAsync = exports.decode = exports._decode = exports.encode = exports._encode = exports.safeParseAsync = exports._safeParseAsync = exports.safeParse = exports._safeParse = exports.parseAsync = exports._parseAsync = exports.parse = exports._parse = void 0;
     var core = __importStar(require_core());
-    var errors = __importStar(require_errors());
+    var errors = __importStar(require_errors2());
     var util = __importStar(require_util());
     var _parse = (_Err) => (schema, value, _ctx, _params) => {
       const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
@@ -21463,26 +33606,26 @@ var require_api = __commonJS({
       });
     }
     // @__NO_SIDE_EFFECTS__
-    function _union(Class, options, params) {
+    function _union(Class, options2, params) {
       return new Class({
         type: "union",
-        options,
+        options: options2,
         ...util.normalizeParams(params)
       });
     }
-    function _xor(Class, options, params) {
+    function _xor(Class, options2, params) {
       return new Class({
         type: "union",
-        options,
+        options: options2,
         inclusive: false,
         ...util.normalizeParams(params)
       });
     }
     // @__NO_SIDE_EFFECTS__
-    function _discriminatedUnion(Class, discriminator, options, params) {
+    function _discriminatedUnion(Class, discriminator, options2, params) {
       return new Class({
         type: "union",
-        options,
+        options: options2,
         discriminator,
         ...util.normalizeParams(params)
       });
@@ -22496,14 +34639,14 @@ var require_json_schema_processors = __commonJS({
     var unionProcessor = (schema, ctx, json, params) => {
       const def = schema._zod.def;
       const isExclusive = def.inclusive === false;
-      const options = def.options.map((x, i) => (0, to_json_schema_js_1.process)(x, ctx, {
+      const options2 = def.options.map((x, i) => (0, to_json_schema_js_1.process)(x, ctx, {
         ...params,
         path: [...params.path, isExclusive ? "oneOf" : "anyOf", i]
       }));
       if (isExclusive) {
-        json.oneOf = options;
+        json.oneOf = options2;
       } else {
-        json.anyOf = options;
+        json.anyOf = options2;
       }
     };
     exports.unionProcessor = unionProcessor;
@@ -22902,7 +35045,7 @@ var require_core2 = __commonJS({
     exports.JSONSchema = exports.JSONSchemaGenerator = exports.toJSONSchema = exports.locales = exports.regexes = exports.util = void 0;
     __exportStar(require_core(), exports);
     __exportStar(require_parse(), exports);
-    __exportStar(require_errors(), exports);
+    __exportStar(require_errors2(), exports);
     __exportStar(require_schemas(), exports);
     __exportStar(require_checks(), exports);
     __exportStar(require_versions(), exports);
@@ -23093,7 +35236,7 @@ var require_iso = __commonJS({
 });
 
 // ../../desktop/rolling-skill/node_modules/zod/v4/classic/errors.cjs
-var require_errors2 = __commonJS({
+var require_errors3 = __commonJS({
   "../../desktop/rolling-skill/node_modules/zod/v4/classic/errors.cjs"(exports) {
     "use strict";
     var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m, k, k2) {
@@ -23203,7 +35346,7 @@ var require_parse2 = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.safeDecodeAsync = exports.safeEncodeAsync = exports.safeDecode = exports.safeEncode = exports.decodeAsync = exports.encodeAsync = exports.decode = exports.encode = exports.safeParseAsync = exports.safeParse = exports.parseAsync = exports.parse = void 0;
     var core = __importStar(require_core2());
-    var errors_js_1 = require_errors2();
+    var errors_js_1 = require_errors3();
     exports.parse = core._parse(errors_js_1.ZodRealError);
     exports.parseAsync = core._parseAsync(errors_js_1.ZodRealError);
     exports.safeParse = core._safeParse(errors_js_1.ZodRealError);
@@ -24093,10 +36236,10 @@ var require_schemas2 = __commonJS({
       inst._zod.processJSONSchema = (ctx, json2, params) => processors.unionProcessor(inst, ctx, json2, params);
       inst.options = def.options;
     });
-    function union(options, params) {
+    function union(options2, params) {
       return new exports.ZodUnion({
         type: "union",
-        options,
+        options: options2,
         ...index_js_1.util.normalizeParams(params)
       });
     }
@@ -24106,10 +36249,10 @@ var require_schemas2 = __commonJS({
       inst._zod.processJSONSchema = (ctx, json2, params) => processors.unionProcessor(inst, ctx, json2, params);
       inst.options = def.options;
     });
-    function xor(options, params) {
+    function xor(options2, params) {
       return new exports.ZodXor({
         type: "union",
-        options,
+        options: options2,
         inclusive: false,
         ...index_js_1.util.normalizeParams(params)
       });
@@ -24118,10 +36261,10 @@ var require_schemas2 = __commonJS({
       exports.ZodUnion.init(inst, def);
       core.$ZodDiscriminatedUnion.init(inst, def);
     });
-    function discriminatedUnion(discriminator, options, params) {
+    function discriminatedUnion(discriminator, options2, params) {
       return new exports.ZodDiscriminatedUnion({
         type: "union",
-        options,
+        options: options2,
         discriminator,
         ...index_js_1.util.normalizeParams(params)
       });
@@ -25154,13 +37297,13 @@ var require_from_json_schema = __commonJS({
       let baseSchema = convertBaseSchema(schema, ctx);
       const hasExplicitType = schema.type || schema.enum !== void 0 || schema.const !== void 0;
       if (schema.anyOf && Array.isArray(schema.anyOf)) {
-        const options = schema.anyOf.map((s) => convertSchema(s, ctx));
-        const anyOfUnion = z.union(options);
+        const options2 = schema.anyOf.map((s) => convertSchema(s, ctx));
+        const anyOfUnion = z.union(options2);
         baseSchema = hasExplicitType ? z.intersection(baseSchema, anyOfUnion) : anyOfUnion;
       }
       if (schema.oneOf && Array.isArray(schema.oneOf)) {
-        const options = schema.oneOf.map((s) => convertSchema(s, ctx));
-        const oneOfUnion = z.xor(options);
+        const options2 = schema.oneOf.map((s) => convertSchema(s, ctx));
+        const oneOfUnion = z.xor(options2);
         baseSchema = hasExplicitType ? z.intersection(baseSchema, oneOfUnion) : oneOfUnion;
       }
       if (schema.allOf && Array.isArray(schema.allOf)) {
@@ -25334,7 +37477,7 @@ var require_external = __commonJS({
     exports.core = __importStar(require_core2());
     __exportStar(require_schemas2(), exports);
     __exportStar(require_checks2(), exports);
-    __exportStar(require_errors2(), exports);
+    __exportStar(require_errors3(), exports);
     __exportStar(require_parse2(), exports);
     __exportStar(require_compat(), exports);
     var index_js_1 = require_core2();
@@ -26688,11 +38831,11 @@ var require_evaluation_turn_error = __commonJS({
         traceEvidence
       };
     }
-    function evaluationTurnError(message, options = {}) {
+    function evaluationTurnError(message, options2 = {}) {
       const error = new Error(message);
       Object.assign(error, {
-        code: options.code ?? "EVALUATION_TURN_FAILED",
-        ...evaluationTraceDiagnostics(options)
+        code: options2.code ?? "EVALUATION_TURN_FAILED",
+        ...evaluationTraceDiagnostics(options2)
       });
       return error;
     }
@@ -26974,17 +39117,17 @@ var require_trace_recorder = __commonJS({
       return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
     }
     var TraceRecorder = class {
-      constructor(directory, options = {}) {
+      constructor(directory, options2 = {}) {
         mkdirSync(directory, { recursive: true, mode: 448 });
-        const sessionId = safeSessionId(options.sessionId ?? `runtime-${Date.now()}`);
+        const sessionId = safeSessionId(options2.sessionId ?? `runtime-${Date.now()}`);
         this.path = join(directory, `${sessionId}.jsonl`);
         this.fileName = `${sessionId}.jsonl`;
         this.line = 0;
         this.latestReference = null;
-        this.runtime = options.runtime ? {
-          runtimeId: options.runtime.runtimeId,
-          providerId: options.runtime.providerId,
-          version: options.runtime.version
+        this.runtime = options2.runtime ? {
+          runtimeId: options2.runtime.runtimeId,
+          providerId: options2.runtime.providerId,
+          version: options2.runtime.version
         } : null;
       }
       record(direction, message) {
@@ -27022,16 +39165,16 @@ var require_trace_recorder = __commonJS({
         if (this.line === mark.line) return null;
         return `trace://${this.fileName}#L${mark.line + 1}-L${this.line}`;
       }
-      evidenceForReference(reference, options = {}) {
+      evidenceForReference(reference, options2 = {}) {
         const { start, end } = parseOwnedReference(reference, this.fileName, this.line);
-        const maxEntries = Math.max(1, Math.min(Number(options.maxEntries) || 500, 1e3));
+        const maxEntries = Math.max(1, Math.min(Number(options2.maxEntries) || 500, 1e3));
         const maxEntryCharacters = Math.max(
           200,
-          Math.min(Number(options.maxEntryCharacters) || 4e3, 2e4)
+          Math.min(Number(options2.maxEntryCharacters) || 4e3, 2e4)
         );
         const maxTotalCharacters = Math.max(
           1e3,
-          Math.min(Number(options.maxTotalCharacters) || 24e4, 4e5)
+          Math.min(Number(options2.maxTotalCharacters) || 24e4, 4e5)
         );
         const lines = readFileSync(this.path, "utf8").trim().split("\n").filter(Boolean);
         const semanticEntries = [];
@@ -27764,8 +39907,8 @@ var require_codex_app_server = __commonJS({
       }
       async requestApproval(message, defaults) {
         const params = message.params ?? {};
-        const options = this.permissionOptions(params.availableDecisions, defaults);
-        const rejection = options.find((option) => /decline|cancel|reject|deny/iu.test(option.optionId));
+        const options2 = this.permissionOptions(params.availableDecisions, defaults);
+        const rejection = options2.find((option) => /decline|cancel|reject|deny/iu.test(option.optionId));
         if (typeof this.requestPermission !== "function") return rejection.optionId;
         const selected = await this.requestPermission({
           rpcId: String(message.id),
@@ -27777,9 +39920,9 @@ var require_codex_app_server = __commonJS({
               rawInput: params.command ?? params.reason ?? ""
             }
           },
-          options
+          options: options2
         });
-        return options.some((option) => option.optionId === selected) ? selected : rejection.optionId;
+        return options2.some((option) => option.optionId === selected) ? selected : rejection.optionId;
       }
       async handleInteractiveServerRequest(message) {
         try {
@@ -27890,24 +40033,24 @@ var require_codex_app_server = __commonJS({
           approvalPolicy: executionPolicy.approvalPolicy ?? "never"
         };
       }
-      listThreads(options = {}) {
+      listThreads(options2 = {}) {
         return this.request("thread/list", {
-          limit: options.limit ?? 100,
+          limit: options2.limit ?? 100,
           sortKey: "updated_at",
           sortDirection: "desc",
           sourceKinds: [],
-          archived: options.archived ?? false,
+          archived: options2.archived ?? false,
           cwd: this.workspaceRoot,
-          ...options.cursor ? { cursor: options.cursor } : {}
+          ...options2.cursor ? { cursor: options2.cursor } : {}
         });
       }
       listModels() {
         return this.request("model/list", { limit: 100, includeHidden: false });
       }
-      listSkills(options = {}) {
+      listSkills(options2 = {}) {
         return this.request("skills/list", {
           cwds: [this.workspaceRoot],
-          forceReload: Boolean(options.forceReload)
+          forceReload: Boolean(options2.forceReload)
         });
       }
       listPlugins() {
@@ -27925,16 +40068,16 @@ var require_codex_app_server = __commonJS({
       readThread(threadId) {
         return this.request("thread/read", { threadId, includeTurns: true });
       }
-      async startThread(options = {}) {
-        const dynamicTools = Object.hasOwn(options, "dynamicTools") ? JSON.parse(JSON.stringify(options.dynamicTools)) : null;
+      async startThread(options2 = {}) {
+        const dynamicTools = Object.hasOwn(options2, "dynamicTools") ? JSON.parse(JSON.stringify(options2.dynamicTools)) : null;
         const response = await this.request("thread/start", {
           cwd: this.workspaceRoot,
-          approvalPolicy: options.approvalPolicy ?? this.executionPolicy.approvalPolicy,
-          sandbox: options.sandbox ?? this.executionPolicy.sandbox,
-          ephemeral: options.ephemeral ?? false,
+          approvalPolicy: options2.approvalPolicy ?? this.executionPolicy.approvalPolicy,
+          sandbox: options2.sandbox ?? this.executionPolicy.sandbox,
+          ephemeral: options2.ephemeral ?? false,
           sessionStartSource: "startup",
-          threadSource: options.threadSource ?? "user",
-          ...options.model ? { model: options.model } : {},
+          threadSource: options2.threadSource ?? "user",
+          ...options2.model ? { model: options2.model } : {},
           ...dynamicTools ? { dynamicTools } : {}
         });
         if (this.registerDynamicTools(response.thread.id, dynamicTools)) {
@@ -27944,16 +40087,16 @@ var require_codex_app_server = __commonJS({
         }
         return response;
       }
-      async resumeThread(threadId, options = {}) {
-        const dynamicTools = Object.hasOwn(options, "dynamicTools") ? JSON.parse(JSON.stringify(options.dynamicTools)) : null;
+      async resumeThread(threadId, options2 = {}) {
+        const dynamicTools = Object.hasOwn(options2, "dynamicTools") ? JSON.parse(JSON.stringify(options2.dynamicTools)) : null;
         const turnState = this.beginDynamicTurnPhase(threadId, "resuming");
         try {
           const response = await this.request("thread/resume", {
             threadId,
-            cwd: options.cwd ?? this.workspaceRoot,
-            approvalPolicy: options.approvalPolicy ?? this.executionPolicy.approvalPolicy,
-            sandbox: options.sandbox ?? this.executionPolicy.sandbox,
-            ...options.model ? { model: options.model } : {},
+            cwd: options2.cwd ?? this.workspaceRoot,
+            approvalPolicy: options2.approvalPolicy ?? this.executionPolicy.approvalPolicy,
+            sandbox: options2.sandbox ?? this.executionPolicy.sandbox,
+            ...options2.model ? { model: options2.model } : {},
             ...dynamicTools ? { dynamicTools } : {}
           });
           if (this.dynamicToolTurnStates.get(threadId)?.generation !== turnState.generation) {
@@ -27974,15 +40117,15 @@ var require_codex_app_server = __commonJS({
           throw error;
         }
       }
-      async startTurn(threadId, text, options = {}) {
+      async startTurn(threadId, text, options2 = {}) {
         const input = Array.isArray(text) ? text : [{ type: "text", text, text_elements: [] }];
         const params = {
           threadId,
           input,
-          ...Object.hasOwn(options, "model") ? { model: options.model ?? null } : {},
-          ...Object.hasOwn(options, "effort") ? { effort: options.effort ?? null } : {},
-          ...Object.hasOwn(options, "approvalPolicy") ? { approvalPolicy: options.approvalPolicy ?? null } : {},
-          ...Object.hasOwn(options, "sandbox") ? { sandboxPolicy: turnSandboxPolicy(options.sandbox) } : {}
+          ...Object.hasOwn(options2, "model") ? { model: options2.model ?? null } : {},
+          ...Object.hasOwn(options2, "effort") ? { effort: options2.effort ?? null } : {},
+          ...Object.hasOwn(options2, "approvalPolicy") ? { approvalPolicy: options2.approvalPolicy ?? null } : {},
+          ...Object.hasOwn(options2, "sandbox") ? { sandboxPolicy: turnSandboxPolicy(options2.sandbox) } : {}
         };
         if (!this.dynamicToolThreads.has(threadId)) return this.request("turn/start", params);
         const current = this.dynamicToolTurnStates.get(threadId);
@@ -28284,26 +40427,26 @@ var require_codex_runtime_provider = __commonJS({
         return [];
       }
     }
-    function buildCodexCandidates(options = {}) {
-      const homeDirectory = options.homeDirectory ?? homedir();
-      const pathValue = options.pathValue ?? process.env.PATH ?? "";
-      const applicationCandidates = options.applicationCandidates ?? [
+    function buildCodexCandidates(options2 = {}) {
+      const homeDirectory = options2.homeDirectory ?? homedir();
+      const pathValue = options2.pathValue ?? process.env.PATH ?? "";
+      const applicationCandidates = options2.applicationCandidates ?? [
         "/Applications/ChatGPT.app/Contents/Resources/codex",
         "/Applications/Codex.app/Contents/Resources/codex",
         join(homeDirectory, "Applications", "ChatGPT.app", "Contents", "Resources", "codex"),
         join(homeDirectory, "Applications", "Codex.app", "Contents", "Resources", "codex")
       ];
-      const systemCandidates = options.systemCandidates ?? [
+      const systemCandidates = options2.systemCandidates ?? [
         "/opt/homebrew/bin/codex",
         "/usr/local/bin/codex",
         "/usr/bin/codex"
       ];
-      const userCandidates = options.userCandidates ?? [
+      const userCandidates = options2.userCandidates ?? [
         join(homeDirectory, ".local", "bin", "codex"),
         join(homeDirectory, ".npm", "bin", "codex"),
         join(homeDirectory, ".npm-global", "bin", "codex")
       ];
-      const sreCandidates = options.sreCandidates ?? sreCodexCandidates(homeDirectory);
+      const sreCandidates = options2.sreCandidates ?? sreCodexCandidates(homeDirectory);
       const candidates = [];
       const seen = /* @__PURE__ */ new Set();
       function add(path, source) {
@@ -28313,8 +40456,8 @@ var require_codex_runtime_provider = __commonJS({
         seen.add(key);
         candidates.push({ path, source });
       }
-      add(options.configuredPath, "configured");
-      add(options.environmentBinary ?? process.env.ROLLING_SKILL_CODEX_BIN, "environment");
+      add(options2.configuredPath, "configured");
+      add(options2.environmentBinary ?? process.env.ROLLING_SKILL_CODEX_BIN, "environment");
       for (const directory of pathValue.split(delimiter).filter(Boolean)) {
         add(join(directory, "codex"), "path");
       }
@@ -28325,19 +40468,19 @@ var require_codex_runtime_provider = __commonJS({
       return candidates;
     }
     function probeCodexRuntime(executablePath, spawnProcess = spawnSync) {
-      const options = {
+      const options2 = {
         encoding: "utf8",
         timeout: 3e3,
         shell: false,
         windowsHide: true
       };
-      const versionResult = spawnProcess(executablePath, ["--version"], options);
+      const versionResult = spawnProcess(executablePath, ["--version"], options2);
       if (versionResult?.status !== 0 || versionResult.error) return null;
       const versionOutput = `${versionResult.stdout ?? ""}
 ${versionResult.stderr ?? ""}`;
       const match = versionOutput.match(/\bcodex-cli\s+([^\s]+)/i);
       if (!match) return null;
-      const serverResult = spawnProcess(executablePath, ["app-server", "--help"], options);
+      const serverResult = spawnProcess(executablePath, ["app-server", "--help"], options2);
       if (serverResult?.status !== 0 || serverResult.error) return null;
       const serverOutput = `${serverResult.stdout ?? ""}
 ${serverResult.stderr ?? ""}`;
@@ -28353,9 +40496,9 @@ ${serverResult.stderr ?? ""}`;
         this.id = "codex";
         this.probe = probe;
       }
-      discover(options = {}) {
+      discover(options2 = {}) {
         const descriptors = [];
-        for (const candidate of buildCodexCandidates(options)) {
+        for (const candidate of buildCodexCandidates(options2)) {
           const compatibility = this.probe(candidate.path);
           if (!compatibility?.appServer) continue;
           descriptors.push(
@@ -28383,9 +40526,9 @@ ${serverResult.stderr ?? ""}`;
         }
         return descriptors;
       }
-      createClient(descriptor, options) {
+      createClient(descriptor, options2) {
         return new CodexAppServerClient({
-          ...options,
+          ...options2,
           binaryPath: descriptor.executablePath,
           runtimeDescriptor: descriptor
         });
@@ -28424,10 +40567,10 @@ var require_codebuddy_acp_client = __commonJS({
       if (value?.type === "text") return String(value.text ?? "");
       return "";
     }
-    function sessionMcpServers(options) {
-      if (!Object.hasOwn(options, "mcpServers")) return [];
-      if (!Array.isArray(options.mcpServers)) throw new TypeError("CodeBuddy MCP servers must be an array");
-      return JSON.parse(JSON.stringify(options.mcpServers));
+    function sessionMcpServers(options2) {
+      if (!Object.hasOwn(options2, "mcpServers")) return [];
+      if (!Array.isArray(options2.mcpServers)) throw new TypeError("CodeBuddy MCP servers must be an array");
+      return JSON.parse(JSON.stringify(options2.mcpServers));
     }
     var CodeBuddyAcpClient = class extends EventEmitter {
       constructor({
@@ -28628,8 +40771,8 @@ var require_codebuddy_acp_client = __commonJS({
           processEpoch
         };
         this.pendingPermissionRequests.set(pending.key, pending);
-        const options = Array.isArray(message.params?.options) ? message.params.options : [];
-        const fallback = options.find(
+        const options2 = Array.isArray(message.params?.options) ? message.params.options : [];
+        const fallback = options2.find(
           (option) => /reject|deny|decline|cancel/i.test(
             `${option.kind ?? ""} ${option.optionId ?? ""} ${option.name ?? ""}`
           )
@@ -28653,9 +40796,9 @@ var require_codebuddy_acp_client = __commonJS({
               processEpoch,
               method: message.method,
               params: message.params ?? {},
-              options
+              options: options2
             });
-            if (options.some((option) => (option.optionId ?? option.name) === selected)) {
+            if (options2.some((option) => (option.optionId ?? option.name) === selected)) {
               optionId = selected;
             }
           }
@@ -28724,8 +40867,8 @@ var require_codebuddy_acp_client = __commonJS({
         this.workspaceRoot = workspaceRoot;
         this.emit("state", this.state());
       }
-      listThreads(options = {}) {
-        if (options.archived) return Promise.resolve({ data: [], nextCursor: null });
+      listThreads(options2 = {}) {
+        if (options2.archived) return Promise.resolve({ data: [], nextCursor: null });
         const data = [...this.sessions.values()].map((thread) => ({
           id: thread.id,
           name: thread.name,
@@ -28792,59 +40935,59 @@ var require_codebuddy_acp_client = __commonJS({
         if (!available?.size || available.has(requested)) return requested;
         throw new Error(`CodeBuddy does not support permission mode ${requested}`);
       }
-      async configureSession(sessionId, options = {}) {
-        if (options.permissionMode) {
+      async configureSession(sessionId, options2 = {}) {
+        if (options2.permissionMode) {
           await this.request("session/set_mode", {
             sessionId,
-            modeId: this.availablePermissionMode(sessionId, options.permissionMode)
+            modeId: this.availablePermissionMode(sessionId, options2.permissionMode)
           });
         }
-        if (options.model) {
-          await this.request("session/set_model", { sessionId, modelId: options.model });
+        if (options2.model) {
+          await this.request("session/set_model", { sessionId, modelId: options2.model });
         }
-        if (options.effort) {
+        if (options2.effort) {
           await this.request("session/set_config_option", {
             sessionId,
             configId: "thought_level",
-            value: options.effort
+            value: options2.effort
           });
         }
       }
-      async startThread(options = {}) {
+      async startThread(options2 = {}) {
         const response = await this.request("session/new", {
           cwd: this.workspaceRoot,
-          mcpServers: sessionMcpServers(options)
+          mcpServers: sessionMcpServers(options2)
         });
         this.captureModels(response);
         const runtimeModes = this.captureModes(response.sessionId, response);
-        await this.configureSession(response.sessionId, options);
+        await this.configureSession(response.sessionId, options2);
         const now = Date.now() / 1e3;
         const thread = {
           id: response.sessionId,
           name: "New CodeBuddy task",
           preview: "",
           cwd: this.workspaceRoot,
-          model: options.model ?? response.models?.currentModelId ?? null,
-          effort: options.effort ?? null,
-          permissionMode: options.permissionMode ?? runtimeModes.currentModeId,
+          model: options2.model ?? response.models?.currentModelId ?? null,
+          effort: options2.effort ?? null,
+          permissionMode: options2.permissionMode ?? runtimeModes.currentModeId,
           availablePermissionModes: runtimeModes.availablePermissionModes,
           status: { type: "idle" },
           updatedAt: now,
           recencyAt: now,
           turns: [],
           modelProvider: "codebuddy",
-          threadSource: options.threadSource ?? "user"
+          threadSource: options2.threadSource ?? "user"
         };
         this.sessions.set(thread.id, thread);
         this.emitNotification("thread/started", { thread });
         return { thread: JSON.parse(JSON.stringify(thread)) };
       }
-      async resumeThread(threadId, options = {}) {
+      async resumeThread(threadId, options2 = {}) {
         if (!this.sessions.has(threadId)) {
           const response = await this.request("session/load", {
             sessionId: threadId,
             cwd: this.workspaceRoot,
-            mcpServers: sessionMcpServers(options)
+            mcpServers: sessionMcpServers(options2)
           });
           this.captureModels(response);
           const runtimeModes = this.captureModes(threadId, response);
@@ -28854,9 +40997,9 @@ var require_codebuddy_acp_client = __commonJS({
             name: "CodeBuddy task",
             preview: "",
             cwd: this.workspaceRoot,
-            model: options.model ?? response.models?.currentModelId ?? null,
-            effort: options.effort ?? null,
-            permissionMode: options.permissionMode ?? runtimeModes.currentModeId,
+            model: options2.model ?? response.models?.currentModelId ?? null,
+            effort: options2.effort ?? null,
+            permissionMode: options2.permissionMode ?? runtimeModes.currentModeId,
             availablePermissionModes: runtimeModes.availablePermissionModes,
             status: { type: "idle" },
             updatedAt: now,
@@ -28865,16 +41008,16 @@ var require_codebuddy_acp_client = __commonJS({
             modelProvider: "codebuddy"
           });
         }
-        await this.configureSession(threadId, options);
+        await this.configureSession(threadId, options2);
         return this.readThread(threadId);
       }
-      async startTurn(threadId, value, options = {}) {
+      async startTurn(threadId, value, options2 = {}) {
         const thread = this.sessions.get(threadId);
         if (!thread) throw new Error("Unknown CodeBuddy session");
-        await this.configureSession(threadId, options);
-        if (options.model) thread.model = options.model;
-        if (options.effort) thread.effort = options.effort;
-        if (options.permissionMode) thread.permissionMode = options.permissionMode;
+        await this.configureSession(threadId, options2);
+        if (options2.model) thread.model = options2.model;
+        if (options2.effort) thread.effort = options2.effort;
+        if (options2.permissionMode) thread.permissionMode = options2.permissionMode;
         const text = Array.isArray(value) ? value.map(
           (part) => part.type === "skill" ? `/${part.name}` : part.type === "text" ? part.text : ""
         ).filter(Boolean).join("\n\n") : String(value);
@@ -29187,20 +41330,20 @@ var require_codebuddy_runtime_provider = __commonJS({
         return [];
       }
     }
-    function buildCodeBuddyCandidates(options = {}) {
-      const homeDirectory = options.homeDirectory ?? homedir();
-      const pathValue = options.pathValue ?? process.env.PATH ?? "";
-      const systemCandidates = options.systemCandidates ?? [
+    function buildCodeBuddyCandidates(options2 = {}) {
+      const homeDirectory = options2.homeDirectory ?? homedir();
+      const pathValue = options2.pathValue ?? process.env.PATH ?? "";
+      const systemCandidates = options2.systemCandidates ?? [
         "/opt/homebrew/bin/codebuddy",
         "/usr/local/bin/codebuddy",
         "/usr/bin/codebuddy"
       ];
-      const userCandidates = options.userCandidates ?? [
+      const userCandidates = options2.userCandidates ?? [
         join(homeDirectory, ".local", "bin", "codebuddy"),
         join(homeDirectory, ".npm", "bin", "codebuddy"),
         join(homeDirectory, ".npm-global", "bin", "codebuddy")
       ];
-      const sreCandidates = options.sreCandidates ?? sreCodeBuddyCandidates(homeDirectory);
+      const sreCandidates = options2.sreCandidates ?? sreCodeBuddyCandidates(homeDirectory);
       const candidates = [];
       const seen = /* @__PURE__ */ new Set();
       const add = (path, source) => {
@@ -29210,8 +41353,8 @@ var require_codebuddy_runtime_provider = __commonJS({
         seen.add(key);
         candidates.push({ path, source });
       };
-      add(options.configuredPath, "configured");
-      add(options.environmentBinary ?? process.env.ROLLING_SKILL_CODEBUDDY_BIN, "environment");
+      add(options2.configuredPath, "configured");
+      add(options2.environmentBinary ?? process.env.ROLLING_SKILL_CODEBUDDY_BIN, "environment");
       for (const directory of pathValue.split(delimiter).filter(Boolean)) {
         add(join(directory, "codebuddy"), "path");
       }
@@ -29232,7 +41375,7 @@ var require_codebuddy_runtime_provider = __commonJS({
       );
     }
     function probeCodeBuddyRuntime(executablePath, spawnProcess = spawnSync) {
-      const options = {
+      const options2 = {
         encoding: "utf8",
         timeout: 3e3,
         shell: false,
@@ -29242,13 +41385,13 @@ var require_codebuddy_runtime_provider = __commonJS({
           PATH: `${dirname(executablePath)}${delimiter}${process.env.PATH ?? "/usr/bin:/bin"}`
         }
       };
-      const versionResult = spawnProcess(executablePath, ["--version"], options);
+      const versionResult = spawnProcess(executablePath, ["--version"], options2);
       if (versionResult?.status !== 0 || versionResult.error) return null;
       const versionText = `${versionResult.stdout ?? ""}
 ${versionResult.stderr ?? ""}`.trim();
       const versionMatch = versionText.match(/(?:codebuddy(?:-code)?\s+)?(\d+\.\d+\.\d+(?:[-+][^\s]+)?)/i);
       if (!versionMatch) return null;
-      const helpResult = spawnProcess(executablePath, ["--help"], options);
+      const helpResult = spawnProcess(executablePath, ["--help"], options2);
       if (helpResult?.status !== 0 || helpResult.error) return null;
       const help = `${helpResult.stdout ?? ""}
 ${helpResult.stderr ?? ""}`;
@@ -29270,9 +41413,9 @@ ${helpResult.stderr ?? ""}`;
         this.id = "codebuddy";
         this.probe = probe;
       }
-      discover(options = {}) {
+      discover(options2 = {}) {
         const descriptors = [];
-        for (const candidate of buildCodeBuddyCandidates(options)) {
+        for (const candidate of buildCodeBuddyCandidates(options2)) {
           const compatibility = this.probe(candidate.path);
           if (!compatibility?.acp) continue;
           descriptors.push(
@@ -29302,9 +41445,9 @@ ${helpResult.stderr ?? ""}`;
         }
         return descriptors;
       }
-      createClient(descriptor, options) {
+      createClient(descriptor, options2) {
         return new CodeBuddyAcpClient({
-          ...options,
+          ...options2,
           binaryPath: descriptor.executablePath,
           runtimeDescriptor: descriptor
         });
@@ -30013,7 +42156,7 @@ var require_deepseek_harness_client = __commonJS({
         const { payload } = token;
         let message;
         if (payload.type === "approval/requested") {
-          const options = [
+          const options2 = [
             { optionId: "allowed-once", kind: "allow_once", name: "Allow once" },
             { optionId: "rejected", kind: "reject", name: "Reject" }
           ];
@@ -30022,7 +42165,7 @@ var require_deepseek_harness_client = __commonJS({
             selected = await this.requestPermission(this.publicValue({
               processEpoch: token.epoch,
               rpcId: token.rpcId,
-              options,
+              options: options2,
               params: {
                 sessionId: payload.sessionId,
                 approvalId: payload.approvalId,
@@ -30182,9 +42325,9 @@ var require_deepseek_harness_client = __commonJS({
         const archived = new Set(workspace.archivedSessionIds ?? []);
         return { items, archived };
       }
-      async listThreads(options = {}) {
+      async listThreads(options2 = {}) {
         const { items, archived } = await this.listSessionSummaries();
-        const wantsArchived = Boolean(options.archived);
+        const wantsArchived = Boolean(options2.archived);
         const data = items.filter(
           (summary) => !summary.blank && (!this.workspaceRoot || summary.cwd === this.workspaceRoot) && archived.has(summary.sessionId) === wantsArchived
         ).map((summary) => {
@@ -30275,8 +42418,8 @@ var require_deepseek_harness_client = __commonJS({
           nextCursor: null
         };
       }
-      async configureSession(sessionId, options = {}) {
-        const requestedPermission = options.permissionMode ?? options.sandbox;
+      async configureSession(sessionId, options2 = {}) {
+        const requestedPermission = options2.permissionMode ?? options2.sandbox;
         const permissionMode = DSH_PERMISSION_MODES.has(requestedPermission) ? requestedPermission : this.defaultPermissionMode;
         if (this.sessionPermissions.get(sessionId) !== permissionMode) {
           const command = await this.request("commands/execute", {
@@ -30288,9 +42431,9 @@ var require_deepseek_harness_client = __commonJS({
           }
           this.sessionPermissions.set(sessionId, permissionMode);
         }
-        if (!options.model && !options.effort) return null;
+        if (!options2.model && !options2.effort) return null;
         let route;
-        if (options.model) route = decodeModelId(options.model);
+        if (options2.model) route = decodeModelId(options2.model);
         else {
           const current = await this.request("session.models", { sessionId });
           route = { provider: current.current.provider, model: current.current.model };
@@ -30298,7 +42441,7 @@ var require_deepseek_harness_client = __commonJS({
         const selected = await this.request("session.selectModel", {
           sessionId,
           ...route,
-          ...options.effort ? { reasoningEffort: options.effort } : {}
+          ...options2.effort ? { reasoningEffort: options2.effort } : {}
         });
         this.emitNotification("thread/settings/updated", {
           threadId: sessionId,
@@ -30309,10 +42452,10 @@ var require_deepseek_harness_client = __commonJS({
         });
         return selected.selected;
       }
-      async startThread(options = {}) {
+      async startThread(options2 = {}) {
         const created = await this.request("session.create", { cwd: this.workspaceRoot });
         this.sessionPermissions.set(created.sessionId, this.defaultPermissionMode);
-        const selected = await this.configureSession(created.sessionId, options);
+        const selected = await this.configureSession(created.sessionId, options2);
         const models = selected ? null : await this.request("session.models", { sessionId: created.sessionId });
         const current = selected ?? models?.current ?? null;
         const now = Date.now() / 1e3;
@@ -30322,20 +42465,20 @@ var require_deepseek_harness_client = __commonJS({
           preview: "",
           cwd: this.workspaceRoot,
           model: current ? encodeModelId(current.provider, current.model) : null,
-          effort: current?.reasoningEffort ?? options.effort ?? null,
+          effort: current?.reasoningEffort ?? options2.effort ?? null,
           status: { type: "idle" },
           updatedAt: now,
           recencyAt: now,
           turns: [],
           modelProvider: "deepseek-harness",
           permissionMode: this.sessionPermissions.get(created.sessionId),
-          threadSource: options.threadSource ?? "user"
+          threadSource: options2.threadSource ?? "user"
         };
         this.emitNotification("thread/started", { thread });
         return { thread, model: thread.model, reasoningEffort: thread.effort };
       }
-      async resumeThread(threadId, options = {}) {
-        await this.configureSession(threadId, options);
+      async resumeThread(threadId, options2 = {}) {
+        await this.configureSession(threadId, options2);
         return this.readThread(threadId);
       }
       turnContent(value) {
@@ -30349,8 +42492,8 @@ var require_deepseek_harness_client = __commonJS({
       async historyTail(sessionId) {
         return this.request("session.history", { sessionId, maxMessages: 200 });
       }
-      async startTurn(threadId, value, options = {}) {
-        await this.configureSession(threadId, options);
+      async startTurn(threadId, value, options2 = {}) {
+        await this.configureSession(threadId, options2);
         const before = await this.historyTail(threadId);
         const mark = before.events?.at(-1)?.event?.seq ?? -1;
         const content = this.turnContent(value);
@@ -30787,15 +42930,15 @@ var require_deepseek_harness_runtime_provider = __commonJS({
         return path;
       }
     }
-    function buildDeepSeekHarnessCandidates(options = {}) {
-      const homeDirectory = options.homeDirectory ?? homedir();
-      const pathValue = options.pathValue ?? process.env.PATH ?? "";
-      const systemCandidates = options.systemCandidates ?? [
+    function buildDeepSeekHarnessCandidates(options2 = {}) {
+      const homeDirectory = options2.homeDirectory ?? homedir();
+      const pathValue = options2.pathValue ?? process.env.PATH ?? "";
+      const systemCandidates = options2.systemCandidates ?? [
         "/opt/homebrew/bin/dsh",
         "/usr/local/bin/dsh",
         "/usr/bin/dsh"
       ];
-      const userCandidates = options.userCandidates ?? [
+      const userCandidates = options2.userCandidates ?? [
         join(homeDirectory, ".local", "bin", "dsh"),
         join(homeDirectory, ".npm", "bin", "dsh"),
         join(homeDirectory, ".npm-global", "bin", "dsh")
@@ -30809,8 +42952,8 @@ var require_deepseek_harness_runtime_provider = __commonJS({
         seen.add(key);
         candidates.push({ path, source });
       };
-      add(options.configuredPath, "configured");
-      add(options.environmentBinary ?? process.env.ROLLING_SKILL_DSH_BIN, "environment");
+      add(options2.configuredPath, "configured");
+      add(options2.environmentBinary ?? process.env.ROLLING_SKILL_DSH_BIN, "environment");
       for (const directory of pathValue.split(delimiter).filter(Boolean)) {
         add(join(directory, "dsh"), "path");
       }
@@ -30819,7 +42962,7 @@ var require_deepseek_harness_runtime_provider = __commonJS({
       return candidates;
     }
     function probeDeepSeekHarnessRuntime(executablePath, spawnProcess = spawnSync) {
-      const options = {
+      const options2 = {
         encoding: "utf8",
         timeout: 3e3,
         shell: false,
@@ -30829,13 +42972,13 @@ var require_deepseek_harness_runtime_provider = __commonJS({
           PATH: `${dirname(executablePath)}${delimiter}${process.env.PATH ?? "/usr/bin:/bin"}`
         }
       };
-      const versionResult = spawnProcess(executablePath, ["--version"], options);
+      const versionResult = spawnProcess(executablePath, ["--version"], options2);
       if (versionResult?.status !== 0 || versionResult.error) return null;
       const versionText = `${versionResult.stdout ?? ""}
 ${versionResult.stderr ?? ""}`.trim();
       const version = versionText.match(/^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/)?.[1];
       if (!version) return null;
-      const helpResult = spawnProcess(executablePath, ["--profile", "web", "--help"], options);
+      const helpResult = spawnProcess(executablePath, ["--profile", "web", "--help"], options2);
       if (helpResult?.status !== 0 || helpResult.error) return null;
       const help = `${helpResult.stdout ?? ""}
 ${helpResult.stderr ?? ""}`;
@@ -30851,9 +42994,9 @@ ${helpResult.stderr ?? ""}`;
         this.id = "deepseek-harness";
         this.probe = probe;
       }
-      discover(options = {}) {
+      discover(options2 = {}) {
         const descriptors = [];
-        for (const candidate of buildDeepSeekHarnessCandidates(options)) {
+        for (const candidate of buildDeepSeekHarnessCandidates(options2)) {
           const compatibility = this.probe(candidate.path);
           if (!compatibility?.webHost) continue;
           descriptors.push(Object.freeze({
@@ -30879,9 +43022,9 @@ ${helpResult.stderr ?? ""}`;
         }
         return descriptors;
       }
-      createClient(descriptor, options) {
+      createClient(descriptor, options2) {
         return new DeepSeekHarnessClient({
-          ...options,
+          ...options2,
           binaryPath: descriptor.executablePath,
           runtimeDescriptor: descriptor
         });
@@ -30913,13 +43056,13 @@ var require_runtime_registry = __commonJS({
           this.providers.set(provider.id, provider);
         }
       }
-      discover(options = {}) {
+      discover(options2 = {}) {
         const available = [];
         const seen = /* @__PURE__ */ new Set();
         for (const provider of this.providers.values()) {
           const providerOptions = {
-            ...options.commonProviderOptions ?? {},
-            ...options.providerOptions?.[provider.id] ?? {}
+            ...options2.commonProviderOptions ?? {},
+            ...options2.providerOptions?.[provider.id] ?? {}
           };
           for (const descriptor of provider.discover(providerOptions) ?? []) {
             if (!descriptor?.runtimeId || descriptor.providerId !== provider.id) continue;
@@ -30928,18 +43071,18 @@ var require_runtime_registry = __commonJS({
             available.push(descriptor);
           }
         }
-        const preferred = options.preferredRuntime;
+        const preferred = options2.preferredRuntime;
         const selected = preferred ? available.find(
           (runtime) => preferred.runtimeId && runtime.runtimeId === preferred.runtimeId || preferred.executablePath && runtime.executablePath === preferred.executablePath && (!preferred.providerId || runtime.providerId === preferred.providerId)
         ) ?? available[0] ?? null : available[0] ?? null;
         return { available, selected };
       }
-      createClient(descriptor, options) {
+      createClient(descriptor, options2) {
         const provider = this.providers.get(descriptor?.providerId);
         if (!provider || typeof provider.createClient !== "function") {
           throw new Error(`No client provider is registered for ${descriptor?.providerId ?? "runtime"}`);
         }
-        return provider.createClient(descriptor, options);
+        return provider.createClient(descriptor, options2);
       }
     };
     module.exports = { RuntimeRegistry };
@@ -31026,13 +43169,13 @@ var require_runtime_services = __commonJS({
         if (!selected) throw new Error(`Runtime ${normalized || "selection"} is no longer available`);
         return copy(selected);
       }
-      function createClient(runtimeId, options = {}) {
+      function createClient(runtimeId, options2 = {}) {
         const selected = descriptor(runtimeId);
         return registry.createClient(selected, {
           workspaceRoot,
           ...traceDirectory ? { traceDirectory } : {},
           ...clientOptions,
-          ...options
+          ...options2
         });
       }
       async function models(runtimeId) {
@@ -31047,7 +43190,7 @@ var require_runtime_services = __commonJS({
           await client.stop?.();
         }
       }
-      async function getClient(runtimeId, options = {}) {
+      async function getClient(runtimeId, options2 = {}) {
         const selected = descriptor(runtimeId);
         const existing = activeClients.get(selected.runtimeId);
         if (existing) return existing;
@@ -31055,7 +43198,7 @@ var require_runtime_services = __commonJS({
           workspaceRoot,
           ...traceDirectory ? { traceDirectory } : {},
           ...clientOptions,
-          ...options
+          ...options2
         });
         try {
           await client.start?.();
@@ -31080,6 +43223,55 @@ var require_runtime_services = __commonJS({
   }
 });
 
+// ../rolling-skill-core/src/skill-services.cjs
+var require_skill_services = __commonJS({
+  "../rolling-skill-core/src/skill-services.cjs"(exports, module) {
+    function copy(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+    function requiredText(value, label, maximum = 4096) {
+      const text = typeof value === "string" ? value.trim() : "";
+      if (!text || text.length > maximum) throw new Error(`${label} is required`);
+      return text;
+    }
+    function createSkillServices({ manager, installationManager, installationStore, runtimeServices }) {
+      if (!manager || !installationManager || !installationStore || !runtimeServices) {
+        throw new Error("Rolling Skill managed Skill dependencies are required");
+      }
+      return Object.freeze({
+        catalog: () => copy(manager.catalog()),
+        get: ({ skillId }) => copy(manager.readSkill(requiredText(skillId, "Skill id", 200))),
+        versions: (input = {}) => copy(manager.listVersionPage(input)),
+        candidateBase: ({ skillId }) => manager.candidateBase(requiredText(skillId, "Skill id", 200)),
+        createCandidate: (input = {}) => manager.createCandidate(copy(input)),
+        release: (input = {}) => manager.releaseVersion(copy(input)),
+        deprecate: ({ versionId }) => manager.deprecateVersion({
+          versionId: requiredText(versionId, "Version id", 200)
+        }),
+        importSource: (input = {}) => manager.importSource(copy(input)),
+        rescan: () => manager.rescanAll(),
+        installationTargets: () => copy(runtimeServices.list()),
+        installations: ({ skillId = null } = {}) => copy(installationManager.overview(skillId)),
+        installation: ({ jobId }) => copy(installationStore.getJob(
+          requiredText(jobId, "Installation Job id", 200)
+        )),
+        startInstallation: (input = {}) => installationManager.start(copy(input)),
+        cancelInstallation: ({ jobId }) => installationManager.cancel(
+          requiredText(jobId, "Installation Job id", 200)
+        ),
+        inspectInstallation: ({ jobId }) => installationManager.inspect(
+          requiredText(jobId, "Installation Job id", 200)
+        ),
+        sendInstallation: ({ jobId, text }) => installationManager.send(
+          requiredText(jobId, "Installation Job id", 200),
+          requiredText(text, "Installer message", 12e4)
+        )
+      });
+    }
+    module.exports = { createSkillServices };
+  }
+});
+
 // ../rolling-skill-core/src/application.cjs
 var require_application = __commonJS({
   "../rolling-skill-core/src/application.cjs"(exports, module) {
@@ -31094,6 +43286,9 @@ var require_application = __commonJS({
     var {
       ManagedSkillStore
     } = require_managed_skill_store();
+    var {
+      ManagedSkillManager
+    } = require_managed_skill_manager();
     var {
       RawCaseStore
     } = require_raw_case_store();
@@ -31110,13 +43305,21 @@ var require_application = __commonJS({
       EvaluationRunner
     } = require_evaluation_runner();
     var {
-      resolveExecutionPolicy
+      resolveExecutionPolicy,
+      resolveRuntimePermission
     } = require_execution_policy();
+    var {
+      SkillInstallationManager
+    } = require_skill_installation_manager();
+    var {
+      SkillInstallationStore
+    } = require_skill_installation_store();
     var { createCaseServices } = require_case_services();
     var { RollingSkillConfigStore } = require_config_store();
     var { ensureDataLayout, resolveDataPaths } = require_data_root();
     var { createEvaluationServices } = require_evaluation_services();
     var { createRuntimeServices } = require_runtime_services();
+    var { createSkillServices } = require_skill_services();
     var MAX_DISPATCH_BYTES = 1024 * 1024;
     function assertPlainJson(value, ancestors = /* @__PURE__ */ new Set()) {
       if (value === null || typeof value === "string" || typeof value === "boolean") return;
@@ -31180,8 +43383,8 @@ var require_application = __commonJS({
         confirmedAt: (/* @__PURE__ */ new Date()).toISOString()
       };
     }
-    function createRollingSkillApplication2(options = {}) {
-      const paths = ensureDataLayout(resolveDataPaths(options));
+    function createRollingSkillApplication2(options2 = {}) {
+      const paths = ensureDataLayout(resolveDataPaths(options2));
       const store = new LocalEvaluationStore(paths.evaluationStore);
       const rawCaseStore = new RawCaseStore(paths.rawCaseEvents);
       const automaticCaptureStateStore = new AutomaticCaptureStateStore(
@@ -31189,14 +43392,40 @@ var require_application = __commonJS({
       );
       const managedSkillStore = new ManagedSkillStore(paths.managedSkillRegistry);
       const configStore = new RollingSkillConfigStore(paths.config);
-      const workspaceRoot = options.workspaceRoot ?? process.cwd();
+      const workspaceRoot = options2.workspaceRoot ?? process.cwd();
       const runtimeServices = createRuntimeServices({
-        registry: options.runtimeRegistry,
+        registry: options2.runtimeRegistry,
         configStore,
         workspaceRoot,
         traceDirectory: paths.traces
       });
-      const refreshManager = options.caseRefreshManager ?? {
+      const managedSkillManager = new ManagedSkillManager({
+        applicationSupportDirectory: paths.managedSkills,
+        store: managedSkillStore
+      });
+      const installationStore = new SkillInstallationStore(paths.skillInstallations);
+      const installationManager = new SkillInstallationManager({
+        store: installationStore,
+        managedSkillStore,
+        managedSkillManager,
+        runtimeRegistry: {
+          createClient: (descriptor, clientOptions) => runtimeServices.createClient(descriptor.runtimeId, clientOptions)
+        },
+        getRuntimes: () => runtimeServices.list(),
+        workspaceRoot,
+        traceDirectory: join(paths.traces, "skill-installations"),
+        resolvePermission: (providerId, permissionMode) => resolveRuntimePermission(providerId, permissionMode, store.read().settings),
+        requestPermission: options2.requestRuntimePermission ?? null,
+        requestQuestion: options2.requestRuntimeQuestion ?? null,
+        onChanged: () => publish()
+      });
+      const skillServices = createSkillServices({
+        manager: managedSkillManager,
+        installationManager,
+        installationStore,
+        runtimeServices
+      });
+      const refreshManager = options2.caseRefreshManager ?? {
         async createSession({ runtimeId, datasetId, caseId }) {
           const selectedRuntimeId = runtimeId ?? configStore.read().runtime?.runtimeId;
           if (!selectedRuntimeId) throw new Error("Select a Runtime before refreshing Cases");
@@ -31226,7 +43455,7 @@ var require_application = __commonJS({
         recycleService,
         refreshManager
       });
-      const evaluationRunner = options.evaluationRunner ?? new EvaluationRunner({
+      const evaluationRunner = options2.evaluationRunner ?? new EvaluationRunner({
         store,
         runtimeRegistry: {
           createClient: (descriptor, clientOptions) => runtimeServices.createClient(descriptor.runtimeId, clientOptions)
@@ -31241,7 +43470,7 @@ var require_application = __commonJS({
         runtimeServices,
         runner: evaluationRunner,
         onChanged: () => publish(),
-        ...options.snapshotSkill ? { snapshotSkill: options.snapshotSkill } : {}
+        ...options2.snapshotSkill ? { snapshotSkill: options2.snapshotSkill } : {}
       });
       const subscribers = /* @__PURE__ */ new Set();
       let closed = false;
@@ -31296,6 +43525,22 @@ var require_application = __commonJS({
         "evaluations.list": (input) => evaluationServices.list(input),
         "evaluations.get": (input) => evaluationServices.get(input),
         "evaluations.cancel": (input) => evaluationServices.cancel(input),
+        "skills.catalog": () => skillServices.catalog(),
+        "skills.get": (input) => skillServices.get(input),
+        "skills.versions": (input) => skillServices.versions(input),
+        "skills.candidateBase": (input) => skillServices.candidateBase(input),
+        "skills.createCandidate": (input) => skillServices.createCandidate(input),
+        "skills.release": (input) => skillServices.release(input),
+        "skills.deprecate": (input) => skillServices.deprecate(input),
+        "skills.import": (input) => skillServices.importSource(input),
+        "skills.rescan": () => skillServices.rescan(),
+        "installations.targets": () => skillServices.installationTargets(),
+        "installations.list": (input) => skillServices.installations(input),
+        "installations.get": (input) => skillServices.installation(input),
+        "installations.start": (input) => skillServices.startInstallation(input),
+        "installations.cancel": (input) => skillServices.cancelInstallation(input),
+        "installations.inspect": (input) => skillServices.inspectInstallation(input),
+        "installations.send": (input) => skillServices.sendInstallation(input),
         ...caseServices.methods
       };
       const mutations = /* @__PURE__ */ new Set([
@@ -31305,6 +43550,15 @@ var require_application = __commonJS({
         "settings.update",
         "evaluations.start",
         "evaluations.cancel",
+        "skills.createCandidate",
+        "skills.release",
+        "skills.deprecate",
+        "skills.import",
+        "skills.rescan",
+        "installations.start",
+        "installations.cancel",
+        "installations.inspect",
+        "installations.send",
         ...caseServices.mutations
       ]);
       async function snapshot() {
@@ -31344,6 +43598,7 @@ var require_application = __commonJS({
         subscribers.clear();
         rawCaseStore.close();
         await evaluationRunner.stopAll?.();
+        await installationManager.stopAll?.();
         await runtimeServices.close();
       }
       return Object.freeze({ close, dispatch, snapshot, subscribe });
@@ -31362,6 +43617,7 @@ var require_src = __commonJS({
     var { createCaseServices } = require_case_services();
     var { createEvaluationServices } = require_evaluation_services();
     var { createRuntimeServices } = require_runtime_services();
+    var { createSkillServices } = require_skill_services();
     var { RollingSkillConfigStore } = require_config_store();
     var { ensureDataLayout, resolveDataPaths } = require_data_root();
     module.exports = {
@@ -31370,6 +43626,7 @@ var require_src = __commonJS({
       createEvaluationServices,
       createRollingSkillApplication: createRollingSkillApplication2,
       createRuntimeServices,
+      createSkillServices,
       ensureDataLayout,
       resolveDataPaths
     };

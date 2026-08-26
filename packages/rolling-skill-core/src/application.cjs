@@ -11,6 +11,9 @@ const {
     ManagedSkillStore,
 } = require("../../../desktop/rolling-skill/src/managed-skill-store.cjs")
 const {
+    ManagedSkillManager,
+} = require("../../../desktop/rolling-skill/src/managed-skill-manager.cjs")
+const {
     RawCaseStore,
 } = require("../../../desktop/rolling-skill/src/raw-case-store.cjs")
 const {
@@ -27,12 +30,20 @@ const {
 } = require("../../../desktop/rolling-skill/src/evaluation-runner.cjs")
 const {
     resolveExecutionPolicy,
+    resolveRuntimePermission,
 } = require("../../../desktop/rolling-skill/src/execution-policy.cjs")
+const {
+    SkillInstallationManager,
+} = require("../../../desktop/rolling-skill/src/skill-installation-manager.cjs")
+const {
+    SkillInstallationStore,
+} = require("../../../desktop/rolling-skill/src/skill-installation-store.cjs")
 const {createCaseServices} = require("./case-services.cjs")
 const {RollingSkillConfigStore} = require("./config-store.cjs")
 const {ensureDataLayout, resolveDataPaths} = require("./data-root.cjs")
 const {createEvaluationServices} = require("./evaluation-services.cjs")
 const {createRuntimeServices} = require("./runtime-services.cjs")
+const {createSkillServices} = require("./skill-services.cjs")
 
 const MAX_DISPATCH_BYTES = 1024 * 1024
 
@@ -123,6 +134,34 @@ function createRollingSkillApplication(options = {}) {
         configStore,
         workspaceRoot,
         traceDirectory: paths.traces,
+    })
+    const managedSkillManager = new ManagedSkillManager({
+        applicationSupportDirectory: paths.managedSkills,
+        store: managedSkillStore,
+    })
+    const installationStore = new SkillInstallationStore(paths.skillInstallations)
+    const installationManager = new SkillInstallationManager({
+        store: installationStore,
+        managedSkillStore,
+        managedSkillManager,
+        runtimeRegistry: {
+            createClient: (descriptor, clientOptions) =>
+                runtimeServices.createClient(descriptor.runtimeId, clientOptions),
+        },
+        getRuntimes: () => runtimeServices.list(),
+        workspaceRoot,
+        traceDirectory: join(paths.traces, "skill-installations"),
+        resolvePermission: (providerId, permissionMode) =>
+            resolveRuntimePermission(providerId, permissionMode, store.read().settings),
+        requestPermission: options.requestRuntimePermission ?? null,
+        requestQuestion: options.requestRuntimeQuestion ?? null,
+        onChanged: () => publish(),
+    })
+    const skillServices = createSkillServices({
+        manager: managedSkillManager,
+        installationManager,
+        installationStore,
+        runtimeServices,
     })
     const refreshManager = options.caseRefreshManager ?? {
         async createSession({runtimeId, datasetId, caseId}) {
@@ -230,6 +269,22 @@ function createRollingSkillApplication(options = {}) {
         "evaluations.list": (input) => evaluationServices.list(input),
         "evaluations.get": (input) => evaluationServices.get(input),
         "evaluations.cancel": (input) => evaluationServices.cancel(input),
+        "skills.catalog": () => skillServices.catalog(),
+        "skills.get": (input) => skillServices.get(input),
+        "skills.versions": (input) => skillServices.versions(input),
+        "skills.candidateBase": (input) => skillServices.candidateBase(input),
+        "skills.createCandidate": (input) => skillServices.createCandidate(input),
+        "skills.release": (input) => skillServices.release(input),
+        "skills.deprecate": (input) => skillServices.deprecate(input),
+        "skills.import": (input) => skillServices.importSource(input),
+        "skills.rescan": () => skillServices.rescan(),
+        "installations.targets": () => skillServices.installationTargets(),
+        "installations.list": (input) => skillServices.installations(input),
+        "installations.get": (input) => skillServices.installation(input),
+        "installations.start": (input) => skillServices.startInstallation(input),
+        "installations.cancel": (input) => skillServices.cancelInstallation(input),
+        "installations.inspect": (input) => skillServices.inspectInstallation(input),
+        "installations.send": (input) => skillServices.sendInstallation(input),
         ...caseServices.methods,
     }
     const mutations = new Set([
@@ -239,6 +294,15 @@ function createRollingSkillApplication(options = {}) {
         "settings.update",
         "evaluations.start",
         "evaluations.cancel",
+        "skills.createCandidate",
+        "skills.release",
+        "skills.deprecate",
+        "skills.import",
+        "skills.rescan",
+        "installations.start",
+        "installations.cancel",
+        "installations.inspect",
+        "installations.send",
         ...caseServices.mutations,
     ])
 
@@ -282,6 +346,7 @@ function createRollingSkillApplication(options = {}) {
         subscribers.clear()
         rawCaseStore.close()
         await evaluationRunner.stopAll?.()
+        await installationManager.stopAll?.()
         await runtimeServices.close()
     }
 

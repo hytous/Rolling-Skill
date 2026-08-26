@@ -83,4 +83,18 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(cases, /<RuntimeSelect/u)
         assert.match(workbench, /<EvaluationsPanel/u)
     })
+
+    it("exposes managed Skill release and Runtime installation as separate native flows", () => {
+        const skills = source("workbench/SkillsPanel.tsx")
+        const workbench = source("workbench/Workbench.tsx")
+
+        assert.match(skills, /skills\.catalog/u)
+        assert.match(skills, /skills\.createCandidate/u)
+        assert.match(skills, /skills\.release/u)
+        assert.match(skills, /installations\.start/u)
+        assert.match(skills, /installations\.cancel/u)
+        assert.match(skills, /installations\.inspect/u)
+        assert.match(skills, /<RuntimeSelect/u)
+        assert.match(workbench, /<SkillsPanel/u)
+    })
 })

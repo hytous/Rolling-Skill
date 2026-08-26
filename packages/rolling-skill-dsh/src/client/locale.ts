@@ -79,6 +79,20 @@ export const zh = {
     emptyEvaluations: "暂无评测记录",
     evaluationDetail: "评测详情",
     close: "关闭",
+    skillRepositories: "Managed Skill",
+    skillRepositoriesDescription: "导入、发布并安装不可变 Skill 版本。",
+    rescan: "重新扫描",
+    skillSourceLocation: "绝对路径或 Git URL",
+    importSkill: "导入",
+    emptySkills: "暂无 Managed Skill",
+    candidateVersion: "Candidate",
+    createCandidate: "创建 Candidate",
+    releaseVersion: "Release",
+    release: "发布",
+    installationRuntime: "安装目标 Runtime",
+    installReleased: "安装已发布版本",
+    installationJobs: "安装 Job",
+    inspect: "检查",
 } as const
 
 export type TranslationKey = keyof typeof zh
@@ -162,6 +176,20 @@ export const en: Record<TranslationKey, string> = {
     emptyEvaluations: "No evaluation runs",
     evaluationDetail: "Evaluation Detail",
     close: "Close",
+    skillRepositories: "Managed Skills",
+    skillRepositoriesDescription: "Import, release, and install immutable Skill versions.",
+    rescan: "Rescan",
+    skillSourceLocation: "Absolute path or Git URL",
+    importSkill: "Import",
+    emptySkills: "No Managed Skills",
+    candidateVersion: "Candidate",
+    createCandidate: "Create Candidate",
+    releaseVersion: "Release",
+    release: "Release",
+    installationRuntime: "Installation Target Runtime",
+    installReleased: "Install Released Version",
+    installationJobs: "Installation Jobs",
+    inspect: "Inspect",
 }
 
 export const DICTIONARIES = {zh, en}
