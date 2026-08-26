@@ -27,11 +27,16 @@
         return version && !name.includes(version) ? `${name} ${version}` : name
     }
 
-    function runtimeDisplayLabel(runtime = {}, catalog = []) {
+    function runtimeDisplayParts(runtime = {}) {
         const base = runtimeBaseLabel(runtime)
         const detail = [runtime.executablePath, runtime.source, runtime.runtimeId]
             .map((value) => String(value ?? "").trim())
             .find((value) => value && value !== base)
+        return {base, detail: detail ?? ""}
+    }
+
+    function runtimeDisplayLabel(runtime = {}, catalog = []) {
+        const {base, detail} = runtimeDisplayParts(runtime)
         return detail ? `${base} · ${detail}` : base
     }
 
@@ -1744,6 +1749,8 @@
             setupError: root.querySelector("#operator-setup-error"),
             jobKind: root.querySelector("#operator-job-kind"),
             runtime: root.querySelector("#operator-runtime"),
+            runtimeName: root.querySelector("#operator-runtime-name"),
+            runtimeDetail: root.querySelector("#operator-runtime-detail"),
             model: root.querySelector("#operator-model"),
             effort: root.querySelector("#operator-effort"),
             skill: root.querySelector("#operator-managed-skill"),
@@ -2072,6 +2079,13 @@
             selectors.runtime.value = catalogs.runtimes.some((entry) => entry.runtimeId === selectedRuntime)
                 ? selectedRuntime
                 : catalogs.runtimes[0]?.runtimeId ?? ""
+            const activeRuntime = catalogs.runtimes.find((entry) => (
+                entry.runtimeId === selectors.runtime.value
+            )) ?? {}
+            const activeIdentity = runtimeDisplayParts(activeRuntime)
+            selectors.runtimeName.textContent = activeIdentity.base
+            selectors.runtimeDetail.textContent = activeIdentity.detail
+            selectors.runtimeDetail.title = activeIdentity.detail
             setSelectOptions(
                 selectors.skill,
                 catalogs.skills.filter((entry) => entry.status === undefined || entry.status === "valid")
@@ -2113,8 +2127,12 @@
             )
             selectors.targets.replaceChildren()
             for (const runtime of catalogs.runtimes) {
-                const label = createElement(document_, "label", "operator-check operator-target-card")
-                label.dataset.operatorTargetCard = runtime.runtimeId
+                const card = createElement(
+                    document_,
+                    "article",
+                    "operator-target-card evaluation-runtime-row",
+                )
+                card.dataset.operatorTargetCard = runtime.runtimeId
                 const input = document_.createElement("input")
                 input.type = "checkbox"
                 input.value = runtime.runtimeId
@@ -2122,23 +2140,32 @@
                 input.checked = selectedTargets.size
                     ? selectedTargets.has(runtime.runtimeId)
                     : runtime.runtimeId === selectors.runtime.value
-                const options = createElement(document_, "span", "operator-target-runtime-options")
+                const heading = createElement(
+                    document_,
+                    "label",
+                    "operator-target-runtime-heading evaluation-runtime-heading",
+                )
+                const identity = runtimeDisplayParts(runtime)
+                const title = createElement(document_, "span")
+                const detail = createElement(document_, "small", "", identity.detail)
+                detail.title = identity.detail
+                title.append(
+                    createElement(document_, "strong", "", identity.base),
+                    detail,
+                )
+                heading.append(input, title)
+                const options = createElement(
+                    document_,
+                    "div",
+                    "operator-target-runtime-options evaluation-runtime-controls",
+                )
                 const targetModel = document_.createElement("select")
                 targetModel.dataset.optimizationTargetModel = runtime.runtimeId
                 const targetEffort = document_.createElement("select")
                 targetEffort.dataset.optimizationTargetEffort = runtime.runtimeId
                 options.append(targetModel, targetEffort)
-                label.append(
-                    input,
-                    createElement(
-                        document_,
-                        "span",
-                        "operator-runtime-label",
-                        runtimeDisplayLabel(runtime, catalogs.runtimes),
-                    ),
-                    options,
-                )
-                selectors.targets.append(label)
+                card.append(heading, options)
+                selectors.targets.append(card)
                 const selected = targetSelections.get(runtime.runtimeId)
                 populateOptimizationModelSelect(runtime.runtimeId, targetModel, targetEffort)
                 if (selected && availableModels(runtime.runtimeId).some((entry) => (
@@ -2149,6 +2176,8 @@
                 }
                 const efforts = runtimeEfforts(runtime.runtimeId, targetModel.value)
                 if (selected && efforts.includes(selected.effort)) targetEffort.value = selected.effort
+                targetModel.disabled = !input.checked
+                targetEffort.disabled = !input.checked
                 if (!modelsByRuntime.has(runtime.runtimeId)) void loadRuntimeModels(runtime.runtimeId)
             }
             void loadRuntimeModels(selectors.runtime.value)
@@ -3052,6 +3081,13 @@
         domEvents.listen(selectors.optimizationJudgeEffort, "change", invalidateOptimizationPreflight)
         domEvents.listen(selectors.targets, "change", (event) => {
             if (destroyed) return
+            const targetToggle = event.target.closest?.("[data-operator-target]")
+            if (targetToggle) {
+                const card = targetToggle.closest("[data-operator-target-card]")
+                const disabled = !targetToggle.checked
+                card.querySelector("[data-optimization-target-model]").disabled = disabled
+                card.querySelector("[data-optimization-target-effort]").disabled = disabled
+            }
             const modelSelect = event.target.closest?.("[data-optimization-target-model]")
             if (modelSelect) {
                 const card = modelSelect.closest("[data-operator-target-card]")
@@ -3123,6 +3159,7 @@
         optimizationRunActions,
         reduceOptimizationTimeline,
         registerOperatorActionDelegates,
+        runtimeDisplayParts,
         runtimeDisplayLabel,
         transcriptEntryKey,
     }

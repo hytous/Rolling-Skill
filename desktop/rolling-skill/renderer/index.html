@@ -341,20 +341,28 @@
                             </label>
                             <section class="operator-setup-section operator-environment-section">
                                 <h2 data-i18n="operatorEnvironment">Run environment</h2>
-                                <div class="operator-setup-row">
-                                    <label class="operator-field">
-                                        <span data-i18n="operatorRuntime">Operator Runtime</span>
-                                        <select id="operator-runtime" required></select>
-                                    </label>
-                                    <label class="operator-field">
-                                        <span data-i18n="model">Model</span>
-                                        <select id="operator-model"></select>
-                                    </label>
-                                    <label class="operator-field">
-                                        <span data-i18n="reasoningEffort">Reasoning effort</span>
-                                        <select id="operator-effort"></select>
-                                    </label>
-                                </div>
+                                <article class="operator-primary-runtime-card evaluation-runtime-row">
+                                    <div class="operator-primary-runtime-heading evaluation-runtime-heading">
+                                        <span>
+                                            <strong id="operator-runtime-name">Runtime</strong>
+                                            <small id="operator-runtime-detail"></small>
+                                        </span>
+                                    </div>
+                                    <div class="operator-primary-runtime-controls evaluation-runtime-controls">
+                                        <label class="operator-primary-runtime-control">
+                                            <span data-i18n="operatorRuntime">Operator Runtime</span>
+                                            <select id="operator-runtime" required></select>
+                                        </label>
+                                        <label class="operator-primary-runtime-control">
+                                            <span data-i18n="model">Model</span>
+                                            <select id="operator-model"></select>
+                                        </label>
+                                        <label class="operator-primary-runtime-control">
+                                            <span data-i18n="reasoningEffort">Reasoning effort</span>
+                                            <select id="operator-effort"></select>
+                                        </label>
+                                    </div>
+                                </article>
                             </section>
                             <section class="operator-setup-section operator-resource-section">
                                 <h2 data-i18n="operatorResources">Resources and scope</h2>

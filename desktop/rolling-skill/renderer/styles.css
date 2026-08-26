@@ -1131,6 +1131,27 @@ kbd {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.operator-primary-runtime-card {
+    gap: 7px;
+}
+
+.evaluation-runtime-heading.operator-primary-runtime-heading {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.evaluation-runtime-controls.operator-primary-runtime-controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.operator-primary-runtime-control {
+    display: grid;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 8px;
+    font-weight: 620;
+    gap: 4px;
+}
+
 .operator-optimization-fields {
     display: grid;
     gap: 12px;
@@ -1178,10 +1199,7 @@ kbd {
 }
 
 .operator-target-runtime-options {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 4px;
-    margin-top: 4px;
+    margin-top: 0;
 }
 
 .operator-target-runtime-options select {
@@ -1212,8 +1230,8 @@ kbd {
 
 .operator-check-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px 10px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 7px;
 }
 
 .operator-check-grid.permission-grid {
@@ -1236,43 +1254,11 @@ kbd {
 }
 
 .operator-target-card {
-    display: grid;
     min-width: 0;
-    padding: 10px 11px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface);
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: start;
-    gap: 7px;
-    color: var(--muted);
-}
-
-.operator-target-card:hover {
-    border-color: var(--border-strong);
-    background: var(--surface-hover);
 }
 
 .operator-target-card:has(input:checked) {
-    border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
-    background: color-mix(in srgb, var(--accent) 9%, var(--surface));
-    color: var(--text);
-}
-
-.operator-target-card > input {
-    margin: 2px 0 0;
-    accent-color: var(--accent);
-}
-
-.operator-target-card .operator-runtime-label {
-    overflow: visible;
-    text-overflow: clip;
-    white-space: normal;
-    overflow-wrap: anywhere;
-}
-
-.operator-target-card .operator-target-runtime-options {
-    grid-column: 1 / -1;
+    border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
 }
 
 .operator-setup-details {

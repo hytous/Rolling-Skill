@@ -21,6 +21,7 @@ const {
     operatorJobTreeIds,
     reduceOptimizationTimeline,
     registerOperatorActionDelegates,
+    runtimeDisplayParts,
     runtimeDisplayLabel,
     transcriptEntryKey,
 } = require("../renderer/operator-workbench.js")
@@ -63,6 +64,26 @@ function event(id, sessionId = "session-1", jobId = "job-1") {
 }
 
 describe("Operator workbench state", () => {
+    it("splits Runtime identity into the same title and path hierarchy used by Skill evaluation", () => {
+        assert.deepEqual(runtimeDisplayParts({
+            runtimeId: "codex:chatgpt",
+            displayName: "Codex",
+            version: "0.149.0",
+            executablePath: "/Applications/ChatGPT.app/Contents/Resources/codex",
+        }), {
+            base: "Codex 0.149.0",
+            detail: "/Applications/ChatGPT.app/Contents/Resources/codex",
+        })
+        assert.deepEqual(runtimeDisplayParts({
+            runtimeId: "dsh:local",
+            displayName: "DeepSeek Harness",
+            version: "0.1.1-rc.1",
+        }), {
+            base: "DeepSeek Harness 0.1.1-rc.1",
+            detail: "dsh:local",
+        })
+    })
+
     it("shows the full Runtime identity so every selectable installation is distinguishable", () => {
         const codexA = {
             runtimeId: "codex:a",
