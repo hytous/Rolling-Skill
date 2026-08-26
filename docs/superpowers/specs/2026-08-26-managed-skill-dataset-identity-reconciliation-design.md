@@ -1,174 +1,226 @@
-# Managed Skill 数据集身份补全双版本设计
+# Managed Skill 数据集绑定双版本设计
 
 日期：2026-08-26  
-状态：对话方案已确认，待书面规格审阅
+状态：已完成对话设计确认
 
-## 1. 背景
+## 1. 背景与根因
 
-Rolling Skill 的受管 Skill 安装记录保存了 `repositoryId`、`skillId`、Runtime、安装目录、版本和内容摘要；数据集则保存 Runtime 实际发现的 Skill 引用。正常的 Electron 全流程会把数据集绑定到 Runtime 安装目录中的 `SKILL.md`，但不会把安装记录中的受管身份补入数据集。优化预检只接受带 `repositoryId + skillId` 的数据集，因此导入、发布、安装、评测均成功后仍无法进入优化。
+Dataset-level Skill binding 早于受管 Skill 版本管理实现。旧模型把 Dataset 绑定为 Runtime inventory 返回的 `name + path + runtimeId`，目的是让 Case 和评测继承同一个已启用 Skill。当受管 Repository、Skill、Version 和 Runtime Installation 后来加入时，Dataset 模型没有随之迁移。
 
-当前 `main` 已迁移为 DeepSeek Harness 插件。DSH 的数据集创建界面只提交名称，Core 随后写入一个代表 Rolling Skill 插件本身的 name-only 引用，同样没有受管身份。优化界面会过滤掉这类数据集，后端预检也会拒绝缺失身份的数据集。
+后来的 Skill 管理设计已经规定：Dataset 绑定稳定 `skillId`，评测启动时再选择或继承具体版本。当前代码却仍把 Runtime 安装路径当作 Dataset 身份，造成三个问题：
 
-Electron 完整版冻结在 `archive/electron-before-dsh-plugin-20260826`。本需求要在两个版本分别修复，并分别形成可安装产物。
+- Dataset 无法稳定关联受管 Skill，优化预检缺少 `repositoryId + skillId`。
+- 同一 Skill 安装到 Codex、CodeBuddy、DSH 时路径不同，一个 Dataset 无法正确代表所有 Runtime。
+- Runtime 安装目录属于可变部署状态，却被混入 Dataset、Case 和 Rubric 的长期领域身份。
+
+当前 `main` 是 DeepSeek Harness 插件；Electron 完整版冻结在 `archive/electron-before-dsh-plugin-20260826`。两个版本都需要改为受管 Skill 绑定，并分别形成可安装产物。
 
 ## 2. 目标
 
-- 新建数据集时保存 Runtime Skill 证据与完整受管身份。
-- 对已有的 Runtime 路径型数据集安全补全受管身份，不清除 Cases、已发布 Rubric 或历史评测证据。
-- 自动关联只允许唯一、已验证、当前身份一致的安装记录；无候选或多候选时 fail closed。
-- DSH 与 Electron 使用一致的匹配语义，但各自在本分支的宿主边界内实现。
-- 修复后，受管 Skill、Released 基线和对应数据集能通过优化预检。
-- 分别构建并安装 DSH 插件与 macOS Electron App。
+- Dataset 只绑定稳定的受管 Skill 身份：`repositoryId + skillId`。
+- Dataset、Cases 和 Rubric 不绑定 Runtime、安装路径或具体版本。
+- 普通评测启动时选择 Dataset、Released Version 和目标 Runtime；后端解析并冻结每个 Runtime 的可信安装证据。
+- 优化使用 Dataset 的稳定 Skill 身份校验 Released 基线和 Candidate，不再从路径反推身份。
+- 旧路径型 Dataset 只在一次性迁移时使用安装路径查找受管 Skill；迁移后路径不再是 Dataset 主身份。
+- 保留现有 Cases、Published Rubric、Curator 历史和 Evaluation Run 冻结证据。
+- DSH 与 Electron 分别测试、构建、安装并做一次本机检查。
 
 ## 3. 非目标
 
-- 不重写评测、Rubric、优化或安装协议。
-- 不修改冻结的 Case、Rubric 版本或历史 Evaluation Run 中的 Skill Evidence。
-- 不把名称相同视为足够证据。
-- 不在存在歧义时静默选择某个 Runtime 或安装版本。
-- 不删除旧 Electron 数据或 DSH 数据。
-- 不合并 Electron 归档分支回 `main`。
+- 不让 Dataset 固定到某个 Version；同一 Dataset 应可比较同一 Skill 的不同版本。
+- 不让 Dataset 固定到某个 Runtime；同一 Dataset 应可跨 Runtime 评测。
+- 不把受管仓库工作目录当成 Runtime 已安装副本。
+- 不按名称静默关联受管 Skill。
+- 不在 Runtime 缺少所选版本时自动覆盖安装；安装仍是独立、显式流程。
+- 不修改历史 Case、Curator Session 或 Evaluation Run 中已经冻结的执行证据。
+- 不合并 Electron 归档分支回 `main`，不删除任何用户数据。
 
-## 4. 方案比较
-
-### 4.1 采用：持久身份补全
-
-在安装存储上提供只读的已验证安装查询与唯一匹配能力。创建数据集时直接写入完整引用；读取现有数据时仅对可唯一证明为同一个 Runtime Skill 的引用补全 `repositoryId`、`id` 和 `providerId`。补全沿用原 `path + runtimeId`，因此 `LocalEvaluationStore.bindDatasetSkill()` 将其视为同一 Skill 身份，不会清空已发布 Rubric。
-
-优点是数据从此自洽，评测、优化、控制面和后续迁移共享同一身份。缺点是需要同时修改存储服务、宿主 facade 和界面创建参数。
-
-### 4.2 不采用：仅在优化预检临时映射
-
-只让预检临时把路径解析成受管 Skill。改动较少，但数据集继续缺失身份，优化界面、权限范围和其他调用方仍会出现不一致。
-
-### 4.3 不采用：只增加手动重新绑定界面
-
-让用户在优化前重新选择受管 Skill。该方案能处理歧义，但会给正常安装流程增加额外步骤，并且现有数据仍可能因重新绑定语义而丢失 active Rubric。
-
-## 5. 统一身份与匹配规则
-
-### 5.1 安装候选
-
-候选必须来自持久化的普通受管安装记录，不使用 optimization experiment：
-
-- `repositoryId`、`skillId`、`runtimeId`、`providerId`、`destination`、`contentDigest` 均完整。
-- `verification` 不是 `none`，且对应安装 Job 的可信结果为成功。
-- 受管 Skill 仍存在，并属于记录中的 Repository。
-- 安装记录的 Skill 名称与 Runtime Skill 名称一致。
-
-若同一 Runtime 和 Skill 有多次安装记录，只考虑每个 Runtime 最新的有效记录；仍然出现多个不同受管身份时拒绝自动关联。
-
-### 5.2 路径规范化
-
-安装协议返回目录，而 Runtime inventory 通常返回 `.../SKILL.md`。匹配时把两者规范化为真实的 Skill 根目录：
-
-- Runtime 路径以 `SKILL.md` 结尾时取父目录。
-- 安装 destination 保持目录；若历史记录直接保存 `SKILL.md`，同样取父目录。
-- 使用绝对、规范化路径比较，不跨越符号链接边界猜测目标。
-- 可读取 `.rolling-skill-managed.json` 时，要求 marker 的 Repository、Skill、Version、commit 和 digest 与安装记录一致。
-
-### 5.3 唯一性
-
-匹配键至少包含：
+## 4. 采用的领域模型
 
 ```text
-runtimeId + providerId + normalizedSkillRoot + normalizedSkillName
+Dataset
+  └─ ManagedSkillBinding(repositoryId, skillId, name)
+       ├─ Cases
+       └─ Published Rubric
+
+Evaluation Request
+  ├─ datasetId
+  ├─ versionId
+  └─ target runtimeIds
+       └─ resolve verified RuntimeInstallation per Runtime
+            └─ freeze destination, commit, digest and Runtime identity in EvaluationRun
+
+Optimization Request
+  ├─ datasetId → ManagedSkillBinding
+  ├─ baselineVersionId
+  └─ Candidate installations created per Runtime and Epoch
 ```
 
-marker/content digest 用于进一步证明身份。匹配结果为 0 或大于 1 时不修改数据集，并返回可理解的错误或保持数据集不可用于优化。
+Dataset 的领域相等只比较 `repositoryId + skillId`。`name` 是展示快照，不是身份主键。Runtime 路径、provider、版本、commit 和 digest 都属于一次执行或安装记录。
 
-### 5.4 补全字段
+### 4.1 未选方案：Dataset 保留 Runtime 路径并补 IDs
 
-补全后的引用保留原有 Runtime 证据字段，并增加：
+这只能修复当前预检报错，却继续把部署状态混入 Dataset。跨 Runtime 路径不同、安装升级和目录移动仍会使 Dataset 失效，因此只允许作为旧数据迁移的输入证据，不作为新模型。
+
+### 4.2 未选方案：预检时临时映射
+
+只在优化预检反查安装记录会让 Dataset 列表、普通评测、Case 归属和权限范围继续不一致。
+
+## 5. 持久数据模型
+
+### 5.1 Dataset
+
+现有 `skillReference` 字段升级为 managed precision，避免新增第二个并行的身份源：
 
 ```json
 {
-  "id": "<managed skill id>",
-  "repositoryId": "<managed repository id>",
-  "providerId": "<runtime provider id>"
+  "schemaVersion": "rolling-skill-skill-reference/v1",
+  "evidencePrecision": "managed",
+  "id": "<skill id>",
+  "repositoryId": "<repository id>",
+  "name": "incident-response-planner",
+  "path": null,
+  "runtimeId": null,
+  "providerId": null
 }
 ```
 
-不把版本 ID写入数据集引用；优化基线版本由用户单独选择并在预检时冻结。
+对 managed precision：
 
-## 6. DSH/Core 实现
+- `id`、`repositoryId`、`name` 必填。
+- `path`、`runtimeId`、`providerId` 必须为空。
+- 身份相等只比较 `repositoryId + id`。
+- 受管 Skill 重命名时可以更新展示名称，不改变 Dataset 归属。
 
-### 6.1 数据集创建
+### 5.2 Evaluation Request
 
-DSH Dataset 面板加载 Managed Skill catalog 和该 Skill 的安装矩阵。创建表单除名称外，要求选择受管 Skill；若该 Skill 只有一个有效安装，自动选中，多个有效安装则显示完整 Runtime 名称、版本和路径供用户选择。
-
-Client 提交：
+普通评测请求新增必填 `versionId`。Client 只提交稳定 IDs：
 
 ```json
 {
-  "name": "incident-response-e2e",
-  "repositoryId": "...",
-  "skillId": "...",
-  "runtimeId": "..."
+  "datasetId": "...",
+  "versionId": "...",
+  "targets": [{"runtimeId": "...", "modelId": "...", "effort": "high"}],
+  "judge": {"runtimeId": "...", "modelId": "...", "effort": "high"}
 }
 ```
 
-Core 不接受 Client 传入路径或 provider 身份，而是从可信安装存储解析完整绑定后调用 `createDataset()`。
+Client 不提交安装路径、commit、digest、provider 或安装 Job ID。
 
-### 6.2 旧数据补全
+### 5.3 Frozen Evaluation Run
 
-Core 初始化后扫描缺少 `id/repositoryId` 的路径型数据集。只对唯一匹配的受管安装调用 `bindDatasetSkill()`，使用原路径和 Runtime ID并补上 IDs。name-only 的 `rolling-skill` 插件数据集没有安装路径证据，不能自动猜测，继续保持原状；用户可在界面显式选择受管 Skill 后重新绑定。
+Core 校验 Version 属于 Dataset 绑定的 Skill，并从可信安装存储为每个目标 Runtime 解析所选 Version。Evaluation Run 冻结：
 
-### 6.3 优化界面
+- Dataset 的 `repositoryId + skillId`。
+- Version 的 `versionId + commit + skillRoot + contentDigest + state`。
+- 每个目标 Runtime 的 `runtimeId + providerId + installationId + destination + verification`。
+- 从冻结 Version commit 生成的 Skill Evidence。
 
-Optimization 面板继续只展示完整身份匹配且已有 Published Rubric 的数据集。创建/补全成功后无需放宽此条件。
+Runner 向每个 Runtime 传该 Runtime 自己的安装引用，而不是共享 Dataset path。Judge 不需要安装被测 Skill。
 
-## 7. Electron 实现
+## 6. 安装解析规则
 
-Electron 保留现有“从当前 Runtime inventory 选择 Skill”的界面。`currentRuntimeSkillReference()` 完成 Runtime 验证后，使用 Runtime、名称和规范化安装路径查询唯一已验证安装，并在返回引用中补入受管 IDs。
+普通评测只接受持久化的非 optimization-experiment 安装记录：
 
-在数据集列表进入控制面或优化工作台前，对旧的路径型引用执行相同的安全补全。补全只增加身份字段；`path + runtimeId` 不变，因此 Cases 和 active Rubric 保留。
+- `repositoryId`、`skillId`、`versionId` 与请求完全一致。
+- `runtimeId` 与目标 Runtime 完全一致。
+- `providerId` 与当前 Runtime descriptor 一致。
+- `destination`、`commit`、`contentDigest` 完整。
+- `verification` 不是 `none`，对应安装 Job 是可信成功结果。
 
-`resolveManagedSkillBinding()` 不再只验证受管仓库内部路径；若选中 Skill 已存在唯一已验证 Runtime 安装，则返回实际安装路径的完整绑定。没有有效安装时保持 fail closed，不把受管仓库工作区误当成 Runtime 已启用安装。
+同一 `Runtime + Skill + Version` 有多条记录时选择最新的有效记录；若最新记录之间仍存在冲突则 fail closed。安装 destination 可在启动时与 Runtime inventory 再验证，验证失败不能开始评测。
 
-## 8. 错误处理
+## 7. Dataset 创建与 Case 生命周期
 
-- 无安装：提示先把 Released Skill 安装到某个 Runtime。
-- 多个可用安装而未选择 Runtime：要求显式选择，不自动使用“当前”或第一项。
-- 路径、marker 或 digest 冲突：拒绝补全并保留原数据。
-- 旧 name-only 数据集：不自动猜测，允许显式重新绑定。
-- 补全写入失败：保持原存储文件可读取，不推进优化。
-- 数据集存在正在进行的 capture/curator/rubric session 时，沿用现有存储闸门；同身份字段补全仍允许原子写入。
+### 7.1 新建 Dataset
 
-## 9. 测试
+DSH 和 Electron 创建表单只选择受管 Skill，不选择 Runtime 或安装路径。Core/Main Process 根据 `repositoryId + skillId` 查询可信 Managed Skill Store，写入 managed precision 引用。
 
-两个分支都按 RED → GREEN：
+Dataset 可以在尚未安装 Skill 时创建，以便先准备 Cases 和 Rubric；只有需要从 Runtime 对话沉淀 Case、刷新 Case 或发起评测时才要求对应 Runtime 存在匹配安装。
 
-- 安装存储返回完整、去重后的已验证安装记录。
-- `SKILL.md` 路径与安装目录能规范化匹配。
-- 唯一匹配补全 IDs；无匹配、provider/runtime 不符、marker 冲突和歧义均拒绝。
-- 补全已有数据集后 Cases 数量、active Rubric 和历史 Evaluation Run 不变。
-- DSH 创建请求必须包含受管 Skill 与 Runtime，Client 不提交路径。
-- DSH 新建数据集立即带完整身份，并出现在对应 Optimization 数据集列表。
-- Electron 新建和旧数据集补全均产生完整身份。
-- 原始 `incident-response-e2e` 形态可通过回归测试进入优化预检。
+### 7.2 Case 沉淀与刷新
+
+来自 Runtime 会话的 Case 仍保留当时观察到的 Runtime Skill 路径、Runtime ID、commit/digest 等冻结 provenance，但 Dataset 只保存受管身份。保存前通过安装记录或 managed marker 验证该 Runtime Skill 属于 Dataset 的 `repositoryId + skillId`。
+
+Case、Curator Session 和历史 Evaluation Run 的旧 `skillReference` 不回写；它们是历史执行证据。
+
+## 8. 旧数据迁移
+
+迁移仅处理 Dataset 本身：
+
+1. 已含完整 `repositoryId + id` 的引用直接转换为 managed precision，移除 Dataset 层的 Runtime/path 身份。
+2. 路径型引用使用 `runtimeId + normalized Skill root + name` 匹配可信安装记录；安装 marker 可用时必须与记录的 Repository、Skill、Version、commit 和 digest 一致。
+3. 唯一匹配时写入 managed precision；Cases、Rubric、Curator 历史和 Evaluation Runs 原样保留。
+4. 0 个或多个候选时保持 legacy/unbound 状态，并要求用户显式选择受管 Skill。
+5. name-only 引用不靠名称自动猜测；只能显式绑定。
+
+安装协议通常返回目录，而 Runtime inventory 返回 `.../SKILL.md`。迁移匹配时统一规范化为 Skill 根目录，但规范化路径只用于迁移证明，不进入新 Dataset 身份。
+
+## 9. DSH/Core 实现
+
+- Dataset 面板加载 Managed Skill catalog，创建请求提交 `repositoryId + skillId`。
+- Core `datasets.create` 从 Managed Skill Store 构造 managed precision 引用，不再写入默认 `rolling-skill` 插件引用。
+- Evaluation 面板在选择 Dataset 后加载该 Skill 的版本，要求选择一个可评测 Version。
+- 目标 Runtime 列表展示该 Version 的安装状态；未安装时禁止启动并引导到 Skill 安装页。
+- Evaluation Service 解析 Version 和每个 Runtime 的可信安装，生成 Frozen Evaluation Run。
+- Optimization 面板继续按 `repositoryId + skillId` 过滤 Dataset；无需路径补全或宽松匹配。
+- Core 初始化迁移 legacy Dataset，name-only 默认 Dataset 不自动绑定。
+
+## 10. Electron 实现
+
+- Dataset 新建和重新绑定界面从 Managed Skill catalog 选择 Skill，不再从当前 Runtime inventory 选择路径。
+- Case 沉淀界面验证当前会话 Skill 与 Dataset 受管身份的安装映射。
+- 评测工作台增加 Version 选择，并按每个目标 Runtime 显示安装状态。
+- Main Process 独占 Managed Skill、Version 和 Runtime Installation 的解析；Renderer 不传路径或摘要。
+- `currentRuntimeSkillReference()` 继续用于会话/执行证据，不再作为 Dataset 创建 API 的输入。
+- 旧路径型 Dataset 在 Store/Main Process 初始化阶段执行一次性安全迁移。
+
+## 11. 错误处理
+
+- Dataset 未绑定受管 Skill：禁止保存新 Case 和发起评测，提供“绑定受管 Skill”。
+- Version 不属于 Dataset Skill：拒绝请求。
+- 目标 Runtime 未安装所选 Version：提示先安装，不自动覆盖。
+- 安装记录未验证、路径漂移或 digest 不符：拒绝评测并提供检查安装入口。
+- 多个迁移候选：不修改 Dataset，要求显式选择。
+- 显式重新绑定到不同 Skill：沿用未完成 Session 闸门，并清除 active Rubric；历史证据不改。
+- legacy → managed 的同概念迁移：保留 active Rubric 和全部 Cases。
+- 迁移写入使用现有临时文件和原子替换；失败保留旧文件。
+
+## 12. 测试与验证
+
+两个分支都严格执行 RED → GREEN：
+
+- managed precision 的验证、持久化和稳定身份比较。
+- Dataset 创建只接受存在且匹配的受管 Skill IDs。
+- Dataset 不保存 Runtime、path 或 Version。
+- 路径型 legacy Dataset 唯一迁移、无候选、歧义和 marker 冲突。
+- 迁移后 Cases、Published Rubric、Curator 历史和 Evaluation Run 完全不变。
+- Version 必须属于 Dataset Skill。
+- 每个目标 Runtime 必须具有所选 Version 的可信安装。
+- 两个 Runtime 使用不同 destination 时，Evaluation Run 分别冻结并正确执行。
+- DSH 与 Electron Client 都只提交稳定 IDs，不提交路径、commit 或 digest。
+- `incident-response-e2e` 旧数据迁移后可通过优化预检。
 
 验证范围：
 
-- `main`：Core 与 DSH 聚焦测试、`npm run test:dsh`、`npm run build:dsh`、包检查与本机 DSH 安装。
-- Electron 分支：相关聚焦测试、`desktop/rolling-skill` 完整测试、macOS App 打包、签名校验和一次本机界面/预检检查。
+- `main`：Core/DSH 聚焦测试、`npm run test:dsh`、`npm run build:dsh`、包检查、本机插件安装与一次界面检查。
+- Electron 分支：聚焦测试、完整 `desktop/rolling-skill` 测试、macOS App 打包、签名校验、本机安装与一次界面/预检检查。
 
-## 10. 分支、提交与安装
+## 13. 分支与交付顺序
 
-1. 在 `main` 完成 DSH/Core 修复、测试、构建、提交并推送。
-2. 在当前普通 checkout 中切换到 `archive/electron-before-dsh-plugin-20260826`；遵循用户偏好，不创建 feature branch、worktree 或子 Agent。
-3. 在归档分支独立完成 Electron 修复、测试、构建、提交并推送该分支。
-4. 把 DSH `.tgz` 安装到本机 web profile，并重启/刷新当前 Harness。
-5. 把 Electron 构建产物安装为仓库根目录的 `Rolling Skill.app`；旧 App 先移动到可恢复备份位置。
-6. 两个版本的数据目录保持分离，不复制、移动或删除用户数据。
+1. 在 `main` 完成 DSH/Core 修复、测试、提交并推送。
+2. 遵循既有偏好，不创建 feature branch、worktree 或子 Agent；在普通 checkout 切换到 `archive/electron-before-dsh-plugin-20260826`。
+3. 在归档分支独立完成 Electron 修复、测试、提交并推送该分支。
+4. 将 DSH `.tgz` 安装到本机 web profile 并刷新 Harness。
+5. 将 Electron 构建产物安装为仓库根目录 `Rolling Skill.app`；旧 App 移到可恢复备份位置。
+6. 两个版本的数据目录保持分离，不移动或删除用户数据。
 
-## 11. 验收标准
+## 14. 验收标准
 
-- DSH 新建受管 Skill 数据集包含 `id + repositoryId + providerId + runtimeId + path`。
-- Electron 通过 Runtime 安装路径创建的数据集包含相同完整身份。
-- 现场旧路径型数据集可在唯一匹配时无损补全。
-- Cases、Published Rubric 与历史评测记录保持不变。
-- 对应 Skill 的 Released 版本、数据集和 Runtime 能通过优化预检。
-- 歧义、无安装或证据冲突不会产生错误绑定。
-- DSH 插件与 Electron App 均完成构建、安装和一次本机检查。
-
+- 两个版本的新 Dataset 只保存受管 `repositoryId + skillId`。
+- Dataset 不依赖任何 Runtime 路径或安装状态。
+- 普通评测明确冻结所选 Version 和每个 Runtime 的独立安装证据。
+- 同一 Dataset 可以对同一 Version 执行跨 Runtime 评测。
+- 优化通过稳定 Skill IDs 校验 Dataset 和 Released 基线。
+- 旧路径型 Dataset 可在唯一匹配时无损迁移，歧义时不猜测。
+- DSH 插件和 Electron App 均完成构建、安装和一次本机检查。
