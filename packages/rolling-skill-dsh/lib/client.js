@@ -191,19 +191,30 @@ function AutomaticCapturePanel({ t }) {
       setBusy(false);
     }
   };
-  const save = () => mutate(() => requestRollingSkill("automatic.update", {
-    mode,
-    executionLocation,
-    cadence,
-    time,
-    weekday,
-    runtimeId: runtimeId || null,
-    modelId: modelId || null,
-    effort: effort || null,
-    datasetId: datasetId || null
-  }));
+  const save = () => mutate(async () => {
+    await requestRollingSkill("automatic.update", {
+      mode,
+      executionLocation,
+      cadence,
+      time,
+      weekday,
+      runtimeId: runtimeId || null,
+      modelId: modelId || null,
+      effort: effort || null,
+      datasetId: datasetId || null
+    });
+    if (status?.worker.installed) {
+      await requestRollingSkill(
+        executionLocation === "always" ? "scheduler.enable" : "scheduler.disable",
+        {}
+      );
+    }
+  });
   const runOnce = () => mutate(() => requestRollingSkill("automatic.runOnce", { slot: "manual" }));
+  const enableScheduler = () => mutate(() => requestRollingSkill("scheduler.enable", {}));
+  const disableScheduler = () => mutate(() => requestRollingSkill("scheduler.disable", {}));
   const requiresRuntime = mode !== "off";
+  const schedulerInstalled = status?.scheduler.installed ?? status?.worker.installed ?? false;
   return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-data-stack", children: [
     /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("section", { className: "rolling-skill-panel", children: [
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-panel-header", children: [
@@ -272,7 +283,8 @@ function AutomaticCapturePanel({ t }) {
       error ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "rolling-skill-actions", children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", disabled: busy || requiresRuntime && !runtimeId, onClick: () => void save(), children: t("saveAutomatic") }),
-        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "ghost", disabled: busy || mode === "off" || !runtimeId, onClick: () => void runOnce(), children: t("runOnce") })
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "ghost", disabled: busy || mode === "off" || !runtimeId, onClick: () => void runOnce(), children: t("runOnce") }),
+        executionLocation === "always" ? schedulerInstalled ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "ghost", disabled: busy, onClick: () => void disableScheduler(), children: t("disableScheduler") }) : /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(import_dsh_client_ui_primitives.Button, { variant: "outline", disabled: busy || status?.executionLocation !== "always" || status?.mode === "off" || !status?.scheduler.supported, onClick: () => void enableScheduler(), children: t("enableScheduler") }) : null
       ] })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("section", { className: "rolling-skill-panel", children: [
@@ -292,11 +304,11 @@ function AutomaticCapturePanel({ t }) {
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dt", { children: t("schedulerStatus") }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dd", { children: executionLocation === "always" ? status?.worker.installed ? t("installed") : t("notInstalled") : t("harnessTimer") })
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dd", { children: executionLocation === "always" ? schedulerInstalled ? t("installed") : t("notInstalled") : t("harnessTimer") })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dt", { children: t("lastError") }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dd", { children: status?.error || status?.worker.lastRegistrationError || t("noError") })
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("dd", { children: status?.error || status?.scheduler.error || status?.worker.lastRegistrationError || t("noError") })
         ] })
       ] })
     ] })
@@ -1501,6 +1513,8 @@ var zh = {
   installed: "\u7CFB\u7EDF\u8C03\u5EA6\u5668\u5DF2\u5B89\u88C5",
   notInstalled: "\u7CFB\u7EDF\u8C03\u5EA6\u5668\u672A\u5B89\u88C5",
   harnessTimer: "\u7531 Harness \u5185\u7F6E\u5B9A\u65F6\u5668\u8FD0\u884C",
+  enableScheduler: "\u5B89\u88C5\u7CFB\u7EDF\u8C03\u5EA6\u5668",
+  disableScheduler: "\u79FB\u9664\u7CFB\u7EDF\u8C03\u5EA6\u5668",
   operator: "\u81EA\u64CD\u4F5C\u4E0E\u4F18\u5316",
   settings: "\u63D2\u4EF6\u8BBE\u7F6E",
   datasetsCount: "\u6570\u636E\u96C6",
@@ -1651,6 +1665,8 @@ var en = {
   installed: "System scheduler installed",
   notInstalled: "System scheduler not installed",
   harnessTimer: "Runs from the Harness timer",
+  enableScheduler: "Install System Scheduler",
+  disableScheduler: "Remove System Scheduler",
   operator: "Operator & Optimization",
   settings: "Plugin Settings",
   datasetsCount: "Datasets",

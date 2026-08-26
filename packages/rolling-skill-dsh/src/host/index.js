@@ -1,14 +1,23 @@
 import applicationModule from "../../../rolling-skill-core/src/index.cjs"
 import apiModule from "./api.cjs"
 import {registerRollingSkillTools} from "./tools.js"
+import schedulerModule from "../scheduler/index.cjs"
 
 const {createRollingSkillApplication} = applicationModule
 const {createRollingSkillApiHandler} = apiModule
+const {createSchedulerAdapter, resolveWorkerExecutable} = schedulerModule
 
 export const inject = ["webServer", "tools"]
 
 export function apply(ctx, config = {}) {
-    const application = createRollingSkillApplication({dataRoot: config.dataRoot})
+    const schedulerAdapter = createSchedulerAdapter({
+        dataRoot: config.dataRoot,
+        workerExecutable: resolveWorkerExecutable(import.meta.url),
+    })
+    const application = createRollingSkillApplication({
+        dataRoot: config.dataRoot,
+        schedulerAdapter,
+    })
     ctx.effect(() => {
         const disposeTools = registerRollingSkillTools(ctx, application)
         const disposeRoute = ctx.webServer.register({

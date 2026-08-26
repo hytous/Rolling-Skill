@@ -316,8 +316,88 @@ function createRollingSkillApplication(options = {}) {
         onChanged: () => publish(),
         }))
     const operatorServices = operatorRuntime.services
+    const schedulerAdapter = options.schedulerAdapter ?? Object.freeze({
+        capabilities: () => ({platform: process.platform, supported: false}),
+        status: async () => ({platform: process.platform, supported: false, installed: false}),
+        install: async () => { throw new Error("System scheduling is unavailable") },
+        uninstall: async () => { throw new Error("System scheduling is unavailable") },
+    })
     const subscribers = new Set()
     let closed = false
+
+    async function schedulerStatus() {
+        const capabilities = schedulerAdapter.capabilities()
+        try {
+            const actual = await schedulerAdapter.status()
+            return {...capabilities, ...actual, worker: configStore.read().worker}
+        } catch (error) {
+            return {
+                ...capabilities,
+                installed: false,
+                error: String(error?.message ?? error).slice(0, 2_000),
+                worker: configStore.read().worker,
+            }
+        }
+    }
+
+    async function enableScheduler() {
+        const profile = store.read().settings.autoCaptureProfile
+        const plugin = configStore.read()
+        const capabilities = schedulerAdapter.capabilities()
+        if (profile.mode === "off") throw new Error("Enable automatic capture before installing its scheduler")
+        if (plugin.executionLocation !== "always") throw new Error("Select always-on execution before installing its scheduler")
+        if (!plugin.runtime) throw new Error("Select a Runtime before installing the automatic capture scheduler")
+        if (!capabilities.supported) throw new Error("System scheduling is unavailable on this platform")
+        try {
+            await schedulerAdapter.install(profile.schedule)
+            configStore.update({
+                worker: {
+                    ...plugin.worker,
+                    enabled: true,
+                    installed: true,
+                    platform: capabilities.platform,
+                    lastRegistrationError: null,
+                },
+            })
+            return schedulerStatus()
+        } catch (error) {
+            configStore.update({
+                worker: {
+                    ...plugin.worker,
+                    enabled: true,
+                    installed: false,
+                    platform: capabilities.platform,
+                    lastRegistrationError: String(error?.message ?? error).slice(0, 2_000),
+                },
+            })
+            throw error
+        }
+    }
+
+    async function disableScheduler() {
+        const plugin = configStore.read()
+        try {
+            await schedulerAdapter.uninstall()
+            configStore.update({
+                worker: {
+                    ...plugin.worker,
+                    enabled: false,
+                    installed: false,
+                    platform: schedulerAdapter.capabilities().platform,
+                    lastRegistrationError: null,
+                },
+            })
+            return schedulerStatus()
+        } catch (error) {
+            configStore.update({
+                worker: {
+                    ...plugin.worker,
+                    lastRegistrationError: String(error?.message ?? error).slice(0, 2_000),
+                },
+            })
+            throw error
+        }
+    }
 
     function dashboardSnapshot() {
         const state = store.read()
@@ -392,9 +472,15 @@ function createRollingSkillApplication(options = {}) {
         "installations.cancel": (input) => skillServices.cancelInstallation(input),
         "installations.inspect": (input) => skillServices.inspectInstallation(input),
         "installations.send": (input) => skillServices.sendInstallation(input),
-        "automatic.status": () => automaticCaptureService.status(),
+        "automatic.status": async () => ({
+            ...automaticCaptureService.status(),
+            scheduler: await schedulerStatus(),
+        }),
         "automatic.update": (input) => automaticCaptureService.update(input),
         "automatic.runOnce": (input) => automaticCaptureService.runOnce(input),
+        "scheduler.status": () => schedulerStatus(),
+        "scheduler.enable": () => enableScheduler(),
+        "scheduler.disable": () => disableScheduler(),
         "operators.summary": (input) => operatorServices.operatorSummary(input),
         "operators.get": (input) => operatorServices.operatorGet(input),
         "operators.start": (input) => operatorServices.operatorStart(input),
@@ -432,6 +518,8 @@ function createRollingSkillApplication(options = {}) {
         "installations.send",
         "automatic.update",
         "automatic.runOnce",
+        "scheduler.enable",
+        "scheduler.disable",
         "operators.start",
         "operators.pause",
         "operators.resume",

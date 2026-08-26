@@ -124,6 +124,8 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(automatic, /automatic\.status/u)
         assert.match(automatic, /automatic\.update/u)
         assert.match(automatic, /automatic\.runOnce/u)
+        assert.match(automatic, /scheduler\.enable/u)
+        assert.match(automatic, /scheduler\.disable/u)
         assert.match(automatic, /scheduled/u)
         assert.match(automatic, /automatic/u)
         assert.match(automatic, /while-harness-running/u)

@@ -13,6 +13,12 @@ const {
     AutomaticCaptureStateStore,
 } = require("../../../../desktop/rolling-skill/src/automatic-capture-state-store.cjs")
 const {
+    dueCaptureSlot,
+} = require("../../../../desktop/rolling-skill/src/conversation-discovery.cjs")
+const {
+    LocalEvaluationStore,
+} = require("../../../../desktop/rolling-skill/src/local-store.cjs")
+const {
     RollingSkillConfigStore,
 } = require("../../../rolling-skill-core/src/config-store.cjs")
 const {
@@ -26,7 +32,8 @@ const {
 const MAX_WORKER_LOG_BYTES = 1024 * 1024
 const RETAINED_WORKER_LOG_BYTES = 512 * 1024
 
-function normalizedSlot(value) {
+function normalizedSlot(value, {allowScheduled = false} = {}) {
+    if (allowScheduled && value === "scheduled") return "scheduled"
     const date = new Date(String(value ?? ""))
     if (!Number.isFinite(date.getTime())) throw new Error("Worker slot must be an ISO timestamp")
     return date.toISOString()
@@ -49,7 +56,7 @@ function parseWorkerArguments(argv = []) {
         throw new Error("Worker data root must be an absolute path")
     }
     if (!result.slot) throw new Error("Worker slot is required")
-    return {dataRoot: result.dataRoot, slot: normalizedSlot(result.slot)}
+    return {dataRoot: result.dataRoot, slot: normalizedSlot(result.slot, {allowScheduled: true})}
 }
 
 function appendWorkerLog(path, record) {
@@ -81,11 +88,12 @@ async function runWorker({
     signal = null,
     createApplication = defaultCreateApplication,
     acquireLease = acquireRunLease,
+    now = () => new Date(),
 } = {}) {
     if (typeof dataRoot !== "string" || !isAbsolute(dataRoot)) {
         throw new Error("Worker data root must be an absolute path")
     }
-    const normalized = normalizedSlot(slot)
+    let normalized = normalizedSlot(slot, {allowScheduled: true})
     const paths = ensureDataLayout(resolveDataPaths({dataRoot}))
     const config = new RollingSkillConfigStore(paths.config).read()
     if (
@@ -98,6 +106,23 @@ async function runWorker({
     }
     assertRunning(signal)
     const stateStore = new AutomaticCaptureStateStore(paths.automaticCaptureState)
+    if (normalized === "scheduled") {
+        const profile = new LocalEvaluationStore(paths.evaluationStore).read().settings.autoCaptureProfile
+        if (profile.mode === "off") {
+            appendWorkerLog(paths.workerLog, {status: "disabled", slot: "scheduled"})
+            return {status: "disabled", slot: "scheduled"}
+        }
+        const due = dueCaptureSlot({
+            now: now(),
+            schedule: profile.schedule,
+            lastScheduledSlot: stateStore.read().lastScheduledSlot,
+        })
+        if (!due) {
+            appendWorkerLog(paths.workerLog, {status: "not-due", slot: "scheduled"})
+            return {status: "not-due", slot: null}
+        }
+        normalized = due.toISOString()
+    }
     if (stateStore.read().lastScheduledSlot === normalized) {
         appendWorkerLog(paths.workerLog, {status: "already-completed", slot: normalized})
         return {status: "already-completed", slot: normalized}

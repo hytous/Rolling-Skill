@@ -159,382 +159,268 @@ var require_automatic_capture_state_store = __commonJS({
   }
 });
 
-// ../rolling-skill-core/src/config-store.cjs
-var require_config_store = __commonJS({
-  "../rolling-skill-core/src/config-store.cjs"(exports2, module2) {
-    var {
-      chmodSync,
-      existsSync,
-      mkdirSync,
-      readFileSync,
-      renameSync,
-      writeFileSync
-    } = require("node:fs");
-    var { randomUUID } = require("node:crypto");
-    var { dirname, isAbsolute } = require("node:path");
-    var CONFIG_SCHEMA = "rolling-skill-plugin-config/v1";
-    var LOCALES = /* @__PURE__ */ new Set(["follow-harness", "zh-CN", "en"]);
-    var EXECUTION_LOCATIONS = /* @__PURE__ */ new Set(["while-harness-running", "always"]);
-    var PROVIDERS = /* @__PURE__ */ new Set(["codex", "codebuddy", "deepseek-harness"]);
-    var PLATFORMS = /* @__PURE__ */ new Set(["darwin", "linux", "win32"]);
-    var CONFIG_FIELDS = /* @__PURE__ */ new Set([
-      "schemaVersion",
-      "locale",
-      "executionLocation",
-      "runtime",
-      "worker"
-    ]);
-    var UPDATE_FIELDS = /* @__PURE__ */ new Set(["locale", "executionLocation", "runtime", "worker"]);
-    function copy(value) {
-      return JSON.parse(JSON.stringify(value));
+// ../../desktop/rolling-skill/src/conversation-discovery.cjs
+var require_conversation_discovery = __commonJS({
+  "../../desktop/rolling-skill/src/conversation-discovery.cjs"(exports2, module2) {
+    var CAPTURE_CADENCES = /* @__PURE__ */ new Set(["daily", "weekly"]);
+    function scheduleParts(schedule = {}) {
+      if (!CAPTURE_CADENCES.has(schedule.cadence)) {
+        throw new Error("Automatic capture cadence is invalid");
+      }
+      const match = /^(?:([01]\d|2[0-3])):([0-5]\d)$/u.exec(String(schedule.time ?? ""));
+      if (!match) throw new Error("Automatic capture time is invalid");
+      const weekday = Number(schedule.weekday);
+      if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+        throw new Error("Automatic capture weekday is invalid");
+      }
+      return { cadence: schedule.cadence, hour: Number(match[1]), minute: Number(match[2]), weekday };
     }
-    function initialConfig() {
-      return {
-        schemaVersion: CONFIG_SCHEMA,
-        locale: "follow-harness",
-        executionLocation: "while-harness-running",
-        runtime: null,
-        worker: {
-          enabled: false,
-          installed: false,
-          platform: null,
-          lastRegistrationError: null
-        }
-      };
+    function localSlot(year, month, day, hour, minute) {
+      return new Date(year, month, day, hour, minute, 0, 0);
     }
-    function requiredText(value, label, maximum = 4096) {
-      const text = typeof value === "string" ? value.trim() : "";
-      if (!text || text.length > maximum) throw new Error(`${label} is required`);
-      return text;
+    function previousScheduledSlot(nowInput, schedule) {
+      const now = new Date(nowInput);
+      if (!Number.isFinite(now.getTime())) throw new Error("Automatic capture current time is invalid");
+      const { cadence, hour, minute, weekday } = scheduleParts(schedule);
+      const candidate = localSlot(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute);
+      if (cadence === "daily") {
+        if (candidate > now) candidate.setDate(candidate.getDate() - 1);
+        return candidate;
+      }
+      candidate.setDate(candidate.getDate() + weekday - candidate.getDay());
+      if (candidate > now) candidate.setDate(candidate.getDate() - 7);
+      return candidate;
     }
-    function optionalText(value, label, maximum) {
-      if (value === null || value === void 0 || value === "") return null;
-      return requiredText(value, label, maximum);
+    function nextScheduledSlot(nowInput, schedule) {
+      const now = new Date(nowInput);
+      if (!Number.isFinite(now.getTime())) throw new Error("Automatic capture current time is invalid");
+      const { cadence, hour, minute, weekday } = scheduleParts(schedule);
+      const candidate = localSlot(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute);
+      if (cadence === "daily") {
+        if (candidate <= now) candidate.setDate(candidate.getDate() + 1);
+        return candidate;
+      }
+      candidate.setDate(candidate.getDate() + weekday - candidate.getDay());
+      if (candidate <= now) candidate.setDate(candidate.getDate() + 7);
+      return candidate;
     }
-    function normalizeRuntime(value) {
-      if (value === null || value === void 0) return null;
+    function dueCaptureSlot({ now = /* @__PURE__ */ new Date(), schedule, lastScheduledSlot = null } = {}) {
+      const due = previousScheduledSlot(now, schedule);
+      if (!lastScheduledSlot) return due;
+      const satisfied = new Date(lastScheduledSlot);
+      if (!Number.isFinite(satisfied.getTime())) return due;
+      return satisfied >= due ? null : due;
+    }
+    function requiredText(value, label, maximum = 4e3) {
+      const normalized = String(value ?? "").trim();
+      if (!normalized) throw new Error(`${label} is required`);
+      if (normalized.length > maximum) throw new Error(`${label} is too long`);
+      return normalized;
+    }
+    function exactKeys(value, expected, label) {
       if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw new Error("Runtime identity must be an object");
+        throw new Error(`${label} JSON schema is invalid`);
       }
-      const allowed = /* @__PURE__ */ new Set(["providerId", "runtimeId", "displayName", "version", "executablePath"]);
-      for (const key of Object.keys(value)) {
-        if (!allowed.has(key)) throw new Error(`Runtime identity has unknown field ${key}`);
+      const actual = Object.keys(value).sort();
+      const wanted = [...expected].sort();
+      if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
+        throw new Error(`${label} JSON contains unsupported fields`);
       }
-      const providerId = requiredText(value.providerId, "Runtime provider", 100);
-      if (!PROVIDERS.has(providerId)) throw new Error("Runtime provider is unsupported");
-      const runtimeId = requiredText(value.runtimeId, "Runtime id", 500);
-      const executablePath = requiredText(value.executablePath, "Runtime executable path", 16384);
-      if (!isAbsolute(executablePath)) throw new Error("Runtime executable path must be absolute");
-      const displayName = optionalText(value.displayName, "Runtime display name", 500);
-      const version = optionalText(value.version, "Runtime version", 200);
-      return {
-        providerId,
-        runtimeId,
-        ...displayName ? { displayName } : {},
-        ...version ? { version } : {},
-        executablePath
-      };
     }
-    function normalizeWorker(value, base = initialConfig().worker) {
-      if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw new Error("Worker configuration must be an object");
-      }
-      const allowed = /* @__PURE__ */ new Set(["enabled", "installed", "platform", "lastRegistrationError"]);
-      for (const key of Object.keys(value)) {
-        if (!allowed.has(key)) throw new Error(`Worker configuration has unknown field ${key}`);
-      }
-      const platform = Object.hasOwn(value, "platform") ? value.platform : base.platform;
-      if (platform !== null && !PLATFORMS.has(platform)) throw new Error("Worker platform is unsupported");
-      const error = Object.hasOwn(value, "lastRegistrationError") ? optionalText(value.lastRegistrationError, "Worker registration error", 4e3) : base.lastRegistrationError;
-      return {
-        enabled: Object.hasOwn(value, "enabled") ? Boolean(value.enabled) : Boolean(base.enabled),
-        installed: Object.hasOwn(value, "installed") ? Boolean(value.installed) : Boolean(base.installed),
-        platform,
-        lastRegistrationError: error
-      };
-    }
-    function normalizeConfig(value) {
-      const defaults = initialConfig();
-      if (!value || typeof value !== "object" || Array.isArray(value)) return defaults;
-      for (const key of Object.keys(value)) {
-        if (!CONFIG_FIELDS.has(key)) throw new Error(`Plugin configuration has unknown field ${key}`);
-      }
-      const locale = value.locale ?? defaults.locale;
-      if (!LOCALES.has(locale)) throw new Error("Plugin locale is unsupported");
-      const executionLocation = value.executionLocation ?? defaults.executionLocation;
-      if (!EXECUTION_LOCATIONS.has(executionLocation)) {
-        throw new Error("Plugin execution location is unsupported");
-      }
-      const runtime = normalizeRuntime(value.runtime);
-      if (executionLocation === "always" && runtime === null) {
-        throw new Error("Always-on execution requires a Runtime");
-      }
-      return {
-        schemaVersion: CONFIG_SCHEMA,
-        locale,
-        executionLocation,
-        runtime,
-        worker: normalizeWorker(value.worker ?? defaults.worker, defaults.worker)
-      };
-    }
-    var RollingSkillConfigStore = class {
-      constructor(path) {
-        if (!isAbsolute(path)) throw new Error("Plugin configuration path must be absolute");
-        this.path = path;
-        this.state = null;
-      }
-      load() {
-        if (this.state) return this.state;
-        this.state = existsSync(this.path) ? normalizeConfig(JSON.parse(readFileSync(this.path, "utf8"))) : initialConfig();
-        this.persist();
-        return this.state;
-      }
-      persist() {
-        mkdirSync(dirname(this.path), { recursive: true, mode: 448 });
-        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID()}`;
-        writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}
-`, { mode: 384 });
-        chmodSync(temporary, 384);
-        renameSync(temporary, this.path);
-        chmodSync(this.path, 384);
-      }
-      read() {
-        return copy(this.load());
-      }
-      update(patch = {}) {
-        if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
-          throw new Error("Plugin configuration update must be an object");
+    function firstJsonObject(text) {
+      const source = String(text ?? "");
+      const start = source.indexOf("{");
+      if (start < 0) throw new Error("Analysis did not return a JSON object");
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let index = start; index < source.length; index += 1) {
+        const character = source[index];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (character === "\\") escaped = true;
+          else if (character === '"') inString = false;
+          continue;
         }
-        for (const key of Object.keys(patch)) {
-          if (!UPDATE_FIELDS.has(key)) throw new Error(`Plugin configuration has unknown field ${key}`);
+        if (character === '"') {
+          inString = true;
+          continue;
         }
-        const current = this.load();
-        this.state = normalizeConfig({
-          ...current,
-          ...patch,
-          worker: Object.hasOwn(patch, "worker") ? normalizeWorker(patch.worker, current.worker) : current.worker
-        });
-        this.persist();
-        return this.read();
-      }
-    };
-    module2.exports = {
-      CONFIG_SCHEMA,
-      RollingSkillConfigStore,
-      initialConfig,
-      normalizeConfig
-    };
-  }
-});
-
-// ../rolling-skill-core/src/data-root.cjs
-var require_data_root = __commonJS({
-  "../rolling-skill-core/src/data-root.cjs"(exports2, module2) {
-    var { chmodSync, mkdirSync } = require("node:fs");
-    var { homedir } = require("node:os");
-    var { isAbsolute, join, resolve } = require("node:path");
-    function absoluteRoot(value, label) {
-      const root = String(value ?? "").trim();
-      if (!root || !isAbsolute(root)) throw new Error(`${label} must be an absolute path`);
-      return resolve(root);
-    }
-    function resolveDataPaths({
-      dataRoot = null,
-      homeDirectory = homedir(),
-      environment = process.env
-    } = {}) {
-      const dshHome = String(environment?.DSH_HOME ?? "").trim();
-      const root = dataRoot ? absoluteRoot(dataRoot, "Rolling Skill data root") : dshHome ? join(absoluteRoot(dshHome, "DSH_HOME"), "rolling-skill") : join(absoluteRoot(homeDirectory, "Home directory"), ".dsh", "rolling-skill");
-      const rawCases = join(root, "raw-cases");
-      const managedSkills = join(root, "managed-skills");
-      const traces = join(root, "traces");
-      const jobs = join(root, "jobs");
-      const logs = join(root, "logs");
-      const locks = join(root, "locks");
-      const scheduler = join(root, "scheduler");
-      return Object.freeze({
-        root,
-        config: join(root, "config.json"),
-        evaluationStore: join(root, "evaluation-store.json"),
-        automaticCaptureState: join(root, "automatic-capture-state.json"),
-        rawCases,
-        rawCaseEvents: join(rawCases, "events.jsonl"),
-        managedSkills,
-        managedSkillRegistry: join(managedSkills, "registry.json"),
-        skillInstallations: join(root, "skill-installations.json"),
-        traces,
-        jobs,
-        operatorJobs: join(jobs, "operator-jobs.json"),
-        optimizationRuns: join(jobs, "optimization-runs.json"),
-        logs,
-        workerLog: join(logs, "worker.log"),
-        locks,
-        captureLease: join(locks, "automatic-capture.json"),
-        scheduler,
-        migration: join(root, "migration.json")
-      });
-    }
-    function ensurePrivateDirectory(path) {
-      mkdirSync(path, { recursive: true, mode: 448 });
-      chmodSync(path, 448);
-    }
-    function ensureDataLayout(paths) {
-      for (const directory of [
-        paths.root,
-        paths.rawCases,
-        paths.managedSkills,
-        paths.traces,
-        paths.jobs,
-        paths.logs,
-        paths.locks,
-        paths.scheduler
-      ]) ensurePrivateDirectory(directory);
-      return paths;
-    }
-    module2.exports = { ensureDataLayout, resolveDataPaths };
-  }
-});
-
-// ../rolling-skill-core/src/run-lease.cjs
-var require_run_lease = __commonJS({
-  "../rolling-skill-core/src/run-lease.cjs"(exports2, module2) {
-    var { randomUUID } = require("node:crypto");
-    var {
-      chmodSync,
-      closeSync,
-      mkdirSync,
-      openSync,
-      readFileSync,
-      renameSync,
-      unlinkSync,
-      writeFileSync
-    } = require("node:fs");
-    var { isAbsolute, join } = require("node:path");
-    var LEASE_SCHEMA = "rolling-skill-run-lease/v1";
-    var LEASE_FILENAME = "automatic-capture.lock";
-    var DEFAULT_STALE_AFTER_MS = 6 * 60 * 60 * 1e3;
-    function timestamp(value, label) {
-      const date = value instanceof Date ? value : new Date(value);
-      if (!Number.isFinite(date.getTime())) throw new Error(`${label} is invalid`);
-      return date.toISOString();
-    }
-    function liveProcess(pid) {
-      if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch (error) {
-        return error?.code === "EPERM";
-      }
-    }
-    function busy(record = null) {
-      return Object.assign(new Error("Rolling Skill automatic capture is already running"), {
-        code: "LEASE_BUSY",
-        ...record?.slot ? { slot: record.slot } : {}
-      });
-    }
-    function readLease(path) {
-      try {
-        const value = JSON.parse(readFileSync(path, "utf8"));
-        if (value?.schemaVersion !== LEASE_SCHEMA || typeof value.token !== "string" || !value.token || typeof value.slot !== "string" || !value.slot || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.acquiredAt !== "string") return null;
-        timestamp(value.acquiredAt, "Run lease acquisition time");
-        return value;
-      } catch {
-        return null;
-      }
-    }
-    async function acquireRunLease(lockDirectory, {
-      slot,
-      pid = process.pid,
-      now = () => /* @__PURE__ */ new Date(),
-      isProcessAlive = liveProcess,
-      staleAfterMs = DEFAULT_STALE_AFTER_MS
-    } = {}) {
-      if (typeof lockDirectory !== "string" || !isAbsolute(lockDirectory)) {
-        throw new Error("Rolling Skill lock directory must be absolute");
-      }
-      const normalizedSlot = timestamp(slot, "Run lease slot");
-      if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Run lease pid is invalid");
-      if (!Number.isSafeInteger(staleAfterMs) || staleAfterMs < 1) {
-        throw new Error("Run lease stale timeout is invalid");
-      }
-      mkdirSync(lockDirectory, { recursive: true, mode: 448 });
-      chmodSync(lockDirectory, 448);
-      const path = join(lockDirectory, LEASE_FILENAME);
-      const token = randomUUID();
-      let recovered = false;
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        const acquiredAt = timestamp(now(), "Run lease clock");
-        const record = {
-          schemaVersion: LEASE_SCHEMA,
-          token,
-          slot: normalizedSlot,
-          pid,
-          acquiredAt
-        };
-        let descriptor;
-        try {
-          descriptor = openSync(path, "wx", 384);
-          writeFileSync(descriptor, `${JSON.stringify(record)}
-`, "utf8");
-          closeSync(descriptor);
-          chmodSync(path, 384);
-        } catch (error) {
-          if (descriptor !== void 0) {
+        if (character === "{") depth += 1;
+        if (character === "}") {
+          depth -= 1;
+          if (depth === 0) {
             try {
-              closeSync(descriptor);
-            } catch {
-            }
-          }
-          if (error?.code !== "EEXIST") throw error;
-          const current = readLease(path);
-          if (!current) throw busy();
-          const age = Date.parse(acquiredAt) - Date.parse(current.acquiredAt);
-          const stale = age >= staleAfterMs || !isProcessAlive(current.pid);
-          if (!stale) throw busy(current);
-          const quarantine = join(lockDirectory, `${LEASE_FILENAME}.stale-${randomUUID()}`);
-          try {
-            renameSync(path, quarantine);
-            recovered = true;
-            try {
-              unlinkSync(quarantine);
-            } catch {
-            }
-            continue;
-          } catch (renameError) {
-            if (["ENOENT", "EEXIST"].includes(renameError?.code)) continue;
-            throw renameError;
-          }
-        }
-        let released = false;
-        return Object.freeze({
-          path,
-          slot: normalizedSlot,
-          pid,
-          acquiredAt,
-          recovered,
-          async release() {
-            if (released) return false;
-            const current = readLease(path);
-            if (current?.token !== token) return false;
-            try {
-              unlinkSync(path);
-              released = true;
-              return true;
+              return JSON.parse(source.slice(start, index + 1));
             } catch (error) {
-              if (error?.code === "ENOENT") return false;
-              throw error;
+              throw new Error(`Analysis returned invalid JSON: ${error.message}`);
             }
           }
-        });
+        }
       }
-      throw busy();
+      throw new Error("Analysis returned incomplete JSON");
+    }
+    function boundaryMessages(userMessages = []) {
+      return userMessages.map((message) => ({
+        id: requiredText(message?.id, "User Item id"),
+        turnId: requiredText(message?.turnId, "User turn id"),
+        text: String(message?.text ?? "")
+      }));
+    }
+    function buildBoundaryPrompt({ threadId, userMessages } = {}) {
+      const input = {
+        threadId: requiredText(threadId, "Thread id"),
+        userMessages: boundaryMessages(userMessages)
+      };
+      return `Identify complete user problem ranges from incremental user messages only.
+Keep follow-ups, corrections, and clarifications for the same problem in one range. Close a range
+when a new intent begins. Leave the final unfinished problem in pendingStartUserItemId. Use only
+the supplied stable IDs. Return JSON only with this exact schema:
+{"segments":[{"startUserItemId":"id","endUserItemId":"id","summary":"short text"}],"pendingStartUserItemId":"id-or-null"}
+<incremental-user-messages>${JSON.stringify(input)}</incremental-user-messages>`;
+    }
+    function parseBoundaryResult(text, { userMessageIds = [] } = {}) {
+      const value = firstJsonObject(text);
+      exactKeys(value, ["segments", "pendingStartUserItemId"], "Boundary result");
+      if (!Array.isArray(value.segments)) throw new Error("Boundary result segments are invalid");
+      const ids = userMessageIds.map((id) => requiredText(id, "User Item id"));
+      const positions = new Map(ids.map((id, index) => [id, index]));
+      let previousEnd = -1;
+      const segments = value.segments.map((segment) => {
+        exactKeys(segment, ["startUserItemId", "endUserItemId", "summary"], "Boundary segment");
+        const startUserItemId = requiredText(segment.startUserItemId, "Boundary start user Item id");
+        const endUserItemId = requiredText(segment.endUserItemId, "Boundary end user Item id");
+        const start = positions.get(startUserItemId);
+        const end = positions.get(endUserItemId);
+        if (start === void 0 || end === void 0) {
+          throw new Error("Boundary segment references an unknown user Item id");
+        }
+        if (start > end || start <= previousEnd) {
+          throw new Error("Boundary segments overlap or are out of order");
+        }
+        previousEnd = end;
+        return {
+          startUserItemId,
+          endUserItemId,
+          summary: requiredText(segment.summary, "Boundary summary", 500)
+        };
+      });
+      const pendingStartUserItemId = value.pendingStartUserItemId === null ? null : requiredText(value.pendingStartUserItemId, "Pending start user Item id");
+      if (pendingStartUserItemId !== null) {
+        const pending = positions.get(pendingStartUserItemId);
+        if (pending === void 0) throw new Error("Pending range references an unknown user Item id");
+        if (pending <= previousEnd) throw new Error("Pending range overlaps a completed segment");
+      }
+      return { segments, pendingStartUserItemId };
+    }
+    function compactEpisodeItem(item = {}) {
+      return {
+        id: String(item.id ?? ""),
+        turnId: String(item.turnId ?? ""),
+        type: String(item.type ?? ""),
+        text: String(item.text ?? "")
+      };
+    }
+    function compactActivity(activity = {}) {
+      const fields = ["type", "status", "server", "tool", "command", "name", "skillName"];
+      return Object.fromEntries(
+        fields.filter((field) => activity[field] !== void 0 && activity[field] !== null).map((field) => [field, String(activity[field]).slice(0, 4e3)])
+      );
+    }
+    function buildOutcomePrompt({ threadId, episode = {}, skills = [], datasets = [] } = {}) {
+      const input = {
+        threadId: requiredText(threadId, "Thread id"),
+        episode: {
+          originalQuestion: String(episode.originalQuestion ?? ""),
+          items: (episode.items ?? []).map(compactEpisodeItem),
+          activity: (episode.toolActivity ?? []).map(compactActivity)
+        },
+        enabledSkills: skills.map((skill) => ({
+          name: String(skill?.name ?? ""),
+          path: skill?.path ? String(skill.path) : null,
+          runtimeId: skill?.runtimeId ? String(skill.runtimeId) : null
+        })),
+        datasetBindings: datasets.map((dataset) => ({
+          id: String(dataset?.id ?? ""),
+          name: String(dataset?.name ?? ""),
+          skill: dataset?.skillReference ? {
+            name: String(dataset.skillReference.name ?? ""),
+            path: dataset.skillReference.path ? String(dataset.skillReference.path) : null
+          } : null
+        }))
+      };
+      return `Classify only this completed problem episode. Identify the principal enabled Skill,
+whether the problem was resolved, the recommended Case type, and the final Assistant Item. Return
+JSON only with this exact schema:
+{"skillName":"name-or-null","outcome":"resolved|unresolved|uncertain","caseType":"goodcase|badcase","finalAssistantItemId":"id-or-null","confidence":0.8,"reason":"short text"}
+<candidate-episode>${JSON.stringify(input)}</candidate-episode>`;
+    }
+    function parseOutcomeResult(text, { skillNames = [], assistantItemIds = [] } = {}) {
+      const value = firstJsonObject(text);
+      exactKeys(
+        value,
+        ["skillName", "outcome", "caseType", "finalAssistantItemId", "confidence", "reason"],
+        "Outcome result"
+      );
+      const skillName = value.skillName === null ? null : requiredText(value.skillName, "Outcome Skill name");
+      if (skillName !== null && !skillNames.includes(skillName)) {
+        throw new Error("Outcome result references an unknown Skill");
+      }
+      if (!(/* @__PURE__ */ new Set(["resolved", "unresolved", "uncertain"])).has(value.outcome)) {
+        throw new Error("Outcome result status is invalid");
+      }
+      if (!(/* @__PURE__ */ new Set(["goodcase", "badcase"])).has(value.caseType)) {
+        throw new Error("Outcome result Case type is invalid");
+      }
+      const finalAssistantItemId = value.finalAssistantItemId === null ? null : requiredText(value.finalAssistantItemId, "Final Assistant Item id");
+      if (finalAssistantItemId !== null && !assistantItemIds.includes(finalAssistantItemId)) {
+        throw new Error("Outcome result references an unknown Assistant Item id");
+      }
+      if (typeof value.confidence !== "number" || !Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1) {
+        throw new Error("Outcome confidence must be between 0 and 1");
+      }
+      return {
+        skillName,
+        outcome: value.outcome,
+        caseType: value.caseType,
+        finalAssistantItemId,
+        confidence: value.confidence,
+        reason: requiredText(value.reason, "Outcome reason", 1e3)
+      };
+    }
+    function partitionUserMessages(messages = [], { maxMessages = 40, maxCharacters = 24e3 } = {}) {
+      if (!Number.isInteger(maxMessages) || maxMessages < 1) throw new Error("Message budget is invalid");
+      if (!Number.isInteger(maxCharacters) || maxCharacters < 1) throw new Error("Character budget is invalid");
+      const batches = [];
+      let batch = [];
+      let characters = 0;
+      for (const message of messages) {
+        const length = String(message?.text ?? "").length;
+        if (batch.length && (batch.length >= maxMessages || characters + length > maxCharacters)) {
+          batches.push(batch);
+          batch = [];
+          characters = 0;
+        }
+        batch.push(message);
+        characters += length;
+        if (batch.length >= maxMessages || characters >= maxCharacters) {
+          batches.push(batch);
+          batch = [];
+          characters = 0;
+        }
+      }
+      if (batch.length) batches.push(batch);
+      return batches;
     }
     module2.exports = {
-      DEFAULT_STALE_AFTER_MS,
-      LEASE_FILENAME,
-      LEASE_SCHEMA,
-      acquireRunLease
+      buildBoundaryPrompt,
+      buildOutcomePrompt,
+      dueCaptureSlot,
+      nextScheduledSlot,
+      parseBoundaryResult,
+      parseOutcomeResult,
+      partitionUserMessages,
+      previousScheduledSlot
     };
   }
 });
@@ -4348,6 +4234,386 @@ var require_local_store = __commonJS({
       initialState,
       migrateState,
       reasoningEffort
+    };
+  }
+});
+
+// ../rolling-skill-core/src/config-store.cjs
+var require_config_store = __commonJS({
+  "../rolling-skill-core/src/config-store.cjs"(exports2, module2) {
+    var {
+      chmodSync,
+      existsSync,
+      mkdirSync,
+      readFileSync,
+      renameSync,
+      writeFileSync
+    } = require("node:fs");
+    var { randomUUID } = require("node:crypto");
+    var { dirname, isAbsolute } = require("node:path");
+    var CONFIG_SCHEMA = "rolling-skill-plugin-config/v1";
+    var LOCALES = /* @__PURE__ */ new Set(["follow-harness", "zh-CN", "en"]);
+    var EXECUTION_LOCATIONS = /* @__PURE__ */ new Set(["while-harness-running", "always"]);
+    var PROVIDERS = /* @__PURE__ */ new Set(["codex", "codebuddy", "deepseek-harness"]);
+    var PLATFORMS = /* @__PURE__ */ new Set(["darwin", "linux", "win32"]);
+    var CONFIG_FIELDS = /* @__PURE__ */ new Set([
+      "schemaVersion",
+      "locale",
+      "executionLocation",
+      "runtime",
+      "worker"
+    ]);
+    var UPDATE_FIELDS = /* @__PURE__ */ new Set(["locale", "executionLocation", "runtime", "worker"]);
+    function copy(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+    function initialConfig() {
+      return {
+        schemaVersion: CONFIG_SCHEMA,
+        locale: "follow-harness",
+        executionLocation: "while-harness-running",
+        runtime: null,
+        worker: {
+          enabled: false,
+          installed: false,
+          platform: null,
+          lastRegistrationError: null
+        }
+      };
+    }
+    function requiredText(value, label, maximum = 4096) {
+      const text = typeof value === "string" ? value.trim() : "";
+      if (!text || text.length > maximum) throw new Error(`${label} is required`);
+      return text;
+    }
+    function optionalText(value, label, maximum) {
+      if (value === null || value === void 0 || value === "") return null;
+      return requiredText(value, label, maximum);
+    }
+    function normalizeRuntime(value) {
+      if (value === null || value === void 0) return null;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Runtime identity must be an object");
+      }
+      const allowed = /* @__PURE__ */ new Set(["providerId", "runtimeId", "displayName", "version", "executablePath"]);
+      for (const key of Object.keys(value)) {
+        if (!allowed.has(key)) throw new Error(`Runtime identity has unknown field ${key}`);
+      }
+      const providerId = requiredText(value.providerId, "Runtime provider", 100);
+      if (!PROVIDERS.has(providerId)) throw new Error("Runtime provider is unsupported");
+      const runtimeId = requiredText(value.runtimeId, "Runtime id", 500);
+      const executablePath = requiredText(value.executablePath, "Runtime executable path", 16384);
+      if (!isAbsolute(executablePath)) throw new Error("Runtime executable path must be absolute");
+      const displayName = optionalText(value.displayName, "Runtime display name", 500);
+      const version = optionalText(value.version, "Runtime version", 200);
+      return {
+        providerId,
+        runtimeId,
+        ...displayName ? { displayName } : {},
+        ...version ? { version } : {},
+        executablePath
+      };
+    }
+    function normalizeWorker(value, base = initialConfig().worker) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Worker configuration must be an object");
+      }
+      const allowed = /* @__PURE__ */ new Set(["enabled", "installed", "platform", "lastRegistrationError"]);
+      for (const key of Object.keys(value)) {
+        if (!allowed.has(key)) throw new Error(`Worker configuration has unknown field ${key}`);
+      }
+      const platform = Object.hasOwn(value, "platform") ? value.platform : base.platform;
+      if (platform !== null && !PLATFORMS.has(platform)) throw new Error("Worker platform is unsupported");
+      const error = Object.hasOwn(value, "lastRegistrationError") ? optionalText(value.lastRegistrationError, "Worker registration error", 4e3) : base.lastRegistrationError;
+      return {
+        enabled: Object.hasOwn(value, "enabled") ? Boolean(value.enabled) : Boolean(base.enabled),
+        installed: Object.hasOwn(value, "installed") ? Boolean(value.installed) : Boolean(base.installed),
+        platform,
+        lastRegistrationError: error
+      };
+    }
+    function normalizeConfig(value) {
+      const defaults = initialConfig();
+      if (!value || typeof value !== "object" || Array.isArray(value)) return defaults;
+      for (const key of Object.keys(value)) {
+        if (!CONFIG_FIELDS.has(key)) throw new Error(`Plugin configuration has unknown field ${key}`);
+      }
+      const locale = value.locale ?? defaults.locale;
+      if (!LOCALES.has(locale)) throw new Error("Plugin locale is unsupported");
+      const executionLocation = value.executionLocation ?? defaults.executionLocation;
+      if (!EXECUTION_LOCATIONS.has(executionLocation)) {
+        throw new Error("Plugin execution location is unsupported");
+      }
+      const runtime = normalizeRuntime(value.runtime);
+      if (executionLocation === "always" && runtime === null) {
+        throw new Error("Always-on execution requires a Runtime");
+      }
+      return {
+        schemaVersion: CONFIG_SCHEMA,
+        locale,
+        executionLocation,
+        runtime,
+        worker: normalizeWorker(value.worker ?? defaults.worker, defaults.worker)
+      };
+    }
+    var RollingSkillConfigStore = class {
+      constructor(path) {
+        if (!isAbsolute(path)) throw new Error("Plugin configuration path must be absolute");
+        this.path = path;
+        this.state = null;
+      }
+      load() {
+        if (this.state) return this.state;
+        this.state = existsSync(this.path) ? normalizeConfig(JSON.parse(readFileSync(this.path, "utf8"))) : initialConfig();
+        this.persist();
+        return this.state;
+      }
+      persist() {
+        mkdirSync(dirname(this.path), { recursive: true, mode: 448 });
+        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID()}`;
+        writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}
+`, { mode: 384 });
+        chmodSync(temporary, 384);
+        renameSync(temporary, this.path);
+        chmodSync(this.path, 384);
+      }
+      read() {
+        return copy(this.load());
+      }
+      update(patch = {}) {
+        if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+          throw new Error("Plugin configuration update must be an object");
+        }
+        for (const key of Object.keys(patch)) {
+          if (!UPDATE_FIELDS.has(key)) throw new Error(`Plugin configuration has unknown field ${key}`);
+        }
+        const current = this.load();
+        this.state = normalizeConfig({
+          ...current,
+          ...patch,
+          worker: Object.hasOwn(patch, "worker") ? normalizeWorker(patch.worker, current.worker) : current.worker
+        });
+        this.persist();
+        return this.read();
+      }
+    };
+    module2.exports = {
+      CONFIG_SCHEMA,
+      RollingSkillConfigStore,
+      initialConfig,
+      normalizeConfig
+    };
+  }
+});
+
+// ../rolling-skill-core/src/data-root.cjs
+var require_data_root = __commonJS({
+  "../rolling-skill-core/src/data-root.cjs"(exports2, module2) {
+    var { chmodSync, mkdirSync } = require("node:fs");
+    var { homedir } = require("node:os");
+    var { isAbsolute, join, resolve } = require("node:path");
+    function absoluteRoot(value, label) {
+      const root = String(value ?? "").trim();
+      if (!root || !isAbsolute(root)) throw new Error(`${label} must be an absolute path`);
+      return resolve(root);
+    }
+    function resolveDataPaths({
+      dataRoot = null,
+      homeDirectory = homedir(),
+      environment = process.env
+    } = {}) {
+      const dshHome = String(environment?.DSH_HOME ?? "").trim();
+      const root = dataRoot ? absoluteRoot(dataRoot, "Rolling Skill data root") : dshHome ? join(absoluteRoot(dshHome, "DSH_HOME"), "rolling-skill") : join(absoluteRoot(homeDirectory, "Home directory"), ".dsh", "rolling-skill");
+      const rawCases = join(root, "raw-cases");
+      const managedSkills = join(root, "managed-skills");
+      const traces = join(root, "traces");
+      const jobs = join(root, "jobs");
+      const logs = join(root, "logs");
+      const locks = join(root, "locks");
+      const scheduler = join(root, "scheduler");
+      return Object.freeze({
+        root,
+        config: join(root, "config.json"),
+        evaluationStore: join(root, "evaluation-store.json"),
+        automaticCaptureState: join(root, "automatic-capture-state.json"),
+        rawCases,
+        rawCaseEvents: join(rawCases, "events.jsonl"),
+        managedSkills,
+        managedSkillRegistry: join(managedSkills, "registry.json"),
+        skillInstallations: join(root, "skill-installations.json"),
+        traces,
+        jobs,
+        operatorJobs: join(jobs, "operator-jobs.json"),
+        optimizationRuns: join(jobs, "optimization-runs.json"),
+        logs,
+        workerLog: join(logs, "worker.log"),
+        locks,
+        captureLease: join(locks, "automatic-capture.json"),
+        scheduler,
+        migration: join(root, "migration.json")
+      });
+    }
+    function ensurePrivateDirectory(path) {
+      mkdirSync(path, { recursive: true, mode: 448 });
+      chmodSync(path, 448);
+    }
+    function ensureDataLayout(paths) {
+      for (const directory of [
+        paths.root,
+        paths.rawCases,
+        paths.managedSkills,
+        paths.traces,
+        paths.jobs,
+        paths.logs,
+        paths.locks,
+        paths.scheduler
+      ]) ensurePrivateDirectory(directory);
+      return paths;
+    }
+    module2.exports = { ensureDataLayout, resolveDataPaths };
+  }
+});
+
+// ../rolling-skill-core/src/run-lease.cjs
+var require_run_lease = __commonJS({
+  "../rolling-skill-core/src/run-lease.cjs"(exports2, module2) {
+    var { randomUUID } = require("node:crypto");
+    var {
+      chmodSync,
+      closeSync,
+      mkdirSync,
+      openSync,
+      readFileSync,
+      renameSync,
+      unlinkSync,
+      writeFileSync
+    } = require("node:fs");
+    var { isAbsolute, join } = require("node:path");
+    var LEASE_SCHEMA = "rolling-skill-run-lease/v1";
+    var LEASE_FILENAME = "automatic-capture.lock";
+    var DEFAULT_STALE_AFTER_MS = 6 * 60 * 60 * 1e3;
+    function timestamp(value, label) {
+      const date = value instanceof Date ? value : new Date(value);
+      if (!Number.isFinite(date.getTime())) throw new Error(`${label} is invalid`);
+      return date.toISOString();
+    }
+    function liveProcess(pid) {
+      if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        return error?.code === "EPERM";
+      }
+    }
+    function busy(record = null) {
+      return Object.assign(new Error("Rolling Skill automatic capture is already running"), {
+        code: "LEASE_BUSY",
+        ...record?.slot ? { slot: record.slot } : {}
+      });
+    }
+    function readLease(path) {
+      try {
+        const value = JSON.parse(readFileSync(path, "utf8"));
+        if (value?.schemaVersion !== LEASE_SCHEMA || typeof value.token !== "string" || !value.token || typeof value.slot !== "string" || !value.slot || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.acquiredAt !== "string") return null;
+        timestamp(value.acquiredAt, "Run lease acquisition time");
+        return value;
+      } catch {
+        return null;
+      }
+    }
+    async function acquireRunLease(lockDirectory, {
+      slot,
+      pid = process.pid,
+      now = () => /* @__PURE__ */ new Date(),
+      isProcessAlive = liveProcess,
+      staleAfterMs = DEFAULT_STALE_AFTER_MS
+    } = {}) {
+      if (typeof lockDirectory !== "string" || !isAbsolute(lockDirectory)) {
+        throw new Error("Rolling Skill lock directory must be absolute");
+      }
+      const normalizedSlot = timestamp(slot, "Run lease slot");
+      if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Run lease pid is invalid");
+      if (!Number.isSafeInteger(staleAfterMs) || staleAfterMs < 1) {
+        throw new Error("Run lease stale timeout is invalid");
+      }
+      mkdirSync(lockDirectory, { recursive: true, mode: 448 });
+      chmodSync(lockDirectory, 448);
+      const path = join(lockDirectory, LEASE_FILENAME);
+      const token = randomUUID();
+      let recovered = false;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const acquiredAt = timestamp(now(), "Run lease clock");
+        const record = {
+          schemaVersion: LEASE_SCHEMA,
+          token,
+          slot: normalizedSlot,
+          pid,
+          acquiredAt
+        };
+        let descriptor;
+        try {
+          descriptor = openSync(path, "wx", 384);
+          writeFileSync(descriptor, `${JSON.stringify(record)}
+`, "utf8");
+          closeSync(descriptor);
+          chmodSync(path, 384);
+        } catch (error) {
+          if (descriptor !== void 0) {
+            try {
+              closeSync(descriptor);
+            } catch {
+            }
+          }
+          if (error?.code !== "EEXIST") throw error;
+          const current = readLease(path);
+          if (!current) throw busy();
+          const age = Date.parse(acquiredAt) - Date.parse(current.acquiredAt);
+          const stale = age >= staleAfterMs || !isProcessAlive(current.pid);
+          if (!stale) throw busy(current);
+          const quarantine = join(lockDirectory, `${LEASE_FILENAME}.stale-${randomUUID()}`);
+          try {
+            renameSync(path, quarantine);
+            recovered = true;
+            try {
+              unlinkSync(quarantine);
+            } catch {
+            }
+            continue;
+          } catch (renameError) {
+            if (["ENOENT", "EEXIST"].includes(renameError?.code)) continue;
+            throw renameError;
+          }
+        }
+        let released = false;
+        return Object.freeze({
+          path,
+          slot: normalizedSlot,
+          pid,
+          acquiredAt,
+          recovered,
+          async release() {
+            if (released) return false;
+            const current = readLease(path);
+            if (current?.token !== token) return false;
+            try {
+              unlinkSync(path);
+              released = true;
+              return true;
+            } catch (error) {
+              if (error?.code === "ENOENT") return false;
+              throw error;
+            }
+          }
+        });
+      }
+      throw busy();
+    }
+    module2.exports = {
+      DEFAULT_STALE_AFTER_MS,
+      LEASE_FILENAME,
+      LEASE_SCHEMA,
+      acquireRunLease
     };
   }
 });
@@ -20948,272 +21214,6 @@ var require_case_services = __commonJS({
       return value === void 0 || value === null || value === "" ? null : requiredText(value, "Runtime id", 500);
     }
     module2.exports = { createCaseServices };
-  }
-});
-
-// ../../desktop/rolling-skill/src/conversation-discovery.cjs
-var require_conversation_discovery = __commonJS({
-  "../../desktop/rolling-skill/src/conversation-discovery.cjs"(exports2, module2) {
-    var CAPTURE_CADENCES = /* @__PURE__ */ new Set(["daily", "weekly"]);
-    function scheduleParts(schedule = {}) {
-      if (!CAPTURE_CADENCES.has(schedule.cadence)) {
-        throw new Error("Automatic capture cadence is invalid");
-      }
-      const match = /^(?:([01]\d|2[0-3])):([0-5]\d)$/u.exec(String(schedule.time ?? ""));
-      if (!match) throw new Error("Automatic capture time is invalid");
-      const weekday = Number(schedule.weekday);
-      if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
-        throw new Error("Automatic capture weekday is invalid");
-      }
-      return { cadence: schedule.cadence, hour: Number(match[1]), minute: Number(match[2]), weekday };
-    }
-    function localSlot(year, month, day, hour, minute) {
-      return new Date(year, month, day, hour, minute, 0, 0);
-    }
-    function previousScheduledSlot(nowInput, schedule) {
-      const now = new Date(nowInput);
-      if (!Number.isFinite(now.getTime())) throw new Error("Automatic capture current time is invalid");
-      const { cadence, hour, minute, weekday } = scheduleParts(schedule);
-      const candidate = localSlot(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute);
-      if (cadence === "daily") {
-        if (candidate > now) candidate.setDate(candidate.getDate() - 1);
-        return candidate;
-      }
-      candidate.setDate(candidate.getDate() + weekday - candidate.getDay());
-      if (candidate > now) candidate.setDate(candidate.getDate() - 7);
-      return candidate;
-    }
-    function nextScheduledSlot(nowInput, schedule) {
-      const now = new Date(nowInput);
-      if (!Number.isFinite(now.getTime())) throw new Error("Automatic capture current time is invalid");
-      const { cadence, hour, minute, weekday } = scheduleParts(schedule);
-      const candidate = localSlot(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute);
-      if (cadence === "daily") {
-        if (candidate <= now) candidate.setDate(candidate.getDate() + 1);
-        return candidate;
-      }
-      candidate.setDate(candidate.getDate() + weekday - candidate.getDay());
-      if (candidate <= now) candidate.setDate(candidate.getDate() + 7);
-      return candidate;
-    }
-    function dueCaptureSlot({ now = /* @__PURE__ */ new Date(), schedule, lastScheduledSlot = null } = {}) {
-      const due = previousScheduledSlot(now, schedule);
-      if (!lastScheduledSlot) return due;
-      const satisfied = new Date(lastScheduledSlot);
-      if (!Number.isFinite(satisfied.getTime())) return due;
-      return satisfied >= due ? null : due;
-    }
-    function requiredText(value, label, maximum = 4e3) {
-      const normalized = String(value ?? "").trim();
-      if (!normalized) throw new Error(`${label} is required`);
-      if (normalized.length > maximum) throw new Error(`${label} is too long`);
-      return normalized;
-    }
-    function exactKeys(value, expected, label) {
-      if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw new Error(`${label} JSON schema is invalid`);
-      }
-      const actual = Object.keys(value).sort();
-      const wanted = [...expected].sort();
-      if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
-        throw new Error(`${label} JSON contains unsupported fields`);
-      }
-    }
-    function firstJsonObject(text) {
-      const source = String(text ?? "");
-      const start = source.indexOf("{");
-      if (start < 0) throw new Error("Analysis did not return a JSON object");
-      let depth = 0;
-      let inString = false;
-      let escaped = false;
-      for (let index = start; index < source.length; index += 1) {
-        const character = source[index];
-        if (inString) {
-          if (escaped) escaped = false;
-          else if (character === "\\") escaped = true;
-          else if (character === '"') inString = false;
-          continue;
-        }
-        if (character === '"') {
-          inString = true;
-          continue;
-        }
-        if (character === "{") depth += 1;
-        if (character === "}") {
-          depth -= 1;
-          if (depth === 0) {
-            try {
-              return JSON.parse(source.slice(start, index + 1));
-            } catch (error) {
-              throw new Error(`Analysis returned invalid JSON: ${error.message}`);
-            }
-          }
-        }
-      }
-      throw new Error("Analysis returned incomplete JSON");
-    }
-    function boundaryMessages(userMessages = []) {
-      return userMessages.map((message) => ({
-        id: requiredText(message?.id, "User Item id"),
-        turnId: requiredText(message?.turnId, "User turn id"),
-        text: String(message?.text ?? "")
-      }));
-    }
-    function buildBoundaryPrompt({ threadId, userMessages } = {}) {
-      const input = {
-        threadId: requiredText(threadId, "Thread id"),
-        userMessages: boundaryMessages(userMessages)
-      };
-      return `Identify complete user problem ranges from incremental user messages only.
-Keep follow-ups, corrections, and clarifications for the same problem in one range. Close a range
-when a new intent begins. Leave the final unfinished problem in pendingStartUserItemId. Use only
-the supplied stable IDs. Return JSON only with this exact schema:
-{"segments":[{"startUserItemId":"id","endUserItemId":"id","summary":"short text"}],"pendingStartUserItemId":"id-or-null"}
-<incremental-user-messages>${JSON.stringify(input)}</incremental-user-messages>`;
-    }
-    function parseBoundaryResult(text, { userMessageIds = [] } = {}) {
-      const value = firstJsonObject(text);
-      exactKeys(value, ["segments", "pendingStartUserItemId"], "Boundary result");
-      if (!Array.isArray(value.segments)) throw new Error("Boundary result segments are invalid");
-      const ids = userMessageIds.map((id) => requiredText(id, "User Item id"));
-      const positions = new Map(ids.map((id, index) => [id, index]));
-      let previousEnd = -1;
-      const segments = value.segments.map((segment) => {
-        exactKeys(segment, ["startUserItemId", "endUserItemId", "summary"], "Boundary segment");
-        const startUserItemId = requiredText(segment.startUserItemId, "Boundary start user Item id");
-        const endUserItemId = requiredText(segment.endUserItemId, "Boundary end user Item id");
-        const start = positions.get(startUserItemId);
-        const end = positions.get(endUserItemId);
-        if (start === void 0 || end === void 0) {
-          throw new Error("Boundary segment references an unknown user Item id");
-        }
-        if (start > end || start <= previousEnd) {
-          throw new Error("Boundary segments overlap or are out of order");
-        }
-        previousEnd = end;
-        return {
-          startUserItemId,
-          endUserItemId,
-          summary: requiredText(segment.summary, "Boundary summary", 500)
-        };
-      });
-      const pendingStartUserItemId = value.pendingStartUserItemId === null ? null : requiredText(value.pendingStartUserItemId, "Pending start user Item id");
-      if (pendingStartUserItemId !== null) {
-        const pending = positions.get(pendingStartUserItemId);
-        if (pending === void 0) throw new Error("Pending range references an unknown user Item id");
-        if (pending <= previousEnd) throw new Error("Pending range overlaps a completed segment");
-      }
-      return { segments, pendingStartUserItemId };
-    }
-    function compactEpisodeItem(item = {}) {
-      return {
-        id: String(item.id ?? ""),
-        turnId: String(item.turnId ?? ""),
-        type: String(item.type ?? ""),
-        text: String(item.text ?? "")
-      };
-    }
-    function compactActivity(activity = {}) {
-      const fields = ["type", "status", "server", "tool", "command", "name", "skillName"];
-      return Object.fromEntries(
-        fields.filter((field) => activity[field] !== void 0 && activity[field] !== null).map((field) => [field, String(activity[field]).slice(0, 4e3)])
-      );
-    }
-    function buildOutcomePrompt({ threadId, episode = {}, skills = [], datasets = [] } = {}) {
-      const input = {
-        threadId: requiredText(threadId, "Thread id"),
-        episode: {
-          originalQuestion: String(episode.originalQuestion ?? ""),
-          items: (episode.items ?? []).map(compactEpisodeItem),
-          activity: (episode.toolActivity ?? []).map(compactActivity)
-        },
-        enabledSkills: skills.map((skill) => ({
-          name: String(skill?.name ?? ""),
-          path: skill?.path ? String(skill.path) : null,
-          runtimeId: skill?.runtimeId ? String(skill.runtimeId) : null
-        })),
-        datasetBindings: datasets.map((dataset) => ({
-          id: String(dataset?.id ?? ""),
-          name: String(dataset?.name ?? ""),
-          skill: dataset?.skillReference ? {
-            name: String(dataset.skillReference.name ?? ""),
-            path: dataset.skillReference.path ? String(dataset.skillReference.path) : null
-          } : null
-        }))
-      };
-      return `Classify only this completed problem episode. Identify the principal enabled Skill,
-whether the problem was resolved, the recommended Case type, and the final Assistant Item. Return
-JSON only with this exact schema:
-{"skillName":"name-or-null","outcome":"resolved|unresolved|uncertain","caseType":"goodcase|badcase","finalAssistantItemId":"id-or-null","confidence":0.8,"reason":"short text"}
-<candidate-episode>${JSON.stringify(input)}</candidate-episode>`;
-    }
-    function parseOutcomeResult(text, { skillNames = [], assistantItemIds = [] } = {}) {
-      const value = firstJsonObject(text);
-      exactKeys(
-        value,
-        ["skillName", "outcome", "caseType", "finalAssistantItemId", "confidence", "reason"],
-        "Outcome result"
-      );
-      const skillName = value.skillName === null ? null : requiredText(value.skillName, "Outcome Skill name");
-      if (skillName !== null && !skillNames.includes(skillName)) {
-        throw new Error("Outcome result references an unknown Skill");
-      }
-      if (!(/* @__PURE__ */ new Set(["resolved", "unresolved", "uncertain"])).has(value.outcome)) {
-        throw new Error("Outcome result status is invalid");
-      }
-      if (!(/* @__PURE__ */ new Set(["goodcase", "badcase"])).has(value.caseType)) {
-        throw new Error("Outcome result Case type is invalid");
-      }
-      const finalAssistantItemId = value.finalAssistantItemId === null ? null : requiredText(value.finalAssistantItemId, "Final Assistant Item id");
-      if (finalAssistantItemId !== null && !assistantItemIds.includes(finalAssistantItemId)) {
-        throw new Error("Outcome result references an unknown Assistant Item id");
-      }
-      if (typeof value.confidence !== "number" || !Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1) {
-        throw new Error("Outcome confidence must be between 0 and 1");
-      }
-      return {
-        skillName,
-        outcome: value.outcome,
-        caseType: value.caseType,
-        finalAssistantItemId,
-        confidence: value.confidence,
-        reason: requiredText(value.reason, "Outcome reason", 1e3)
-      };
-    }
-    function partitionUserMessages(messages = [], { maxMessages = 40, maxCharacters = 24e3 } = {}) {
-      if (!Number.isInteger(maxMessages) || maxMessages < 1) throw new Error("Message budget is invalid");
-      if (!Number.isInteger(maxCharacters) || maxCharacters < 1) throw new Error("Character budget is invalid");
-      const batches = [];
-      let batch = [];
-      let characters = 0;
-      for (const message of messages) {
-        const length = String(message?.text ?? "").length;
-        if (batch.length && (batch.length >= maxMessages || characters + length > maxCharacters)) {
-          batches.push(batch);
-          batch = [];
-          characters = 0;
-        }
-        batch.push(message);
-        characters += length;
-        if (batch.length >= maxMessages || characters >= maxCharacters) {
-          batches.push(batch);
-          batch = [];
-          characters = 0;
-        }
-      }
-      if (batch.length) batches.push(batch);
-      return batches;
-    }
-    module2.exports = {
-      buildBoundaryPrompt,
-      buildOutcomePrompt,
-      dueCaptureSlot,
-      nextScheduledSlot,
-      parseBoundaryResult,
-      parseOutcomeResult,
-      partitionUserMessages,
-      previousScheduledSlot
-    };
   }
 });
 
@@ -60701,8 +60701,89 @@ var require_application = __commonJS({
         onChanged: () => publish()
       }));
       const operatorServices = operatorRuntime.services;
+      const schedulerAdapter = options2.schedulerAdapter ?? Object.freeze({
+        capabilities: () => ({ platform: process.platform, supported: false }),
+        status: async () => ({ platform: process.platform, supported: false, installed: false }),
+        install: async () => {
+          throw new Error("System scheduling is unavailable");
+        },
+        uninstall: async () => {
+          throw new Error("System scheduling is unavailable");
+        }
+      });
       const subscribers = /* @__PURE__ */ new Set();
       let closed = false;
+      async function schedulerStatus() {
+        const capabilities = schedulerAdapter.capabilities();
+        try {
+          const actual = await schedulerAdapter.status();
+          return { ...capabilities, ...actual, worker: configStore.read().worker };
+        } catch (error) {
+          return {
+            ...capabilities,
+            installed: false,
+            error: String(error?.message ?? error).slice(0, 2e3),
+            worker: configStore.read().worker
+          };
+        }
+      }
+      async function enableScheduler() {
+        const profile = store.read().settings.autoCaptureProfile;
+        const plugin = configStore.read();
+        const capabilities = schedulerAdapter.capabilities();
+        if (profile.mode === "off") throw new Error("Enable automatic capture before installing its scheduler");
+        if (plugin.executionLocation !== "always") throw new Error("Select always-on execution before installing its scheduler");
+        if (!plugin.runtime) throw new Error("Select a Runtime before installing the automatic capture scheduler");
+        if (!capabilities.supported) throw new Error("System scheduling is unavailable on this platform");
+        try {
+          await schedulerAdapter.install(profile.schedule);
+          configStore.update({
+            worker: {
+              ...plugin.worker,
+              enabled: true,
+              installed: true,
+              platform: capabilities.platform,
+              lastRegistrationError: null
+            }
+          });
+          return schedulerStatus();
+        } catch (error) {
+          configStore.update({
+            worker: {
+              ...plugin.worker,
+              enabled: true,
+              installed: false,
+              platform: capabilities.platform,
+              lastRegistrationError: String(error?.message ?? error).slice(0, 2e3)
+            }
+          });
+          throw error;
+        }
+      }
+      async function disableScheduler() {
+        const plugin = configStore.read();
+        try {
+          await schedulerAdapter.uninstall();
+          configStore.update({
+            worker: {
+              ...plugin.worker,
+              enabled: false,
+              installed: false,
+              platform: schedulerAdapter.capabilities().platform,
+              lastRegistrationError: null
+            }
+          });
+          return schedulerStatus();
+        } catch (error) {
+          configStore.update({
+            worker: {
+              ...plugin.worker,
+              lastRegistrationError: String(error?.message ?? error).slice(0, 2e3)
+            }
+          });
+          throw error;
+        }
+      }
       function dashboardSnapshot() {
         const state = store.read();
         const rawCases = rawCaseStore.list();
@@ -60772,9 +60853,15 @@ var require_application = __commonJS({
         "installations.cancel": (input) => skillServices.cancelInstallation(input),
         "installations.inspect": (input) => skillServices.inspectInstallation(input),
         "installations.send": (input) => skillServices.sendInstallation(input),
-        "automatic.status": () => automaticCaptureService.status(),
+        "automatic.status": async () => ({
+          ...automaticCaptureService.status(),
+          scheduler: await schedulerStatus()
+        }),
         "automatic.update": (input) => automaticCaptureService.update(input),
         "automatic.runOnce": (input) => automaticCaptureService.runOnce(input),
+        "scheduler.status": () => schedulerStatus(),
+        "scheduler.enable": () => enableScheduler(),
+        "scheduler.disable": () => disableScheduler(),
         "operators.summary": (input) => operatorServices.operatorSummary(input),
         "operators.get": (input) => operatorServices.operatorGet(input),
         "operators.start": (input) => operatorServices.operatorStart(input),
@@ -60812,6 +60899,8 @@ var require_application = __commonJS({
         "installations.send",
         "automatic.update",
         "automatic.runOnce",
+        "scheduler.enable",
+        "scheduler.disable",
         "operators.start",
         "operators.pause",
         "operators.resume",
@@ -60924,6 +61013,12 @@ var require_run = __commonJS({
       AutomaticCaptureStateStore
     } = require_automatic_capture_state_store();
     var {
+      dueCaptureSlot
+    } = require_conversation_discovery();
+    var {
+      LocalEvaluationStore
+    } = require_local_store();
+    var {
       RollingSkillConfigStore
     } = require_config_store();
     var {
@@ -60935,7 +61030,8 @@ var require_run = __commonJS({
     } = require_run_lease();
     var MAX_WORKER_LOG_BYTES = 1024 * 1024;
     var RETAINED_WORKER_LOG_BYTES = 512 * 1024;
-    function normalizedSlot(value) {
+    function normalizedSlot(value, { allowScheduled = false } = {}) {
+      if (allowScheduled && value === "scheduled") return "scheduled";
       const date = new Date(String(value ?? ""));
       if (!Number.isFinite(date.getTime())) throw new Error("Worker slot must be an ISO timestamp");
       return date.toISOString();
@@ -60957,7 +61053,7 @@ var require_run = __commonJS({
         throw new Error("Worker data root must be an absolute path");
       }
       if (!result.slot) throw new Error("Worker slot is required");
-      return { dataRoot: result.dataRoot, slot: normalizedSlot(result.slot) };
+      return { dataRoot: result.dataRoot, slot: normalizedSlot(result.slot, { allowScheduled: true }) };
     }
     function appendWorkerLog(path, record) {
       mkdirSync(dirname(path), { recursive: true, mode: 448 });
@@ -60985,12 +61081,13 @@ var require_run = __commonJS({
       slot,
       signal = null,
       createApplication = defaultCreateApplication,
-      acquireLease = acquireRunLease
+      acquireLease = acquireRunLease,
+      now = () => /* @__PURE__ */ new Date()
     } = {}) {
       if (typeof dataRoot !== "string" || !isAbsolute(dataRoot)) {
         throw new Error("Worker data root must be an absolute path");
       }
-      const normalized = normalizedSlot(slot);
+      let normalized = normalizedSlot(slot, { allowScheduled: true });
       const paths = ensureDataLayout(resolveDataPaths({ dataRoot }));
       const config = new RollingSkillConfigStore(paths.config).read();
       if (config.executionLocation !== "always" || config.worker.enabled !== true || config.runtime === null) {
@@ -60999,6 +61096,23 @@ var require_run = __commonJS({
       }
       assertRunning(signal);
       const stateStore = new AutomaticCaptureStateStore(paths.automaticCaptureState);
+      if (normalized === "scheduled") {
+        const profile = new LocalEvaluationStore(paths.evaluationStore).read().settings.autoCaptureProfile;
+        if (profile.mode === "off") {
+          appendWorkerLog(paths.workerLog, { status: "disabled", slot: "scheduled" });
+          return { status: "disabled", slot: "scheduled" };
+        }
+        const due = dueCaptureSlot({
+          now: now(),
+          schedule: profile.schedule,
+          lastScheduledSlot: stateStore.read().lastScheduledSlot
+        });
+        if (!due) {
+          appendWorkerLog(paths.workerLog, { status: "not-due", slot: "scheduled" });
+          return { status: "not-due", slot: null };
+        }
+        normalized = due.toISOString();
+      }
       if (stateStore.read().lastScheduledSlot === normalized) {
         appendWorkerLog(paths.workerLog, { status: "already-completed", slot: normalized });
         return { status: "already-completed", slot: normalized };

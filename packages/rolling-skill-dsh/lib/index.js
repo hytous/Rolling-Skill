@@ -60583,8 +60583,89 @@ var require_application = __commonJS({
         onChanged: () => publish()
       }));
       const operatorServices = operatorRuntime.services;
+      const schedulerAdapter = options2.schedulerAdapter ?? Object.freeze({
+        capabilities: () => ({ platform: process.platform, supported: false }),
+        status: async () => ({ platform: process.platform, supported: false, installed: false }),
+        install: async () => {
+          throw new Error("System scheduling is unavailable");
+        },
+        uninstall: async () => {
+          throw new Error("System scheduling is unavailable");
+        }
+      });
       const subscribers = /* @__PURE__ */ new Set();
       let closed = false;
+      async function schedulerStatus() {
+        const capabilities = schedulerAdapter.capabilities();
+        try {
+          const actual = await schedulerAdapter.status();
+          return { ...capabilities, ...actual, worker: configStore.read().worker };
+        } catch (error) {
+          return {
+            ...capabilities,
+            installed: false,
+            error: String(error?.message ?? error).slice(0, 2e3),
+            worker: configStore.read().worker
+          };
+        }
+      }
+      async function enableScheduler() {
+        const profile = store.read().settings.autoCaptureProfile;
+        const plugin = configStore.read();
+        const capabilities = schedulerAdapter.capabilities();
+        if (profile.mode === "off") throw new Error("Enable automatic capture before installing its scheduler");
+        if (plugin.executionLocation !== "always") throw new Error("Select always-on execution before installing its scheduler");
+        if (!plugin.runtime) throw new Error("Select a Runtime before installing the automatic capture scheduler");
+        if (!capabilities.supported) throw new Error("System scheduling is unavailable on this platform");
+        try {
+          await schedulerAdapter.install(profile.schedule);
+          configStore.update({
+            worker: {
+              ...plugin.worker,
+              enabled: true,
+              installed: true,
+              platform: capabilities.platform,
+              lastRegistrationError: null
+            }
+          });
+          return schedulerStatus();
+        } catch (error) {
+          configStore.update({
+            worker: {
+              ...plugin.worker,
+              enabled: true,
+              installed: false,
+              platform: capabilities.platform,
+              lastRegistrationError: String(error?.message ?? error).slice(0, 2e3)
+            }
+          });
+          throw error;
+        }
+      }
+      async function disableScheduler() {
+        const plugin = configStore.read();
+        try {
+          await schedulerAdapter.uninstall();
+          configStore.update({
+            worker: {
+              ...plugin.worker,
+              enabled: false,
+              installed: false,
+              platform: schedulerAdapter.capabilities().platform,
+              lastRegistrationError: null
+            }
+          });
+          return schedulerStatus();
+        } catch (error) {
+          configStore.update({
+            worker: {
+              ...plugin.worker,
+              lastRegistrationError: String(error?.message ?? error).slice(0, 2e3)
+            }
+          });
+          throw error;
+        }
+      }
       function dashboardSnapshot() {
         const state = store.read();
         const rawCases = rawCaseStore.list();
@@ -60654,9 +60735,15 @@ var require_application = __commonJS({
         "installations.cancel": (input) => skillServices.cancelInstallation(input),
         "installations.inspect": (input) => skillServices.inspectInstallation(input),
         "installations.send": (input) => skillServices.sendInstallation(input),
-        "automatic.status": () => automaticCaptureService.status(),
+        "automatic.status": async () => ({
+          ...automaticCaptureService.status(),
+          scheduler: await schedulerStatus()
+        }),
         "automatic.update": (input) => automaticCaptureService.update(input),
         "automatic.runOnce": (input) => automaticCaptureService.runOnce(input),
+        "scheduler.status": () => schedulerStatus(),
+        "scheduler.enable": () => enableScheduler(),
+        "scheduler.disable": () => disableScheduler(),
         "operators.summary": (input) => operatorServices.operatorSummary(input),
         "operators.get": (input) => operatorServices.operatorGet(input),
         "operators.start": (input) => operatorServices.operatorStart(input),
@@ -60694,6 +60781,8 @@ var require_application = __commonJS({
         "installations.send",
         "automatic.update",
         "automatic.runOnce",
+        "scheduler.enable",
+        "scheduler.disable",
         "operators.start",
         "operators.pause",
         "operators.resume",
@@ -61076,6 +61165,355 @@ var require_api2 = __commonJS({
   }
 });
 
+// src/scheduler/common.cjs
+var require_common = __commonJS({
+  "src/scheduler/common.cjs"(exports, module) {
+    var { execFile } = __require("node:child_process");
+    var { isAbsolute, win32 } = __require("node:path");
+    var IDENTIFIER = "com.rolling-skill.dsh.capture";
+    var WEEKDAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+    function requiredAbsolutePath(value, label) {
+      const path = String(value ?? "").trim();
+      if (!path || !isAbsolute(path) && !win32.isAbsolute(path)) {
+        throw new Error(`${label} must be an absolute path`);
+      }
+      if (/\0|[\r\n]/u.test(path)) throw new Error(`${label} is invalid`);
+      return path;
+    }
+    function normalizeSchedule(value = {}) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Automatic capture schedule is invalid");
+      }
+      if (value.cadence !== "daily" && value.cadence !== "weekly") {
+        throw new Error("Automatic capture cadence is invalid");
+      }
+      const match = /^(?:([01]\d|2[0-3])):([0-5]\d)$/u.exec(String(value.time ?? ""));
+      if (!match) throw new Error("Automatic capture time is invalid");
+      const weekday = Number(value.weekday);
+      if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+        throw new Error("Automatic capture weekday is invalid");
+      }
+      return {
+        cadence: value.cadence,
+        time: `${match[1]}:${match[2]}`,
+        hour: Number(match[1]),
+        minute: Number(match[2]),
+        weekday
+      };
+    }
+    function defaultRun(command, args) {
+      return new Promise((resolve) => {
+        execFile(command, args, { encoding: "utf8", windowsHide: true }, (error, stdout, stderr) => {
+          resolve({
+            exitCode: typeof error?.code === "number" ? error.code : error ? 1 : 0,
+            stdout: String(stdout ?? ""),
+            stderr: String(stderr ?? error?.message ?? "")
+          });
+        });
+      });
+    }
+    function assertCommand(result, label) {
+      if (Number(result?.exitCode ?? 1) === 0) return result;
+      const detail = String(result?.stderr ?? result?.stdout ?? "").trim().slice(0, 2e3);
+      throw new Error(detail ? `${label}: ${detail}` : `${label} failed`);
+    }
+    async function ignoreFailure(operation) {
+      try {
+        return await operation();
+      } catch {
+        return null;
+      }
+    }
+    module.exports = {
+      IDENTIFIER,
+      WEEKDAYS,
+      assertCommand,
+      defaultRun,
+      ignoreFailure,
+      normalizeSchedule,
+      requiredAbsolutePath
+    };
+  }
+});
+
+// src/scheduler/launchd.cjs
+var require_launchd = __commonJS({
+  "src/scheduler/launchd.cjs"(exports, module) {
+    var fsPromises = __require("node:fs/promises");
+    var { join } = __require("node:path");
+    var {
+      IDENTIFIER,
+      assertCommand,
+      defaultRun,
+      ignoreFailure,
+      normalizeSchedule,
+      requiredAbsolutePath
+    } = require_common();
+    function xml(value) {
+      return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+    }
+    function renderLaunchAgent({ workerExecutable, dataRoot, schedule }) {
+      const worker = requiredAbsolutePath(workerExecutable, "Worker executable");
+      const root = requiredAbsolutePath(dataRoot, "Rolling Skill data root");
+      const normalized = normalizeSchedule(schedule);
+      const weekday = normalized.cadence === "weekly" ? `
+      <key>Weekday</key>
+      <integer>${normalized.weekday}</integer>` : "";
+      const argumentsList = [worker, "--data-root", root, "--slot", "scheduled"].map((argument) => `      <string>${xml(argument)}</string>`).join("\n");
+      return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>${IDENTIFIER}</string>
+    <key>ProgramArguments</key>
+    <array>
+${argumentsList}
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+      <key>Hour</key>
+      <integer>${normalized.hour}</integer>
+      <key>Minute</key>
+      <integer>${normalized.minute}</integer>${weekday}
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+  </dict>
+</plist>
+`;
+    }
+    function createLaunchdAdapter({
+      homeDirectory,
+      workerExecutable,
+      dataRoot,
+      uid = process.getuid?.(),
+      run = defaultRun,
+      fs = fsPromises
+    } = {}) {
+      const home = requiredAbsolutePath(homeDirectory, "Home directory");
+      const worker = requiredAbsolutePath(workerExecutable, "Worker executable");
+      const root = requiredAbsolutePath(dataRoot, "Rolling Skill data root");
+      if (!Number.isInteger(uid) || uid < 0) throw new Error("macOS user id is unavailable");
+      const directory = join(home, "Library", "LaunchAgents");
+      const path = join(directory, `${IDENTIFIER}.plist`);
+      const domain = `gui/${uid}`;
+      const target = `${domain}/${IDENTIFIER}`;
+      return Object.freeze({
+        capabilities: () => ({ platform: "darwin", supported: true, identifier: IDENTIFIER }),
+        async install(schedule) {
+          const source = renderLaunchAgent({ workerExecutable: worker, dataRoot: root, schedule });
+          await fs.mkdir(directory, { recursive: true, mode: 448 });
+          await fs.writeFile(path, source, { encoding: "utf8", mode: 384 });
+          await ignoreFailure(async () => run("launchctl", ["bootout", target]));
+          assertCommand(await run("launchctl", ["bootstrap", domain, path]), "LaunchAgent registration");
+          return { installed: true, platform: "darwin", identifier: IDENTIFIER, path };
+        },
+        async status() {
+          const result = await run("launchctl", ["print", target]);
+          return { installed: Number(result?.exitCode ?? 1) === 0, platform: "darwin", identifier: IDENTIFIER, path };
+        },
+        async uninstall() {
+          await ignoreFailure(async () => run("launchctl", ["bootout", target]));
+          await fs.rm(path, { force: true });
+          return { installed: false, platform: "darwin", identifier: IDENTIFIER };
+        }
+      });
+    }
+    module.exports = { createLaunchdAdapter, renderLaunchAgent };
+  }
+});
+
+// src/scheduler/systemd.cjs
+var require_systemd = __commonJS({
+  "src/scheduler/systemd.cjs"(exports, module) {
+    var fsPromises = __require("node:fs/promises");
+    var { join } = __require("node:path");
+    var {
+      IDENTIFIER,
+      WEEKDAYS,
+      assertCommand,
+      defaultRun,
+      ignoreFailure,
+      normalizeSchedule,
+      requiredAbsolutePath
+    } = require_common();
+    function systemdArgument(value) {
+      const text2 = String(value);
+      if (/\0|[\r\n]/u.test(text2)) throw new Error("systemd argument is invalid");
+      return `"${text2.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+    }
+    function renderSystemdService({ workerExecutable, dataRoot }) {
+      const command = [
+        requiredAbsolutePath(workerExecutable, "Worker executable"),
+        "--data-root",
+        requiredAbsolutePath(dataRoot, "Rolling Skill data root"),
+        "--slot",
+        "scheduled"
+      ].map(systemdArgument).join(" ");
+      return `[Unit]
+Description=Rolling Skill automatic capture
+
+[Service]
+Type=oneshot
+ExecStart=${command}
+`;
+    }
+    function renderSystemdTimer(schedule) {
+      const normalized = normalizeSchedule(schedule);
+      const calendar = normalized.cadence === "daily" ? `*-*-* ${normalized.time}:00` : `${WEEKDAYS[normalized.weekday][0]}${WEEKDAYS[normalized.weekday].slice(1).toLocaleLowerCase("en-US")} *-*-* ${normalized.time}:00`;
+      return `[Unit]
+Description=Schedule Rolling Skill automatic capture
+
+[Timer]
+OnCalendar=${calendar}
+Persistent=true
+Unit=${IDENTIFIER}.service
+
+[Install]
+WantedBy=timers.target
+`;
+    }
+    function createSystemdAdapter({
+      homeDirectory,
+      workerExecutable,
+      dataRoot,
+      run = defaultRun,
+      fs = fsPromises
+    } = {}) {
+      const home = requiredAbsolutePath(homeDirectory, "Home directory");
+      const worker = requiredAbsolutePath(workerExecutable, "Worker executable");
+      const root = requiredAbsolutePath(dataRoot, "Rolling Skill data root");
+      const directory = join(home, ".config", "systemd", "user");
+      const servicePath = join(directory, `${IDENTIFIER}.service`);
+      const timerPath = join(directory, `${IDENTIFIER}.timer`);
+      const timerUnit = `${IDENTIFIER}.timer`;
+      return Object.freeze({
+        capabilities: () => ({ platform: "linux", supported: true, identifier: IDENTIFIER }),
+        async install(schedule) {
+          await fs.mkdir(directory, { recursive: true, mode: 448 });
+          await fs.writeFile(servicePath, renderSystemdService({ workerExecutable: worker, dataRoot: root }), { encoding: "utf8", mode: 384 });
+          await fs.writeFile(timerPath, renderSystemdTimer(schedule), { encoding: "utf8", mode: 384 });
+          assertCommand(await run("systemctl", ["--user", "daemon-reload"]), "systemd user reload");
+          assertCommand(await run("systemctl", ["--user", "enable", "--now", timerUnit]), "systemd timer registration");
+          return { installed: true, platform: "linux", identifier: IDENTIFIER, servicePath, timerPath };
+        },
+        async status() {
+          const result = await run("systemctl", ["--user", "is-enabled", timerUnit]);
+          return { installed: Number(result?.exitCode ?? 1) === 0, platform: "linux", identifier: IDENTIFIER, servicePath, timerPath };
+        },
+        async uninstall() {
+          await ignoreFailure(async () => run("systemctl", ["--user", "disable", "--now", timerUnit]));
+          await Promise.all([fs.rm(servicePath, { force: true }), fs.rm(timerPath, { force: true })]);
+          assertCommand(await run("systemctl", ["--user", "daemon-reload"]), "systemd user reload");
+          return { installed: false, platform: "linux", identifier: IDENTIFIER };
+        }
+      });
+    }
+    module.exports = { createSystemdAdapter, renderSystemdService, renderSystemdTimer };
+  }
+});
+
+// src/scheduler/task-scheduler.cjs
+var require_task_scheduler = __commonJS({
+  "src/scheduler/task-scheduler.cjs"(exports, module) {
+    var {
+      IDENTIFIER,
+      WEEKDAYS,
+      assertCommand,
+      defaultRun,
+      ignoreFailure,
+      normalizeSchedule,
+      requiredAbsolutePath
+    } = require_common();
+    function windowsQuoted(value) {
+      const text2 = String(value);
+      if (/\0|[\r\n"]/u.test(text2)) throw new Error("Windows scheduled task argument is invalid");
+      return `"${text2.replace(/(\\+)$/u, "$1$1")}"`;
+    }
+    function taskCreateArguments({ workerExecutable, dataRoot, schedule }) {
+      const worker = requiredAbsolutePath(workerExecutable, "Worker executable");
+      const root = requiredAbsolutePath(dataRoot, "Rolling Skill data root");
+      const normalized = normalizeSchedule(schedule);
+      const taskCommand = `${windowsQuoted(worker)} --data-root ${windowsQuoted(root)} --slot scheduled`;
+      return [
+        "/Create",
+        "/F",
+        "/TN",
+        IDENTIFIER,
+        "/TR",
+        taskCommand,
+        "/SC",
+        normalized.cadence === "daily" ? "DAILY" : "WEEKLY",
+        ...normalized.cadence === "weekly" ? ["/D", WEEKDAYS[normalized.weekday]] : [],
+        "/ST",
+        normalized.time
+      ];
+    }
+    function createTaskSchedulerAdapter({ workerExecutable, dataRoot, run = defaultRun } = {}) {
+      const worker = requiredAbsolutePath(workerExecutable, "Worker executable");
+      const root = requiredAbsolutePath(dataRoot, "Rolling Skill data root");
+      return Object.freeze({
+        capabilities: () => ({ platform: "win32", supported: true, identifier: IDENTIFIER }),
+        async install(schedule) {
+          assertCommand(await run("schtasks.exe", taskCreateArguments({ workerExecutable: worker, dataRoot: root, schedule })), "Windows scheduled task registration");
+          return { installed: true, platform: "win32", identifier: IDENTIFIER };
+        },
+        async status() {
+          const result = await run("schtasks.exe", ["/Query", "/TN", IDENTIFIER]);
+          return { installed: Number(result?.exitCode ?? 1) === 0, platform: "win32", identifier: IDENTIFIER };
+        },
+        async uninstall() {
+          await ignoreFailure(async () => run("schtasks.exe", ["/Delete", "/F", "/TN", IDENTIFIER]));
+          return { installed: false, platform: "win32", identifier: IDENTIFIER };
+        }
+      });
+    }
+    module.exports = { createTaskSchedulerAdapter, taskCreateArguments };
+  }
+});
+
+// src/scheduler/index.cjs
+var require_scheduler = __commonJS({
+  "src/scheduler/index.cjs"(exports, module) {
+    var { homedir } = __require("node:os");
+    var { dirname, resolve } = __require("node:path");
+    var { fileURLToPath } = __require("node:url");
+    var { IDENTIFIER } = require_common();
+    var { createLaunchdAdapter } = require_launchd();
+    var { createSystemdAdapter } = require_systemd();
+    var { createTaskSchedulerAdapter } = require_task_scheduler();
+    function resolveWorkerExecutable2(moduleUrl, platform = process.platform) {
+      const filename = fileURLToPath(moduleUrl);
+      const name = platform === "win32" ? "rolling-skill-worker.cmd" : "rolling-skill-worker";
+      return resolve(dirname(filename), "..", "..", "..", ".bin", name);
+    }
+    function unsupportedAdapter(platform) {
+      const capabilities = () => ({ platform, supported: false, identifier: IDENTIFIER });
+      const unavailable = async () => {
+        throw new Error(`Automatic capture system scheduling is unavailable on ${platform}`);
+      };
+      return Object.freeze({ capabilities, install: unavailable, status: async () => ({ ...capabilities(), installed: false }), uninstall: unavailable });
+    }
+    function createSchedulerAdapter2({
+      platform = process.platform,
+      homeDirectory = homedir(),
+      workerExecutable,
+      dataRoot,
+      run
+    } = {}) {
+      const options2 = { homeDirectory, workerExecutable, dataRoot, ...run ? { run } : {} };
+      if (platform === "darwin") return createLaunchdAdapter(options2);
+      if (platform === "linux") return createSystemdAdapter(options2);
+      if (platform === "win32") return createTaskSchedulerAdapter(options2);
+      return unsupportedAdapter(platform);
+    }
+    module.exports = { createSchedulerAdapter: createSchedulerAdapter2, resolveWorkerExecutable: resolveWorkerExecutable2 };
+  }
+});
+
 // src/host/index.js
 var import_src = __toESM(require_src(), 1);
 var import_api = __toESM(require_api2(), 1);
@@ -61216,11 +61654,20 @@ function registerRollingSkillTools(ctx, application) {
 }
 
 // src/host/index.js
+var import_scheduler = __toESM(require_scheduler(), 1);
 var { createRollingSkillApplication } = import_src.default;
 var { createRollingSkillApiHandler } = import_api.default;
+var { createSchedulerAdapter, resolveWorkerExecutable } = import_scheduler.default;
 var inject = ["webServer", "tools"];
 function apply(ctx, config = {}) {
-  const application = createRollingSkillApplication({ dataRoot: config.dataRoot });
+  const schedulerAdapter = createSchedulerAdapter({
+    dataRoot: config.dataRoot,
+    workerExecutable: resolveWorkerExecutable(import.meta.url)
+  });
+  const application = createRollingSkillApplication({
+    dataRoot: config.dataRoot,
+    schedulerAdapter
+  });
   ctx.effect(() => {
     const disposeTools = registerRollingSkillTools(ctx, application);
     const disposeRoute = ctx.webServer.register({

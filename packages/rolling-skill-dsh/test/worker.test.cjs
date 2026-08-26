@@ -7,6 +7,7 @@ const {afterEach, describe, it} = require("node:test")
 const {RollingSkillConfigStore} = require("../../rolling-skill-core/src/config-store.cjs")
 const {resolveDataPaths} = require("../../rolling-skill-core/src/data-root.cjs")
 const {AutomaticCaptureStateStore} = require("../../../desktop/rolling-skill/src/automatic-capture-state-store.cjs")
+const {LocalEvaluationStore} = require("../../../desktop/rolling-skill/src/local-store.cjs")
 const {
     MAX_WORKER_LOG_BYTES,
     appendWorkerLog,
@@ -51,8 +52,40 @@ describe("Rolling Skill one-shot Worker", () => {
             dataRoot: "/tmp/rolling-skill",
             slot: "2026-08-26T09:00:00.000Z",
         })
+        assert.deepEqual(parseWorkerArguments([
+            "--data-root", "/tmp/rolling-skill",
+            "--slot", "scheduled",
+        ]), {
+            dataRoot: "/tmp/rolling-skill",
+            slot: "scheduled",
+        })
         assert.throws(() => parseWorkerArguments(["--data-root", "/tmp/root", "--open"]), /unknown option/iu)
         assert.throws(() => parseWorkerArguments(["--slot", "today"]), /data root|timestamp/iu)
+    })
+
+    it("resolves a scheduler wake-up to the latest due persisted slot", async () => {
+        const root = dataRoot()
+        const paths = enable(root)
+        new LocalEvaluationStore(paths.evaluationStore).updateSettings({
+            autoCaptureMode: "scheduled",
+            autoCaptureCadence: "daily",
+            autoCaptureTime: "09:00",
+            autoCaptureWeekday: 1,
+        })
+        const calls = []
+        const result = await runWorker({
+            dataRoot: root,
+            slot: "scheduled",
+            now: () => new Date(2026, 7, 26, 9, 5, 0, 0),
+            createApplication: () => ({
+                dispatch: async (method, input) => (calls.push([method, input]), {}),
+                close: async () => {},
+            }),
+        })
+
+        const expectedSlot = new Date(2026, 7, 26, 9, 0, 0, 0).toISOString()
+        assert.equal(result.slot, expectedSlot)
+        assert.equal(calls[0][1].slot, expectedSlot)
     })
 
     it("runs one configured slot, completes it, and skips the same slot", async () => {

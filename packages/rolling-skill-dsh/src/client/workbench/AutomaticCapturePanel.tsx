@@ -22,6 +22,7 @@ interface AutomaticStatus {
     pendingCount: number
     running: boolean
     worker: {enabled: boolean; installed: boolean; platform: string | null; lastRegistrationError: string | null}
+    scheduler: {supported: boolean; installed: boolean; platform: string; error?: string | null}
 }
 
 const WEEKDAY_KEYS = [
@@ -109,19 +110,30 @@ export function AutomaticCapturePanel({t}: {t: Translate}) {
             setBusy(false)
         }
     }
-    const save = () => mutate(() => requestRollingSkill("automatic.update", {
-        mode,
-        executionLocation,
-        cadence,
-        time,
-        weekday,
-        runtimeId: runtimeId || null,
-        modelId: modelId || null,
-        effort: effort || null,
-        datasetId: datasetId || null,
-    }))
+    const save = () => mutate(async () => {
+        await requestRollingSkill("automatic.update", {
+            mode,
+            executionLocation,
+            cadence,
+            time,
+            weekday,
+            runtimeId: runtimeId || null,
+            modelId: modelId || null,
+            effort: effort || null,
+            datasetId: datasetId || null,
+        })
+        if (status?.worker.installed) {
+            await requestRollingSkill(
+                executionLocation === "always" ? "scheduler.enable" : "scheduler.disable",
+                {},
+            )
+        }
+    })
     const runOnce = () => mutate(() => requestRollingSkill("automatic.runOnce", {slot: "manual"}))
+    const enableScheduler = () => mutate(() => requestRollingSkill("scheduler.enable", {}))
+    const disableScheduler = () => mutate(() => requestRollingSkill("scheduler.disable", {}))
     const requiresRuntime = mode !== "off"
+    const schedulerInstalled = status?.scheduler.installed ?? status?.worker.installed ?? false
 
     return (
         <div className="rolling-skill-data-stack">
@@ -144,9 +156,9 @@ export function AutomaticCapturePanel({t}: {t: Translate}) {
                 </div>
                 <p className="rolling-skill-help">{mode === "scheduled" ? t("scheduledBehavior") : mode === "automatic" ? t("automaticBehavior") : t("offBehavior")}</p>
                 {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
-                <div className="rolling-skill-actions"><Button variant="outline" disabled={busy || (requiresRuntime && !runtimeId)} onClick={() => void save()}>{t("saveAutomatic")}</Button><Button variant="ghost" disabled={busy || mode === "off" || !runtimeId} onClick={() => void runOnce()}>{t("runOnce")}</Button></div>
+                <div className="rolling-skill-actions"><Button variant="outline" disabled={busy || (requiresRuntime && !runtimeId)} onClick={() => void save()}>{t("saveAutomatic")}</Button><Button variant="ghost" disabled={busy || mode === "off" || !runtimeId} onClick={() => void runOnce()}>{t("runOnce")}</Button>{executionLocation === "always" ? schedulerInstalled ? <Button variant="ghost" disabled={busy} onClick={() => void disableScheduler()}>{t("disableScheduler")}</Button> : <Button variant="outline" disabled={busy || status?.executionLocation !== "always" || status?.mode === "off" || !status?.scheduler.supported} onClick={() => void enableScheduler()}>{t("enableScheduler")}</Button> : null}</div>
             </section>
-            <section className="rolling-skill-panel"><h3>{t("automaticStatus")}</h3><dl><div><dt>{t("nextRun")}</dt><dd>{displayTime(status?.nextRunAt ?? null, t("notAvailable"))}</dd></div><div><dt>{t("lastSuccess")}</dt><dd>{displayTime(status?.lastSuccessAt ?? null, t("notAvailable"))}</dd></div><div><dt>{t("pendingRawCases")}</dt><dd>{status?.pendingCount ?? 0}</dd></div><div><dt>{t("schedulerStatus")}</dt><dd>{executionLocation === "always" ? status?.worker.installed ? t("installed") : t("notInstalled") : t("harnessTimer")}</dd></div><div><dt>{t("lastError")}</dt><dd>{status?.error || status?.worker.lastRegistrationError || t("noError")}</dd></div></dl></section>
+            <section className="rolling-skill-panel"><h3>{t("automaticStatus")}</h3><dl><div><dt>{t("nextRun")}</dt><dd>{displayTime(status?.nextRunAt ?? null, t("notAvailable"))}</dd></div><div><dt>{t("lastSuccess")}</dt><dd>{displayTime(status?.lastSuccessAt ?? null, t("notAvailable"))}</dd></div><div><dt>{t("pendingRawCases")}</dt><dd>{status?.pendingCount ?? 0}</dd></div><div><dt>{t("schedulerStatus")}</dt><dd>{executionLocation === "always" ? schedulerInstalled ? t("installed") : t("notInstalled") : t("harnessTimer")}</dd></div><div><dt>{t("lastError")}</dt><dd>{status?.error || status?.scheduler.error || status?.worker.lastRegistrationError || t("noError")}</dd></div></dl></section>
         </div>
     )
 }
