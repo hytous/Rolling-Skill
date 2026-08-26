@@ -15,6 +15,9 @@ await mkdir(outputRoot, {recursive: true})
 await build({
     entryPoints: [join(sourceRoot, "host", "index.js")],
     outfile: join(outputRoot, "index.js"),
+    banner: {
+        js: 'import {createRequire} from "node:module"; const require = createRequire(import.meta.url);',
+    },
     bundle: true,
     external: dshExternals,
     format: "esm",

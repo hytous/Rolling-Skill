@@ -21,6 +21,7 @@
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
+    "inspect": "node scripts/inspect-package.mjs",
     "test": "node --test test/*.test.cjs",
     "prepack": "npm run build"
   },

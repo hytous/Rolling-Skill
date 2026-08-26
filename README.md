@@ -1,265 +1,64 @@
 # Rolling Skill
 
-Rolling Skill 是一个本地优先的 macOS Agent 客户端和 Skill 评测工作台。它连接电脑上
-已经安装的 Agent Runtime，在同一个桌面应用中完成对话、Trace 查看、Case 沉淀、数据集
-管理以及跨 Runtime 的 Skill 评测。
+Rolling Skill 现在以 DeepSeek Harness（DSH）原生插件为主要交付形态。它在 Harness Settings 中提供统一的中英文工作台，用于：
 
-Rolling Skill 不捆绑 Codex、CodeBuddy 或其他 Runtime，不要求 Docker，也不依赖单独的
-后端服务。应用本身没有登录系统；模型服务所需的认证仍由对应 Runtime 管理。
+- 管理 Dataset、Good/Bad Case 与 Raw Case；
+- 单个或批量更新因数据、工具变化而失效的 Case；
+- 跨 Codex、CodeBuddy 和 DSH Runtime 运行 Skill 评测；
+- 管理、发布并安装不可变 Skill 版本；
+- 在受限能力、预算和审批下运行 Operator 与自动优化；
+- 定时发现新对话中的完整问题，生成待审核 Raw Case，或通过全部安全闸门后自动沉淀 Case；
+- 通过系统调度器在 Harness 关闭后继续执行自动沉淀；
+- 只读复制并导入归档 Electron 版的数据。
 
-## 快速开始
+插件不会捆绑、下载或升级任何 Runtime。Runtime 名称、版本和完整可执行路径都会作为独立身份显示，模型目录来自对应 Runtime 本身。
 
-双击仓库根目录的 `Rolling Skill.app`。本地构建使用钥匙串中的稳定本地签名证书，首次打开时
-macOS 可能要求先按住 Control 点击应用，再选择 **打开**。
+## 安装
 
-应用启动后会自动发现兼容的本机 Runtime。也可以在 **设置 → Runtime** 中重新扫描、
-选择指定的可执行文件或恢复自动选择。
+在仓库根目录构建并生成 npm 兼容包：
 
-当前构建目标：
+```bash
+npm install
+npm run build --workspace @rolling-skill/dsh-plugin
+mkdir -p packages/rolling-skill-dsh/dist
+npm pack --workspace @rolling-skill/dsh-plugin --pack-destination packages/rolling-skill-dsh/dist
+node packages/rolling-skill-dsh/scripts/inspect-package.mjs packages/rolling-skill-dsh/dist/rolling-skill-dsh-plugin-0.1.0.tgz
+```
 
-- macOS 13 或更高版本；
-- Apple Silicon；
-- 至少安装一个受支持的 Runtime，才能实际发起 Agent 请求。
+安装到现有 DSH `web` profile：
 
-没有可用 Runtime 时，应用、本地数据集和历史评测记录仍可正常打开。
+```bash
+dsh plugin --profile web add ./packages/rolling-skill-dsh/dist/rolling-skill-dsh-plugin-0.1.0.tgz
+dsh web --no-open
+```
 
-## 核心能力
+公共 npm、腾讯 npm 软件源、HTTPS `.tgz`、更新、卸载、数据保留与系统调度器说明见 [DSH 插件文档](packages/rolling-skill-dsh/README.md)。
 
-- 像本地 Codex 客户端一样创建和继续 Agent 对话；
-- 从 Runtime 的模型清单中选择模型和推理强度；
-- 查看并保存 Runtime 原始 Trace；
-- 从一段连续的问题解决过程创建 `goodcase` 或 `badcase`；
-- 冻结证据与评测输入始终保留用户问题原文；可选问题描述只记录 Agent 回答中发生了什么；
-- 使用独立 Rubric Agent 从数据集绑定的 Skill 生成、讨论、修订并发布一套共享评分标准；
-- 使用独立 Curator 会话继承已发布标准，只提炼 Case 参考事实、适用性、特殊项和失败原因；
-- 将已完成或丢弃的 Case Draft 从活动列表移出，并在设置中查看归档记录；
-- 创建、浏览和删除数据集及其中的 Case；每个数据集唯一绑定一个 Runtime Skill；
-- 运行单个 Case 或整个数据集；
-- 为一次评测选择多个 Runtime、模型和推理强度，并让不同 Runtime 并行执行；
-- 在 **Skill 评测 → 评测记录** 中查看或删除持久化的 Case × Runtime 结果；
-- 删除当前 Case 后继续保留历史评测使用的不可变快照；
-- 可选 Automatic Capture，默认关闭且只创建待审核草稿，不会自动写入数据集。
+## 数据
 
-删除数据集会同时移除其中的 Case、Rubric 版本/会话和已结束的 Curator 草稿记录，但保留历史
-评测中的不可变快照；若仍有未结束草稿，删除会被阻止。排队中或运行中的评测记录不能删除，终态记录删除后不会额外
-删除其原始 Trace 文件。若删除的是 Automatic Capture 目标数据集，自动沉淀会关闭，不会
-静默改投其他数据集。
-
-当前自动评测重点是 Skill 工作流和输出格式。数字结论暂不作为自动硬门槛，仍保留给人工
-或后续 Agent Judge 审核。
-
-## 自操作（Operator）工作台
-
-**自操作** 是独立于普通对话和正式评测的 Rolling Skill Operator。用户先选择本机已发现且
-通过兼容性探测的 Runtime，再从该 Runtime 实际返回的目录中选择模型和推理强度；应用不内置
-Runtime 或模型名单。模型没有公布推理强度时就不传该字段，例如 DSH 的
-`wetv-glm/glm-5.3` 在 effort 为空时不会被补成通用默认值。
-
-Operator 只能调用启动时明确授予的 scoped tools，并同时受对象范围、动作集合、预算、有效期
-和权限策略约束。读操作、写操作和高风险动作分别校验；发布 Candidate、正式安装或覆盖 Skill、
-删除以及预算扩张等动作会进入 Approval 队列，必须由用户明确批准，Agent 不能自行扩大授权或
-用自然语言声称已经获批。Operator 控制面依赖正在运行的 Rolling Skill.app；App 关闭时只有
-Raw Case 的离线 enqueue/list 例外，不能继续 Operator Job。
-
-三种 Runtime 使用同一套 Operator 协议和控制面，但传输各自独立：
-
-- Codex app-server 使用当前 Operator 线程专属的 dynamic tools；
-- CodeBuddy ACP 使用当前 Operator 会话专属的 stdio MCP bridge；
-- DeepSeek Harness（DSH）通过 Bash 调用随 App 构建的受控 CLI；CLI 连接同一控制面，不能
-  绕过 capability、权限或审批。
-
-左侧 Job 列表、中间 Operator 会话和右侧状态/Artifact/Approval 面板使用持久化快照。后台
-Job 的高频增量不会重绘当前 DOM，只更新状态摘要、未读数和持久化事件；切回时直接恢复该 Job
-的完整快照、有限 catch-up、输入草稿和阅读位置，不从顶部重放。停止 Operator Job 不会停止或
-改写普通 Chat，也不会把 Operator 工具、身份、权限、MCP/CLI 配置带给被测 Runtime、Judge、
-Curator 或 Rubric Agent，因此正式自动触发评测仍与自操作严格隔离。
-
-Operator 修改 Skill 时使用 Rolling Skill 管理的独立 Git 仓库 workspace，不直接改 Runtime
-自己的 Skill 目录。Working、Candidate 和 Released 保持分层；发布与安装仍是两个独立步骤，
-即使发布成功，正式安装仍需单独选择 Runtime 配置并获得人工批准。
-
-App 或 Runtime 中断后，`running` Job 会先进入恢复流程，不会盲目重放有副作用的 Step。
-Evaluation 按持久化的 run ID 对账；安装先做只读 inspect；pending Approval 原样保留，恢复后的
-父 Job 回到 `waiting_approval`。无法确认结果时进入 `needs_recovery`，并阻止后续发布、安装或
-新一轮操作；已经生成的 Artifact、评测结果和错误证据会继续保留。停止会取消未开始工作并
-中断当前执行，但不会把未知结果伪装成成功。
-
-## Runtime 支持
-
-| Runtime | 接入协议 | 当前能力 |
-| --- | --- | --- |
-| Codex | app-server JSONL | 对话、历史任务、模型、推理强度、会话权限、Skills、Plugins、Trace、评测 |
-| CodeBuddy | ACP stdio JSONL | 对话、模型、推理强度、会话权限与授权确认、流式输出、Trace、评测 |
-| DeepSeek Harness（DSH） | 本地 Web Host HTTP/WebSocket | 对话、历史会话、模型、权限与问答、Skills、流式输出、Trace、评测 |
-
-Chat 始终绑定一个活动 Runtime。Skill 评测使用隔离的 Runtime 客户端，因此可以让多个
-Runtime 配置并行运行，而不会共享活动对话的客户端状态。同一个 Runtime 内的 Cases 顺序
-执行，避免会话状态互相干扰。
-
-Runtime 自己负责 Skills、MCP、Plugins、上下文和模型认证。Rolling Skill 负责统一发现、
-会话呈现、数据集、评测编排和证据记录，不复制 Runtime 的 Skill 内容，也不会静默安装或
-升级 Runtime。
-
-Chat 输入框左下角提供按会话保存的权限选择。Codex 映射到只读、仅工作目录或完整本机
-访问；CodeBuddy 使用其原生 `session/set_mode`，可选自动审核、需要时询问、自动允许编辑、
-Plan、不询问直接拒绝、跳过提示或完整访问（ACP `fullAccess`）。CodeBuddy 的“需要时询问”
-会在本机弹出授权确认；找不到明确拒绝选项时会安全取消。默认使用自动审核，不再硬编码
-`dontAsk`。
-
-### 本机发现
-
-Codex 会检查已保存路径、`ROLLING_SKILL_CODEX_BIN`、`PATH`、ChatGPT/Codex.app 资源、
-Homebrew 和常见用户目录。候选文件必须能标识为 Codex 并支持 `app-server`。
-
-CodeBuddy 会检查已保存路径、`ROLLING_SKILL_CODEBUDDY_BIN`、`PATH`、Homebrew、常见用户
-目录和兼容的 `.sre-codex` 安装。候选文件必须支持 stdio ACP。
-
-DeepSeek Harness 会检查已保存路径、`ROLLING_SKILL_DSH_BIN`、`PATH`、Homebrew 和常见用户
-目录。候选文件必须支持动态端口的本地 Web Host；Rolling Skill 负责启动和停止该 Host，并通过
-HTTP/WebSocket 访问会话、模型、Skill、工具和实时事件，不下载或替换 `dsh`。
-
-每个候选 Runtime 都必须通过对应 Provider 的兼容性探测，不能仅凭文件名被选中。
-
-## Codex originator 兼容模式
-
-Codex app-server 会把初始化请求中的 `clientInfo.name` 作为后续模型请求的 `originator`
-header。如果企业 Codex 服务只允许固定的 known clients，未登记的客户端会返回：
+DSH 插件默认将数据保存在：
 
 ```text
-403 Forbidden: unsupported Codex client originator
+~/.dsh/rolling-skill
 ```
 
-这不是账号未登录，也与模型或推理强度无关。当前开发测试版本临时使用 `codex_exec`
-作为 app-server originator，以兼容已经允许本机 Codex CLI 的内部网关；窗口标题与产品界面仍
-保持 Rolling Skill。该兼容身份只用于开发测试，正式分发前应恢复 `rolling-skill` 并完成相应
-客户端登记。
+普通更新或卸载插件不会删除数据。旧版 Electron 数据只能在设置页经过显式确认后 copy-only 导入；源目录不会被修改或删除。
 
-## Case 沉淀流程
+## Electron 归档
 
-1. 在 **Skill 评测** 中创建并绑定数据集，使用 Rubric Agent 审阅并发布该数据集的评分标准。
-2. 在 Chat 中完成一次问题解决过程。
-3. 在结束该过程的 Assistant 消息旁选择 **沉淀 Case**。
-4. 选择作为起点的 User 消息、已有已发布标准的目标数据集和 `goodcase`/`badcase`；可选填写
-   “Agent 回答中的问题”，描述本次回答发生了什么问题，默认留空。
-5. Rolling Skill 冻结所选对话及 Trace 范围；起点 User 消息始终作为评测输入，问题描述
-   只供 Curator 和 Judge 分析，不能替换原始问题，原对话仍可继续使用。
-6. 独立、只读的 Curator 会话继承冻结的 Rubric 版本，并根据当前 Runtime 中的 Skill 整理必要证据。
-7. 可以继续向 Curator 提问、要求修改、切换模型或推理强度。
-8. 选择 **Done** 后保存 Case；选择 **丢弃** 则不写入数据集。
+Electron 版已停止继续开发，归档在：
 
-Curator 的结构化结果包含参考答案摘要、必要事实、必要步骤、输出格式、证据引用、数据集
-Rubric 各项在本 Case 中的适用性，以及确有必要的 Case 特殊项。它不能重新设计数据集标准。
-Badcase 还包含首次偏离点、根因、重复循环摘要、正确恢复方式和可执行的复现扣分规则。
+- 分支：`archive/electron-before-dsh-plugin-20260826`
+- 提交：`d9e6a27b60d957ded0b33765c0cc321b265175d5`
 
-## Skill 评测
+当前 `main` 只继续 DSH 插件与共享 Core。
 
-在左上角切换到 **Skill 评测**：
-
-1. 选择已绑定被测 Skill 的数据集；界面只显示继承的 Skill，不再为本次运行重复选择；
-2. 首次使用时选择 **让 Agent 生成**，在右侧 Rubric Agent 会话中审阅、自然语言修订并发布；
-3. 选择自动触发或显式诊断模式；
-4. 勾选一个或多个 Runtime，并分别选择模型和推理强度；
-5. 独立选择 Judge Runtime、模型和推理强度；
-6. 启动选中 Case 或整个数据集；
-7. 在 **评测记录** 中查看执行状态、判分状态、回答、Trace 和逐项得分。
-
-每次发布都会产生不可变的 Rubric 版本。Case 和评测运行分别冻结自己使用的版本；新版本不会
-重算历史 Run。与新版本不一致的旧 Case 会显示“需要校准”并阻止正式评测，避免把旧 Case
-解释静默套到新标准上。可在 Case 卡片或评分标准状态区选择 **校准**，由 Curator 同时读取
-原始问答、当前结构化总结、当前 Skill 和最新评分标准；审核后选择 **完成并更新 Case**，
-系统原地更新 Case、保留旧校准版本，并在全部 Case 就绪后恢复正式评测。并发编辑时，旧基线
-草稿不能覆盖已经发布的较新版本。
-
-数据集列表右上角可将当前数据集导出为 CSV。导出前可选择全部 Case 或仅 Good Case，并选择
-`output` 使用 Curator 精炼参考答案或冻结片段中的原始 Assistant 回复。文件固定包含 `input`
-和 `output` 两列，每个单元格均为 JSON 消息数组；原始回复模式会保留片段内的多条 Assistant
-消息，但不包含工具输出。
-
-运行中的评测可从记录列表或详情页选择 **停止评测**。Rolling Skill 会停止这次评测专属的
-被测 Runtime/Judge 客户端，阻止尚未开始的 Case 启动，并保留已经完成的回答与 Trace；
-评测记录进入“已停止”终态后可以删除。停止评测不会停止 Chat 使用的主 Runtime，也不会
-影响同时运行的其他评测。
-
-每个 `Case × Runtime` 满分 100：A「通用 Skill 执行合规」40 分，B「灵活 Skill / Case 质量」
-60 分。A 固定为 Skill 激活、必读 Reference、工具与 CLI 策略、工作流顺序、分页/完整性/
-落盘、确定性处理、证据与输出规范、错误恢复八项，由固定程序校验 Judge 是否逐项填写并
-计算分数；A 达到 32 分且没有 Skill 激活关键失败才通过硬门槛。完整 Trace 没有任何错误
-事件时，固定程序直接给“错误恢复”满分；发生错误时才要求 Judge 同时引用失败证据和后续
-恢复动作。B 使用评测 Run 冻结的数据集 Rubric，并叠加 Case 的参考事实和少量特殊项
-主观评分，并记录可验证字段、交叉校验、验证状态和 Judge 置信度；B 不会反转 A 的门槛
-结论。被测执行、Judge 判分和质量结论是三个独立状态，Judge 失败不会丢失原回答或 Trace。
-显式唤起只作诊断：保留 A/B 分项，但不生成正式总分或通过/失败结论。
-
-每个 Case 执行完成后会立即进入独立、只读的 Judge 队列，判分可与其他 Runtime/Case 的
-后续执行重叠，无需等待整个数据集执行完。每个 Case 的
-Trace 会冻结为精确行范围，所选 `SKILL.md` 及递归链接的本地 Markdown Reference 也会按
-摘要固定快照；程序会把回答、Trace 与 Skill 快照整理成类型化证据目录，正向 A 评分不能
-用无关证据冒充 Skill 激活、Reference 读取或工具执行。每个 Case 执行前后还会重新核对
-Skill 摘要，若评测期间内容发生变化则拒绝该结果。命令输入保留，长输出有界摘要并明确
-标注截断。Judge 输出若漏掉任何评分项或违反结构契约会自动重试一次，最终得分只由本地
-固定程序计算。
-
-正式百分制结论还要求被测 Runtime 能通过 Skill 清单确认执行的是同一个绝对 Skill 路径。
-无法提供路径级 Skill 清单的 Runtime（例如当前 CodeBuddy 适配）仍会运行并展示 A/B 分项，
-但只标为诊断，不生成正式总分或通过结论，避免把另一份同名 Skill 当作冻结版本。
-
-自动触发模式只发送 Case 中冻结的原始用户问题；“Agent 回答中的问题”仅作为 Curator 和
-Judge 的分析上下文。该模式用于评测 Runtime 是否能自行发现并触发 Skill。显式诊断模式使用对应
-Provider 的显式 Skill 输入，用于区分“没有触发 Skill”和“Skill 执行错误”，不等同于
-自动触发成绩。
-
-Skill 绑定和评分标准都属于数据集，而不属于单次沉淀或评测。新建数据集必须同时选择当前
-Runtime 精确报告为已启用的 Skill，随后发布 Rubric；Automatic Capture 也只选择已经完成这两步
-的目标数据集。旧数据会在同一数据集只有一份
-一致的历史 Skill name+path 时自动迁移；没有证据或存在冲突时保持未绑定，需在工作台或沉淀
-弹窗中手动修复。重新绑定只影响之后的新 Case 和评测；已有 Case、Curator 草稿和评测记录中的
-冻结证据保持不变。重新绑定会使当前 Rubric 失效，但保留历史版本。存在进行中的
-Curator/capture 或 Rubric Agent 会话时不能更换绑定。
-
-## 本地数据
-
-所有 Rolling Skill 数据默认保存在本机：
-
-| 路径 | 内容 |
-| --- | --- |
-| `~/Library/Application Support/Rolling Skill/evaluation-store.json` | 设置、数据集、Rubric 版本/会话、Cases、Curator 会话和评测记录 |
-| `~/Library/Application Support/Rolling Skill/preferences.json` | 工作目录和 Runtime 选择 |
-| `~/Library/Application Support/Rolling Skill/operator-jobs.json` | Operator 会话、Job、Step、Approval、Artifact 索引和恢复事件 |
-| `~/Library/Application Support/Rolling Skill/traces/*.jsonl` | 带 Runtime 身份的追加式 Trace |
-
-## 构建与开发
-
-在仓库根目录构建可双击应用：
+## 开发命令
 
 ```bash
-bash desktop/rolling-skill/scripts/build-macos-app.sh
+npm run test:dsh
+npm run build:dsh
 ```
-
-开发模式：
-
-```bash
-cd desktop/rolling-skill
-npm ci
-npm test
-npm start
-```
-
-构建脚本会运行测试、生成 Apple Silicon Electron 应用、确认包内没有 Agent Runtime，
-创建或复用登录钥匙串中的长期本地签名证书，并将签名结果写到仓库根目录的
-`Rolling Skill.app`。脚本要求 Node.js 22 或更高版本，并会在当前 Node 过旧时自动尝试本机
-Homebrew Node。私钥不会写入仓库。
-
-## 安全边界
-
-- Runtime 探测和启动使用固定参数数组及 `shell: false`；
-- Renderer 禁用 Node integration，启用 context isolation 和 Chromium sandbox；
-- Preload 只暴露受限的 Runtime、会话、数据集、Curator、评测和 Trace IPC；
-- 外部 HTTPS 链接交给 macOS 打开，其他内部跳转会被阻止；
-- 数据集使用原子写入，Trace 使用仅当前用户可读的追加式文件；
-- Rolling Skill 不静默安装 Skill、Plugin 或 Runtime，避免污染评测可复现性。
-
-更详细的架构、协议和测试说明见
-[desktop/rolling-skill/README.md](desktop/rolling-skill/README.md)。
 
 ## License
 

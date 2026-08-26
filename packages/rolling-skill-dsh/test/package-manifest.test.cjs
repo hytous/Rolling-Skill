@@ -2,6 +2,7 @@ const assert = require("node:assert/strict")
 const {existsSync, readFileSync} = require("node:fs")
 const {join} = require("node:path")
 const {describe, it} = require("node:test")
+const {pathToFileURL} = require("node:url")
 
 const packageRoot = join(__dirname, "..")
 const manifestPath = join(packageRoot, "package.json")
@@ -47,5 +48,12 @@ describe("Rolling Skill DSH package manifest", () => {
             const bundle = readFileSync(join(packageRoot, "lib", filename), "utf8")
             assert.doesNotMatch(bundle, /[ \t]+$/mu, `${filename} contains trailing whitespace`)
         }
+    })
+
+    it("loads the bundled Host in native Node ESM", async () => {
+        const hostUrl = pathToFileURL(join(packageRoot, "lib", "index.js"))
+        hostUrl.searchParams.set("test", String(Date.now()))
+        const host = await import(hostUrl.href)
+        assert.equal(typeof host.apply, "function")
     })
 })

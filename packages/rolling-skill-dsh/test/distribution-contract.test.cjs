@@ -1,0 +1,34 @@
+const assert = require("node:assert/strict")
+const {existsSync, readFileSync} = require("node:fs")
+const {join} = require("node:path")
+const {it} = require("node:test")
+const {pathToFileURL} = require("node:url")
+
+it("documents DSH distribution and rejects unsafe package entries", async () => {
+    const packageRoot = join(__dirname, "..")
+    const readme = readFileSync(join(packageRoot, "README.md"), "utf8")
+    const rootReadme = readFileSync(join(packageRoot, "..", "..", "README.md"), "utf8")
+    assert.match(readme, /dsh plugin --profile web add/u)
+    assert.match(readme, /腾讯.*npm|Tencent.*npm/iu)
+    assert.match(readme, /卸载|uninstall/iu)
+    assert.match(readme, /保留.*数据|retains?.*data/iu)
+    assert.match(readme, /mkdir -p packages\/rolling-skill-dsh\/dist/u)
+    assert.match(rootReadme, /mkdir -p packages\/rolling-skill-dsh\/dist/u)
+
+    const scriptPath = join(packageRoot, "scripts", "inspect-package.mjs")
+    assert.equal(existsSync(scriptPath), true)
+    const {inspectEntries} = await import(`${pathToFileURL(scriptPath).href}?test=${Date.now()}`)
+    const manifest = JSON.stringify({name: "@rolling-skill/dsh-plugin", version: "0.1.0"})
+    const safe = new Map([
+        ["package/package.json", Buffer.from(manifest)],
+        ["package/README.md", Buffer.from("Rolling Skill")],
+        ["package/cordis.patch.yml", Buffer.from("- insert: []")],
+        ["package/lib/index.js", Buffer.from("export function apply() {}")],
+        ["package/lib/client.js", Buffer.from("window.__ModuleLoader__.load({id:'@rolling-skill/dsh-plugin'})")],
+        ["package/lib/worker.cjs", Buffer.from("#!/usr/bin/env node\n")],
+    ])
+    assert.doesNotThrow(() => inspectEntries(safe))
+    assert.throws(() => inspectEntries(new Map([...safe, ["package/private.env", Buffer.from("TOKEN=secret")]])), /allowlist/iu)
+    assert.throws(() => inspectEntries(new Map([...safe].map(([name, body]) => [name, name.endsWith("index.js") ? Buffer.from("/workspace/projects/private") : body]))), /developer path/iu)
+    assert.throws(() => inspectEntries(new Map([...safe].map(([name, body]) => [name, name.endsWith("index.js") ? Buffer.from("/Users/alice/Projects/rolling-skill") : body]))), /developer path/iu)
+})
