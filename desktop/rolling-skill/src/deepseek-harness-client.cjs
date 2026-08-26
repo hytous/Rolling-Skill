@@ -1554,6 +1554,7 @@ class DeepSeekHarnessClient extends EventEmitter {
             effort: input.effort,
             timeoutMs: input.timeoutMs,
             attempt: input.attempt,
+            onThreadStarted: input.onThreadStarted,
         })
         return output
     }

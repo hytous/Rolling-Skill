@@ -502,6 +502,7 @@ describe("CodeBuddy ACP client", () => {
         const threadOptions = []
         const turnCalls = []
         const finishTurns = []
+        const startedThreads = []
         client.recorder = {
             latestReference: "trace://codebuddy-judge.jsonl#L12",
             record() {},
@@ -536,6 +537,7 @@ describe("CodeBuddy ACP client", () => {
             modelId: "gpt-5.6-sol",
             effort: "high",
             timeoutMs: 1_000,
+            onThreadStarted: (threadId) => startedThreads.push(threadId),
         })
         await new Promise((resolve) => setImmediate(resolve))
         const writes = []
@@ -564,6 +566,7 @@ describe("CodeBuddy ACP client", () => {
             modelId: "gpt-5.6-sol",
             effort: "high",
             timeoutMs: 1_000,
+            onThreadStarted: (threadId) => startedThreads.push(threadId),
         })
         await new Promise((resolve) => setImmediate(resolve))
         finishTurns.shift()()
@@ -610,6 +613,7 @@ describe("CodeBuddy ACP client", () => {
         assert.equal(client.sessions.has(first.threadId), false)
         assert.equal(client.sessions.has(second.threadId), false)
         assert.equal(client.evaluationJudgeSessions.size, 0)
+        assert.deepEqual(startedThreads, ["judge-session-1", "judge-session-2"])
     })
 
     it("returns a Case-scoped trace range and bounded evidence", async () => {

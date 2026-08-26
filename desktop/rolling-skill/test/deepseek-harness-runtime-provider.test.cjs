@@ -1640,4 +1640,29 @@ describe("DeepSeek Harness session adapter", () => {
 
         assert.deepEqual(startedThreads, ["evaluation-session"])
     })
+
+    it("forwards the hidden analysis thread callback through the Judge adapter", async () => {
+        const client = new DeepSeekHarnessClient({
+            binaryPath: "/bin/dsh",
+            workspaceRoot: "/workspace",
+            traceDirectory: mkdtempSync(join(tmpdir(), "rolling-skill-dsh-analysis-thread-")),
+        })
+        temporaryDirectories.push(client.traceDirectory)
+        let evaluationInput
+        client.runEvaluationCase = async (input) => {
+            evaluationInput = input
+            input.onThreadStarted?.("analysis-session")
+            return {threadId: "analysis-session", response: "{}"}
+        }
+        const startedThreads = []
+
+        await client.runEvaluationJudge({
+            prompt: "classify",
+            onThreadStarted: (threadId) => startedThreads.push(threadId),
+        })
+
+        assert.equal(evaluationInput.question, "classify")
+        assert.equal(typeof evaluationInput.onThreadStarted, "function")
+        assert.deepEqual(startedThreads, ["analysis-session"])
+    })
 })

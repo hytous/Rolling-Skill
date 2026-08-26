@@ -548,12 +548,13 @@ class CodexAppServerClient extends EventEmitter {
 
     listThreads(options = {}) {
         return this.request("thread/list", {
-            limit: 100,
+            limit: options.limit ?? 100,
             sortKey: "updated_at",
             sortDirection: "desc",
             sourceKinds: [],
             archived: options.archived ?? false,
             cwd: this.workspaceRoot,
+            ...(options.cursor ? {cursor: options.cursor} : {}),
         })
     }
 
@@ -824,6 +825,7 @@ class CodexAppServerClient extends EventEmitter {
             approvalPolicy: "never",
         })
         const threadId = threadResponse.thread.id
+        input.onThreadStarted?.(threadId)
         let turnId = null
         let responseText = ""
         let cleanup = () => {}

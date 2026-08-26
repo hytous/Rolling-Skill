@@ -349,7 +349,8 @@ class CodeBuddyAcpClient extends EventEmitter {
         this.emit("state", this.state())
     }
 
-    listThreads() {
+    listThreads(options = {}) {
+        if (options.archived) return Promise.resolve({data: [], nextCursor: null})
         const data = [...this.sessions.values()]
             .map((thread) => ({
                 id: thread.id,
@@ -704,6 +705,7 @@ class CodeBuddyAcpClient extends EventEmitter {
             threadSource: "subagent",
         })
         const threadId = response.thread.id
+        input.onThreadStarted?.(threadId)
         this.evaluationJudgeSessions.add(threadId)
         let turnId = null
         let cleanup = () => {}

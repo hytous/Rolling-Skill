@@ -1331,6 +1331,7 @@ describe("Codex app-server request construction", () => {
         })
         const threadOptions = []
         const turnCalls = []
+        const startedThreads = []
         client.recorder = {
             latestReference: "trace://judge.jsonl#L9",
             mark: () => ({line: 2}),
@@ -1365,13 +1366,17 @@ describe("Codex app-server request construction", () => {
             modelId: "gpt-5.6-sol",
             effort: "xhigh",
             timeoutMs: 1_000,
+            onThreadStarted: (threadId) => startedThreads.push(threadId),
         })
         const second = await client.runEvaluationJudge({
             prompt: "judge that",
             modelId: "gpt-5.6-sol",
             effort: "xhigh",
             timeoutMs: 1_000,
+            onThreadStarted: (threadId) => startedThreads.push(threadId),
         })
+
+        assert.deepEqual(startedThreads, ["judge-thread-1", "judge-thread-2"])
 
         assert.deepEqual(threadOptions, [
             {
