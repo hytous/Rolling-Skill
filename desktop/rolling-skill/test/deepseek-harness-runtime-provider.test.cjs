@@ -1614,4 +1614,30 @@ describe("DeepSeek Harness session adapter", () => {
             payload: {sessionId: "session-1"},
         }])
     })
+
+    it("reports the hidden evaluation thread immediately after it starts", async () => {
+        const client = new DeepSeekHarnessClient({
+            binaryPath: "/bin/dsh",
+            workspaceRoot: "/workspace",
+            traceDirectory: mkdtempSync(join(tmpdir(), "rolling-skill-dsh-evaluation-thread-")),
+        })
+        temporaryDirectories.push(client.traceDirectory)
+        client.startThread = async () => ({thread: {id: "evaluation-session"}})
+        client.startTurn = async () => ({turn: {id: "evaluation-turn"}})
+        client.waitForCompletedTurn = () => ({
+            promise: Promise.resolve({
+                id: "evaluation-turn",
+                items: [{type: "agentMessage", text: "answer"}],
+            }),
+            cleanup: () => {},
+        })
+        const startedThreads = []
+
+        await client.runEvaluationCase({
+            question: "hello",
+            onThreadStarted: (threadId) => startedThreads.push(threadId),
+        })
+
+        assert.deepEqual(startedThreads, ["evaluation-session"])
+    })
 })

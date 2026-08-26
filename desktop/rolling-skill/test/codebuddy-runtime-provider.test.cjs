@@ -638,8 +638,14 @@ describe("CodeBuddy ACP client", () => {
             return {turn: {id: "evaluation-turn"}}
         }
 
-        const result = await client.runEvaluationCase({question: "hello", timeoutMs: 1_000})
+        const startedThreads = []
+        const result = await client.runEvaluationCase({
+            question: "hello",
+            timeoutMs: 1_000,
+            onThreadStarted: (threadId) => startedThreads.push(threadId),
+        })
 
+        assert.deepEqual(startedThreads, ["evaluation-session"])
         assert.equal(result.traceReference, "trace://case.jsonl#L21-L29")
         assert.deepEqual(result.traceEvidence, {
             reference: "trace://case.jsonl#L21-L29",

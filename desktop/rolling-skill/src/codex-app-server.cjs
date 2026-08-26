@@ -714,6 +714,7 @@ class CodexAppServerClient extends EventEmitter {
             ephemeral: false,
         })
         const threadId = threadResponse.thread.id
+        input.onThreadStarted?.(threadId)
         const prompt =
             input.activationMode === "explicit" && input.skillReference?.name && input.skillReference?.path
                 ? [

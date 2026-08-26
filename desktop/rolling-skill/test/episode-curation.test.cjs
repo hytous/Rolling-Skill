@@ -168,6 +168,19 @@ describe("episode curation evidence", () => {
         assert.equal(episode.items.at(-1).id, "canonical-final-answer")
     })
 
+    it("can preserve an immutable Case question while keeping replay items unchanged", () => {
+        const thread = sourceThread()
+        thread.turns[0].items[0].content[0].text = "internal refresh instructions"
+
+        const episode = buildEpisodeSnapshot(thread, {
+            endItemId: "agent-2",
+            originalQuestionOverride: "原 Case 问题  \n逐字保留",
+        })
+
+        assert.equal(episode.originalQuestion, "原 Case 问题  \n逐字保留")
+        assert.equal(episode.items[0].text, "internal refresh instructions")
+    })
+
     it("keeps command input but bounds long shell output in the frozen Case episode", () => {
         const thread = sourceThread()
         const command = thread.turns[0].items.find((item) => item.id === "command-1")

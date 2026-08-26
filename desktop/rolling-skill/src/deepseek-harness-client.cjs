@@ -1473,6 +1473,7 @@ class DeepSeekHarnessClient extends EventEmitter {
         const traceMark = this.recorder?.mark?.() ?? null
         const response = await this.startThread({model: input.modelId, effort: input.effort})
         const threadId = response.thread.id
+        input.onThreadStarted?.(threadId)
         let turnId = null
         let lastActivityAt = new Date().toISOString()
         const activityListener = (message) => {

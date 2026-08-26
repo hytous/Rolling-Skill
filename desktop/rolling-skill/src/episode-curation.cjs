@@ -439,7 +439,9 @@ function buildEpisodeSnapshot(thread, options = {}) {
     const items = flattened
         .slice(startIndex, endIndex + 1)
         .map(({turnId, item}) => normalizeItem(item, turnId))
-    const originalQuestion = items[0].text
+    const originalQuestion = options.originalQuestionOverride === undefined
+        ? items[0].text
+        : String(options.originalQuestionOverride)
     if (!originalQuestion?.trim()) throw new Error("The selected source question is empty")
     const episode = {
         schemaVersion: "rolling-skill-episode/v1",

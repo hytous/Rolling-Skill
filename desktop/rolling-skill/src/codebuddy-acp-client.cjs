@@ -611,6 +611,7 @@ class CodeBuddyAcpClient extends EventEmitter {
         const traceMark = this.recorder?.mark?.() ?? null
         const response = await this.startThread({model: input.modelId, effort: input.effort})
         const threadId = response.thread.id
+        input.onThreadStarted?.(threadId)
         const prompt =
             input.activationMode === "explicit" && input.skillReference?.name
                 ? `/${input.skillReference.name}\n\n${input.question}`
