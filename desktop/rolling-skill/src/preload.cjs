@@ -244,6 +244,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     getCuration: (sessionId) => ipcRenderer.invoke("curation:get", sessionId),
     createCuration: (input) => ipcRenderer.invoke("curation:create", input),
     createCaseCalibration: (input) => ipcRenderer.invoke("curation:create-calibration", input),
+    createCaseRefresh: (input) => ipcRenderer.invoke("cases:refresh", input),
     sendCurationMessage: (sessionId, text) =>
         ipcRenderer.invoke("curation:send", {sessionId, text}),
     retryCuration: (sessionId) => ipcRenderer.invoke("curation:retry", sessionId),

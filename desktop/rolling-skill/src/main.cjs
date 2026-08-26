@@ -34,6 +34,7 @@ const {DeepSeekHarnessRuntimeProvider} = require("./deepseek-harness-runtime-pro
 const {AutomaticCaptureManager} = require("./automatic-capture.cjs")
 const {CurationManager} = require("./curation-manager.cjs")
 const {CaseRecycleService} = require("./case-recycle-service.cjs")
+const {CaseRefreshManager} = require("./case-refresh-manager.cjs")
 const {RubricManager} = require("./rubric-manager.cjs")
 const {EvaluationRunner} = require("./evaluation-runner.cjs")
 const {EvaluationPowerGuard} = require("./evaluation-power-guard.cjs")
@@ -187,6 +188,7 @@ let evaluationRunner = null
 let activityStore = null
 let rawCaseStore = null
 let caseRecycleService = null
+let caseRefreshManager = null
 let managedSkillStore = null
 let managedSkillManager = null
 let managedSkillStartupError = null
@@ -299,7 +301,7 @@ function sourceCurationMarkers() {
     return store.read().curationSessions
         .filter(
             (session_) =>
-                session_.operation !== "calibration" &&
+                session_.operation === "capture" &&
                 session_.status !== "cancelled" &&
                 session_.episode?.source?.threadId,
         )
@@ -319,7 +321,8 @@ function isHiddenRuntimeThread(threadId) {
     return Boolean(
         threadId && (
             curationManager?.hiddenThreadIds().has(threadId) ||
-            rubricManager?.hiddenThreadIds().has(threadId)
+            rubricManager?.hiddenThreadIds().has(threadId) ||
+            caseRefreshManager?.hiddenThreadIds().has(threadId)
         ),
     )
 }
@@ -2866,6 +2869,7 @@ function installIpc() {
         const hidden = new Set([
             ...curationManager.hiddenThreadIds(),
             ...rubricManager.hiddenThreadIds(),
+            ...caseRefreshManager.hiddenThreadIds(),
         ])
         return {...response, data: (response.data ?? []).filter((thread) => !hidden.has(thread.id))}
     })
@@ -2946,11 +2950,8 @@ function installIpc() {
     })
     ipcMain.handle("runtime:read-thread", async (_event, threadId) => {
         threadId = requireIdentifier(threadId, "thread")
-        if (
-            curationManager.hiddenThreadIds().has(threadId) ||
-            rubricManager.hiddenThreadIds().has(threadId)
-        ) {
-            throw new Error("Curator and Rubric Agent threads are available through their review sessions only")
+        if (isHiddenRuntimeThread(threadId)) {
+            throw new Error("Internal refresh, Curator, and Rubric Agent tasks are available through their review sessions only")
         }
         const runtime = await ensureRuntime()
         const sourceRuntimeId = runtimeDescriptor?.runtimeId
@@ -3166,6 +3167,12 @@ function installIpc() {
             datasetId: requireIdentifier(input.datasetId, "dataset"),
             caseId: requireIdentifier(input.caseId, "Case"),
             recoverQuestions: input.recoverQuestions !== false,
+        }),
+    )
+    ipcMain.handle("cases:refresh", async (_event, input = {}) =>
+        caseRefreshManager.createSession({
+            datasetId: requireIdentifier(input.datasetId, "dataset"),
+            caseId: requireIdentifier(input.caseId, "Case"),
         }),
     )
     ipcMain.handle("datasets:reveal", revealLocalData)
@@ -3556,6 +3563,12 @@ if (!hasLock) {
             getRuntimeDescriptor: () => runtimeDescriptor,
             onChanged: (session) => send("curation:changed", session),
             onActivity: (activity) => send("curation:activity", activity),
+        })
+        caseRefreshManager = new CaseRefreshManager({
+            store,
+            curationManager,
+            getRuntime: ensureRuntime,
+            getRuntimeDescriptor: () => runtimeDescriptor,
         })
         rubricManager = new RubricManager({
             store,

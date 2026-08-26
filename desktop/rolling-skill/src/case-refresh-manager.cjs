@@ -70,7 +70,7 @@ class CaseRefreshManager {
     }
 
     hiddenThreadIds() {
-        return [...this.hidden]
+        return new Set(this.hidden)
     }
 
     async createSession({datasetId, caseId}) {

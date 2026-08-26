@@ -170,6 +170,31 @@ describe("desktop main/preload bridge", () => {
         assert.match(store, /targetCaseId/)
     })
 
+    it("exposes Case refresh and keeps its internal Runtime task hidden", async () => {
+        const main = source("src/main.cjs")
+        const {api, calls} = preloadBridge(() => ({operation: "refresh"}))
+
+        const result = await api.createCaseRefresh({datasetId: "dataset-1", caseId: "case-1"})
+
+        assert.equal(result.operation, "refresh")
+        assert.deepEqual(plain(calls), [{
+            channel: "cases:refresh",
+            payload: {datasetId: "dataset-1", caseId: "case-1"},
+        }])
+        assert.match(main, /new CaseRefreshManager\(/u)
+        assert.match(main, /cases:refresh/u)
+        assert.match(main, /caseRefreshManager\.createSession/u)
+        assert.match(main, /caseRefreshManager\?\.hiddenThreadIds\(\)\.has\(threadId\)/u)
+        assert.match(
+            main,
+            /runtime:list-threads[\s\S]*?caseRefreshManager\.hiddenThreadIds\(\)/u,
+        )
+        assert.match(
+            main,
+            /runtime:read-thread[\s\S]*?isHiddenRuntimeThread\(threadId\)/u,
+        )
+    })
+
     it("routes optional delete recovery through the Case recycle service", async () => {
         const main = source("src/main.cjs")
         const {api, calls} = preloadBridge(() => ({deleted: true}))

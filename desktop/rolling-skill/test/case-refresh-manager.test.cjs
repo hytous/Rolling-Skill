@@ -157,7 +157,7 @@ describe("Case refresh manager", () => {
         assert.equal(test.curationInputs[0].episode.items[0].text, test.runtimeInputs[0].question)
         assert.equal(test.curationInputs[0].modelId, "gpt-curator")
         assert.equal(test.curationInputs[0].effort, "xhigh")
-        assert.deepEqual(test.manager.hiddenThreadIds(), ["refresh-thread"])
+        assert.deepEqual([...test.manager.hiddenThreadIds()], ["refresh-thread"])
         assert.deepEqual(test.archivedThreads, ["refresh-thread"])
         assert.equal(test.released(), 1)
     })
@@ -209,7 +209,7 @@ describe("Case refresh manager", () => {
             /replay failed/i,
         )
         assert.equal(test.curationInputs.length, 0)
-        assert.deepEqual(test.manager.hiddenThreadIds(), ["failed-refresh-thread"])
+        assert.deepEqual([...test.manager.hiddenThreadIds()], ["failed-refresh-thread"])
         assert.equal(test.released(), 1)
     })
 
