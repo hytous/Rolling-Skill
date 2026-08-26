@@ -108,6 +108,17 @@ const translations = {
         calibrationBatchStopped: "Automatic calibration stopped",
         calibrationBatchFailed: "Automatic calibration paused: {message}",
         calibrationContextChanged: "The dataset or published rubric changed during automatic calibration.",
+        refreshCase: "Refresh Case",
+        refreshingCase: "Refreshing…",
+        reviewRefresh: "Review refresh",
+        caseRefresh: "Case refresh",
+        refreshBaseline: "Previous saved Case",
+        refreshStarted: "Case refresh started with the current Skill and tools",
+        caseRefreshed: "Case updated; the previous version was preserved",
+        doneRefresh: "Done · update Case",
+        refreshTargetChanged: "The Case changed during refresh. Start again.",
+        refreshFailed: "Case refresh failed: {message}",
+        refreshBatchStopped: "Automatic Case refresh stopped",
         datasetSkillRequired: "Select an enabled Skill for this dataset.",
         autoCaptureDatasetRequired: "Automatic capture requires a Skill-bound dataset that is available in the active runtime.",
         changeDatasetSkillCopy: "Change the Skill bound to “{name}”. Future capture and evaluation use the new binding.",
@@ -792,6 +803,17 @@ const translations = {
         calibrationBatchStopped: "已停止批量自动校准",
         calibrationBatchFailed: "批量自动校准已暂停：{message}",
         calibrationContextChanged: "自动校准期间数据集或已发布评分标准发生了变化。",
+        refreshCase: "更新 Case",
+        refreshingCase: "更新中…",
+        reviewRefresh: "查看更新",
+        caseRefresh: "Case 更新",
+        refreshBaseline: "更新前保存的 Case",
+        refreshStarted: "已使用当前 Skill 和工具开始更新 Case",
+        caseRefreshed: "Case 已更新，旧版本已保留",
+        doneRefresh: "完成并更新 Case",
+        refreshTargetChanged: "更新期间 Case 已发生变化，请重新开始。",
+        refreshFailed: "Case 更新失败：{message}",
+        refreshBatchStopped: "已停止批量更新",
         datasetSkillRequired: "请为这个数据集选择当前运行时中已启用的 Skill。",
         autoCaptureDatasetRequired: "自动沉淀必须选择一个已绑定 Skill 且该 Skill 在当前运行时可用的数据集。",
         changeDatasetSkillCopy: "更换数据集“{name}”绑定的 Skill；之后的新沉淀和评测会使用新绑定。",
@@ -1460,6 +1482,8 @@ const state = {
     evaluationCases: [],
     calibrationStartingCaseIds: new Set(),
     calibrationBatch: null,
+    refreshStartingCaseIds: new Set(),
+    refreshBatch: null,
     evaluationSkills: [],
     evaluationDatasetId: null,
     evaluationCaseId: null,
@@ -3048,6 +3072,7 @@ function sourceCurationMarkerFromSession(session) {
     if (
         !session ||
         session.operation === "calibration" ||
+        session.operation === "refresh" ||
         session.status === "cancelled" ||
         !session.episode?.source?.threadId
     ) {
@@ -3478,6 +3503,14 @@ function activeCalibrationForCase(caseId) {
     ) ?? null
 }
 
+function activeRefreshForCase(caseId) {
+    return state.curationSessions.find(
+        (session) =>
+            session.operation === "refresh" &&
+            session.targetCaseId === caseId,
+    ) ?? null
+}
+
 function calibrationBatchSnapshot() {
     return state.calibrationBatch?.snapshot?.() ?? null
 }
@@ -3509,6 +3542,13 @@ function calibrationActionKey(session, idleKey = "calibrateCase") {
     return session.status === "queued" || session.status === "running"
         ? "calibrationInProgress"
         : "reviewCalibration"
+}
+
+function refreshActionKey(session) {
+    if (!session) return "refreshCase"
+    return session.status === "queued" || session.status === "running"
+        ? "refreshingCase"
+        : "reviewRefresh"
 }
 
 function appendStringList(container, values, empty = t("none")) {
@@ -3727,6 +3767,8 @@ function renderCurations() {
                 node("span", "curation-list-title", title || t("untitledCase")),
                 ...(session.operation === "calibration"
                     ? [node("span", "curation-list-mode", t("caseCalibration"))]
+                    : session.operation === "refresh"
+                      ? [node("span", "curation-list-mode", t("caseRefresh"))]
                     : []),
                 node(
                     "span",
@@ -3752,6 +3794,8 @@ function renderCurations() {
         node("span", `case-kind ${session.caseType}`, session.caseType),
         ...(session.operation === "calibration"
             ? [node("span", "case-kind calibration", t("caseCalibration"))]
+            : session.operation === "refresh"
+              ? [node("span", "case-kind refresh", t("caseRefresh"))]
             : []),
         node("span", `curation-status ${session.status}`, curationStatusLabel(session.status)),
     )
@@ -3814,6 +3858,28 @@ function renderCurations() {
         summary.append(
             node("span", "curation-reference-check", "↺"),
             node("strong", "", t("calibrationBaseline")),
+            node(
+                "small",
+                "",
+                session.baselineCaseSnapshot.curated?.referenceAnswer?.summary ??
+                    session.baselineCaseSnapshot.answer ??
+                    t("none"),
+            ),
+        )
+        baseline.append(summary)
+        if (session.baselineCaseSnapshot.curated) {
+            baseline.append(renderDraft(session.baselineCaseSnapshot.curated, session.caseType))
+        }
+        scroll.append(baseline)
+    }
+
+    if (session.operation === "refresh" && session.baselineCaseSnapshot) {
+        const baseline = document.createElement("details")
+        baseline.className = "curation-reference-card refresh-baseline-card"
+        const summary = document.createElement("summary")
+        summary.append(
+            node("span", "curation-reference-check", "↺"),
+            node("strong", "", t("refreshBaseline")),
             node(
                 "small",
                 "",
@@ -3918,7 +3984,13 @@ function renderCurations() {
             const done = node(
                 "button",
                 "curation-done primary",
-                t(session.operation === "calibration" ? "doneCalibration" : "doneSaveCase"),
+                t(
+                    session.operation === "calibration"
+                        ? "doneCalibration"
+                        : session.operation === "refresh"
+                          ? "doneRefresh"
+                          : "doneSaveCase",
+                ),
             )
             done.type = "button"
             done.dataset.archiveCuration = session.id
@@ -5362,6 +5434,7 @@ function renderEvaluationWorkbench() {
             node("small", "", caseEntry.outputSummary || ""),
         )
         let calibrate = null
+        const maintenanceActions = node("div", "evaluation-case-maintenance-actions")
         if (caseNeedsCalibration(caseEntry)) {
             button.append(node("span", "case-calibration", t("caseNeedsCalibration")))
             const calibration = activeCalibrationForCase(caseEntry.id)
@@ -5372,15 +5445,32 @@ function renderEvaluationWorkbench() {
             )
             calibrate.type = "button"
             calibrate.dataset.calibrateEvaluationCase = caseEntry.id
-            calibrate.disabled = state.calibrationStartingCaseIds.has(caseEntry.id)
+            calibrate.disabled =
+                state.calibrationStartingCaseIds.has(caseEntry.id) ||
+                Boolean(activeRefreshForCase(caseEntry.id))
+            maintenanceActions.append(calibrate)
         }
+        const refresh = activeRefreshForCase(caseEntry.id)
+        const refreshButton = node(
+            "button",
+            "evaluation-case-refresh",
+            t(refreshActionKey(refresh)),
+        )
+        refreshButton.type = "button"
+        refreshButton.dataset.refreshEvaluationCase = caseEntry.id
+        refreshButton.disabled =
+            state.refreshStartingCaseIds.has(caseEntry.id) ||
+            Boolean(activeCalibrationForCase(caseEntry.id))
+        maintenanceActions.append(refreshButton)
         const remove = node("button", "hover-delete-button evaluation-case-delete", "×")
         remove.type = "button"
         remove.title = t("deleteCase")
         remove.setAttribute("aria-label", t("deleteCase"))
         remove.dataset.deleteEvaluationCase = caseEntry.id
-        remove.disabled = Boolean(activeCalibrationForCase(caseEntry.id))
-        row.append(button, ...(calibrate ? [calibrate] : []), remove)
+        remove.disabled = Boolean(
+            activeCalibrationForCase(caseEntry.id) || activeRefreshForCase(caseEntry.id),
+        )
+        row.append(button, maintenanceActions, remove)
         elements.evaluationCaseList.append(row)
     }
 
@@ -7456,7 +7546,10 @@ async function discardCurationImmediately(sessionId, {feedback = false} = {}) {
     const session = await window.rollingSkill.discardCuration(sessionId)
     upsertCuration(session)
     renderCurations()
-    if (state.surface === "evaluation" && session.operation === "calibration") {
+    if (
+        state.surface === "evaluation" &&
+        (session.operation === "calibration" || session.operation === "refresh")
+    ) {
         renderEvaluationWorkbench()
     }
     if (feedback) showToast(t("draftDiscarded"))
@@ -7618,6 +7711,55 @@ async function createCaseCalibration(caseId, {automatic = false, throwOnError = 
     }
 }
 
+function refreshErrorMessage(error) {
+    const message = String(error?.message ?? error ?? t("failed")).replace(
+        /^Error invoking remote method '[^']+': Error:\s*/u,
+        "",
+    )
+    if (/The Case changed during refresh/iu.test(message)) return t("refreshTargetChanged")
+    return formatMessage("refreshFailed", {message})
+}
+
+async function createCaseRefresh(caseId, {automatic = false, throwOnError = false} = {}) {
+    const caseEntry = state.evaluationCases.find((entry) => entry.id === caseId)
+    if (!caseEntry || caseEntry.datasetId !== state.evaluationDatasetId) {
+        const error = new Error(t("refreshTargetChanged"))
+        if (throwOnError) throw error
+        showError(error)
+        return null
+    }
+    const existing = activeRefreshForCase(caseId)
+    if (existing) {
+        state.activeCurationId = existing.id
+        setCurationOpen(true)
+        return existing
+    }
+    if (state.refreshStartingCaseIds.has(caseId)) {
+        if (throwOnError) throw new Error(t("refreshingCase"))
+        return null
+    }
+    state.refreshStartingCaseIds.add(caseId)
+    renderEvaluationWorkbench()
+    try {
+        const session = await window.rollingSkill.createCaseRefresh({
+            datasetId: caseEntry.datasetId,
+            caseId,
+        })
+        upsertCuration(session)
+        state.activeCurationId = session.id
+        setCurationOpen(true)
+        if (!automatic) showToast(t("refreshStarted"))
+        return session
+    } catch (error) {
+        if (throwOnError) throw error
+        showError(new Error(refreshErrorMessage(error)))
+        return null
+    } finally {
+        state.refreshStartingCaseIds.delete(caseId)
+        renderEvaluationWorkbench()
+    }
+}
+
 async function loadTrace() {
     elements.traceEvents.replaceChildren(node("div", "sidebar-placeholder", t("readingTrace")))
     try {
@@ -7726,9 +7868,28 @@ function upsertCuration(session) {
     )
 }
 
+function refreshBatchForSession(sessionId) {
+    const batch = state.refreshBatch
+    const snapshot = batch?.snapshot?.()
+    return snapshot?.status === "running" && snapshot.currentSessionId === sessionId
+        ? batch
+        : null
+}
+
+function leaveAutomaticRefreshForManualAction(sessionId) {
+    const batch = refreshBatchForSession(sessionId)
+    if (!batch) return false
+    batch.stop()
+    renderEvaluationWorkbench()
+    renderCurations()
+    showToast(t("refreshBatchStopped"))
+    return true
+}
+
 async function sendCurationMessage(sessionId, text) {
     if (!String(text).trim()) return false
     leaveAutomaticCalibrationForManualAction(sessionId)
+    leaveAutomaticRefreshForManualAction(sessionId)
     try {
         const session = await window.rollingSkill.sendCurationMessage(sessionId, text)
         const input = elements.curationDetail.querySelector(
@@ -7747,6 +7908,7 @@ async function sendCurationMessage(sessionId, text) {
 
 async function retryCuration(sessionId) {
     leaveAutomaticCalibrationForManualAction(sessionId)
+    leaveAutomaticRefreshForManualAction(sessionId)
     try {
         const session = await window.rollingSkill.retryCuration(sessionId)
         upsertCuration(session)
@@ -7757,7 +7919,10 @@ async function retryCuration(sessionId) {
 }
 
 async function archiveCuration(sessionId, {automatic = false} = {}) {
-    if (!automatic) leaveAutomaticCalibrationForManualAction(sessionId)
+    if (!automatic) {
+        leaveAutomaticCalibrationForManualAction(sessionId)
+        leaveAutomaticRefreshForManualAction(sessionId)
+    }
     const operation = state.curationSessions.find((entry) => entry.id === sessionId)?.operation
     try {
         await window.rollingSkill.archiveCuration(sessionId)
@@ -7766,17 +7931,26 @@ async function archiveCuration(sessionId, {automatic = false} = {}) {
         state.datasets = await window.rollingSkill.listDatasets()
         renderCurations()
         if (state.surface === "evaluation") await loadEvaluationWorkbench(false)
-        if (!automatic) showToast(t(operation === "calibration" ? "caseCalibrated" : "caseSaved"))
+        if (!automatic) {
+            showToast(t(
+                operation === "calibration"
+                    ? "caseCalibrated"
+                    : operation === "refresh"
+                      ? "caseRefreshed"
+                      : "caseSaved",
+            ))
+        }
         return session
     } catch (error) {
         if (automatic) throw error
-        showError(error)
+        showError(operation === "refresh" ? new Error(refreshErrorMessage(error)) : error)
         return null
     }
 }
 
 function openDiscardDialog(sessionId) {
     leaveAutomaticCalibrationForManualAction(sessionId)
+    leaveAutomaticRefreshForManualAction(sessionId)
     state.discardCurationId = sessionId
     elements.discardDialog.showModal()
 }
@@ -7799,6 +7973,7 @@ async function discardCuration() {
 
 async function updateCurationModel(sessionId, selectedModelId) {
     leaveAutomaticCalibrationForManualAction(sessionId)
+    leaveAutomaticRefreshForManualAction(sessionId)
     try {
         const session = await window.rollingSkill.updateCurationModel(
             sessionId,
@@ -7814,6 +7989,7 @@ async function updateCurationModel(sessionId, selectedModelId) {
 
 async function updateCurationEffort(sessionId, selectedEffort) {
     leaveAutomaticCalibrationForManualAction(sessionId)
+    leaveAutomaticRefreshForManualAction(sessionId)
     try {
         const session = await window.rollingSkill.updateCurationEffort(
             sessionId,
@@ -8242,6 +8418,15 @@ elements.evaluationDatasetList.addEventListener("click", (event) => {
     if (button) void selectEvaluationDataset(button.dataset.evaluationDatasetId)
 })
 elements.evaluationCaseList.addEventListener("click", (event) => {
+    const refresh = event.target.closest("[data-refresh-evaluation-case]")
+    if (refresh) {
+        const currentCalibrationSessionId = calibrationBatchSnapshot()?.currentSessionId
+        if (currentCalibrationSessionId) {
+            leaveAutomaticCalibrationForManualAction(currentCalibrationSessionId)
+        }
+        void createCaseRefresh(refresh.dataset.refreshEvaluationCase)
+        return
+    }
     const remove = event.target.closest("[data-delete-evaluation-case]")
     if (remove) {
         openDeleteCaseDialog(remove.dataset.deleteEvaluationCase)
@@ -8675,10 +8860,17 @@ window.rollingSkill.onCurationChanged((session) => {
     if (!state.activeCurationId) state.activeCurationId = session.id
     renderCurations()
     handleCalibrationBatchSessionUpdate(session)
-    if (state.surface === "evaluation" && session.operation === "calibration") {
+    if (
+        state.surface === "evaluation" &&
+        (session.operation === "calibration" || session.operation === "refresh")
+    ) {
         renderEvaluationWorkbench()
     }
-    if (session.operation !== "calibration" && session.episode?.source?.threadId === state.activeThreadId) {
+    if (
+        session.operation !== "calibration" &&
+        session.operation !== "refresh" &&
+        session.episode?.source?.threadId === state.activeThreadId
+    ) {
         renderConversation()
     }
 })

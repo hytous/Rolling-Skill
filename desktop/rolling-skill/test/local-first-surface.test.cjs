@@ -197,6 +197,38 @@ describe("local-first desktop surface", () => {
         assert.doesNotMatch(renderer, /defaultEffort \? `\$\{t\("runtimeDefaultEffort"\)\} · \$\{defaultEffort\}`/)
     })
 
+    it("offers bilingual single-Case refresh with historical baseline review", () => {
+        const renderer = source("renderer/renderer.js")
+        const styles = source("renderer/styles.css")
+
+        assert.match(renderer, /refreshCase:\s*"Refresh Case"/u)
+        assert.match(renderer, /refreshCase:\s*"更新 Case"/u)
+        assert.match(renderer, /refreshingCase:\s*"Refreshing…"/u)
+        assert.match(renderer, /refreshingCase:\s*"更新中…"/u)
+        assert.match(renderer, /reviewRefresh:\s*"Review refresh"/u)
+        assert.match(renderer, /reviewRefresh:\s*"查看更新"/u)
+        assert.match(renderer, /caseRefresh:\s*"Case refresh"/u)
+        assert.match(renderer, /caseRefresh:\s*"Case 更新"/u)
+        assert.match(renderer, /refreshBaseline:\s*"Previous saved Case"/u)
+        assert.match(renderer, /refreshBaseline:\s*"更新前保存的 Case"/u)
+        assert.match(renderer, /caseRefreshed:\s*"Case updated; the previous version was preserved"/u)
+        assert.match(renderer, /caseRefreshed:\s*"Case 已更新，旧版本已保留"/u)
+        assert.match(renderer, /refreshTargetChanged:\s*"The Case changed during refresh\. Start again\."/u)
+        assert.match(renderer, /refreshTargetChanged:\s*"更新期间 Case 已发生变化，请重新开始。"/u)
+        assert.match(renderer, /refreshFailed:\s*"Case refresh failed: \{message\}"/u)
+        assert.match(renderer, /refreshFailed:\s*"Case 更新失败：\{message\}"/u)
+
+        assert.match(renderer, /dataset\.refreshEvaluationCase\s*=\s*caseEntry\.id/u)
+        assert.match(renderer, /function activeRefreshForCase\(/u)
+        assert.match(renderer, /session\.operation === "refresh" && session\.baselineCaseSnapshot/u)
+        assert.match(renderer, /t\("refreshBaseline"\)/u)
+        assert.match(renderer, /async function createCaseRefresh\(/u)
+        assert.match(renderer, /window\.rollingSkill\.createCaseRefresh/u)
+        assert.match(renderer, /leaveAutomaticRefreshForManualAction\(sessionId\)/u)
+        assert.match(styles, /\.evaluation-case-refresh/u)
+        assert.match(styles, /\.refresh-baseline-card/u)
+    })
+
     it("offers bilingual Raw Case recovery before Case and dataset deletion", () => {
         const html = source("renderer/index.html")
         const renderer = source("renderer/renderer.js")
