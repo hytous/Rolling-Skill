@@ -6,6 +6,7 @@ const {afterEach, describe, it} = require("node:test")
 
 const {
     RAW_CASE_EVENT_SCHEMA,
+    RawCaseConflictError,
     RawCaseStore,
     defaultRawCaseEventsPath,
     readRawCaseEvents,
@@ -33,6 +34,27 @@ function input(question = "查一下七月混元 3 的成本") {
         skill: {name: "billing-cost-management", path: "/skills/billing/SKILL.md"},
         note: "等账期稳定后验证",
         source: {kind: "manual"},
+    }
+}
+
+function automaticInput(threadId, question = "查一下七月混元 3 的成本") {
+    return {
+        question,
+        skill: {name: "billing-cost-management", path: "/skills/billing/SKILL.md"},
+        note: "Automatically discovered",
+        source: {
+            kind: "automatic_capture",
+            runtimeId: "codex:/opt/codex-a",
+            threadId,
+            startTurnId: `turn-${threadId}-1`,
+            startItemId: `user-${threadId}-1`,
+            endTurnId: `turn-${threadId}-2`,
+            endItemId: `agent-${threadId}-2`,
+            outcome: "resolved",
+            caseType: "goodcase",
+            confidence: 0.91,
+            inspectedAt: "2026-08-26T03:00:00.000Z",
+        },
     }
 }
 
@@ -253,6 +275,69 @@ describe("raw case event store", () => {
         assert.equal(duplicate.duplicateOf, first.id)
         assert.equal(differentSkill.question, "同一个问题")
         assert.equal(store.list().length, 2)
+        store.close()
+    })
+
+    it("merges unique automatic episode observations into one pending question", () => {
+        const {store} = fixture()
+
+        const first = store.addAutomaticCandidate(automaticInput("thread-1"))
+        const second = store.addAutomaticCandidate(automaticInput("thread-2"))
+        const repeated = store.addAutomaticCandidate(automaticInput("thread-2"))
+        const records = store.list()
+
+        assert.equal(first.created, true)
+        assert.equal(first.observed, true)
+        assert.equal(second.created, false)
+        assert.equal(second.observed, true)
+        assert.equal(second.duplicateOf, first.rawCase.id)
+        assert.equal(repeated.observed, false)
+        assert.equal(records.length, 1)
+        assert.equal(records[0].source.kind, "automatic_capture")
+        assert.deepEqual(
+            records[0].source.observations.map((entry) => entry.threadId),
+            ["thread-1", "thread-2"],
+        )
+        store.close()
+    })
+
+    it("keeps normal duplicate behavior from mutating source observations", () => {
+        const {store} = fixture()
+        const created = store.add(input("manual duplicate"))
+        const duplicate = store.add({...input(" manual duplicate "), source: {kind: "cli"}})
+
+        assert.equal(duplicate.created, false)
+        assert.equal(duplicate.duplicateOf, created.id)
+        assert.deepEqual(store.get(created.id).source, {kind: "manual"})
+        store.close()
+    })
+
+    it("retries one automatic observation compare-and-set conflict from the latest record", () => {
+        const {store} = fixture()
+        const first = store.addAutomaticCandidate(automaticInput("thread-1"))
+        const updateIfCurrent = store.updateIfCurrent.bind(store)
+        let attempts = 0
+        store.updateIfCurrent = (...args) => {
+            attempts += 1
+            if (attempts === 1) {
+                const current = store.get(first.rawCase.id)
+                updateIfCurrent(first.rawCase.id, {
+                    expectedRevision: current.revision,
+                    expectedSkillName: current.skill.name,
+                }, {note: "concurrent edit"})
+                throw new RawCaseConflictError()
+            }
+            return updateIfCurrent(...args)
+        }
+
+        const merged = store.addAutomaticCandidate(automaticInput("thread-2"))
+
+        assert.equal(attempts, 2)
+        assert.equal(merged.rawCase.note, "concurrent edit")
+        assert.deepEqual(
+            merged.rawCase.source.observations.map((entry) => entry.threadId),
+            ["thread-1", "thread-2"],
+        )
         store.close()
     })
 

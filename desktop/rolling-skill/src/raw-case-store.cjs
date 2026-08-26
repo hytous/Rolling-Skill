@@ -134,6 +134,46 @@ function deduplicationKey(input) {
     return `${skillKey}\u0000${String(input.question ?? "").trim()}`
 }
 
+function automaticIdentifier(value, label) {
+    const normalized = String(value ?? "").trim()
+    if (!normalized || normalized.length > 4_096) throw new Error(`${label} is required`)
+    return normalized
+}
+
+function normalizeAutomaticObservation(source = {}) {
+    if (source.kind !== "automatic_capture") {
+        throw new Error("Automatic Raw Case source kind is required")
+    }
+    const observation = {
+        runtimeId: automaticIdentifier(source.runtimeId, "Automatic capture Runtime id"),
+        threadId: automaticIdentifier(source.threadId, "Automatic capture thread id"),
+        startTurnId: automaticIdentifier(source.startTurnId, "Automatic capture start turn id"),
+        startItemId: automaticIdentifier(source.startItemId, "Automatic capture start Item id"),
+        endTurnId: automaticIdentifier(source.endTurnId, "Automatic capture end turn id"),
+        endItemId: automaticIdentifier(source.endItemId, "Automatic capture end Item id"),
+        outcome: String(source.outcome ?? "uncertain"),
+        caseType: String(source.caseType ?? "goodcase"),
+        confidence: Number(source.confidence),
+        inspectedAt: automaticIdentifier(source.inspectedAt, "Automatic capture inspection time"),
+        ...(source.summary ? {summary: String(source.summary).slice(0, 1_000)} : {}),
+        ...(source.reason ? {reason: String(source.reason).slice(0, 2_000)} : {}),
+    }
+    if (!new Set(["resolved", "unresolved", "uncertain"]).has(observation.outcome)) {
+        throw new Error("Automatic capture outcome is invalid")
+    }
+    if (!new Set(["goodcase", "badcase"]).has(observation.caseType)) {
+        throw new Error("Automatic capture Case type is invalid")
+    }
+    if (!Number.isFinite(observation.confidence) || observation.confidence < 0 || observation.confidence > 1) {
+        throw new Error("Automatic capture confidence must be between 0 and 1")
+    }
+    return observation
+}
+
+function observationKey(value) {
+    return [value.runtimeId, value.threadId, value.startItemId, value.endItemId].join("\u0000")
+}
+
 function recordRevision(value) {
     return Number.isSafeInteger(value) && value >= 1 ? value : 1
 }
@@ -275,6 +315,58 @@ class RawCaseStore {
         }
         this.append({type: "added", rawCase})
         return publicRecord(rawCase)
+    }
+
+    addAutomaticCandidate(input) {
+        const normalized = normalizeInput(input)
+        const observation = normalizeAutomaticObservation(normalized.source)
+        const added = this.add({
+            ...normalized,
+            source: {kind: "automatic_capture", observations: [observation]},
+        })
+        if (added?.created !== false) {
+            return {
+                created: true,
+                observed: true,
+                duplicateOf: null,
+                rawCase: added,
+            }
+        }
+
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const current = this.requireRecord(added.duplicateOf)
+            const observations = Array.isArray(current.source?.observations)
+                ? current.source.observations
+                : []
+            if (observations.some((entry) => observationKey(entry) === observationKey(observation))) {
+                return {
+                    created: false,
+                    observed: false,
+                    duplicateOf: current.id,
+                    rawCase: current,
+                }
+            }
+            try {
+                const updated = this.updateIfCurrent(current.id, {
+                    expectedRevision: current.revision,
+                    expectedSkillName: current.skill.name,
+                }, {
+                    source: {
+                        ...current.source,
+                        observations: [...observations, observation],
+                    },
+                })
+                return {
+                    created: false,
+                    observed: true,
+                    duplicateOf: current.id,
+                    rawCase: updated,
+                }
+            } catch (error) {
+                if (error?.code !== "RAW_CASE_CONFLICT" || attempt === 1) throw error
+            }
+        }
+        throw new RawCaseConflictError()
     }
 
     addMany(inputs) {
