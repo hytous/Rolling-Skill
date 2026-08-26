@@ -1262,6 +1262,13 @@ kbd {
     accent-color: var(--accent);
 }
 
+.operator-target-card .operator-runtime-label {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
 .operator-target-card .operator-target-runtime-options {
     grid-column: 1 / -1;
 }

@@ -19,6 +19,25 @@
         return String(model?.id ?? model?.modelId ?? model?.model ?? model ?? "").trim()
     }
 
+    function runtimeBaseLabel(runtime = {}) {
+        const name = String(
+            runtime.displayName ?? runtime.providerId ?? runtime.runtimeId ?? "Runtime",
+        ).trim() || "Runtime"
+        const version = String(runtime.version ?? "").trim()
+        return version && !name.includes(version) ? `${name} ${version}` : name
+    }
+
+    function runtimeDisplayLabel(runtime = {}, catalog = []) {
+        const base = runtimeBaseLabel(runtime)
+        const duplicates = (Array.isArray(catalog) ? catalog : [])
+            .filter((entry) => runtimeBaseLabel(entry) === base)
+        if (duplicates.length < 2) return base
+        const detail = [runtime.executablePath, runtime.source, runtime.runtimeId]
+            .map((value) => String(value ?? "").trim())
+            .find((value) => value && value !== base)
+        return detail ? `${base} · ${detail}` : base
+    }
+
     function catalogForRuntime(catalogs, runtimeId) {
         const source = catalogs?.modelsByRuntime
         if (source instanceof Map) return source.get(runtimeId) ?? []
@@ -1943,7 +1962,7 @@
                 appendOption(
                     selectors.optimizationJudgeRuntime,
                     runtime.runtimeId,
-                    runtime.displayName ?? runtime.runtimeId,
+                    runtimeDisplayLabel(runtime, catalogs.runtimes),
                 )
             }
             selectors.optimizationJudgeRuntime.value = catalogs.runtimes.some((entry) => (
@@ -2045,7 +2064,7 @@
                 appendOption(
                     selectors.runtime,
                     runtime.runtimeId,
-                    `${runtime.displayName ?? runtime.providerId ?? runtime.runtimeId}${runtime.version ? ` ${runtime.version}` : ""}`,
+                    runtimeDisplayLabel(runtime, catalogs.runtimes),
                 )
                 if (!modelsByRuntime.has(runtime.runtimeId) && Array.isArray(runtime.models) && runtime.models.length) {
                     modelsByRuntime.set(runtime.runtimeId, runtime.models.map((entry) => (
@@ -2114,7 +2133,12 @@
                 options.append(targetModel, targetEffort)
                 label.append(
                     input,
-                    createElement(document_, "span", "", runtime.displayName ?? runtime.runtimeId),
+                    createElement(
+                        document_,
+                        "span",
+                        "operator-runtime-label",
+                        runtimeDisplayLabel(runtime, catalogs.runtimes),
+                    ),
                     options,
                 )
                 selectors.targets.append(label)
@@ -3102,6 +3126,7 @@
         optimizationRunActions,
         reduceOptimizationTimeline,
         registerOperatorActionDelegates,
+        runtimeDisplayLabel,
         transcriptEntryKey,
     }
     if (typeof module !== "undefined" && module.exports) module.exports = exported

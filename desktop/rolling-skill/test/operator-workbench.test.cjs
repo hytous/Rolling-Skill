@@ -21,6 +21,7 @@ const {
     operatorJobTreeIds,
     reduceOptimizationTimeline,
     registerOperatorActionDelegates,
+    runtimeDisplayLabel,
     transcriptEntryKey,
 } = require("../renderer/operator-workbench.js")
 
@@ -62,6 +63,46 @@ function event(id, sessionId = "session-1", jobId = "job-1") {
 }
 
 describe("Operator workbench state", () => {
+    it("distinguishes Runtime versions and falls back to paths for true label collisions", () => {
+        const codexA = {
+            runtimeId: "codex:a",
+            displayName: "Codex",
+            version: "0.149.0",
+            executablePath: "/Applications/ChatGPT.app/Contents/Resources/codex",
+        }
+        const codexB = {
+            runtimeId: "codex:b",
+            displayName: "Codex",
+            version: "0.148.0",
+            executablePath: "/usr/local/bin/codex",
+        }
+
+        assert.equal(runtimeDisplayLabel(codexA, [codexA, codexB]), "Codex 0.149.0")
+        assert.equal(runtimeDisplayLabel(codexB, [codexA, codexB]), "Codex 0.148.0")
+
+        const duplicateA = {...codexA, runtimeId: "codex:duplicate-a", version: "0.149.0"}
+        const duplicateB = {
+            ...codexA,
+            runtimeId: "codex:duplicate-b",
+            version: "0.149.0",
+            executablePath: "/opt/codex/bin/codex",
+        }
+        const duplicates = [duplicateA, duplicateB]
+        assert.equal(
+            runtimeDisplayLabel(duplicateA, duplicates),
+            "Codex 0.149.0 · /Applications/ChatGPT.app/Contents/Resources/codex",
+        )
+        assert.equal(
+            runtimeDisplayLabel(duplicateB, duplicates),
+            "Codex 0.149.0 · /opt/codex/bin/codex",
+        )
+        assert.equal(runtimeDisplayLabel({
+            runtimeId: "codex:versioned-name",
+            displayName: "Codex 0.149.0",
+            version: "0.149.0",
+        }), "Codex 0.149.0")
+    })
+
     it("uses the host translation pipeline for dynamic Job statuses", () => {
         const translate = (key) => ({
             operatorStatusWaitingApproval: "等待审批",
