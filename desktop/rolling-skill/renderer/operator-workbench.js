@@ -1724,6 +1724,7 @@
             jobList: root.querySelector("#operator-job-list"),
             newJob: root.querySelector("#operator-new-job"),
             setup: root.querySelector("#operator-setup-form"),
+            setupScroll: root.querySelector("#operator-setup-scroll"),
             setupError: root.querySelector("#operator-setup-error"),
             jobKind: root.querySelector("#operator-job-kind"),
             runtime: root.querySelector("#operator-runtime"),
@@ -2720,6 +2721,7 @@
                 patchActiveChrome({restoreView: true})
             } else {
                 creating = true
+                selectors.setupScroll.scrollTop = 0
                 patchActiveChrome()
             }
         }
@@ -2982,6 +2984,7 @@
             if (destroyed) return
             saveActiveView()
             creating = true
+            selectors.setupScroll.scrollTop = 0
             patchJobList()
             patchActiveChrome()
             selectors.setup.elements.objective.focus()

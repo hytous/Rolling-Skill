@@ -308,24 +308,27 @@
 
                     <section class="operator-session-panel">
                         <form id="operator-setup-form" class="operator-setup-form hidden">
+                            <div id="operator-setup-scroll" class="operator-setup-scroll">
                             <header class="operator-setup-hero">
-                                <span class="panel-kicker" data-i18n="operatorScopedSession">Scoped session</span>
-                                <h1 data-i18n="operatorStartSelfOperation">Start self-operation</h1>
-                                <p data-i18n="operatorStartHelp">Choose the Runtime, authority, scope, and hard budget for this durable Job.</p>
-                            </header>
-                            <label class="operator-field operator-objective-field">
-                                <span data-i18n="operatorObjective">Objective</span>
-                                <textarea name="objective" rows="3" maxlength="32768" required placeholder="Describe the bounded outcome…" data-i18n-placeholder="operatorObjectivePlaceholder"></textarea>
-                            </label>
-                            <section class="operator-setup-section operator-environment-section">
-                                <h2 data-i18n="operatorEnvironment">Run environment</h2>
-                                <label class="operator-field operator-job-kind-field">
+                                <div class="operator-setup-hero-copy">
+                                    <span class="panel-kicker" data-i18n="operatorScopedSession">Scoped session</span>
+                                    <h1 data-i18n="operatorStartSelfOperation">Start self-operation</h1>
+                                    <p data-i18n="operatorStartHelp">Choose the Runtime, authority, scope, and hard budget for this durable Job.</p>
+                                </div>
+                                <label class="operator-field operator-job-kind-field operator-hero-control">
                                     <span data-i18n="operatorTaskType">Task type</span>
                                     <select id="operator-job-kind">
                                         <option value="operator" data-i18n="operatorJobType">Operator Job</option>
                                         <option value="optimization" data-i18n="operatorOptimizationType">Multi-Epoch Skill optimization</option>
                                     </select>
                                 </label>
+                            </header>
+                            <label class="operator-field operator-objective-field" data-step="01">
+                                <span data-i18n="operatorObjective">Objective</span>
+                                <textarea name="objective" rows="3" maxlength="32768" required placeholder="Describe the bounded outcome…" data-i18n-placeholder="operatorObjectivePlaceholder"></textarea>
+                            </label>
+                            <section class="operator-setup-section operator-environment-section" data-step="02">
+                                <h2 data-i18n="operatorEnvironment">Run environment</h2>
                                 <div class="operator-setup-row">
                                     <label class="operator-field">
                                         <span data-i18n="operatorRuntime">Operator Runtime</span>
@@ -341,7 +344,7 @@
                                     </label>
                                 </div>
                             </section>
-                            <section class="operator-setup-section operator-resource-section">
+                            <section class="operator-setup-section operator-resource-section" data-step="03">
                                 <h2 data-i18n="operatorResources">Resources and scope</h2>
                                 <div class="operator-setup-row two">
                                     <label class="operator-field">
@@ -428,6 +431,7 @@
                                 </fieldset>
                             </details>
                             <p id="operator-setup-error" class="operator-error hidden" role="alert"></p>
+                            </div>
                             <div class="operator-setup-actions operator-setup-footer">
                                 <button id="operator-generic-start" class="primary" type="submit" data-i18n="operatorStartJob">Start Operator Job</button>
                                 <button id="operator-optimization-preflight" class="hidden" type="button" data-i18n="operatorRunPreflight">Run Optimization preflight</button>
