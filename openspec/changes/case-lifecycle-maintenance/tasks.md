@@ -20,22 +20,22 @@
 
 ## 4. Scheduled Discovery Foundation
 
-- [ ] 4.1 Replace legacy Automatic Capture settings with explicit mode and schedule migration, plus private per-Runtime/thread scan-state APIs and tests
-- [ ] 4.2 Implement pure daily/weekly slot calculation, one-run startup catch-up, stable boundary and outcome prompt builders, strict JSON parsers, and confidence gates
-- [ ] 4.3 Extend RawCaseStore to merge duplicate automatic-capture episode observations without changing normal question deduplication
+- [x] 4.1 Replace legacy Automatic Capture settings with explicit mode and schedule migration, plus private per-Runtime/thread scan-state APIs and tests
+- [x] 4.2 Implement pure daily/weekly slot calculation, one-run startup catch-up, stable boundary and outcome prompt builders, strict JSON parsers, and confidence gates
+- [x] 4.3 Extend RawCaseStore to merge duplicate automatic-capture episode observations without changing normal question deduplication
 
 ## 5. Scheduled Discovery Runtime
 
-- [ ] 5.1 Refactor AutomaticCaptureManager into scheduled ConversationDiscoveryManager orchestration with paginated thread listing, hidden-thread filtering, two-stage bounded analysis, pending tails, and fail-closed cursor commits
-- [ ] 5.2 Implement Raw Case draft creation from frozen automatic-capture boundaries and compatible dataset selection
-- [ ] 5.3 Implement fully automatic routing and save with the 0.8 confidence, Skill, dataset, Rubric, Draft, and post-save Raw Case gates
-- [ ] 5.4 Wire scheduler startup/shutdown, Runtime changes, status notifications, catch-up, and removal of completion-event whole-thread capture
+- [x] 5.1 Refactor AutomaticCaptureManager into scheduled ConversationDiscoveryManager orchestration with paginated thread listing, hidden-thread filtering, two-stage bounded analysis, pending tails, and fail-closed cursor commits
+- [x] 5.2 Implement Raw Case draft creation from frozen automatic-capture boundaries and compatible dataset selection
+- [x] 5.3 Implement fully automatic routing and save with the 0.8 confidence, Skill, dataset, Rubric, Draft, and post-save Raw Case gates
+- [x] 5.4 Wire scheduler startup/shutdown, Runtime changes, status notifications, catch-up, and removal of completion-event whole-thread capture
 
 ## 6. Scheduled Discovery UI
 
-- [ ] 6.1 Replace the Automatic Capture settings UI with localized mode, cadence, weekday, time, model, effort, and preferred dataset controls
-- [ ] 6.2 Add localized topbar next-run/running/pending/error state and Settings last-success state
-- [ ] 6.3 Render automatic candidates in Raw Cases with source, Skill, outcome, confidence, and Create Case Draft action while preserving existing delete-recovery execution actions
+- [x] 6.1 Replace the Automatic Capture settings UI with localized mode, cadence, weekday, time, model, effort, and preferred dataset controls
+- [x] 6.2 Add localized topbar next-run/running/pending/error state and Settings last-success state
+- [x] 6.3 Render automatic candidates in Raw Cases with source, Skill, outcome, confidence, and Create Case Draft action while preserving existing delete-recovery execution actions
 
 ## 7. Integration and Delivery
 

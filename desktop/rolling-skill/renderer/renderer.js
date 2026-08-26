@@ -39,6 +39,21 @@ const translations = {
         rawCaseDuplicate: "This question is already pending for the same Skill.",
         rawCaseDraftStatus: "Case draft",
         rawCaseArchivedStatus: "Saved Case",
+        rawCaseDetectedSkill: "Detected Skill: {name}",
+        rawCaseOutcomeResolved: "Resolved",
+        rawCaseOutcomeUnresolved: "Unresolved",
+        rawCaseOutcomeUncertain: "Uncertain",
+        rawCaseConfidence: "Confidence {value}%",
+        rawCaseSourceTime: "Detected {time}",
+        rawCaseSourceRuntime: "Source Runtime: {runtime}",
+        createCaseDraft: "Create Case Draft",
+        rawCaseChooseDataset: "Target dataset",
+        rawCaseCreateDraftConfirm: "Create draft",
+        rawCaseCreatingDraft: "Creating…",
+        rawCaseSourceRuntimeMismatch: "Switch to source Runtime {runtime} to create this Draft.",
+        rawCaseNoCompatibleDataset: "No matching dataset has a published rubric for this Skill.",
+        rawCaseEpisodeIncomplete: "This candidate has incomplete source boundaries and cannot create a Draft.",
+        rawCaseDraftCreateFailed: "Could not create the Draft: {message}",
         curateAgain: "Curate again",
         skill: "Skill",
         taskCouldNotContinue: "Task could not continue",
@@ -773,6 +788,21 @@ const translations = {
         rawCaseDuplicate: "同一个 Skill 下已经有这条待验证问题。",
         rawCaseDraftStatus: "Case 草稿",
         rawCaseArchivedStatus: "已沉淀 Case",
+        rawCaseDetectedSkill: "识别到 Skill：{name}",
+        rawCaseOutcomeResolved: "已解决",
+        rawCaseOutcomeUnresolved: "未解决",
+        rawCaseOutcomeUncertain: "不确定",
+        rawCaseConfidence: "置信度 {value}%",
+        rawCaseSourceTime: "识别于 {time}",
+        rawCaseSourceRuntime: "来源运行时：{runtime}",
+        createCaseDraft: "创建 Case 草稿",
+        rawCaseChooseDataset: "目标数据集",
+        rawCaseCreateDraftConfirm: "创建草稿",
+        rawCaseCreatingDraft: "正在创建…",
+        rawCaseSourceRuntimeMismatch: "请切换到来源运行时 {runtime} 后再创建草稿。",
+        rawCaseNoCompatibleDataset: "没有为该 Skill 匹配到已发布评分标准的数据集。",
+        rawCaseEpisodeIncomplete: "该候选缺少完整的来源边界，无法创建草稿。",
+        rawCaseDraftCreateFailed: "无法创建草稿：{message}",
         curateAgain: "再次整理",
         skill: "Skill",
         taskCouldNotContinue: "任务无法继续",
@@ -1514,6 +1544,9 @@ const state = {
     rawCaseOpen: window.innerWidth > 1120,
     rawCaseEditingId: null,
     rawCaseDispatchingIds: new Set(),
+    rawCaseDraftChooserId: null,
+    rawCaseDraftingIds: new Set(),
+    rawCaseDraftErrors: new Map(),
     curatorProfile: {runtimePolicy: "active", modelId: null},
     automaticCaptureStatus: {
         mode: "off",
@@ -2957,6 +2990,132 @@ function renderRawCaseSkillOptions() {
     elements.rawCaseSkill.value = current
 }
 
+function automaticRawCaseObservation(rawCase) {
+    const source = rawCase?.source
+    const automatic = source?.kind === "automatic_capture"
+    if (!automatic) return null
+    const observation = Array.isArray(source.observations)
+        ? source.observations.at(-1) ?? source
+        : source
+    const boundaryFields = [
+        "runtimeId",
+        "threadId",
+        "startTurnId",
+        "startItemId",
+        "endTurnId",
+        "endItemId",
+    ]
+    return {
+        ...observation,
+        complete: boundaryFields.every((field) => String(observation?.[field] ?? "").trim()),
+        outcome: new Set(["resolved", "unresolved", "uncertain"]).has(observation?.outcome)
+            ? observation.outcome
+            : "uncertain",
+        confidence: Number(observation?.confidence),
+    }
+}
+
+function rawCaseSkillsMatch(left, right) {
+    if (!left || !right) return false
+    const leftId = String(left.id ?? "").trim()
+    const rightId = String(right.id ?? "").trim()
+    if (leftId && rightId) return leftId === rightId
+    const leftName = String(left.name ?? "").trim().toLocaleLowerCase("en-US")
+    const rightName = String(right.name ?? "").trim().toLocaleLowerCase("en-US")
+    if (!leftName || leftName !== rightName) return false
+    const leftPath = String(left.path ?? "").trim()
+    const rightPath = String(right.path ?? "").trim()
+    return !leftPath || !rightPath || leftPath === rightPath
+}
+
+function compatibleRawCaseDatasets(rawCase) {
+    const matches = state.datasets.filter((dataset) => (
+        dataset.activeRubricVersionId &&
+        rawCaseSkillsMatch(dataset.skillReference, rawCase?.skill)
+    ))
+    const preferredId = state.settings.autoCaptureProfile?.datasetId
+    const preferred = matches.find((dataset) => dataset.id === preferredId)
+    return preferred
+        ? [preferred, ...matches.filter((dataset) => dataset.id !== preferred.id)]
+        : matches
+}
+
+function rawCaseDraftBlocker(observation, datasets) {
+    if (!observation?.complete) return t("rawCaseEpisodeIncomplete")
+    if (observation.runtimeId !== state.runtime?.runtime?.runtimeId) {
+        return formatMessage("rawCaseSourceRuntimeMismatch", {
+            runtime: observation.runtimeId,
+        })
+    }
+    if (!datasets.length) return t("rawCaseNoCompatibleDataset")
+    return null
+}
+
+function renderAutomaticRawCaseEvidence(rawCase, observation) {
+    const metadata = node("div", "raw-case-automatic-meta")
+    const outcomeKey = {
+        resolved: "rawCaseOutcomeResolved",
+        unresolved: "rawCaseOutcomeUnresolved",
+        uncertain: "rawCaseOutcomeUncertain",
+    }[observation.outcome]
+    metadata.append(
+        node("span", "raw-case-evidence-skill", formatMessage("rawCaseDetectedSkill", {
+            name: rawCase.skill?.name || t("skill"),
+        })),
+        node("span", `raw-case-outcome ${observation.outcome}`, t(outcomeKey)),
+    )
+    if (Number.isFinite(observation.confidence)) {
+        metadata.append(node("span", "", formatMessage("rawCaseConfidence", {
+            value: Math.round(observation.confidence * 100),
+        })))
+    }
+    const sourceTime = formatCaptureDate(observation.inspectedAt)
+    if (sourceTime) {
+        metadata.append(node("span", "", formatMessage("rawCaseSourceTime", {
+            time: sourceTime,
+        })))
+    }
+    if (observation.runtimeId) {
+        metadata.append(node("span", "raw-case-source-runtime", formatMessage(
+            "rawCaseSourceRuntime",
+            {runtime: observation.runtimeId},
+        )))
+    }
+    return metadata
+}
+
+function renderRawCaseDraftChooser(rawCase, datasets) {
+    const chooser = node("div", "raw-case-draft-chooser")
+    const field = node("label")
+    const select = node("select")
+    select.dataset.rawCaseDraftDataset = rawCase.id
+    for (const dataset of datasets) {
+        const option = node("option", "", dataset.name || dataset.id)
+        option.value = dataset.id
+        select.append(option)
+    }
+    field.append(node("span", "", t("rawCaseChooseDataset")), select)
+    const actions = node("div", "raw-case-draft-chooser-actions")
+    const cancel = node("button", "raw-case-secondary", t("cancel"))
+    cancel.type = "button"
+    cancel.dataset.cancelRawCaseDraft = rawCase.id
+    const create = node(
+        "button",
+        "raw-case-primary",
+        t(state.rawCaseDraftingIds.has(rawCase.id)
+            ? "rawCaseCreatingDraft"
+            : "rawCaseCreateDraftConfirm"),
+    )
+    create.type = "button"
+    create.dataset.createRawCaseDraft = rawCase.id
+    create.disabled = state.rawCaseDraftingIds.has(rawCase.id)
+    select.disabled = create.disabled
+    cancel.disabled = create.disabled
+    actions.append(cancel, create)
+    chooser.append(field, actions)
+    return chooser
+}
+
 function canDispatchRawCaseToCurrentThread() {
     return Boolean(
         state.activeThreadId &&
@@ -2975,7 +3134,8 @@ function rawCaseDispatchDisabled(rawCaseId) {
         state.runtime?.status !== "ready" ||
         state.sending ||
         Boolean(state.activeTurnId) ||
-        state.rawCaseDispatchingIds.has(rawCaseId)
+        state.rawCaseDispatchingIds.has(rawCaseId) ||
+        state.rawCaseDraftingIds.has(rawCaseId)
     )
 }
 
@@ -3009,6 +3169,11 @@ function renderRawCases() {
         )
         group.append(heading)
         for (const rawCase of rawCases) {
+            const observation = automaticRawCaseObservation(rawCase)
+            const compatibleDatasets = observation ? compatibleRawCaseDatasets(rawCase) : []
+            const draftBlocker = observation
+                ? rawCaseDraftBlocker(observation, compatibleDatasets)
+                : null
             const card = node("article", "raw-case-card")
             card.dataset.rawCaseId = rawCase.id
             const question = node("p", "raw-case-card-question", rawCase.question)
@@ -3034,10 +3199,35 @@ function renderRawCases() {
             fresh.dataset.dispatchRawCase = rawCase.id
             fresh.dataset.dispatchMode = "new"
             fresh.disabled = rawCaseDispatchDisabled(rawCase.id)
-            edit.disabled = state.rawCaseDispatchingIds.has(rawCase.id)
-            remove.disabled = state.rawCaseDispatchingIds.has(rawCase.id)
+            const rawCaseBusy = state.rawCaseDispatchingIds.has(rawCase.id) ||
+                state.rawCaseDraftingIds.has(rawCase.id)
+            edit.disabled = rawCaseBusy
+            remove.disabled = rawCaseBusy
             actions.append(edit, remove, current, fresh)
-            card.append(question, metadata, actions)
+            card.append(question)
+            if (observation) card.append(renderAutomaticRawCaseEvidence(rawCase, observation))
+            card.append(metadata, actions)
+            if (observation?.complete) {
+                const openDraft = node("button", "raw-case-create-draft", t("createCaseDraft"))
+                openDraft.type = "button"
+                const dataOpenRawCaseDraft = rawCase.id
+                openDraft.dataset.openRawCaseDraft = dataOpenRawCaseDraft
+                openDraft.disabled = Boolean(draftBlocker) || state.rawCaseDraftingIds.has(rawCase.id)
+                if (draftBlocker) openDraft.title = draftBlocker
+                card.append(openDraft)
+            }
+            if (
+                observation?.complete &&
+                !draftBlocker &&
+                state.rawCaseDraftChooserId === rawCase.id
+            ) {
+                card.append(renderRawCaseDraftChooser(rawCase, compatibleDatasets))
+            }
+            const creationError = state.rawCaseDraftErrors.get(rawCase.id)
+            const errorMessage = draftBlocker ?? (creationError
+                ? formatMessage("rawCaseDraftCreateFailed", {message: creationError})
+                : null)
+            if (errorMessage) card.append(node("p", "raw-case-draft-error", errorMessage))
             group.append(card)
         }
         elements.rawCaseList.append(group)
@@ -3104,6 +3294,35 @@ async function deleteRawCase(rawCaseId) {
         else renderRawCases()
     } catch (error) {
         showError(error)
+    }
+}
+
+async function createRawCaseDraft(rawCaseId, datasetId) {
+    const rawCase = state.rawCases.find((entry) => entry.id === rawCaseId)
+    const observation = automaticRawCaseObservation(rawCase)
+    const datasets = compatibleRawCaseDatasets(rawCase)
+    const blocker = rawCaseDraftBlocker(observation, datasets)
+    if (!rawCase || blocker || !datasets.some((dataset) => dataset.id === datasetId)) {
+        if (rawCase && blocker) state.rawCaseDraftErrors.set(rawCaseId, blocker)
+        renderRawCases()
+        return
+    }
+    state.rawCaseDraftingIds.add(rawCaseId)
+    state.rawCaseDraftErrors.delete(rawCaseId)
+    renderRawCases()
+    try {
+        const session = await window.rollingSkill.createCurationFromRawCase(rawCaseId, datasetId)
+        upsertSourceCurationMarker(session)
+        upsertCuration(session)
+        state.activeCurationId = session.id
+        state.rawCases = state.rawCases.filter((entry) => entry.id !== rawCaseId)
+        state.rawCaseDraftChooserId = null
+        setCurationOpen(true)
+    } catch (error) {
+        state.rawCaseDraftErrors.set(rawCaseId, error instanceof Error ? error.message : String(error))
+    } finally {
+        state.rawCaseDraftingIds.delete(rawCaseId)
+        renderRawCases()
     }
 }
 
@@ -8977,6 +9196,30 @@ elements.rawCaseForm.addEventListener("submit", (event) => {
 })
 elements.cancelRawCaseEdit.addEventListener("click", clearRawCaseForm)
 elements.rawCaseList.addEventListener("click", (event) => {
+    const openDraft = event.target.closest("[data-open-raw-case-draft]")
+    if (openDraft) {
+        const rawCaseId = openDraft.dataset.openRawCaseDraft
+        state.rawCaseDraftChooserId = rawCaseId
+        state.rawCaseDraftErrors.delete(rawCaseId)
+        renderRawCases()
+        return
+    }
+    const cancelDraft = event.target.closest("[data-cancel-raw-case-draft]")
+    if (cancelDraft) {
+        state.rawCaseDraftChooserId = null
+        state.rawCaseDraftErrors.delete(cancelDraft.dataset.cancelRawCaseDraft)
+        renderRawCases()
+        return
+    }
+    const createDraft = event.target.closest("[data-create-raw-case-draft]")
+    if (createDraft) {
+        const rawCaseId = createDraft.dataset.createRawCaseDraft
+        const datasetId = elements.rawCaseList.querySelector(
+            `[data-raw-case-draft-dataset="${CSS.escape(rawCaseId)}"]`,
+        )?.value
+        if (datasetId) void createRawCaseDraft(rawCaseId, datasetId)
+        return
+    }
     const edit = event.target.closest("[data-edit-raw-case]")
     if (edit) {
         editRawCase(edit.dataset.editRawCase)
@@ -9242,6 +9485,11 @@ window.rollingSkill.onRuntimeQuestion(onRuntimeQuestion)
 window.rollingSkill.onRuntimeQuestionResolved(onRuntimeQuestionResolved)
 window.rollingSkill.onRawCasesChanged((rawCases) => {
     state.rawCases = rawCases ?? []
+    const pendingIds = new Set(state.rawCases.map((rawCase) => rawCase.id))
+    if (!pendingIds.has(state.rawCaseDraftChooserId)) state.rawCaseDraftChooserId = null
+    for (const rawCaseId of state.rawCaseDraftErrors.keys()) {
+        if (!pendingIds.has(rawCaseId)) state.rawCaseDraftErrors.delete(rawCaseId)
+    }
     renderRawCases()
 })
 window.rollingSkill.onAutomaticCaptureStatus((status) => {

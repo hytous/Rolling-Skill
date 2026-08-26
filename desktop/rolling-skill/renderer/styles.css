@@ -4249,6 +4249,43 @@ kbd {
     line-height: 1.4;
 }
 
+.raw-case-automatic-meta {
+    display: flex;
+    margin-top: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px 8px;
+    color: var(--muted);
+    font-size: 8.5px;
+    line-height: 1.4;
+}
+
+.raw-case-automatic-meta .raw-case-evidence-skill {
+    color: var(--text);
+    font-weight: 650;
+}
+
+.raw-case-automatic-meta .raw-case-outcome {
+    padding: 2px 5px;
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+    color: var(--accent);
+    font-weight: 650;
+}
+
+.raw-case-automatic-meta .raw-case-outcome.unresolved,
+.raw-case-automatic-meta .raw-case-outcome.uncertain {
+    border-color: var(--border);
+    background: var(--surface);
+    color: var(--faint);
+}
+
+.raw-case-source-runtime {
+    flex-basis: 100%;
+    overflow-wrap: anywhere;
+}
+
 .raw-case-card-actions {
     display: flex;
     margin-top: 9px;
@@ -4263,6 +4300,88 @@ kbd {
 .raw-case-card-actions .danger:hover:not(:disabled) {
     border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
     color: var(--danger);
+}
+
+.raw-case-create-draft,
+.raw-case-draft-chooser button {
+    min-height: 29px;
+    padding: 0 9px;
+    border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+    border-radius: 7px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-size: 8.8px;
+    font-weight: 650;
+}
+
+.raw-case-create-draft {
+    width: 100%;
+    margin-top: 7px;
+}
+
+.raw-case-create-draft:disabled,
+.raw-case-draft-chooser button:disabled,
+.raw-case-draft-chooser select:disabled {
+    cursor: default;
+    opacity: 0.45;
+}
+
+.raw-case-draft-chooser {
+    display: grid;
+    margin-top: 7px;
+    padding: 8px;
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+    gap: 7px;
+}
+
+.raw-case-draft-chooser label {
+    display: grid;
+    gap: 4px;
+    color: var(--faint);
+    font-size: 8.5px;
+    font-weight: 650;
+}
+
+.raw-case-draft-chooser select {
+    width: 100%;
+    min-width: 0;
+    height: 30px;
+    padding: 0 27px 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    outline: 0;
+    background: var(--surface-raised);
+    color: var(--text);
+    font-size: 9px;
+}
+
+.raw-case-draft-chooser select:focus {
+    border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+}
+
+.raw-case-draft-chooser-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 5px;
+}
+
+.raw-case-draft-chooser .raw-case-secondary {
+    border-color: var(--border);
+    background: var(--surface-raised);
+    color: var(--muted);
+    font-weight: 500;
+}
+
+.raw-case-draft-error {
+    margin: 7px 0 0;
+    padding: 7px 8px;
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+    color: color-mix(in srgb, var(--danger) 72%, var(--text));
+    font-size: 8.5px;
+    line-height: 1.45;
 }
 
 .trace-drawer.visible,
