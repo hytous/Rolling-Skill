@@ -2549,6 +2549,58 @@ var require_local_store = __commonJS({
         installationJobIdsByRuntime
       };
     }
+    function managedRuntimeConfigurationBinding({
+      input,
+      configuration,
+      datasetSkillReference,
+      managedVersionSnapshot,
+      optimizationAuthorized
+    }) {
+      let skillReference = normalizeSkillReference(input.skillReference);
+      if (!skillReference && optimizationAuthorized && datasetSkillReference.path) {
+        skillReference = normalizeSkillReference({
+          ...datasetSkillReference,
+          runtimeId: configuration.runtimeId,
+          providerId: configuration.providerId
+        });
+      }
+      if (!skillReference || !skillReference.path || skillReference.evidencePrecision === "managed" || skillReference.evidencePrecision === "name-only") {
+        throw new Error("Managed evaluation requires a path-precise Runtime Skill binding");
+      }
+      if (skillReference.name !== datasetSkillReference.name || skillReference.runtimeId !== configuration.runtimeId || skillReference.providerId !== configuration.providerId) {
+        throw new Error("Managed evaluation Runtime Skill binding conflicts with its target");
+      }
+      if (datasetSkillReference.evidencePrecision === "managed" && (skillReference.repositoryId !== datasetSkillReference.repositoryId || skillReference.id !== datasetSkillReference.id)) {
+        throw new Error("Managed evaluation Runtime Skill binding conflicts with the Dataset Skill");
+      }
+      const installationJobId = skillIdentity(
+        input.installationJobId ?? input.experimentInstallationJobId ?? managedVersionSnapshot.installationJobIdsByRuntime[configuration.runtimeId],
+        "Managed installation Job id"
+      );
+      const installationId = skillIdentity(input.installationId, "Managed installation id");
+      const installationVerification = skillIdentity(
+        input.installationVerification,
+        "Managed installation verification"
+      );
+      if (!installationJobId) {
+        throw new Error("Managed evaluation requires a frozen installation Job");
+      }
+      if (!optimizationAuthorized && (!installationId || !installationVerification || installationVerification === "none")) {
+        throw new Error("Managed evaluation requires a verified normal installation");
+      }
+      if (input.expectedContentDigest && input.expectedContentDigest !== managedVersionSnapshot.contentDigest) {
+        throw new Error("Managed evaluation Runtime digest conflicts with the frozen version");
+      }
+      return {
+        ...configuration,
+        skillReference,
+        installationId,
+        installationJobId,
+        installationVerification,
+        expectedContentDigest: managedVersionSnapshot.contentDigest,
+        ...optimizationAuthorized ? { experimentInstallationJobId: installationJobId } : {}
+      };
+    }
     function normalizeSkillReference(value) {
       if (value === null || value === void 0) return null;
       if (value.schemaVersion !== "rolling-skill-skill-reference/v1") {
@@ -2561,6 +2613,30 @@ var require_local_store = __commonJS({
       const repositoryId = skillIdentity(value.repositoryId, "Skill repository id");
       if (!name) {
         throw new Error("A valid runtime Skill name is required");
+      }
+      if (evidencePrecision === "managed") {
+        const providerId2 = skillIdentity(value.providerId, "Skill provider id");
+        const runtimeId2 = skillIdentity(value.runtimeId, "Skill runtime id");
+        const workspaceRoot = skillIdentity(value.workspaceRoot, "Skill workspace root");
+        if (!id || !repositoryId) {
+          throw new Error("A complete managed Skill identity is required");
+        }
+        if (path || providerId2 || runtimeId2 || workspaceRoot) {
+          throw new Error("Managed Skill identity cannot include deployment fields");
+        }
+        return {
+          schemaVersion: value.schemaVersion,
+          evidencePrecision,
+          id,
+          repositoryId,
+          name,
+          path: null,
+          scope: skillIdentity(value.scope, "Skill scope"),
+          description: skillIdentity(value.description, "Skill description"),
+          runtimeId: null,
+          providerId: null,
+          confirmedAt: skillIdentity(value.confirmedAt, "Skill confirmation time")
+        };
       }
       if (evidencePrecision === "name-only") {
         const providerId2 = skillIdentity(value.providerId, "Skill provider id");
@@ -2606,7 +2682,12 @@ var require_local_store = __commonJS({
       };
     }
     function sameSkillReferenceIdentity(left, right) {
-      if (!left || !right || left.name !== right.name) return false;
+      if (!left || !right) return false;
+      const managed = left.evidencePrecision === "managed" || right.evidencePrecision === "managed";
+      if (managed) {
+        return left.evidencePrecision === "managed" && right.evidencePrecision === "managed" && left.repositoryId === right.repositoryId && left.id === right.id;
+      }
+      if (left.name !== right.name) return false;
       const nameOnly = left.evidencePrecision === "name-only" || right.evidencePrecision === "name-only";
       if (nameOnly) {
         return left.evidencePrecision === "name-only" && right.evidencePrecision === "name-only" && left.providerId === right.providerId && left.runtimeId === right.runtimeId && left.workspaceRoot === right.workspaceRoot;
@@ -2701,6 +2782,24 @@ var require_local_store = __commonJS({
         }
         dataset.skillReference = skillReference;
         dataset.activeRubricVersionId = null;
+        this.persist();
+        return copy(dataset);
+      }
+      migrateDatasetSkillReference(datasetId, input = {}) {
+        const state = this.load();
+        const dataset = requireDataset(state, datasetId);
+        const expectedLegacyReference = normalizeSkillReference(input.expectedLegacyReference);
+        const managedSkillReference = normalizeSkillReference(input.managedSkillReference);
+        if (!expectedLegacyReference || expectedLegacyReference.evidencePrecision === "managed" || expectedLegacyReference.evidencePrecision === "name-only" || !expectedLegacyReference.path) {
+          throw new Error("A legacy path Skill binding is required for migration");
+        }
+        if (!managedSkillReference || managedSkillReference.evidencePrecision !== "managed") {
+          throw new Error("A complete managed Skill identity is required for migration");
+        }
+        if (!dataset.skillReference || dataset.skillReference.evidencePrecision === "managed" || !sameSkillReferenceIdentity(dataset.skillReference, expectedLegacyReference)) {
+          throw new Error("Legacy Dataset Skill binding changed before migration");
+        }
+        dataset.skillReference = managedSkillReference;
         this.persist();
         return copy(dataset);
       }
@@ -3733,7 +3832,8 @@ var require_local_store = __commonJS({
             "One or more Cases require calibration for the active dataset rubric version"
           );
         }
-        let runtimeConfigurations = (input.runtimeConfigurations ?? []).map((configuration) => ({
+        const requestedRuntimeConfigurations = input.runtimeConfigurations ?? [];
+        let runtimeConfigurations = requestedRuntimeConfigurations.map((configuration) => ({
           ...evaluationRuntimeConfiguration(configuration),
           skillEvidenceBinding: configuration.skillEvidenceBinding === "verified" ? "verified" : "unverified"
         }));
@@ -3747,18 +3847,27 @@ var require_local_store = __commonJS({
         }
         let managedVersionSnapshot = null;
         if (input.managedVersionSnapshot !== void 0 && input.managedVersionSnapshot !== null) {
-          if (options2.optimizationAuthorized !== true) {
-            throw new Error("Managed Candidate evaluation requires an internal Optimization capability");
+          const optimizationAuthorized = options2.optimizationAuthorized === true;
+          const managedVersionAuthorized = options2.managedVersionAuthorized === true;
+          if (!optimizationAuthorized && !managedVersionAuthorized) {
+            throw new Error("Managed evaluation requires an internal capability");
           }
           managedVersionSnapshot = managedEvaluationVersionSnapshot(
             input.managedVersionSnapshot,
             runtimeConfigurations.map((configuration) => configuration.runtimeId)
           );
-          runtimeConfigurations = runtimeConfigurations.map((configuration) => ({
-            ...configuration,
-            expectedContentDigest: managedVersionSnapshot.contentDigest,
-            experimentInstallationJobId: managedVersionSnapshot.installationJobIdsByRuntime[configuration.runtimeId]
-          }));
+          if (datasetSkillReference.evidencePrecision === "managed" && (datasetSkillReference.repositoryId !== managedVersionSnapshot.repositoryId || datasetSkillReference.id !== managedVersionSnapshot.skillId)) {
+            throw new Error("Managed version does not belong to the Dataset Skill");
+          }
+          runtimeConfigurations = runtimeConfigurations.map(
+            (configuration, index) => managedRuntimeConfigurationBinding({
+              input: requestedRuntimeConfigurations[index],
+              configuration,
+              datasetSkillReference,
+              managedVersionSnapshot,
+              optimizationAuthorized
+            })
+          );
         }
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const requestedJudgeProfile = input.judgeProfile ?? state.settings.judgeProfile;
@@ -17687,21 +17796,22 @@ var require_evaluation_runner = __commonJS({
       }
       async verifyManagedRuntimeVersion(client, run, configuration) {
         if (!run.managedVersionSnapshot) return configuration.skillEvidenceBinding ?? "unverified";
+        const targetSkillReference = configuration.skillReference ?? run.skillReference;
         const expected = configuration.expectedContentDigest;
-        if (expected !== run.managedVersionSnapshot.contentDigest || !configuration.experimentInstallationJobId) {
+        if (expected !== run.managedVersionSnapshot.contentDigest || !(configuration.installationJobId ?? configuration.experimentInstallationJobId) || !targetSkillReference?.path) {
           const error2 = new Error(`${SKILL_VERSION_CHANGED}: frozen target binding is incomplete`);
           error2.code = SKILL_VERSION_CHANGED;
           throw error2;
         }
         if (typeof client.listSkills !== "function") return "unverified";
         const response = await client.listSkills({ forceReload: true });
-        const matchingName = (response?.data ?? []).flatMap((entry) => entry.skills ?? []).filter((skill) => skill?.enabled && skill.name === run.skillReference?.name);
+        const matchingName = (response?.data ?? []).flatMap((entry) => entry.skills ?? []).filter((skill) => skill?.enabled && skill.name === targetSkillReference.name);
         const pathPrecise = matchingName.filter(
           (skill) => skill.path || skill.evidencePrecision !== "name-only"
         );
         if (!pathPrecise.length) return "unverified";
         if (pathPrecise.some(
-          (skill) => skill.path === run.skillReference?.path && skill.contentDigest === expected
+          (skill) => skill.path === targetSkillReference.path && skill.contentDigest === expected
         )) return "verified";
         const error = new Error(`${SKILL_VERSION_CHANGED}: Runtime Skill digest no longer matches Candidate`);
         error.code = SKILL_VERSION_CHANGED;
@@ -17810,6 +17920,7 @@ var require_evaluation_runner = __commonJS({
             control.executionStates.set(result.id, "running");
             this.onChanged({ runId: run.id, resultId: result.id, status: "running" });
             try {
+              const targetSkillReference = configuration.skillReference ?? run.skillReference;
               this.assertSkillSnapshotUnchanged(run);
               let preExecutionBinding = configuration.skillEvidenceBinding ?? "unverified";
               if (run.managedVersionSnapshot) {
@@ -17822,7 +17933,7 @@ var require_evaluation_runner = __commonJS({
               const output = await client.runEvaluationCase({
                 question: result.caseSnapshot.question,
                 activationMode: run.activationMode,
-                skillReference: run.skillReference,
+                skillReference: targetSkillReference,
                 modelId: configuration.modelId,
                 effort: configuration.effort
               });
@@ -17843,7 +17954,7 @@ var require_evaluation_runner = __commonJS({
               const declaredBinding = (run.managedVersionSnapshot ? postExecutionBinding === "verified" && preExecutionBinding === "verified" ? "verified" : "unverified" : null) ?? result.runtimeConfiguration?.skillEvidenceBinding ?? configuration.skillEvidenceBinding ?? "unverified";
               const skillExecutionBinding = resolveExecutedSkillEvidenceBinding({
                 declaredBinding,
-                skillReference: run.skillReference,
+                skillReference: targetSkillReference,
                 skillEvidence: run.skillEvidence,
                 traceEvidence: output.traceEvidence,
                 expectedContentDigest: run.managedVersionSnapshot ? (() => {
@@ -19809,7 +19920,7 @@ var require_skill_installation_store = __commonJS({
       unlinkSync,
       writeFileSync
     } = __require("node:fs");
-    var { dirname, resolve } = __require("node:path");
+    var { dirname, isAbsolute, resolve, win32 } = __require("node:path");
     var SKILL_INSTALLATION_STORE_SCHEMA = "rolling-skill-installations/v1";
     var MAX_STORE_BYTES = 24 * 1024 * 1024;
     var MAX_ENTRY_BYTES = 128 * 1024;
@@ -20021,6 +20132,17 @@ var require_skill_installation_store = __commonJS({
       if (TERMINAL_STATUSES.has(from)) return false;
       return TRANSITIONS.get(from)?.has(to) ?? false;
     }
+    function normalizedSkillRoot(value) {
+      const path = typeof value === "string" ? value.trim() : "";
+      if (!path || !isAbsolute(path) && !win32.isAbsolute(path)) return null;
+      const windows = win32.isAbsolute(path);
+      const absolute = windows ? win32.resolve(path) : resolve(path);
+      const normalized = absolute.replace(/\\/gu, "/").replace(/\/+$/gu, "");
+      return /\/SKILL\.md$/iu.test(normalized) ? normalized.slice(0, -"/SKILL.md".length) : normalized;
+    }
+    function frozen(value) {
+      return Object.freeze(copy(value));
+    }
     var SkillInstallationStore = class {
       constructor(path) {
         this.path = resolve(requiredText(path, "Skill installation store path"));
@@ -20122,6 +20244,84 @@ var require_skill_installation_store = __commonJS({
       }
       read() {
         return copy(this.state);
+      }
+      listVerifiedInstallations(filters = {}) {
+        const normalizedFilters = {};
+        for (const [field, label] of [
+          ["repositoryId", "Repository id"],
+          ["skillId", "Skill id"],
+          ["versionId", "Version id"],
+          ["runtimeId", "Runtime id"],
+          ["providerId", "Provider id"]
+        ]) {
+          if (filters[field] !== void 0 && filters[field] !== null && filters[field] !== "") {
+            normalizedFilters[field] = requiredText(filters[field], label, 300);
+          }
+        }
+        const records = [];
+        for (const installation of this.state.installations) {
+          const job = this.state.jobs.find((entry) => entry.id === installation.jobId);
+          if (!job || job.status !== "succeeded" || job.request.purpose !== "managed-installation" || job.operation !== "install" || job.parsedResult?.trusted !== true || !installation.repositoryId || !installation.skillId || !installation.versionId || !installation.runtimeId || !installation.providerId || !installation.commit || !installation.contentDigest || !normalizedSkillRoot(installation.destination) || !installation.installedAt || !installation.verification || installation.verification === "none" || job.request.source.repositoryId !== installation.repositoryId || job.request.source.skillId !== installation.skillId || job.request.source.versionId !== installation.versionId || job.request.source.commit !== installation.commit || job.request.source.expectedDigest !== installation.contentDigest || job.runtime.runtimeId !== installation.runtimeId || job.runtime.providerId !== installation.providerId || job.parsedResult.destination !== installation.destination || job.parsedResult.verification !== installation.verification) {
+            continue;
+          }
+          if (Object.entries(normalizedFilters).some(([field, value]) => installation[field] !== value)) {
+            continue;
+          }
+          records.push({
+            ...copy(installation),
+            installationId: installation.id,
+            skillName: job.request.skillName,
+            runtime: copy(job.runtime)
+          });
+        }
+        records.sort(
+          (left, right) => right.installedAt.localeCompare(left.installedAt) || right.id.localeCompare(left.id)
+        );
+        return Object.freeze(records.map((entry) => frozen(entry)));
+      }
+      resolveVerifiedInstallation(input = {}) {
+        const filters = {
+          repositoryId: requiredText(input.repositoryId, "Repository id", 200),
+          skillId: requiredText(input.skillId, "Skill id", 200),
+          versionId: requiredText(input.versionId, "Version id", 200),
+          runtimeId: requiredText(input.runtimeId, "Runtime id", 300),
+          providerId: requiredText(input.providerId, "Provider id", 100)
+        };
+        const candidates = this.listVerifiedInstallations(filters);
+        if (!candidates.length) throw new Error("A verified Skill installation is required");
+        const newestInstalledAt = candidates[0].installedAt;
+        const newest = candidates.filter((entry) => entry.installedAt === newestInstalledAt);
+        const signatures = new Set(newest.map((entry) => JSON.stringify({
+          repositoryId: entry.repositoryId,
+          skillId: entry.skillId,
+          versionId: entry.versionId,
+          runtimeId: entry.runtimeId,
+          providerId: entry.providerId,
+          commit: entry.commit,
+          contentDigest: entry.contentDigest,
+          destination: normalizedSkillRoot(entry.destination),
+          verification: entry.verification
+        })));
+        if (signatures.size > 1) {
+          throw new Error("Conflicting newest verified Skill installations are ambiguous");
+        }
+        return frozen(newest[0]);
+      }
+      resolveManagedInstallationForLegacyReference(input = {}) {
+        const name = requiredText(input.name, "Legacy Skill name", 200);
+        const root = normalizedSkillRoot(requiredText(input.path, "Legacy Skill path", 8192));
+        if (!root) throw new Error("Legacy Skill path must be absolute");
+        const runtimeId = requiredText(input.runtimeId, "Legacy Runtime id", 300);
+        const providerId = nullableText(input.providerId, "Legacy provider id", 100);
+        const candidates = this.listVerifiedInstallations({ runtimeId, ...providerId ? { providerId } : {} }).filter((entry) => entry.skillName === name).filter((entry) => normalizedSkillRoot(entry.destination) === root);
+        if (!candidates.length) return null;
+        const identities = new Set(candidates.map(
+          (entry) => `${entry.repositoryId}\0${entry.skillId}`
+        ));
+        if (identities.size > 1) {
+          throw new Error("Legacy Skill path matches ambiguous managed installations");
+        }
+        return frozen(candidates[0]);
       }
       createJob(input = {}) {
         const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -21780,8 +21980,9 @@ var require_data_root = __commonJS({
 var require_evaluation_services = __commonJS({
   "../rolling-skill-core/src/evaluation-services.cjs"(exports, module) {
     var {
-      snapshotSkillEvidence
+      snapshotManagedSkillEvidence
     } = require_evaluation_skill_evidence();
+    var { basename, join } = __require("node:path");
     function copy(value) {
       return JSON.parse(JSON.stringify(value));
     }
@@ -21803,35 +22004,107 @@ var require_evaluation_services = __commonJS({
         effort: optionalText(value.effort, `${label} reasoning effort`)
       };
     }
+    function installedSkillPath(destination) {
+      return basename(destination).toLocaleLowerCase("en-US") === "skill.md" ? destination : join(destination, "SKILL.md");
+    }
     function createEvaluationServices({
       store,
       runtimeServices,
       runner,
-      snapshotSkill = snapshotSkillEvidence,
+      managedSkillStore,
+      managedSkillManager,
+      installationStore,
+      snapshotManagedSkill = snapshotManagedSkillEvidence,
       onChanged = () => {
       }
     }) {
-      if (!store || !runtimeServices || !runner) {
+      if (!store || !runtimeServices || !runner || !managedSkillStore || !managedSkillManager || !installationStore) {
         throw new Error("Rolling Skill evaluation dependencies are required");
       }
       async function start(input = {}) {
         const datasetId = requiredText(input.datasetId, "Dataset id");
         const dataset = store.getDataset(datasetId);
+        const datasetSkill = dataset.skillReference;
+        if (datasetSkill?.evidencePrecision !== "managed" || !datasetSkill.id || !datasetSkill.repositoryId || datasetSkill.path || datasetSkill.runtimeId || datasetSkill.providerId) {
+          throw new Error("Dataset must bind a managed Skill before evaluation");
+        }
+        const versionId = requiredText(input.versionId, "Evaluation version id");
+        const skill = managedSkillStore.getSkill(datasetSkill.id);
+        const repository = managedSkillStore.getRepository(datasetSkill.repositoryId);
+        if (skill.repositoryId !== repository.id || datasetSkill.name !== skill.name) {
+          throw new Error("Dataset managed Skill identity no longer matches the catalog");
+        }
+        const version = managedSkillStore.getVersion(versionId);
+        if (version.state !== "released" || version.deprecatedAt || version.skillId !== skill.id || version.repositoryId !== repository.id) {
+          throw new Error("Evaluation requires the Dataset Skill's Released version");
+        }
         const targets = Array.isArray(input.targets) ? input.targets : [];
         if (targets.length < 1 || targets.length > 20) {
           throw new Error("At least one evaluation Runtime is required");
         }
-        const runtimeConfigurations = targets.map(
+        const requestedRuntimeConfigurations = targets.map(
           (target) => configuration(runtimeServices, target, "Evaluation")
         );
         const judgeConfiguration = configuration(runtimeServices, input.judge, "Judge");
-        const skillEvidence = snapshotSkill(dataset.skillReference);
+        const installationJobIdsByRuntime = {};
+        const runtimeConfigurations = requestedRuntimeConfigurations.map((runtimeConfiguration) => {
+          const installation = installationStore.resolveVerifiedInstallation({
+            repositoryId: repository.id,
+            skillId: skill.id,
+            versionId: version.id,
+            runtimeId: runtimeConfiguration.runtimeId,
+            providerId: runtimeConfiguration.providerId
+          });
+          if (installation.commit !== version.commit || installation.contentDigest !== version.contentDigest) {
+            throw new Error("Verified Runtime installation does not match the Released version");
+          }
+          installationJobIdsByRuntime[runtimeConfiguration.runtimeId] = installation.jobId;
+          return {
+            ...runtimeConfiguration,
+            skillEvidenceBinding: "verified",
+            skillReference: {
+              schemaVersion: "rolling-skill-skill-reference/v1",
+              id: skill.id,
+              repositoryId: repository.id,
+              name: skill.name,
+              path: installedSkillPath(installation.destination),
+              scope: "runtime",
+              description: skill.description ?? null,
+              runtimeId: runtimeConfiguration.runtimeId,
+              providerId: runtimeConfiguration.providerId,
+              confirmedAt: installation.installedAt
+            },
+            installationId: installation.installationId ?? installation.id,
+            installationJobId: installation.jobId,
+            installationVerification: installation.verification,
+            expectedContentDigest: version.contentDigest
+          };
+        });
+        const skillEvidence = await snapshotManagedSkill({
+          name: skill.name,
+          repositoryId: repository.id,
+          skillId: skill.id,
+          versionId: version.id,
+          repositoryPath: repository.managedPath,
+          commit: version.commit,
+          skillRoot: version.skillRoot,
+          contentDigest: version.contentDigest
+        }, { git: managedSkillManager.git });
         const run = store.createEvaluationRun({
           datasetId,
           caseIds: Array.isArray(input.caseIds) ? input.caseIds : [],
           selectionMode: input.selectionMode ?? "dataset",
           activationMode: input.activationMode ?? "explicit",
           skillEvidence,
+          managedVersionSnapshot: {
+            repositoryId: repository.id,
+            skillId: skill.id,
+            versionId: version.id,
+            commit: version.commit,
+            skillRoot: version.skillRoot,
+            contentDigest: version.contentDigest,
+            installationJobIdsByRuntime
+          },
           judgeProfile: {
             runtimePolicy: "active",
             modelId: judgeConfiguration.modelId,
@@ -21839,7 +22112,7 @@ var require_evaluation_services = __commonJS({
           },
           judgeConfiguration,
           runtimeConfigurations
-        });
+        }, { managedVersionAuthorized: true });
         Promise.resolve(runner.run(run)).catch((error) => {
           try {
             store.updateEvaluationRun?.(run.id, {
@@ -55871,6 +56144,37 @@ var require_operator_services = __commonJS({
         16
       ) + 1;
     }
+    function optimizationRuntimeSkillBinding({
+      runtimeConfiguration,
+      repository,
+      skill,
+      candidate,
+      installationJob
+    }) {
+      if (installationJob?.status !== "succeeded" || installationJob.request?.purpose !== "optimization-experiment" || installationJob.parsedResult?.trusted !== true || !installationJob.parsedResult.destination || !installationJob.parsedResult.verification || installationJob.parsedResult.verification === "none" || installationJob.runtime?.runtimeId !== runtimeConfiguration.runtimeId || installationJob.runtime?.providerId !== runtimeConfiguration.providerId || installationJob.request.source?.repositoryId !== repository.id || installationJob.request.source?.skillId !== skill.id || installationJob.request.source?.versionId !== candidate.id || installationJob.request.source?.commit !== candidate.commit || installationJob.request.source?.expectedDigest !== candidate.contentDigest) {
+        throw new Error(`Optimization target ${runtimeConfiguration.runtimeId} lacks a trusted Candidate installation`);
+      }
+      const destination = installationJob.parsedResult.destination;
+      const path = basename(destination).toLocaleLowerCase("en-US") === "skill.md" ? destination : join(destination, "SKILL.md");
+      return {
+        ...runtimeConfiguration,
+        skillReference: {
+          schemaVersion: "rolling-skill-skill-reference/v1",
+          id: skill.id,
+          repositoryId: repository.id,
+          name: skill.name,
+          path,
+          scope: "runtime",
+          description: skill.description ?? null,
+          runtimeId: runtimeConfiguration.runtimeId,
+          providerId: runtimeConfiguration.providerId,
+          confirmedAt: installationJob.completedAt ?? (/* @__PURE__ */ new Date()).toISOString()
+        },
+        installationJobId: installationJob.id,
+        installationVerification: installationJob.parsedResult.verification,
+        expectedContentDigest: candidate.contentDigest
+      };
+    }
     function createOperatorRuntime({
       paths,
       store,
@@ -56133,9 +56437,22 @@ var require_operator_services = __commonJS({
           skillRoot: candidate.skillRoot,
           contentDigest: candidate.contentDigest
         }, { git: managedSkillManager.git });
-        const installationJobIdsByRuntime = Object.fromEntries(
-          (input.installationJobs ?? []).map((job) => [job.runtime.runtimeId, job.id])
+        const installationJobsByRuntime = new Map(
+          (input.installationJobs ?? []).map((job) => [job.runtime.runtimeId, job])
         );
+        const installationJobIdsByRuntime = Object.fromEntries(
+          [...installationJobsByRuntime].map(([runtimeId, job]) => [runtimeId, job.id])
+        );
+        const runtimeConfigurations = input.targets.map((target) => {
+          const resolved = runtimeConfiguration(target);
+          return optimizationRuntimeSkillBinding({
+            runtimeConfiguration: resolved,
+            repository,
+            skill,
+            candidate,
+            installationJob: installationJobsByRuntime.get(resolved.runtimeId)
+          });
+        });
         const run = store.createEvaluationRun({
           datasetId: snapshot.dataset.id,
           caseIds: snapshot.dataset.caseRevisions.map((entry) => entry.caseId),
@@ -56157,7 +56474,7 @@ var require_operator_services = __commonJS({
             effort: snapshot.judge.effort
           },
           judgeConfiguration: runtimeConfiguration(snapshot.judge),
-          runtimeConfigurations: input.targets.map(runtimeConfiguration)
+          runtimeConfigurations
         }, { optimizationAuthorized: true });
         await evaluationRunner.run(run);
         return store.getEvaluationRun(run.id);
@@ -56267,10 +56584,11 @@ var require_operator_services = __commonJS({
     module.exports = {
       createOperatorRuntime,
       createOperatorServices,
+      optimizationRuntimeSkillBinding,
       publicOperatorValue: publicValue
     };
     var { createHash } = __require("node:crypto");
-    var { join } = __require("node:path");
+    var { basename, join } = __require("node:path");
     var {
       snapshotManagedSkillEvidence
     } = require_evaluation_skill_evidence();
@@ -60688,19 +61006,78 @@ var require_application = __commonJS({
       }
       return JSON.parse(JSON.stringify(input));
     }
-    function defaultSkillReference(paths) {
+    function requiredIdentifier(value, label) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized || normalized.length > 200) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function managedSkillReference(repository, skill, confirmedAt = (/* @__PURE__ */ new Date()).toISOString()) {
       return {
         schemaVersion: "rolling-skill-skill-reference/v1",
-        name: "rolling-skill",
+        evidencePrecision: "managed",
+        id: skill.id,
+        repositoryId: repository.id,
+        name: skill.name,
         path: null,
-        scope: "plugin",
-        description: "Rolling Skill DeepSeek Harness plugin",
-        runtimeId: "deepseek-harness:rolling-skill",
-        providerId: "deepseek-harness",
-        workspaceRoot: paths.root,
-        evidencePrecision: "name-only",
-        confirmedAt: (/* @__PURE__ */ new Date()).toISOString()
+        scope: "managed",
+        description: skill.description ?? null,
+        runtimeId: null,
+        providerId: null,
+        confirmedAt
       };
+    }
+    function managedDatasetSkillReference(managedSkillStore, input = {}) {
+      const allowed = /* @__PURE__ */ new Set(["name", "repositoryId", "skillId"]);
+      const unsupported = Object.keys(input).find((field) => !allowed.has(field));
+      if (unsupported) throw new Error(`Unsupported Dataset field: ${unsupported}`);
+      const repositoryId = requiredIdentifier(input.repositoryId, "Dataset Skill repository id");
+      const skillId = requiredIdentifier(input.skillId, "Dataset Skill id");
+      const repository = managedSkillStore.getRepository(repositoryId);
+      const skill = managedSkillStore.getSkill(skillId);
+      if (skill.repositoryId !== repository.id) {
+        throw new Error("Dataset Skill repository does not match the managed Skill");
+      }
+      return managedSkillReference(repository, skill);
+    }
+    function reconcileManagedDatasetBindings({ store, managedSkillStore, installationStore }) {
+      let migrated = 0;
+      let skipped = 0;
+      for (const dataset of store.listDatasets()) {
+        const legacy = dataset.skillReference;
+        if (!legacy || legacy.evidencePrecision === "managed" || !legacy.path) {
+          skipped += 1;
+          continue;
+        }
+        try {
+          const installation = legacy.repositoryId && legacy.id ? {
+            repositoryId: legacy.repositoryId,
+            skillId: legacy.id,
+            installedAt: legacy.confirmedAt ?? (/* @__PURE__ */ new Date()).toISOString()
+          } : installationStore.resolveManagedInstallationForLegacyReference(legacy);
+          if (!installation) {
+            skipped += 1;
+            continue;
+          }
+          const repository = managedSkillStore.getRepository(installation.repositoryId);
+          const skill = managedSkillStore.getSkill(installation.skillId);
+          if (skill.repositoryId !== repository.id) {
+            skipped += 1;
+            continue;
+          }
+          store.migrateDatasetSkillReference(dataset.id, {
+            expectedLegacyReference: legacy,
+            managedSkillReference: managedSkillReference(
+              repository,
+              skill,
+              installation.installedAt ?? legacy.confirmedAt ?? (/* @__PURE__ */ new Date()).toISOString()
+            )
+          });
+          migrated += 1;
+        } catch {
+          skipped += 1;
+        }
+      }
+      return { migrated, skipped };
     }
     function workerOperatorRuntime() {
       const unavailable = () => {
@@ -60763,6 +61140,7 @@ var require_application = __commonJS({
         store: managedSkillStore
       });
       const installationStore = new SkillInstallationStore(paths.skillInstallations);
+      reconcileManagedDatasetBindings({ store, managedSkillStore, installationStore });
       const installationManager = new SkillInstallationManager({
         store: installationStore,
         managedSkillStore,
@@ -60867,8 +61245,11 @@ var require_application = __commonJS({
         store,
         runtimeServices,
         runner: evaluationRunner,
+        managedSkillStore,
+        managedSkillManager,
+        installationStore,
         onChanged: () => publish(),
-        ...options2.snapshotSkill ? { snapshotSkill: options2.snapshotSkill } : {}
+        ...options2.snapshotManagedSkill ? { snapshotManagedSkill: options2.snapshotManagedSkill } : {}
       });
       const operatorRuntime = options2.operatorRuntime ?? (options2.workerMode ? workerOperatorRuntime() : createOperatorRuntime({
         paths,
@@ -61009,8 +61390,8 @@ var require_application = __commonJS({
           cases: store.listCases(datasetId)
         }),
         "datasets.create": (input) => store.createDataset({
-          ...input,
-          skillReference: input.skillReference ?? defaultSkillReference(paths)
+          name: input.name,
+          skillReference: managedDatasetSkillReference(managedSkillStore, input)
         }),
         "rawCases.list": () => rawCaseStore.list(),
         "rawCases.add": (input) => rawCaseStore.add(input),
@@ -61163,7 +61544,8 @@ var require_application = __commonJS({
     }
     module.exports = {
       MAX_DISPATCH_BYTES,
-      createRollingSkillApplication: createRollingSkillApplication2
+      createRollingSkillApplication: createRollingSkillApplication2,
+      reconcileManagedDatasetBindings
     };
   }
 });

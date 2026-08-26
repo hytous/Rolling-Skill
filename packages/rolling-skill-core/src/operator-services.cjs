@@ -197,6 +197,54 @@ function revision(value) {
     ) + 1
 }
 
+function optimizationRuntimeSkillBinding({
+    runtimeConfiguration,
+    repository,
+    skill,
+    candidate,
+    installationJob,
+}) {
+    if (
+        installationJob?.status !== "succeeded" ||
+        installationJob.request?.purpose !== "optimization-experiment" ||
+        installationJob.parsedResult?.trusted !== true ||
+        !installationJob.parsedResult.destination ||
+        !installationJob.parsedResult.verification ||
+        installationJob.parsedResult.verification === "none" ||
+        installationJob.runtime?.runtimeId !== runtimeConfiguration.runtimeId ||
+        installationJob.runtime?.providerId !== runtimeConfiguration.providerId ||
+        installationJob.request.source?.repositoryId !== repository.id ||
+        installationJob.request.source?.skillId !== skill.id ||
+        installationJob.request.source?.versionId !== candidate.id ||
+        installationJob.request.source?.commit !== candidate.commit ||
+        installationJob.request.source?.expectedDigest !== candidate.contentDigest
+    ) {
+        throw new Error(`Optimization target ${runtimeConfiguration.runtimeId} lacks a trusted Candidate installation`)
+    }
+    const destination = installationJob.parsedResult.destination
+    const path = basename(destination).toLocaleLowerCase("en-US") === "skill.md"
+        ? destination
+        : join(destination, "SKILL.md")
+    return {
+        ...runtimeConfiguration,
+        skillReference: {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            id: skill.id,
+            repositoryId: repository.id,
+            name: skill.name,
+            path,
+            scope: "runtime",
+            description: skill.description ?? null,
+            runtimeId: runtimeConfiguration.runtimeId,
+            providerId: runtimeConfiguration.providerId,
+            confirmedAt: installationJob.completedAt ?? new Date().toISOString(),
+        },
+        installationJobId: installationJob.id,
+        installationVerification: installationJob.parsedResult.verification,
+        expectedContentDigest: candidate.contentDigest,
+    }
+}
+
 function createOperatorRuntime({
     paths,
     store,
@@ -478,9 +526,22 @@ function createOperatorRuntime({
             skillRoot: candidate.skillRoot,
             contentDigest: candidate.contentDigest,
         }, {git: managedSkillManager.git})
-        const installationJobIdsByRuntime = Object.fromEntries(
-            (input.installationJobs ?? []).map((job) => [job.runtime.runtimeId, job.id]),
+        const installationJobsByRuntime = new Map(
+            (input.installationJobs ?? []).map((job) => [job.runtime.runtimeId, job]),
         )
+        const installationJobIdsByRuntime = Object.fromEntries(
+            [...installationJobsByRuntime].map(([runtimeId, job]) => [runtimeId, job.id]),
+        )
+        const runtimeConfigurations = input.targets.map((target) => {
+            const resolved = runtimeConfiguration(target)
+            return optimizationRuntimeSkillBinding({
+                runtimeConfiguration: resolved,
+                repository,
+                skill,
+                candidate,
+                installationJob: installationJobsByRuntime.get(resolved.runtimeId),
+            })
+        })
         const run = store.createEvaluationRun({
             datasetId: snapshot.dataset.id,
             caseIds: snapshot.dataset.caseRevisions.map((entry) => entry.caseId),
@@ -502,7 +563,7 @@ function createOperatorRuntime({
                 effort: snapshot.judge.effort,
             },
             judgeConfiguration: runtimeConfiguration(snapshot.judge),
-            runtimeConfigurations: input.targets.map(runtimeConfiguration),
+            runtimeConfigurations,
         }, {optimizationAuthorized: true})
         await evaluationRunner.run(run)
         return store.getEvaluationRun(run.id)
@@ -618,10 +679,11 @@ function createOperatorRuntime({
 module.exports = {
     createOperatorRuntime,
     createOperatorServices,
+    optimizationRuntimeSkillBinding,
     publicOperatorValue: publicValue,
 }
 const {createHash} = require("node:crypto")
-const {join} = require("node:path")
+const {basename, join} = require("node:path")
 
 const {
     snapshotManagedSkillEvidence,

@@ -1,7 +1,10 @@
 const assert = require("node:assert/strict")
 const {describe, it} = require("node:test")
 
-const {createOperatorServices} = require("../src/operator-services.cjs")
+const {
+    createOperatorServices,
+    optimizationRuntimeSkillBinding,
+} = require("../src/operator-services.cjs")
 
 function fixture() {
     const calls = []
@@ -89,6 +92,54 @@ function fixture() {
 }
 
 describe("Rolling Skill Operator services", () => {
+    it("freezes each Optimization target's experiment installation path", () => {
+        const runtimeConfiguration = {
+            runtimeId: "codex:one",
+            providerId: "codex",
+            displayName: "Codex",
+            executablePath: "/opt/codex",
+        }
+        const candidate = {
+            id: "candidate-1",
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            commit: "a".repeat(40),
+            contentDigest: `sha256:${"b".repeat(64)}`,
+        }
+        const binding = optimizationRuntimeSkillBinding({
+            runtimeConfiguration,
+            repository: {id: "repository-1"},
+            skill: {id: "skill-1", name: "billing", description: "Billing"},
+            candidate,
+            installationJob: {
+                id: "experiment-job-1",
+                status: "succeeded",
+                runtime: {runtimeId: "codex:one", providerId: "codex"},
+                request: {
+                    purpose: "optimization-experiment",
+                    source: {
+                        repositoryId: "repository-1",
+                        skillId: "skill-1",
+                        versionId: "candidate-1",
+                        commit: "a".repeat(40),
+                        expectedDigest: `sha256:${"b".repeat(64)}`,
+                    },
+                },
+                parsedResult: {
+                    trusted: true,
+                    destination: "/experiments/codex/billing",
+                    verification: "runtime-inventory",
+                },
+                completedAt: "2026-08-26T00:00:00.000Z",
+            },
+        })
+
+        assert.equal(binding.skillReference.path, "/experiments/codex/billing/SKILL.md")
+        assert.equal(binding.skillReference.runtimeId, "codex:one")
+        assert.equal(binding.installationJobId, "experiment-job-1")
+        assert.equal(binding.expectedContentDigest, candidate.contentDigest)
+    })
+
     it("returns bounded public summaries without capabilities, paths, environment, or reasoning", () => {
         const {services} = fixture()
         const summary = services.operatorSummary({limit: 20})

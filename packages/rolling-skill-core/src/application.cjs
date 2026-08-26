@@ -114,19 +114,83 @@ function checkedInput(method, input) {
     return JSON.parse(JSON.stringify(input))
 }
 
-function defaultSkillReference(paths) {
+function requiredIdentifier(value, label) {
+    const normalized = typeof value === "string" ? value.trim() : ""
+    if (!normalized || normalized.length > 200) throw new Error(`${label} is required`)
+    return normalized
+}
+
+function managedSkillReference(repository, skill, confirmedAt = new Date().toISOString()) {
     return {
         schemaVersion: "rolling-skill-skill-reference/v1",
-        name: "rolling-skill",
+        evidencePrecision: "managed",
+        id: skill.id,
+        repositoryId: repository.id,
+        name: skill.name,
         path: null,
-        scope: "plugin",
-        description: "Rolling Skill DeepSeek Harness plugin",
-        runtimeId: "deepseek-harness:rolling-skill",
-        providerId: "deepseek-harness",
-        workspaceRoot: paths.root,
-        evidencePrecision: "name-only",
-        confirmedAt: new Date().toISOString(),
+        scope: "managed",
+        description: skill.description ?? null,
+        runtimeId: null,
+        providerId: null,
+        confirmedAt,
     }
+}
+
+function managedDatasetSkillReference(managedSkillStore, input = {}) {
+    const allowed = new Set(["name", "repositoryId", "skillId"])
+    const unsupported = Object.keys(input).find((field) => !allowed.has(field))
+    if (unsupported) throw new Error(`Unsupported Dataset field: ${unsupported}`)
+    const repositoryId = requiredIdentifier(input.repositoryId, "Dataset Skill repository id")
+    const skillId = requiredIdentifier(input.skillId, "Dataset Skill id")
+    const repository = managedSkillStore.getRepository(repositoryId)
+    const skill = managedSkillStore.getSkill(skillId)
+    if (skill.repositoryId !== repository.id) {
+        throw new Error("Dataset Skill repository does not match the managed Skill")
+    }
+    return managedSkillReference(repository, skill)
+}
+
+function reconcileManagedDatasetBindings({store, managedSkillStore, installationStore}) {
+    let migrated = 0
+    let skipped = 0
+    for (const dataset of store.listDatasets()) {
+        const legacy = dataset.skillReference
+        if (!legacy || legacy.evidencePrecision === "managed" || !legacy.path) {
+            skipped += 1
+            continue
+        }
+        try {
+            const installation = legacy.repositoryId && legacy.id
+                ? {
+                    repositoryId: legacy.repositoryId,
+                    skillId: legacy.id,
+                    installedAt: legacy.confirmedAt ?? new Date().toISOString(),
+                }
+                : installationStore.resolveManagedInstallationForLegacyReference(legacy)
+            if (!installation) {
+                skipped += 1
+                continue
+            }
+            const repository = managedSkillStore.getRepository(installation.repositoryId)
+            const skill = managedSkillStore.getSkill(installation.skillId)
+            if (skill.repositoryId !== repository.id) {
+                skipped += 1
+                continue
+            }
+            store.migrateDatasetSkillReference(dataset.id, {
+                expectedLegacyReference: legacy,
+                managedSkillReference: managedSkillReference(
+                    repository,
+                    skill,
+                    installation.installedAt ?? legacy.confirmedAt ?? new Date().toISOString(),
+                ),
+            })
+            migrated += 1
+        } catch {
+            skipped += 1
+        }
+    }
+    return {migrated, skipped}
 }
 
 function workerOperatorRuntime() {
@@ -190,6 +254,7 @@ function createRollingSkillApplication(options = {}) {
         store: managedSkillStore,
     })
     const installationStore = new SkillInstallationStore(paths.skillInstallations)
+    reconcileManagedDatasetBindings({store, managedSkillStore, installationStore})
     const installationManager = new SkillInstallationManager({
         store: installationStore,
         managedSkillStore,
@@ -297,8 +362,13 @@ function createRollingSkillApplication(options = {}) {
         store,
         runtimeServices,
         runner: evaluationRunner,
+        managedSkillStore,
+        managedSkillManager,
+        installationStore,
         onChanged: () => publish(),
-        ...(options.snapshotSkill ? {snapshotSkill: options.snapshotSkill} : {}),
+        ...(options.snapshotManagedSkill
+            ? {snapshotManagedSkill: options.snapshotManagedSkill}
+            : {}),
     })
     const operatorRuntime = options.operatorRuntime ?? (options.workerMode
         ? workerOperatorRuntime()
@@ -443,8 +513,8 @@ function createRollingSkillApplication(options = {}) {
             cases: store.listCases(datasetId),
         }),
         "datasets.create": (input) => store.createDataset({
-            ...input,
-            skillReference: input.skillReference ?? defaultSkillReference(paths),
+            name: input.name,
+            skillReference: managedDatasetSkillReference(managedSkillStore, input),
         }),
         "rawCases.list": () => rawCaseStore.list(),
         "rawCases.add": (input) => rawCaseStore.add(input),
@@ -606,4 +676,5 @@ function createRollingSkillApplication(options = {}) {
 module.exports = {
     MAX_DISPATCH_BYTES,
     createRollingSkillApplication,
+    reconcileManagedDatasetBindings,
 }

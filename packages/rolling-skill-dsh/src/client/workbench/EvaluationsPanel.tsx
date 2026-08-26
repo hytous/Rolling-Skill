@@ -1,13 +1,39 @@
 import {Button, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
-import {useEffect, useState} from "react"
+import {useEffect, useMemo, useState} from "react"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
 import {RuntimeSelect} from "./RuntimeSelect"
 import type {RuntimeDescriptor} from "./RuntimeSelect"
 
-interface Dataset {id: string; name: string; caseCount: number}
+interface Dataset {
+    id: string
+    name: string
+    caseCount: number
+    skillReference: {
+        evidencePrecision?: string
+        id?: string
+        repositoryId?: string
+        name?: string
+    } | null
+}
 interface Model {id?: string; model?: string; displayName?: string}
+interface Version {
+    id: string
+    skillId: string
+    state: "candidate" | "released"
+    versionLabel: string | null
+    deprecatedAt?: string | null
+}
+interface VersionPage {versions: Version[]; nextCursor: string | null}
+interface Installation {
+    runtimeId: string
+    providerId: string | null
+    versionId: string | null
+    verification: string
+    destination: string | null
+}
+interface InstallationOverview {matrix: Installation[]}
 interface EvaluationSummary {
     id: string
     datasetId: string
@@ -27,6 +53,9 @@ export function EvaluationsPanel({t}: {t: Translate}) {
     const [targetRuntimeId, setTargetRuntimeId] = useState("")
     const [judgeRuntimeId, setJudgeRuntimeId] = useState("")
     const [datasetId, setDatasetId] = useState("")
+    const [versions, setVersions] = useState<Version[]>([])
+    const [versionId, setVersionId] = useState("")
+    const [installations, setInstallations] = useState<Installation[]>([])
     const [targetModels, setTargetModels] = useState<Model[]>([])
     const [judgeModels, setJudgeModels] = useState<Model[]>([])
     const [targetModelId, setTargetModelId] = useState("")
@@ -55,6 +84,44 @@ export function EvaluationsPanel({t}: {t: Translate}) {
         })
         return () => controller.abort()
     }, [revision])
+
+    const selectedDataset = useMemo(
+        () => datasets.find((dataset) => dataset.id === datasetId) ?? null,
+        [datasets, datasetId],
+    )
+
+    useEffect(() => {
+        const skillId = selectedDataset?.skillReference?.evidencePrecision === "managed"
+            ? selectedDataset.skillReference.id
+            : null
+        if (!skillId) {
+            setVersions([])
+            setVersionId("")
+            setInstallations([])
+            return
+        }
+        const controller = new AbortController()
+        Promise.all([
+            requestRollingSkill<VersionPage>("skills.versions", {
+                skillIds: [skillId],
+                skillId,
+                limit: 100,
+            }, controller.signal),
+            requestRollingSkill<InstallationOverview>("installations.list", {skillId}, controller.signal),
+        ]).then(([page, overview]) => {
+            const released = page.versions.filter(
+                (version) => version.state === "released" && !version.deprecatedAt,
+            )
+            setVersions(released)
+            setVersionId((current) => released.some((version) => version.id === current)
+                ? current
+                : released[0]?.id ?? "")
+            setInstallations(overview.matrix)
+        }).catch((reason: unknown) => {
+            if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"))
+        })
+        return () => controller.abort()
+    }, [selectedDataset, revision])
 
     useEffect(() => {
         if (!targetRuntimeId) return
@@ -96,8 +163,14 @@ export function EvaluationsPanel({t}: {t: Translate}) {
             setBusy(false)
         }
     }
+    const selectedInstallation = installations.find((installation) =>
+        installation.runtimeId === targetRuntimeId &&
+        installation.versionId === versionId &&
+        installation.verification !== "none",
+    ) ?? null
     const start = () => mutate(() => requestRollingSkill("evaluations.start", {
         datasetId,
+        versionId,
         selectionMode: "dataset",
         activationMode: "explicit",
         targets: [{runtimeId: targetRuntimeId, modelId: targetModelId || null, effort}],
@@ -117,7 +190,9 @@ export function EvaluationsPanel({t}: {t: Translate}) {
             <section className="rolling-skill-panel">
                 <div className="rolling-skill-panel-header"><div><h3>{t("evaluationStartTitle")}</h3><p>{t("evaluationStartDescription")}</p></div></div>
                 <label className="rolling-skill-field"><span>{t("selectDataset")}</span><select className="rolling-skill-select" value={datasetId} onChange={(event) => setDatasetId(event.target.value)}>{datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name} · {dataset.caseCount}</option>)}</select></label>
+                <label className="rolling-skill-field"><span>{t("evaluationVersion")}</span><select className="rolling-skill-select" value={versionId} onChange={(event) => setVersionId(event.target.value)}>{versions.map((version) => <option key={version.id} value={version.id}>{version.versionLabel ?? version.id}</option>)}</select></label>
                 <RuntimeSelect t={t} runtimes={runtimes} value={targetRuntimeId} onChange={setTargetRuntimeId} label={t("evaluationRuntime")}/>
+                <p className={selectedInstallation ? "rolling-skill-inline-success" : "rolling-skill-inline-error"}>{selectedInstallation ? t("installationReady") : t("installationMissing")}</p>
                 <div className="rolling-skill-grid">
                     <label className="rolling-skill-field"><span>{t("model")}</span><select className="rolling-skill-select" value={targetModelId} onChange={(event) => setTargetModelId(event.target.value)}>{targetModels.map((model) => {const id = model.id ?? model.model ?? ""; return <option key={id} value={id}>{model.displayName ?? id}</option>})}</select></label>
                     <label className="rolling-skill-field"><span>{t("effort")}</span><select className="rolling-skill-select" value={effort} onChange={(event) => setEffort(event.target.value)}>{["low", "medium", "high", "xhigh", "max"].map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
@@ -125,7 +200,7 @@ export function EvaluationsPanel({t}: {t: Translate}) {
                 <RuntimeSelect t={t} runtimes={runtimes} value={judgeRuntimeId} onChange={setJudgeRuntimeId} label={t("judgeRuntime")}/>
                 <label className="rolling-skill-field"><span>{t("judgeModel")}</span><select className="rolling-skill-select" value={judgeModelId} onChange={(event) => setJudgeModelId(event.target.value)}>{judgeModels.map((model) => {const id = model.id ?? model.model ?? ""; return <option key={id} value={id}>{model.displayName ?? id}</option>})}</select></label>
                 {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
-                <Button variant="outline" disabled={busy || !datasetId || !targetRuntimeId || !judgeRuntimeId} onClick={() => void start()}>{t("startEvaluation")}</Button>
+                <Button variant="outline" disabled={busy || !datasetId || !versionId || !targetRuntimeId || !judgeRuntimeId || !selectedInstallation} onClick={() => void start()}>{t("startEvaluation")}</Button>
             </section>
             <section className="rolling-skill-panel">
                 <div className="rolling-skill-panel-header"><div><h3>{t("evaluationRuns")}</h3></div><Button variant="ghost" size="sm" onClick={() => setRevision((value) => value + 1)}>{t("refresh")}</Button></div>

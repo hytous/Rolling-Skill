@@ -451,7 +451,9 @@ var import_react3 = require("react");
 var import_jsx_runtime4 = require("react/jsx-runtime");
 function DatasetsPanel({ t, onChanged }) {
   const [datasets, setDatasets] = (0, import_react3.useState)([]);
+  const [catalog, setCatalog] = (0, import_react3.useState)({ repositories: [], skills: [] });
   const [name, setName] = (0, import_react3.useState)("");
+  const [skillId, setSkillId] = (0, import_react3.useState)("");
   const [deleting, setDeleting] = (0, import_react3.useState)(null);
   const [recoverQuestions, setRecoverQuestions] = (0, import_react3.useState)(true);
   const [busy, setBusy] = (0, import_react3.useState)(false);
@@ -459,7 +461,15 @@ function DatasetsPanel({ t, onChanged }) {
   const [revision, setRevision] = (0, import_react3.useState)(0);
   (0, import_react3.useEffect)(() => {
     const controller = new AbortController();
-    requestRollingSkill("datasets.list", {}, controller.signal).then(setDatasets).catch((reason) => {
+    Promise.all([
+      requestRollingSkill("datasets.list", {}, controller.signal),
+      requestRollingSkill("skills.catalog", {}, controller.signal)
+    ]).then(([datasetItems, nextCatalog]) => {
+      setDatasets(datasetItems);
+      setCatalog(nextCatalog);
+      const validSkills = nextCatalog.skills.filter((skill) => skill.status === "valid");
+      setSkillId((current) => validSkills.some((skill) => skill.id === current) ? current : validSkills[0]?.id ?? "");
+    }).catch((reason) => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
     });
     return () => controller.abort();
@@ -479,7 +489,13 @@ function DatasetsPanel({ t, onChanged }) {
     }
   };
   const create = () => mutate(async () => {
-    await requestRollingSkill("datasets.create", { name });
+    const selectedSkill = catalog.skills.find((skill) => skill.id === skillId);
+    if (!selectedSkill) throw new Error(t("noManagedSkills"));
+    await requestRollingSkill("datasets.create", {
+      name,
+      repositoryId: selectedSkill.repositoryId,
+      skillId: selectedSkill.id
+    });
     setName("");
   });
   const remove = () => {
@@ -527,13 +543,31 @@ function DatasetsPanel({ t, onChanged }) {
           onChange: (event) => setName(event.target.value)
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "outline", size: "sm", disabled: busy || !name.trim(), onClick: create, children: t("createDataset") })
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+        "select",
+        {
+          className: "rolling-skill-select",
+          "aria-label": t("datasetSkill"),
+          value: skillId,
+          onChange: (event) => setSkillId(event.target.value),
+          children: catalog.skills.filter((skill) => skill.status === "valid").map((skill) => {
+            const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId);
+            return /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("option", { value: skill.id, children: [
+              skill.name,
+              " \xB7 ",
+              repository?.displayName ?? skill.repositoryId
+            ] }, skill.id);
+          })
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(import_dsh_client_ui_primitives3.Button, { variant: "outline", size: "sm", disabled: busy || !name.trim() || !skillId, onClick: create, children: t("createDataset") })
     ] }),
     error ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-list", children: [
       datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("article", { className: "rolling-skill-list-row", children: [
         /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("strong", { children: dataset.name }),
+          /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: dataset.skillReference?.evidencePrecision === "managed" ? `${t("datasetSkill")}: ${dataset.skillReference.name}` : t("unboundManagedSkill") }),
           /* @__PURE__ */ (0, import_jsx_runtime4.jsx)("span", { children: t("caseBreakdown").replace("{all}", String(dataset.caseCount)).replace("{good}", String(dataset.goodcaseCount)).replace("{bad}", String(dataset.badcaseCount)) })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime4.jsxs)("div", { className: "rolling-skill-actions", children: [
@@ -577,6 +611,9 @@ function EvaluationsPanel({ t }) {
   const [targetRuntimeId, setTargetRuntimeId] = (0, import_react4.useState)("");
   const [judgeRuntimeId, setJudgeRuntimeId] = (0, import_react4.useState)("");
   const [datasetId, setDatasetId] = (0, import_react4.useState)("");
+  const [versions, setVersions] = (0, import_react4.useState)([]);
+  const [versionId, setVersionId] = (0, import_react4.useState)("");
+  const [installations, setInstallations] = (0, import_react4.useState)([]);
   const [targetModels, setTargetModels] = (0, import_react4.useState)([]);
   const [judgeModels, setJudgeModels] = (0, import_react4.useState)([]);
   const [targetModelId, setTargetModelId] = (0, import_react4.useState)("");
@@ -604,6 +641,38 @@ function EvaluationsPanel({ t }) {
     });
     return () => controller.abort();
   }, [revision]);
+  const selectedDataset = (0, import_react4.useMemo)(
+    () => datasets.find((dataset) => dataset.id === datasetId) ?? null,
+    [datasets, datasetId]
+  );
+  (0, import_react4.useEffect)(() => {
+    const skillId = selectedDataset?.skillReference?.evidencePrecision === "managed" ? selectedDataset.skillReference.id : null;
+    if (!skillId) {
+      setVersions([]);
+      setVersionId("");
+      setInstallations([]);
+      return;
+    }
+    const controller = new AbortController();
+    Promise.all([
+      requestRollingSkill("skills.versions", {
+        skillIds: [skillId],
+        skillId,
+        limit: 100
+      }, controller.signal),
+      requestRollingSkill("installations.list", { skillId }, controller.signal)
+    ]).then(([page, overview]) => {
+      const released = page.versions.filter(
+        (version) => version.state === "released" && !version.deprecatedAt
+      );
+      setVersions(released);
+      setVersionId((current) => released.some((version) => version.id === current) ? current : released[0]?.id ?? "");
+      setInstallations(overview.matrix);
+    }).catch((reason) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
+    });
+    return () => controller.abort();
+  }, [selectedDataset, revision]);
   (0, import_react4.useEffect)(() => {
     if (!targetRuntimeId) return;
     const controller = new AbortController();
@@ -638,8 +707,12 @@ function EvaluationsPanel({ t }) {
       setBusy(false);
     }
   };
+  const selectedInstallation = installations.find(
+    (installation) => installation.runtimeId === targetRuntimeId && installation.versionId === versionId && installation.verification !== "none"
+  ) ?? null;
   const start = () => mutate(() => requestRollingSkill("evaluations.start", {
     datasetId,
+    versionId,
     selectionMode: "dataset",
     activationMode: "explicit",
     targets: [{ runtimeId: targetRuntimeId, modelId: targetModelId || null, effort }],
@@ -667,7 +740,12 @@ function EvaluationsPanel({ t }) {
           dataset.caseCount
         ] }, dataset.id)) })
       ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: t("evaluationVersion") }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("select", { className: "rolling-skill-select", value: versionId, onChange: (event) => setVersionId(event.target.value), children: versions.map((version) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("option", { value: version.id, children: version.versionLabel ?? version.id }, version.id)) })
+      ] }),
       /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(RuntimeSelect, { t, runtimes, value: targetRuntimeId, onChange: setTargetRuntimeId, label: t("evaluationRuntime") }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: selectedInstallation ? "rolling-skill-inline-success" : "rolling-skill-inline-error", children: selectedInstallation ? t("installationReady") : t("installationMissing") }),
       /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-grid", children: [
         /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("label", { className: "rolling-skill-field", children: [
           /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { children: t("model") }),
@@ -690,7 +768,7 @@ function EvaluationsPanel({ t }) {
         }) })
       ] }),
       error ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "outline", disabled: busy || !datasetId || !targetRuntimeId || !judgeRuntimeId, onClick: () => void start(), children: t("startEvaluation") })
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_dsh_client_ui_primitives4.Button, { variant: "outline", disabled: busy || !datasetId || !versionId || !targetRuntimeId || !judgeRuntimeId || !selectedInstallation, onClick: () => void start(), children: t("startEvaluation") })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: "rolling-skill-panel", children: [
       /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "rolling-skill-panel-header", children: [
@@ -1611,6 +1689,9 @@ var zh = {
   datasetsTitle: "\u6570\u636E\u96C6",
   datasetsDescription: "\u7EC4\u7EC7 Case\uFF0C\u5E76\u5BFC\u51FA\u53EF\u79FB\u690D\u7684 CSV \u6570\u636E\u3002",
   datasetName: "\u6570\u636E\u96C6\u540D\u79F0",
+  datasetSkill: "\u53D7\u7BA1 Skill",
+  unboundManagedSkill: "\u5C1A\u672A\u7ED1\u5B9A\u53D7\u7BA1 Skill",
+  noManagedSkills: "\u8BF7\u5148\u5BFC\u5165\u4E00\u4E2A\u6709\u6548\u7684\u53D7\u7BA1 Skill",
   createDataset: "\u65B0\u5EFA\u6570\u636E\u96C6",
   caseBreakdown: "\u5171 {all} \xB7 Good {good} \xB7 Bad {bad}",
   exportCsv: "\u5BFC\u51FA CSV",
@@ -1646,6 +1727,9 @@ var zh = {
   evaluationStartTitle: "\u5F00\u59CB\u8BC4\u6D4B",
   evaluationStartDescription: "\u76EE\u6807\u548C Judge \u90FD\u6309\u5B8C\u6574 Runtime \u8EAB\u4EFD\u8FD0\u884C\u3002",
   evaluationRuntime: "\u76EE\u6807 Runtime",
+  evaluationVersion: "\u8BC4\u6D4B\u7248\u672C",
+  installationReady: "\u6240\u9009\u7248\u672C\u5DF2\u5B89\u88C5\u5230\u76EE\u6807 Runtime",
+  installationMissing: "\u6240\u9009\u7248\u672C\u5C1A\u672A\u5B89\u88C5\u5230\u76EE\u6807 Runtime\uFF0C\u8BF7\u5148\u524D\u5F80 Skill \u7BA1\u7406\u5B89\u88C5\u3002",
   judgeRuntime: "Judge Runtime",
   model: "\u6A21\u578B",
   judgeModel: "Judge \u6A21\u578B",
@@ -1774,6 +1858,9 @@ var en = {
   datasetsTitle: "Datasets",
   datasetsDescription: "Organize Cases and export portable CSV data.",
   datasetName: "Dataset name",
+  datasetSkill: "Managed Skill",
+  unboundManagedSkill: "Managed Skill is not bound",
+  noManagedSkills: "Import a valid managed Skill first",
   createDataset: "Create Dataset",
   caseBreakdown: "{all} total \xB7 {good} Good \xB7 {bad} Bad",
   exportCsv: "Export CSV",
@@ -1809,6 +1896,9 @@ var en = {
   evaluationStartTitle: "Start Evaluation",
   evaluationStartDescription: "Targets and the Judge run against exact Runtime identities.",
   evaluationRuntime: "Target Runtime",
+  evaluationVersion: "Evaluation Version",
+  installationReady: "The selected version is installed on the target Runtime",
+  installationMissing: "The selected version is not installed on the target Runtime. Install it in Skill Management first.",
   judgeRuntime: "Judge Runtime",
   model: "Model",
   judgeModel: "Judge Model",

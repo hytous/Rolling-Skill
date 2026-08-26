@@ -22,6 +22,7 @@ function fixture() {
     const target = runtime("codex:a", "/opt/codex-a")
     const judge = runtime("deepseek-harness:b", "/opt/dsh-b")
     const created = []
+    const resolvedInstallations = []
     const running = []
     const cancelled = []
     const run = {
@@ -34,10 +35,19 @@ function fixture() {
     const store = {
         getDataset: () => ({
             id: "dataset-1",
-            skillReference: {name: "billing", path: "/skills/billing/SKILL.md"},
+            skillReference: {
+                schemaVersion: "rolling-skill-skill-reference/v1",
+                evidencePrecision: "managed",
+                id: "skill-1",
+                repositoryId: "repository-1",
+                name: "billing",
+                path: null,
+                runtimeId: null,
+                providerId: null,
+            },
         }),
-        createEvaluationRun(input) {
-            created.push(structuredClone(input))
+        createEvaluationRun(input, options) {
+            created.push({input: structuredClone(input), options: structuredClone(options)})
             return structuredClone(run)
         },
         listEvaluationRunSummaries: () => [{id: "run-1", status: "running"}],
@@ -60,13 +70,74 @@ function fixture() {
             return {...run, status: "cancelled"}
         },
     }
+    const managedSkillStore = {
+        getSkill(id) {
+            if (id !== "skill-1") throw new Error("Unknown managed Skill")
+            return {id, repositoryId: "repository-1", name: "billing", skillRoot: "skills/billing"}
+        },
+        getRepository(id) {
+            if (id !== "repository-1") throw new Error("Unknown managed Skill repository")
+            return {id, managedPath: "/managed/repository-1"}
+        },
+        getVersion(id) {
+            if (id === "candidate-1") return {
+                id,
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                state: "candidate",
+                commit: "a".repeat(40),
+                contentDigest: `sha256:${"b".repeat(64)}`,
+                skillRoot: "skills/billing",
+            }
+            if (id !== "released-1") throw new Error("Unknown managed Skill version")
+            return {
+                id,
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                state: "released",
+                commit: "a".repeat(40),
+                contentDigest: `sha256:${"b".repeat(64)}`,
+                skillRoot: "skills/billing",
+            }
+        },
+    }
+    const installationStore = {
+        resolveVerifiedInstallation(input) {
+            resolvedInstallations.push(structuredClone(input))
+            return {
+                id: `installation-${input.runtimeId}`,
+                installationId: `installation-${input.runtimeId}`,
+                jobId: `job-${input.runtimeId}`,
+                ...input,
+                commit: "a".repeat(40),
+                contentDigest: `sha256:${"b".repeat(64)}`,
+                destination: `/installed/${input.runtimeId}/billing`,
+                verification: "runtime-inventory",
+                installedAt: "2026-08-26T00:00:00.000Z",
+            }
+        },
+    }
     const services = createEvaluationServices({
         store,
         runtimeServices,
         runner,
-        snapshotSkill: () => ({schemaVersion: "evidence/v1", digest: "sha256:test"}),
+        managedSkillStore,
+        managedSkillManager: {git: {}},
+        installationStore,
+        snapshotManagedSkill: async () => ({
+            schemaVersion: "evidence/v1",
+            digest: "sha256:test",
+            managedSource: {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                versionId: "released-1",
+                commit: "a".repeat(40),
+                skillRoot: "skills/billing",
+                contentDigest: `sha256:${"b".repeat(64)}`,
+            },
+        }),
     })
-    return {services, created, running, cancelled}
+    return {services, created, running, cancelled, resolvedInstallations}
 }
 
 describe("Rolling Skill evaluation services", () => {
@@ -74,6 +145,7 @@ describe("Rolling Skill evaluation services", () => {
         const test = fixture()
         const started = await test.services.start({
             datasetId: "dataset-1",
+            versionId: "released-1",
             caseIds: [],
             selectionMode: "dataset",
             activationMode: "explicit",
@@ -82,11 +154,36 @@ describe("Rolling Skill evaluation services", () => {
         })
 
         assert.equal(started.id, "run-1")
-        assert.equal(test.created[0].runtimeConfigurations[0].executablePath, "/opt/codex-a")
-        assert.equal(test.created[0].runtimeConfigurations[0].modelId, "gpt-5.6")
-        assert.equal(test.created[0].judgeConfiguration.executablePath, "/opt/dsh-b")
-        assert.equal(test.created[0].skillEvidence.digest, "sha256:test")
+        assert.equal(test.created[0].input.runtimeConfigurations[0].executablePath, "/opt/codex-a")
+        assert.equal(test.created[0].input.runtimeConfigurations[0].modelId, "gpt-5.6")
+        assert.equal(
+            test.created[0].input.runtimeConfigurations[0].skillReference.path,
+            "/installed/codex:a/billing/SKILL.md",
+        )
+        assert.equal(test.created[0].input.runtimeConfigurations[0].installationId, "installation-codex:a")
+        assert.equal(test.created[0].input.judgeConfiguration.executablePath, "/opt/dsh-b")
+        assert.equal(test.created[0].input.skillEvidence.digest, "sha256:test")
+        assert.equal(test.created[0].input.managedVersionSnapshot.versionId, "released-1")
+        assert.deepEqual(test.created[0].options, {managedVersionAuthorized: true})
+        assert.equal(test.resolvedInstallations.length, 1)
         assert.equal(test.running.length, 1)
+    })
+
+    it("requires a Released version owned by the Dataset Skill", async () => {
+        const test = fixture()
+        const request = {
+            datasetId: "dataset-1",
+            targets: [{runtimeId: "codex:a"}],
+            judge: {runtimeId: "deepseek-harness:b"},
+        }
+
+        await assert.rejects(() => test.services.start(request), /version.*required/i)
+        await assert.rejects(
+            () => test.services.start({...request, versionId: "candidate-1"}),
+            /Released version|version.*released/i,
+        )
+        assert.equal(test.created.length, 0)
+        assert.equal(test.resolvedInstallations.length, 0)
     })
 
     it("lists summaries, returns completed detail, and cancels through the runner", async () => {

@@ -66,6 +66,15 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(workbench, /<RawCasesPanel/u)
     })
 
+    it("creates Datasets from stable managed Skill IDs without deployment evidence", () => {
+        const datasets = source("workbench/DatasetsPanel.tsx")
+
+        assert.match(datasets, /skills\.catalog/u)
+        assert.match(datasets, /repositoryId:\s*selectedSkill\.repositoryId/u)
+        assert.match(datasets, /skillId:\s*selectedSkill\.id/u)
+        assert.doesNotMatch(datasets, /datasets\.create[\s\S]{0,240}(?:path|runtimeId|providerId)\s*:/u)
+    })
+
     it("reuses a full-identity Runtime row for Case refresh and evaluations", () => {
         const runtime = source("workbench/RuntimeSelect.tsx")
         const evaluations = source("workbench/EvaluationsPanel.tsx")
@@ -82,6 +91,17 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(evaluations, /<RuntimeSelect/u)
         assert.match(cases, /<RuntimeSelect/u)
         assert.match(workbench, /<EvaluationsPanel/u)
+    })
+
+    it("requires a Released managed version and checks its target installation", () => {
+        const evaluations = source("workbench/EvaluationsPanel.tsx")
+
+        assert.match(evaluations, /skills\.versions/u)
+        assert.match(evaluations, /installations\.list/u)
+        assert.match(evaluations, /version\.state\s*===\s*"released"/u)
+        assert.match(evaluations, /versionId,/u)
+        assert.match(evaluations, /selectedInstallation/u)
+        assert.doesNotMatch(evaluations, /evaluations\.start[\s\S]{0,400}(?:path|commit|contentDigest)\s*:/u)
     })
 
     it("exposes managed Skill release and Runtime installation as separate native flows", () => {

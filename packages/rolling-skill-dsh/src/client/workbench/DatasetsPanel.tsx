@@ -11,7 +11,24 @@ interface DatasetSummary {
     goodcaseCount: number
     badcaseCount: number
     createdAt: string
+    skillReference: {
+        evidencePrecision?: string
+        id?: string
+        repositoryId?: string
+        name?: string
+    } | null
 }
+
+interface ManagedSkill {
+    id: string
+    repositoryId: string
+    name: string
+    description?: string
+    status: string
+}
+
+interface Repository {id: string; displayName: string}
+interface SkillCatalog {repositories: Repository[]; skills: ManagedSkill[]}
 
 interface CsvExport {
     filename: string
@@ -20,7 +37,9 @@ interface CsvExport {
 
 export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => void}) {
     const [datasets, setDatasets] = useState<DatasetSummary[]>([])
+    const [catalog, setCatalog] = useState<SkillCatalog>({repositories: [], skills: []})
     const [name, setName] = useState("")
+    const [skillId, setSkillId] = useState("")
     const [deleting, setDeleting] = useState<DatasetSummary | null>(null)
     const [recoverQuestions, setRecoverQuestions] = useState(true)
     const [busy, setBusy] = useState(false)
@@ -29,8 +48,18 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
 
     useEffect(() => {
         const controller = new AbortController()
-        requestRollingSkill<DatasetSummary[]>("datasets.list", {}, controller.signal)
-            .then(setDatasets)
+        Promise.all([
+            requestRollingSkill<DatasetSummary[]>("datasets.list", {}, controller.signal),
+            requestRollingSkill<SkillCatalog>("skills.catalog", {}, controller.signal),
+        ])
+            .then(([datasetItems, nextCatalog]) => {
+                setDatasets(datasetItems)
+                setCatalog(nextCatalog)
+                const validSkills = nextCatalog.skills.filter((skill) => skill.status === "valid")
+                setSkillId((current) => validSkills.some((skill) => skill.id === current)
+                    ? current
+                    : validSkills[0]?.id ?? "")
+            })
             .catch((reason: unknown) => {
                 if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"))
             })
@@ -52,7 +81,13 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
         }
     }
     const create = () => mutate(async () => {
-        await requestRollingSkill("datasets.create", {name})
+        const selectedSkill = catalog.skills.find((skill) => skill.id === skillId)
+        if (!selectedSkill) throw new Error(t("noManagedSkills"))
+        await requestRollingSkill("datasets.create", {
+            name,
+            repositoryId: selectedSkill.repositoryId,
+            skillId: selectedSkill.id,
+        })
         setName("")
     })
     const remove = () => {
@@ -96,7 +131,18 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
                     aria-label={t("datasetName")}
                     onChange={(event: {target: {value: string}}) => setName(event.target.value)}
                 />
-                <Button variant="outline" size="sm" disabled={busy || !name.trim()} onClick={create}>
+                <select
+                    className="rolling-skill-select"
+                    aria-label={t("datasetSkill")}
+                    value={skillId}
+                    onChange={(event) => setSkillId(event.target.value)}
+                >
+                    {catalog.skills.filter((skill) => skill.status === "valid").map((skill) => {
+                        const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId)
+                        return <option key={skill.id} value={skill.id}>{skill.name} · {repository?.displayName ?? skill.repositoryId}</option>
+                    })}
+                </select>
+                <Button variant="outline" size="sm" disabled={busy || !name.trim() || !skillId} onClick={create}>
                     {t("createDataset")}
                 </Button>
             </div>
@@ -106,6 +152,9 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
                     <article className="rolling-skill-list-row" key={dataset.id}>
                         <div>
                             <strong>{dataset.name}</strong>
+                            <span>{dataset.skillReference?.evidencePrecision === "managed"
+                                ? `${t("datasetSkill")}: ${dataset.skillReference.name}`
+                                : t("unboundManagedSkill")}</span>
                             <span>{t("caseBreakdown")
                                 .replace("{all}", String(dataset.caseCount))
                                 .replace("{good}", String(dataset.goodcaseCount))
