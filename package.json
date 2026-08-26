@@ -1,0 +1,15 @@
+{
+  "name": "rolling-skill-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build:dsh": "npm run build --workspace @rolling-skill/dsh-plugin",
+    "test:dsh": "node --test packages/rolling-skill-core/test/*.test.cjs packages/rolling-skill-dsh/test/*.test.cjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

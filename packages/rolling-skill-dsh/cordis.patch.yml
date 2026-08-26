@@ -1,0 +1,7 @@
+# Rolling Skill contributes one dual-face Host/Client package. The package
+# manifest exposes the browser entry and this row starts the Host service.
+- insert:
+    - id: rolling-skill
+      name: '@rolling-skill/dsh-plugin'
+      config:
+        dataRoot: !!js dshHomePath('rolling-skill')
