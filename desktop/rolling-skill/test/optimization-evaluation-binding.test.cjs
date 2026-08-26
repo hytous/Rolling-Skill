@@ -144,6 +144,37 @@ function runtimeConfiguration(runtimeId = "codex:target") {
     }
 }
 
+function managedDatasetReference() {
+    return {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        evidencePrecision: "managed",
+        id: "skill-1",
+        repositoryId: "repository-1",
+        name: "billing",
+        path: null,
+        scope: "managed",
+        description: "Billing",
+        runtimeId: null,
+        providerId: null,
+        confirmedAt: "2026-08-26T00:00:00.000Z",
+    }
+}
+
+function installedSkillReference(runtimeId, path) {
+    return {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        id: "skill-1",
+        repositoryId: "repository-1",
+        name: "billing",
+        path,
+        scope: "runtime",
+        description: "Billing",
+        runtimeId,
+        providerId: runtimeId.split(":")[0],
+        confirmedAt: "2026-08-26T00:00:00.000Z",
+    }
+}
+
 describe("Optimization Evaluation managed Candidate binding", () => {
     it("exports Judge evidence from the exact managed commit instead of mutable Working", async () => {
         const {evidence, source} = await exactManagedEvidence()
@@ -195,6 +226,148 @@ describe("Optimization Evaluation managed Candidate binding", () => {
         assert.equal(run.runtimeConfigurations[0].expectedContentDigest, expectedManaged.contentDigest)
         assert.equal(run.runtimeConfigurations[0].experimentInstallationJobId, "install-job-codex")
         assert.equal(run.runtimeConfigurations[1].experimentInstallationJobId, "install-job-codebuddy")
+    })
+
+    it("persists target-specific verified installations for an ordinary managed evaluation", async () => {
+        const directory = temporaryDirectory("rolling-skill-managed-dataset-store-")
+        const store = new LocalEvaluationStore(join(directory, "store.json"))
+        const dataset = store.createDataset({
+            name: "Managed billing",
+            skillReference: managedDatasetReference(),
+        })
+        const saved = store.saveCase({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            question: "查询历史账单",
+            answer: "返回历史账单",
+        })
+        const exact = await exactManagedEvidence()
+        const runtimeConfigurations = [
+            {
+                ...runtimeConfiguration("codex:target"),
+                skillReference: installedSkillReference(
+                    "codex:target",
+                    "/runtime/codex/billing/SKILL.md",
+                ),
+                installationId: "installation-codex",
+                installationJobId: "install-job-codex",
+                installationVerification: "runtime-inventory",
+            },
+            {
+                ...runtimeConfiguration("codebuddy:target"),
+                skillReference: installedSkillReference(
+                    "codebuddy:target",
+                    "/runtime/codebuddy/billing/SKILL.md",
+                ),
+                installationId: "installation-codebuddy",
+                installationJobId: "install-job-codebuddy",
+                installationVerification: "runtime-inventory",
+            },
+        ]
+        const input = {
+            datasetId: dataset.id,
+            caseIds: [saved.id],
+            selectionMode: "selected",
+            activationMode: "automatic",
+            skillEvidence: exact.evidence,
+            managedVersionSnapshot: exact.version,
+            runtimeConfigurations,
+        }
+
+        assert.throws(
+            () => store.createEvaluationRun(input),
+            /internal.*capability|managed.*capability/i,
+        )
+        const run = store.createEvaluationRun(input, {managedVersionAuthorized: true})
+
+        assert.equal(run.skillReference.evidencePrecision, "managed")
+        assert.equal(run.runtimeConfigurations[0].skillReference.path, "/runtime/codex/billing/SKILL.md")
+        assert.equal(run.runtimeConfigurations[1].skillReference.path, "/runtime/codebuddy/billing/SKILL.md")
+        assert.equal(run.runtimeConfigurations[0].installationId, "installation-codex")
+        assert.equal(run.runtimeConfigurations[1].installationJobId, "install-job-codebuddy")
+        assert.equal(run.results[0].runtimeConfiguration.skillReference.runtimeId, "codex:target")
+        assert.equal(run.results[1].runtimeConfiguration.skillReference.runtimeId, "codebuddy:target")
+    })
+
+    it("executes each Runtime with its own frozen installed Skill reference", async () => {
+        const evidence = localEvidence()
+        const executed = []
+        const configurations = [
+            {
+                ...runtimeConfiguration("codex:target"),
+                skillReference: installedSkillReference(
+                    "codex:target",
+                    "/runtime/codex/billing/SKILL.md",
+                ),
+                expectedContentDigest: digest("d"),
+                installationJobId: "install-job-codex",
+            },
+            {
+                ...runtimeConfiguration("codebuddy:target"),
+                skillReference: installedSkillReference(
+                    "codebuddy:target",
+                    "/runtime/codebuddy/billing/SKILL.md",
+                ),
+                expectedContentDigest: digest("d"),
+                installationJobId: "install-job-codebuddy",
+            },
+        ]
+        const run = {
+            id: "two-runtime-managed-run",
+            activationMode: "automatic",
+            skillReference: managedDatasetReference(),
+            skillEvidence: evidence,
+            managedVersionSnapshot: managedVersionSnapshot(),
+            judgeConfiguration: null,
+            runtimeConfigurations: configurations,
+            results: configurations.map((configuration, index) => ({
+                id: `result-${index}`,
+                runtimeId: configuration.runtimeId,
+                runtimeConfiguration: configuration,
+                status: "queued",
+                caseSnapshot: {id: "case-1", revision: 1, question: "查询历史账单"},
+            })),
+        }
+        const runner = new EvaluationRunner({
+            store: {
+                updateEvaluationRun() {},
+                updateEvaluationResult() {},
+            },
+            runtimeRegistry: {
+                createClient(descriptor) {
+                    const configuration = configurations.find(
+                        (entry) => entry.runtimeId === descriptor.runtimeId,
+                    )
+                    return {
+                        start: async () => {},
+                        listSkills: async () => ({data: [{skills: [{
+                            name: "billing",
+                            path: configuration.skillReference.path,
+                            enabled: true,
+                            contentDigest: digest("d"),
+                        }]}]}),
+                        runEvaluationCase: async (input) => {
+                            executed.push({runtimeId: descriptor.runtimeId, input})
+                            return {response: "ok", durationMs: 1}
+                        },
+                        stop: async () => {},
+                    }
+                },
+            },
+            workspaceRoot: "/workspace",
+            traceDirectory: "/traces",
+        })
+
+        const completed = await runner.run(run)
+
+        assert.equal(completed.status, "completed")
+        assert.deepEqual(
+            executed.map((entry) => [entry.runtimeId, entry.input.skillReference.path]).sort(),
+            [
+                ["codebuddy:target", "/runtime/codebuddy/billing/SKILL.md"],
+                ["codex:target", "/runtime/codex/billing/SKILL.md"],
+            ],
+        )
     })
 
     it("requires exact inventory digest and keeps name-only evidence unverified", () => {
@@ -322,6 +495,10 @@ describe("Optimization Evaluation managed Candidate binding", () => {
 })
 
 function candidateRun(skillEvidence) {
+    const targetSkillReference = installedSkillReference(
+        "codex:target",
+        "/runtime/skills/billing/SKILL.md",
+    )
     return {
         id: "optimization-evaluation-run",
         activationMode: "automatic",
@@ -333,7 +510,9 @@ function candidateRun(skillEvidence) {
         judgeConfiguration: {runtimeId: "judge", providerId: "codex", executablePath: "/judge"},
         runtimeConfigurations: [{
             ...runtimeConfiguration("codex:target"),
+            skillReference: targetSkillReference,
             expectedContentDigest: digest("d"),
+            installationJobId: "install-job-codex",
             experimentInstallationJobId: "install-job-codex",
         }],
         results: [{

@@ -841,6 +841,80 @@ function managedEvaluationVersionSnapshot(value, runtimeIds) {
     }
 }
 
+function managedRuntimeConfigurationBinding({
+    input,
+    configuration,
+    datasetSkillReference,
+    managedVersionSnapshot,
+    optimizationAuthorized,
+}) {
+    let skillReference = normalizeSkillReference(input.skillReference)
+    if (!skillReference && optimizationAuthorized && datasetSkillReference.path) {
+        skillReference = normalizeSkillReference({
+            ...datasetSkillReference,
+            runtimeId: configuration.runtimeId,
+            providerId: configuration.providerId,
+        })
+    }
+    if (
+        !skillReference ||
+        !skillReference.path ||
+        skillReference.evidencePrecision === "managed" ||
+        skillReference.evidencePrecision === "name-only"
+    ) {
+        throw new Error("Managed evaluation requires a path-precise Runtime Skill binding")
+    }
+    if (
+        skillReference.name !== datasetSkillReference.name ||
+        skillReference.runtimeId !== configuration.runtimeId ||
+        skillReference.providerId !== configuration.providerId
+    ) {
+        throw new Error("Managed evaluation Runtime Skill binding conflicts with its target")
+    }
+    if (
+        datasetSkillReference.evidencePrecision === "managed" &&
+        (skillReference.repositoryId !== datasetSkillReference.repositoryId ||
+            skillReference.id !== datasetSkillReference.id)
+    ) {
+        throw new Error("Managed evaluation Runtime Skill binding conflicts with the Dataset Skill")
+    }
+    const installationJobId = skillIdentity(
+        input.installationJobId ??
+            input.experimentInstallationJobId ??
+            managedVersionSnapshot.installationJobIdsByRuntime[configuration.runtimeId],
+        "Managed installation Job id",
+    )
+    const installationId = skillIdentity(input.installationId, "Managed installation id")
+    const installationVerification = skillIdentity(
+        input.installationVerification,
+        "Managed installation verification",
+    )
+    if (!installationJobId) {
+        throw new Error("Managed evaluation requires a frozen installation Job")
+    }
+    if (
+        !optimizationAuthorized &&
+        (!installationId || !installationVerification || installationVerification === "none")
+    ) {
+        throw new Error("Managed evaluation requires a verified normal installation")
+    }
+    if (
+        input.expectedContentDigest &&
+        input.expectedContentDigest !== managedVersionSnapshot.contentDigest
+    ) {
+        throw new Error("Managed evaluation Runtime digest conflicts with the frozen version")
+    }
+    return {
+        ...configuration,
+        skillReference,
+        installationId,
+        installationJobId,
+        installationVerification,
+        expectedContentDigest: managedVersionSnapshot.contentDigest,
+        ...(optimizationAuthorized ? {experimentInstallationJobId: installationJobId} : {}),
+    }
+}
+
 function normalizeSkillReference(value) {
     if (value === null || value === undefined) return null
     if (value.schemaVersion !== "rolling-skill-skill-reference/v1") {
@@ -2221,7 +2295,8 @@ class LocalEvaluationStore {
                 "One or more Cases require calibration for the active dataset rubric version",
             )
         }
-        let runtimeConfigurations = (input.runtimeConfigurations ?? []).map((configuration) => ({
+        const requestedRuntimeConfigurations = input.runtimeConfigurations ?? []
+        let runtimeConfigurations = requestedRuntimeConfigurations.map((configuration) => ({
             ...evaluationRuntimeConfiguration(configuration),
             skillEvidenceBinding:
                 configuration.skillEvidenceBinding === "verified" ? "verified" : "unverified",
@@ -2236,19 +2311,31 @@ class LocalEvaluationStore {
         }
         let managedVersionSnapshot = null
         if (input.managedVersionSnapshot !== undefined && input.managedVersionSnapshot !== null) {
-            if (options.optimizationAuthorized !== true) {
-                throw new Error("Managed Candidate evaluation requires an internal Optimization capability")
+            const optimizationAuthorized = options.optimizationAuthorized === true
+            const managedVersionAuthorized = options.managedVersionAuthorized === true
+            if (!optimizationAuthorized && !managedVersionAuthorized) {
+                throw new Error("Managed evaluation requires an internal capability")
             }
             managedVersionSnapshot = managedEvaluationVersionSnapshot(
                 input.managedVersionSnapshot,
                 runtimeConfigurations.map((configuration) => configuration.runtimeId),
             )
-            runtimeConfigurations = runtimeConfigurations.map((configuration) => ({
-                ...configuration,
-                expectedContentDigest: managedVersionSnapshot.contentDigest,
-                experimentInstallationJobId:
-                    managedVersionSnapshot.installationJobIdsByRuntime[configuration.runtimeId],
-            }))
+            if (
+                datasetSkillReference.evidencePrecision === "managed" &&
+                (datasetSkillReference.repositoryId !== managedVersionSnapshot.repositoryId ||
+                    datasetSkillReference.id !== managedVersionSnapshot.skillId)
+            ) {
+                throw new Error("Managed version does not belong to the Dataset Skill")
+            }
+            runtimeConfigurations = runtimeConfigurations.map((configuration, index) =>
+                managedRuntimeConfigurationBinding({
+                    input: requestedRuntimeConfigurations[index],
+                    configuration,
+                    datasetSkillReference,
+                    managedVersionSnapshot,
+                    optimizationAuthorized,
+                }),
+            )
         }
         const now = new Date().toISOString()
         const requestedJudgeProfile = input.judgeProfile ?? state.settings.judgeProfile

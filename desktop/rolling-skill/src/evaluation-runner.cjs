@@ -144,10 +144,12 @@ class EvaluationRunner {
 
     async verifyManagedRuntimeVersion(client, run, configuration) {
         if (!run.managedVersionSnapshot) return configuration.skillEvidenceBinding ?? "unverified"
+        const targetSkillReference = configuration.skillReference ?? run.skillReference
         const expected = configuration.expectedContentDigest
         if (
             expected !== run.managedVersionSnapshot.contentDigest ||
-            !configuration.experimentInstallationJobId
+            !(configuration.installationJobId ?? configuration.experimentInstallationJobId) ||
+            !targetSkillReference?.path
         ) {
             const error = new Error(`${SKILL_VERSION_CHANGED}: frozen target binding is incomplete`)
             error.code = SKILL_VERSION_CHANGED
@@ -156,13 +158,13 @@ class EvaluationRunner {
         if (typeof client.listSkills !== "function") return "unverified"
         const response = await client.listSkills({forceReload: true})
         const matchingName = (response?.data ?? []).flatMap((entry) => entry.skills ?? [])
-            .filter((skill) => skill?.enabled && skill.name === run.skillReference?.name)
+            .filter((skill) => skill?.enabled && skill.name === targetSkillReference.name)
         const pathPrecise = matchingName.filter((skill) =>
             skill.path || skill.evidencePrecision !== "name-only",
         )
         if (!pathPrecise.length) return "unverified"
         if (pathPrecise.some((skill) =>
-            skill.path === run.skillReference?.path && skill.contentDigest === expected,
+            skill.path === targetSkillReference.path && skill.contentDigest === expected,
         )) return "verified"
         const error = new Error(`${SKILL_VERSION_CHANGED}: Runtime Skill digest no longer matches Candidate`)
         error.code = SKILL_VERSION_CHANGED
@@ -280,6 +282,7 @@ class EvaluationRunner {
                 control.executionStates.set(result.id, "running")
                 this.onChanged({runId: run.id, resultId: result.id, status: "running"})
                 try {
+                    const targetSkillReference = configuration.skillReference ?? run.skillReference
                     this.assertSkillSnapshotUnchanged(run)
                     let preExecutionBinding =
                         configuration.skillEvidenceBinding ?? "unverified"
@@ -293,7 +296,7 @@ class EvaluationRunner {
                     const output = await client.runEvaluationCase({
                         question: result.caseSnapshot.question,
                         activationMode: run.activationMode,
-                        skillReference: run.skillReference,
+                        skillReference: targetSkillReference,
                         modelId: configuration.modelId,
                         effort: configuration.effort,
                     })
@@ -322,7 +325,7 @@ class EvaluationRunner {
                         "unverified"
                     const skillExecutionBinding = resolveExecutedSkillEvidenceBinding({
                         declaredBinding,
-                        skillReference: run.skillReference,
+                        skillReference: targetSkillReference,
                         skillEvidence: run.skillEvidence,
                         traceEvidence: output.traceEvidence,
                         expectedContentDigest: run.managedVersionSnapshot
