@@ -1,7 +1,7 @@
 # DSH 独立工作台与 Case 沉淀能力补全设计
 
 日期：2026-08-27  
-状态：已完成对话设计确认
+状态：补充设计已记录，待迁移账本复核
 
 ## 1. 背景与根因
 
@@ -35,6 +35,8 @@ DSH 当前没有供第三方插件安全追加顶层页面路由的公开槽位�
 ## 3. 目标
 
 - Rolling Skill 成为 DSH 中可直接进入的独立业务工作台。
+- 用户可以直接在 DSH 原生对话中从已完成回复发起 Case 沉淀，不必先切换工作台。
+- 对已经进入 Draft 或已保存为 Case 的来源区间提供可恢复的状态标色和跳转。
 - 补齐 Raw Case 到 Draft、Draft 对话修订、保存 Case 和丢弃 Draft。
 - 补齐 Rubric 草稿生成、对话修订、发布和版本历史。
 - 保持 Electron 版的业务语义，同时使用 DSH 原生 React 和 UI primitives 实现界面。
@@ -117,6 +119,49 @@ Draft 详情显示：
 
 刷新和重试继续使用同一 Session；Client 刷新不能重复创建任务。
 
+### 7.3 原生对话中的“沉淀 Case”入口
+
+插件注册 DSH 的 additive `conversation.chat.assistant-actions` 槽位。每条已经完成的 Assistant 回复都显示“沉淀 Case”操作；进行中的回复不显示该操作。
+
+点击后打开轻量对话框，而不是强制跳转到完整工作台：
+
+1. 终点固定为被点击回复的稳定 `messageId`，用户不能用 Client 伪造回复正文。
+2. 后端从完整 Session log 返回可用的直接 Human `user/message` 起点，默认选最近一个问题；即使更早消息尚未加载到浏览器也能选择。
+3. 用户选择 Dataset、Good/Bad，填写可选问题说明。
+4. 创建前完成 Managed Skill、Published Rubric、可信 Runtime Installation、来源边界和重复沉淀检查。
+5. 确认后创建 Draft，并提供“打开 Draft”操作；详细审核、修订和保存继续在 Rolling Skill 工作台中完成。
+
+同一 `sessionId + endMessageId` 已经存在活动 Draft 或 Case 时，操作显示“Draft 中”“已沉淀”或“再次整理”，普通点击不会无意创建重复 Session。
+
+### 7.4 DSH 原生 Trace 获取与冻结
+
+DSH Host 增加 `sessionQuery` 服务依赖。Client 只提交 `sessionId`、选中的起点事件身份、`endMessageId`、Dataset、Case 类型、问题说明和 idempotency key；不得提交消息正文、工具结果、路径、digest 或自行拼装的 Episode。
+
+Host 使用 `sessionQuery.readSession(sessionId)` 读取 live-preferred 的完整原始事件日志，并完成：
+
+- 按 `assistant/message.data.message.id` 找到被点击的最终回复。
+- 校验起点是终点之前的直接 Human `user/message`，且没有跨越不允许的来源边界。
+- 截取从起点到终点所在 `turn/end` 的连续事件，保留 turn/step、Assistant 消息、工具调用与结果、usage 和中断信息。
+- 记录 Session header、起止 seq、`capturedThroughSeq`、消息 ID、父 Session/seed lineage、捕获时间和原始日志 digest。
+- 如果事件经历 compaction、shadow 或 replacement，使用 `sessionQuery.traceEvent` 保存来源/替换链；无法证明边界时在创建 Draft 前失败。
+
+`sessionQuery.traceSession()` 只补充 Session lineage，不能替代执行 Trace。执行证据的唯一来源是冻结的 `readSession()` 原始事件切片。
+
+冻结快照保存在 Rolling Skill DSH 数据目录下。Curation Episode adapter 和 Curator evidence 都从同一快照生成，后续重试或保存不得重新读取一份可能已经变化的 Session log。Core 增加窄的可信内部入口接收 Host 已冻结的 Episode evidence，不向普通 Client 暴露任意 Episode 写入接口。
+
+### 7.5 来源区间状态与标色
+
+Electron 现有来源区间语义在 DSH 中保持一致：
+
+- 活动 Draft 使用主题自适应的半透明 warning 色。
+- 已保存 Case 使用主题自适应的半透明 success 色。
+- 区间终点显示“Case 草稿”或“已沉淀 Case”。
+- “沉淀 Case”操作变为“再次整理”，状态标签可以打开对应 Draft 或 Case。
+- 保存、丢弃、删除、刷新、切换 Session 和加载更早历史后状态立即重建。
+- 跨 Turn 的连续来源区间全部标记；重叠时已保存 Case 优先于 Draft。
+
+DSH 实际会话节点提供稳定的 `data-chat-flow-key`/projection node key 锚点。插件根据可信起止 seq 与当前 projection 计算应标记的原生 flow rows，只增加插件样式和状态组件，不替换 `conversation.chat.node` 的已发货渲染器。若未来 DSH 删除该稳定锚点，兼容性测试必须失败并退化为状态标签，不能静默显示错误区间。
+
 ## 8. Rubric 工作流
 
 评分标准按 Dataset 组织。Dataset 详情显示当前 Published Rubric、版本、发布时间和历史版本。
@@ -160,6 +205,9 @@ Client 只提交 Dataset、Version、Runtime 和会话 ID。路径、commit、di
 - `rubrics.listVersions`、`rubrics.active`、`rubrics.listSessions`、`rubrics.getSession`
 - `rubrics.create`、`rubrics.send`、`rubrics.retry`、`rubrics.publish`、`rubrics.discard`
 - `rubrics.updateModel`、`rubrics.updateEffort`
+- `conversationCuration.inspect`：从可信 Session log 返回起点候选、Dataset 闸门和现有沉淀状态。
+- `conversationCuration.create`：由 Host 冻结 DSH Trace 后创建 Curation Session。
+- `conversationCuration.markers`：按 DSH Session 返回 Draft/Case 来源区间和稳定业务身份。
 
 所有 mutation 进入现有序列化 mutation queue。创建操作使用 idempotency key；重复请求必须返回原结果或拒绝不同 payload 复用同一 key。
 
@@ -179,6 +227,9 @@ Client 只提交 Dataset、Version、Runtime 和会话 ID。路径、commit、di
 ## 12. 前端组件边界
 
 - `RollingSkillLauncher`：侧栏按钮、折叠态可访问标签和覆盖层开关。
+- `ConversationCurationAction`：原生 Assistant action、现有状态和“再次整理”。
+- `CurationQuickDialog`：起点、Dataset、Good/Bad、说明与创建前阻断。
+- `SourceCaseRangeMarkerController`：把可信业务区间投影到 DSH flow key，并管理主题自适应样式。
 - `WorkbenchShell`：覆盖层、主导航、刷新与关闭，不承载业务请求。
 - `RawCaseInboxPanel`：Raw Case 条件、Dataset 选择和 Draft 创建。
 - `CurationWorkspace`：来源、Draft 预览、对话、保存与丢弃。
@@ -222,11 +273,29 @@ DSH 包继续是标准 Cordis Host/Client 插件：
 - Rubric 生成、修订、contract 校验、publish 和版本历史。
 - Dataset 保持 pathless managed identity；每个操作冻结 Runtime-specific evidence。
 - Client source/component tests 覆盖独立 launcher、Settings 瘦身、按钮闸门和请求 payload 不含路径或摘要。
+- DSH 原生 Assistant action 只出现在 finalized message；起点候选来自 Host 完整日志而不是已加载 DOM。
+- Host `readSession` 事件切片、`traceEvent` replacement chain、冻结 digest、重试复用和伪造边界拒绝。
+- Draft warning 标色、Case success 标色、跨 Turn、重叠优先级、加载更早历史、丢弃/删除清理和点击跳转。
 - 临时数据目录中的完整 Curation/Rubric 集成流程。
 - `npm run test:dsh`、`npm run build:dsh`、tarball 内容检查和体积报告。
 - 本机 web profile 强制更新插件后，用真实 DSH 浏览器检查独立入口、覆盖层、空状态和阻断提示。
 
 Electron 归档分支继续使用自身完整测试、macOS App 构建和签名验证；本设计不把两套前端合并成一个产物。
+
+### 14.1 零遗漏迁移闸门
+
+完整迁移账本位于 [2026-08-27-rolling-skill-surface-parity-ledger.md](./2026-08-27-rolling-skill-surface-parity-ledger.md)。它从 Electron Renderer 页面与事件、Preload API、Main/Core handlers、持久化状态和现有测试五个来源反向生成，不只统计可见页面。
+
+每项能力必须归入以下一种状态：
+
+- `DSH native`：由 DSH 原生界面承接，并完成不被插件破坏的真实 UI 回归。
+- `Conversation extension`：由原生对话 additive slot 承接。
+- `Workbench`：由 Rolling Skill 独立工作台承接。
+- `Host/Worker`：无独立页面，但后台语义、恢复和诊断必须对齐。
+- `Settings`：仅低频插件配置、导入与诊断。
+- `Intentional difference`：必须写明理由和用户批准，不允许用它隐藏未实现功能。
+
+实现计划、测试名称和最终验收报告都引用账本 ID。只要存在未映射 ID、`TODO`、跳过的测试或未经批准的差异，双版本都不得声明迁移完成。
 
 ## 15. 交付顺序
 
@@ -241,8 +310,10 @@ Electron 归档分支继续使用自身完整测试、macOS App 构建和签名�
 - Rolling Skill 在 DSH 侧栏有独立入口，完整工作台不再位于 Settings 弹窗。
 - Settings 只显示插件级配置、导入和诊断。
 - 用户能从具备完整来源的 Raw Case 创建 Draft、通过对话修改并保存为 Case 或丢弃。
+- 用户能直接从 DSH 原生已完成回复创建 Draft，可信冻结 Trace，并看到可恢复的 Draft/Case 来源区间标色。
 - 用户能为 Dataset 生成/修订 Rubric、通过对话调整并发布新版本。
 - Dataset 永久只绑定 Managed Skill identity；Version 和安装路径只作为操作级冻结证据。
 - 所有阻断在创建任务前给出可操作原因，不产生半成品 Session。
 - DSH tarball 不包含 Electron/Chromium/.app，包检查报告实际体积但无任意硬上限。
 - DSH 插件与 Electron App 分别通过测试、构建、安装和本机检查。
+- 完整迁移账本中的每个 ID 都有明确承接面、实现状态和自动化或真实 UI 验收证据；不存在未说明缺口。
