@@ -1,10 +1,10 @@
 # Electron Managed Skill Dataset Binding Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Port the stable managed Dataset model to the archived Electron application, update Renderer/Main Process flows, and produce a locally installed macOS App without merging the archive branch into `main`.
 
-**Architecture:** Reuse the tested shared store, installation-resolution, and per-Runtime evaluation changes from `main`. Electron Renderer submits only managed IDs and a Released version ID; Main Process resolves canonical Skill/version/install records and owns legacy migration. Existing Runtime inventory references remain execution or Case provenance, never Dataset identity.
+**Architecture:** Reuse the tested shared store, installation-resolution, and per-Runtime evaluation changes from `main`. Electron Renderer submits only managed IDs and a Released version ID; Main Process resolves canonical Skill/version/install records and owns legacy migration. Existing Runtime inventory references remain execution or Case provenance, never Dataset identity. Completion is also checked against the Electron-owned entries in the 136-ID surface parity ledger.
 
 **Tech Stack:** Electron, Node.js 22, CommonJS Main Process, vanilla Renderer JavaScript, `node:test`, electron-builder, macOS code signing.
 
@@ -32,7 +32,14 @@ Do not create a new branch, worktree, or sub-Agent.
 
 - [ ] **Step 3: Port only reusable domain commits**
 
-Cherry-pick the dedicated managed-reference/installation commit from `main`. If the evaluation-runner change is in a mixed DSH commit, apply only the shared Electron files and their tests, then commit the focused port. Do not bring DSH packages or docs into the archive branch unless already present by ancestry.
+Cherry-pick the dedicated shared commits from `main` in order:
+
+```bash
+git cherry-pick d1200b7300
+git cherry-pick e1689b452c
+```
+
+The first commit adds managed Dataset identity; the second freezes per-Runtime installation evidence. Stop and inspect any conflict before editing. Do not bring DSH packages or docs into the archive branch unless already present by ancestry.
 
 - [ ] **Step 4: Run shared focused tests**
 
@@ -62,6 +69,16 @@ Expected: FAIL because current IPC binds a Runtime inventory path.
 - [ ] **Step 3: Implement managed Dataset IPC**
 
 Resolve `{repositoryId, skillId}` against `ManagedSkillStore` in Main Process and construct managed precision. Preserve explicit rebind semantics: rebinding to different IDs clears active Rubric under existing session guards; an automatic legacy-to-managed migration preserves it.
+
+```js
+ipcMain.handle("datasets:create", (_event, input) => {
+  const managedSkill = managedSkillStore.requireSkill({
+    repositoryId: input.repositoryId,
+    skillId: input.skillId,
+  });
+  return evaluationStore.createDataset({ name: input.name, managedSkill });
+});
+```
 
 - [ ] **Step 4: Reconcile legacy Datasets after stores load**
 
@@ -97,6 +114,17 @@ Expected: FAIL under shared Dataset-path execution.
 
 Load Dataset managed IDs, validate the requested Released version, resolve one trusted normal installation for each target descriptor, snapshot the managed commit, and create the managed Evaluation Run with per-Runtime configurations. Renderer must not pass destinations, providers, digests, commits, or Job IDs.
 
+```js
+const configurations = targetRuntimeDescriptors.map((descriptor) =>
+  installationStore.requireTrustedInstallation({
+    repositoryId: dataset.repositoryId,
+    skillId: dataset.skillId,
+    versionId,
+    runtimeDescriptor: descriptor,
+  }),
+);
+```
+
 - [ ] **Step 4: Keep optimization Candidate execution compatible**
 
 Populate candidate run configurations from trusted experiment installation Job results so the shared runner always receives a target-specific path. Continue validating baseline Version and Dataset by stable IDs.
@@ -111,7 +139,7 @@ Expected: PASS.
 
 **Files:**
 - Modify: `desktop/rolling-skill/renderer/index.html`
-- Modify: `desktop/rolling-skill/renderer/app.js`
+- Modify: `desktop/rolling-skill/renderer/renderer.js`
 - Modify: `desktop/rolling-skill/renderer/styles.css` only if needed for existing component alignment
 - Modify: `desktop/rolling-skill/test/local-first-surface.test.cjs`
 - Modify: `desktop/rolling-skill/test/evaluation-store.test.cjs`
@@ -129,6 +157,14 @@ Expected: FAIL against the current Runtime-bound form.
 - [ ] **Step 3: Implement Dataset managed-Skill selection**
 
 Use the existing managed Skill catalog. Create and rebind requests send only stable IDs. Display legacy/unbound status with an explicit rebind action. Do not require a Runtime installation merely to create a Dataset.
+
+```js
+await window.rollingSkill.datasets.create({
+  name,
+  repositoryId: selected.repositoryId,
+  skillId: selected.skillId,
+});
+```
 
 - [ ] **Step 4: Implement evaluation Version and installation status**
 
@@ -159,6 +195,10 @@ Run from `desktop/rolling-skill`: `npm test`
 
 Expected: PASS with zero failed tests.
 
+Run from `desktop/rolling-skill`: `npm run smoke:renderer`
+
+Expected: the packaged Renderer boots and its managed Dataset/Evaluation controls initialize without a browser exception.
+
 - [ ] **Step 2: Run targeted incident data regression safely**
 
 Copy the old `evaluation-store.json`, managed store, and installation store to a temporary directory. Start stores against the copies, run reconciliation, and assert Dataset `3331958b...` becomes managed `repositoryId: 42cad4f2...`, `skillId: f32e251d...` while its Cases, active Rubric `b6da...`, and historical runs are byte-equivalent in content. Never mutate the live archived App data during this diagnostic.
@@ -166,6 +206,10 @@ Copy the old `evaluation-store.json`, managed store, and installation store to a
 - [ ] **Step 3: Verify optimization preflight**
 
 Using the temporary migrated store, assert the incident Dataset and its Released baseline pass stable-ID preflight; verify ambiguous and missing-install fixtures remain blocked.
+
+- [ ] **Step 4: Verify every Electron-owned parity entry**
+
+Use `docs/superpowers/specs/2026-08-27-rolling-skill-surface-parity-ledger.md` from `main` as the immutable checklist. Record the exact Renderer/Main implementation and automated test for each Electron-owned ID. Approved platform differences may cite the Electron-native IPC/Renderer equivalent; no ID may be closed by a tab name alone.
 
 ## Task 6: Build, install, sign-check, and inspect the App
 
