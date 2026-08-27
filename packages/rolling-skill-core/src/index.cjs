@@ -16,9 +16,14 @@ const {
     createCurationOperationEvidenceResolver,
 } = require("./curation-operation-evidence.cjs")
 const {ensureDataLayout, resolveDataPaths} = require("./data-root.cjs")
+const {
+    SURFACE_PARITY_MANIFEST,
+    surfaceParityReport,
+} = require("./surface-parity-manifest.cjs")
 
 module.exports = {
     RollingSkillConfigStore,
+    SURFACE_PARITY_MANIFEST,
     acquireRunLease,
     createAutomaticCaptureService,
     createCaseServices,
@@ -34,4 +39,5 @@ module.exports = {
     createSkillServices,
     ensureDataLayout,
     resolveDataPaths,
+    surfaceParityReport,
 }
