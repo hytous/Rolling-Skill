@@ -38,6 +38,7 @@ function resolveDataPaths({
         managedSkillRegistry: join(managedSkills, "registry.json"),
         skillInstallations: join(root, "skill-installations.json"),
         traces,
+        dshConversationTraces: join(traces, "dsh-conversations"),
         jobs,
         operatorJobs: join(jobs, "operator-jobs.json"),
         optimizationRuns: join(jobs, "optimization-runs.json"),
