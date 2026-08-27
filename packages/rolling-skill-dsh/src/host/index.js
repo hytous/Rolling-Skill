@@ -13,7 +13,7 @@ const {createSchedulerAdapter, resolveWorkerExecutable} = schedulerModule
 
 export const inject = ["webServer", "tools", "sessionQuery", "agents"]
 
-export function apply(ctx, config = {}) {
+export function apply(ctx, config = {}, dependencies = {}) {
     const dataPaths = resolveDataPaths({dataRoot: config.dataRoot})
     const schedulerAdapter = createSchedulerAdapter({
         dataRoot: config.dataRoot,
@@ -22,7 +22,7 @@ export function apply(ctx, config = {}) {
     const application = createRollingSkillApplication({
         dataRoot: config.dataRoot,
         schedulerAdapter,
-        ...(ctx.runtimeRegistry ? {runtimeRegistry: ctx.runtimeRegistry} : {}),
+        ...(dependencies.runtimeRegistry ? {runtimeRegistry: dependencies.runtimeRegistry} : {}),
         conversationEpisodeSource: createSessionEvidenceSource({
             sessionQuery: ctx.sessionQuery,
             traceRoot: dataPaths.dshConversationTraces,

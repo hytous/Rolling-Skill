@@ -64513,7 +64513,7 @@ var { createRollingSkillApiHandler } = import_api.default;
 var { createSessionEvidenceSource } = import_session_evidence.default;
 var { createSchedulerAdapter, resolveWorkerExecutable } = import_scheduler.default;
 var inject = ["webServer", "tools", "sessionQuery", "agents"];
-function apply(ctx, config = {}) {
+function apply(ctx, config = {}, dependencies = {}) {
   const dataPaths = resolveDataPaths({ dataRoot: config.dataRoot });
   const schedulerAdapter = createSchedulerAdapter({
     dataRoot: config.dataRoot,
@@ -64522,7 +64522,7 @@ function apply(ctx, config = {}) {
   const application = createRollingSkillApplication({
     dataRoot: config.dataRoot,
     schedulerAdapter,
-    ...ctx.runtimeRegistry ? { runtimeRegistry: ctx.runtimeRegistry } : {},
+    ...dependencies.runtimeRegistry ? { runtimeRegistry: dependencies.runtimeRegistry } : {},
     conversationEpisodeSource: createSessionEvidenceSource({
       sessionQuery: ctx.sessionQuery,
       traceRoot: dataPaths.dshConversationTraces

@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict")
-const {mkdtempSync, mkdirSync, writeFileSync} = require("node:fs")
+const {mkdtempSync, mkdirSync, readFileSync, writeFileSync} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {Readable} = require("node:stream")
@@ -217,6 +217,8 @@ async function callRoute(handler, method, input) {
 }
 
 it("registers and disposes the Rolling Skill Cordis Host route", async () => {
+    const hostSource = readFileSync(join(__dirname, "../src/host/index.js"), "utf8")
+    assert.doesNotMatch(hostSource, /ctx\.runtimeRegistry/u)
     const source = pathToFileURL(join(__dirname, "../src/host/index.js"))
     const plugin = await import(`${source.href}?test=${Date.now()}`)
     const effects = []
@@ -297,9 +299,7 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
     assert.deepEqual(plugin.inject, ["webServer", "tools", "sessionQuery", "agents"])
     const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-host-"))
     const dataset = seedCurationPrerequisites(dataRoot)
-    plugin.apply(context, {
-        dataRoot,
-    })
+    plugin.apply(context, {dataRoot}, {runtimeRegistry: context.runtimeRegistry})
 
     assert.equal(registeredRoute.kind, "exact")
     assert.equal(registeredRoute.path, "/rolling-skill/api")
