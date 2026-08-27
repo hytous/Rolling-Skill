@@ -173,9 +173,9 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
             ) : route.page === "datasets" ? (
                 <DatasetsPanel t={t} onChanged={() => setDataRevision((value) => value + 1)}/>
             ) : route.page === "cases" ? (
-                <CasesPanel t={t} revision={dataRevision} onChanged={() => setDataRevision((value) => value + 1)}/>
+                <CasesPanel t={t} revision={dataRevision} initialDatasetId={route.datasetId} initialCaseId={route.caseId} onChanged={() => setDataRevision((value) => value + 1)}/>
             ) : route.page === "raw-cases" ? (
-                <RawCasesPanel t={t} revision={dataRevision} onChanged={() => setDataRevision((value) => value + 1)}/>
+                <RawCasesPanel t={t} revision={dataRevision} initialRawCaseId={route.rawCaseId} onChanged={() => setDataRevision((value) => value + 1)}/>
             ) : route.page === "rubrics" ? (
                 <RubricPanel
                     t={t}

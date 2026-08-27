@@ -15,6 +15,10 @@ async function fixture() {
         async dispatch(method, input) {
             calls.push([method, structuredClone(input)])
             if (method === "dashboard.get") return shared
+            if (method === "skills.catalog") return {
+                repositories: [{id: "repository-1"}],
+                skills: [{id: "skill-1", repositoryId: "repository-1", name: "rolling-skill", status: "valid"}],
+            }
             if (method === "rawCases.add") return {id: "raw-1", ...input}
             if (method === "evaluations.start") return {id: "evaluation-1", status: "queued"}
             if (method === "automatic.runOnce") return {slot: "manual", status: "completed"}
@@ -76,13 +80,20 @@ describe("Rolling Skill DSH tools", () => {
         }, execution())
         await definitions.get("rolling_skill_run_capture").execute({}, execution())
         assert.deepEqual(calls.map(([method]) => method), [
+            "skills.catalog",
             "rawCases.add",
             "evaluations.start",
             "automatic.runOnce",
         ])
-        assert.equal(calls[1][1].targets[0].runtimeId, "codex:one")
-        assert.equal(calls[1][1].judge.runtimeId, "codex:one")
-        assert.match(calls[1][1].idempotencyKey, /^dsh-tool-/u)
+        assert.deepEqual(calls[1][1], {
+            question: "How should this Case be refreshed?",
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            note: "",
+        })
+        assert.equal(calls[2][1].targets[0].runtimeId, "codex:one")
+        assert.equal(calls[2][1].judge.runtimeId, "codex:one")
+        assert.match(calls[2][1].idempotencyKey, /^dsh-tool-/u)
     })
 
     it("honors cancellation before writes and sanitizes thrown errors", async () => {

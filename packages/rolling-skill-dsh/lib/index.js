@@ -2134,6 +2134,14 @@ var require_local_store = __commonJS({
           session.skillReference = null;
           changed = true;
         }
+        if (!("executionSkillReference" in session)) {
+          session.executionSkillReference = null;
+          changed = true;
+        }
+        if (!("operationEvidence" in session)) {
+          session.operationEvidence = null;
+          changed = true;
+        }
         if (!("rubricVersionSnapshot" in session)) {
           session.rubricVersionSnapshot = null;
           changed = true;
@@ -2158,6 +2166,16 @@ var require_local_store = __commonJS({
           session.status = "needs_review";
           session.error = attemptedContract && session.error ? `The last Curator response did not replace the valid reference answer: ${session.error}` : null;
           if (session.curator) session.curator.currentTurnId = null;
+          changed = true;
+        }
+      }
+      for (const session of state.rubricSessions) {
+        if (!("executionSkillReference" in session)) {
+          session.executionSkillReference = null;
+          changed = true;
+        }
+        if (!("operationEvidence" in session)) {
+          session.operationEvidence = null;
           changed = true;
         }
       }
@@ -2366,6 +2384,17 @@ var require_local_store = __commonJS({
         capturedAt: entry.createdAt ?? (/* @__PURE__ */ new Date()).toISOString()
       };
     }
+    function dshConversationSource(value) {
+      if (value?.kind !== "dsh-session" || typeof value.sessionId !== "string" || !value.sessionId.trim() || !Number.isSafeInteger(value.startSeq) || !Number.isSafeInteger(value.endSeq) || value.startSeq < 0 || value.endSeq < value.startSeq || typeof value.endMessageId !== "string" || !value.endMessageId.trim() || !/^sha256:[a-f0-9]{64}$/u.test(String(value.digest ?? ""))) return null;
+      return {
+        kind: "dsh-session",
+        sessionId: value.sessionId,
+        startSeq: value.startSeq,
+        endSeq: value.endSeq,
+        endMessageId: value.endMessageId,
+        digest: value.digest
+      };
+    }
     function caseCalibrationBaseline(entry) {
       return {
         caseId: entry.id,
@@ -2398,6 +2427,16 @@ var require_local_store = __commonJS({
     function newCurationSession({ dataset, input, episode, operation = "capture", targetCaseId = null, baselineCaseSnapshot = null }) {
       requireCaseType(input.caseType);
       const skillReference = copy(requireDatasetSkill(dataset));
+      const executionSkillReference = input.executionSkillReference ? normalizeSkillReference(input.executionSkillReference) : null;
+      const operationEvidence = input.operationEvidence ? structuredObject(input.operationEvidence, "Curation operation evidence") : null;
+      if (executionSkillReference && skillReference.evidencePrecision === "managed") {
+        if (executionSkillReference.id !== skillReference.id || executionSkillReference.repositoryId !== skillReference.repositoryId || executionSkillReference.name !== skillReference.name || !executionSkillReference.path || !executionSkillReference.runtimeId || !executionSkillReference.providerId) {
+          throw new Error("Curation execution Skill does not match the Dataset managed Skill");
+        }
+        if (operationEvidence?.schemaVersion !== "rolling-skill-operation-evidence/v1" || operationEvidence.kind !== "curation" || operationEvidence.repositoryId !== skillReference.repositoryId || operationEvidence.skillId !== skillReference.id || operationEvidence.runtime?.runtimeId !== executionSkillReference.runtimeId || operationEvidence.runtime?.providerId !== executionSkillReference.providerId || operationEvidence.installation?.destination !== executionSkillReference.path.replace(/\/SKILL\.md$/iu, "")) {
+          throw new Error("Curation operation evidence does not match its execution Skill");
+        }
+      }
       const rubricVersionSnapshot = dataset.activeRubricVersionId ? copy(input.rubricVersionSnapshot) : null;
       const frozenEpisode = copy(episode);
       if (frozenEpisode?.schemaVersion !== "rolling-skill-episode/v1") {
@@ -2417,6 +2456,7 @@ var require_local_store = __commonJS({
       const now = (/* @__PURE__ */ new Date()).toISOString();
       return {
         id: randomUUID2(),
+        idempotencyKey: modelId(input.idempotencyKey, "Curation idempotency key"),
         datasetId: dataset.id,
         operation,
         targetCaseId,
@@ -2426,6 +2466,8 @@ var require_local_store = __commonJS({
         status: "queued",
         episode: frozenEpisode,
         skillReference,
+        executionSkillReference,
+        operationEvidence,
         rubricVersionSnapshot,
         curator: {
           runtimeId: input.curator?.runtimeId ?? null,
@@ -2852,6 +2894,8 @@ var require_local_store = __commonJS({
         const automatic = state.settings.autoCaptureProfile;
         if (automatic.datasetId === datasetId) {
           automatic.datasetId = null;
+          automatic.mode = "off";
+          state.settings.autoCapture = false;
         }
         this.persist();
         return copy({
@@ -3030,6 +3074,16 @@ var require_local_store = __commonJS({
         const state = this.load();
         const dataset = requireDataset(state, input.datasetId);
         const skillReference = copy(requireDatasetSkill(dataset));
+        const executionSkillReference = input.executionSkillReference ? normalizeSkillReference(input.executionSkillReference) : null;
+        const operationEvidence = input.operationEvidence ? structuredObject(input.operationEvidence, "Rubric operation evidence") : null;
+        if (executionSkillReference && skillReference.evidencePrecision === "managed") {
+          if (executionSkillReference.id !== skillReference.id || executionSkillReference.repositoryId !== skillReference.repositoryId || executionSkillReference.name !== skillReference.name || !executionSkillReference.path || !executionSkillReference.runtimeId || !executionSkillReference.providerId) {
+            throw new Error("Rubric execution Skill does not match the Dataset managed Skill");
+          }
+          if (operationEvidence?.schemaVersion !== "rolling-skill-operation-evidence/v1" || operationEvidence.kind !== "rubric" || operationEvidence.repositoryId !== skillReference.repositoryId || operationEvidence.skillId !== skillReference.id || operationEvidence.runtime?.runtimeId !== executionSkillReference.runtimeId || operationEvidence.runtime?.providerId !== executionSkillReference.providerId || operationEvidence.installation?.destination !== executionSkillReference.path.replace(/\/SKILL\.md$/iu, "")) {
+            throw new Error("Rubric operation evidence does not match its execution Skill");
+          }
+        }
         const skillEvidence = copy(validateSkillEvidence(input.skillEvidence, {
           expectedName: skillReference.name,
           requireComplete: true
@@ -3049,6 +3103,8 @@ var require_local_store = __commonJS({
           baseVersionId,
           status: "queued",
           skillReference,
+          executionSkillReference,
+          operationEvidence,
           skillEvidence,
           rubricAgent: {
             runtimeId: input.rubricAgent?.runtimeId ?? null,
@@ -3209,6 +3265,7 @@ var require_local_store = __commonJS({
           rubricDigest: datasetRubricDigest(rubric),
           skillReference: copy(session.skillReference),
           skillEvidenceDigest: session.skillEvidence.digest,
+          operationEvidence: copy(session.operationEvidence),
           sourceSessionId: session.id,
           baseVersionId: session.baseVersionId,
           createdAt: now,
@@ -3359,6 +3416,55 @@ var require_local_store = __commonJS({
           )
         );
       }
+      listConversationCurationMarkers(sessionId) {
+        const normalizedSessionId = String(sessionId ?? "").trim();
+        if (!normalizedSessionId || normalizedSessionId.length > 200) {
+          throw new Error("DSH Session id is required");
+        }
+        const state = this.load();
+        const markers = [];
+        const projectedCaseIds = /* @__PURE__ */ new Set();
+        for (const session of state.curationSessions) {
+          const source = dshConversationSource(session.episode?.source);
+          if (!source || source.sessionId !== normalizedSessionId || session.status === "cancelled") {
+            continue;
+          }
+          const caseRecord = state.cases.find(
+            (entry) => entry.id === session.caseId || entry.source?.curationSessionId === session.id
+          );
+          if (!caseRecord && session.status === "archived") continue;
+          if (caseRecord) projectedCaseIds.add(caseRecord.id);
+          markers.push({
+            sessionId: source.sessionId,
+            startSeq: source.startSeq,
+            endSeq: source.endSeq,
+            endMessageId: source.endMessageId,
+            curationSessionId: session.id,
+            caseId: caseRecord?.id ?? null,
+            status: caseRecord ? "saved" : "draft",
+            digest: source.digest
+          });
+        }
+        for (const entry of state.cases) {
+          if (projectedCaseIds.has(entry.id)) continue;
+          const source = dshConversationSource(entry.source);
+          if (!source || source.sessionId !== normalizedSessionId) continue;
+          markers.push({
+            sessionId: source.sessionId,
+            startSeq: source.startSeq,
+            endSeq: source.endSeq,
+            endMessageId: source.endMessageId,
+            curationSessionId: entry.source?.curationSessionId ?? null,
+            caseId: entry.id,
+            status: "saved",
+            digest: source.digest
+          });
+        }
+        markers.sort(
+          (left, right) => left.startSeq - right.startSeq || left.endSeq - right.endSeq || Number(right.status === "saved") - Number(left.status === "saved") || String(left.curationSessionId ?? "").localeCompare(String(right.curationSessionId ?? "")) || String(left.caseId ?? "").localeCompare(String(right.caseId ?? ""))
+        );
+        return copy(markers);
+      }
       hasCurationForSource(threadId, endItemId) {
         return this.load().curationSessions.some(
           (entry) => entry.episode?.source?.threadId === threadId && entry.episode?.source?.endItemId === endItemId
@@ -3366,6 +3472,14 @@ var require_local_store = __commonJS({
       }
       getCurationSession(id) {
         return copy(requireCurationSession(this.load(), id));
+      }
+      findCurationSessionByIdempotencyKey(idempotencyKey) {
+        const normalized = modelId(idempotencyKey, "Curation idempotency key");
+        if (!normalized) return null;
+        const session = this.load().curationSessions.find(
+          (entry) => entry.idempotencyKey === normalized && entry.status !== "cancelled"
+        );
+        return session ? copy(session) : null;
       }
       createCurationSession(input) {
         const state = this.load();
@@ -3624,6 +3738,7 @@ var require_local_store = __commonJS({
             modelProvider: session.episode.source.modelProvider,
             modelId: session.episode.source.modelId,
             traceReference: session.episode.source.traceReference,
+            ...dshConversationSource(session.episode.source),
             curationSessionId: session.id,
             curationRevisionId: latestRevision?.id ?? null,
             curatorThreadId: session.curator.threadId,
@@ -3643,7 +3758,8 @@ var require_local_store = __commonJS({
           };
           target.evidence = {
             episodeSchemaVersion: session.episode.schemaVersion,
-            toolActivity: copy(session.episode.toolActivity)
+            toolActivity: copy(session.episode.toolActivity),
+            operationEvidence: copy(session.operationEvidence)
           };
           target.updatedAt = now;
           target.lastRefresh = {
@@ -3744,6 +3860,7 @@ var require_local_store = __commonJS({
             modelProvider: session.episode.source.modelProvider,
             modelId: session.episode.source.modelId,
             traceReference: session.episode.source.traceReference,
+            ...dshConversationSource(session.episode.source),
             curationSessionId: session.id,
             curationRevisionId: latestRevision?.id ?? null,
             curatorThreadId: session.curator.threadId,
@@ -3763,7 +3880,8 @@ var require_local_store = __commonJS({
           },
           evidence: {
             episodeSchemaVersion: session.episode.schemaVersion,
-            toolActivity: copy(session.episode.toolActivity)
+            toolActivity: copy(session.episode.toolActivity),
+            operationEvidence: copy(session.operationEvidence)
           },
           calibrationHistory: [],
           refreshHistory: [],
@@ -15706,6 +15824,39 @@ ${badcaseGuidance}`;
         rubricCriteriaIds: session.rubricVersionSnapshot?.rubric?.criteria?.map((entry) => entry.id) ?? void 0
       };
     }
+    function validateFrozenEpisodeSource(episode, source) {
+      if (!source || source.kind !== "dsh-session") {
+        throw new Error("Frozen Episode source must be a trusted DSH session");
+      }
+      if (!Number.isSafeInteger(source.startSeq) || !Number.isSafeInteger(source.endSeq) || source.startSeq < 0 || source.endSeq < source.startSeq) {
+        throw new Error("Frozen Episode source event range is invalid");
+      }
+      if (typeof source.sessionId !== "string" || !source.sessionId.trim() || typeof source.endMessageId !== "string" || !source.endMessageId.trim()) {
+        throw new Error("Frozen Episode source boundaries are incomplete");
+      }
+      if (!/^sha256:[a-f0-9]{64}$/u.test(String(source.digest ?? ""))) {
+        throw new Error("Frozen Episode source digest is invalid");
+      }
+      const frozenSource = episode?.source;
+      const sourceFields = [
+        "kind",
+        "sessionId",
+        "startSeq",
+        "endSeq",
+        "endMessageId",
+        "digest"
+      ];
+      if (!frozenSource || sourceFields.some((field) => source[field] !== frozenSource[field])) {
+        throw new Error("Frozen Episode source digest does not match trusted evidence");
+      }
+      if (JSON.stringify(source.observedSkills ?? []) !== JSON.stringify(frozenSource.observedSkills ?? [])) {
+        throw new Error("Frozen Episode observed Skill evidence does not match trusted evidence");
+      }
+      if (!Array.isArray(episode.items) || episode.items.length === 0 || episode.items.some((item) => typeof item?.id !== "string" || !item.id.trim())) {
+        throw new Error("Every frozen Episode item requires a stable id");
+      }
+      return episode;
+    }
     var CurationManager = class {
       constructor({
         store,
@@ -15803,6 +15954,42 @@ ${badcaseGuidance}`;
         const releaseDataset = this.store.reserveDataset(input.datasetId);
         try {
           return await this.createSessionFromEvidence(input);
+        } finally {
+          releaseDataset();
+        }
+      }
+      async createSessionFromFrozenEpisode(input) {
+        const episode = validateFrozenEpisodeSource(input.episode, input.source);
+        const existing = this.store.findCurationSessionByIdempotencyKey(input.idempotencyKey);
+        if (existing) {
+          if (existing.datasetId !== input.datasetId || existing.caseType !== input.caseType || existing.episode?.source?.digest !== input.source.digest) {
+            throw new Error("Curation idempotency key was already used for different evidence");
+          }
+          return existing;
+        }
+        const releaseDataset = this.store.reserveDataset(input.datasetId);
+        try {
+          const runtimeDescriptor = this.getRuntimeDescriptor();
+          const curator = input.curator ?? {};
+          const session = this.store.createCurationSession({
+            datasetId: input.datasetId,
+            caseType: input.caseType,
+            issueDescription: input.issueDescription ?? "",
+            episode,
+            executionSkillReference: input.executionSkillReference,
+            operationEvidence: input.operationEvidence,
+            idempotencyKey: input.idempotencyKey,
+            curator: {
+              runtimeId: curator.runtimeId ?? runtimeDescriptor?.runtimeId ?? null,
+              modelProvider: curator.modelProvider ?? runtimeDescriptor?.providerId ?? null,
+              modelId: curator.modelId ?? null,
+              effort: curator.effort ?? null,
+              promptVersion: CURATOR_PROMPT_VERSION
+            }
+          });
+          this.emitChanged(session);
+          this.queue(session.id, () => this.startInitialTurn(session.id));
+          return session;
         } finally {
           releaseDataset();
         }
@@ -15938,17 +16125,18 @@ ${session.issueDescription}` : ""}`;
             issueDescription: session.issueDescription,
             caseType: session.caseType,
             modelId: session.curator.modelId,
-            skillReference: session.skillReference,
+            skillReference: session.executionSkillReference ?? session.skillReference,
             rubricVersion: session.rubricVersionSnapshot,
             operation: session.operation,
             calibrationBaseline: session.operation === "calibration" ? session.baselineCaseSnapshot : null,
             refreshBaseline: session.operation === "refresh" ? session.baselineCaseSnapshot : null
           });
-          const turnInput = session.skillReference ? [
+          const executionSkillReference = session.executionSkillReference ?? session.skillReference;
+          const turnInput = executionSkillReference ? [
             {
               type: "skill",
-              name: session.skillReference.name,
-              path: session.skillReference.path
+              name: executionSkillReference.name,
+              path: executionSkillReference.path
             },
             { type: "text", text: prompt, text_elements: [] }
           ] : prompt;
@@ -16355,6 +16543,8 @@ var require_rubric_manager = __commonJS({
           datasetId: dataset.id,
           baseVersionId,
           skillEvidence: input.skillEvidence,
+          executionSkillReference: input.executionSkillReference,
+          operationEvidence: input.operationEvidence,
           rubricAgent: {
             runtimeId: descriptor?.runtimeId ?? null,
             modelProvider: descriptor?.providerId ?? null,
@@ -16407,8 +16597,8 @@ var require_rubric_manager = __commonJS({
           const turnInput = [
             {
               type: "skill",
-              name: session.skillReference.name,
-              path: session.skillReference.path
+              name: (session.executionSkillReference ?? session.skillReference).name,
+              path: (session.executionSkillReference ?? session.skillReference).path
             },
             { type: "text", text: prompt, text_elements: [] }
           ];
@@ -21908,6 +22098,223 @@ var require_automatic_capture_service = __commonJS({
   }
 });
 
+// ../rolling-skill-core/src/curation-operation-evidence.cjs
+var require_curation_operation_evidence = __commonJS({
+  "../rolling-skill-core/src/curation-operation-evidence.cjs"(exports, module) {
+    var { basename, isAbsolute, join, resolve } = __require("node:path");
+    function installedSkillPath(destination) {
+      return basename(destination).toLocaleLowerCase("en-US") === "skill.md" ? destination : join(destination, "SKILL.md");
+    }
+    function blockerCode(message) {
+      if (/managed Skill/iu.test(message)) return "MANAGED_SKILL_REQUIRED";
+      if (/Rubric/iu.test(message)) return "PUBLISHED_RUBRIC_REQUIRED";
+      if (/Select a Runtime/iu.test(message)) return "RUNTIME_REQUIRED";
+      if (/ambiguous/iu.test(message)) return "INSTALLATION_AMBIGUOUS";
+      if (/installation/iu.test(message)) return "INSTALLATION_REQUIRED";
+      return "CURATION_PREREQUISITE_FAILED";
+    }
+    function createCurationOperationEvidenceResolver({
+      store,
+      configStore,
+      runtimeServices,
+      managedSkillStore,
+      installationStore
+    } = {}) {
+      if (!store || !configStore || !runtimeServices || !managedSkillStore || !installationStore) {
+        throw new Error("Curation operation evidence dependencies are required");
+      }
+      function resolveEvidence(datasetId, {
+        observedSkills,
+        kind = "curation",
+        requireRubric = kind === "curation"
+      } = {}) {
+        if (kind !== "curation" && kind !== "rubric") {
+          throw new Error("Managed Skill operation kind is invalid");
+        }
+        const dataset = store.getDataset(datasetId);
+        const datasetSkill = dataset.skillReference;
+        if (datasetSkill?.evidencePrecision !== "managed" || !datasetSkill.id || !datasetSkill.repositoryId || datasetSkill.path || datasetSkill.runtimeId || datasetSkill.providerId) {
+          throw new Error("Dataset must bind a pathless managed Skill before curation");
+        }
+        const rubric = store.getActiveDatasetRubric(dataset.id);
+        if (requireRubric && !rubric) {
+          throw new Error("A published dataset Rubric is required before curation");
+        }
+        const selectedRuntime = configStore.read().runtime;
+        if (!selectedRuntime?.runtimeId) {
+          throw new Error("Select a Runtime before starting curation");
+        }
+        const runtime = runtimeServices.descriptor(selectedRuntime.runtimeId);
+        const repository = managedSkillStore.getRepository(datasetSkill.repositoryId);
+        const skill = managedSkillStore.getSkill(datasetSkill.id);
+        if (skill.repositoryId !== repository.id || datasetSkill.name !== skill.name) {
+          throw new Error("Dataset managed Skill identity no longer matches the catalog");
+        }
+        const released = managedSkillStore.listVersions(skill.id).filter(
+          (version2) => version2.state === "released" && !version2.deprecatedAt && version2.repositoryId === repository.id && version2.skillId === skill.id
+        );
+        if (!released.length) {
+          throw new Error("A Released managed Skill version is required before curation");
+        }
+        const versionsById = new Map(released.map((version2) => [version2.id, version2]));
+        const installations = installationStore.listVerifiedInstallations({
+          repositoryId: repository.id,
+          skillId: skill.id,
+          runtimeId: runtime.runtimeId,
+          providerId: runtime.providerId
+        });
+        if (!installations.length) {
+          throw new Error("A verified Skill installation is required before curation");
+        }
+        const matching = installations.filter((installation2) => {
+          const version2 = versionsById.get(installation2.versionId);
+          return version2 && installation2.commit === version2.commit && installation2.contentDigest === version2.contentDigest;
+        });
+        if (!matching.length) {
+          throw new Error("Verified Skill installation does not match a Released version");
+        }
+        const newestInstalledAt = matching[0].installedAt;
+        const newest = matching.filter((entry) => entry.installedAt === newestInstalledAt);
+        const signatures = new Set(newest.map((entry) => JSON.stringify({
+          versionId: entry.versionId,
+          commit: entry.commit,
+          contentDigest: entry.contentDigest,
+          destination: entry.destination,
+          verification: entry.verification
+        })));
+        if (signatures.size !== 1) {
+          throw new Error("Conflicting newest verified Skill installations are ambiguous");
+        }
+        const installation = newest[0];
+        if (!isAbsolute(installation.destination)) {
+          throw new Error("Verified Skill installation destination is invalid");
+        }
+        const version = versionsById.get(installation.versionId);
+        const runtimeSnapshot = {
+          runtimeId: runtime.runtimeId,
+          providerId: runtime.providerId,
+          displayName: runtime.displayName,
+          version: runtime.version ?? null,
+          executablePath: runtime.executablePath
+        };
+        const marker = {
+          schema: "rolling-skill-install/v1",
+          repositoryId: repository.id,
+          skillId: skill.id,
+          versionId: version.id,
+          commit: version.commit,
+          contentDigest: version.contentDigest,
+          installedAt: installation.installedAt
+        };
+        let sourceSkill = null;
+        if (observedSkills !== void 0) {
+          if (!Array.isArray(observedSkills) || observedSkills.length === 0) {
+            throw new Error("Trusted DSH source Skill evidence is required before curation");
+          }
+          const matchingSourceSkills = observedSkills.filter(
+            (entry) => entry?.name === skill.name && entry.resourceBase?.kind === "directory" && typeof entry.resourceBase.path === "string" && resolve(entry.resourceBase.path) === resolve(installation.destination)
+          );
+          if (!matchingSourceSkills.length) {
+            const named = observedSkills.some((entry) => entry?.name === skill.name);
+            throw new Error(named ? "Trusted DSH source Skill does not match the verified installation" : "Trusted DSH observed Skill does not match the Dataset Skill");
+          }
+          const signatures2 = new Set(matchingSourceSkills.map((entry) => JSON.stringify({
+            name: entry.name,
+            provider: entry.provider,
+            resourceBase: entry.resourceBase
+          })));
+          if (signatures2.size !== 1) {
+            throw new Error("Trusted DSH source Skill evidence is ambiguous");
+          }
+          const selected = matchingSourceSkills.slice().sort((left, right) => left.callSeq - right.callSeq || left.resultSeq - right.resultSeq).at(-1);
+          sourceSkill = {
+            name: selected.name,
+            provider: selected.provider,
+            resourceBase: { ...selected.resourceBase },
+            callSeq: selected.callSeq,
+            resultSeq: selected.resultSeq
+          };
+        }
+        return {
+          executionSkillReference: {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            id: skill.id,
+            repositoryId: repository.id,
+            name: skill.name,
+            path: installedSkillPath(installation.destination),
+            scope: "runtime",
+            description: skill.description ?? null,
+            runtimeId: runtime.runtimeId,
+            providerId: runtime.providerId,
+            confirmedAt: installation.installedAt
+          },
+          operationEvidence: {
+            schemaVersion: "rolling-skill-operation-evidence/v1",
+            kind,
+            repositoryId: repository.id,
+            skillId: skill.id,
+            skillName: skill.name,
+            versionId: version.id,
+            versionLabel: version.versionLabel,
+            commit: version.commit,
+            skillRoot: version.skillRoot,
+            contentDigest: version.contentDigest,
+            rubricVersionId: rubric?.id ?? null,
+            runtime: runtimeSnapshot,
+            installation: {
+              installationId: installation.installationId ?? installation.id,
+              jobId: installation.jobId,
+              destination: installation.destination,
+              verification: installation.verification,
+              installedAt: installation.installedAt,
+              marker
+            },
+            ...sourceSkill ? { sourceSkill } : {}
+          }
+        };
+      }
+      function inspectDataset(datasetId) {
+        const dataset = store.getDataset(datasetId);
+        try {
+          const resolved = resolveEvidence(dataset.id);
+          return {
+            datasetId: dataset.id,
+            name: dataset.name,
+            ready: true,
+            blockers: [],
+            rubricVersionId: resolved.operationEvidence.rubricVersionId,
+            runtime: {
+              runtimeId: resolved.operationEvidence.runtime.runtimeId,
+              displayName: resolved.operationEvidence.runtime.displayName,
+              version: resolved.operationEvidence.runtime.version
+            },
+            version: {
+              versionId: resolved.operationEvidence.versionId,
+              versionLabel: resolved.operationEvidence.versionLabel
+            }
+          };
+        } catch (error) {
+          const message = String(error?.message ?? "Curation prerequisite failed");
+          return {
+            datasetId: dataset.id,
+            name: dataset.name,
+            ready: false,
+            blockers: [{ code: blockerCode(message), message }],
+            rubricVersionId: dataset.activeRubricVersionId ?? null,
+            runtime: null,
+            version: null
+          };
+        }
+      }
+      function resolveRubric(datasetId) {
+        return resolveEvidence(datasetId, { kind: "rubric", requireRubric: false });
+      }
+      return Object.freeze({ inspectDataset, resolve: resolveEvidence, resolveRubric });
+    }
+    module.exports = { createCurationOperationEvidenceResolver };
+  }
+});
+
 // ../rolling-skill-core/src/data-root.cjs
 var require_data_root = __commonJS({
   "../rolling-skill-core/src/data-root.cjs"(exports, module) {
@@ -21919,7 +22326,7 @@ var require_data_root = __commonJS({
       if (!root || !isAbsolute(root)) throw new Error(`${label} must be an absolute path`);
       return resolve(root);
     }
-    function resolveDataPaths({
+    function resolveDataPaths2({
       dataRoot = null,
       homeDirectory = homedir(),
       environment = process.env
@@ -21944,6 +22351,7 @@ var require_data_root = __commonJS({
         managedSkillRegistry: join(managedSkills, "registry.json"),
         skillInstallations: join(root, "skill-installations.json"),
         traces,
+        dshConversationTraces: join(traces, "dsh-conversations"),
         jobs,
         operatorJobs: join(jobs, "operator-jobs.json"),
         optimizationRuns: join(jobs, "optimization-runs.json"),
@@ -21972,7 +22380,7 @@ var require_data_root = __commonJS({
       ]) ensurePrivateDirectory(directory);
       return paths;
     }
-    module.exports = { ensureDataLayout, resolveDataPaths };
+    module.exports = { ensureDataLayout, resolveDataPaths: resolveDataPaths2 };
   }
 });
 
@@ -22163,7 +22571,7 @@ var require_legacy_import = __commonJS({
     } = __require("node:fs");
     var { homedir } = __require("node:os");
     var { basename, dirname, isAbsolute, join, relative, resolve, sep } = __require("node:path");
-    var { ensureDataLayout, resolveDataPaths } = require_data_root();
+    var { ensureDataLayout, resolveDataPaths: resolveDataPaths2 } = require_data_root();
     var MIGRATION_SCHEMA = "rolling-skill-legacy-import/v1";
     var SOURCE_FILES = Object.freeze([
       { source: "evaluation-store.json", destination: "evaluation-store.json", schema: "evaluation" },
@@ -22391,7 +22799,7 @@ var require_legacy_import = __commonJS({
       const copied = [];
       let destinationBackedUp = false;
       try {
-        const stagePaths = ensureDataLayout(resolveDataPaths({ dataRoot: staging }));
+        const stagePaths = ensureDataLayout(resolveDataPaths2({ dataRoot: staging }));
         const config = join(destination, "config.json");
         if (existsSync(config)) copyTree(config, stagePaths.config, copied, "config.json");
         for (const entry of SOURCE_FILES) {
@@ -60932,6 +61340,9 @@ var require_application = __commonJS({
       RubricManager
     } = require_rubric_manager();
     var {
+      snapshotSkillEvidence
+    } = require_evaluation_skill_evidence();
+    var {
       EvaluationRunner
     } = require_evaluation_runner();
     var {
@@ -60947,7 +61358,10 @@ var require_application = __commonJS({
     var { createCaseServices } = require_case_services();
     var { createAutomaticCaptureService } = require_automatic_capture_service();
     var { RollingSkillConfigStore } = require_config_store();
-    var { ensureDataLayout, resolveDataPaths } = require_data_root();
+    var {
+      createCurationOperationEvidenceResolver
+    } = require_curation_operation_evidence();
+    var { ensureDataLayout, resolveDataPaths: resolveDataPaths2 } = require_data_root();
     var { createEvaluationServices } = require_evaluation_services();
     var {
       detectLegacyElectronDataRoot,
@@ -61011,6 +61425,251 @@ var require_application = __commonJS({
       if (!normalized || normalized.length > 200) throw new Error(`${label} is required`);
       return normalized;
     }
+    function requiredBodyText(value, label, maxLength = 12e4) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized) throw new Error(`${label} is required`);
+      if (value.length > maxLength) throw new Error(`${label} is too large`);
+      return value;
+    }
+    function exactFields(input, allowed, label) {
+      const unsupported = Object.keys(input).find((field) => !allowed.has(field));
+      if (unsupported) throw new Error(`Unsupported ${label} field: ${unsupported}`);
+    }
+    function requiredSequence(value, label) {
+      if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} is invalid`);
+      return value;
+    }
+    function publicConversationCuration(session) {
+      const source = session?.episode?.source ?? {};
+      return {
+        id: session.id,
+        datasetId: session.datasetId,
+        caseType: session.caseType,
+        status: session.status,
+        caseId: session.caseId ?? null,
+        sessionId: source.sessionId ?? null,
+        startSeq: source.startSeq ?? null,
+        endSeq: source.endSeq ?? null,
+        endMessageId: source.endMessageId ?? null,
+        digest: source.digest ?? null
+      };
+    }
+    function boundedText(value, limit = 2e4) {
+      const text2 = String(value ?? "");
+      return text2.length <= limit ? text2 : `${text2.slice(0, limit)}
+\u2026[truncated]`;
+    }
+    function publicSkillReference(reference) {
+      if (!reference) return null;
+      return {
+        schemaVersion: reference.schemaVersion ?? null,
+        evidencePrecision: reference.evidencePrecision ?? null,
+        id: reference.id ?? null,
+        repositoryId: reference.repositoryId ?? null,
+        name: reference.name ?? null,
+        scope: reference.scope ?? null,
+        description: reference.description ?? null,
+        runtimeId: reference.runtimeId ?? null,
+        providerId: reference.providerId ?? null,
+        confirmedAt: reference.confirmedAt ?? null
+      };
+    }
+    function publicDataset(dataset) {
+      if (!dataset) return null;
+      return {
+        ...dataset,
+        skillReference: publicSkillReference(dataset.skillReference)
+      };
+    }
+    function publicRawCase(record) {
+      if (!record) return null;
+      return {
+        ...record,
+        skill: record.skill ? {
+          ...record.skill.id ? { id: record.skill.id } : {},
+          name: record.skill.name
+        } : null
+      };
+    }
+    function publicOperationEvidence(evidence) {
+      if (!evidence) return null;
+      return {
+        schemaVersion: evidence.schemaVersion ?? null,
+        kind: evidence.kind ?? null,
+        repositoryId: evidence.repositoryId ?? null,
+        skillId: evidence.skillId ?? null,
+        skillName: evidence.skillName ?? null,
+        versionId: evidence.versionId ?? null,
+        versionLabel: evidence.versionLabel ?? null,
+        commit: evidence.commit ?? null,
+        contentDigest: evidence.contentDigest ?? null,
+        rubricVersionId: evidence.rubricVersionId ?? null,
+        runtime: evidence.runtime ? {
+          runtimeId: evidence.runtime.runtimeId ?? null,
+          providerId: evidence.runtime.providerId ?? null,
+          displayName: evidence.runtime.displayName ?? null,
+          version: evidence.runtime.version ?? null
+        } : null,
+        installation: evidence.installation ? {
+          installationId: evidence.installation.installationId ?? null,
+          jobId: evidence.installation.jobId ?? null,
+          verification: evidence.installation.verification ?? null,
+          installedAt: evidence.installation.installedAt ?? null,
+          marker: evidence.installation.marker ?? null
+        } : null,
+        sourceSkill: evidence.sourceSkill ? {
+          name: evidence.sourceSkill.name ?? null,
+          provider: evidence.sourceSkill.provider ?? null,
+          resourceKind: evidence.sourceSkill.resourceBase?.kind ?? null,
+          callSeq: evidence.sourceSkill.callSeq ?? null,
+          resultSeq: evidence.sourceSkill.resultSeq ?? null
+        } : null
+      };
+    }
+    function publicEpisode(episode) {
+      if (!episode) return null;
+      const source = episode.source ?? {};
+      return {
+        schemaVersion: episode.schemaVersion ?? null,
+        id: episode.id ?? null,
+        originalQuestion: boundedText(episode.originalQuestion, 12e4),
+        capturedAt: episode.capturedAt ?? null,
+        source: {
+          kind: source.kind ?? null,
+          sessionId: source.sessionId ?? null,
+          startSeq: source.startSeq ?? null,
+          endSeq: source.endSeq ?? null,
+          endMessageId: source.endMessageId ?? null,
+          digest: source.digest ?? null,
+          observedSkills: Array.isArray(source.observedSkills) ? source.observedSkills.map((entry) => ({
+            name: entry.name ?? null,
+            provider: entry.provider ?? null,
+            resourceKind: entry.resourceBase?.kind ?? null,
+            callSeq: entry.callSeq ?? null,
+            resultSeq: entry.resultSeq ?? null
+          })) : []
+        },
+        items: Array.isArray(episode.items) ? episode.items.slice(0, 250).map((item) => ({
+          id: item.id ?? null,
+          type: item.type ?? null,
+          role: item.role ?? null,
+          text: boundedText(item.text),
+          turnId: item.turnId ?? null,
+          seq: item.seq ?? null,
+          toolName: item.toolName ?? item.name ?? null,
+          arguments: item.arguments ?? null,
+          usage: item.usage ?? null
+        })) : []
+      };
+    }
+    function publicConversationMessages(messages) {
+      return Array.isArray(messages) ? messages.slice(-100).map((message) => ({
+        id: message.id ?? null,
+        role: message.role ?? null,
+        text: boundedText(message.text),
+        turnId: message.turnId ?? null,
+        createdAt: message.createdAt ?? null
+      })) : [];
+    }
+    function publicCurationSession(session) {
+      return {
+        id: session.id,
+        datasetId: session.datasetId,
+        operation: session.operation ?? "curation",
+        targetCaseId: session.targetCaseId ?? null,
+        caseType: session.caseType,
+        issueDescription: boundedText(session.issueDescription, 12e4),
+        status: session.status,
+        caseId: session.caseId ?? null,
+        skillReference: publicSkillReference(session.skillReference),
+        episode: publicEpisode(session.episode),
+        operationEvidence: publicOperationEvidence(session.operationEvidence),
+        rubricVersionSnapshot: publicRubricVersion(session.rubricVersionSnapshot),
+        curator: session.curator ? {
+          runtimeId: session.curator.runtimeId ?? null,
+          modelProvider: session.curator.modelProvider ?? null,
+          modelId: session.curator.modelId ?? null,
+          effort: session.curator.effort ?? null,
+          effectiveModelId: session.curator.effectiveModelId ?? null,
+          effectiveEffort: session.curator.effectiveEffort ?? null,
+          working: Boolean(session.curator.currentTurnId)
+        } : null,
+        conversation: publicConversationMessages(session.conversation),
+        revisions: Array.isArray(session.revisions) ? session.revisions.map((entry) => ({
+          id: entry.id,
+          draft: entry.draft,
+          turnId: entry.turnId ?? null,
+          createdAt: entry.createdAt ?? null
+        })) : [],
+        draft: session.draft ?? null,
+        error: session.error ?? null,
+        createdAt: session.createdAt ?? null,
+        updatedAt: session.updatedAt ?? null,
+        revision: session.updatedAt ?? null
+      };
+    }
+    function publicRubricSession(session) {
+      return {
+        id: session.id,
+        datasetId: session.datasetId,
+        baseVersionId: session.baseVersionId ?? null,
+        publishedVersionId: session.publishedVersionId ?? null,
+        status: session.status,
+        skillReference: publicSkillReference(session.skillReference),
+        operationEvidence: publicOperationEvidence(session.operationEvidence),
+        skillEvidence: session.skillEvidence ? {
+          schemaVersion: session.skillEvidence.schemaVersion,
+          name: session.skillEvidence.name,
+          digest: session.skillEvidence.digest,
+          truncated: session.skillEvidence.truncated,
+          warnings: session.skillEvidence.warnings,
+          files: session.skillEvidence.files?.map((file) => ({
+            id: file.id,
+            path: file.path,
+            bytes: file.bytes,
+            digest: file.digest
+          })) ?? []
+        } : null,
+        rubricAgent: session.rubricAgent ? {
+          runtimeId: session.rubricAgent.runtimeId ?? null,
+          modelProvider: session.rubricAgent.modelProvider ?? null,
+          modelId: session.rubricAgent.modelId ?? null,
+          effort: session.rubricAgent.effort ?? null,
+          effectiveModelId: session.rubricAgent.effectiveModelId ?? null,
+          effectiveEffort: session.rubricAgent.effectiveEffort ?? null,
+          working: Boolean(session.rubricAgent.currentTurnId)
+        } : null,
+        conversation: publicConversationMessages(session.conversation),
+        revisions: Array.isArray(session.revisions) ? session.revisions.map((entry) => ({
+          id: entry.id,
+          rubric: entry.rubric,
+          rubricDigest: entry.rubricDigest,
+          turnId: entry.turnId ?? null,
+          createdAt: entry.createdAt ?? null
+        })) : [],
+        draft: session.draft ?? null,
+        error: session.error ?? null,
+        createdAt: session.createdAt ?? null,
+        updatedAt: session.updatedAt ?? null,
+        revision: session.updatedAt ?? null
+      };
+    }
+    function publicRubricVersion(version) {
+      if (!version) return null;
+      return {
+        id: version.id,
+        datasetId: version.datasetId,
+        version: version.version,
+        rubric: version.rubric,
+        rubricDigest: version.rubricDigest,
+        skillReference: publicSkillReference(version.skillReference),
+        skillEvidenceDigest: version.skillEvidenceDigest ?? null,
+        operationEvidence: publicOperationEvidence(version.operationEvidence),
+        sourceSessionId: version.sourceSessionId ?? null,
+        createdAt: version.createdAt ?? null,
+        updatedAt: version.updatedAt ?? null
+      };
+    }
     function managedSkillReference(repository, skill, confirmedAt = (/* @__PURE__ */ new Date()).toISOString()) {
       return {
         schemaVersion: "rolling-skill-skill-reference/v1",
@@ -61038,6 +61697,17 @@ var require_application = __commonJS({
         throw new Error("Dataset Skill repository does not match the managed Skill");
       }
       return managedSkillReference(repository, skill);
+    }
+    function managedRawCaseSkill(managedSkillStore, input = {}) {
+      const repositoryId = requiredIdentifier(input.repositoryId, "Raw Case Skill repository id");
+      const skillId = requiredIdentifier(input.skillId, "Raw Case Skill id");
+      const repository = managedSkillStore.getRepository(repositoryId);
+      const skill = managedSkillStore.getSkill(skillId);
+      if (skill.repositoryId !== repository.id) {
+        throw new Error("Raw Case Skill repository does not match the managed Skill");
+      }
+      if (skill.status !== "valid") throw new Error("Raw Case Skill is not valid");
+      return { id: skill.id, name: skill.name };
     }
     function reconcileManagedDatasetBindings({ store, managedSkillStore, installationStore }) {
       let migrated = 0;
@@ -61118,7 +61788,7 @@ var require_application = __commonJS({
       } });
     }
     function createRollingSkillApplication2(options2 = {}) {
-      const paths = ensureDataLayout(resolveDataPaths(options2));
+      const paths = ensureDataLayout(resolveDataPaths2(options2));
       const legacySourceRoot = options2.legacySourceRoot ?? detectLegacyElectronDataRoot();
       const store = new LocalEvaluationStore(paths.evaluationStore);
       const rawCaseStore = new RawCaseStore(paths.rawCaseEvents);
@@ -61180,6 +61850,13 @@ var require_application = __commonJS({
           void automaticCaptureService?.handleCurationChanged(session);
           publish();
         }
+      });
+      const conversationCurationOperationResolver = options2.conversationCurationOperationResolver ?? createCurationOperationEvidenceResolver({
+        store,
+        configStore,
+        runtimeServices,
+        managedSkillStore,
+        installationStore
       });
       const rubricManager = options2.rubricManager ?? new RubricManager({
         store,
@@ -61282,6 +61959,8 @@ var require_application = __commonJS({
         }
       });
       const subscribers = /* @__PURE__ */ new Set();
+      const conversationCreates = /* @__PURE__ */ new Map();
+      const reviewMutationResults = /* @__PURE__ */ new Map();
       let closed = false;
       async function schedulerStatus() {
         const capabilities = schedulerAdapter.capabilities();
@@ -61382,24 +62061,340 @@ var require_application = __commonJS({
           plugin: configStore.read()
         };
       }
+      function requireConversationEpisodeSource() {
+        const source = options2.conversationEpisodeSource;
+        if (!source || typeof source.inspect !== "function" || typeof source.capture !== "function") {
+          throw new Error("Trusted DSH conversation evidence is unavailable");
+        }
+        return source;
+      }
+      function curationSession(id) {
+        return typeof curationManager.getSession === "function" ? curationManager.getSession(id) : store.getCurationSession(id);
+      }
+      function curationSessions(archived) {
+        if (typeof curationManager.listSessions === "function") {
+          return curationManager.listSessions({ archived });
+        }
+        return archived ? store.listArchivedCurationSessions() : store.listCurationSessions();
+      }
+      function rubricSession(id) {
+        return typeof rubricManager.getSession === "function" ? rubricManager.getSession(id) : store.getRubricSession(id);
+      }
+      function rubricSessions(datasetId) {
+        return typeof rubricManager.listSessions === "function" ? rubricManager.listSessions({ datasetId }) : store.listRubricSessions(datasetId);
+      }
+      function expectedSessionRevision(input, getSession, label) {
+        const sessionId = requiredIdentifier(input.sessionId, `${label} Session id`);
+        const expectedRevision = requiredIdentifier(input.expectedRevision, `${label} revision`);
+        const session = getSession(sessionId);
+        if (session.updatedAt !== expectedRevision) {
+          throw new Error(`Stale ${label} revision; reload the latest Session`);
+        }
+        return session;
+      }
+      function idempotentReviewMutation(method, input, operation) {
+        const idempotencyKey = requiredIdentifier(input.idempotencyKey, `${method} idempotency key`);
+        const cacheKey = `${method}:${idempotencyKey}`;
+        const signature = JSON.stringify(input);
+        const existing = reviewMutationResults.get(cacheKey);
+        if (existing) {
+          if (existing.signature !== signature) {
+            throw new Error(`${method} idempotency key was already used with different input`);
+          }
+          return existing.value;
+        }
+        const value = Promise.resolve().then(operation);
+        reviewMutationResults.set(cacheKey, { signature, value });
+        if (reviewMutationResults.size > 1e3) {
+          reviewMutationResults.delete(reviewMutationResults.keys().next().value);
+        }
+        value.catch(() => {
+          if (reviewMutationResults.get(cacheKey)?.value === value) {
+            reviewMutationResults.delete(cacheKey);
+          }
+        });
+        return value;
+      }
+      function curationMutation(input, allowed, method, operation) {
+        exactFields(input, /* @__PURE__ */ new Set(["sessionId", "expectedRevision", "idempotencyKey", ...allowed]), "curation");
+        return idempotentReviewMutation(method, input, async () => {
+          const session = expectedSessionRevision(input, curationSession, "Curation");
+          return operation(session);
+        });
+      }
+      function rubricMutation(input, allowed, method, operation) {
+        exactFields(input, /* @__PURE__ */ new Set(["sessionId", "expectedRevision", "idempotencyKey", ...allowed]), "rubric");
+        return idempotentReviewMutation(method, input, async () => {
+          const session = expectedSessionRevision(input, rubricSession, "Rubric");
+          return operation(session);
+        });
+      }
+      async function inspectConversationCuration(input) {
+        exactFields(input, /* @__PURE__ */ new Set(["sessionId", "endMessageId"]), "conversation curation");
+        const request = {
+          sessionId: requiredIdentifier(input.sessionId, "DSH Session id"),
+          endMessageId: requiredIdentifier(input.endMessageId, "Assistant message id")
+        };
+        const inspection = await requireConversationEpisodeSource().inspect(request);
+        return {
+          ...inspection,
+          datasets: store.listDatasets().map(
+            (dataset) => conversationCurationOperationResolver.inspectDataset(dataset.id)
+          )
+        };
+      }
+      async function createConversationCuration(input) {
+        exactFields(input, /* @__PURE__ */ new Set([
+          "sessionId",
+          "endMessageId",
+          "startSeq",
+          "datasetId",
+          "label",
+          "note",
+          "idempotencyKey"
+        ]), "conversation curation");
+        const label = requiredIdentifier(input.label, "Case label");
+        if (label !== "good" && label !== "bad") throw new Error("Case label is invalid");
+        if (input.note !== void 0 && input.note !== null && typeof input.note !== "string") {
+          throw new Error("Curation note must be text");
+        }
+        const note = input.note ?? "";
+        if (note.length > 12e4) throw new Error("Curation note is too large");
+        const request = {
+          sessionId: requiredIdentifier(input.sessionId, "DSH Session id"),
+          endMessageId: requiredIdentifier(input.endMessageId, "Assistant message id"),
+          startSeq: requiredSequence(input.startSeq, "Human start sequence"),
+          datasetId: requiredIdentifier(input.datasetId, "Dataset id"),
+          caseType: label === "good" ? "goodcase" : "badcase",
+          issueDescription: note,
+          idempotencyKey: requiredIdentifier(input.idempotencyKey, "Curation idempotency key")
+        };
+        store.getDataset(request.datasetId);
+        const existing = store.findCurationSessionByIdempotencyKey(request.idempotencyKey);
+        if (existing) {
+          const source = existing.episode?.source;
+          if (existing.datasetId !== request.datasetId || existing.caseType !== request.caseType || existing.issueDescription !== request.issueDescription || source?.sessionId !== request.sessionId || source?.startSeq !== request.startSeq || source?.endMessageId !== request.endMessageId) {
+            throw new Error("Curation idempotency key was already used with different input");
+          }
+          return publicConversationCuration(existing);
+        }
+        const signature = JSON.stringify(request);
+        const pending = conversationCreates.get(request.idempotencyKey);
+        if (pending) {
+          if (pending.signature !== signature) {
+            throw new Error("Curation idempotency key was already used with different input");
+          }
+          return pending.value;
+        }
+        const value = Promise.resolve().then(async () => {
+          const frozen = await requireConversationEpisodeSource().capture({
+            sessionId: request.sessionId,
+            endMessageId: request.endMessageId,
+            startSeq: request.startSeq
+          });
+          const operation = conversationCurationOperationResolver.resolve(request.datasetId, {
+            observedSkills: frozen.source.observedSkills
+          });
+          const session = await curationManager.createSessionFromFrozenEpisode({
+            datasetId: request.datasetId,
+            caseType: request.caseType,
+            issueDescription: request.issueDescription,
+            idempotencyKey: request.idempotencyKey,
+            episode: frozen.episode,
+            source: frozen.source,
+            executionSkillReference: operation.executionSkillReference,
+            operationEvidence: operation.operationEvidence
+          });
+          return publicConversationCuration(session);
+        });
+        conversationCreates.set(request.idempotencyKey, { signature, value });
+        try {
+          return await value;
+        } finally {
+          if (conversationCreates.get(request.idempotencyKey)?.value === value) {
+            conversationCreates.delete(request.idempotencyKey);
+          }
+        }
+      }
       const methods = {
         "dashboard.get": () => dashboardSnapshot(),
-        "datasets.list": () => store.listDatasets(),
+        "datasets.list": () => store.listDatasets().map(publicDataset),
         "datasets.get": ({ datasetId }) => ({
-          ...store.getDataset(datasetId),
+          ...publicDataset(store.getDataset(datasetId)),
           cases: store.listCases(datasetId)
         }),
-        "datasets.create": (input) => store.createDataset({
+        "datasets.create": (input) => publicDataset(store.createDataset({
           name: input.name,
           skillReference: managedDatasetSkillReference(managedSkillStore, input)
-        }),
-        "rawCases.list": () => rawCaseStore.list(),
-        "rawCases.add": (input) => rawCaseStore.add(input),
+        })),
+        "datasets.bindSkill": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set([
+            "datasetId",
+            "repositoryId",
+            "skillId",
+            "expectedCreatedAt",
+            "idempotencyKey"
+          ]), "Dataset Skill binding");
+          return idempotentReviewMutation("datasets.bindSkill", input, async () => {
+            const datasetId = requiredIdentifier(input.datasetId, "Dataset id");
+            const dataset = store.getDataset(datasetId);
+            const expectedCreatedAt = requiredIdentifier(
+              input.expectedCreatedAt,
+              "Dataset creation revision"
+            );
+            if (dataset.createdAt !== expectedCreatedAt) {
+              throw new Error("Dataset changed since it was loaded");
+            }
+            return publicDataset(store.bindDatasetSkill(
+              datasetId,
+              managedDatasetSkillReference(managedSkillStore, {
+                repositoryId: input.repositoryId,
+                skillId: input.skillId
+              })
+            ));
+          });
+        },
+        "rawCases.list": () => rawCaseStore.list().map(publicRawCase),
+        "rawCases.add": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set([
+            "question",
+            "note",
+            "repositoryId",
+            "skillId"
+          ]), "Raw Case");
+          return publicRawCase(rawCaseStore.add({
+            question: input.question,
+            note: input.note ?? "",
+            skill: managedRawCaseSkill(managedSkillStore, input),
+            source: { kind: "manual" }
+          }));
+        },
+        "rawCases.updateManaged": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set([
+            "id",
+            "expectedRevision",
+            "expectedSkillName",
+            "question",
+            "note",
+            "repositoryId",
+            "skillId",
+            "idempotencyKey"
+          ]), "Raw Case update");
+          return idempotentReviewMutation("rawCases.updateManaged", input, async () => publicRawCase(rawCaseStore.updateIfCurrent(
+            requiredIdentifier(input.id, "Raw Case id"),
+            {
+              expectedRevision: input.expectedRevision,
+              expectedSkillName: requiredIdentifier(
+                input.expectedSkillName,
+                "Raw Case Skill name"
+              )
+            },
+            {
+              question: input.question,
+              note: input.note ?? "",
+              skill: managedRawCaseSkill(managedSkillStore, input)
+            }
+          )));
+        },
         "settings.get": () => settingsSnapshot(),
         "settings.update": ({ rollingSkill = {}, plugin = {} }) => {
           if (Object.keys(rollingSkill).length > 0) store.updateSettings(rollingSkill);
           if (Object.keys(plugin).length > 0) configStore.update(plugin);
           return settingsSnapshot();
+        },
+        "conversationCuration.inspect": (input) => inspectConversationCuration(input),
+        "conversationCuration.create": (input) => createConversationCuration(input),
+        "conversationCuration.markers": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["sessionId"]), "conversation curation");
+          return store.listConversationCurationMarkers(
+            requiredIdentifier(input.sessionId, "DSH Session id")
+          );
+        },
+        "curation.list": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["archived"]), "curation");
+          const archived = input.archived === true;
+          return { items: curationSessions(archived).map(publicCurationSession), archived };
+        },
+        "curation.get": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["sessionId"]), "curation");
+          return publicCurationSession(curationSession(
+            requiredIdentifier(input.sessionId, "Curation Session id")
+          ));
+        },
+        "curation.send": (input) => curationMutation(input, ["text"], "curation.send", async (session) => {
+          const text2 = requiredBodyText(input.text, "Curation review message");
+          return publicCurationSession(await curationManager.sendMessage(session.id, text2));
+        }),
+        "curation.retry": (input) => curationMutation(input, [], "curation.retry", async (session) => publicCurationSession(await curationManager.retry(session.id))),
+        "curation.model": (input) => curationMutation(input, ["modelId"], "curation.model", async (session) => publicCurationSession(curationManager.updateModel(session.id, input.modelId ?? null))),
+        "curation.effort": (input) => curationMutation(input, ["effort"], "curation.effort", async (session) => publicCurationSession(curationManager.updateEffort(session.id, input.effort ?? null))),
+        "curation.save": (input) => curationMutation(input, [], "curation.save", async (session) => {
+          const caseRecord = await curationManager.archive(session.id);
+          const updated = curationSession(session.id);
+          return {
+            session: publicCurationSession(updated),
+            caseRecord: {
+              id: caseRecord.id,
+              datasetId: caseRecord.datasetId,
+              caseType: caseRecord.caseType,
+              updatedAt: caseRecord.updatedAt ?? caseRecord.createdAt ?? null
+            }
+          };
+        }),
+        "curation.discard": (input) => curationMutation(input, [], "curation.discard", async (session) => publicCurationSession(await curationManager.discard(session.id))),
+        "curation.hidden": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(), "curation");
+          return [...curationManager.hiddenThreadIds()].sort();
+        },
+        "rubrics.list": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["datasetId"]), "rubric");
+          const datasetId = input.datasetId ? requiredIdentifier(input.datasetId, "Dataset id") : null;
+          return {
+            sessions: rubricSessions(datasetId).map(publicRubricSession),
+            versions: datasetId ? store.listDatasetRubricVersions(datasetId).map(publicRubricVersion) : [],
+            active: datasetId ? publicRubricVersion(store.getActiveDatasetRubric(datasetId)) : null
+          };
+        },
+        "rubrics.get": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["sessionId"]), "rubric");
+          return publicRubricSession(rubricSession(
+            requiredIdentifier(input.sessionId, "Rubric Session id")
+          ));
+        },
+        "rubrics.create": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["datasetId", "modelId", "effort", "idempotencyKey"]), "rubric");
+          return idempotentReviewMutation("rubrics.create", input, async () => {
+            const datasetId = requiredIdentifier(input.datasetId, "Dataset id");
+            const operation = conversationCurationOperationResolver.resolveRubric(datasetId);
+            const skillEvidence = snapshotSkillEvidence(operation.executionSkillReference);
+            return publicRubricSession(await rubricManager.createSession({
+              datasetId,
+              modelId: input.modelId ?? null,
+              effort: input.effort ?? null,
+              skillEvidence,
+              executionSkillReference: operation.executionSkillReference,
+              operationEvidence: operation.operationEvidence
+            }));
+          });
+        },
+        "rubrics.send": (input) => rubricMutation(input, ["text"], "rubrics.send", async (session) => {
+          const text2 = requiredBodyText(input.text, "Rubric review message");
+          return publicRubricSession(await rubricManager.sendMessage(session.id, text2));
+        }),
+        "rubrics.retry": (input) => rubricMutation(input, [], "rubrics.retry", async (session) => publicRubricSession(await rubricManager.retry(session.id))),
+        "rubrics.model": (input) => rubricMutation(input, ["modelId"], "rubrics.model", async (session) => publicRubricSession(rubricManager.updateModel(session.id, input.modelId ?? null))),
+        "rubrics.effort": (input) => rubricMutation(input, ["effort"], "rubrics.effort", async (session) => publicRubricSession(rubricManager.updateEffort(session.id, input.effort ?? null))),
+        "rubrics.publish": (input) => rubricMutation(input, [], "rubrics.publish", async (session) => {
+          const version = await rubricManager.publish(session.id);
+          return {
+            session: publicRubricSession(rubricSession(session.id)),
+            version: publicRubricVersion(version)
+          };
+        }),
+        "rubrics.discard": (input) => rubricMutation(input, [], "rubrics.discard", async (session) => publicRubricSession(await rubricManager.discard(session.id))),
+        "rubrics.hidden": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(), "rubric");
+          return [...rubricManager.hiddenThreadIds()].sort();
         },
         "runtimes.list": ({ force = false }) => force ? runtimeServices.refresh() : runtimeServices.list(),
         "runtimes.models": ({ runtimeId }) => runtimeServices.models(runtimeId),
@@ -61466,9 +62461,25 @@ var require_application = __commonJS({
       };
       const mutations = /* @__PURE__ */ new Set([
         "datasets.create",
+        "datasets.bindSkill",
         "rawCases.add",
+        "rawCases.updateManaged",
         "rawCases.update",
         "settings.update",
+        "conversationCuration.create",
+        "curation.send",
+        "curation.retry",
+        "curation.model",
+        "curation.effort",
+        "curation.save",
+        "curation.discard",
+        "rubrics.create",
+        "rubrics.send",
+        "rubrics.retry",
+        "rubrics.model",
+        "rubrics.effort",
+        "rubrics.publish",
+        "rubrics.discard",
         "evaluations.start",
         "evaluations.cancel",
         "skills.createCandidate",
@@ -61694,6 +62705,195 @@ var require_run_lease = __commonJS({
   }
 });
 
+// ../rolling-skill-core/src/surface-parity-manifest.cjs
+var require_surface_parity_manifest = __commonJS({
+  "../rolling-skill-core/src/surface-parity-manifest.cjs"(exports, module) {
+    var FAMILIES = Object.freeze([
+      { prefix: "SH", count: 12, family: "Shell and native conversation", dshOwner: "DSH native shell with additive Rolling Skill extensions" },
+      { prefix: "CV", count: 11, family: "Native conversation curation", dshOwner: "DSH conversation slots and trusted Host evidence" },
+      { prefix: "DC", count: 16, family: "Dataset, Case, and Raw Case", dshOwner: "Rolling Skill workbench and Shared Core" },
+      { prefix: "CU", count: 12, family: "Curation Draft lifecycle", dshOwner: "Rolling Skill review workbench and CurationManager" },
+      { prefix: "RB", count: 8, family: "Dataset Rubric", dshOwner: "Rolling Skill rubric workbench and RubricManager" },
+      { prefix: "MS", count: 12, family: "Managed Skill and Installation", dshOwner: "Rolling Skill Skill workbench and Host managers" },
+      { prefix: "EV", count: 11, family: "Skill Evaluation", dshOwner: "Rolling Skill evaluation workbench and EvaluationRunner" },
+      { prefix: "AC", count: 11, family: "Automatic Capture", dshOwner: "Rolling Skill workbench, Host, and one-shot Worker" },
+      { prefix: "OP", count: 9, family: "Operator", dshOwner: "Rolling Skill Operator workbench and control plane" },
+      { prefix: "OZ", count: 7, family: "Optimization", dshOwner: "Rolling Skill Optimization workbench and control plane" },
+      { prefix: "ST", count: 10, family: "Settings and distribution", dshOwner: "DSH Settings, sidebar workbench, and plugin package" },
+      { prefix: "DS", count: 5, family: "DSH-specific integration", dshOwner: "DSH Host API and Agent tools" },
+      { prefix: "QL", count: 12, family: "Cross-cutting quality", dshOwner: "Shared Core, DSH adapters, and native UI" }
+    ]);
+    var GREEN = /* @__PURE__ */ new Set([
+      "CV-01",
+      "CV-02",
+      "CV-03",
+      "CV-04",
+      "CV-05",
+      "CV-06",
+      "CV-07",
+      "CV-08",
+      "CV-09",
+      "CV-10",
+      "CV-11",
+      "DC-01",
+      "DC-03",
+      "DC-04",
+      "DC-05",
+      "DC-06",
+      "DC-07",
+      "DC-08",
+      "DC-11",
+      "DC-12",
+      "CU-01",
+      "CU-03",
+      "CU-04",
+      "CU-05",
+      "CU-06",
+      "CU-07",
+      "CU-08",
+      "CU-09",
+      "CU-10",
+      "CU-11",
+      "RB-01",
+      "RB-03",
+      "RB-04",
+      "RB-05",
+      "RB-06",
+      "RB-07",
+      "MS-01",
+      "MS-02",
+      "MS-03",
+      "MS-04",
+      "MS-05",
+      "MS-07",
+      "MS-08",
+      "MS-09",
+      "MS-11",
+      "MS-12",
+      "EV-01",
+      "EV-02",
+      "EV-03",
+      "EV-04",
+      "EV-05",
+      "EV-06",
+      "EV-08",
+      "EV-09",
+      "EV-10",
+      "EV-11",
+      "AC-01",
+      "AC-02",
+      "AC-03",
+      "AC-04",
+      "AC-05",
+      "AC-06",
+      "AC-07",
+      "AC-08",
+      "AC-09",
+      "AC-10",
+      "AC-11",
+      "OP-01",
+      "OP-02",
+      "OP-03",
+      "OP-04",
+      "OP-05",
+      "OP-06",
+      "OP-07",
+      "OP-08",
+      "OP-09",
+      "OZ-01",
+      "OZ-02",
+      "OZ-03",
+      "OZ-04",
+      "OZ-05",
+      "OZ-06",
+      "OZ-07",
+      "ST-01",
+      "ST-02",
+      "ST-04",
+      "ST-05",
+      "ST-07",
+      "ST-08",
+      "DS-01",
+      "DS-02",
+      "DS-03",
+      "DS-04",
+      "DS-05",
+      "QL-01",
+      "QL-02",
+      "QL-03",
+      "QL-04",
+      "QL-05",
+      "QL-06",
+      "QL-07",
+      "QL-08",
+      "QL-10",
+      "QL-11",
+      "QL-12"
+    ]);
+    var IMPLEMENTATION_BY_PREFIX = Object.freeze({
+      SH: "DSH native shell; plugin registers only additive slots in packages/rolling-skill-dsh/src/client/index.tsx",
+      CV: "packages/rolling-skill-dsh/src/client/conversation and packages/rolling-skill-dsh/src/host/session-evidence.cjs",
+      DC: "packages/rolling-skill-dsh/src/client/workbench Dataset/Case/Raw Case panels and packages/rolling-skill-core/src/case-services.cjs",
+      CU: "packages/rolling-skill-dsh/src/client/workbench/Curation*.tsx and desktop/rolling-skill/src/curation-manager.cjs",
+      RB: "packages/rolling-skill-dsh/src/client/workbench/Rubric*.tsx and desktop/rolling-skill/src/rubric-manager.cjs",
+      MS: "packages/rolling-skill-dsh/src/client/workbench/SkillsPanel.tsx and packages/rolling-skill-core/src/skill-services.cjs",
+      EV: "packages/rolling-skill-dsh/src/client/workbench/EvaluationsPanel.tsx and packages/rolling-skill-core/src/evaluation-services.cjs",
+      AC: "packages/rolling-skill-dsh/src/client/workbench/AutomaticCapturePanel.tsx and packages/rolling-skill-core/src/automatic-capture-service.cjs",
+      OP: "packages/rolling-skill-dsh/src/client/workbench/OperatorPanel.tsx and packages/rolling-skill-core/src/operator-services.cjs",
+      OZ: "packages/rolling-skill-dsh/src/client/workbench/OptimizationPanel.tsx and packages/rolling-skill-core/src/operator-services.cjs",
+      ST: "packages/rolling-skill-dsh/src/client/settings, workbench launcher, package scripts, and manifest",
+      DS: "packages/rolling-skill-dsh/src/host and packages/rolling-skill-dsh/src/tools.cjs",
+      QL: "Shared Core validation, durable Stores, Host boundary, and DSH native client"
+    });
+    var TEST_BY_PREFIX = Object.freeze({
+      SH: "real DSH browser acceptance is required; source contracts prevent replacement slots",
+      CV: "session-evidence.test.cjs, conversation-markers.test.cjs, client-source.test.cjs",
+      DC: "case-services.test.cjs and client-source.test.cjs",
+      CU: "curation-manager.test.cjs, application.test.cjs, curation-client.test.cjs",
+      RB: "rubric-manager.test.cjs, application.test.cjs, rubric-client.test.cjs",
+      MS: "skill-services.test.cjs, skill-installation-store.test.cjs, client-source.test.cjs",
+      EV: "evaluation-services.test.cjs, evaluation-runner.test.cjs, client-source.test.cjs",
+      AC: "automatic-capture-service.test.cjs, worker.test.cjs, client-source.test.cjs",
+      OP: "operator-services.test.cjs and operator control-plane desktop tests",
+      OZ: "operator-services.test.cjs and optimization control-plane desktop tests",
+      ST: "distribution-contract.test.cjs, manifest.test.cjs, client-source.test.cjs",
+      DS: "host-api.test.cjs, host-plugin.test.cjs, tools.test.cjs",
+      QL: "Shared Core and Electron complete regression suites"
+    });
+    var INTENTIONAL_DIFFERENCE = Object.freeze({
+      "ST-06": "DSH owns plugin installation; Rolling Skill does not reproduce Electron Runtime-plugin management.",
+      "ST-10": "The signed Electron .app remains a separately built archived-branch deliverable."
+    });
+    var SURFACE_PARITY_MANIFEST = Object.freeze(FAMILIES.flatMap(
+      (definition) => Array.from({ length: definition.count }, (_, index) => {
+        const id = `${definition.prefix}-${String(index + 1).padStart(2, "0")}`;
+        const status = GREEN.has(id) ? "green" : definition.prefix === "SH" || id === "ST-03" ? "baseline" : "red";
+        return Object.freeze({
+          id,
+          family: definition.family,
+          electronOwner: `Electron baseline capability ${id}`,
+          dshOwner: definition.dshOwner,
+          status,
+          implementation: status === "red" ? `Gap tracked against ${IMPLEMENTATION_BY_PREFIX[definition.prefix]}` : IMPLEMENTATION_BY_PREFIX[definition.prefix],
+          automatedEvidence: status === "red" ? `Pending exact gap coverage; family evidence: ${TEST_BY_PREFIX[definition.prefix]}` : TEST_BY_PREFIX[definition.prefix],
+          uiEvidence: status === "ui-verified" ? "Verified in the installed DSH browser" : "Pending installed DSH browser verification",
+          approvedDifference: INTENTIONAL_DIFFERENCE[id] ?? "None"
+        });
+      })
+    ));
+    function surfaceParityReport() {
+      const byStatus = { baseline: 0, red: 0, green: 0, "ui-verified": 0 };
+      for (const entry of SURFACE_PARITY_MANIFEST) byStatus[entry.status] += 1;
+      return {
+        total: SURFACE_PARITY_MANIFEST.length,
+        byStatus,
+        gaps: SURFACE_PARITY_MANIFEST.filter((entry) => entry.status === "red" || entry.status === "baseline").map((entry) => entry.id)
+      };
+    }
+    module.exports = { SURFACE_PARITY_MANIFEST, surfaceParityReport };
+  }
+});
+
 // ../rolling-skill-core/src/index.cjs
 var require_src = __commonJS({
   "../rolling-skill-core/src/index.cjs"(exports, module) {
@@ -61711,12 +62911,21 @@ var require_src = __commonJS({
     var { acquireRunLease } = require_run_lease();
     var { createSkillServices } = require_skill_services();
     var { RollingSkillConfigStore } = require_config_store();
-    var { ensureDataLayout, resolveDataPaths } = require_data_root();
+    var {
+      createCurationOperationEvidenceResolver
+    } = require_curation_operation_evidence();
+    var { ensureDataLayout, resolveDataPaths: resolveDataPaths2 } = require_data_root();
+    var {
+      SURFACE_PARITY_MANIFEST,
+      surfaceParityReport
+    } = require_surface_parity_manifest();
     module.exports = {
       RollingSkillConfigStore,
+      SURFACE_PARITY_MANIFEST,
       acquireRunLease,
       createAutomaticCaptureService,
       createCaseServices,
+      createCurationOperationEvidenceResolver,
       createEvaluationServices,
       detectLegacyElectronDataRoot,
       importLegacyData,
@@ -61727,7 +62936,8 @@ var require_src = __commonJS({
       createRuntimeServices,
       createSkillServices,
       ensureDataLayout,
-      resolveDataPaths
+      resolveDataPaths: resolveDataPaths2,
+      surfaceParityReport
     };
   }
 });
@@ -61766,7 +62976,7 @@ var require_api2 = __commonJS({
         return;
       }
       const message = String(error?.message ?? "");
-      if (message.startsWith("Unknown Rolling Skill method") || message.includes("must be plain JSON") || message.includes("must not exceed 1 MiB")) {
+      if (message.startsWith("Unknown Rolling Skill method") || message.startsWith("Unsupported conversation curation field") || message.includes("must be plain JSON") || message.includes("must not exceed 1 MiB")) {
         writeJson(request, response, 400, {
           ok: false,
           error: { code: "INVALID_REQUEST", message: "Request is invalid" }
@@ -61872,6 +63082,336 @@ var require_api2 = __commonJS({
       MAX_BODY_BYTES,
       createRollingSkillApiHandler: createRollingSkillApiHandler2
     };
+  }
+});
+
+// src/host/session-evidence.cjs
+var require_session_evidence = __commonJS({
+  "src/host/session-evidence.cjs"(exports, module) {
+    var { createHash, randomUUID: randomUUID2 } = __require("node:crypto");
+    var {
+      chmodSync,
+      existsSync,
+      mkdirSync,
+      readFileSync,
+      renameSync,
+      unlinkSync,
+      writeFileSync
+    } = __require("node:fs");
+    var { isAbsolute, join, resolve } = __require("node:path");
+    function requiredText(value, label) {
+      const normalized = String(value ?? "").trim();
+      if (!normalized || normalized.length > 200) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function stableValue(value) {
+      if (Array.isArray(value)) return value.map(stableValue);
+      if (!value || typeof value !== "object") return value;
+      const normalized = {};
+      for (const key of Object.keys(value).sort()) normalized[key] = stableValue(value[key]);
+      return normalized;
+    }
+    function stableJson(value) {
+      return `${JSON.stringify(stableValue(value))}
+`;
+    }
+    function messageText(message) {
+      return (message?.content ?? []).filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text).join("\n").trim();
+    }
+    function directHumanEvent(event) {
+      return event?.type === "user/message" && event.data?.source?.kind === "user";
+    }
+    function finalizedAssistantBoundary(events, endMessageId) {
+      const assistant = events.find(
+        (event) => event.type === "assistant/message" && event.data?.message?.id === endMessageId && event.data?.interrupted !== true
+      );
+      if (!assistant) throw new Error("Selected message is not a finalized Assistant boundary");
+      const turnEnd = events.find(
+        (event) => event.seq > assistant.seq && event.type === "turn/end" && event.data?.turn === assistant.data?.turn
+      );
+      if (turnEnd?.data?.reason?.kind !== "completed") {
+        throw new Error("Selected message is not a finalized Assistant boundary");
+      }
+      return { assistant, turnEnd };
+    }
+    function traceProjection(observation) {
+      return {
+        target: observation.target,
+        replacedBy: observation.replacedBy ?? null,
+        replacementChain: observation.replacementChain ?? [],
+        replacedEventSeqs: observation.replacedEventSeqs ?? [],
+        sourceEventSeqs: observation.sourceEventSeqs ?? [],
+        derivedEventSeqs: observation.derivedEventSeqs ?? []
+      };
+    }
+    function validateTraceObservation(observation, { sessionId, seq, boundary }) {
+      if (observation?.session?.id !== sessionId || observation?.target?.sessionId !== sessionId || observation?.target?.seq !== seq) {
+        throw new Error(`DSH ${boundary} trace does not match the captured Session event`);
+      }
+      if (boundary === "Assistant boundary" && observation.target.surface !== "current") {
+        throw new Error("Assistant boundary is no longer current in the DSH conversation");
+      }
+      if (boundary === "Human boundary" && observation.target.surface !== "current" && observation.target.surface !== "shadowed") {
+        throw new Error("Human boundary is not present in the DSH conversation surface");
+      }
+    }
+    function toolResultText(event) {
+      const message = event?.data?.message;
+      const blocks = message?.content ?? [];
+      return blocks.map((block) => {
+        if (block?.type === "text" || block?.type === "reasoning") return block.text ?? "";
+        if (block?.type === "tool-result") return JSON.stringify(block);
+        return JSON.stringify(block);
+      }).filter(Boolean).join("\n");
+    }
+    function toolArguments(value) {
+      if (value && typeof value === "object" && !Array.isArray(value)) return value;
+      if (typeof value !== "string") return null;
+      try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+      } catch {
+        return null;
+      }
+    }
+    function skillResourceBase(value) {
+      if (value?.kind === "directory" && typeof value.path === "string" && value.path) {
+        return { kind: "directory", path: value.path };
+      }
+      if (value?.kind === "url" && typeof value.url === "string" && value.url) {
+        return { kind: "url", url: value.url };
+      }
+      if (value?.kind === "opaque" && typeof value.description === "string" && value.description) {
+        return { kind: "opaque", description: value.description };
+      }
+      return null;
+    }
+    function observedSkills(events) {
+      const resultsByCallId = new Map(events.filter((event) => event.type === "tool/result").map((event) => [event.data?.message?.source?.callId, event]));
+      const observed = [];
+      for (const call of events) {
+        if (call.type !== "tool/call" || call.data?.name !== "skill") continue;
+        const args = toolArguments(call.data.arguments);
+        const result = resultsByCallId.get(call.data.callId);
+        const meta = result?.data?.meta;
+        const name = typeof meta?.name === "string" ? meta.name.trim() : "";
+        const provider = typeof meta?.provider === "string" ? meta.provider.trim() : "";
+        const resourceBase = skillResourceBase(meta?.resourceBase);
+        if (!result || result.data?.error || !name || !provider || args?.name !== name || !resourceBase) continue;
+        observed.push({
+          name,
+          provider,
+          resourceBase,
+          callSeq: call.seq,
+          resultSeq: result.seq
+        });
+      }
+      return observed;
+    }
+    function episodeFromSlice({ session, events, start, startTurn, assistant, turnEnd, source }) {
+      const resultsByCallId = /* @__PURE__ */ new Map();
+      for (const event of events) {
+        if (event.type !== "tool/result") continue;
+        const callId = event.data?.message?.source?.callId;
+        if (callId) resultsByCallId.set(callId, event);
+      }
+      const items = [];
+      let currentTurn = startTurn;
+      for (const event of events) {
+        if (event.type === "turn/start") currentTurn = event.data.turn;
+        const id = `dsh:${session.id}:${event.seq}`;
+        if (event.type === "user/message" && event.data?.source?.kind !== "tool") {
+          items.push({
+            id,
+            turnId: `dsh:${session.id}:turn:${currentTurn}`,
+            type: "userMessage",
+            text: messageText(event.data),
+            source: event.data?.source ?? null
+          });
+          continue;
+        }
+        if (event.type === "assistant/message") {
+          const text2 = messageText(event.data?.message);
+          if (!text2) continue;
+          items.push({
+            id,
+            turnId: `dsh:${session.id}:turn:${event.data.turn}`,
+            type: "agentMessage",
+            text: text2,
+            modelProvider: event.data.message.source?.provider ?? null,
+            modelId: event.data.message.source?.model ?? null,
+            usage: event.data.usage ?? null
+          });
+          continue;
+        }
+        if (event.type === "tool/call") {
+          const result = resultsByCallId.get(event.data.callId);
+          items.push({
+            id,
+            turnId: `dsh:${session.id}:turn:${event.data.turn}`,
+            type: "dynamicToolCall",
+            tool: event.data.name,
+            status: result?.data?.error ? "failed" : result ? "completed" : "running",
+            arguments: event.data.arguments,
+            result: result ? toolResultText(result) : null,
+            error: result?.data?.error ?? null,
+            sourceEventSeqs: result ? [event.seq, result.seq] : [event.seq]
+          });
+        }
+      }
+      const provider = assistant.data.message.source?.provider ?? null;
+      const model = assistant.data.message.source?.model ?? null;
+      const episodeSource = {
+        threadId: session.id,
+        cwd: session.cwd ?? null,
+        startTurnId: `dsh:${session.id}:turn:${startTurn}`,
+        startItemId: `dsh:${session.id}:${start.seq}`,
+        endTurnId: `dsh:${session.id}:turn:${assistant.data.turn}`,
+        endItemId: `dsh:${session.id}:${assistant.seq}`,
+        runtimeId: null,
+        modelProvider: provider,
+        modelId: model,
+        traceReference: `dsh-conversation:${source.digest}`,
+        ...source
+      };
+      return {
+        schemaVersion: "rolling-skill-episode/v1",
+        id: `dsh:${session.id}:${start.seq}-${turnEnd.seq}`,
+        originalQuestion: messageText(start.data),
+        source: episodeSource,
+        items,
+        toolActivity: items.filter((item) => item.type === "dynamicToolCall"),
+        capturedAt: new Date(turnEnd.time).toISOString()
+      };
+    }
+    function persistSnapshot(traceRoot, snapshot) {
+      mkdirSync(traceRoot, { recursive: true, mode: 448 });
+      chmodSync(traceRoot, 448);
+      const serialized = stableJson(snapshot);
+      const digest = `sha256:${createHash("sha256").update(serialized).digest("hex")}`;
+      const path = join(traceRoot, `${digest.slice(7)}.json`);
+      if (existsSync(path)) {
+        if (readFileSync(path, "utf8") !== serialized) {
+          throw new Error("Frozen DSH evidence digest collided with different content");
+        }
+        return { digest, path };
+      }
+      const temporary = `${path}.${process.pid}.${randomUUID2()}.tmp`;
+      try {
+        writeFileSync(temporary, serialized, { encoding: "utf8", flag: "wx", mode: 384 });
+        chmodSync(temporary, 384);
+        renameSync(temporary, path);
+      } finally {
+        if (existsSync(temporary)) unlinkSync(temporary);
+      }
+      return { digest, path };
+    }
+    function createSessionEvidenceSource2({ sessionQuery, traceRoot }) {
+      if (!sessionQuery || typeof sessionQuery.readSession !== "function") {
+        throw new Error("DSH sessionQuery.readSession is required");
+      }
+      const requestedTraceRoot = String(traceRoot ?? "").trim();
+      if (!requestedTraceRoot || !isAbsolute(requestedTraceRoot)) {
+        throw new Error("DSH conversation trace root must be absolute");
+      }
+      const normalizedTraceRoot = resolve(requestedTraceRoot);
+      async function inspect(input) {
+        const sessionId = requiredText(input?.sessionId, "DSH Session id");
+        const endMessageId = requiredText(input?.endMessageId, "Assistant message id");
+        const snapshot = await sessionQuery.readSession(sessionId);
+        const { assistant, turnEnd } = finalizedAssistantBoundary(snapshot.events, endMessageId);
+        const startCandidates = snapshot.events.filter((event) => event.seq <= assistant.seq && directHumanEvent(event)).map((event) => ({
+          seq: event.seq,
+          messageId: event.data.id,
+          text: messageText(event.data),
+          time: event.time
+        }));
+        return {
+          sessionId,
+          endMessageId,
+          endSeq: turnEnd.seq,
+          assistantSeq: assistant.seq,
+          startCandidates
+        };
+      }
+      async function capture(input) {
+        const sessionId = requiredText(input?.sessionId, "DSH Session id");
+        const endMessageId = requiredText(input?.endMessageId, "Assistant message id");
+        const snapshot = await sessionQuery.readSession(sessionId);
+        const { assistant, turnEnd } = finalizedAssistantBoundary(snapshot.events, endMessageId);
+        const start = snapshot.events.find(
+          (event) => event.seq === input?.startSeq && directHumanEvent(event)
+        );
+        if (!start || start.seq > assistant.seq) {
+          throw new Error("Selected message is not a valid direct-human start boundary");
+        }
+        const startTurnEvent = snapshot.events.filter((event) => event.seq < start.seq && event.type === "turn/start").at(-1);
+        const startTurn = startTurnEvent?.data?.turn;
+        if (!Number.isSafeInteger(startTurn)) {
+          throw new Error("Selected Human boundary is not enclosed by a DSH turn");
+        }
+        if (typeof sessionQuery.traceEvent !== "function") {
+          throw new Error("DSH sessionQuery.traceEvent is required to freeze source lineage");
+        }
+        const [startTrace, endTrace] = await Promise.all([
+          sessionQuery.traceEvent({ sessionId, seq: start.seq }),
+          sessionQuery.traceEvent({ sessionId, seq: assistant.seq })
+        ]);
+        validateTraceObservation(startTrace, {
+          sessionId,
+          seq: start.seq,
+          boundary: "Human boundary"
+        });
+        validateTraceObservation(endTrace, {
+          sessionId,
+          seq: assistant.seq,
+          boundary: "Assistant boundary"
+        });
+        const events = snapshot.events.filter(
+          (event) => event.seq >= start.seq && event.seq <= turnEnd.seq
+        );
+        const frozenSnapshot = {
+          schemaVersion: "rolling-skill-dsh-conversation-evidence/v1",
+          session: snapshot.session,
+          boundaries: {
+            startSeq: start.seq,
+            assistantSeq: assistant.seq,
+            endSeq: turnEnd.seq,
+            endMessageId
+          },
+          events,
+          lineage: {
+            start: traceProjection(startTrace),
+            end: traceProjection(endTrace)
+          }
+        };
+        const persisted = persistSnapshot(normalizedTraceRoot, frozenSnapshot);
+        const evidenceSource = {
+          kind: "dsh-session",
+          sessionId,
+          startSeq: start.seq,
+          endSeq: turnEnd.seq,
+          endMessageId,
+          digest: persisted.digest,
+          snapshotPath: persisted.path,
+          observedSkills: observedSkills(events)
+        };
+        return {
+          episode: episodeFromSlice({
+            session: snapshot.session,
+            events,
+            start,
+            startTurn,
+            assistant,
+            turnEnd,
+            source: evidenceSource
+          }),
+          source: evidenceSource
+        };
+      }
+      return Object.freeze({ capture, inspect });
+    }
+    module.exports = { createSessionEvidenceSource: createSessionEvidenceSource2 };
   }
 });
 
@@ -62227,6 +63767,7 @@ var require_scheduler = __commonJS({
 // src/host/index.js
 var import_src = __toESM(require_src(), 1);
 var import_api = __toESM(require_api2(), 1);
+var import_session_evidence = __toESM(require_session_evidence(), 1);
 
 // src/host/tools.js
 import { randomUUID } from "node:crypto";
@@ -62302,12 +63843,22 @@ function createRollingSkillTools(application) {
         schema: { type: "json" },
         render: (_args, value) => text(`Raw Case recorded${value?.id ? `: ${value.id}` : ""}.`)
       },
-      execute: (args, exec) => dispatch(application, "rawCases.add", {
-        question: args.question,
-        skill: { name: args.skillName || "rolling-skill" },
-        note: args.note || "",
-        source: { kind: "dsh-tool" }
-      }, exec.signal)
+      execute: async (args, exec) => {
+        const catalog = await dispatch(application, "skills.catalog", {}, exec.signal);
+        const requestedName = String(args.skillName || "rolling-skill").trim().toLocaleLowerCase("en-US");
+        const matches = (catalog.skills ?? []).filter(
+          (skill) => skill.status === "valid" && String(skill.name ?? "").trim().toLocaleLowerCase("en-US") === requestedName
+        );
+        if (matches.length !== 1) {
+          throw new Error(matches.length === 0 ? `No valid managed Skill named ${args.skillName || "rolling-skill"}` : `Managed Skill name ${args.skillName || "rolling-skill"} is ambiguous`);
+        }
+        return dispatch(application, "rawCases.add", {
+          question: args.question,
+          repositoryId: matches[0].repositoryId,
+          skillId: matches[0].id,
+          note: args.note || ""
+        }, exec.signal);
+      }
     }, /* @__PURE__ */ new Set(["question", "skillName", "note"])),
     closedDefinition({
       name: "rolling_skill_start_evaluation",
@@ -62365,18 +63916,25 @@ function registerRollingSkillTools(ctx, application) {
 
 // src/host/index.js
 var import_scheduler = __toESM(require_scheduler(), 1);
-var { createRollingSkillApplication } = import_src.default;
+var { createRollingSkillApplication, resolveDataPaths } = import_src.default;
 var { createRollingSkillApiHandler } = import_api.default;
+var { createSessionEvidenceSource } = import_session_evidence.default;
 var { createSchedulerAdapter, resolveWorkerExecutable } = import_scheduler.default;
-var inject = ["webServer", "tools"];
+var inject = ["webServer", "tools", "sessionQuery"];
 function apply(ctx, config = {}) {
+  const dataPaths = resolveDataPaths({ dataRoot: config.dataRoot });
   const schedulerAdapter = createSchedulerAdapter({
     dataRoot: config.dataRoot,
     workerExecutable: resolveWorkerExecutable(import.meta.url)
   });
   const application = createRollingSkillApplication({
     dataRoot: config.dataRoot,
-    schedulerAdapter
+    schedulerAdapter,
+    ...ctx.runtimeRegistry ? { runtimeRegistry: ctx.runtimeRegistry } : {},
+    conversationEpisodeSource: createSessionEvidenceSource({
+      sessionQuery: ctx.sessionQuery,
+      traceRoot: dataPaths.dshConversationTraces
+    })
   });
   ctx.effect(() => {
     const disposeTools = registerRollingSkillTools(ctx, application);

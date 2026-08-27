@@ -389,8 +389,9 @@ describe("shared Rolling Skill application", () => {
         })
         const rawCase = await application.dispatch("rawCases.add", {
             question: "How do I refresh this Case?",
-            skill: {name: "rolling-skill"},
-            source: {kind: "manual"},
+            repositoryId: managed.repository.id,
+            skillId: managed.skill.id,
+            note: "Keep the original wording",
         })
         assert.equal(dataset.name, "DSH cases")
         assert.deepEqual(
@@ -398,18 +399,20 @@ describe("shared Rolling Skill application", () => {
                 evidencePrecision: dataset.skillReference.evidencePrecision,
                 repositoryId: dataset.skillReference.repositoryId,
                 skillId: dataset.skillReference.id,
-                path: dataset.skillReference.path,
+                exposesPath: Object.hasOwn(dataset.skillReference, "path"),
                 runtimeId: dataset.skillReference.runtimeId,
             },
             {
                 evidencePrecision: "managed",
                 repositoryId: managed.repository.id,
                 skillId: managed.skill.id,
-                path: null,
+                exposesPath: false,
                 runtimeId: null,
             },
         )
         assert.equal(rawCase.question, "How do I refresh this Case?")
+        assert.deepEqual(rawCase.skill, {id: managed.skill.id, name: managed.skill.name})
+        assert.equal(rawCase.note, "Keep the original wording")
         assert.equal((await application.dispatch("datasets.list", {})).length, 2)
         assert.equal((await application.dispatch("rawCases.list", {})).length, 1)
 
@@ -493,6 +496,81 @@ describe("shared Rolling Skill application", () => {
         await assert.rejects(
             () => application.dispatch("datasets.create", {
                 name: "Injected path",
+                repositoryId: managed.repository.id,
+                skillId: managed.skill.id,
+                path: "/tmp/forged/SKILL.md",
+            }),
+            /unsupported.*field/i,
+        )
+        await application.close()
+    })
+
+    it("binds and rebinds Datasets only to pathless Managed Skill identities", async () => {
+        const {createRollingSkillApplication} = require(modulePath)
+        const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-dataset-bind-"))
+        const application = createRollingSkillApplication({dataRoot})
+        const managed = await importManagedSkill(application)
+        const dataset = (await application.dispatch("datasets.list", {}))[0]
+
+        const bound = await application.dispatch("datasets.bindSkill", {
+            datasetId: dataset.id,
+            repositoryId: managed.repository.id,
+            skillId: managed.skill.id,
+            expectedCreatedAt: dataset.createdAt,
+            idempotencyKey: "bind-default-dataset",
+        })
+        assert.equal(bound.skillReference.evidencePrecision, "managed")
+        assert.equal(bound.skillReference.repositoryId, managed.repository.id)
+        assert.equal(bound.skillReference.id, managed.skill.id)
+        assert.equal(Object.hasOwn(bound.skillReference, "path"), false)
+        assert.equal(Object.hasOwn(bound.skillReference, "executablePath"), false)
+
+        await assert.rejects(
+            () => application.dispatch("datasets.bindSkill", {
+                datasetId: dataset.id,
+                repositoryId: managed.repository.id,
+                skillId: managed.skill.id,
+                expectedCreatedAt: dataset.createdAt,
+                idempotencyKey: "bind-with-path",
+                path: "/tmp/runtime/skills/billing/SKILL.md",
+            }),
+            /unsupported.*field/i,
+        )
+        await application.close()
+    })
+
+    it("creates and edits manual Raw Cases with stable Managed Skill identity and no path", async () => {
+        const {createRollingSkillApplication} = require(modulePath)
+        const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-raw-case-managed-"))
+        const application = createRollingSkillApplication({dataRoot})
+        const managed = await importManagedSkill(application)
+
+        const created = await application.dispatch("rawCases.add", {
+            question: "  preserve these spaces?  ",
+            repositoryId: managed.repository.id,
+            skillId: managed.skill.id,
+            note: "manual",
+        })
+        assert.equal(created.question, "  preserve these spaces?  ")
+        assert.deepEqual(created.skill, {id: managed.skill.id, name: managed.skill.name})
+        assert.equal(Object.hasOwn(created.skill, "path"), false)
+
+        const updated = await application.dispatch("rawCases.updateManaged", {
+            id: created.id,
+            expectedRevision: created.revision,
+            expectedSkillName: created.skill.name,
+            question: created.question,
+            note: "updated",
+            repositoryId: managed.repository.id,
+            skillId: managed.skill.id,
+            idempotencyKey: "update-managed-raw-case",
+        })
+        assert.equal(updated.note, "updated")
+        assert.deepEqual(updated.skill, {id: managed.skill.id, name: managed.skill.name})
+
+        await assert.rejects(
+            () => application.dispatch("rawCases.add", {
+                question: "forged",
                 repositoryId: managed.repository.id,
                 skillId: managed.skill.id,
                 path: "/tmp/forged/SKILL.md",

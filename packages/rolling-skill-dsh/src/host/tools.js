@@ -83,12 +83,25 @@ export function createRollingSkillTools(application) {
                 schema: {type: "json"},
                 render: (_args, value) => text(`Raw Case recorded${value?.id ? `: ${value.id}` : ""}.`),
             },
-            execute: (args, exec) => dispatch(application, "rawCases.add", {
-                question: args.question,
-                skill: {name: args.skillName || "rolling-skill"},
-                note: args.note || "",
-                source: {kind: "dsh-tool"},
-            }, exec.signal),
+            execute: async (args, exec) => {
+                const catalog = await dispatch(application, "skills.catalog", {}, exec.signal)
+                const requestedName = String(args.skillName || "rolling-skill").trim().toLocaleLowerCase("en-US")
+                const matches = (catalog.skills ?? []).filter((skill) =>
+                    skill.status === "valid" &&
+                    String(skill.name ?? "").trim().toLocaleLowerCase("en-US") === requestedName,
+                )
+                if (matches.length !== 1) {
+                    throw new Error(matches.length === 0
+                        ? `No valid managed Skill named ${args.skillName || "rolling-skill"}`
+                        : `Managed Skill name ${args.skillName || "rolling-skill"} is ambiguous`)
+                }
+                return dispatch(application, "rawCases.add", {
+                    question: args.question,
+                    repositoryId: matches[0].repositoryId,
+                    skillId: matches[0].id,
+                    note: args.note || "",
+                }, exec.signal)
+            },
         }, new Set(["question", "skillName", "note"])),
         closedDefinition({
             name: "rolling_skill_start_evaluation",

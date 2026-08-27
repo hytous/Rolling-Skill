@@ -180,6 +180,25 @@ function publicSkillReference(reference) {
     }
 }
 
+function publicDataset(dataset) {
+    if (!dataset) return null
+    return {
+        ...dataset,
+        skillReference: publicSkillReference(dataset.skillReference),
+    }
+}
+
+function publicRawCase(record) {
+    if (!record) return null
+    return {
+        ...record,
+        skill: record.skill ? {
+            ...(record.skill.id ? {id: record.skill.id} : {}),
+            name: record.skill.name,
+        } : null,
+    }
+}
+
 function publicOperationEvidence(evidence) {
     if (!evidence) return null
     return {
@@ -395,6 +414,18 @@ function managedDatasetSkillReference(managedSkillStore, input = {}) {
         throw new Error("Dataset Skill repository does not match the managed Skill")
     }
     return managedSkillReference(repository, skill)
+}
+
+function managedRawCaseSkill(managedSkillStore, input = {}) {
+    const repositoryId = requiredIdentifier(input.repositoryId, "Raw Case Skill repository id")
+    const skillId = requiredIdentifier(input.skillId, "Raw Case Skill id")
+    const repository = managedSkillStore.getRepository(repositoryId)
+    const skill = managedSkillStore.getSkill(skillId)
+    if (skill.repositoryId !== repository.id) {
+        throw new Error("Raw Case Skill repository does not match the managed Skill")
+    }
+    if (skill.status !== "valid") throw new Error("Raw Case Skill is not valid")
+    return {id: skill.id, name: skill.name}
 }
 
 function reconcileManagedDatasetBindings({store, managedSkillStore, installationStore}) {
@@ -948,17 +979,85 @@ function createRollingSkillApplication(options = {}) {
 
     const methods = {
         "dashboard.get": () => dashboardSnapshot(),
-        "datasets.list": () => store.listDatasets(),
+        "datasets.list": () => store.listDatasets().map(publicDataset),
         "datasets.get": ({datasetId}) => ({
-            ...store.getDataset(datasetId),
+            ...publicDataset(store.getDataset(datasetId)),
             cases: store.listCases(datasetId),
         }),
-        "datasets.create": (input) => store.createDataset({
+        "datasets.create": (input) => publicDataset(store.createDataset({
             name: input.name,
             skillReference: managedDatasetSkillReference(managedSkillStore, input),
-        }),
-        "rawCases.list": () => rawCaseStore.list(),
-        "rawCases.add": (input) => rawCaseStore.add(input),
+        })),
+        "datasets.bindSkill": (input) => {
+            exactFields(input, new Set([
+                "datasetId",
+                "repositoryId",
+                "skillId",
+                "expectedCreatedAt",
+                "idempotencyKey",
+            ]), "Dataset Skill binding")
+            return idempotentReviewMutation("datasets.bindSkill", input, async () => {
+                const datasetId = requiredIdentifier(input.datasetId, "Dataset id")
+                const dataset = store.getDataset(datasetId)
+                const expectedCreatedAt = requiredIdentifier(
+                    input.expectedCreatedAt,
+                    "Dataset creation revision",
+                )
+                if (dataset.createdAt !== expectedCreatedAt) {
+                    throw new Error("Dataset changed since it was loaded")
+                }
+                return publicDataset(store.bindDatasetSkill(
+                    datasetId,
+                    managedDatasetSkillReference(managedSkillStore, {
+                        repositoryId: input.repositoryId,
+                        skillId: input.skillId,
+                    }),
+                ))
+            })
+        },
+        "rawCases.list": () => rawCaseStore.list().map(publicRawCase),
+        "rawCases.add": (input) => {
+            exactFields(input, new Set([
+                "question",
+                "note",
+                "repositoryId",
+                "skillId",
+            ]), "Raw Case")
+            return publicRawCase(rawCaseStore.add({
+                question: input.question,
+                note: input.note ?? "",
+                skill: managedRawCaseSkill(managedSkillStore, input),
+                source: {kind: "manual"},
+            }))
+        },
+        "rawCases.updateManaged": (input) => {
+            exactFields(input, new Set([
+                "id",
+                "expectedRevision",
+                "expectedSkillName",
+                "question",
+                "note",
+                "repositoryId",
+                "skillId",
+                "idempotencyKey",
+            ]), "Raw Case update")
+            return idempotentReviewMutation("rawCases.updateManaged", input, async () =>
+                publicRawCase(rawCaseStore.updateIfCurrent(
+                    requiredIdentifier(input.id, "Raw Case id"),
+                    {
+                        expectedRevision: input.expectedRevision,
+                        expectedSkillName: requiredIdentifier(
+                            input.expectedSkillName,
+                            "Raw Case Skill name",
+                        ),
+                    },
+                    {
+                        question: input.question,
+                        note: input.note ?? "",
+                        skill: managedRawCaseSkill(managedSkillStore, input),
+                    },
+                )))
+        },
         "settings.get": () => settingsSnapshot(),
         "settings.update": ({rollingSkill = {}, plugin = {}}) => {
             if (Object.keys(rollingSkill).length > 0) store.updateSettings(rollingSkill)
@@ -1140,7 +1239,9 @@ function createRollingSkillApplication(options = {}) {
     }
     const mutations = new Set([
         "datasets.create",
+        "datasets.bindSkill",
         "rawCases.add",
+        "rawCases.updateManaged",
         "rawCases.update",
         "settings.update",
         "conversationCuration.create",

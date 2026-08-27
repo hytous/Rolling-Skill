@@ -41,6 +41,8 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
     const [name, setName] = useState("")
     const [skillId, setSkillId] = useState("")
     const [deleting, setDeleting] = useState<DatasetSummary | null>(null)
+    const [binding, setBinding] = useState<DatasetSummary | null>(null)
+    const [bindingSkillId, setBindingSkillId] = useState("")
     const [recoverQuestions, setRecoverQuestions] = useState(true)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -103,6 +105,28 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
             setDeleting(null)
         })
     }
+    const beginBinding = (dataset: DatasetSummary) => {
+        const validSkills = catalog.skills.filter((skill) => skill.status === "valid")
+        setBinding(dataset)
+        setBindingSkillId(validSkills.some((skill) => skill.id === dataset.skillReference?.id)
+            ? dataset.skillReference?.id ?? ""
+            : validSkills[0]?.id ?? "")
+    }
+    const bindSkill = () => {
+        const dataset = binding
+        const selectedSkill = catalog.skills.find((skill) => skill.id === bindingSkillId)
+        if (!dataset || !selectedSkill) return
+        void mutate(async () => {
+            await requestRollingSkill("datasets.bindSkill", {
+                datasetId: dataset.id,
+                repositoryId: selectedSkill.repositoryId,
+                skillId: selectedSkill.id,
+                expectedCreatedAt: dataset.createdAt,
+                idempotencyKey: crypto.randomUUID(),
+            })
+            setBinding(null)
+        })
+    }
     const exportCsv = async (datasetId: string) => {
         setError(null)
         try {
@@ -161,6 +185,7 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
                                 .replace("{bad}", String(dataset.badcaseCount))}</span>
                         </div>
                         <div className="rolling-skill-actions">
+                            <Button variant="ghost" size="sm" onClick={() => beginBinding(dataset)}>{t("changeManagedSkill")}</Button>
                             <Button variant="ghost" size="sm" onClick={() => void exportCsv(dataset.id)}>{t("exportCsv")}</Button>
                             <Button variant="ghost" size="sm" onClick={() => setDeleting(dataset)}>{t("delete")}</Button>
                         </div>
@@ -183,6 +208,24 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
                     <input type="checkbox" checked={recoverQuestions} onChange={(event) => setRecoverQuestions(event.target.checked)}/>
                     <span>{t("recoverToRawCases")}</span>
                 </label>
+            </Modal>
+            <Modal
+                open={binding !== null}
+                onClose={() => setBinding(null)}
+                title={t("bindManagedSkillTitle")}
+                closeLabel={t("cancel")}
+                footer={<>
+                    <Button variant="outline" onClick={() => setBinding(null)}>{t("cancel")}</Button>
+                    <Button variant="outline" disabled={busy || !bindingSkillId} onClick={bindSkill}>{t("save")}</Button>
+                </>}
+            >
+                <p>{t("bindManagedSkillDescription")}</p>
+                <select className="rolling-skill-select" value={bindingSkillId} onChange={(event) => setBindingSkillId(event.target.value)}>
+                    {catalog.skills.filter((skill) => skill.status === "valid").map((skill) => {
+                        const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId)
+                        return <option key={skill.id} value={skill.id}>{skill.name} · {repository?.displayName ?? skill.repositoryId}</option>
+                    })}
+                </select>
             </Modal>
         </section>
     )

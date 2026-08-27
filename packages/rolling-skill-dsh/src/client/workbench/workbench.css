@@ -222,6 +222,58 @@
     overflow-wrap: anywhere;
 }
 
+.rolling-skill-pagination {
+    align-items: center;
+    color: var(--dsw-alias-label-secondary);
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-top: 14px;
+}
+
+.rolling-skill-group-list,
+.rolling-skill-raw-group,
+.rolling-skill-detail-stack {
+    display: grid;
+    gap: 12px;
+}
+
+.rolling-skill-group-list {
+    margin-top: 14px;
+}
+
+.rolling-skill-raw-group h4 {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+    margin: 0;
+}
+
+.rolling-skill-raw-group h4 span {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+}
+
+.rolling-skill-verbatim {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.rolling-skill-detail-stack h4,
+.rolling-skill-detail-stack p {
+    margin: 0;
+}
+
+.rolling-skill-detail-stack pre {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    max-height: 320px;
+    overflow: auto;
+    padding: 10px;
+    white-space: pre-wrap;
+}
+
 .rolling-skill-case-copy p {
     margin: 0;
     white-space: pre-wrap;
