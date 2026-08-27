@@ -1,5 +1,5 @@
 import {gunzipSync} from "node:zlib"
-import {readFileSync} from "node:fs"
+import {readFileSync, statSync} from "node:fs"
 import {resolve} from "node:path"
 import {fileURLToPath} from "node:url"
 
@@ -12,7 +12,6 @@ const ALLOWED_FILES = new Set([
     "package/lib/worker.cjs",
 ])
 const REQUIRED_FILES = new Set(ALLOWED_FILES)
-const MAX_ENTRY_BYTES = 128 * 1024 * 1024
 const DEVELOPER_PATH_PATTERN = /(?:\/(?:Users|home)\/[^/\s"'<>]+\/|\/(?:data\/)?workspace\/|\/private\/var\/folders\/|[A-Za-z]:\\Users\\[^\\\s"'<>]+\\)/iu
 
 function tarText(bytes, start, length) {
@@ -54,9 +53,7 @@ export function readTarGz(path) {
         const header = archive.subarray(offset, offset + 512)
         if (header.every((byte) => byte === 0)) break
         const size = tarSize(archive, offset)
-        if (!Number.isSafeInteger(size) || size < 0 || size > MAX_ENTRY_BYTES) {
-            throw new Error("Package entry exceeds the inspection limit")
-        }
+        if (!Number.isSafeInteger(size) || size < 0) throw new Error("Package entry size is invalid")
         const bodyStart = offset + 512
         const bodyEnd = bodyStart + size
         if (bodyEnd > archive.length) throw new Error("Package tar entry is truncated")
@@ -107,8 +104,8 @@ export function inspectEntries(entries) {
         throw new Error("Package contains credential material")
     }
     if (/sourceMappingURL=|\.map(?:\?|$)/u.test(combined)) throw new Error("Package contains a source map")
-    if ([...entries.keys()].some((name) => /(?:^|\/)(?:Electron Framework|electron(?:\.exe)?|.*\.app)(?:\/|$)/iu.test(name))) {
-        throw new Error("Package contains an Electron artifact")
+    if ([...entries.keys()].some((name) => /(?:^|\/)(?:Electron Framework|Chromium Framework|electron(?:\.exe)?|chromium(?:\.exe)?|.*\.app)(?:\/|$)/iu.test(name))) {
+        throw new Error("Package contains an Electron or Chromium artifact")
     }
     if (!text(entries, "package/lib/client.js").startsWith("window.__ModuleLoader__.load")) {
         throw new Error("Package Client is missing the DSH lazy module wrapper")
@@ -116,11 +113,21 @@ export function inspectEntries(entries) {
     if (!text(entries, "package/lib/worker.cjs").startsWith("#!/usr/bin/env node\n")) {
         throw new Error("Package Worker is not executable")
     }
-    return {name: manifest.name, version: manifest.version, files: [...entries.keys()].sort()}
+    return {
+        name: manifest.name,
+        version: manifest.version,
+        fileCount: entries.size,
+        packedBytes: null,
+        unpackedBytes: [...entries.values()].reduce((sum, body) => sum + body.byteLength, 0),
+        files: [...entries.keys()].sort(),
+    }
 }
 
 export function inspectPackage(path) {
-    return inspectEntries(readTarGz(path))
+    return {
+        ...inspectEntries(readTarGz(path)),
+        packedBytes: statSync(path).size,
+    }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -130,8 +137,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         process.exitCode = 1
     } else {
         try {
-            inspectPackage(resolve(path))
-            process.stdout.write("package inspection passed\n")
+            const report = inspectPackage(resolve(path))
+            process.stdout.write(
+                `package inspection passed: ${report.fileCount} files, ` +
+                `${report.packedBytes} packed bytes, ${report.unpackedBytes} unpacked bytes\n`,
+            )
         } catch (error) {
             process.stderr.write(`package inspection failed: ${error.message}\n`)
             process.exitCode = 1
