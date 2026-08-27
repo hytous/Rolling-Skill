@@ -375,6 +375,14 @@ function migrateState(input) {
             session.skillReference = null
             changed = true
         }
+        if (!("executionSkillReference" in session)) {
+            session.executionSkillReference = null
+            changed = true
+        }
+        if (!("operationEvidence" in session)) {
+            session.operationEvidence = null
+            changed = true
+        }
         if (!("rubricVersionSnapshot" in session)) {
             session.rubricVersionSnapshot = null
             changed = true
@@ -703,6 +711,35 @@ function caseRefreshBaseline(entry) {
 function newCurationSession({dataset, input, episode, operation = "capture", targetCaseId = null, baselineCaseSnapshot = null}) {
     requireCaseType(input.caseType)
     const skillReference = copy(requireDatasetSkill(dataset))
+    const executionSkillReference = input.executionSkillReference
+        ? normalizeSkillReference(input.executionSkillReference)
+        : null
+    const operationEvidence = input.operationEvidence
+        ? structuredObject(input.operationEvidence, "Curation operation evidence")
+        : null
+    if (executionSkillReference && skillReference.evidencePrecision === "managed") {
+        if (
+            executionSkillReference.id !== skillReference.id ||
+            executionSkillReference.repositoryId !== skillReference.repositoryId ||
+            executionSkillReference.name !== skillReference.name ||
+            !executionSkillReference.path ||
+            !executionSkillReference.runtimeId ||
+            !executionSkillReference.providerId
+        ) {
+            throw new Error("Curation execution Skill does not match the Dataset managed Skill")
+        }
+        if (
+            operationEvidence?.schemaVersion !== "rolling-skill-operation-evidence/v1" ||
+            operationEvidence.kind !== "curation" ||
+            operationEvidence.repositoryId !== skillReference.repositoryId ||
+            operationEvidence.skillId !== skillReference.id ||
+            operationEvidence.runtime?.runtimeId !== executionSkillReference.runtimeId ||
+            operationEvidence.runtime?.providerId !== executionSkillReference.providerId ||
+            operationEvidence.installation?.destination !== executionSkillReference.path.replace(/\/SKILL\.md$/iu, "")
+        ) {
+            throw new Error("Curation operation evidence does not match its execution Skill")
+        }
+    }
     const rubricVersionSnapshot = dataset.activeRubricVersionId
         ? copy(input.rubricVersionSnapshot)
         : null
@@ -734,6 +771,8 @@ function newCurationSession({dataset, input, episode, operation = "capture", tar
         status: "queued",
         episode: frozenEpisode,
         skillReference,
+        executionSkillReference,
+        operationEvidence,
         rubricVersionSnapshot,
         curator: {
             runtimeId: input.curator?.runtimeId ?? null,
@@ -2177,6 +2216,7 @@ class LocalEvaluationStore {
             target.evidence = {
                 episodeSchemaVersion: session.episode.schemaVersion,
                 toolActivity: copy(session.episode.toolActivity),
+                operationEvidence: copy(session.operationEvidence),
             }
             target.updatedAt = now
             target.lastRefresh = {
@@ -2298,6 +2338,7 @@ class LocalEvaluationStore {
             evidence: {
                 episodeSchemaVersion: session.episode.schemaVersion,
                 toolActivity: copy(session.episode.toolActivity),
+                operationEvidence: copy(session.operationEvidence),
             },
             calibrationHistory: [],
             refreshHistory: [],

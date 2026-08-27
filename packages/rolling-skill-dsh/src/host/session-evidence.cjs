@@ -101,6 +101,62 @@ function toolResultText(event) {
     }).filter(Boolean).join("\n")
 }
 
+function toolArguments(value) {
+    if (value && typeof value === "object" && !Array.isArray(value)) return value
+    if (typeof value !== "string") return null
+    try {
+        const parsed = JSON.parse(value)
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null
+    } catch {
+        return null
+    }
+}
+
+function skillResourceBase(value) {
+    if (value?.kind === "directory" && typeof value.path === "string" && value.path) {
+        return {kind: "directory", path: value.path}
+    }
+    if (value?.kind === "url" && typeof value.url === "string" && value.url) {
+        return {kind: "url", url: value.url}
+    }
+    if (value?.kind === "opaque" && typeof value.description === "string" && value.description) {
+        return {kind: "opaque", description: value.description}
+    }
+    return null
+}
+
+function observedSkills(events) {
+    const resultsByCallId = new Map(events
+        .filter((event) => event.type === "tool/result")
+        .map((event) => [event.data?.message?.source?.callId, event]))
+    const observed = []
+    for (const call of events) {
+        if (call.type !== "tool/call" || call.data?.name !== "skill") continue
+        const args = toolArguments(call.data.arguments)
+        const result = resultsByCallId.get(call.data.callId)
+        const meta = result?.data?.meta
+        const name = typeof meta?.name === "string" ? meta.name.trim() : ""
+        const provider = typeof meta?.provider === "string" ? meta.provider.trim() : ""
+        const resourceBase = skillResourceBase(meta?.resourceBase)
+        if (
+            !result ||
+            result.data?.error ||
+            !name ||
+            !provider ||
+            args?.name !== name ||
+            !resourceBase
+        ) continue
+        observed.push({
+            name,
+            provider,
+            resourceBase,
+            callSeq: call.seq,
+            resultSeq: result.seq,
+        })
+    }
+    return observed
+}
+
 function episodeFromSlice({session, events, start, startTurn, assistant, turnEnd, source}) {
     const resultsByCallId = new Map()
     for (const event of events) {
@@ -295,6 +351,7 @@ function createSessionEvidenceSource({sessionQuery, traceRoot}) {
             endMessageId,
             digest: persisted.digest,
             snapshotPath: persisted.path,
+            observedSkills: observedSkills(events),
         }
         return {
             episode: episodeFromSlice({

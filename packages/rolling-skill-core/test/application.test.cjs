@@ -87,6 +87,28 @@ describe("shared Rolling Skill application", () => {
             dataRoot,
             curationManager,
             conversationEpisodeSource,
+            conversationCurationOperationResolver: {
+                inspectDataset(datasetId) {
+                    return {datasetId, name: "Default", ready: true, blockers: []}
+                },
+                resolve() {
+                    return {
+                        executionSkillReference: {
+                            schemaVersion: "rolling-skill-skill-reference/v1",
+                            id: "skill-1",
+                            repositoryId: "repository-1",
+                            name: "billing",
+                            path: "/runtime/skills/billing/SKILL.md",
+                            scope: "runtime",
+                            description: null,
+                            runtimeId: "runtime-1",
+                            providerId: "deepseek-harness",
+                            confirmedAt: "2026-08-27T00:00:00.000Z",
+                        },
+                        operationEvidence: {schemaVersion: "rolling-skill-operation-evidence/v1"},
+                    }
+                },
+            },
         })
         const datasetId = (await application.dispatch("datasets.list", {}))[0].id
 
@@ -95,7 +117,11 @@ describe("shared Rolling Skill application", () => {
                 sessionId: "session-1",
                 endMessageId: "assistant-2",
             }),
-            {sessionId: "session-1", startCandidates: [{seq: 4}]},
+            {
+                sessionId: "session-1",
+                startCandidates: [{seq: 4}],
+                datasets: [{datasetId, name: "Default", ready: true, blockers: []}],
+            },
         )
         const request = {
             sessionId: "session-1",
@@ -125,6 +151,11 @@ describe("shared Rolling Skill application", () => {
         assert.equal(createInput.issueDescription, "保留证据")
         assert.deepEqual(createInput.episode, frozen.episode)
         assert.deepEqual(createInput.source, frozen.source)
+        assert.equal(createInput.executionSkillReference.path, "/runtime/skills/billing/SKILL.md")
+        assert.equal(
+            createInput.operationEvidence.schemaVersion,
+            "rolling-skill-operation-evidence/v1",
+        )
         assert.deepEqual(
             await application.dispatch("conversationCuration.markers", {sessionId: "session-1"}),
             [],

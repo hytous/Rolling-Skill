@@ -136,6 +136,9 @@ function validateFrozenEpisodeSource(episode, source) {
     if (!frozenSource || sourceFields.some((field) => source[field] !== frozenSource[field])) {
         throw new Error("Frozen Episode source digest does not match trusted evidence")
     }
+    if (JSON.stringify(source.observedSkills ?? []) !== JSON.stringify(frozenSource.observedSkills ?? [])) {
+        throw new Error("Frozen Episode observed Skill evidence does not match trusted evidence")
+    }
     if (
         !Array.isArray(episode.items) ||
         episode.items.length === 0 ||
@@ -281,6 +284,8 @@ class CurationManager {
                 caseType: input.caseType,
                 issueDescription: input.issueDescription ?? "",
                 episode,
+                executionSkillReference: input.executionSkillReference,
+                operationEvidence: input.operationEvidence,
                 idempotencyKey: input.idempotencyKey,
                 curator: {
                     runtimeId: curator.runtimeId ?? runtimeDescriptor?.runtimeId ?? null,
@@ -434,7 +439,7 @@ class CurationManager {
                 issueDescription: session.issueDescription,
                 caseType: session.caseType,
                 modelId: session.curator.modelId,
-                skillReference: session.skillReference,
+                skillReference: session.executionSkillReference ?? session.skillReference,
                 rubricVersion: session.rubricVersionSnapshot,
                 operation: session.operation,
                 calibrationBaseline:
@@ -442,12 +447,13 @@ class CurationManager {
                 refreshBaseline:
                     session.operation === "refresh" ? session.baselineCaseSnapshot : null,
             })
-            const turnInput = session.skillReference
+            const executionSkillReference = session.executionSkillReference ?? session.skillReference
+            const turnInput = executionSkillReference
                 ? [
                       {
                           type: "skill",
-                          name: session.skillReference.name,
-                          path: session.skillReference.path,
+                          name: executionSkillReference.name,
+                          path: executionSkillReference.path,
                       },
                       {type: "text", text: prompt, text_elements: []},
                   ]

@@ -20,6 +20,7 @@ export function apply(ctx, config = {}) {
     const application = createRollingSkillApplication({
         dataRoot: config.dataRoot,
         schedulerAdapter,
+        ...(ctx.runtimeRegistry ? {runtimeRegistry: ctx.runtimeRegistry} : {}),
         conversationEpisodeSource: createSessionEvidenceSource({
             sessionQuery: ctx.sessionQuery,
             traceRoot: dataPaths.dshConversationTraces,

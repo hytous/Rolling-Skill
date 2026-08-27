@@ -12,6 +12,9 @@ const {createRuntimeServices} = require("./runtime-services.cjs")
 const {acquireRunLease} = require("./run-lease.cjs")
 const {createSkillServices} = require("./skill-services.cjs")
 const {RollingSkillConfigStore} = require("./config-store.cjs")
+const {
+    createCurationOperationEvidenceResolver,
+} = require("./curation-operation-evidence.cjs")
 const {ensureDataLayout, resolveDataPaths} = require("./data-root.cjs")
 
 module.exports = {
@@ -19,6 +22,7 @@ module.exports = {
     acquireRunLease,
     createAutomaticCaptureService,
     createCaseServices,
+    createCurationOperationEvidenceResolver,
     createEvaluationServices,
     detectLegacyElectronDataRoot,
     importLegacyData,

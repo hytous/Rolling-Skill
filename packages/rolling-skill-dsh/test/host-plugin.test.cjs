@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict")
-const {mkdtempSync} = require("node:fs")
+const {mkdtempSync, mkdirSync, writeFileSync} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {Readable} = require("node:stream")
@@ -7,6 +7,24 @@ const {it} = require("node:test")
 const {pathToFileURL} = require("node:url")
 
 const {LocalEvaluationStore} = require("../../../desktop/rolling-skill/src/local-store.cjs")
+const {ManagedSkillStore} = require("../../../desktop/rolling-skill/src/managed-skill-store.cjs")
+const {SkillInstallationStore} = require("../../../desktop/rolling-skill/src/skill-installation-store.cjs")
+const {RollingSkillConfigStore} = require("../../rolling-skill-core/src/config-store.cjs")
+
+const COMMIT = "b".repeat(40)
+const DIGEST = `sha256:${"a".repeat(64)}`
+const RUNTIME = {
+    runtimeId: "deepseek-harness:/opt/test-dsh",
+    providerId: "deepseek-harness",
+    displayName: "Test DSH",
+    version: "1.0.0",
+    executablePath: "/opt/test-dsh",
+    source: "test",
+    transport: "stdio-jsonl",
+    capabilities: [],
+    models: [],
+    efforts: [],
+}
 
 function sessionLog() {
     return {
@@ -27,6 +45,32 @@ function sessionLog() {
             {
                 seq: 2,
                 time: 102,
+                type: "tool/call",
+                data: {turn: 0, step: 0, callId: "skill-1", name: "skill", arguments: {name: "billing"}},
+            },
+            {
+                seq: 3,
+                time: 103,
+                type: "tool/result",
+                data: {
+                    turn: 0,
+                    step: 0,
+                    message: {
+                        id: "tool-1",
+                        role: "user",
+                        source: {kind: "tool", callId: "skill-1"},
+                        content: [{type: "text", text: "billing loaded"}],
+                    },
+                    meta: {
+                        name: "billing",
+                        provider: "filesystem",
+                        resourceBase: {kind: "directory", path: "/runtime/skills/billing"},
+                    },
+                },
+            },
+            {
+                seq: 4,
+                time: 102,
                 type: "assistant/message",
                 data: {
                     turn: 0,
@@ -39,9 +83,110 @@ function sessionLog() {
                     },
                 },
             },
-            {seq: 3, time: 103, type: "turn/end", data: {turn: 0, reason: {kind: "completed"}}},
+            {seq: 5, time: 105, type: "turn/end", data: {turn: 0, reason: {kind: "completed"}}},
         ],
     }
+}
+
+function seedCurationPrerequisites(dataRoot) {
+    mkdirSync(join(dataRoot, "managed-skills"), {recursive: true})
+    const managedPath = mkdtempSync(join(tmpdir(), "rolling-skill-managed-repo-"))
+    const managedStore = new ManagedSkillStore(join(dataRoot, "managed-skills", "registry.json"))
+    const repository = managedStore.addRepository({
+        displayName: "Billing repository",
+        managedPath,
+        defaultBranch: "main",
+        source: {kind: "folder", location: managedPath},
+    })
+    const skill = managedStore.replaceRepositorySkills(repository.id, [{
+        name: "billing",
+        description: "Billing Skill",
+        skillRoot: "billing",
+        manifestPath: "billing/SKILL.md",
+        status: "valid",
+        warnings: [],
+        executableFiles: [],
+    }])[0]
+    const candidate = managedStore.addVersion({
+        repositoryId: repository.id,
+        skillId: skill.id,
+        commit: COMMIT,
+        contentDigest: DIGEST,
+        state: "candidate",
+        createdBy: "user",
+    })
+    const version = managedStore.releaseVersion(candidate.id, "v1")
+
+    const seedStore = new LocalEvaluationStore(join(dataRoot, "evaluation-store.json"))
+    const dataset = seedStore.bindDatasetSkill(seedStore.listDatasets()[0].id, {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        evidencePrecision: "managed",
+        id: skill.id,
+        repositoryId: repository.id,
+        name: skill.name,
+        path: null,
+        scope: "managed",
+        description: skill.description,
+        runtimeId: null,
+        providerId: null,
+        confirmedAt: "2026-08-27T00:00:00.000Z",
+    })
+    const state = seedStore.read()
+    state.datasetRubricVersions.push({
+        id: "rubric-1",
+        datasetId: dataset.id,
+        version: 1,
+        rubric: {
+            schemaVersion: "rolling-skill-dataset-rubric/v1",
+            scoringModel: "unified-100/v1",
+            title: "Billing rubric",
+            summary: "Billing quality",
+            criteria: [],
+            automaticFailures: [],
+        },
+        rubricDigest: DIGEST,
+        skillReference: dataset.skillReference,
+        skillEvidenceDigest: DIGEST,
+        createdAt: "2026-08-27T00:00:00.000Z",
+    })
+    state.datasets.find((entry) => entry.id === dataset.id).activeRubricVersionId = "rubric-1"
+    writeFileSync(join(dataRoot, "evaluation-store.json"), `${JSON.stringify(state, null, 2)}\n`)
+
+    new RollingSkillConfigStore(join(dataRoot, "config.json")).update({runtime: {
+        providerId: RUNTIME.providerId,
+        runtimeId: RUNTIME.runtimeId,
+        displayName: RUNTIME.displayName,
+        version: RUNTIME.version,
+        executablePath: RUNTIME.executablePath,
+    }})
+    const installations = new SkillInstallationStore(join(dataRoot, "skill-installations.json"))
+    const destination = "/runtime/skills/billing"
+    const job = installations.createJob({
+        operation: "install",
+        runtime: RUNTIME,
+        request: {
+            schema: "rolling-skill-install-request/v1",
+            purpose: "managed-installation",
+            markerSchema: "rolling-skill-install/v1",
+            repositoryPath: managedPath,
+            skillName: skill.name,
+            versionLabel: version.versionLabel,
+            source: {
+                repositoryId: repository.id,
+                skillId: skill.id,
+                versionId: version.id,
+                commit: version.commit,
+                skillRoot: version.skillRoot,
+                expectedDigest: version.contentDigest,
+            },
+        },
+    })
+    installations.updateJob(job.id, {status: "running"})
+    installations.completeJob(job.id, {
+        status: "succeeded",
+        parsedResult: {trusted: true, destination, verification: "runtime-inventory"},
+    })
+    return dataset
 }
 
 async function callRoute(handler, method, input) {
@@ -99,13 +244,29 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
                         sessionId,
                         seq,
                         type: seq === 1 ? "user/message" : "assistant/message",
-                        time: seq === 1 ? 101 : 102,
+                        time: seq === 1 ? 101 : 104,
                         surface: "current",
                     },
                     replacementChain: [],
                     replacedEventSeqs: [],
                     sourceEventSeqs: [],
                     derivedEventSeqs: [],
+                }
+            },
+        },
+        runtimeRegistry: {
+            discover: () => ({available: [RUNTIME], selected: RUNTIME}),
+            createClient() {
+                return {
+                    async start() {},
+                    async stop() {},
+                    async startThread() {
+                        return {thread: {id: "curator-thread-1", modelProvider: RUNTIME.providerId}}
+                    },
+                    async startTurn() {
+                        return {turn: {id: "curator-turn-1", items: []}}
+                    },
+                    async archiveThread() {},
                 }
             },
         },
@@ -126,20 +287,7 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
 
     assert.deepEqual(plugin.inject, ["webServer", "tools", "sessionQuery"])
     const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-host-"))
-    const seedStore = new LocalEvaluationStore(join(dataRoot, "evaluation-store.json"))
-    const dataset = seedStore.bindDatasetSkill(seedStore.listDatasets()[0].id, {
-        schemaVersion: "rolling-skill-skill-reference/v1",
-        evidencePrecision: "managed",
-        id: "skill-1",
-        repositoryId: "repository-1",
-        name: "billing",
-        path: null,
-        scope: "managed",
-        description: null,
-        runtimeId: null,
-        providerId: null,
-        confirmedAt: "2026-08-27T00:00:00.000Z",
-    })
+    const dataset = seedCurationPrerequisites(dataRoot)
     plugin.apply(context, {
         dataRoot,
     })

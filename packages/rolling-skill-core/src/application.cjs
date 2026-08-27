@@ -44,6 +44,9 @@ const {
 const {createCaseServices} = require("./case-services.cjs")
 const {createAutomaticCaptureService} = require("./automatic-capture-service.cjs")
 const {RollingSkillConfigStore} = require("./config-store.cjs")
+const {
+    createCurationOperationEvidenceResolver,
+} = require("./curation-operation-evidence.cjs")
 const {ensureDataLayout, resolveDataPaths} = require("./data-root.cjs")
 const {createEvaluationServices} = require("./evaluation-services.cjs")
 const {
@@ -323,6 +326,15 @@ function createRollingSkillApplication(options = {}) {
             publish()
         },
     })
+    const conversationCurationOperationResolver =
+        options.conversationCurationOperationResolver ??
+        createCurationOperationEvidenceResolver({
+            store,
+            configStore,
+            runtimeServices,
+            managedSkillStore,
+            installationStore,
+        })
     const rubricManager = options.rubricManager ?? new RubricManager({
         store,
         getRuntime: getSelectedRuntime,
@@ -550,7 +562,13 @@ function createRollingSkillApplication(options = {}) {
             sessionId: requiredIdentifier(input.sessionId, "DSH Session id"),
             endMessageId: requiredIdentifier(input.endMessageId, "Assistant message id"),
         }
-        return requireConversationEpisodeSource().inspect(request)
+        const inspection = await requireConversationEpisodeSource().inspect(request)
+        return {
+            ...inspection,
+            datasets: store.listDatasets().map((dataset) =>
+                conversationCurationOperationResolver.inspectDataset(dataset.id),
+            ),
+        }
     }
 
     async function createConversationCuration(input) {
@@ -609,6 +627,9 @@ function createRollingSkillApplication(options = {}) {
                 endMessageId: request.endMessageId,
                 startSeq: request.startSeq,
             })
+            const operation = conversationCurationOperationResolver.resolve(request.datasetId, {
+                observedSkills: frozen.source.observedSkills,
+            })
             const session = await curationManager.createSessionFromFrozenEpisode({
                 datasetId: request.datasetId,
                 caseType: request.caseType,
@@ -616,6 +637,8 @@ function createRollingSkillApplication(options = {}) {
                 idempotencyKey: request.idempotencyKey,
                 episode: frozen.episode,
                 source: frozen.source,
+                executionSkillReference: operation.executionSkillReference,
+                operationEvidence: operation.operationEvidence,
             })
             return publicConversationCuration(session)
         })

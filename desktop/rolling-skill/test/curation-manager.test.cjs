@@ -255,7 +255,48 @@ describe("curation manager", () => {
     it("creates a Curator draft from trusted frozen DSH evidence without rereading its source", async () => {
         runtime.readThread = async () => assert.fail("must not read the source Runtime thread")
         const datasetId = store.listDatasets()[0].id
+        store.bindDatasetSkill(datasetId, {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            evidencePrecision: "managed",
+            id: "skill-1",
+            repositoryId: "repository-1",
+            name: "billing-cost-management",
+            path: null,
+            scope: "managed",
+            description: "Billing cost queries and analysis",
+            runtimeId: null,
+            providerId: null,
+            confirmedAt: "2026-08-27T00:00:00.000Z",
+        })
         const {episode, source} = frozenDshEvidence()
+        const executionSkillReference = {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            id: "skill-1",
+            repositoryId: "repository-1",
+            name: "billing-cost-management",
+            path: "/runtime/skills/billing-cost-management/SKILL.md",
+            scope: "runtime",
+            description: "Billing cost queries and analysis",
+            runtimeId: "codex-alpha",
+            providerId: "codex",
+            confirmedAt: "2026-08-27T01:00:00.000Z",
+        }
+        const operationEvidence = {
+            schemaVersion: "rolling-skill-operation-evidence/v1",
+            kind: "curation",
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            versionId: "version-1",
+            commit: "b".repeat(40),
+            contentDigest: `sha256:${"c".repeat(64)}`,
+            runtime: {runtimeId: "codex-alpha", providerId: "codex"},
+            installation: {
+                installationId: "installation-1",
+                jobId: "job-1",
+                destination: "/runtime/skills/billing-cost-management",
+                verification: "runtime-inventory",
+            },
+        }
 
         const session = await manager.createSessionFromFrozenEpisode({
             datasetId,
@@ -263,6 +304,8 @@ describe("curation manager", () => {
             issueDescription: "The answer needs review.",
             episode,
             source,
+            executionSkillReference,
+            operationEvidence,
             curator: {
                 runtimeId: "codex-alpha",
                 modelProvider: "openai",
@@ -279,6 +322,10 @@ describe("curation manager", () => {
         assert.equal(persisted.curator.modelId, "gpt-5.6-sol")
         assert.equal(persisted.curator.effort, "high")
         assert.equal(persisted.status, "running")
+        assert.equal(persisted.skillReference.path, null)
+        assert.deepEqual(persisted.executionSkillReference, executionSkillReference)
+        assert.deepEqual(persisted.operationEvidence, operationEvidence)
+        assert.equal(runtime.startedTurns[0].text[0].path, executionSkillReference.path)
     })
 
     it("reuses the persisted frozen-evidence session for one idempotency key", async () => {

@@ -37,7 +37,7 @@ function sessionLog() {
                 surfaceOp: "append",
             },
             {seq: 5, time: 105, type: "step/start", data: {turn: 0, step: 0}},
-            {seq: 6, time: 106, type: "tool/call", data: {turn: 0, step: 0, callId: "call-1", name: "billing", arguments: "{}"}},
+            {seq: 6, time: 106, type: "tool/call", data: {turn: 0, step: 0, callId: "call-1", name: "skill", arguments: "{\"name\":\"billing\"}"}},
             {
                 seq: 7,
                 time: 107,
@@ -46,6 +46,11 @@ function sessionLog() {
                     turn: 0,
                     step: 0,
                     message: message("tool-1", "user", "七月成本 100", {kind: "tool", callId: "call-1"}),
+                    meta: {
+                        name: "billing",
+                        provider: "local",
+                        resourceBase: {kind: "directory", path: "/runtime/skills/billing"},
+                    },
                 },
                 surfaceOp: "append",
             },
@@ -171,6 +176,14 @@ describe("DSH trusted session evidence", () => {
         assert.equal(first.episode.source.endSeq, 16)
         assert.equal(first.episode.source.startTurnId, "dsh:session-1:turn:0")
         assert.equal(first.episode.source.endTurnId, "dsh:session-1:turn:1")
+        assert.deepEqual(first.source.observedSkills, [{
+            name: "billing",
+            provider: "local",
+            resourceBase: {kind: "directory", path: "/runtime/skills/billing"},
+            callSeq: 6,
+            resultSeq: 7,
+        }])
+        assert.deepEqual(first.episode.source.observedSkills, first.source.observedSkills)
         assert.deepEqual(first.episode.items.map((item) => item.id), [
             "dsh:session-1:4",
             "dsh:session-1:6",
