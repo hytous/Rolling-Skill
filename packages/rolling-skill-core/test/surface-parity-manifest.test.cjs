@@ -33,6 +33,15 @@ describe("Rolling Skill surface parity manifest", () => {
         const report = surfaceParityReport()
         assert.equal(report.total, 136)
         assert.equal(report.byStatus.green + report.byStatus["ui-verified"] + report.byStatus.red + report.byStatus.baseline, 136)
+        assert.deepEqual(
+            SURFACE_PARITY_MANIFEST.filter((entry) => entry.status === "ui-verified").map((entry) => entry.id),
+            [
+                "SH-01", "SH-02", "SH-03", "SH-04", "SH-05", "SH-06",
+                "SH-07", "SH-08", "SH-09", "SH-10", "SH-11", "SH-12",
+                "ST-03", "QL-09",
+            ],
+        )
+        assert.deepEqual(report.gaps, ["ST-10"])
         assert.deepEqual(report.gaps, SURFACE_PARITY_MANIFEST.filter((entry) => entry.status === "red" || entry.status === "baseline").map((entry) => entry.id))
     })
 })

@@ -29,6 +29,12 @@ const GREEN = new Set([
     "QL-01", "QL-02", "QL-03", "QL-04", "QL-05", "QL-06", "QL-07", "QL-08", "QL-10", "QL-11", "QL-12",
 ])
 
+const UI_VERIFIED = new Set([
+    "SH-01", "SH-02", "SH-03", "SH-04", "SH-05", "SH-06",
+    "SH-07", "SH-08", "SH-09", "SH-10", "SH-11", "SH-12",
+    "ST-03", "QL-09",
+])
+
 const IMPLEMENTATION_BY_PREFIX = Object.freeze({
     SH: "DSH native shell; plugin registers only additive slots in packages/rolling-skill-dsh/src/client/index.tsx",
     CV: "packages/rolling-skill-dsh/src/client/conversation and packages/rolling-skill-dsh/src/host/session-evidence.cjs",
@@ -69,7 +75,9 @@ const INTENTIONAL_DIFFERENCE = Object.freeze({
 const SURFACE_PARITY_MANIFEST = Object.freeze(FAMILIES.flatMap((definition) =>
     Array.from({length: definition.count}, (_, index) => {
         const id = `${definition.prefix}-${String(index + 1).padStart(2, "0")}`
-        const status = GREEN.has(id)
+        const status = UI_VERIFIED.has(id)
+            ? "ui-verified"
+            : GREEN.has(id)
             ? "green"
             : definition.prefix === "SH" || id === "ST-03"
                 ? "baseline"
