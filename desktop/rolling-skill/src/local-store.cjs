@@ -1208,6 +1208,8 @@ class LocalEvaluationStore {
         const automatic = state.settings.autoCaptureProfile
         if (automatic.datasetId === datasetId) {
             automatic.datasetId = null
+            automatic.mode = "off"
+            state.settings.autoCapture = false
         }
 
         this.persist()
