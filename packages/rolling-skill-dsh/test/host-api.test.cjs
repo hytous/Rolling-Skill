@@ -118,6 +118,30 @@ describe("Rolling Skill Host JSON API", () => {
         assert.doesNotMatch(failed.text, /secret|private|config\.json/u)
     })
 
+    it("classifies hostile conversation fields as invalid without exposing details", async () => {
+        const {createRollingSkillApiHandler} = require("../src/host/api.cjs")
+        const handler = createRollingSkillApiHandler({
+            dispatch: async () => {
+                throw new Error("Unsupported conversation curation field: snapshotPath=/private")
+            },
+        })
+
+        const response = await request(handler, {
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({
+                method: "conversationCuration.create",
+                input: {snapshotPath: "/private"},
+            }),
+        })
+
+        assert.equal(response.status, 400)
+        assert.deepEqual(JSON.parse(response.text), {
+            ok: false,
+            error: {code: "INVALID_REQUEST", message: "Request is invalid"},
+        })
+        assert.doesNotMatch(response.text, /snapshotPath|private/u)
+    })
+
     it("does not dispatch an already-aborted request", async () => {
         const {PassThrough} = require("node:stream")
         const {createRollingSkillApiHandler} = require("../src/host/api.cjs")

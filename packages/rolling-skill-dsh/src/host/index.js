@@ -1,15 +1,18 @@
 import applicationModule from "../../../rolling-skill-core/src/index.cjs"
 import apiModule from "./api.cjs"
+import sessionEvidenceModule from "./session-evidence.cjs"
 import {registerRollingSkillTools} from "./tools.js"
 import schedulerModule from "../scheduler/index.cjs"
 
-const {createRollingSkillApplication} = applicationModule
+const {createRollingSkillApplication, resolveDataPaths} = applicationModule
 const {createRollingSkillApiHandler} = apiModule
+const {createSessionEvidenceSource} = sessionEvidenceModule
 const {createSchedulerAdapter, resolveWorkerExecutable} = schedulerModule
 
-export const inject = ["webServer", "tools"]
+export const inject = ["webServer", "tools", "sessionQuery"]
 
 export function apply(ctx, config = {}) {
+    const dataPaths = resolveDataPaths({dataRoot: config.dataRoot})
     const schedulerAdapter = createSchedulerAdapter({
         dataRoot: config.dataRoot,
         workerExecutable: resolveWorkerExecutable(import.meta.url),
@@ -17,6 +20,10 @@ export function apply(ctx, config = {}) {
     const application = createRollingSkillApplication({
         dataRoot: config.dataRoot,
         schedulerAdapter,
+        conversationEpisodeSource: createSessionEvidenceSource({
+            sessionQuery: ctx.sessionQuery,
+            traceRoot: dataPaths.dshConversationTraces,
+        }),
     })
     ctx.effect(() => {
         const disposeTools = registerRollingSkillTools(ctx, application)

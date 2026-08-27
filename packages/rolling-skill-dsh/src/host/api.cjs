@@ -36,6 +36,7 @@ function publicFailure(request, response, error) {
     const message = String(error?.message ?? "")
     if (
         message.startsWith("Unknown Rolling Skill method") ||
+        message.startsWith("Unsupported conversation curation field") ||
         message.includes("must be plain JSON") ||
         message.includes("must not exceed 1 MiB")
     ) {

@@ -2,8 +2,74 @@ const assert = require("node:assert/strict")
 const {mkdtempSync} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
+const {Readable} = require("node:stream")
 const {it} = require("node:test")
 const {pathToFileURL} = require("node:url")
+
+const {LocalEvaluationStore} = require("../../../desktop/rolling-skill/src/local-store.cjs")
+
+function sessionLog() {
+    return {
+        session: {version: 0, id: "session-1", createdAt: 100, cwd: "/workspace"},
+        events: [
+            {seq: 0, time: 100, type: "turn/start", data: {turn: 0}},
+            {
+                seq: 1,
+                time: 101,
+                type: "user/message",
+                data: {
+                    id: "human-1",
+                    role: "user",
+                    content: [{type: "text", text: "查七月账单"}],
+                    source: {kind: "user"},
+                },
+            },
+            {
+                seq: 2,
+                time: 102,
+                type: "assistant/message",
+                data: {
+                    turn: 0,
+                    step: 0,
+                    message: {
+                        id: "assistant-1",
+                        role: "assistant",
+                        content: [{type: "text", text: "七月成本 100 元"}],
+                        source: {kind: "model", provider: "deepseek", model: "deepseek-chat"},
+                    },
+                },
+            },
+            {seq: 3, time: 103, type: "turn/end", data: {turn: 0, reason: {kind: "completed"}}},
+        ],
+    }
+}
+
+async function callRoute(handler, method, input) {
+    const request = Readable.from([Buffer.from(JSON.stringify({method, input}))])
+    request.method = "POST"
+    request.headers = {
+        "content-type": "application/json",
+        host: "127.0.0.1:3080",
+        origin: "http://127.0.0.1:3080",
+    }
+    request.aborted = false
+    const headers = new Map()
+    let body = ""
+    const response = {
+        destroyed: false,
+        writableEnded: false,
+        statusCode: 0,
+        setHeader(name, value) {
+            headers.set(String(name).toLowerCase(), value)
+        },
+        end(value = "") {
+            body += String(value)
+            this.writableEnded = true
+        },
+    }
+    await handler(request, response)
+    return {status: response.statusCode, headers, body: JSON.parse(body)}
+}
 
 it("registers and disposes the Rolling Skill Cordis Host route", async () => {
     const source = pathToFileURL(join(__dirname, "../src/host/index.js"))
@@ -12,11 +78,35 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
     let registeredRoute = null
     let routeDisposed = false
     const toolNames = []
+    let sessionReads = 0
     const context = {
         tools: {
             register(definition) {
                 toolNames.push(definition.name)
                 return () => {}
+            },
+        },
+        sessionQuery: {
+            async readSession(sessionId) {
+                sessionReads += 1
+                assert.equal(sessionId, "session-1")
+                return sessionLog()
+            },
+            async traceEvent({sessionId, seq}) {
+                return {
+                    session: sessionLog().session,
+                    target: {
+                        sessionId,
+                        seq,
+                        type: seq === 1 ? "user/message" : "assistant/message",
+                        time: seq === 1 ? 101 : 102,
+                        surface: "current",
+                    },
+                    replacementChain: [],
+                    replacedEventSeqs: [],
+                    sourceEventSeqs: [],
+                    derivedEventSeqs: [],
+                }
             },
         },
         webServer: {
@@ -34,9 +124,24 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
         },
     }
 
-    assert.deepEqual(plugin.inject, ["webServer", "tools"])
+    assert.deepEqual(plugin.inject, ["webServer", "tools", "sessionQuery"])
+    const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-host-"))
+    const seedStore = new LocalEvaluationStore(join(dataRoot, "evaluation-store.json"))
+    const dataset = seedStore.bindDatasetSkill(seedStore.listDatasets()[0].id, {
+        schemaVersion: "rolling-skill-skill-reference/v1",
+        evidencePrecision: "managed",
+        id: "skill-1",
+        repositoryId: "repository-1",
+        name: "billing",
+        path: null,
+        scope: "managed",
+        description: null,
+        runtimeId: null,
+        providerId: null,
+        confirmedAt: "2026-08-27T00:00:00.000Z",
+    })
     plugin.apply(context, {
-        dataRoot: mkdtempSync(join(tmpdir(), "rolling-skill-host-")),
+        dataRoot,
     })
 
     assert.equal(registeredRoute.kind, "exact")
@@ -49,6 +154,58 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
         "rolling_skill_start_evaluation",
         "rolling_skill_run_capture",
     ])
+
+    const inspected = await callRoute(
+        registeredRoute.handler,
+        "conversationCuration.inspect",
+        {sessionId: "session-1", endMessageId: "assistant-1"},
+    )
+    assert.equal(inspected.status, 200)
+    assert.deepEqual(inspected.body.value.startCandidates.map((entry) => entry.seq), [1])
+
+    const hostile = await callRoute(
+        registeredRoute.handler,
+        "conversationCuration.create",
+        {
+            sessionId: "session-1",
+            endMessageId: "assistant-1",
+            startSeq: 1,
+            datasetId: dataset.id,
+            label: "good",
+            note: "",
+            idempotencyKey: "host-create-hostile",
+            episode: {forged: true},
+        },
+    )
+    assert.equal(hostile.status, 400)
+    assert.equal(sessionReads, 1)
+
+    const created = await callRoute(
+        registeredRoute.handler,
+        "conversationCuration.create",
+        {
+            sessionId: "session-1",
+            endMessageId: "assistant-1",
+            startSeq: 1,
+            datasetId: dataset.id,
+            label: "good",
+            note: "",
+            idempotencyKey: "host-create-1",
+        },
+    )
+    assert.equal(created.status, 200)
+    assert.equal(created.body.value.sessionId, "session-1")
+    assert.equal(created.body.value.startSeq, 1)
+    assert.equal(sessionReads, 2, "create must re-read the Session after inspect")
+
+    const markers = await callRoute(
+        registeredRoute.handler,
+        "conversationCuration.markers",
+        {sessionId: "session-1"},
+    )
+    assert.equal(markers.status, 200)
+    assert.equal(markers.body.value[0].curationSessionId, created.body.value.id)
+    assert.equal(markers.body.value[0].status, "draft")
 
     await effects[0].dispose()
     assert.equal(routeDisposed, true)
