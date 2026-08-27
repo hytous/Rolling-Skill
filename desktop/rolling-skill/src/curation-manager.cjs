@@ -101,6 +101,51 @@ function draftValidationOptions(session) {
     }
 }
 
+function validateFrozenEpisodeSource(episode, source) {
+    if (!source || source.kind !== "dsh-session") {
+        throw new Error("Frozen Episode source must be a trusted DSH session")
+    }
+    if (
+        !Number.isSafeInteger(source.startSeq) ||
+        !Number.isSafeInteger(source.endSeq) ||
+        source.startSeq < 0 ||
+        source.endSeq < source.startSeq
+    ) {
+        throw new Error("Frozen Episode source event range is invalid")
+    }
+    if (
+        typeof source.sessionId !== "string" ||
+        !source.sessionId.trim() ||
+        typeof source.endMessageId !== "string" ||
+        !source.endMessageId.trim()
+    ) {
+        throw new Error("Frozen Episode source boundaries are incomplete")
+    }
+    if (!/^sha256:[a-f0-9]{64}$/u.test(String(source.digest ?? ""))) {
+        throw new Error("Frozen Episode source digest is invalid")
+    }
+    const frozenSource = episode?.source
+    const sourceFields = [
+        "kind",
+        "sessionId",
+        "startSeq",
+        "endSeq",
+        "endMessageId",
+        "digest",
+    ]
+    if (!frozenSource || sourceFields.some((field) => source[field] !== frozenSource[field])) {
+        throw new Error("Frozen Episode source digest does not match trusted evidence")
+    }
+    if (
+        !Array.isArray(episode.items) ||
+        episode.items.length === 0 ||
+        episode.items.some((item) => typeof item?.id !== "string" || !item.id.trim())
+    ) {
+        throw new Error("Every frozen Episode item requires a stable id")
+    }
+    return episode
+}
+
 class CurationManager {
     constructor({
         store,
@@ -209,6 +254,46 @@ class CurationManager {
         const releaseDataset = this.store.reserveDataset(input.datasetId)
         try {
             return await this.createSessionFromEvidence(input)
+        } finally {
+            releaseDataset()
+        }
+    }
+
+    async createSessionFromFrozenEpisode(input) {
+        const episode = validateFrozenEpisodeSource(input.episode, input.source)
+        const existing = this.store.findCurationSessionByIdempotencyKey(input.idempotencyKey)
+        if (existing) {
+            if (
+                existing.datasetId !== input.datasetId ||
+                existing.caseType !== input.caseType ||
+                existing.episode?.source?.digest !== input.source.digest
+            ) {
+                throw new Error("Curation idempotency key was already used for different evidence")
+            }
+            return existing
+        }
+        const releaseDataset = this.store.reserveDataset(input.datasetId)
+        try {
+            const runtimeDescriptor = this.getRuntimeDescriptor()
+            const curator = input.curator ?? {}
+            const session = this.store.createCurationSession({
+                datasetId: input.datasetId,
+                caseType: input.caseType,
+                issueDescription: input.issueDescription ?? "",
+                episode,
+                idempotencyKey: input.idempotencyKey,
+                curator: {
+                    runtimeId: curator.runtimeId ?? runtimeDescriptor?.runtimeId ?? null,
+                    modelProvider:
+                        curator.modelProvider ?? runtimeDescriptor?.providerId ?? null,
+                    modelId: curator.modelId ?? null,
+                    effort: curator.effort ?? null,
+                    promptVersion: CURATOR_PROMPT_VERSION,
+                },
+            })
+            this.emitChanged(session)
+            this.queue(session.id, () => this.startInitialTurn(session.id))
+            return session
         } finally {
             releaseDataset()
         }

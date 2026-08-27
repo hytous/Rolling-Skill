@@ -701,6 +701,7 @@ function newCurationSession({dataset, input, episode, operation = "capture", tar
     const now = new Date().toISOString()
     return {
         id: randomUUID(),
+        idempotencyKey: modelId(input.idempotencyKey, "Curation idempotency key"),
         datasetId: dataset.id,
         operation,
         targetCaseId,
@@ -1784,6 +1785,15 @@ class LocalEvaluationStore {
 
     getCurationSession(id) {
         return copy(requireCurationSession(this.load(), id))
+    }
+
+    findCurationSessionByIdempotencyKey(idempotencyKey) {
+        const normalized = modelId(idempotencyKey, "Curation idempotency key")
+        if (!normalized) return null
+        const session = this.load().curationSessions.find(
+            (entry) => entry.idempotencyKey === normalized && entry.status !== "cancelled",
+        )
+        return session ? copy(session) : null
     }
 
     createCurationSession(input) {

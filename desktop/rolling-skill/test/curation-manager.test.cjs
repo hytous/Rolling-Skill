@@ -108,6 +108,27 @@ function sourceThread() {
     }
 }
 
+function frozenDshEvidence() {
+    const baseEpisode = buildEpisodeSnapshot(sourceThread(), {
+        startItemId: "user-1",
+        endItemId: "answer-1",
+        traceReference: "dsh-conversation:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    })
+    const source = {
+        kind: "dsh-session",
+        sessionId: "session-1",
+        startSeq: 4,
+        endSeq: 12,
+        endMessageId: "assistant-2",
+        digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    }
+    const episode = {
+        ...JSON.parse(JSON.stringify(baseEpisode)),
+        source: {...baseEpisode.source, ...source},
+    }
+    return {episode, source}
+}
+
 function billingSkillReference() {
     return {
         schemaVersion: "rolling-skill-skill-reference/v1",
@@ -230,6 +251,140 @@ describe("curation manager", () => {
     })
 
     afterEach(() => rmSync(directory, {recursive: true, force: true}))
+
+    it("creates a Curator draft from trusted frozen DSH evidence without rereading its source", async () => {
+        runtime.readThread = async () => assert.fail("must not read the source Runtime thread")
+        const datasetId = store.listDatasets()[0].id
+        const {episode, source} = frozenDshEvidence()
+
+        const session = await manager.createSessionFromFrozenEpisode({
+            datasetId,
+            caseType: "goodcase",
+            issueDescription: "The answer needs review.",
+            episode,
+            source,
+            curator: {
+                runtimeId: "codex-alpha",
+                modelProvider: "openai",
+                modelId: "gpt-5.6-sol",
+                effort: "high",
+            },
+            idempotencyKey: "capture:session-1:4:12",
+        })
+        await manager.waitForIdle(session.id)
+
+        const persisted = store.getCurationSession(session.id)
+        assert.equal(persisted.episode.source.digest, source.digest)
+        assert.equal(persisted.episode.source.sessionId, source.sessionId)
+        assert.equal(persisted.curator.modelId, "gpt-5.6-sol")
+        assert.equal(persisted.curator.effort, "high")
+        assert.equal(persisted.status, "running")
+    })
+
+    it("reuses the persisted frozen-evidence session for one idempotency key", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const {episode, source} = frozenDshEvidence()
+        const input = {
+            datasetId,
+            caseType: "goodcase",
+            episode,
+            source,
+            curator: {runtimeId: "codex-alpha"},
+            idempotencyKey: "capture:session-1:4:12",
+        }
+
+        const first = await manager.createSessionFromFrozenEpisode(input)
+        const second = await manager.createSessionFromFrozenEpisode(input)
+
+        assert.equal(second.id, first.id)
+        assert.equal(store.listCurationSessions().length, 1)
+    })
+
+    it("rejects reuse of a frozen-evidence idempotency key for different evidence", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const first = frozenDshEvidence()
+        const idempotencyKey = "capture:session-1:4:12"
+        await manager.createSessionFromFrozenEpisode({
+            datasetId,
+            caseType: "goodcase",
+            ...first,
+            curator: {runtimeId: "codex-alpha"},
+            idempotencyKey,
+        })
+        const second = frozenDshEvidence()
+        second.source.digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        second.episode.source.digest = second.source.digest
+
+        await assert.rejects(
+            manager.createSessionFromFrozenEpisode({
+                datasetId,
+                caseType: "goodcase",
+                ...second,
+                curator: {runtimeId: "codex-alpha"},
+                idempotencyKey,
+            }),
+            /idempotency key.*different evidence/i,
+        )
+        assert.equal(store.listCurationSessions().length, 1)
+    })
+
+    it("rejects a frozen Episode whose trusted source digest does not match", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const {episode, source} = frozenDshEvidence()
+        source.digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+        await assert.rejects(
+            manager.createSessionFromFrozenEpisode({
+                datasetId,
+                caseType: "goodcase",
+                episode,
+                source,
+                curator: {runtimeId: "codex-alpha"},
+                idempotencyKey: "capture:session-1:mismatch",
+            }),
+            /source digest does not match/i,
+        )
+        assert.equal(store.listCurationSessions().length, 0)
+    })
+
+    it("rejects frozen DSH evidence with an item missing its stable id", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const {episode, source} = frozenDshEvidence()
+        delete episode.items[0].id
+
+        await assert.rejects(
+            manager.createSessionFromFrozenEpisode({
+                datasetId,
+                caseType: "goodcase",
+                episode,
+                source,
+                curator: {runtimeId: "codex-alpha"},
+                idempotencyKey: "capture:session-1:missing-item-id",
+            }),
+            /item.*stable id/i,
+        )
+        assert.equal(store.listCurationSessions().length, 0)
+    })
+
+    it("rejects a frozen DSH source whose event range is reversed", async () => {
+        const datasetId = store.listDatasets()[0].id
+        const {episode, source} = frozenDshEvidence()
+        source.startSeq = 20
+        episode.source.startSeq = 20
+
+        await assert.rejects(
+            manager.createSessionFromFrozenEpisode({
+                datasetId,
+                caseType: "goodcase",
+                episode,
+                source,
+                curator: {runtimeId: "codex-alpha"},
+                idempotencyKey: "capture:session-1:reversed-range",
+            }),
+            /source event range/i,
+        )
+        assert.equal(store.listCurationSessions().length, 0)
+    })
 
     it("freezes an exact source episode and starts a read-only Curator thread", async () => {
         const datasetId = store.listDatasets()[0].id
