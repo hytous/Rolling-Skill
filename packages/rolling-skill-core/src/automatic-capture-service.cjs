@@ -25,6 +25,7 @@ function createAutomaticCaptureService({
     stateStore = null,
     rawCaseStore = null,
     curationManager = null,
+    listSkills = null,
     listDatasets = () => store.listDatasets(),
     getHiddenThreadIds = () => new Set(),
     manager = null,
@@ -59,12 +60,12 @@ function createAutomaticCaptureService({
         getRuntime: runtimeClient,
         getRuntimeDescriptor: runtimeDescriptor,
         listDatasets,
-        listSkills: async (runtime) => {
+        listSkills: listSkills ?? (async (runtime) => {
             if (typeof runtime.listSkills !== "function") return []
             const response = await runtime.listSkills({forceReload: true})
             return (response?.data ?? []).flatMap((entry) => entry.skills ?? [])
                 .filter((skill) => skill.enabled !== false)
-        },
+        }),
         runAnalysis: async (input) => {
             const runtime = await runtimeClient()
             if (typeof runtime.runEvaluationJudge !== "function") {

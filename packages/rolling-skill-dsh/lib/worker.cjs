@@ -16636,6 +16636,8 @@ ${badcaseGuidance}`;
           caseType: input.caseType,
           issueDescription: input.issueDescription ?? "",
           episode,
+          executionSkillReference: input.executionSkillReference,
+          operationEvidence: input.operationEvidence,
           curator: {
             runtimeId: runtimeDescriptor?.runtimeId ?? null,
             modelProvider: response.thread.modelProvider ?? runtimeDescriptor?.providerId ?? null,
@@ -21441,7 +21443,7 @@ var require_case_services = __commonJS({
     function fingerprint(method, input) {
       return JSON.stringify({ method, input });
     }
-    function createCaseServices({ store, rawCaseStore, recycleService, refreshManager = null }) {
+    function createCaseServices({ store, rawCaseStore, recycleService, refreshManager = null, dispatchRawCase = null }) {
       if (!store || !rawCaseStore || !recycleService) {
         throw new Error("Rolling Skill Case service dependencies are required");
       }
@@ -21569,14 +21571,35 @@ var require_case_services = __commonJS({
             missingOriginalCount: outputMode === "original" ? selected.filter((entry) => !originalFinalAssistantMessages(entry).length).length : 0
           };
         },
-        "rawCases.dispatch": (input) => once(
-          "rawCases.dispatch",
-          input,
-          () => rawCaseStore.markDispatched(
-            requiredText(input.id, "Raw Case id", 200),
-            input.dispatch ?? {}
-          )
-        ),
+        "rawCases.dispatch": (input) => once("rawCases.dispatch", input, async () => {
+          if (typeof dispatchRawCase !== "function") {
+            throw new Error("Native DSH Session dispatch is unavailable");
+          }
+          if (input.target !== "new" && input.target !== "current") {
+            throw new Error("Raw Case dispatch target is unsupported");
+          }
+          const targetSessionId = input.target === "current" ? requiredText(input.sessionId, "Current DSH Session id", 300) : null;
+          const id = requiredText(input.id, "Raw Case id", 200);
+          const rawCase = rawCaseStore.requireRecord(id);
+          const dispatched = await dispatchRawCase({
+            question: rawCase.question,
+            note: rawCase.note ?? "",
+            skill: rawCase.skill ? {
+              ...typeof rawCase.skill.id === "string" ? { id: rawCase.skill.id } : {},
+              name: rawCase.skill.name
+            } : null,
+            target: input.target,
+            ...targetSessionId ? { sessionId: targetSessionId } : {}
+          });
+          const sessionId = requiredText(dispatched?.sessionId, "Dispatched DSH Session id", 300);
+          const result = {
+            sessionId,
+            status: typeof dispatched.status === "string" ? dispatched.status : "queued",
+            target: input.target
+          };
+          rawCaseStore.markDispatched(id, { mode: input.target, ...result });
+          return result;
+        }),
         "rawCases.update": (input) => once(
           "rawCases.update",
           input,
@@ -21971,8 +21994,7 @@ var require_automatic_capture = __commonJS({
         };
         const candidateSkill = {
           ...skill.id ? { id: skill.id } : {},
-          name: skill.name,
-          ...skill.path ? { path: skill.path } : {}
+          name: skill.name
         };
         const saved = this.rawCaseStore.addAutomaticCandidate({
           question: episode.originalQuestion,
@@ -22109,6 +22131,7 @@ var require_automatic_capture_service = __commonJS({
       stateStore = null,
       rawCaseStore = null,
       curationManager = null,
+      listSkills = null,
       listDatasets = () => store.listDatasets(),
       getHiddenThreadIds = () => /* @__PURE__ */ new Set(),
       manager = null,
@@ -22142,11 +22165,11 @@ var require_automatic_capture_service = __commonJS({
         getRuntime: runtimeClient,
         getRuntimeDescriptor: runtimeDescriptor,
         listDatasets,
-        listSkills: async (runtime) => {
+        listSkills: listSkills ?? (async (runtime) => {
           if (typeof runtime.listSkills !== "function") return [];
           const response = await runtime.listSkills({ forceReload: true });
           return (response?.data ?? []).flatMap((entry) => entry.skills ?? []).filter((skill) => skill.enabled !== false);
-        },
+        }),
         runAnalysis: async (input) => {
           const runtime = await runtimeClient();
           if (typeof runtime.runEvaluationJudge !== "function") {
@@ -22532,6 +22555,101 @@ var require_evaluation_services = __commonJS({
     function installedSkillPath(destination) {
       return basename(destination).toLocaleLowerCase("en-US") === "skill.md" ? destination : join(destination, "SKILL.md");
     }
+    function boundedText(value, maximum = 4e4) {
+      const text = String(value ?? "");
+      return text.length <= maximum ? text : `${text.slice(0, maximum)}
+\u2026[truncated]`;
+    }
+    function publicSkillIdentity(reference) {
+      if (!reference) return null;
+      return {
+        id: reference.id ?? null,
+        repositoryId: reference.repositoryId ?? null,
+        name: reference.name ?? null,
+        evidencePrecision: reference.evidencePrecision ?? null
+      };
+    }
+    function publicEvaluationSummary(summary) {
+      if (!summary) return null;
+      const { skillReference, ...rest } = summary;
+      return {
+        ...rest,
+        ...skillReference ? { skillReference: publicSkillIdentity(skillReference) } : {}
+      };
+    }
+    function publicRuntime(configuration2) {
+      if (!configuration2) return null;
+      return {
+        runtimeId: configuration2.runtimeId ?? null,
+        providerId: configuration2.providerId ?? null,
+        displayName: configuration2.displayName ?? configuration2.runtimeId ?? null,
+        version: configuration2.version ?? null,
+        modelId: configuration2.modelId ?? null,
+        effort: configuration2.effort ?? null,
+        installationId: configuration2.installationId ?? null,
+        installationJobId: configuration2.installationJobId ?? null,
+        installationVerification: configuration2.installationVerification ?? null
+      };
+    }
+    function publicEvaluationResult(result) {
+      return {
+        id: result.id,
+        caseId: result.caseId ?? result.caseSnapshot?.id ?? null,
+        question: result.caseSnapshot?.question ?? result.question ?? null,
+        caseType: result.caseSnapshot?.caseType ?? null,
+        runtimeId: result.runtimeId ?? null,
+        status: result.status,
+        gradingStatus: result.gradingStatus ?? null,
+        durationMs: result.durationMs ?? null,
+        response: result.response ? boundedText(result.response) : null,
+        error: result.error ? boundedText(result.error, 4e3) : null,
+        gradingError: result.gradingError ? boundedText(result.gradingError, 4e3) : null,
+        scoreContract: result.scoreContract ?? null,
+        judgment: result.judgment ?? null,
+        computedScore: result.computedScore ?? null,
+        judge: result.judge ? {
+          runtimeId: result.judge.runtimeId ?? null,
+          modelId: result.judge.modelId ?? null,
+          effort: result.judge.effort ?? null
+        } : null,
+        traceEvidence: result.traceEvidence ? {
+          schemaVersion: result.traceEvidence.schemaVersion ?? null,
+          entryCount: Array.isArray(result.traceEvidence.entries) ? result.traceEvidence.entries.length : 0,
+          truncated: result.traceEvidence.truncated === true,
+          omittedEntries: result.traceEvidence.omittedEntries ?? 0
+        } : null,
+        startedAt: result.startedAt ?? null,
+        completedAt: result.completedAt ?? null,
+        gradingStartedAt: result.gradingStartedAt ?? null,
+        gradingCompletedAt: result.gradingCompletedAt ?? null
+      };
+    }
+    function publicEvaluation(run) {
+      if (!run) return null;
+      return {
+        id: run.id,
+        datasetId: run.datasetId,
+        selectionMode: run.selectionMode ?? null,
+        activationMode: run.activationMode ?? null,
+        status: run.status,
+        caseCount: run.caseSnapshots?.length ?? 0,
+        runtimeCount: run.runtimeConfigurations?.length ?? 0,
+        createdAt: run.createdAt ?? null,
+        startedAt: run.startedAt ?? null,
+        completedAt: run.completedAt ?? null,
+        skillReference: publicSkillIdentity(run.skillReference),
+        skillEvidence: run.skillEvidence ? {
+          schemaVersion: run.skillEvidence.schemaVersion ?? null,
+          digest: run.skillEvidence.digest ?? null,
+          managedSource: run.skillEvidence.managedSource ?? null,
+          complete: run.skillEvidence.complete ?? null,
+          warningCount: Array.isArray(run.skillEvidence.warnings) ? run.skillEvidence.warnings.length : 0
+        } : null,
+        runtimeConfigurations: (run.runtimeConfigurations ?? []).map(publicRuntime),
+        judgeConfiguration: publicRuntime(run.judgeConfiguration),
+        results: (run.results ?? []).map(publicEvaluationResult)
+      };
+    }
     function createEvaluationServices({
       store,
       runtimeServices,
@@ -22652,10 +22770,10 @@ var require_evaluation_services = __commonJS({
         return copy(run);
       }
       function list({ datasetId = null } = {}) {
-        return copy(store.listEvaluationRunSummaries(datasetId));
+        return copy(store.listEvaluationRunSummaries(datasetId).map(publicEvaluationSummary));
       }
       function get({ runId } = {}) {
-        return copy(store.getEvaluationRun(requiredText(runId, "Evaluation Run id")));
+        return copy(publicEvaluation(store.getEvaluationRun(requiredText(runId, "Evaluation Run id"))));
       }
       async function cancel({ runId } = {}) {
         const id = requiredText(runId, "Evaluation Run id");
@@ -22663,7 +22781,13 @@ var require_evaluation_services = __commonJS({
         onChanged({ runId: id, status: "cancelled" });
         return copy(value);
       }
-      return Object.freeze({ cancel, get, list, start });
+      function remove({ runId } = {}) {
+        const id = requiredText(runId, "Evaluation Run id");
+        const value = store.deleteEvaluationRun(id);
+        onChanged({ runId: id, status: "deleted" });
+        return copy(value);
+      }
+      return Object.freeze({ cancel, delete: remove, get, list, start });
     }
     module2.exports = { createEvaluationServices };
   }
@@ -52766,6 +52890,12 @@ var require_optimization_control_service = __commonJS({
     } = require_optimization_contract();
     var { persistOptimizationReport } = require_optimization_report();
     var MAX_PUBLIC_ARTIFACT_BYTES = 1024 * 1024;
+    var MAX_PUBLIC_REPORT_PREVIEW_BYTES = 32 * 1024;
+    function boundedReportPreview(value) {
+      const body = Buffer.from(String(value ?? ""), "utf8");
+      if (body.byteLength <= MAX_PUBLIC_REPORT_PREVIEW_BYTES) return body.toString("utf8");
+      return `${body.subarray(0, MAX_PUBLIC_REPORT_PREVIEW_BYTES - 3).toString("utf8").replace(/\uFFFD$/u, "")}\u2026`;
+    }
     function dependency(value, method, label) {
       if (!value || typeof value[method] !== "function") {
         throw new Error(`${label} with ${method}() is required`);
@@ -53188,7 +53318,8 @@ var require_optimization_control_service = __commonJS({
         return { report: {
           artifactId: generated.reportArtifactId,
           digest: generated.digest,
-          mediaType: "text/markdown; charset=utf-8"
+          mediaType: "text/markdown; charset=utf-8",
+          preview: boundedReportPreview(generated.markdown)
         } };
       }
     };
@@ -61375,6 +61506,174 @@ var require_runtime_services = __commonJS({
   }
 });
 
+// ../rolling-skill-core/src/runtime-interaction-broker.cjs
+var require_runtime_interaction_broker = __commonJS({
+  "../rolling-skill-core/src/runtime-interaction-broker.cjs"(exports2, module2) {
+    "use strict";
+    var { randomUUID } = require("node:crypto");
+    var PRIVATE_KEY = /(?:token|secret|path|sourceClient|signal|capability|environment|(?:^|_)body$)/iu;
+    var MAX_TEXT = 32 * 1024;
+    var MAX_ITEMS = 100;
+    function requiredText(value, label, maximum = 300) {
+      const text = typeof value === "string" ? value.trim() : "";
+      if (!text || text.length > maximum) throw new Error(`${label} is required`);
+      return text;
+    }
+    function exactKeys(value, allowed, label) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} must be an object`);
+      }
+      const unsupported = Object.keys(value).find((key) => !allowed.has(key));
+      if (unsupported) throw new Error(`${label} contains an unsupported field: ${unsupported}`);
+      return value;
+    }
+    function publicValue(value, depth = 0) {
+      if (value === null || typeof value === "boolean") return value;
+      if (typeof value === "number") return Number.isFinite(value) ? value : null;
+      if (typeof value === "string") return value.length <= MAX_TEXT ? value : `${value.slice(0, MAX_TEXT - 1)}\u2026`;
+      if (!value || typeof value !== "object" || depth >= 6) return null;
+      if (Array.isArray(value)) return value.slice(0, MAX_ITEMS).map((entry) => publicValue(entry, depth + 1));
+      const output = {};
+      for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+        if (!Object.hasOwn(descriptor, "value") || PRIVATE_KEY.test(key)) continue;
+        output[key] = publicValue(descriptor.value, depth + 1);
+      }
+      return output;
+    }
+    function runtimeSummary(value) {
+      if (!value || typeof value !== "object") return null;
+      return publicValue({
+        runtimeId: value.runtimeId,
+        providerId: value.providerId,
+        displayName: value.displayName,
+        version: value.version
+      });
+    }
+    function owner(request) {
+      if (typeof request.operatorSessionId === "string" && request.operatorSessionId.trim()) {
+        return {
+          ownerKind: "operator",
+          ownerId: requiredText(request.operatorSessionId, "Operator Session id", 300),
+          jobId: typeof request.operatorJobId === "string" ? request.operatorJobId.slice(0, 300) : null
+        };
+      }
+      return {
+        ownerKind: "installation",
+        ownerId: requiredText(request.jobId, "Installation Job id", 300),
+        jobId: requiredText(request.jobId, "Installation Job id", 300)
+      };
+    }
+    var RuntimeInteractionBroker = class {
+      constructor({ timeoutMs = 15 * 60 * 1e3, onChanged = () => {
+      } } = {}) {
+        if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1e3 || timeoutMs > 24 * 60 * 60 * 1e3) {
+          throw new Error("Runtime interaction timeout is invalid");
+        }
+        if (typeof onChanged !== "function") throw new Error("Runtime interaction callback is invalid");
+        this.timeoutMs = timeoutMs;
+        this.onChanged = onChanged;
+        this.pending = /* @__PURE__ */ new Map();
+        this.closed = false;
+      }
+      requestPermission(request = {}) {
+        return this.#request("permission", request, "decline");
+      }
+      requestQuestion(request = {}) {
+        return this.#request("question", request, { answers: [] });
+      }
+      #request(kind, request, fallback) {
+        if (this.closed) return Promise.resolve(fallback);
+        const selectedOwner = owner(request);
+        const id = `interaction-${randomUUID()}`;
+        const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+        const expiresAt = new Date(Date.now() + this.timeoutMs).toISOString();
+        const options2 = kind === "permission" ? publicValue(Array.isArray(request.options) ? request.options : []) : [];
+        const questions = kind === "question" ? publicValue(Array.isArray(request.questions) ? request.questions : []) : [];
+        const record = {
+          id,
+          kind,
+          ...selectedOwner,
+          requestId: typeof request.rpcId === "string" ? request.rpcId.slice(0, 500) : null,
+          runtime: runtimeSummary(request.runtime),
+          options: options2,
+          questions,
+          createdAt,
+          expiresAt
+        };
+        return new Promise((resolve) => {
+          const signal = request.signal;
+          const finish = (value) => {
+            const current = this.pending.get(id);
+            if (!current) return;
+            this.pending.delete(id);
+            clearTimeout(current.timer);
+            signal?.removeEventListener?.("abort", current.abort);
+            resolve(value);
+            this.onChanged();
+          };
+          const abort = () => finish(fallback);
+          const timer = setTimeout(abort, this.timeoutMs);
+          timer.unref?.();
+          this.pending.set(id, { record, resolve: finish, fallback, timer, abort, request });
+          signal?.addEventListener?.("abort", abort, { once: true });
+          if (signal?.aborted) abort();
+          else this.onChanged();
+        });
+      }
+      list(input = {}) {
+        exactKeys(input, /* @__PURE__ */ new Set(["ownerKind", "ownerId"]), "Runtime interaction list request");
+        if (input.ownerKind !== void 0 && !["installation", "operator"].includes(input.ownerKind)) {
+          throw new Error("Runtime interaction owner kind is invalid");
+        }
+        if (input.ownerId !== void 0) requiredText(input.ownerId, "Runtime interaction owner id", 300);
+        return [...this.pending.values()].map(({ record }) => structuredClone(record)).filter((record) => input.ownerKind === void 0 || record.ownerKind === input.ownerKind).filter((record) => input.ownerId === void 0 || record.ownerId === input.ownerId).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+      }
+      resolve(input = {}) {
+        exactKeys(input, /* @__PURE__ */ new Set(["interactionId", "decision", "answers"]), "Runtime interaction resolution");
+        const interactionId = requiredText(input.interactionId, "Runtime interaction id", 300);
+        const pending = this.pending.get(interactionId);
+        if (!pending) throw new Error("Runtime interaction is no longer pending");
+        if (pending.record.kind === "permission") {
+          if (input.answers !== void 0) throw new Error("Permission resolution cannot include answers");
+          const decision = requiredText(input.decision, "Runtime permission decision", 300);
+          const allowed = /* @__PURE__ */ new Set(["decline"]);
+          for (const option of pending.record.options) {
+            const optionId = option?.optionId ?? option?.id ?? option?.value;
+            if (typeof optionId === "string" && optionId) allowed.add(optionId);
+          }
+          if (!allowed.has(decision)) throw new Error("Runtime permission decision is not offered");
+          pending.resolve(decision);
+          return { interactionId, status: "resolved", decision };
+        }
+        if (input.decision !== void 0) throw new Error("Question resolution cannot include a permission decision");
+        if (!Array.isArray(input.answers) || input.answers.length > MAX_ITEMS) {
+          throw new Error("Runtime question answers are invalid");
+        }
+        const questionIds = new Set(pending.record.questions.map((question) => question?.id ?? question?.questionId).filter((value) => typeof value === "string" && value));
+        const seen = /* @__PURE__ */ new Set();
+        const answers = input.answers.map((entry) => {
+          exactKeys(entry, /* @__PURE__ */ new Set(["questionId", "answer"]), "Runtime question answer");
+          const questionId = requiredText(entry.questionId, "Runtime question id", 300);
+          if (!questionIds.has(questionId)) throw new Error("Runtime answer references an unknown question");
+          if (seen.has(questionId)) throw new Error("Runtime question has duplicate answers");
+          seen.add(questionId);
+          const answer = typeof entry.answer === "string" ? entry.answer : "";
+          if (answer.length > MAX_TEXT) throw new Error("Runtime question answer is too large");
+          return { questionId, answer };
+        });
+        pending.resolve({ answers });
+        return { interactionId, status: "resolved", answerCount: answers.length };
+      }
+      close() {
+        if (this.closed) return;
+        this.closed = true;
+        for (const pending of [...this.pending.values()]) pending.resolve(pending.fallback);
+      }
+    };
+    module2.exports = { RuntimeInteractionBroker };
+  }
+});
+
 // ../rolling-skill-core/src/skill-services.cjs
 var require_skill_services = __commonJS({
   "../rolling-skill-core/src/skill-services.cjs"(exports2, module2) {
@@ -61386,7 +61685,97 @@ var require_skill_services = __commonJS({
       if (!text || text.length > maximum) throw new Error(`${label} is required`);
       return text;
     }
-    function createSkillServices({ manager, installationManager, installationStore, runtimeServices }) {
+    function boundedText(value, maximum = 2e4) {
+      const text = String(value ?? "");
+      return text.length <= maximum ? text : `${text.slice(0, maximum)}
+\u2026[truncated]`;
+    }
+    function publicTimeline(entries) {
+      return Array.isArray(entries) ? entries.slice(-200).map((entry) => ({
+        role: entry.role ?? null,
+        type: entry.type ?? null,
+        title: entry.title ? boundedText(entry.title, 1e3) : null,
+        summary: entry.summary ? boundedText(entry.summary, 4e3) : null,
+        content: entry.content ? boundedText(entry.content) : null,
+        recordedAt: entry.recordedAt ?? null
+      })) : [];
+    }
+    function publicInstallationJob(job) {
+      if (!job) return null;
+      return {
+        id: job.id,
+        operation: job.operation ?? null,
+        parentJobId: job.parentJobId ?? null,
+        status: job.status,
+        runtime: job.runtime ? {
+          runtimeId: job.runtime.runtimeId,
+          providerId: job.runtime.providerId ?? null,
+          displayName: job.runtime.displayName ?? job.runtime.runtimeId,
+          version: job.runtime.version ?? null
+        } : null,
+        request: job.request ? {
+          purpose: job.request.purpose ?? null,
+          skillName: job.request.skillName ?? null,
+          versionLabel: job.request.versionLabel ?? null,
+          source: job.request.source ? {
+            repositoryId: job.request.source.repositoryId ?? null,
+            skillId: job.request.source.skillId ?? null,
+            versionId: job.request.source.versionId ?? null,
+            commit: job.request.source.commit ?? null,
+            expectedDigest: job.request.source.expectedDigest ?? null
+          } : null
+        } : null,
+        modelId: job.modelId ?? null,
+        effort: job.effort ?? null,
+        permissionMode: job.permissionMode ?? null,
+        effectiveModelId: job.effectiveModelId ?? null,
+        effectiveEffort: job.effectiveEffort ?? null,
+        effectivePermissionMode: job.effectivePermissionMode ?? null,
+        conversationStatus: job.conversationStatus ?? null,
+        canFollowUp: Boolean(job.threadId),
+        conversationError: job.conversationError ? {
+          code: job.conversationError.code ?? null,
+          message: boundedText(job.conversationError.message, 4e3)
+        } : null,
+        messages: publicTimeline(job.messages),
+        activities: publicTimeline(job.activities),
+        error: job.error ? {
+          code: job.error.code ?? null,
+          message: boundedText(job.error.message, 4e3)
+        } : null,
+        parsedResult: job.parsedResult ? {
+          operation: job.parsedResult.operation ?? null,
+          trusted: job.parsedResult.trusted === true,
+          verification: job.parsedResult.verification ?? null
+        } : null,
+        traceAvailable: Boolean(job.traceReference),
+        createdAt: job.createdAt ?? null,
+        startedAt: job.startedAt ?? null,
+        updatedAt: job.updatedAt ?? null,
+        completedAt: job.completedAt ?? null
+      };
+    }
+    function publicInstallationOverview(overview) {
+      return {
+        jobs: (overview?.jobs ?? []).map(publicInstallationJob),
+        matrix: (overview?.matrix ?? []).map((entry) => ({
+          runtimeId: entry.runtimeId,
+          providerId: entry.providerId ?? null,
+          displayName: entry.displayName ?? entry.runtimeId,
+          skillId: entry.skillId ?? null,
+          versionId: entry.versionId ?? null,
+          commit: entry.commit ?? null,
+          contentDigest: entry.contentDigest ?? null,
+          verification: entry.verification ?? "none",
+          installedAt: entry.installedAt ?? null,
+          trustedJobId: entry.trustedJobId ?? null,
+          lastJobId: entry.lastJobId ?? null,
+          lastJobStatus: entry.lastJobStatus ?? null,
+          lastJobUpdatedAt: entry.lastJobUpdatedAt ?? null
+        }))
+      };
+    }
+    function createSkillServices({ manager, installationManager, installationStore, runtimeServices, revealPath = null }) {
       if (!manager || !installationManager || !installationStore || !runtimeServices) {
         throw new Error("Rolling Skill managed Skill dependencies are required");
       }
@@ -61402,22 +61791,30 @@ var require_skill_services = __commonJS({
         }),
         importSource: (input = {}) => manager.importSource(copy(input)),
         rescan: () => manager.rescanAll(),
+        revealRepository: async ({ repositoryId }) => {
+          if (typeof revealPath !== "function") throw new Error("Opening local repositories is unavailable");
+          repositoryId = requiredText(repositoryId, "Repository id", 200);
+          await revealPath(manager.repositoryPath(repositoryId));
+          return { repositoryId, opened: true };
+        },
         installationTargets: () => copy(runtimeServices.list()),
-        installations: ({ skillId = null } = {}) => copy(installationManager.overview(skillId)),
-        installation: ({ jobId }) => copy(installationStore.getJob(
+        installations: ({ skillId = null } = {}) => publicInstallationOverview(
+          installationManager.overview(skillId)
+        ),
+        installation: ({ jobId }) => publicInstallationJob(installationStore.getJob(
           requiredText(jobId, "Installation Job id", 200)
         )),
-        startInstallation: (input = {}) => installationManager.start(copy(input)),
-        cancelInstallation: ({ jobId }) => installationManager.cancel(
+        startInstallation: async (input = {}) => (await installationManager.start(copy(input))).map(publicInstallationJob),
+        cancelInstallation: async ({ jobId }) => publicInstallationJob(await installationManager.cancel(
           requiredText(jobId, "Installation Job id", 200)
-        ),
-        inspectInstallation: ({ jobId }) => installationManager.inspect(
+        )),
+        inspectInstallation: async ({ jobId }) => publicInstallationJob(await installationManager.inspect(
           requiredText(jobId, "Installation Job id", 200)
-        ),
-        sendInstallation: ({ jobId, text }) => installationManager.send(
+        )),
+        sendInstallation: async ({ jobId, text }) => publicInstallationJob(await installationManager.send(
           requiredText(jobId, "Installation Job id", 200),
           requiredText(text, "Installer message", 12e4)
-        )
+        ))
       });
     }
     module2.exports = { createSkillServices };
@@ -61428,7 +61825,7 @@ var require_skill_services = __commonJS({
 var require_application = __commonJS({
   "../rolling-skill-core/src/application.cjs"(exports2, module2) {
     var { Buffer: Buffer2 } = require("node:buffer");
-    var { join } = require("node:path");
+    var { basename, join, resolve } = require("node:path");
     var {
       AutomaticCaptureStateStore
     } = require_automatic_capture_state_store();
@@ -61487,6 +61884,7 @@ var require_application = __commonJS({
     } = require_legacy_import();
     var { createOperatorRuntime } = require_operator_services();
     var { createRuntimeServices } = require_runtime_services();
+    var { RuntimeInteractionBroker } = require_runtime_interaction_broker();
     var { createSkillServices } = require_skill_services();
     var MAX_DISPATCH_BYTES = 1024 * 1024;
     function assertPlainJson(value, ancestors = /* @__PURE__ */ new Set()) {
@@ -61826,6 +62224,10 @@ var require_application = __commonJS({
       if (skill.status !== "valid") throw new Error("Raw Case Skill is not valid");
       return { id: skill.id, name: skill.name };
     }
+    function automaticRawCaseObservation(record) {
+      const observations = Array.isArray(record?.source?.observations) ? record.source.observations : record?.source?.kind === "automatic_capture" ? [record.source] : [];
+      return observations.at(-1) ?? null;
+    }
     function reconcileManagedDatasetBindings({ store, managedSkillStore, installationStore }) {
       let migrated = 0;
       let skipped = 0;
@@ -61914,6 +62316,11 @@ var require_application = __commonJS({
       );
       const managedSkillStore = new ManagedSkillStore(paths.managedSkillRegistry);
       const configStore = new RollingSkillConfigStore(paths.config);
+      const runtimeInteractionBroker = options2.runtimeInteractionBroker ?? new RuntimeInteractionBroker({
+        onChanged: () => publish()
+      });
+      const requestRuntimePermission = options2.requestRuntimePermission ?? ((request) => runtimeInteractionBroker.requestPermission(request));
+      const requestRuntimeQuestion = options2.requestRuntimeQuestion ?? ((request) => runtimeInteractionBroker.requestQuestion(request));
       let automaticCaptureService = null;
       const workspaceRoot = options2.workspaceRoot ?? process.cwd();
       const runtimeServices = createRuntimeServices({
@@ -61939,15 +62346,16 @@ var require_application = __commonJS({
         workspaceRoot,
         traceDirectory: join(paths.traces, "skill-installations"),
         resolvePermission: (providerId, permissionMode) => resolveRuntimePermission(providerId, permissionMode, store.read().settings),
-        requestPermission: options2.requestRuntimePermission ?? null,
-        requestQuestion: options2.requestRuntimeQuestion ?? null,
+        requestPermission: requestRuntimePermission,
+        requestQuestion: requestRuntimeQuestion,
         onChanged: () => publish()
       });
       const skillServices = createSkillServices({
         manager: managedSkillManager,
         installationManager,
         installationStore,
-        runtimeServices
+        runtimeServices,
+        revealPath: options2.revealPath ?? null
       });
       const selectedRuntimeId = () => configStore.read().runtime?.runtimeId ?? null;
       const selectedRuntimeDescriptor = () => {
@@ -61981,13 +62389,46 @@ var require_application = __commonJS({
         getRuntimeDescriptor: selectedRuntimeDescriptor,
         onChanged: () => publish()
       });
+      const automaticCurationManager = Object.freeze({
+        async createSession(input) {
+          const operation = conversationCurationOperationResolver.resolve(input.datasetId);
+          return curationManager.createSession({
+            ...input,
+            executionSkillReference: operation.executionSkillReference,
+            operationEvidence: operation.operationEvidence
+          });
+        },
+        archive: (sessionId) => curationManager.archive(sessionId),
+        hiddenThreadIds: () => curationManager.hiddenThreadIds()
+      });
       automaticCaptureService = createAutomaticCaptureService({
         store,
         configStore,
         runtimeServices,
         stateStore: automaticCaptureStateStore,
         rawCaseStore,
-        curationManager,
+        curationManager: automaticCurationManager,
+        listSkills: async (runtime) => {
+          if (typeof runtime.listSkills !== "function") return [];
+          const descriptor = selectedRuntimeDescriptor();
+          if (!descriptor) return [];
+          const response = await runtime.listSkills({ forceReload: true });
+          const runtimeSkills = (response?.data ?? []).flatMap((entry) => entry.skills ?? []).filter((skill) => skill.enabled !== false);
+          const verified = installationStore.listVerifiedInstallations({
+            runtimeId: descriptor.runtimeId,
+            providerId: descriptor.providerId
+          });
+          const matched = [];
+          for (const installation of verified) {
+            const skill = managedSkillStore.getSkill(installation.skillId);
+            const installedManifest = basename(installation.destination).toLocaleLowerCase("en-US") === "skill.md" ? installation.destination : join(installation.destination, "SKILL.md");
+            const observed = runtimeSkills.find(
+              (entry) => entry.name === skill.name && typeof entry.path === "string" && resolve(entry.path) === resolve(installedManifest)
+            );
+            if (observed) matched.push({ id: skill.id, name: skill.name });
+          }
+          return matched;
+        },
         listDatasets: () => store.listDatasets(),
         getHiddenThreadIds: () => /* @__PURE__ */ new Set([
           ...curationManager.hiddenThreadIds(),
@@ -62023,7 +62464,8 @@ var require_application = __commonJS({
         store,
         rawCaseStore,
         recycleService,
-        refreshManager
+        refreshManager,
+        dispatchRawCase: options2.rawCaseDispatcher ?? null
       });
       const evaluationRunner = options2.evaluationRunner ?? new EvaluationRunner({
         store,
@@ -62059,8 +62501,8 @@ var require_application = __commonJS({
         curationManager,
         rubricManager,
         workspaceRoot,
-        requestPermission: options2.requestRuntimePermission ?? null,
-        requestQuestion: options2.requestRuntimeQuestion ?? null,
+        requestPermission: requestRuntimePermission,
+        requestQuestion: requestRuntimeQuestion,
         operatorToolPath: options2.operatorToolPath ?? null,
         onChanged: () => publish()
       }));
@@ -62413,10 +62855,54 @@ var require_application = __commonJS({
             }
           )));
         },
+        "rawCases.createDraft": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["id", "datasetId", "idempotencyKey"]), "Raw Case Draft");
+          return idempotentReviewMutation("rawCases.createDraft", input, async () => {
+            const rawCase = rawCaseStore.requireRecord(requiredIdentifier(input.id, "Raw Case id"));
+            const datasetId = requiredIdentifier(input.datasetId, "Dataset id");
+            const dataset = store.getDataset(datasetId);
+            if (!rawCase.skill?.id || dataset.skillReference?.evidencePrecision !== "managed" || dataset.skillReference.id !== rawCase.skill.id) {
+              throw new Error("Raw Case Skill does not match the Dataset managed Skill");
+            }
+            const source = automaticRawCaseObservation(rawCase);
+            if (!source || source.outcome === "uncertain" || !source.threadId || !source.startItemId || !source.endItemId) {
+              throw new Error("Raw Case has no complete automatic Episode evidence");
+            }
+            const operation = conversationCurationOperationResolver.resolve(datasetId);
+            const session = await curationManager.createSession({
+              datasetId,
+              caseType: source.caseType,
+              sourceThreadId: source.threadId,
+              startItemId: source.startItemId,
+              startTurnId: source.startTurnId,
+              endItemId: source.endItemId,
+              endTurnId: source.endTurnId,
+              issueDescription: rawCase.note ?? source.reason ?? "",
+              executionSkillReference: operation.executionSkillReference,
+              operationEvidence: operation.operationEvidence
+            });
+            rawCaseStore.markDispatched(rawCase.id, {
+              mode: "curation-draft",
+              sessionId: session.id
+            });
+            return publicCurationSession(session);
+          });
+        },
         "settings.get": () => settingsSnapshot(),
         "settings.update": ({ rollingSkill = {}, plugin = {} }) => {
+          if (Object.hasOwn(plugin, "runtime") || Object.hasOwn(plugin, "worker")) {
+            throw new Error("Runtime and Worker settings require their dedicated Host operations");
+          }
           if (Object.keys(rollingSkill).length > 0) store.updateSettings(rollingSkill);
           if (Object.keys(plugin).length > 0) configStore.update(plugin);
+          return settingsSnapshot();
+        },
+        "settings.selectRuntime": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["runtimeId"]), "Runtime selection");
+          const descriptor = runtimeServices.descriptor(
+            requiredIdentifier(input.runtimeId, "Runtime id")
+          );
+          configStore.update({ runtime: descriptor });
           return settingsSnapshot();
         },
         "conversationCuration.inspect": (input) => inspectConversationCuration(input),
@@ -62437,6 +62923,21 @@ var require_application = __commonJS({
           return publicCurationSession(curationSession(
             requiredIdentifier(input.sessionId, "Curation Session id")
           ));
+        },
+        "curation.createCalibration": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["datasetId", "caseId", "idempotencyKey"]), "calibration");
+          return idempotentReviewMutation("curation.createCalibration", input, async () => {
+            const datasetId = requiredIdentifier(input.datasetId, "Dataset id");
+            const caseId = requiredIdentifier(input.caseId, "Case id");
+            store.getDataset(datasetId);
+            const profile = store.read().settings.curatorProfile;
+            return publicCurationSession(await curationManager.createCalibrationSession({
+              datasetId,
+              caseId,
+              modelId: profile.modelId,
+              effort: profile.effort
+            }));
+          });
         },
         "curation.send": (input) => curationMutation(input, ["text"], "curation.send", async (session) => {
           const text = requiredBodyText(input.text, "Curation review message");
@@ -62508,6 +63009,12 @@ var require_application = __commonJS({
             version: publicRubricVersion(version)
           };
         }),
+        "rubrics.migrateLegacy": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["datasetId", "idempotencyKey"]), "rubric migration");
+          return idempotentReviewMutation("rubrics.migrateLegacy", input, async () => publicRubricVersion(store.migrateActiveDatasetRubricToUnified(
+            requiredIdentifier(input.datasetId, "Dataset id")
+          )));
+        },
         "rubrics.discard": (input) => rubricMutation(input, [], "rubrics.discard", async (session) => publicRubricSession(await rubricManager.discard(session.id))),
         "rubrics.hidden": (input) => {
           exactFields(input, /* @__PURE__ */ new Set(), "rubric");
@@ -62519,6 +63026,7 @@ var require_application = __commonJS({
         "evaluations.list": (input) => evaluationServices.list(input),
         "evaluations.get": (input) => evaluationServices.get(input),
         "evaluations.cancel": (input) => evaluationServices.cancel(input),
+        "evaluations.delete": (input) => evaluationServices.delete(input),
         "skills.catalog": () => skillServices.catalog(),
         "skills.get": (input) => skillServices.get(input),
         "skills.versions": (input) => skillServices.versions(input),
@@ -62528,6 +63036,7 @@ var require_application = __commonJS({
         "skills.deprecate": (input) => skillServices.deprecate(input),
         "skills.import": (input) => skillServices.importSource(input),
         "skills.rescan": () => skillServices.rescan(),
+        "skills.reveal": (input) => skillServices.revealRepository(input),
         "installations.targets": () => skillServices.installationTargets(),
         "installations.list": (input) => skillServices.installations(input),
         "installations.get": (input) => skillServices.installation(input),
@@ -62535,6 +63044,8 @@ var require_application = __commonJS({
         "installations.cancel": (input) => skillServices.cancelInstallation(input),
         "installations.inspect": (input) => skillServices.inspectInstallation(input),
         "installations.send": (input) => skillServices.sendInstallation(input),
+        "interactions.list": (input) => runtimeInteractionBroker.list(input),
+        "interactions.resolve": (input) => runtimeInteractionBroker.resolve(input),
         "automatic.status": async () => ({
           ...automaticCaptureService.status(),
           scheduler: await schedulerStatus()
@@ -62581,10 +63092,13 @@ var require_application = __commonJS({
         "datasets.bindSkill",
         "rawCases.add",
         "rawCases.updateManaged",
+        "rawCases.createDraft",
         "rawCases.update",
         "settings.update",
+        "settings.selectRuntime",
         "conversationCuration.create",
         "curation.send",
+        "curation.createCalibration",
         "curation.retry",
         "curation.model",
         "curation.effort",
@@ -62596,18 +63110,22 @@ var require_application = __commonJS({
         "rubrics.model",
         "rubrics.effort",
         "rubrics.publish",
+        "rubrics.migrateLegacy",
         "rubrics.discard",
         "evaluations.start",
         "evaluations.cancel",
+        "evaluations.delete",
         "skills.createCandidate",
         "skills.release",
         "skills.deprecate",
         "skills.import",
         "skills.rescan",
+        "skills.reveal",
         "installations.start",
         "installations.cancel",
         "installations.inspect",
         "installations.send",
+        "interactions.resolve",
         "automatic.update",
         "automatic.runOnce",
         "scheduler.enable",
@@ -62664,6 +63182,7 @@ var require_application = __commonJS({
         automaticCaptureService.stopHostSchedule();
         await evaluationRunner.stopAll?.();
         await installationManager.stopAll?.();
+        runtimeInteractionBroker.close?.();
         await operatorRuntime.close();
         await runtimeServices.close();
       }
@@ -62709,15 +63228,23 @@ var require_surface_parity_manifest = __commonJS({
       "CV-10",
       "CV-11",
       "DC-01",
+      "DC-02",
       "DC-03",
       "DC-04",
       "DC-05",
       "DC-06",
       "DC-07",
       "DC-08",
+      "DC-09",
+      "DC-10",
       "DC-11",
       "DC-12",
+      "DC-13",
+      "DC-14",
+      "DC-15",
+      "DC-16",
       "CU-01",
+      "CU-02",
       "CU-03",
       "CU-04",
       "CU-05",
@@ -62727,20 +63254,25 @@ var require_surface_parity_manifest = __commonJS({
       "CU-09",
       "CU-10",
       "CU-11",
+      "CU-12",
       "RB-01",
+      "RB-02",
       "RB-03",
       "RB-04",
       "RB-05",
       "RB-06",
       "RB-07",
+      "RB-08",
       "MS-01",
       "MS-02",
       "MS-03",
       "MS-04",
       "MS-05",
+      "MS-06",
       "MS-07",
       "MS-08",
       "MS-09",
+      "MS-10",
       "MS-11",
       "MS-12",
       "EV-01",
@@ -62749,6 +63281,7 @@ var require_surface_parity_manifest = __commonJS({
       "EV-04",
       "EV-05",
       "EV-06",
+      "EV-07",
       "EV-08",
       "EV-09",
       "EV-10",
@@ -62784,8 +63317,10 @@ var require_surface_parity_manifest = __commonJS({
       "ST-02",
       "ST-04",
       "ST-05",
+      "ST-06",
       "ST-07",
       "ST-08",
+      "ST-09",
       "DS-01",
       "DS-02",
       "DS-03",
@@ -62881,6 +63416,7 @@ var require_src = __commonJS({
     } = require_legacy_import();
     var { createOperatorRuntime, createOperatorServices } = require_operator_services();
     var { createRuntimeServices } = require_runtime_services();
+    var { RuntimeInteractionBroker } = require_runtime_interaction_broker();
     var { acquireRunLease } = require_run_lease();
     var { createSkillServices } = require_skill_services();
     var { RollingSkillConfigStore } = require_config_store();
@@ -62894,6 +63430,7 @@ var require_src = __commonJS({
     } = require_surface_parity_manifest();
     module2.exports = {
       RollingSkillConfigStore,
+      RuntimeInteractionBroker,
       SURFACE_PARITY_MANIFEST,
       acquireRunLease,
       createAutomaticCaptureService,

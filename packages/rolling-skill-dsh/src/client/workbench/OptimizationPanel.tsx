@@ -1,4 +1,4 @@
-import {Button} from "@deepseek-ai/dsh-client-ui-primitives"
+import {Button, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
 import {useEffect, useMemo, useState} from "react"
 
 import {requestRollingSkill} from "../api"
@@ -12,8 +12,28 @@ interface Version {id: string; skillId: string; repositoryId: string; state: str
 interface Catalog {skills: Skill[]}
 interface SkillDetail {skill: Skill; versions: Version[]}
 interface OptimizationRun {id: string; state: string; currentEpoch?: number; revision?: number; error?: {message?: string} | null}
+interface OptimizationEpoch {
+    number: number
+    status: string
+    candidate?: {versionId?: string; commit?: string; contentDigest?: string}
+    installations?: Array<{runtimeId?: string; status?: string; installationJobId?: string}>
+    analysis?: {score?: number; scoreDelta?: number; passRate?: number; regressionCount?: number; executionFailureCount?: number; gradingFailureCount?: number}
+    decision?: {action?: string; rationale?: string}
+}
+interface OptimizationDetail extends OptimizationRun {
+    snapshotDigest?: string
+    baseline?: unknown
+    dataset?: unknown
+    rubric?: unknown
+    operator?: unknown
+    targets?: unknown[]
+    judge?: unknown
+    checkpoint?: unknown
+    epochs?: OptimizationEpoch[]
+}
+interface OptimizationReport {artifactId: string; digest: string; mediaType: string; preview?: string}
 
-export function OptimizationPanel({t}: {t: Translate}) {
+export function OptimizationPanel({t, initialRunId}: {t: Translate; initialRunId?: string}) {
     const [runtimes, setRuntimes] = useState<RuntimeDescriptor[]>([])
     const [datasets, setDatasets] = useState<Dataset[]>([])
     const [catalog, setCatalog] = useState<Catalog>({skills: []})
@@ -26,6 +46,9 @@ export function OptimizationPanel({t}: {t: Translate}) {
     const [targetRuntimeId, setTargetRuntimeId] = useState("")
     const [judgeRuntimeId, setJudgeRuntimeId] = useState("")
     const [preflightReady, setPreflightReady] = useState(false)
+    const [preflightResult, setPreflightResult] = useState<unknown>(null)
+    const [runDetail, setRunDetail] = useState<OptimizationDetail | null>(null)
+    const [report, setReport] = useState<OptimizationReport | null>(null)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [revision, setRevision] = useState(0)
@@ -46,11 +69,12 @@ export function OptimizationPanel({t}: {t: Translate}) {
             setTargetRuntimeId((current) => current || runtimeItems[0]?.runtimeId || "")
             setJudgeRuntimeId((current) => current || runtimeItems[0]?.runtimeId || "")
             setSkillId((current) => current || nextCatalog.skills[0]?.id || "")
+            if (initialRunId) void inspect(initialRunId)
         }).catch((reason: unknown) => {
             if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"))
         })
         return () => controller.abort()
-    }, [revision])
+    }, [revision, initialRunId])
 
     useEffect(() => {
         if (!skillId) {
@@ -69,6 +93,7 @@ export function OptimizationPanel({t}: {t: Translate}) {
                 ))
                 setDatasetId(matching?.id ?? "")
                 setPreflightReady(false)
+                setPreflightResult(null)
             })
             .catch((reason: unknown) => {
                 if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"))
@@ -116,7 +141,7 @@ export function OptimizationPanel({t}: {t: Translate}) {
         }
     }
     const preflight = () => mutate(async () => {
-        await requestRollingSkill("optimizations.preflight", configuration())
+        setPreflightResult(await requestRollingSkill("optimizations.preflight", configuration()))
         setPreflightReady(true)
     })
     const start = () => mutate(async () => {
@@ -125,11 +150,46 @@ export function OptimizationPanel({t}: {t: Translate}) {
             idempotencyKey: `dsh-${Date.now()}`,
         })
         setPreflightReady(false)
+        setPreflightResult(null)
     })
+    const inspect = async (runId: string) => {
+        setError(null)
+        try {
+            const next = await requestRollingSkill<{run: OptimizationDetail}>("optimizations.get", {runId})
+            setRunDetail(next.run)
+            setReport(null)
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : t("loadError"))
+        }
+    }
+    const generateReport = async () => {
+        if (!runDetail) return
+        setBusy(true)
+        setError(null)
+        try {
+            const result = await requestRollingSkill<{report: OptimizationReport}>("optimizations.report", {runId: runDetail.id})
+            setReport(result.report)
+            const next = await requestRollingSkill<{run: OptimizationDetail}>("optimizations.get", {runId: runDetail.id})
+            setRunDetail(next.run)
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : t("loadError"))
+        } finally {
+            setBusy(false)
+        }
+    }
     const ready = Boolean(
         skillId && versionId && datasetId &&
         operatorRuntimeId && targetRuntimeId && judgeRuntimeId,
     )
+
+    useEffect(() => {
+        if (!runs.some((run) => !["completed", "failed", "cancelled"].includes(run.state))) return
+        const timer = window.setInterval(() => {
+            setRevision((value) => value + 1)
+            if (runDetail) void inspect(runDetail.id)
+        }, 1_500)
+        return () => window.clearInterval(timer)
+    }, [runs, runDetail?.id])
 
     return (
         <section className="rolling-skill-panel">
@@ -144,10 +204,19 @@ export function OptimizationPanel({t}: {t: Translate}) {
             <RuntimeSelect t={t} runtimes={runtimes} value={judgeRuntimeId} onChange={(value) => {setJudgeRuntimeId(value); setPreflightReady(false)}} label={t("judgeRuntime")}/>
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
             <div className="rolling-skill-actions"><Button variant="outline" disabled={busy || !ready} onClick={() => void preflight()}>{t("optimizationPreflight")}</Button><Button variant="outline" disabled={busy || !preflightReady} onClick={() => void start()}>{t("startOptimization")}</Button></div>
+            {preflightResult ? <section className="rolling-skill-subpanel rolling-skill-section-gap"><h4>{t("optimizationPreflightResult")}</h4><pre>{JSON.stringify(preflightResult, null, 2)}</pre></section> : null}
             <div className="rolling-skill-list rolling-skill-section-gap">
-                {runs.map((run) => <article className="rolling-skill-list-row" key={run.id}><div><strong>{run.state}</strong><span>{run.id} · Epoch {run.currentEpoch ?? 0}</span>{run.error?.message ? <small>{run.error.message}</small> : null}</div><div className="rolling-skill-actions">{!["paused", "completed", "failed", "cancelled"].includes(run.state) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.pause", {runId: run.id}))}>{t("pause")}</Button> : null}{["paused", "needs_recovery"].includes(run.state) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.resume", {runId: run.id}))}>{t("resume")}</Button> : null}{!["completed", "failed", "cancelled"].includes(run.state) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.cancel", {runId: run.id}))}>{t("cancelRun")}</Button> : null}</div></article>)}
+                {runs.map((run) => <article className="rolling-skill-list-row" key={run.id}><div><strong>{run.state}</strong><span>{run.id} · Epoch {run.currentEpoch ?? 0}</span>{run.error?.message ? <small>{run.error.message}</small> : null}</div><div className="rolling-skill-actions"><Button variant="ghost" size="sm" onClick={() => void inspect(run.id)}>{t("details")}</Button>{!["paused", "completed", "failed", "cancelled"].includes(run.state) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.pause", {runId: run.id}))}>{t("pause")}</Button> : null}{["paused", "needs_recovery"].includes(run.state) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.resume", {runId: run.id}))}>{t("resume")}</Button> : null}{!["completed", "failed", "cancelled"].includes(run.state) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.cancel", {runId: run.id}))}>{t("cancelRun")}</Button> : null}</div></article>)}
                 {runs.length === 0 ? <p>{t("emptyOptimizations")}</p> : null}
             </div>
+            <Modal open={runDetail !== null} onClose={() => setRunDetail(null)} title={t("optimizationDetail")} closeLabel={t("close")} footer={<><Button variant="outline" disabled={busy} onClick={() => void generateReport()}>{t("generateOptimizationReport")}</Button><Button variant="outline" onClick={() => setRunDetail(null)}>{t("close")}</Button></>}>
+                {runDetail ? <div className="rolling-skill-detail-stack">
+                    <p><strong>{runDetail.state}</strong> · {runDetail.id} · Epoch {runDetail.currentEpoch ?? 0}</p>
+                    <pre>{JSON.stringify({snapshotDigest: runDetail.snapshotDigest, baseline: runDetail.baseline, dataset: runDetail.dataset, rubric: runDetail.rubric, operator: runDetail.operator, targets: runDetail.targets, judge: runDetail.judge, checkpoint: runDetail.checkpoint, error: runDetail.error}, null, 2)}</pre>
+                    <section className="rolling-skill-subpanel"><h4>{t("optimizationTimeline")}</h4><div className="rolling-skill-list">{(runDetail.epochs ?? []).map((epoch) => <article className="rolling-skill-list-row" key={epoch.number}><div><strong>Epoch {epoch.number} · {epoch.status}</strong><span>{epoch.candidate?.versionId ?? t("notAvailable")} · {epoch.analysis?.score ?? t("notAvailable")} / Δ {epoch.analysis?.scoreDelta ?? t("notAvailable")}</span><small>{epoch.decision?.action} {epoch.decision?.rationale}</small><pre>{JSON.stringify({candidate: epoch.candidate ?? null, installations: epoch.installations ?? [], analysis: epoch.analysis ?? null, decision: epoch.decision ?? null}, null, 2)}</pre></div></article>)}{!runDetail.epochs?.length ? <p>{t("emptyOptimizationTimeline")}</p> : null}</div></section>
+                    {report ? <section className="rolling-skill-subpanel"><h4>{t("optimizationReport")}</h4><p><code>{report.artifactId}</code> · <code>{report.digest}</code></p><pre className="rolling-skill-verbatim">{report.preview ?? t("notAvailable")}</pre></section> : null}
+                </div> : null}
+            </Modal>
         </section>
     )
 }

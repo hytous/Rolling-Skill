@@ -3,13 +3,15 @@ import apiModule from "./api.cjs"
 import sessionEvidenceModule from "./session-evidence.cjs"
 import {registerRollingSkillTools} from "./tools.js"
 import schedulerModule from "../scheduler/index.cjs"
+import {createNativeSessionDispatcher} from "./native-session-dispatcher.js"
+import {createPathRevealer} from "./reveal-path.js"
 
 const {createRollingSkillApplication, resolveDataPaths} = applicationModule
 const {createRollingSkillApiHandler} = apiModule
 const {createSessionEvidenceSource} = sessionEvidenceModule
 const {createSchedulerAdapter, resolveWorkerExecutable} = schedulerModule
 
-export const inject = ["webServer", "tools", "sessionQuery"]
+export const inject = ["webServer", "tools", "sessionQuery", "agents"]
 
 export function apply(ctx, config = {}) {
     const dataPaths = resolveDataPaths({dataRoot: config.dataRoot})
@@ -25,6 +27,8 @@ export function apply(ctx, config = {}) {
             sessionQuery: ctx.sessionQuery,
             traceRoot: dataPaths.dshConversationTraces,
         }),
+        rawCaseDispatcher: createNativeSessionDispatcher({agents: ctx.agents}),
+        revealPath: createPathRevealer(),
     })
     ctx.effect(() => {
         const disposeTools = registerRollingSkillTools(ctx, application)

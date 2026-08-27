@@ -4,6 +4,7 @@ import {useEffect, useState} from "react"
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
 import {CaseCaptureDialog} from "./CaseCaptureDialog"
+import {registerActiveConversationSession} from "./active-session"
 
 interface Marker {
     endMessageId: string
@@ -30,6 +31,8 @@ export function CaseCaptureAction({messageId, sessionId, t}: CaseCaptureActionPr
     const [open, setOpen] = useState(false)
     const [loading, setLoading] = useState(true)
     const [marker, setMarker] = useState<Marker | null>(null)
+
+    useEffect(() => registerActiveConversationSession(sessionId), [sessionId])
 
     useEffect(() => {
         const controller = new AbortController()

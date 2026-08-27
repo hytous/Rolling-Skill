@@ -39,7 +39,11 @@ dsh plugin --profile web add ./rolling-skill-dsh-plugin-0.1.0.tgz
 dsh web --no-open
 ```
 
-Rolling Skill 位于 Harness 的 Settings 页面中。
+安装后从 Harness 侧栏底部打开独立的 Rolling Skill Workbench。日常的 Draft 审阅、Dataset / Case / Raw Case、评分标准、Managed Skill、安装、评测、自动沉淀、Operator 和 Optimization 都在工作台中；Settings 只保留默认 Runtime 与 Curator/Rubric/Judge Profile、数据诊断和旧版导入。
+
+每条已完成的 Assistant 回复旁会出现“沉淀 Case”入口，不需要先切到工作台。创建后，Draft 来源区间使用 warning 色，保存成 Case 后使用 success 色；刷新和重新打开会话后标记仍从持久化证据恢复。手工 Raw Case 没有完整 Episode 时，可以从工作台把原问题原样派发到新的 DSH 原生会话，成功入队后才标记为 dispatched。
+
+Dataset 只绑定受管 Repository/Skill 的稳定 ID，不保存 Runtime 安装路径。每次 Curation、Rubric、Evaluation、Installation 或 Optimization 操作再由 Host 解析并冻结 Released Version、Runtime、安装校验、commit 和 digest 作为该次操作证据。
 
 ## 完全自动沉淀
 

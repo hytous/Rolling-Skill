@@ -92,6 +92,9 @@ function fixture() {
         },
     }
     const rawCaseStore = {
+        requireRecord(id) {
+            return {id, question: "raw question", note: "note", skill: {id: "skill-1", name: "billing"}}
+        },
         updateIfCurrent(id, expected, changes) {
             rawUpdates.push({id, expected: structuredClone(expected), changes: structuredClone(changes)})
             return {id, revision: expected.expectedRevision + 1, ...changes}
@@ -107,7 +110,13 @@ function fixture() {
     }
     const {createCaseServices} = require(modulePath)
     return {
-        services: createCaseServices({store, rawCaseStore, recycleService, refreshManager}),
+        services: createCaseServices({
+            store,
+            rawCaseStore,
+            recycleService,
+            refreshManager,
+            dispatchRawCase: async () => ({sessionId: "thread-1", status: "queued"}),
+        }),
         refreshes,
         recycled,
         rawDispatches,
@@ -211,7 +220,7 @@ describe("Rolling Skill Case services", () => {
 
         await test.services.dispatch("rawCases.dispatch", {
             id: "raw-1",
-            dispatch: {threadId: "thread-1", mode: "new", runtimeId: "codex:a"},
+            target: "new",
             idempotencyKey: "dispatch-raw-1",
         })
         await test.services.dispatch("rawCases.update", {
@@ -234,7 +243,7 @@ describe("Rolling Skill Case services", () => {
         })
         assert.deepEqual(test.rawDispatches[0], {
             id: "raw-1",
-            dispatch: {threadId: "thread-1", mode: "new", runtimeId: "codex:a"},
+            dispatch: {mode: "new", sessionId: "thread-1", status: "queued", target: "new"},
         })
         assert.deepEqual(test.rawDeletes, ["raw-2"])
         assert.deepEqual(test.rawUpdates, [{

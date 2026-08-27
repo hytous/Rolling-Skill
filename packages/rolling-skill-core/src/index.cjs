@@ -9,6 +9,7 @@ const {
 } = require("./legacy-import.cjs")
 const {createOperatorRuntime, createOperatorServices} = require("./operator-services.cjs")
 const {createRuntimeServices} = require("./runtime-services.cjs")
+const {RuntimeInteractionBroker} = require("./runtime-interaction-broker.cjs")
 const {acquireRunLease} = require("./run-lease.cjs")
 const {createSkillServices} = require("./skill-services.cjs")
 const {RollingSkillConfigStore} = require("./config-store.cjs")
@@ -23,6 +24,7 @@ const {
 
 module.exports = {
     RollingSkillConfigStore,
+    RuntimeInteractionBroker,
     SURFACE_PARITY_MANIFEST,
     acquireRunLease,
     createAutomaticCaptureService,

@@ -225,6 +225,15 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
     const toolNames = []
     let sessionReads = 0
     const context = {
+        agents: {
+            get: () => null,
+            async create() {
+                return {
+                    agent: {followup() {}},
+                    async dispose() {},
+                }
+            },
+        },
         tools: {
             register(definition) {
                 toolNames.push(definition.name)
@@ -285,7 +294,7 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
         },
     }
 
-    assert.deepEqual(plugin.inject, ["webServer", "tools", "sessionQuery"])
+    assert.deepEqual(plugin.inject, ["webServer", "tools", "sessionQuery", "agents"])
     const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-host-"))
     const dataset = seedCurationPrerequisites(dataRoot)
     plugin.apply(context, {

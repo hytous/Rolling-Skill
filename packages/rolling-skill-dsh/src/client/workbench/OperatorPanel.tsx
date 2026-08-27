@@ -1,8 +1,9 @@
-import {Button, Input} from "@deepseek-ai/dsh-client-ui-primitives"
+import {Button, Input, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
 import {useEffect, useState} from "react"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
+import {RuntimeInteractions} from "./RuntimeInteractions"
 import {RuntimeSelect} from "./RuntimeSelect"
 import type {RuntimeDescriptor} from "./RuntimeSelect"
 
@@ -19,8 +20,16 @@ interface OperatorSummary {
     approvals: OperatorApproval[]
     totals: {sessions: number; jobs: number; approvals: number}
 }
+interface OperatorDetail {
+    session: OperatorSession & {transcript?: Array<Record<string, unknown>>}
+    parentJob: OperatorJob & {artifactIds?: string[]; error?: unknown}
+    state: string
+    runtimeThreadId?: string | null
+    transport?: unknown
+}
+interface OperatorArtifact {id: string; jobId: string; name?: string; mediaType?: string; byteLength?: number}
 
-export function OperatorPanel({t}: {t: Translate}) {
+export function OperatorPanel({t, initialSessionId}: {t: Translate; initialSessionId?: string}) {
     const [runtimes, setRuntimes] = useState<RuntimeDescriptor[]>([])
     const [runtimeId, setRuntimeId] = useState("")
     const [models, setModels] = useState<Model[]>([])
@@ -35,6 +44,9 @@ export function OperatorPanel({t}: {t: Translate}) {
         approvals: [],
         totals: {sessions: 0, jobs: 0, approvals: 0},
     })
+    const [detail, setDetail] = useState<OperatorDetail | null>(null)
+    const [artifacts, setArtifacts] = useState<OperatorArtifact[]>([])
+    const [message, setMessage] = useState("")
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [revision, setRevision] = useState(0)
@@ -52,11 +64,12 @@ export function OperatorPanel({t}: {t: Translate}) {
             setDatasets(datasetItems)
             setCatalog(nextCatalog)
             setSummary(nextSummary)
+            if (initialSessionId) void inspect(initialSessionId)
         }).catch((reason: unknown) => {
             if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"))
         })
         return () => controller.abort()
-    }, [revision])
+    }, [revision, initialSessionId])
 
     useEffect(() => {
         if (!runtimeId) return
@@ -118,8 +131,42 @@ export function OperatorPanel({t}: {t: Translate}) {
             maxReportedCost: null,
         },
     }))
+    const inspect = async (sessionId: string) => {
+        setError(null)
+        try {
+            const next = await requestRollingSkill<OperatorDetail>("operators.get", {sessionId})
+            setDetail(next)
+            setArtifacts(await requestRollingSkill<OperatorArtifact[]>("operators.artifacts", {jobId: next.parentJob.id}))
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : t("loadError"))
+        }
+    }
+    const send = async () => {
+        if (!detail || !message.trim()) return
+        setBusy(true)
+        setError(null)
+        try {
+            await requestRollingSkill("operators.send", {sessionId: detail.session.id, text: message})
+            setMessage("")
+            await inspect(detail.session.id)
+            setRevision((value) => value + 1)
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : t("loadError"))
+        } finally {
+            setBusy(false)
+        }
+    }
     const parentJob = (sessionId: string) => summary.jobs.find((job) => job.sessionId === sessionId)
     const pendingApprovals = summary.approvals.filter((approval) => approval.status === "pending")
+
+    useEffect(() => {
+        if (!summary.jobs.some((job) => !["cancelled", "failed", "succeeded"].includes(job.status))) return
+        const timer = window.setInterval(() => {
+            setRevision((value) => value + 1)
+            if (detail) void inspect(detail.session.id)
+        }, 1_500)
+        return () => window.clearInterval(timer)
+    }, [summary.jobs, detail?.session.id])
 
     return (
         <section className="rolling-skill-panel">
@@ -139,11 +186,20 @@ export function OperatorPanel({t}: {t: Translate}) {
             <div className="rolling-skill-list rolling-skill-section-gap">
                 {summary.sessions.map((session) => {
                     const job = parentJob(session.id)
-                    return <article className="rolling-skill-list-row" key={session.id}><div><strong>{job?.status ?? t("notAvailable")}</strong><span>{session.runtime.displayName} {session.runtime.version || ""} · {session.modelId || session.id}</span><small>{job?.objective}</small></div><div className="rolling-skill-actions">{job?.status === "running" ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("operators.pause", {sessionId: session.id}))}>{t("pause")}</Button> : null}{["paused", "needs_recovery"].includes(job?.status ?? "") ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("operators.resume", {sessionId: session.id}))}>{t("resume")}</Button> : null}{!(["cancelled", "failed", "succeeded"].includes(job?.status ?? "")) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("operators.cancel", {sessionId: session.id}))}>{t("cancelRun")}</Button> : null}</div></article>
+                    return <article className="rolling-skill-list-row" key={session.id}><div><strong>{job?.status ?? t("notAvailable")}</strong><span>{session.runtime.displayName} {session.runtime.version || ""} · {session.modelId || session.id}</span><small>{job?.objective}</small></div><div className="rolling-skill-actions"><Button variant="ghost" size="sm" onClick={() => void inspect(session.id)}>{t("details")}</Button>{job?.status === "running" ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("operators.pause", {sessionId: session.id}))}>{t("pause")}</Button> : null}{["paused", "needs_recovery"].includes(job?.status ?? "") ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("operators.resume", {sessionId: session.id}))}>{t("resume")}</Button> : null}{!(["cancelled", "failed", "succeeded"].includes(job?.status ?? "")) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("operators.cancel", {sessionId: session.id}))}>{t("cancelRun")}</Button> : null}</div></article>
                 })}
                 {summary.sessions.length === 0 ? <p>{t("emptyOperators")}</p> : null}
             </div>
             {pendingApprovals.length ? <div className="rolling-skill-subpanel rolling-skill-section-gap"><h4>{t("pendingApprovals")}</h4>{pendingApprovals.map((approval) => {const job = summary.jobs.find((item) => item.id === approval.jobId); return <article className="rolling-skill-list-row" key={approval.id}><div><strong>{approval.action}</strong><span>{approval.risk}</span></div><div className="rolling-skill-actions"><Button variant="outline" size="sm" disabled={busy || !job} onClick={() => void mutate(() => requestRollingSkill("operators.approve", {sessionId: job?.sessionId, approvalId: approval.id, decision: "approve", scope: "once"}))}>{t("approve")}</Button><Button variant="ghost" size="sm" disabled={busy || !job} onClick={() => void mutate(() => requestRollingSkill("operators.approve", {sessionId: job?.sessionId, approvalId: approval.id, decision: "reject", scope: "once"}))}>{t("reject")}</Button></div></article>})}</div> : null}
+            <RuntimeInteractions t={t} ownerKind="operator"/>
+            <Modal open={detail !== null} onClose={() => setDetail(null)} title={t("operatorDetail")} closeLabel={t("close")} footer={<Button variant="outline" onClick={() => setDetail(null)}>{t("close")}</Button>}>
+                {detail ? <div className="rolling-skill-detail-stack">
+                    <p><strong>{detail.state}</strong> · {detail.session.runtime.displayName} · {detail.parentJob.objective}</p>
+                    <section className="rolling-skill-subpanel"><h4>{t("operatorTranscript")}</h4><div className="rolling-skill-list">{(detail.session.transcript ?? []).map((entry, index) => <article className="rolling-skill-list-row" key={String(entry.id ?? index)}><div><strong>{String(entry.kind ?? t("notAvailable"))}</strong><pre>{JSON.stringify(entry, null, 2)}</pre></div></article>)}{!detail.session.transcript?.length ? <p>{t("emptyOperatorTranscript")}</p> : null}</div></section>
+                    <section className="rolling-skill-subpanel"><h4>{t("operatorArtifacts")}</h4><div className="rolling-skill-list">{artifacts.map((artifact) => <article className="rolling-skill-list-row" key={artifact.id}><div><strong>{artifact.name ?? artifact.id}</strong><span>{artifact.mediaType ?? ""} {artifact.byteLength === undefined ? "" : `· ${artifact.byteLength} B`}</span></div></article>)}{artifacts.length === 0 ? <p>{t("emptyOperatorArtifacts")}</p> : null}</div></section>
+                    {!(["cancelled", "failed", "succeeded"].includes(detail.parentJob.status)) ? <div className="rolling-skill-actions"><Input value={message} placeholder={t("operatorFollowUp")} onChange={(event: {target: {value: string}}) => setMessage(event.target.value)}/><Button variant="outline" disabled={busy || !message.trim()} onClick={() => void send()}>{t("send")}</Button></div> : null}
+                </div> : null}
+            </Modal>
         </section>
     )
 }

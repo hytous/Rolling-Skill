@@ -326,6 +326,8 @@ class CurationManager {
             caseType: input.caseType,
             issueDescription: input.issueDescription ?? "",
             episode,
+            executionSkillReference: input.executionSkillReference,
+            operationEvidence: input.operationEvidence,
             curator: {
                 runtimeId: runtimeDescriptor?.runtimeId ?? null,
                 modelProvider: response.thread.modelProvider ?? runtimeDescriptor?.providerId ?? null,

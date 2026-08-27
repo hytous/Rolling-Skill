@@ -7,6 +7,13 @@ const {
 const {persistOptimizationReport} = require("./optimization-report.cjs")
 
 const MAX_PUBLIC_ARTIFACT_BYTES = 1024 * 1024
+const MAX_PUBLIC_REPORT_PREVIEW_BYTES = 32 * 1024
+
+function boundedReportPreview(value) {
+    const body = Buffer.from(String(value ?? ""), "utf8")
+    if (body.byteLength <= MAX_PUBLIC_REPORT_PREVIEW_BYTES) return body.toString("utf8")
+    return `${body.subarray(0, MAX_PUBLIC_REPORT_PREVIEW_BYTES - 3).toString("utf8").replace(/\uFFFD$/u, "")}…`
+}
 
 function dependency(value, method, label) {
     if (!value || typeof value[method] !== "function") {
@@ -492,6 +499,7 @@ class OptimizationControlService {
             artifactId: generated.reportArtifactId,
             digest: generated.digest,
             mediaType: "text/markdown; charset=utf-8",
+            preview: boundedReportPreview(generated.markdown),
         }}
     }
 }

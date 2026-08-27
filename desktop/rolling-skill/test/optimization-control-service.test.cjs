@@ -396,6 +396,8 @@ describe("Optimization control service", () => {
         assert.equal(context.artifactCalls[0].jobId, "operator-job-1")
         assert.equal(result.report.artifactId, "report-artifact-1")
         assert.match(result.report.digest, /^sha256:[a-f0-9]{64}$/u)
+        assert.match(result.report.preview, /^# Skill 多轮优化报告/u)
+        assert.ok(result.report.preview.length <= 32 * 1024)
         const stored = context.store.getRun("optimization-run-1")
         assert.equal(stored.checkpoint.reportArtifactId, "report-artifact-1")
         assert.equal(stored.checkpoint.reportDigest, result.report.digest)

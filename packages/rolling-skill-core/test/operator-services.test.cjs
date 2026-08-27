@@ -77,7 +77,10 @@ function fixture() {
         pause: async (id) => (calls.push(["optimization-pause", id]), {run: {id, state: "paused"}}),
         resume: async (id) => (calls.push(["optimization-resume", id]), {run: {id, state: "editing"}}),
         stop: async (id) => (calls.push(["optimization-stop", id]), {run: {id, state: "cancelled"}}),
-        report: (id) => (calls.push(["optimization-report", id]), {report: {artifactId: "artifact-2"}}),
+        report: (id) => (calls.push(["optimization-report", id]), {report: {
+            artifactId: "artifact-2",
+            preview: "# Optimization report",
+        }}),
     }
     return {
         calls,
@@ -191,7 +194,9 @@ describe("Rolling Skill Operator services", () => {
         await services.optimizationPause({runId: "optimization-1"})
         await services.optimizationResume({runId: "optimization-1"})
         await services.optimizationCancel({runId: "optimization-1"})
-        assert.equal(services.optimizationReport({runId: "optimization-1"}).report.artifactId, "artifact-2")
+        const report = services.optimizationReport({runId: "optimization-1"}).report
+        assert.equal(report.artifactId, "artifact-2")
+        assert.equal(report.preview, "# Optimization report")
         assert.deepEqual(calls.filter(([kind]) => kind.startsWith("optimization-")).map(([kind]) => kind), [
             "optimization-start",
             "optimization-pause",

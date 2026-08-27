@@ -1,8 +1,9 @@
 import {Button, Input, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
-import {useEffect, useMemo, useState} from "react"
+import {useEffect, useMemo, useState, useSyncExternalStore} from "react"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
+import {activeConversationSessionSnapshot, subscribeActiveConversationSession} from "../conversation/active-session"
 
 interface RawCase {
     id: string
@@ -15,17 +16,20 @@ interface RawCase {
 interface ManagedSkill {id: string; repositoryId: string; name: string; status: string}
 interface Repository {id: string; displayName: string}
 interface SkillCatalog {repositories: Repository[]; skills: ManagedSkill[]}
+interface Dataset {id: string; name: string; activeRubricVersionId?: string | null; skillReference?: {id?: string; evidencePrecision?: string} | null}
 
 interface RawCasesPanelProps {
     t: Translate
     revision: number
     onChanged: () => void
     initialRawCaseId?: string
+    onNavigate: (route: {page: "curation"; sessionId: string}) => void
 }
 
-export function RawCasesPanel({t, revision, onChanged, initialRawCaseId}: RawCasesPanelProps) {
+export function RawCasesPanel({t, revision, onChanged, initialRawCaseId, onNavigate}: RawCasesPanelProps) {
     const [entries, setEntries] = useState<RawCase[]>([])
     const [catalog, setCatalog] = useState<SkillCatalog>({repositories: [], skills: []})
+    const [datasets, setDatasets] = useState<Dataset[]>([])
     const [search, setSearch] = useState("")
     const [adding, setAdding] = useState(false)
     const [editing, setEditing] = useState<RawCase | null>(null)
@@ -34,17 +38,27 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId}: RawCas
     const [skillId, setSkillId] = useState("")
     const [deleting, setDeleting] = useState<RawCase | null>(null)
     const [inspecting, setInspecting] = useState<RawCase | null>(null)
+    const [drafting, setDrafting] = useState<RawCase | null>(null)
+    const [draftDatasetId, setDraftDatasetId] = useState("")
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [dispatchedSessionId, setDispatchedSessionId] = useState<string | null>(null)
+    const activeSessionId = useSyncExternalStore(
+        subscribeActiveConversationSession,
+        activeConversationSessionSnapshot,
+        () => null,
+    )
 
     useEffect(() => {
         const controller = new AbortController()
         Promise.all([
             requestRollingSkill<RawCase[]>("rawCases.list", {}, controller.signal),
             requestRollingSkill<SkillCatalog>("skills.catalog", {}, controller.signal),
-        ]).then(([rawCases, nextCatalog]) => {
+            requestRollingSkill<Dataset[]>("datasets.list", {}, controller.signal),
+        ]).then(([rawCases, nextCatalog, datasetItems]) => {
             setEntries(rawCases)
             setCatalog(nextCatalog)
+            setDatasets(datasetItems)
             const valid = nextCatalog.skills.filter((skill) => skill.status === "valid")
             setSkillId((current) => valid.some((skill) => skill.id === current) ? current : valid[0]?.id ?? "")
             if (initialRawCaseId) setInspecting(rawCases.find((entry) => entry.id === initialRawCaseId) ?? null)
@@ -132,6 +146,43 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId}: RawCas
             setDeleting(null)
         })
     }
+    const compatibleDatasets = (entry: RawCase | null) => datasets.filter((dataset) =>
+        Boolean(entry?.skill.id) &&
+        dataset.skillReference?.evidencePrecision === "managed" &&
+        dataset.skillReference.id === entry?.skill.id &&
+        Boolean(dataset.activeRubricVersionId),
+    )
+    const beginDraft = (entry: RawCase) => {
+        const compatible = compatibleDatasets(entry)
+        setDrafting(entry)
+        setDraftDatasetId(compatible[0]?.id ?? "")
+    }
+    const createDraft = () => {
+        const entry = drafting
+        if (!entry || !draftDatasetId) return
+        void mutate(async () => {
+            const session = await requestRollingSkill<{id: string}>("rawCases.createDraft", {
+                id: entry.id,
+                datasetId: draftDatasetId,
+                idempotencyKey: crypto.randomUUID(),
+            })
+            setDrafting(null)
+            onNavigate({page: "curation", sessionId: session.id})
+        })
+    }
+    const hasCompleteEpisode = (entry: RawCase) => {
+        const observation = entry.source?.observations?.at(-1)
+        return Boolean(observation && observation.outcome !== "uncertain")
+    }
+    const dispatchToSession = (entry: RawCase, target: "current" | "new") => void mutate(async () => {
+        const result = await requestRollingSkill<{sessionId: string}>("rawCases.dispatch", {
+            id: entry.id,
+            target,
+            ...(target === "current" ? {sessionId: activeSessionId} : {}),
+            idempotencyKey: crypto.randomUUID(),
+        })
+        setDispatchedSessionId(result.sessionId)
+    })
 
     const form = <div className="rolling-skill-form-stack">
         <label><span>{t("question")}</span><textarea value={question} onChange={(event) => setQuestion(event.target.value)}/></label>
@@ -152,6 +203,7 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId}: RawCas
             </div>
             <Input value={search} placeholder={t("searchRawCases")} aria-label={t("searchRawCases")} onChange={(event: {target: {value: string}}) => setSearch(event.target.value)}/>
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
+            {dispatchedSessionId ? <p className="rolling-skill-inline-success">{t("rawCaseDispatched")} <code>{dispatchedSessionId}</code></p> : null}
             <div className="rolling-skill-group-list">
                 {filteredGroups.map((group) => <section className="rolling-skill-raw-group" key={group.key}>
                     <h4>{group.name} <span>{group.items.length}</span></h4>
@@ -160,6 +212,7 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId}: RawCas
                             <div><strong className="rolling-skill-verbatim">{entry.question}</strong><span>{entry.source?.kind ?? t("manualSource")}{entry.note ? ` · ${entry.note}` : ""}</span></div>
                             <div className="rolling-skill-actions">
                                 <Button variant="ghost" size="sm" onClick={() => setInspecting(entry)}>{t("details")}</Button>
+                                {hasCompleteEpisode(entry) ? <Button variant="ghost" size="sm" disabled={compatibleDatasets(entry).length === 0} onClick={() => beginDraft(entry)}>{t("createCaseDraft")}</Button> : <>{activeSessionId ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => dispatchToSession(entry, "current")}>{t("validateInCurrentSession")}</Button> : null}<Button variant="ghost" size="sm" disabled={busy} onClick={() => dispatchToSession(entry, "new")}>{t("validateInNewSession")}</Button></>}
                                 <Button variant="ghost" size="sm" onClick={() => beginEdit(entry)}>{t("edit")}</Button>
                                 <Button variant="ghost" size="sm" onClick={() => setDeleting(entry)}>{t("delete")}</Button>
                             </div>
@@ -176,6 +229,10 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId}: RawCas
             </Modal>
             <Modal open={inspecting !== null} onClose={() => setInspecting(null)} title={t("rawCaseEvidence")} closeLabel={t("close")} footer={<Button variant="outline" onClick={() => setInspecting(null)}>{t("close")}</Button>}>
                 {inspecting ? <div className="rolling-skill-detail-stack"><h4>{t("question")}</h4><p className="rolling-skill-verbatim">{inspecting.question}</p><h4>{t("caseEvidence")}</h4><pre>{JSON.stringify(inspecting.source ?? {kind: "manual"}, null, 2)}</pre></div> : null}
+            </Modal>
+            <Modal open={drafting !== null} onClose={() => setDrafting(null)} title={t("createCaseDraft")} closeLabel={t("cancel")} footer={<><Button variant="outline" onClick={() => setDrafting(null)}>{t("cancel")}</Button><Button variant="outline" disabled={busy || !draftDatasetId} onClick={createDraft}>{t("captureCreate")}</Button></>}>
+                <p>{t("rawCaseDraftDescription")}</p>
+                <select className="rolling-skill-select" value={draftDatasetId} onChange={(event) => setDraftDatasetId(event.target.value)}>{compatibleDatasets(drafting).map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}</select>
             </Modal>
             <Modal open={deleting !== null} onClose={() => setDeleting(null)} title={t("deleteRawCaseTitle")} closeLabel={t("cancel")} footer={<><Button variant="outline" onClick={() => setDeleting(null)}>{t("cancel")}</Button><Button variant="outline" disabled={busy} onClick={recycle}>{t("confirmDelete")}</Button></>}><p>{t("deleteRawCasePrompt")}</p></Modal>
         </section>

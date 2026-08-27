@@ -49,7 +49,7 @@ function fingerprint(method, input) {
     return JSON.stringify({method, input})
 }
 
-function createCaseServices({store, rawCaseStore, recycleService, refreshManager = null}) {
+function createCaseServices({store, rawCaseStore, recycleService, refreshManager = null, dispatchRawCase = null}) {
     if (!store || !rawCaseStore || !recycleService) {
         throw new Error("Rolling Skill Case service dependencies are required")
     }
@@ -189,12 +189,37 @@ function createCaseServices({store, rawCaseStore, recycleService, refreshManager
                     : 0,
             }
         },
-        "rawCases.dispatch": (input) => once("rawCases.dispatch", input, () =>
-            rawCaseStore.markDispatched(
-                requiredText(input.id, "Raw Case id", 200),
-                input.dispatch ?? {},
-            ),
-        ),
+        "rawCases.dispatch": (input) => once("rawCases.dispatch", input, async () => {
+            if (typeof dispatchRawCase !== "function") {
+                throw new Error("Native DSH Session dispatch is unavailable")
+            }
+            if (input.target !== "new" && input.target !== "current") {
+                throw new Error("Raw Case dispatch target is unsupported")
+            }
+            const targetSessionId = input.target === "current"
+                ? requiredText(input.sessionId, "Current DSH Session id", 300)
+                : null
+            const id = requiredText(input.id, "Raw Case id", 200)
+            const rawCase = rawCaseStore.requireRecord(id)
+            const dispatched = await dispatchRawCase({
+                question: rawCase.question,
+                note: rawCase.note ?? "",
+                skill: rawCase.skill ? {
+                    ...(typeof rawCase.skill.id === "string" ? {id: rawCase.skill.id} : {}),
+                    name: rawCase.skill.name,
+                } : null,
+                target: input.target,
+                ...(targetSessionId ? {sessionId: targetSessionId} : {}),
+            })
+            const sessionId = requiredText(dispatched?.sessionId, "Dispatched DSH Session id", 300)
+            const result = {
+                sessionId,
+                status: typeof dispatched.status === "string" ? dispatched.status : "queued",
+                target: input.target,
+            }
+            rawCaseStore.markDispatched(id, {mode: input.target, ...result})
+            return result
+        }),
         "rawCases.update": (input) => once("rawCases.update", input, () =>
             rawCaseStore.updateIfCurrent(
                 requiredText(input.id, "Raw Case id", 200),

@@ -1,5 +1,5 @@
 const {Buffer} = require("node:buffer")
-const {join} = require("node:path")
+const {basename, join, resolve} = require("node:path")
 
 const {
     AutomaticCaptureStateStore,
@@ -59,6 +59,7 @@ const {
 } = require("./legacy-import.cjs")
 const {createOperatorRuntime} = require("./operator-services.cjs")
 const {createRuntimeServices} = require("./runtime-services.cjs")
+const {RuntimeInteractionBroker} = require("./runtime-interaction-broker.cjs")
 const {createSkillServices} = require("./skill-services.cjs")
 
 const MAX_DISPATCH_BYTES = 1024 * 1024
@@ -428,6 +429,15 @@ function managedRawCaseSkill(managedSkillStore, input = {}) {
     return {id: skill.id, name: skill.name}
 }
 
+function automaticRawCaseObservation(record) {
+    const observations = Array.isArray(record?.source?.observations)
+        ? record.source.observations
+        : record?.source?.kind === "automatic_capture"
+            ? [record.source]
+            : []
+    return observations.at(-1) ?? null
+}
+
 function reconcileManagedDatasetBindings({store, managedSkillStore, installationStore}) {
     let migrated = 0
     let skipped = 0
@@ -519,6 +529,15 @@ function createRollingSkillApplication(options = {}) {
     )
     const managedSkillStore = new ManagedSkillStore(paths.managedSkillRegistry)
     const configStore = new RollingSkillConfigStore(paths.config)
+    const runtimeInteractionBroker = options.runtimeInteractionBroker ?? new RuntimeInteractionBroker({
+        onChanged: () => publish(),
+    })
+    const requestRuntimePermission = options.requestRuntimePermission ?? (
+        (request) => runtimeInteractionBroker.requestPermission(request)
+    )
+    const requestRuntimeQuestion = options.requestRuntimeQuestion ?? (
+        (request) => runtimeInteractionBroker.requestQuestion(request)
+    )
     let automaticCaptureService = null
     const workspaceRoot = options.workspaceRoot ?? process.cwd()
     const runtimeServices = createRuntimeServices({
@@ -546,8 +565,8 @@ function createRollingSkillApplication(options = {}) {
         traceDirectory: join(paths.traces, "skill-installations"),
         resolvePermission: (providerId, permissionMode) =>
             resolveRuntimePermission(providerId, permissionMode, store.read().settings),
-        requestPermission: options.requestRuntimePermission ?? null,
-        requestQuestion: options.requestRuntimeQuestion ?? null,
+        requestPermission: requestRuntimePermission,
+        requestQuestion: requestRuntimeQuestion,
         onChanged: () => publish(),
     })
     const skillServices = createSkillServices({
@@ -555,6 +574,7 @@ function createRollingSkillApplication(options = {}) {
         installationManager,
         installationStore,
         runtimeServices,
+        revealPath: options.revealPath ?? null,
     })
     const selectedRuntimeId = () => configStore.read().runtime?.runtimeId ?? null
     const selectedRuntimeDescriptor = () => {
@@ -590,13 +610,51 @@ function createRollingSkillApplication(options = {}) {
         getRuntimeDescriptor: selectedRuntimeDescriptor,
         onChanged: () => publish(),
     })
+    const automaticCurationManager = Object.freeze({
+        async createSession(input) {
+            const operation = conversationCurationOperationResolver.resolve(input.datasetId)
+            return curationManager.createSession({
+                ...input,
+                executionSkillReference: operation.executionSkillReference,
+                operationEvidence: operation.operationEvidence,
+            })
+        },
+        archive: (sessionId) => curationManager.archive(sessionId),
+        hiddenThreadIds: () => curationManager.hiddenThreadIds(),
+    })
     automaticCaptureService = createAutomaticCaptureService({
         store,
         configStore,
         runtimeServices,
         stateStore: automaticCaptureStateStore,
         rawCaseStore,
-        curationManager,
+        curationManager: automaticCurationManager,
+        listSkills: async (runtime) => {
+            if (typeof runtime.listSkills !== "function") return []
+            const descriptor = selectedRuntimeDescriptor()
+            if (!descriptor) return []
+            const response = await runtime.listSkills({forceReload: true})
+            const runtimeSkills = (response?.data ?? []).flatMap((entry) => entry.skills ?? [])
+                .filter((skill) => skill.enabled !== false)
+            const verified = installationStore.listVerifiedInstallations({
+                runtimeId: descriptor.runtimeId,
+                providerId: descriptor.providerId,
+            })
+            const matched = []
+            for (const installation of verified) {
+                const skill = managedSkillStore.getSkill(installation.skillId)
+                const installedManifest = basename(installation.destination).toLocaleLowerCase("en-US") === "skill.md"
+                    ? installation.destination
+                    : join(installation.destination, "SKILL.md")
+                const observed = runtimeSkills.find((entry) =>
+                    entry.name === skill.name &&
+                    typeof entry.path === "string" &&
+                    resolve(entry.path) === resolve(installedManifest),
+                )
+                if (observed) matched.push({id: skill.id, name: skill.name})
+            }
+            return matched
+        },
         listDatasets: () => store.listDatasets(),
         getHiddenThreadIds: () => new Set([
             ...curationManager.hiddenThreadIds(),
@@ -633,6 +691,7 @@ function createRollingSkillApplication(options = {}) {
         rawCaseStore,
         recycleService,
         refreshManager,
+        dispatchRawCase: options.rawCaseDispatcher ?? null,
     })
     const evaluationRunner = options.evaluationRunner ?? new EvaluationRunner({
         store,
@@ -673,8 +732,8 @@ function createRollingSkillApplication(options = {}) {
         curationManager,
         rubricManager,
         workspaceRoot,
-        requestPermission: options.requestRuntimePermission ?? null,
-        requestQuestion: options.requestRuntimeQuestion ?? null,
+        requestPermission: requestRuntimePermission,
+        requestQuestion: requestRuntimeQuestion,
         operatorToolPath: options.operatorToolPath ?? null,
         onChanged: () => publish(),
         }))
@@ -1058,10 +1117,64 @@ function createRollingSkillApplication(options = {}) {
                     },
                 )))
         },
+        "rawCases.createDraft": (input) => {
+            exactFields(input, new Set(["id", "datasetId", "idempotencyKey"]), "Raw Case Draft")
+            return idempotentReviewMutation("rawCases.createDraft", input, async () => {
+                const rawCase = rawCaseStore.requireRecord(requiredIdentifier(input.id, "Raw Case id"))
+                const datasetId = requiredIdentifier(input.datasetId, "Dataset id")
+                const dataset = store.getDataset(datasetId)
+                if (
+                    !rawCase.skill?.id ||
+                    dataset.skillReference?.evidencePrecision !== "managed" ||
+                    dataset.skillReference.id !== rawCase.skill.id
+                ) {
+                    throw new Error("Raw Case Skill does not match the Dataset managed Skill")
+                }
+                const source = automaticRawCaseObservation(rawCase)
+                if (
+                    !source ||
+                    source.outcome === "uncertain" ||
+                    !source.threadId ||
+                    !source.startItemId ||
+                    !source.endItemId
+                ) {
+                    throw new Error("Raw Case has no complete automatic Episode evidence")
+                }
+                const operation = conversationCurationOperationResolver.resolve(datasetId)
+                const session = await curationManager.createSession({
+                    datasetId,
+                    caseType: source.caseType,
+                    sourceThreadId: source.threadId,
+                    startItemId: source.startItemId,
+                    startTurnId: source.startTurnId,
+                    endItemId: source.endItemId,
+                    endTurnId: source.endTurnId,
+                    issueDescription: rawCase.note ?? source.reason ?? "",
+                    executionSkillReference: operation.executionSkillReference,
+                    operationEvidence: operation.operationEvidence,
+                })
+                rawCaseStore.markDispatched(rawCase.id, {
+                    mode: "curation-draft",
+                    sessionId: session.id,
+                })
+                return publicCurationSession(session)
+            })
+        },
         "settings.get": () => settingsSnapshot(),
         "settings.update": ({rollingSkill = {}, plugin = {}}) => {
+            if (Object.hasOwn(plugin, "runtime") || Object.hasOwn(plugin, "worker")) {
+                throw new Error("Runtime and Worker settings require their dedicated Host operations")
+            }
             if (Object.keys(rollingSkill).length > 0) store.updateSettings(rollingSkill)
             if (Object.keys(plugin).length > 0) configStore.update(plugin)
+            return settingsSnapshot()
+        },
+        "settings.selectRuntime": (input) => {
+            exactFields(input, new Set(["runtimeId"]), "Runtime selection")
+            const descriptor = runtimeServices.descriptor(
+                requiredIdentifier(input.runtimeId, "Runtime id"),
+            )
+            configStore.update({runtime: descriptor})
             return settingsSnapshot()
         },
         "conversationCuration.inspect": (input) => inspectConversationCuration(input),
@@ -1082,6 +1195,21 @@ function createRollingSkillApplication(options = {}) {
             return publicCurationSession(curationSession(
                 requiredIdentifier(input.sessionId, "Curation Session id"),
             ))
+        },
+        "curation.createCalibration": (input) => {
+            exactFields(input, new Set(["datasetId", "caseId", "idempotencyKey"]), "calibration")
+            return idempotentReviewMutation("curation.createCalibration", input, async () => {
+                const datasetId = requiredIdentifier(input.datasetId, "Dataset id")
+                const caseId = requiredIdentifier(input.caseId, "Case id")
+                store.getDataset(datasetId)
+                const profile = store.read().settings.curatorProfile
+                return publicCurationSession(await curationManager.createCalibrationSession({
+                    datasetId,
+                    caseId,
+                    modelId: profile.modelId,
+                    effort: profile.effort,
+                }))
+            })
         },
         "curation.send": (input) => curationMutation(input, ["text"], "curation.send", async (session) => {
             const text = requiredBodyText(input.text, "Curation review message")
@@ -1166,6 +1294,13 @@ function createRollingSkillApplication(options = {}) {
                 version: publicRubricVersion(version),
             }
         }),
+        "rubrics.migrateLegacy": (input) => {
+            exactFields(input, new Set(["datasetId", "idempotencyKey"]), "rubric migration")
+            return idempotentReviewMutation("rubrics.migrateLegacy", input, async () =>
+                publicRubricVersion(store.migrateActiveDatasetRubricToUnified(
+                    requiredIdentifier(input.datasetId, "Dataset id"),
+                )))
+        },
         "rubrics.discard": (input) => rubricMutation(input, [], "rubrics.discard", async (session) =>
             publicRubricSession(await rubricManager.discard(session.id))),
         "rubrics.hidden": (input) => {
@@ -1180,6 +1315,7 @@ function createRollingSkillApplication(options = {}) {
         "evaluations.list": (input) => evaluationServices.list(input),
         "evaluations.get": (input) => evaluationServices.get(input),
         "evaluations.cancel": (input) => evaluationServices.cancel(input),
+        "evaluations.delete": (input) => evaluationServices.delete(input),
         "skills.catalog": () => skillServices.catalog(),
         "skills.get": (input) => skillServices.get(input),
         "skills.versions": (input) => skillServices.versions(input),
@@ -1189,6 +1325,7 @@ function createRollingSkillApplication(options = {}) {
         "skills.deprecate": (input) => skillServices.deprecate(input),
         "skills.import": (input) => skillServices.importSource(input),
         "skills.rescan": () => skillServices.rescan(),
+        "skills.reveal": (input) => skillServices.revealRepository(input),
         "installations.targets": () => skillServices.installationTargets(),
         "installations.list": (input) => skillServices.installations(input),
         "installations.get": (input) => skillServices.installation(input),
@@ -1196,6 +1333,8 @@ function createRollingSkillApplication(options = {}) {
         "installations.cancel": (input) => skillServices.cancelInstallation(input),
         "installations.inspect": (input) => skillServices.inspectInstallation(input),
         "installations.send": (input) => skillServices.sendInstallation(input),
+        "interactions.list": (input) => runtimeInteractionBroker.list(input),
+        "interactions.resolve": (input) => runtimeInteractionBroker.resolve(input),
         "automatic.status": async () => ({
             ...automaticCaptureService.status(),
             scheduler: await schedulerStatus(),
@@ -1242,10 +1381,13 @@ function createRollingSkillApplication(options = {}) {
         "datasets.bindSkill",
         "rawCases.add",
         "rawCases.updateManaged",
+        "rawCases.createDraft",
         "rawCases.update",
         "settings.update",
+        "settings.selectRuntime",
         "conversationCuration.create",
         "curation.send",
+        "curation.createCalibration",
         "curation.retry",
         "curation.model",
         "curation.effort",
@@ -1257,18 +1399,22 @@ function createRollingSkillApplication(options = {}) {
         "rubrics.model",
         "rubrics.effort",
         "rubrics.publish",
+        "rubrics.migrateLegacy",
         "rubrics.discard",
         "evaluations.start",
         "evaluations.cancel",
+        "evaluations.delete",
         "skills.createCandidate",
         "skills.release",
         "skills.deprecate",
         "skills.import",
         "skills.rescan",
+        "skills.reveal",
         "installations.start",
         "installations.cancel",
         "installations.inspect",
         "installations.send",
+        "interactions.resolve",
         "automatic.update",
         "automatic.runOnce",
         "scheduler.enable",
@@ -1329,6 +1475,7 @@ function createRollingSkillApplication(options = {}) {
         automaticCaptureService.stopHostSchedule()
         await evaluationRunner.stopAll?.()
         await installationManager.stopAll?.()
+        runtimeInteractionBroker.close?.()
         await operatorRuntime.close()
         await runtimeServices.close()
     }

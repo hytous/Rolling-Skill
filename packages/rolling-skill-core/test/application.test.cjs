@@ -3,6 +3,7 @@ const {mkdtempSync, mkdirSync, writeFileSync} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {describe, it} = require("node:test")
+const {RawCaseStore} = require("../../../desktop/rolling-skill/src/raw-case-store.cjs")
 
 const modulePath = "../src/application.cjs"
 
@@ -577,6 +578,137 @@ describe("shared Rolling Skill application", () => {
             }),
             /unsupported.*field/i,
         )
+        await application.close()
+    })
+
+    it("creates a Draft from a complete automatic Raw Case only after trusted operation resolution", async () => {
+        const {createRollingSkillApplication} = require(modulePath)
+        const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-raw-case-draft-"))
+        const calls = []
+        const curationManager = {
+            hiddenThreadIds: () => new Set(),
+            listSessions: () => [],
+            getSession: () => null,
+            async createSession(input) {
+                calls.push(structuredClone(input))
+                return {id: "curation-from-raw", datasetId: input.datasetId, caseType: input.caseType, status: "queued", episode: {source: {}}, conversation: [], revisions: [], updatedAt: "now"}
+            },
+        }
+        const operation = {
+            executionSkillReference: {id: "skill-1", repositoryId: "repository-1", name: "billing", path: "/runtime/billing/SKILL.md", runtimeId: "runtime-1", providerId: "codex"},
+            operationEvidence: {schemaVersion: "rolling-skill-operation-evidence/v1", kind: "curation"},
+        }
+        const application = createRollingSkillApplication({
+            dataRoot,
+            curationManager,
+            conversationCurationOperationResolver: {
+                inspectDataset: () => ({ready: true}),
+                resolve: () => structuredClone(operation),
+                resolveRubric: () => structuredClone(operation),
+            },
+        })
+        const managed = await importManagedSkill(application)
+        const dataset = await application.dispatch("datasets.create", {
+            name: "Automatic",
+            repositoryId: managed.repository.id,
+            skillId: managed.skill.id,
+        })
+        const rawStore = new RawCaseStore(join(dataRoot, "raw-cases", "events.jsonl"))
+        const saved = rawStore.addAutomaticCandidate({
+            question: "Preserve automatic question verbatim",
+            skill: {id: managed.skill.id, name: managed.skill.name},
+            note: "complete",
+            source: {
+                kind: "automatic_capture",
+                runtimeId: "runtime-1",
+                threadId: "thread-1",
+                startTurnId: "turn-1",
+                startItemId: "user-1",
+                endTurnId: "turn-2",
+                endItemId: "assistant-1",
+                outcome: "resolved",
+                caseType: "goodcase",
+                confidence: 0.99,
+                inspectedAt: "2026-08-27T00:00:00.000Z",
+            },
+        })
+
+        const result = await application.dispatch("rawCases.createDraft", {
+            id: saved.rawCase.id,
+            datasetId: dataset.id,
+            idempotencyKey: "raw-case-draft-1",
+        })
+        assert.equal(result.id, "curation-from-raw")
+        assert.equal(calls[0].sourceThreadId, "thread-1")
+        assert.equal(calls[0].executionSkillReference.path, "/runtime/billing/SKILL.md")
+        assert.equal((await application.dispatch("rawCases.list", {})).length, 0)
+        await application.close()
+    })
+
+    it("exposes only brokered background Runtime interactions through strict methods", async () => {
+        const {createRollingSkillApplication} = require(modulePath)
+        const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-interactions-"))
+        const calls = []
+        const runtimeInteractionBroker = {
+            requestPermission: async () => "decline",
+            requestQuestion: async () => ({answers: []}),
+            list: (input) => (calls.push(["list", input]), [{
+                id: "interaction-1",
+                kind: "permission",
+                ownerKind: "installation",
+                ownerId: "job-1",
+                options: [{optionId: "allow_once"}],
+            }]),
+            resolve: (input) => (calls.push(["resolve", input]), {
+                interactionId: input.interactionId,
+                status: "resolved",
+            }),
+            close: () => calls.push(["close"]),
+        }
+        const application = createRollingSkillApplication({dataRoot, runtimeInteractionBroker})
+
+        const pending = await application.dispatch("interactions.list", {
+            ownerKind: "installation",
+            ownerId: "job-1",
+        })
+        assert.equal(pending[0].id, "interaction-1")
+        await application.dispatch("interactions.resolve", {
+            interactionId: "interaction-1",
+            decision: "allow_once",
+        })
+        assert.deepEqual(calls.slice(0, 2).map(([kind]) => kind), ["list", "resolve"])
+        await application.close()
+        assert.equal(calls.at(-1)[0], "close")
+    })
+
+    it("marks a Raw Case dispatched only after a native DSH Session accepts it", async () => {
+        const {createRollingSkillApplication} = require(modulePath)
+        const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-raw-dispatch-"))
+        const calls = []
+        const application = createRollingSkillApplication({
+            dataRoot,
+            rawCaseDispatcher: async (input) => {
+                calls.push(structuredClone(input))
+                return {sessionId: "dsh-session-1", status: "queued"}
+            },
+        })
+        const managed = await importManagedSkill(application)
+        const rawCase = await application.dispatch("rawCases.add", {
+            question: "Keep this question verbatim",
+            note: "manual",
+            repositoryId: managed.repository.id,
+            skillId: managed.skill.id,
+        })
+
+        const result = await application.dispatch("rawCases.dispatch", {
+            id: rawCase.id,
+            target: "new",
+            idempotencyKey: "dispatch-raw-1",
+        })
+        assert.equal(result.sessionId, "dsh-session-1")
+        assert.equal(calls[0].question, "Keep this question verbatim")
+        assert.deepEqual(calls[0].skill, {id: managed.skill.id, name: managed.skill.name})
+        assert.equal((await application.dispatch("rawCases.list", {})).length, 0)
         await application.close()
     })
 })

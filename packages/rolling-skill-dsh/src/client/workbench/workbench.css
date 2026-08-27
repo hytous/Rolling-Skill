@@ -601,6 +601,15 @@
     overflow-wrap: anywhere;
 }
 
+.rolling-skill-link-button {
+    background: transparent;
+    border: 0;
+    color: var(--dsw-alias-state-business-primary);
+    cursor: pointer;
+    padding: 0;
+    text-align: left;
+}
+
 .rolling-skill-field .rolling-skill-select {
     margin-top: 0;
 }

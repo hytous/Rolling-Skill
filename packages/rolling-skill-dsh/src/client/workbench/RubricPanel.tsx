@@ -8,7 +8,7 @@ import {RubricSessionView} from "./RubricSessionView"
 
 interface Dataset {id: string; name: string; activeRubricVersionId: string | null}
 interface RubricSessionSummary {id: string; status: string; updatedAt: string; baseVersionId: string | null}
-interface RubricVersion {id: string; version: number; rubric: {title?: string}; createdAt: string}
+interface RubricVersion {id: string; version: number; rubric: {title?: string; scoringModel?: string}; createdAt: string}
 
 export function RubricPanel({
     t,
@@ -84,6 +84,22 @@ export function RubricPanel({
             setBusy(false)
         }
     }
+    const migrateLegacy = async () => {
+        if (!datasetId || busy) return
+        setBusy(true)
+        setError(null)
+        try {
+            await requestRollingSkill("rubrics.migrateLegacy", {
+                datasetId,
+                idempotencyKey: crypto.randomUUID(),
+            })
+            setRevision((value) => value + 1)
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : t("loadError"))
+        } finally {
+            setBusy(false)
+        }
+    }
 
     return (
         <div className="rolling-skill-review-layout">
@@ -102,6 +118,7 @@ export function RubricPanel({
                 </div>
                 <h4>{t("rubricHistory")}</h4>
                 {active ? <p className="rolling-skill-badge">{t("activeRubric")} · v{active.version}</p> : <p>{t("noActiveRubric")}</p>}
+                {active && active.rubric.scoringModel !== "unified-100/v1" ? <section className="rolling-skill-subpanel"><p>{t("legacyRubricNotice")}</p><Button variant="outline" size="sm" disabled={busy} onClick={() => void migrateLegacy()}>{t("migrateLegacyRubric")}</Button></section> : null}
                 <div className="rolling-skill-list">{versions.map((version) => <div className="rolling-skill-list-row" key={version.id}><div><strong>v{version.version} · {version.rubric.title}</strong><span>{version.createdAt}</span></div></div>)}</div>
             </aside>
             <main className="rolling-skill-review-detail">

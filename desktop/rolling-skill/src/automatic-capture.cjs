@@ -405,7 +405,6 @@ class ConversationDiscoveryManager {
         const candidateSkill = {
             ...(skill.id ? {id: skill.id} : {}),
             name: skill.name,
-            ...(skill.path ? {path: skill.path} : {}),
         }
         const saved = this.rawCaseStore.addAutomaticCandidate({
             question: episode.originalQuestion,

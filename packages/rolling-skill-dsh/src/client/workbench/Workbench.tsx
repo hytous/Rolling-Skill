@@ -173,9 +173,9 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
             ) : route.page === "datasets" ? (
                 <DatasetsPanel t={t} onChanged={() => setDataRevision((value) => value + 1)}/>
             ) : route.page === "cases" ? (
-                <CasesPanel t={t} revision={dataRevision} initialDatasetId={route.datasetId} initialCaseId={route.caseId} onChanged={() => setDataRevision((value) => value + 1)}/>
+                <CasesPanel t={t} revision={dataRevision} initialDatasetId={route.datasetId} initialCaseId={route.caseId} onNavigate={navigate} onChanged={() => setDataRevision((value) => value + 1)}/>
             ) : route.page === "raw-cases" ? (
-                <RawCasesPanel t={t} revision={dataRevision} initialRawCaseId={route.rawCaseId} onChanged={() => setDataRevision((value) => value + 1)}/>
+                <RawCasesPanel t={t} revision={dataRevision} initialRawCaseId={route.rawCaseId} onNavigate={navigate} onChanged={() => setDataRevision((value) => value + 1)}/>
             ) : route.page === "rubrics" ? (
                 <RubricPanel
                     t={t}
@@ -184,15 +184,15 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
                     onNavigate={navigate}
                 />
             ) : route.page === "evaluations" ? (
-                <EvaluationsPanel t={t}/>
+                <EvaluationsPanel t={t} initialRunId={route.runId}/>
             ) : route.page === "skills" || route.page === "installations" ? (
-                <SkillsPanel t={t}/>
+                <SkillsPanel t={t} initialSkillId={route.page === "skills" ? route.skillId : undefined} initialJobId={route.page === "installations" ? route.jobId : undefined}/>
             ) : route.page === "automatic" ? (
                 <AutomaticCapturePanel t={t}/>
             ) : route.page === "operator" ? (
-                <OperatorPanel t={t}/>
+                <OperatorPanel t={t} initialSessionId={route.sessionId}/>
             ) : route.page === "optimization" ? (
-                <OptimizationPanel t={t}/>
+                <OptimizationPanel t={t} initialRunId={route.runId}/>
             ) : route.page === "import" ? (
                 <ImportPanel t={t}/>
             ) : route.page === "diagnostics" ? (

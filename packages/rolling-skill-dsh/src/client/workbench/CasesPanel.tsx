@@ -1,10 +1,11 @@
 import {Button, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
-import {useEffect, useState} from "react"
+import {useEffect, useRef, useState} from "react"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
 import {RuntimeSelect} from "./RuntimeSelect"
 import type {RuntimeDescriptor} from "./RuntimeSelect"
+import type {WorkbenchRoute} from "./Workbench"
 
 interface Dataset {id: string; name: string}
 interface CaseEntry {
@@ -13,6 +14,8 @@ interface CaseEntry {
     question: string
     answer: string
     updatedAt: string
+    rubricVersionId?: string | null
+    rubricCalibration?: {status?: string; calibratedAt?: string | null} | null
 }
 interface CaseDetail extends CaseEntry {
     createdAt?: string
@@ -22,6 +25,8 @@ interface CaseDetail extends CaseEntry {
     episode?: {source?: unknown}
 }
 interface CasePage {items: CaseEntry[]; total: number; page: number; pageSize: number; pageCount: number}
+interface CalibrationSession {id: string; status: string; revision: string; draft?: unknown; error?: {message?: string} | null}
+interface CalibrationBatch {status: "running" | "stopped" | "failed" | "completed"; completed: number; total: number; currentSessionId?: string; error?: string}
 
 interface CasesPanelProps {
     t: Translate
@@ -29,9 +34,10 @@ interface CasesPanelProps {
     onChanged: () => void
     initialDatasetId?: string
     initialCaseId?: string
+    onNavigate: (route: WorkbenchRoute) => void
 }
 
-export function CasesPanel({t, revision, onChanged, initialDatasetId, initialCaseId}: CasesPanelProps) {
+export function CasesPanel({t, revision, onChanged, initialDatasetId, initialCaseId, onNavigate}: CasesPanelProps) {
     const [datasets, setDatasets] = useState<Dataset[]>([])
     const [runtimes, setRuntimes] = useState<RuntimeDescriptor[]>([])
     const [runtimeId, setRuntimeId] = useState("")
@@ -45,6 +51,12 @@ export function CasesPanel({t, revision, onChanged, initialDatasetId, initialCas
     const [recoverQuestions, setRecoverQuestions] = useState(true)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const [calibrationBatch, setCalibrationBatch] = useState<CalibrationBatch | null>(null)
+    const stopCalibration = useRef(false)
+
+    useEffect(() => () => {
+        stopCalibration.current = true
+    }, [])
 
     useEffect(() => {
         const controller = new AbortController()
@@ -120,6 +132,73 @@ export function CasesPanel({t, revision, onChanged, initialDatasetId, initialCas
     const refreshBatch = (scope: "goodcase" | "all") => mutate(() => requestRollingSkill("cases.refreshBatch", {
         datasetId, scope, idempotencyKey: crypto.randomUUID(), runtimeId,
     }))
+    const calibrate = (entry: CaseEntry) => mutate(async () => {
+        const session = await requestRollingSkill<{id: string}>("curation.createCalibration", {
+            datasetId,
+            caseId: entry.id,
+            idempotencyKey: crypto.randomUUID(),
+        })
+        onNavigate({page: "curation", sessionId: session.id})
+    })
+    const waitForCalibrationDraft = async (sessionId: string): Promise<CalibrationSession> => {
+        while (!stopCalibration.current) {
+            const session = await requestRollingSkill<CalibrationSession>("curation.get", {sessionId})
+            if (session.status === "needs_review" && session.draft) return session
+            if (["failed", "cancelled", "archived"].includes(session.status)) {
+                throw new Error(session.error?.message ?? `Calibration stopped while ${session.status}`)
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, 1_200))
+        }
+        throw new Error("CALIBRATION_BATCH_STOPPED")
+    }
+    const startCalibrationBatch = async () => {
+        if (!datasetId || calibrationBatch?.status === "running") return
+        stopCalibration.current = false
+        setError(null)
+        let currentSessionId: string | undefined
+        try {
+            const all: CaseEntry[] = []
+            let nextPage = 1
+            while (true) {
+                const result = await requestRollingSkill<CasePage>("cases.list", {datasetId, caseScope: "all", page: nextPage, pageSize: 200})
+                all.push(...result.items)
+                if (nextPage >= result.pageCount) break
+                nextPage += 1
+            }
+            const pending = all.filter((entry) => entry.rubricCalibration?.status !== "current")
+            setCalibrationBatch({status: "running", completed: 0, total: pending.length})
+            let completed = 0
+            for (const entry of pending) {
+                if (stopCalibration.current) throw new Error("CALIBRATION_BATCH_STOPPED")
+                const session = await requestRollingSkill<CalibrationSession>("curation.createCalibration", {
+                    datasetId,
+                    caseId: entry.id,
+                    idempotencyKey: crypto.randomUUID(),
+                })
+                currentSessionId = session.id
+                setCalibrationBatch({status: "running", completed, total: pending.length, currentSessionId})
+                const ready = await waitForCalibrationDraft(session.id)
+                await requestRollingSkill("curation.save", {
+                    sessionId: ready.id,
+                    expectedRevision: ready.revision,
+                    idempotencyKey: crypto.randomUUID(),
+                })
+                completed += 1
+                setCalibrationBatch({status: "running", completed, total: pending.length})
+                onChanged()
+            }
+            setCalibrationBatch({status: "completed", completed, total: pending.length})
+        } catch (reason) {
+            const message = reason instanceof Error ? reason.message : t("loadError")
+            setCalibrationBatch((current) => ({
+                status: message === "CALIBRATION_BATCH_STOPPED" ? "stopped" : "failed",
+                completed: current?.completed ?? 0,
+                total: current?.total ?? 0,
+                ...(currentSessionId ? {currentSessionId} : {}),
+                ...(message === "CALIBRATION_BATCH_STOPPED" ? {} : {error: message}),
+            }))
+        }
+    }
     const remove = () => {
         const entry = deleting
         if (!entry) return
@@ -140,6 +219,7 @@ export function CasesPanel({t, revision, onChanged, initialDatasetId, initialCas
                 <div className="rolling-skill-actions">
                     <Button variant="outline" size="sm" disabled={!datasetId || busy} onClick={() => void refreshBatch("goodcase")}>{t("refreshGoodCases")}</Button>
                     <Button variant="outline" size="sm" disabled={!datasetId || busy} onClick={() => void refreshBatch("all")}>{t("refreshAllCases")}</Button>
+                    {calibrationBatch?.status === "running" ? <Button variant="outline" size="sm" onClick={() => {stopCalibration.current = true}}>{t("stopCalibrationBatch")}</Button> : <Button variant="outline" size="sm" disabled={!datasetId || busy} onClick={() => void startCalibrationBatch()}>{t("calibrateAllCases")}</Button>}
                 </div>
             </div>
             <div className="rolling-skill-form-row">
@@ -154,16 +234,19 @@ export function CasesPanel({t, revision, onChanged, initialDatasetId, initialCas
                 <RuntimeSelect t={t} runtimes={runtimes} value={runtimeId} onChange={setRuntimeId} label={t("refreshRuntime")}/>
             </div>
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
+            {calibrationBatch ? <section className="rolling-skill-subpanel"><p>{t("calibrationBatchProgress").replace("{completed}", String(calibrationBatch.completed)).replace("{total}", String(calibrationBatch.total))} · {calibrationBatch.status}</p>{calibrationBatch.error ? <p className="rolling-skill-inline-error">{calibrationBatch.error}</p> : null}{calibrationBatch.currentSessionId ? <Button variant="ghost" size="sm" onClick={() => onNavigate({page: "curation", sessionId: calibrationBatch.currentSessionId!})}>{t("reviewCalibration")}</Button> : null}</section> : null}
             <div className="rolling-skill-list">
                 {entries.map((entry) => (
                     <article className="rolling-skill-case-row" key={entry.id}>
                         <div className="rolling-skill-case-copy">
                             <span className="rolling-skill-badge">{entry.caseType === "goodcase" ? t("goodcase") : t("badcase")}</span>
+                            {entry.rubricCalibration?.status !== "current" ? <span className="rolling-skill-badge">{t("caseNeedsCalibration")}</span> : null}
                             <strong>{entry.question}</strong><p>{entry.answer}</p>
                         </div>
                         <div className="rolling-skill-actions">
                             <Button variant="ghost" size="sm" onClick={() => void inspect(entry)}>{t("details")}</Button>
                             <Button variant="ghost" size="sm" disabled={busy} onClick={() => void refreshOne(entry)}>{t("refreshCase")}</Button>
+                            {entry.rubricCalibration?.status !== "current" ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void calibrate(entry)}>{t("calibrateCase")}</Button> : null}
                             <Button variant="ghost" size="sm" disabled={busy} onClick={() => setDeleting(entry)}>{t("delete")}</Button>
                         </div>
                     </article>

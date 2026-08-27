@@ -43,7 +43,7 @@ var require_automatic_capture_state_store = __commonJS({
       writeFileSync
     } = __require("node:fs");
     var { dirname } = __require("node:path");
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
     var STATE_SCHEMA = "rolling-skill-automatic-capture-state/v1";
     function copy(value) {
       return JSON.parse(JSON.stringify(value));
@@ -106,7 +106,7 @@ var require_automatic_capture_state_store = __commonJS({
       persist() {
         const directory = dirname(this.path);
         mkdirSync(directory, { recursive: true, mode: 448 });
-        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID2()}`;
+        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID3()}`;
         writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}
 `, { mode: 384 });
         chmodSync(temporary, 384);
@@ -1797,7 +1797,7 @@ var require_local_store = __commonJS({
       writeFileSync
     } = __require("node:fs");
     var { dirname } = __require("node:path");
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
     var {
       UNIFIED_SCORING_MODEL,
       datasetRubricDigest,
@@ -1931,7 +1931,7 @@ var require_local_store = __commonJS({
         settings: defaultSettings(),
         datasets: [
           {
-            id: randomUUID2(),
+            id: randomUUID3(),
             name: "Skill evaluation cases",
             skillReference: null,
             activeRubricVersionId: null,
@@ -2455,7 +2455,7 @@ var require_local_store = __commonJS({
       }
       const now = (/* @__PURE__ */ new Date()).toISOString();
       return {
-        id: randomUUID2(),
+        id: randomUUID3(),
         idempotencyKey: modelId(input.idempotencyKey, "Curation idempotency key"),
         datasetId: dataset.id,
         operation,
@@ -2757,7 +2757,7 @@ var require_local_store = __commonJS({
       persist() {
         const directory = dirname(this.path);
         mkdirSync(directory, { recursive: true, mode: 448 });
-        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID2()}`;
+        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID3()}`;
         writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}
 `, { mode: 384 });
         chmodSync(temporary, 384);
@@ -2788,7 +2788,7 @@ var require_local_store = __commonJS({
         if (!skillReference) throw new Error("Dataset Skill binding is required");
         const state = this.load();
         const dataset = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           name: trimmed,
           skillReference,
           activeRubricVersionId: null,
@@ -3098,7 +3098,7 @@ var require_local_store = __commonJS({
         }
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const session = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           datasetId: dataset.id,
           baseVersionId,
           status: "queued",
@@ -3166,7 +3166,7 @@ var require_local_store = __commonJS({
         if (!message) throw new Error("Rubric message text is required");
         if (message.length > 12e4) throw new Error("Rubric message is too large");
         session.conversation.push({
-          id: randomUUID2(),
+          id: randomUUID3(),
           role: input.role,
           text: message,
           turnId: input.turnId ?? null,
@@ -3184,14 +3184,14 @@ var require_local_store = __commonJS({
         if (!assistantText) throw new Error("A Rubric Agent response is required");
         const now = (/* @__PURE__ */ new Date()).toISOString();
         session.conversation.push({
-          id: randomUUID2(),
+          id: randomUUID3(),
           role: "assistant",
           text: assistantText,
           turnId: input.turnId ?? null,
           createdAt: now
         });
         session.revisions.push({
-          id: randomUUID2(),
+          id: randomUUID3(),
           rubric,
           rubricDigest: datasetRubricDigest(rubric),
           turnId: input.turnId ?? null,
@@ -3258,7 +3258,7 @@ var require_local_store = __commonJS({
         const versionNumber = state.datasetRubricVersions.filter((entry) => entry.datasetId === dataset.id).reduce((highest, entry) => Math.max(highest, Number(entry.version) || 0), 0) + 1;
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const version = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           datasetId: dataset.id,
           version: versionNumber,
           rubric,
@@ -3339,7 +3339,7 @@ var require_local_store = __commonJS({
         const versionNumber = state.datasetRubricVersions.filter((entry) => entry.datasetId === dataset.id).reduce((highest, entry) => Math.max(highest, Number(entry.version) || 0), 0) + 1;
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const version = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           datasetId: dataset.id,
           version: versionNumber,
           rubric,
@@ -3377,7 +3377,7 @@ var require_local_store = __commonJS({
         if (!answer) throw new Error("Case answer is required");
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const entry = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           datasetId: input.datasetId,
           caseType: input.caseType,
           question,
@@ -3626,7 +3626,7 @@ var require_local_store = __commonJS({
         if (!text2) throw new Error("Curation message text is required");
         if (text2.length > 12e4) throw new Error("Curation message is too large");
         session.conversation.push({
-          id: randomUUID2(),
+          id: randomUUID3(),
           role: input.role,
           text: text2,
           turnId: input.turnId ?? null,
@@ -3648,14 +3648,14 @@ var require_local_store = __commonJS({
         if (!assistantText) throw new Error("A Curator response is required");
         const now = (/* @__PURE__ */ new Date()).toISOString();
         session.conversation.push({
-          id: randomUUID2(),
+          id: randomUUID3(),
           role: "assistant",
           text: assistantText,
           turnId: input.turnId ?? null,
           createdAt: now
         });
         const revision = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           draft,
           turnId: input.turnId ?? null,
           createdAt: now
@@ -3709,7 +3709,7 @@ var require_local_store = __commonJS({
           }
           if (!Array.isArray(target.refreshHistory)) target.refreshHistory = [];
           target.refreshHistory.push({
-            id: randomUUID2(),
+            id: randomUUID3(),
             answer: target.answer,
             curated: copy(target.curated ?? null),
             issueDescription: target.issueDescription ?? "",
@@ -3786,7 +3786,7 @@ var require_local_store = __commonJS({
           const previousRubricVersionId = target.rubricVersionId ?? null;
           if (!Array.isArray(target.calibrationHistory)) target.calibrationHistory = [];
           target.calibrationHistory.push({
-            id: randomUUID2(),
+            id: randomUUID3(),
             rubricVersionId: previousRubricVersionId,
             rubricCalibration: copy(target.rubricCalibration ?? null),
             skillReference: copy(target.skillReference ?? null),
@@ -3838,7 +3838,7 @@ var require_local_store = __commonJS({
           return copy(target);
         }
         const entry = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           datasetId: session.datasetId,
           caseType: session.caseType,
           question: session.episode.originalQuestion,
@@ -4016,7 +4016,7 @@ var require_local_store = __commonJS({
           }
         }
         const run = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           datasetId: input.datasetId,
           datasetSnapshot: copy(dataset),
           rubricVersionSnapshot,
@@ -4039,7 +4039,7 @@ var require_local_store = __commonJS({
         for (const configuration of runtimeConfigurations) {
           for (const caseSnapshot of caseSnapshots) {
             run.results.push({
-              id: randomUUID2(),
+              id: randomUUID3(),
               caseId: caseSnapshot.id,
               runtimeId: configuration.runtimeId,
               caseSnapshot: copy(caseSnapshot),
@@ -4263,7 +4263,7 @@ var require_managed_skill_version_cursor = __commonJS({
 // ../../desktop/rolling-skill/src/managed-skill-store.cjs
 var require_managed_skill_store = __commonJS({
   "../../desktop/rolling-skill/src/managed-skill-store.cjs"(exports, module) {
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
     var {
       chmodSync,
       closeSync,
@@ -4483,7 +4483,7 @@ var require_managed_skill_store = __commonJS({
         if (!existsSync(this.path)) {
           this.state = initialManagedSkillState();
           this.persist();
-          this.catalogRevision = randomUUID2();
+          this.catalogRevision = randomUUID3();
           this.versionOrderIndex = null;
           return this.state;
         }
@@ -4494,7 +4494,7 @@ var require_managed_skill_store = __commonJS({
           this.state = validateState(JSON.parse(readFileSync(this.path, "utf8")));
           chmodSync(dirname(this.path), 448);
           chmodSync(this.path, 384);
-          this.catalogRevision = randomUUID2();
+          this.catalogRevision = randomUUID3();
           this.versionOrderIndex = null;
           return this.state;
         } catch (error) {
@@ -4506,7 +4506,7 @@ var require_managed_skill_store = __commonJS({
         const directory = dirname(this.path);
         mkdirSync(directory, { recursive: true, mode: 448 });
         chmodSync(directory, 448);
-        const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID2()}`;
+        const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID3()}`;
         const descriptor = openSync(temporaryPath, "wx", 384);
         try {
           try {
@@ -4541,7 +4541,7 @@ var require_managed_skill_store = __commonJS({
         try {
           const result = operation();
           this.persist();
-          this.catalogRevision = randomUUID2();
+          this.catalogRevision = randomUUID3();
           this.versionOrderIndex = null;
           return copy(result);
         } catch (error) {
@@ -4577,7 +4577,7 @@ var require_managed_skill_store = __commonJS({
         if (!SOURCE_KINDS.has(sourceKind)) throw new Error("Unsupported managed Skill source kind");
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const repository = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           displayName: requiredString(input.displayName, "Repository display name", 200),
           managedPath,
           defaultBranch: requiredString(input.defaultBranch, "Default branch", 200),
@@ -4635,7 +4635,7 @@ var require_managed_skill_store = __commonJS({
             );
           }
           return {
-            id: previous?.id ?? randomUUID2(),
+            id: previous?.id ?? randomUUID3(),
             repositoryId: repository.id,
             name,
             description: input.description === null || input.description === void 0 ? null : requiredString(input.description, "Skill description", 1024),
@@ -4779,7 +4779,7 @@ var require_managed_skill_store = __commonJS({
           throw new Error("Managed Skill version already exists for this commit");
         }
         const version = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           repositoryId: repository.id,
           skillId: skill.id,
           skillRoot: skill.skillRoot,
@@ -14444,7 +14444,7 @@ var require_managed_skill_git = __commonJS({
 // ../../desktop/rolling-skill/src/managed-skill-manager.cjs
 var require_managed_skill_manager = __commonJS({
   "../../desktop/rolling-skill/src/managed-skill-manager.cjs"(exports, module) {
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
     var {
       chmodSync,
       closeSync,
@@ -14683,7 +14683,7 @@ var require_managed_skill_manager = __commonJS({
         if (kind !== "git-url" && !isAbsolute(location)) {
           throw new Error("Local Skill source path must be absolute");
         }
-        const repositoryId = randomUUID2();
+        const repositoryId = randomUUID3();
         const stagingPath = join(this.paths.repositoriesRoot, `.staging-${repositoryId}`);
         const managedPath = join(this.paths.repositoriesRoot, repositoryId);
         let repository = null;
@@ -14966,7 +14966,7 @@ var require_raw_case_store = __commonJS({
     } = __require("node:fs");
     var { homedir } = __require("node:os");
     var { dirname, join } = __require("node:path");
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
     var RAW_CASE_EVENT_SCHEMA = "rolling-skill-raw-case-event/v1";
     var MAX_QUESTION_LENGTH = 12e4;
     var MAX_BATCH_SIZE = 200;
@@ -15218,7 +15218,7 @@ var require_raw_case_store = __commonJS({
         }
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const rawCase = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           ...normalized,
           createdAt: now,
           updatedAt: now,
@@ -15365,7 +15365,7 @@ var require_raw_case_store = __commonJS({
         chmodSync(directory, 448);
         const event = {
           schemaVersion: RAW_CASE_EVENT_SCHEMA,
-          eventId: randomUUID2(),
+          eventId: randomUUID3(),
           occurredAt: (/* @__PURE__ */ new Date()).toISOString(),
           ...payload
         };
@@ -16016,6 +16016,8 @@ ${badcaseGuidance}`;
           caseType: input.caseType,
           issueDescription: input.issueDescription ?? "",
           episode,
+          executionSkillReference: input.executionSkillReference,
+          operationEvidence: input.operationEvidence,
           curator: {
             runtimeId: runtimeDescriptor?.runtimeId ?? null,
             modelProvider: response.thread.modelProvider ?? runtimeDescriptor?.providerId ?? null,
@@ -20096,7 +20098,7 @@ var require_skill_installation_manager = __commonJS({
 // ../../desktop/rolling-skill/src/skill-installation-store.cjs
 var require_skill_installation_store = __commonJS({
   "../../desktop/rolling-skill/src/skill-installation-store.cjs"(exports, module) {
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
     var {
       chmodSync,
       closeSync,
@@ -20399,7 +20401,7 @@ var require_skill_installation_store = __commonJS({
         const directory = dirname(this.path);
         mkdirSync(directory, { recursive: true, mode: 448 });
         chmodSync(directory, 448);
-        const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID2()}`;
+        const temporaryPath = `${this.path}.tmp-${process.pid}-${randomUUID3()}`;
         const descriptor = openSync(temporaryPath, "wx", 384);
         try {
           try {
@@ -20516,7 +20518,7 @@ var require_skill_installation_store = __commonJS({
       createJob(input = {}) {
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const job = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           operation: OPERATIONS.has(input.operation) ? input.operation : "install",
           parentJobId: nullableText(input.parentJobId, "Parent installation job id", 200),
           runtime: normalizeRuntime(input.runtime),
@@ -20656,7 +20658,7 @@ var require_skill_installation_store = __commonJS({
           if (status === "succeeded" && stored.request.purpose !== "optimization-experiment") {
             const result = input.parsedResult;
             this.state.installations.push({
-              id: randomUUID2(),
+              id: randomUUID3(),
               jobId: stored.id,
               runtimeId: stored.runtime.runtimeId,
               providerId: stored.runtime.providerId,
@@ -20821,7 +20823,7 @@ var require_case_services = __commonJS({
     function fingerprint(method, input) {
       return JSON.stringify({ method, input });
     }
-    function createCaseServices({ store, rawCaseStore, recycleService, refreshManager = null }) {
+    function createCaseServices({ store, rawCaseStore, recycleService, refreshManager = null, dispatchRawCase = null }) {
       if (!store || !rawCaseStore || !recycleService) {
         throw new Error("Rolling Skill Case service dependencies are required");
       }
@@ -20949,14 +20951,35 @@ var require_case_services = __commonJS({
             missingOriginalCount: outputMode === "original" ? selected.filter((entry) => !originalFinalAssistantMessages(entry).length).length : 0
           };
         },
-        "rawCases.dispatch": (input) => once(
-          "rawCases.dispatch",
-          input,
-          () => rawCaseStore.markDispatched(
-            requiredText(input.id, "Raw Case id", 200),
-            input.dispatch ?? {}
-          )
-        ),
+        "rawCases.dispatch": (input) => once("rawCases.dispatch", input, async () => {
+          if (typeof dispatchRawCase !== "function") {
+            throw new Error("Native DSH Session dispatch is unavailable");
+          }
+          if (input.target !== "new" && input.target !== "current") {
+            throw new Error("Raw Case dispatch target is unsupported");
+          }
+          const targetSessionId = input.target === "current" ? requiredText(input.sessionId, "Current DSH Session id", 300) : null;
+          const id = requiredText(input.id, "Raw Case id", 200);
+          const rawCase = rawCaseStore.requireRecord(id);
+          const dispatched = await dispatchRawCase({
+            question: rawCase.question,
+            note: rawCase.note ?? "",
+            skill: rawCase.skill ? {
+              ...typeof rawCase.skill.id === "string" ? { id: rawCase.skill.id } : {},
+              name: rawCase.skill.name
+            } : null,
+            target: input.target,
+            ...targetSessionId ? { sessionId: targetSessionId } : {}
+          });
+          const sessionId = requiredText(dispatched?.sessionId, "Dispatched DSH Session id", 300);
+          const result = {
+            sessionId,
+            status: typeof dispatched.status === "string" ? dispatched.status : "queued",
+            target: input.target
+          };
+          rawCaseStore.markDispatched(id, { mode: input.target, ...result });
+          return result;
+        }),
         "rawCases.update": (input) => once(
           "rawCases.update",
           input,
@@ -21617,8 +21640,7 @@ var require_automatic_capture = __commonJS({
         };
         const candidateSkill = {
           ...skill.id ? { id: skill.id } : {},
-          name: skill.name,
-          ...skill.path ? { path: skill.path } : {}
+          name: skill.name
         };
         const saved = this.rawCaseStore.addAutomaticCandidate({
           question: episode.originalQuestion,
@@ -21740,7 +21762,7 @@ var require_config_store = __commonJS({
       renameSync,
       writeFileSync
     } = __require("node:fs");
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
     var { dirname, isAbsolute } = __require("node:path");
     var CONFIG_SCHEMA = "rolling-skill-plugin-config/v1";
     var LOCALES = /* @__PURE__ */ new Set(["follow-harness", "zh-CN", "en"]);
@@ -21861,7 +21883,7 @@ var require_config_store = __commonJS({
       }
       persist() {
         mkdirSync(dirname(this.path), { recursive: true, mode: 448 });
-        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID2()}`;
+        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID3()}`;
         writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}
 `, { mode: 384 });
         chmodSync(temporary, 384);
@@ -21923,6 +21945,7 @@ var require_automatic_capture_service = __commonJS({
       stateStore = null,
       rawCaseStore = null,
       curationManager = null,
+      listSkills = null,
       listDatasets = () => store.listDatasets(),
       getHiddenThreadIds = () => /* @__PURE__ */ new Set(),
       manager = null,
@@ -21956,11 +21979,11 @@ var require_automatic_capture_service = __commonJS({
         getRuntime: runtimeClient,
         getRuntimeDescriptor: runtimeDescriptor,
         listDatasets,
-        listSkills: async (runtime) => {
+        listSkills: listSkills ?? (async (runtime) => {
           if (typeof runtime.listSkills !== "function") return [];
           const response = await runtime.listSkills({ forceReload: true });
           return (response?.data ?? []).flatMap((entry) => entry.skills ?? []).filter((skill) => skill.enabled !== false);
-        },
+        }),
         runAnalysis: async (input) => {
           const runtime = await runtimeClient();
           if (typeof runtime.runEvaluationJudge !== "function") {
@@ -22415,6 +22438,101 @@ var require_evaluation_services = __commonJS({
     function installedSkillPath(destination) {
       return basename(destination).toLocaleLowerCase("en-US") === "skill.md" ? destination : join(destination, "SKILL.md");
     }
+    function boundedText(value, maximum = 4e4) {
+      const text2 = String(value ?? "");
+      return text2.length <= maximum ? text2 : `${text2.slice(0, maximum)}
+\u2026[truncated]`;
+    }
+    function publicSkillIdentity(reference) {
+      if (!reference) return null;
+      return {
+        id: reference.id ?? null,
+        repositoryId: reference.repositoryId ?? null,
+        name: reference.name ?? null,
+        evidencePrecision: reference.evidencePrecision ?? null
+      };
+    }
+    function publicEvaluationSummary(summary) {
+      if (!summary) return null;
+      const { skillReference, ...rest } = summary;
+      return {
+        ...rest,
+        ...skillReference ? { skillReference: publicSkillIdentity(skillReference) } : {}
+      };
+    }
+    function publicRuntime(configuration2) {
+      if (!configuration2) return null;
+      return {
+        runtimeId: configuration2.runtimeId ?? null,
+        providerId: configuration2.providerId ?? null,
+        displayName: configuration2.displayName ?? configuration2.runtimeId ?? null,
+        version: configuration2.version ?? null,
+        modelId: configuration2.modelId ?? null,
+        effort: configuration2.effort ?? null,
+        installationId: configuration2.installationId ?? null,
+        installationJobId: configuration2.installationJobId ?? null,
+        installationVerification: configuration2.installationVerification ?? null
+      };
+    }
+    function publicEvaluationResult(result) {
+      return {
+        id: result.id,
+        caseId: result.caseId ?? result.caseSnapshot?.id ?? null,
+        question: result.caseSnapshot?.question ?? result.question ?? null,
+        caseType: result.caseSnapshot?.caseType ?? null,
+        runtimeId: result.runtimeId ?? null,
+        status: result.status,
+        gradingStatus: result.gradingStatus ?? null,
+        durationMs: result.durationMs ?? null,
+        response: result.response ? boundedText(result.response) : null,
+        error: result.error ? boundedText(result.error, 4e3) : null,
+        gradingError: result.gradingError ? boundedText(result.gradingError, 4e3) : null,
+        scoreContract: result.scoreContract ?? null,
+        judgment: result.judgment ?? null,
+        computedScore: result.computedScore ?? null,
+        judge: result.judge ? {
+          runtimeId: result.judge.runtimeId ?? null,
+          modelId: result.judge.modelId ?? null,
+          effort: result.judge.effort ?? null
+        } : null,
+        traceEvidence: result.traceEvidence ? {
+          schemaVersion: result.traceEvidence.schemaVersion ?? null,
+          entryCount: Array.isArray(result.traceEvidence.entries) ? result.traceEvidence.entries.length : 0,
+          truncated: result.traceEvidence.truncated === true,
+          omittedEntries: result.traceEvidence.omittedEntries ?? 0
+        } : null,
+        startedAt: result.startedAt ?? null,
+        completedAt: result.completedAt ?? null,
+        gradingStartedAt: result.gradingStartedAt ?? null,
+        gradingCompletedAt: result.gradingCompletedAt ?? null
+      };
+    }
+    function publicEvaluation(run) {
+      if (!run) return null;
+      return {
+        id: run.id,
+        datasetId: run.datasetId,
+        selectionMode: run.selectionMode ?? null,
+        activationMode: run.activationMode ?? null,
+        status: run.status,
+        caseCount: run.caseSnapshots?.length ?? 0,
+        runtimeCount: run.runtimeConfigurations?.length ?? 0,
+        createdAt: run.createdAt ?? null,
+        startedAt: run.startedAt ?? null,
+        completedAt: run.completedAt ?? null,
+        skillReference: publicSkillIdentity(run.skillReference),
+        skillEvidence: run.skillEvidence ? {
+          schemaVersion: run.skillEvidence.schemaVersion ?? null,
+          digest: run.skillEvidence.digest ?? null,
+          managedSource: run.skillEvidence.managedSource ?? null,
+          complete: run.skillEvidence.complete ?? null,
+          warningCount: Array.isArray(run.skillEvidence.warnings) ? run.skillEvidence.warnings.length : 0
+        } : null,
+        runtimeConfigurations: (run.runtimeConfigurations ?? []).map(publicRuntime),
+        judgeConfiguration: publicRuntime(run.judgeConfiguration),
+        results: (run.results ?? []).map(publicEvaluationResult)
+      };
+    }
     function createEvaluationServices({
       store,
       runtimeServices,
@@ -22535,10 +22653,10 @@ var require_evaluation_services = __commonJS({
         return copy(run);
       }
       function list({ datasetId = null } = {}) {
-        return copy(store.listEvaluationRunSummaries(datasetId));
+        return copy(store.listEvaluationRunSummaries(datasetId).map(publicEvaluationSummary));
       }
       function get({ runId } = {}) {
-        return copy(store.getEvaluationRun(requiredText(runId, "Evaluation Run id")));
+        return copy(publicEvaluation(store.getEvaluationRun(requiredText(runId, "Evaluation Run id"))));
       }
       async function cancel({ runId } = {}) {
         const id = requiredText(runId, "Evaluation Run id");
@@ -22546,7 +22664,13 @@ var require_evaluation_services = __commonJS({
         onChanged({ runId: id, status: "cancelled" });
         return copy(value);
       }
-      return Object.freeze({ cancel, get, list, start });
+      function remove({ runId } = {}) {
+        const id = requiredText(runId, "Evaluation Run id");
+        const value = store.deleteEvaluationRun(id);
+        onChanged({ runId: id, status: "deleted" });
+        return copy(value);
+      }
+      return Object.freeze({ cancel, delete: remove, get, list, start });
     }
     module.exports = { createEvaluationServices };
   }
@@ -22555,7 +22679,7 @@ var require_evaluation_services = __commonJS({
 // ../rolling-skill-core/src/legacy-import.cjs
 var require_legacy_import = __commonJS({
   "../rolling-skill-core/src/legacy-import.cjs"(exports, module) {
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
     var {
       chmodSync,
       copyFileSync,
@@ -22793,7 +22917,7 @@ var require_legacy_import = __commonJS({
       }
       assertPristineDestination(destination);
       mkdirSync(dirname(destination), { recursive: true, mode: 448 });
-      const token = randomUUID2();
+      const token = randomUUID3();
       const staging = join(dirname(destination), `${basename(destination)}.import-staging-${token}`);
       const backup = join(dirname(destination), `${basename(destination)}.pre-import-${token}`);
       const copied = [];
@@ -41923,7 +42047,7 @@ var require_policy = __commonJS({
 // ../../desktop/rolling-skill/src/control-plane/control-plane.cjs
 var require_control_plane = __commonJS({
   "../../desktop/rolling-skill/src/control-plane/control-plane.cjs"(exports, module) {
-    var { createHash, randomUUID: randomUUID2 } = __require("node:crypto");
+    var { createHash, randomUUID: randomUUID3 } = __require("node:crypto");
     var { isAbsolute, resolve } = __require("node:path");
     var intrinsicPromiseResolve = Promise.resolve.bind(Promise);
     var intrinsicPromiseThen = Promise.prototype.then;
@@ -42717,7 +42841,7 @@ var require_control_plane = __commonJS({
             );
             assertOperatorRouteLive(state, operatorRoute);
             rawResult = await operatorRoute.execute(Object.freeze({
-              invocationId: randomUUID2(),
+              invocationId: randomUUID3(),
               method,
               input,
               policyDecision: decision,
@@ -44869,7 +44993,7 @@ var require_socket_server = __commonJS({
     var fs = __require("node:fs");
     var net = __require("node:net");
     var path = __require("node:path");
-    var { createHash, randomBytes, randomUUID: randomUUID2, timingSafeEqual } = __require("node:crypto");
+    var { createHash, randomBytes, randomUUID: randomUUID3, timingSafeEqual } = __require("node:crypto");
     var { JsonLineDecoder } = require_json_rpc();
     var { createPublicControlError, publicControlError } = require_contracts();
     var CONTROL_SOCKET_DIRECTORY = "control";
@@ -45098,7 +45222,7 @@ var require_socket_server = __commonJS({
     }
     function controlledSibling(candidate, prefix) {
       const directory = path.dirname(candidate);
-      const sibling = path.join(directory, `${prefix}${process.pid}-${randomUUID2()}`);
+      const sibling = path.join(directory, `${prefix}${process.pid}-${randomUUID3()}`);
       if (path.dirname(sibling) !== directory || !path.basename(sibling).startsWith(prefix)) throw new Error("Control socket generated path is invalid");
       return sibling;
     }
@@ -47660,7 +47784,7 @@ var require_job_engine = __commonJS({
 // ../../desktop/rolling-skill/src/operator/job-store.cjs
 var require_job_store = __commonJS({
   "../../desktop/rolling-skill/src/operator/job-store.cjs"(exports, module) {
-    var { createHash, randomUUID: randomUUID2 } = __require("node:crypto");
+    var { createHash, randomUUID: randomUUID3 } = __require("node:crypto");
     var {
       constants,
       closeSync,
@@ -48630,7 +48754,7 @@ var require_job_store = __commonJS({
       const directory = dirname(filePath);
       secureDirectory(directory, { create: true });
       if (pathEntryExists(filePath)) secureFileMetadata(filePath, directory, Number.MAX_SAFE_INTEGER, "Private file");
-      const temporaryPath = join(directory, `.${basename(filePath)}.tmp-${process.pid}-${randomUUID2()}`);
+      const temporaryPath = join(directory, `.${basename(filePath)}.tmp-${process.pid}-${randomUUID3()}`);
       const descriptor = openSync(
         temporaryPath,
         constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | NOFOLLOW,
@@ -48816,7 +48940,7 @@ var require_job_store = __commonJS({
       if (!backend) {
         backend = {
           state: null,
-          generation: randomUUID2(),
+          generation: randomUUID3(),
           revision: 0,
           references: 0,
           coordinationKey: Object.freeze({}),
@@ -49007,7 +49131,7 @@ var require_job_store = __commonJS({
       createSession(input = {}) {
         const now = nowTimestamp();
         const session = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           runtime: normalizeRuntime(input.runtime),
           modelId: nullableText(input.modelId, "Operator model id", 300),
           effort: nullableText(input.effort, "Operator effort", 100),
@@ -49038,7 +49162,7 @@ var require_job_store = __commonJS({
         const parentJobId = nullableText(input.parentJobId, "Parent Operator Job id", 200);
         const now = nowTimestamp();
         const job = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           sessionId,
           parentJobId,
           type: requiredText(input.type, "Operator Job type", 200),
@@ -49124,7 +49248,7 @@ var require_job_store = __commonJS({
         })));
         const now = nowTimestamp();
         const step = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           jobId: requiredText(jobId, "Operator Step Job id", 200),
           sessionId: "",
           method,
@@ -49164,7 +49288,7 @@ var require_job_store = __commonJS({
           job.eventSequence += 1;
           job.updatedAt = now;
           state.events.push({
-            id: randomUUID2(),
+            id: randomUUID3(),
             jobId: job.id,
             sequence: job.eventSequence,
             kind: "operator_step_created",
@@ -49301,7 +49425,7 @@ var require_job_store = __commonJS({
           if (job.eventSequence < MAX_JOB_EVENTS) {
             job.eventSequence += 1;
             state.events.push({
-              id: randomUUID2(),
+              id: randomUUID3(),
               jobId: job.id,
               sequence: job.eventSequence,
               kind: "operator_cancellation_requested",
@@ -49353,7 +49477,7 @@ var require_job_store = __commonJS({
           if (job.eventSequence < MAX_JOB_EVENTS) {
             job.eventSequence += 1;
             state.events.push({
-              id: randomUUID2(),
+              id: randomUUID3(),
               jobId: job.id,
               sequence: job.eventSequence,
               kind: "recovery_required",
@@ -49454,7 +49578,7 @@ var require_job_store = __commonJS({
           if (job.eventSequence >= MAX_JOB_EVENTS) throw new Error("Operator Job reached the 10,000 event limit");
           const now = nowTimestamp();
           const event = {
-            id: randomUUID2(),
+            id: randomUUID3(),
             jobId,
             sequence: job.eventSequence + 1,
             kind,
@@ -49514,7 +49638,7 @@ var require_job_store = __commonJS({
           throw new Error("Operator artifact body is required");
         }
         if (body.byteLength > MAX_ARTIFACT_BYTES) throw new Error("Operator artifact exceeds its 64 MiB byte limit");
-        const id = randomUUID2();
+        const id = randomUUID3();
         const artifactDigest = sha256(body);
         const artifact = {
           id,
@@ -49581,7 +49705,7 @@ var require_job_store = __commonJS({
           throw new Error("Operator Job must be waiting_approval before creating an approval");
         }
         const approval = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           jobId,
           sessionId: job.sessionId,
           stepId: nullableText(approvalInput.stepId, "Operator approval Step id", 200),
@@ -49656,7 +49780,7 @@ var require_job_store = __commonJS({
           }
           const now = nowTimestamp();
           const entry = {
-            id: randomUUID2(),
+            id: randomUUID3(),
             sessionId,
             sequence: session.transcriptSequence + 1,
             kind,
@@ -49688,7 +49812,7 @@ var require_job_store = __commonJS({
           if (job.eventSequence < MAX_JOB_EVENTS) {
             job.eventSequence += 1;
             this.#state.events.push({
-              id: randomUUID2(),
+              id: randomUUID3(),
               jobId: job.id,
               sequence: job.eventSequence,
               kind: "recovery_required",
@@ -50128,7 +50252,7 @@ var require_operator_tool_transport = __commonJS({
 // ../../desktop/rolling-skill/src/operator/operator-session-manager.cjs
 var require_operator_session_manager = __commonJS({
   "../../desktop/rolling-skill/src/operator/operator-session-manager.cjs"(exports, module) {
-    var { createHash, randomUUID: randomUUID2 } = __require("node:crypto");
+    var { createHash, randomUUID: randomUUID3 } = __require("node:crypto");
     var { isAbsolute, resolve } = __require("node:path");
     var {
       OPERATOR_PROTOCOL,
@@ -50322,7 +50446,7 @@ var require_operator_session_manager = __commonJS({
     }
     function compactActivity(item) {
       const activity = {
-        itemId: requiredText(item.id ?? `item-${randomUUID2()}`, "Operator activity id", 500),
+        itemId: requiredText(item.id ?? `item-${randomUUID3()}`, "Operator activity id", 500),
         type: requiredText(item.type ?? "runtimeActivity", "Operator activity type", 300)
       };
       for (const key of ["status", "name", "title"]) {
@@ -50528,7 +50652,7 @@ var require_operator_session_manager = __commonJS({
         if (!Array.isArray(actions) || actions.some((action) => !OPERATOR_CONTROL_ACTION_SET.has(action))) {
           throw new Error("Operator action is not exposed to the Runtime Tool");
         }
-        const authoritySessionId = `operator-${randomUUID2()}`;
+        const authoritySessionId = `operator-${randomUUID3()}`;
         const grant = await this.#capabilities.issue({
           sessionId: authoritySessionId,
           actions: clone(actions, "Operator actions"),
@@ -51325,7 +51449,7 @@ var require_operator_session_manager = __commonJS({
         if (control.stopped) throw new Error("Operator session is stopped");
         const content = messageText(text2);
         if (control.boundaryQueue.length >= MAX_PENDING_BOUNDARIES) throw new Error("Operator message queue is full");
-        const boundaryId = `boundary-${randomUUID2()}`;
+        const boundaryId = `boundary-${randomUUID3()}`;
         this.#append(control, "operator_boundary_enqueued", {
           boundaryId,
           boundaryKind: "user",
@@ -51399,7 +51523,7 @@ var require_operator_session_manager = __commonJS({
           status: child.status,
           artifactIds
         });
-        const boundaryId = `boundary-${randomUUID2()}`;
+        const boundaryId = `boundary-${randomUUID3()}`;
         this.#append(control, "operator_boundary_enqueued", {
           boundaryId,
           boundaryKind: "environment",
@@ -52649,6 +52773,12 @@ var require_optimization_control_service = __commonJS({
     } = require_optimization_contract();
     var { persistOptimizationReport } = require_optimization_report();
     var MAX_PUBLIC_ARTIFACT_BYTES = 1024 * 1024;
+    var MAX_PUBLIC_REPORT_PREVIEW_BYTES = 32 * 1024;
+    function boundedReportPreview(value) {
+      const body = Buffer.from(String(value ?? ""), "utf8");
+      if (body.byteLength <= MAX_PUBLIC_REPORT_PREVIEW_BYTES) return body.toString("utf8");
+      return `${body.subarray(0, MAX_PUBLIC_REPORT_PREVIEW_BYTES - 3).toString("utf8").replace(/\uFFFD$/u, "")}\u2026`;
+    }
     function dependency(value, method, label) {
       if (!value || typeof value[method] !== "function") {
         throw new Error(`${label} with ${method}() is required`);
@@ -53071,7 +53201,8 @@ var require_optimization_control_service = __commonJS({
         return { report: {
           artifactId: generated.reportArtifactId,
           digest: generated.digest,
-          mediaType: "text/markdown; charset=utf-8"
+          mediaType: "text/markdown; charset=utf-8",
+          preview: boundedReportPreview(generated.markdown)
         } };
       }
     };
@@ -54390,7 +54521,7 @@ var require_optimization_runner = __commonJS({
 // ../../desktop/rolling-skill/src/optimization/optimization-store.cjs
 var require_optimization_store = __commonJS({
   "../../desktop/rolling-skill/src/optimization/optimization-store.cjs"(exports, module) {
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
     var {
       constants,
       closeSync,
@@ -54739,7 +54870,7 @@ var require_optimization_store = __commonJS({
       if (pathEntryExists(filePath)) {
         secureFileMetadata(filePath, directory, Number.MAX_SAFE_INTEGER, "Optimization store");
       }
-      const temporaryPath = join(directory, `.${basename(filePath)}.tmp-${process.pid}-${randomUUID2()}`);
+      const temporaryPath = join(directory, `.${basename(filePath)}.tmp-${process.pid}-${randomUUID3()}`);
       const descriptor = openSync(
         temporaryPath,
         constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | NOFOLLOW,
@@ -54888,7 +55019,7 @@ var require_optimization_store = __commonJS({
       };
     }
     function createTakeover(path, owner) {
-      const token = randomUUID2();
+      const token = randomUUID3();
       return createControlFile(path, {
         schemaVersion: TAKEOVER_SCHEMA,
         pid: process.pid,
@@ -54910,7 +55041,7 @@ var require_optimization_store = __commonJS({
       fsyncDirectoryBestEffort(dirname(path));
     }
     function verifiedUnlink(path, expected, reader, label, sameIdentity = sameControlIdentity) {
-      const retiredPath = `${path}.retired-${process.pid}-${randomUUID2()}`;
+      const retiredPath = `${path}.retired-${process.pid}-${randomUUID3()}`;
       try {
         renameSync(path, retiredPath);
       } catch (error) {
@@ -54950,7 +55081,7 @@ var require_optimization_store = __commonJS({
           throw new Error("Optimization takeover claim changed before ownership creation");
         }
       }
-      const token = randomUUID2();
+      const token = randomUUID3();
       const ownership = createControlFile(path, {
         schemaVersion: OWNERSHIP_SCHEMA,
         pid: process.pid,
@@ -55082,7 +55213,7 @@ var require_optimization_store = __commonJS({
     function initialState() {
       return {
         schemaVersion: OPTIMIZATION_STORE_SCHEMA,
-        generation: randomUUID2(),
+        generation: randomUUID3(),
         revision: 0,
         runs: [],
         creationKeys: []
@@ -55626,7 +55757,7 @@ var require_optimization_store = __commonJS({
         if (this.#state.runs.length >= MAX_RUNS) throw new Error("Optimization store reached its run limit");
         const now = nowTimestamp();
         const run = {
-          id: normalizedOptions.id === void 0 ? randomUUID2() : publicId(normalizedOptions.id, "Optimization run id"),
+          id: normalizedOptions.id === void 0 ? randomUUID3() : publicId(normalizedOptions.id, "Optimization run id"),
           state: "preflight",
           revision: 0,
           snapshot: cloneJson(frozen),
@@ -55829,7 +55960,7 @@ var require_optimization_store = __commonJS({
           const run = this.#requireRun(runId, state);
           const now = nowTimestamp();
           const epoch = {
-            id: source.id === void 0 ? randomUUID2() : publicId(source.id, "Optimization epoch id"),
+            id: source.id === void 0 ? randomUUID3() : publicId(source.id, "Optimization epoch id"),
             number: run.epochs.length + 1,
             status: "editing",
             candidateArtifactId: source.candidateArtifactId === void 0 ? null : artifactId(source.candidateArtifactId, "Candidate artifact id"),
@@ -57585,7 +57716,7 @@ var require_trace_recorder = __commonJS({
 var require_codex_app_server = __commonJS({
   "../../desktop/rolling-skill/src/codex-app-server.cjs"(exports, module) {
     var { EventEmitter } = __require("node:events");
-    var { spawn } = __require("node:child_process");
+    var { spawn: spawn2 } = __require("node:child_process");
     var { existsSync } = __require("node:fs");
     var { dirname, join } = __require("node:path");
     var { version: clientVersion } = require_package();
@@ -57659,7 +57790,7 @@ var require_codex_app_server = __commonJS({
         requestQuestion = null,
         requestTool = null,
         childEnvironment = {},
-        spawnProcess = spawn,
+        spawnProcess = spawn2,
         shutdownTimeoutMs = 2e3
       }) {
         super();
@@ -58583,9 +58714,9 @@ ${serverResult.stderr ?? ""}`;
 // ../../desktop/rolling-skill/src/codebuddy-acp-client.cjs
 var require_codebuddy_acp_client = __commonJS({
   "../../desktop/rolling-skill/src/codebuddy-acp-client.cjs"(exports, module) {
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
     var { EventEmitter } = __require("node:events");
-    var { spawn } = __require("node:child_process");
+    var { spawn: spawn2 } = __require("node:child_process");
     var { dirname } = __require("node:path");
     var { version: clientVersion } = require_package();
     var { JsonLineDecoder, RpcRequestTracker } = require_json_rpc();
@@ -58613,7 +58744,7 @@ var require_codebuddy_acp_client = __commonJS({
         runtimeDescriptor = null,
         traceDirectory,
         workspaceRoot,
-        spawnProcess = spawn,
+        spawnProcess = spawn2,
         requestPermission = null,
         childEnvironment = {}
       }) {
@@ -59057,18 +59188,18 @@ var require_codebuddy_acp_client = __commonJS({
           (part) => part.type === "skill" ? `/${part.name}` : part.type === "text" ? part.text : ""
         ).filter(Boolean).join("\n\n") : String(value);
         const turn = {
-          id: randomUUID2(),
+          id: randomUUID3(),
           status: "inProgress",
           items: [
             {
-              id: randomUUID2(),
+              id: randomUUID3(),
               type: "userMessage",
               content: [{ type: "text", text: text2, text_elements: [] }]
             }
           ]
         };
-        const item = { id: randomUUID2(), type: "agentMessage", text: "" };
-        const reasoning = { id: randomUUID2(), type: "reasoning", text: "", summary: [] };
+        const item = { id: randomUUID3(), type: "agentMessage", text: "" };
+        const reasoning = { id: randomUUID3(), type: "reasoning", text: "", summary: [] };
         turn.items.push(item);
         thread.turns.push(turn);
         thread.preview ||= text2.slice(0, 160);
@@ -59504,9 +59635,9 @@ ${helpResult.stderr ?? ""}`;
 // ../../desktop/rolling-skill/src/deepseek-harness-client.cjs
 var require_deepseek_harness_client = __commonJS({
   "../../desktop/rolling-skill/src/deepseek-harness-client.cjs"(exports, module) {
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
     var { EventEmitter } = __require("node:events");
-    var { spawn } = __require("node:child_process");
+    var { spawn: spawn2 } = __require("node:child_process");
     var { dirname } = __require("node:path");
     var { evaluationTurnError } = require_evaluation_turn_error();
     var { TraceRecorder } = require_trace_recorder();
@@ -59726,7 +59857,7 @@ var require_deepseek_harness_client = __commonJS({
         runtimeDescriptor = null,
         traceDirectory,
         workspaceRoot,
-        spawnProcess = spawn,
+        spawnProcess = spawn2,
         fetchImpl = globalThis.fetch,
         webSocketFactory = null,
         executionPolicy = null,
@@ -59950,7 +60081,7 @@ var require_deepseek_harness_client = __commonJS({
       }
       async request(method, payload = {}, { timeoutMs = null } = {}) {
         if (!this.baseUrl) throw new Error("DeepSeek Harness Host is not running");
-        const rpcId = randomUUID2();
+        const rpcId = randomUUID3();
         const envelope = { type: "client-request", rpcId, method, payload };
         this.recordTrace("outbound", { method, params: payload, rpcId });
         const boundedTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0 ? Math.max(1, Number(timeoutMs)) : null;
@@ -61258,6 +61389,174 @@ var require_runtime_services = __commonJS({
   }
 });
 
+// ../rolling-skill-core/src/runtime-interaction-broker.cjs
+var require_runtime_interaction_broker = __commonJS({
+  "../rolling-skill-core/src/runtime-interaction-broker.cjs"(exports, module) {
+    "use strict";
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
+    var PRIVATE_KEY = /(?:token|secret|path|sourceClient|signal|capability|environment|(?:^|_)body$)/iu;
+    var MAX_TEXT = 32 * 1024;
+    var MAX_ITEMS = 100;
+    function requiredText(value, label, maximum = 300) {
+      const text2 = typeof value === "string" ? value.trim() : "";
+      if (!text2 || text2.length > maximum) throw new Error(`${label} is required`);
+      return text2;
+    }
+    function exactKeys2(value, allowed, label) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} must be an object`);
+      }
+      const unsupported = Object.keys(value).find((key) => !allowed.has(key));
+      if (unsupported) throw new Error(`${label} contains an unsupported field: ${unsupported}`);
+      return value;
+    }
+    function publicValue(value, depth = 0) {
+      if (value === null || typeof value === "boolean") return value;
+      if (typeof value === "number") return Number.isFinite(value) ? value : null;
+      if (typeof value === "string") return value.length <= MAX_TEXT ? value : `${value.slice(0, MAX_TEXT - 1)}\u2026`;
+      if (!value || typeof value !== "object" || depth >= 6) return null;
+      if (Array.isArray(value)) return value.slice(0, MAX_ITEMS).map((entry) => publicValue(entry, depth + 1));
+      const output = {};
+      for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+        if (!Object.hasOwn(descriptor, "value") || PRIVATE_KEY.test(key)) continue;
+        output[key] = publicValue(descriptor.value, depth + 1);
+      }
+      return output;
+    }
+    function runtimeSummary(value) {
+      if (!value || typeof value !== "object") return null;
+      return publicValue({
+        runtimeId: value.runtimeId,
+        providerId: value.providerId,
+        displayName: value.displayName,
+        version: value.version
+      });
+    }
+    function owner(request) {
+      if (typeof request.operatorSessionId === "string" && request.operatorSessionId.trim()) {
+        return {
+          ownerKind: "operator",
+          ownerId: requiredText(request.operatorSessionId, "Operator Session id", 300),
+          jobId: typeof request.operatorJobId === "string" ? request.operatorJobId.slice(0, 300) : null
+        };
+      }
+      return {
+        ownerKind: "installation",
+        ownerId: requiredText(request.jobId, "Installation Job id", 300),
+        jobId: requiredText(request.jobId, "Installation Job id", 300)
+      };
+    }
+    var RuntimeInteractionBroker = class {
+      constructor({ timeoutMs = 15 * 60 * 1e3, onChanged = () => {
+      } } = {}) {
+        if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1e3 || timeoutMs > 24 * 60 * 60 * 1e3) {
+          throw new Error("Runtime interaction timeout is invalid");
+        }
+        if (typeof onChanged !== "function") throw new Error("Runtime interaction callback is invalid");
+        this.timeoutMs = timeoutMs;
+        this.onChanged = onChanged;
+        this.pending = /* @__PURE__ */ new Map();
+        this.closed = false;
+      }
+      requestPermission(request = {}) {
+        return this.#request("permission", request, "decline");
+      }
+      requestQuestion(request = {}) {
+        return this.#request("question", request, { answers: [] });
+      }
+      #request(kind, request, fallback) {
+        if (this.closed) return Promise.resolve(fallback);
+        const selectedOwner = owner(request);
+        const id = `interaction-${randomUUID3()}`;
+        const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+        const expiresAt = new Date(Date.now() + this.timeoutMs).toISOString();
+        const options2 = kind === "permission" ? publicValue(Array.isArray(request.options) ? request.options : []) : [];
+        const questions = kind === "question" ? publicValue(Array.isArray(request.questions) ? request.questions : []) : [];
+        const record = {
+          id,
+          kind,
+          ...selectedOwner,
+          requestId: typeof request.rpcId === "string" ? request.rpcId.slice(0, 500) : null,
+          runtime: runtimeSummary(request.runtime),
+          options: options2,
+          questions,
+          createdAt,
+          expiresAt
+        };
+        return new Promise((resolve) => {
+          const signal = request.signal;
+          const finish = (value) => {
+            const current = this.pending.get(id);
+            if (!current) return;
+            this.pending.delete(id);
+            clearTimeout(current.timer);
+            signal?.removeEventListener?.("abort", current.abort);
+            resolve(value);
+            this.onChanged();
+          };
+          const abort = () => finish(fallback);
+          const timer = setTimeout(abort, this.timeoutMs);
+          timer.unref?.();
+          this.pending.set(id, { record, resolve: finish, fallback, timer, abort, request });
+          signal?.addEventListener?.("abort", abort, { once: true });
+          if (signal?.aborted) abort();
+          else this.onChanged();
+        });
+      }
+      list(input = {}) {
+        exactKeys2(input, /* @__PURE__ */ new Set(["ownerKind", "ownerId"]), "Runtime interaction list request");
+        if (input.ownerKind !== void 0 && !["installation", "operator"].includes(input.ownerKind)) {
+          throw new Error("Runtime interaction owner kind is invalid");
+        }
+        if (input.ownerId !== void 0) requiredText(input.ownerId, "Runtime interaction owner id", 300);
+        return [...this.pending.values()].map(({ record }) => structuredClone(record)).filter((record) => input.ownerKind === void 0 || record.ownerKind === input.ownerKind).filter((record) => input.ownerId === void 0 || record.ownerId === input.ownerId).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+      }
+      resolve(input = {}) {
+        exactKeys2(input, /* @__PURE__ */ new Set(["interactionId", "decision", "answers"]), "Runtime interaction resolution");
+        const interactionId = requiredText(input.interactionId, "Runtime interaction id", 300);
+        const pending = this.pending.get(interactionId);
+        if (!pending) throw new Error("Runtime interaction is no longer pending");
+        if (pending.record.kind === "permission") {
+          if (input.answers !== void 0) throw new Error("Permission resolution cannot include answers");
+          const decision = requiredText(input.decision, "Runtime permission decision", 300);
+          const allowed = /* @__PURE__ */ new Set(["decline"]);
+          for (const option of pending.record.options) {
+            const optionId = option?.optionId ?? option?.id ?? option?.value;
+            if (typeof optionId === "string" && optionId) allowed.add(optionId);
+          }
+          if (!allowed.has(decision)) throw new Error("Runtime permission decision is not offered");
+          pending.resolve(decision);
+          return { interactionId, status: "resolved", decision };
+        }
+        if (input.decision !== void 0) throw new Error("Question resolution cannot include a permission decision");
+        if (!Array.isArray(input.answers) || input.answers.length > MAX_ITEMS) {
+          throw new Error("Runtime question answers are invalid");
+        }
+        const questionIds = new Set(pending.record.questions.map((question) => question?.id ?? question?.questionId).filter((value) => typeof value === "string" && value));
+        const seen = /* @__PURE__ */ new Set();
+        const answers = input.answers.map((entry) => {
+          exactKeys2(entry, /* @__PURE__ */ new Set(["questionId", "answer"]), "Runtime question answer");
+          const questionId = requiredText(entry.questionId, "Runtime question id", 300);
+          if (!questionIds.has(questionId)) throw new Error("Runtime answer references an unknown question");
+          if (seen.has(questionId)) throw new Error("Runtime question has duplicate answers");
+          seen.add(questionId);
+          const answer = typeof entry.answer === "string" ? entry.answer : "";
+          if (answer.length > MAX_TEXT) throw new Error("Runtime question answer is too large");
+          return { questionId, answer };
+        });
+        pending.resolve({ answers });
+        return { interactionId, status: "resolved", answerCount: answers.length };
+      }
+      close() {
+        if (this.closed) return;
+        this.closed = true;
+        for (const pending of [...this.pending.values()]) pending.resolve(pending.fallback);
+      }
+    };
+    module.exports = { RuntimeInteractionBroker };
+  }
+});
+
 // ../rolling-skill-core/src/skill-services.cjs
 var require_skill_services = __commonJS({
   "../rolling-skill-core/src/skill-services.cjs"(exports, module) {
@@ -61269,7 +61568,97 @@ var require_skill_services = __commonJS({
       if (!text2 || text2.length > maximum) throw new Error(`${label} is required`);
       return text2;
     }
-    function createSkillServices({ manager, installationManager, installationStore, runtimeServices }) {
+    function boundedText(value, maximum = 2e4) {
+      const text2 = String(value ?? "");
+      return text2.length <= maximum ? text2 : `${text2.slice(0, maximum)}
+\u2026[truncated]`;
+    }
+    function publicTimeline(entries) {
+      return Array.isArray(entries) ? entries.slice(-200).map((entry) => ({
+        role: entry.role ?? null,
+        type: entry.type ?? null,
+        title: entry.title ? boundedText(entry.title, 1e3) : null,
+        summary: entry.summary ? boundedText(entry.summary, 4e3) : null,
+        content: entry.content ? boundedText(entry.content) : null,
+        recordedAt: entry.recordedAt ?? null
+      })) : [];
+    }
+    function publicInstallationJob(job) {
+      if (!job) return null;
+      return {
+        id: job.id,
+        operation: job.operation ?? null,
+        parentJobId: job.parentJobId ?? null,
+        status: job.status,
+        runtime: job.runtime ? {
+          runtimeId: job.runtime.runtimeId,
+          providerId: job.runtime.providerId ?? null,
+          displayName: job.runtime.displayName ?? job.runtime.runtimeId,
+          version: job.runtime.version ?? null
+        } : null,
+        request: job.request ? {
+          purpose: job.request.purpose ?? null,
+          skillName: job.request.skillName ?? null,
+          versionLabel: job.request.versionLabel ?? null,
+          source: job.request.source ? {
+            repositoryId: job.request.source.repositoryId ?? null,
+            skillId: job.request.source.skillId ?? null,
+            versionId: job.request.source.versionId ?? null,
+            commit: job.request.source.commit ?? null,
+            expectedDigest: job.request.source.expectedDigest ?? null
+          } : null
+        } : null,
+        modelId: job.modelId ?? null,
+        effort: job.effort ?? null,
+        permissionMode: job.permissionMode ?? null,
+        effectiveModelId: job.effectiveModelId ?? null,
+        effectiveEffort: job.effectiveEffort ?? null,
+        effectivePermissionMode: job.effectivePermissionMode ?? null,
+        conversationStatus: job.conversationStatus ?? null,
+        canFollowUp: Boolean(job.threadId),
+        conversationError: job.conversationError ? {
+          code: job.conversationError.code ?? null,
+          message: boundedText(job.conversationError.message, 4e3)
+        } : null,
+        messages: publicTimeline(job.messages),
+        activities: publicTimeline(job.activities),
+        error: job.error ? {
+          code: job.error.code ?? null,
+          message: boundedText(job.error.message, 4e3)
+        } : null,
+        parsedResult: job.parsedResult ? {
+          operation: job.parsedResult.operation ?? null,
+          trusted: job.parsedResult.trusted === true,
+          verification: job.parsedResult.verification ?? null
+        } : null,
+        traceAvailable: Boolean(job.traceReference),
+        createdAt: job.createdAt ?? null,
+        startedAt: job.startedAt ?? null,
+        updatedAt: job.updatedAt ?? null,
+        completedAt: job.completedAt ?? null
+      };
+    }
+    function publicInstallationOverview(overview) {
+      return {
+        jobs: (overview?.jobs ?? []).map(publicInstallationJob),
+        matrix: (overview?.matrix ?? []).map((entry) => ({
+          runtimeId: entry.runtimeId,
+          providerId: entry.providerId ?? null,
+          displayName: entry.displayName ?? entry.runtimeId,
+          skillId: entry.skillId ?? null,
+          versionId: entry.versionId ?? null,
+          commit: entry.commit ?? null,
+          contentDigest: entry.contentDigest ?? null,
+          verification: entry.verification ?? "none",
+          installedAt: entry.installedAt ?? null,
+          trustedJobId: entry.trustedJobId ?? null,
+          lastJobId: entry.lastJobId ?? null,
+          lastJobStatus: entry.lastJobStatus ?? null,
+          lastJobUpdatedAt: entry.lastJobUpdatedAt ?? null
+        }))
+      };
+    }
+    function createSkillServices({ manager, installationManager, installationStore, runtimeServices, revealPath = null }) {
       if (!manager || !installationManager || !installationStore || !runtimeServices) {
         throw new Error("Rolling Skill managed Skill dependencies are required");
       }
@@ -61285,22 +61674,30 @@ var require_skill_services = __commonJS({
         }),
         importSource: (input = {}) => manager.importSource(copy(input)),
         rescan: () => manager.rescanAll(),
+        revealRepository: async ({ repositoryId }) => {
+          if (typeof revealPath !== "function") throw new Error("Opening local repositories is unavailable");
+          repositoryId = requiredText(repositoryId, "Repository id", 200);
+          await revealPath(manager.repositoryPath(repositoryId));
+          return { repositoryId, opened: true };
+        },
         installationTargets: () => copy(runtimeServices.list()),
-        installations: ({ skillId = null } = {}) => copy(installationManager.overview(skillId)),
-        installation: ({ jobId }) => copy(installationStore.getJob(
+        installations: ({ skillId = null } = {}) => publicInstallationOverview(
+          installationManager.overview(skillId)
+        ),
+        installation: ({ jobId }) => publicInstallationJob(installationStore.getJob(
           requiredText(jobId, "Installation Job id", 200)
         )),
-        startInstallation: (input = {}) => installationManager.start(copy(input)),
-        cancelInstallation: ({ jobId }) => installationManager.cancel(
+        startInstallation: async (input = {}) => (await installationManager.start(copy(input))).map(publicInstallationJob),
+        cancelInstallation: async ({ jobId }) => publicInstallationJob(await installationManager.cancel(
           requiredText(jobId, "Installation Job id", 200)
-        ),
-        inspectInstallation: ({ jobId }) => installationManager.inspect(
+        )),
+        inspectInstallation: async ({ jobId }) => publicInstallationJob(await installationManager.inspect(
           requiredText(jobId, "Installation Job id", 200)
-        ),
-        sendInstallation: ({ jobId, text: text2 }) => installationManager.send(
+        )),
+        sendInstallation: async ({ jobId, text: text2 }) => publicInstallationJob(await installationManager.send(
           requiredText(jobId, "Installation Job id", 200),
           requiredText(text2, "Installer message", 12e4)
-        )
+        ))
       });
     }
     module.exports = { createSkillServices };
@@ -61311,7 +61708,7 @@ var require_skill_services = __commonJS({
 var require_application = __commonJS({
   "../rolling-skill-core/src/application.cjs"(exports, module) {
     var { Buffer: Buffer2 } = __require("node:buffer");
-    var { join } = __require("node:path");
+    var { basename, join, resolve } = __require("node:path");
     var {
       AutomaticCaptureStateStore
     } = require_automatic_capture_state_store();
@@ -61370,6 +61767,7 @@ var require_application = __commonJS({
     } = require_legacy_import();
     var { createOperatorRuntime } = require_operator_services();
     var { createRuntimeServices } = require_runtime_services();
+    var { RuntimeInteractionBroker } = require_runtime_interaction_broker();
     var { createSkillServices } = require_skill_services();
     var MAX_DISPATCH_BYTES = 1024 * 1024;
     function assertPlainJson(value, ancestors = /* @__PURE__ */ new Set()) {
@@ -61709,6 +62107,10 @@ var require_application = __commonJS({
       if (skill.status !== "valid") throw new Error("Raw Case Skill is not valid");
       return { id: skill.id, name: skill.name };
     }
+    function automaticRawCaseObservation(record) {
+      const observations = Array.isArray(record?.source?.observations) ? record.source.observations : record?.source?.kind === "automatic_capture" ? [record.source] : [];
+      return observations.at(-1) ?? null;
+    }
     function reconcileManagedDatasetBindings({ store, managedSkillStore, installationStore }) {
       let migrated = 0;
       let skipped = 0;
@@ -61797,6 +62199,11 @@ var require_application = __commonJS({
       );
       const managedSkillStore = new ManagedSkillStore(paths.managedSkillRegistry);
       const configStore = new RollingSkillConfigStore(paths.config);
+      const runtimeInteractionBroker = options2.runtimeInteractionBroker ?? new RuntimeInteractionBroker({
+        onChanged: () => publish()
+      });
+      const requestRuntimePermission = options2.requestRuntimePermission ?? ((request) => runtimeInteractionBroker.requestPermission(request));
+      const requestRuntimeQuestion = options2.requestRuntimeQuestion ?? ((request) => runtimeInteractionBroker.requestQuestion(request));
       let automaticCaptureService = null;
       const workspaceRoot = options2.workspaceRoot ?? process.cwd();
       const runtimeServices = createRuntimeServices({
@@ -61822,15 +62229,16 @@ var require_application = __commonJS({
         workspaceRoot,
         traceDirectory: join(paths.traces, "skill-installations"),
         resolvePermission: (providerId, permissionMode) => resolveRuntimePermission(providerId, permissionMode, store.read().settings),
-        requestPermission: options2.requestRuntimePermission ?? null,
-        requestQuestion: options2.requestRuntimeQuestion ?? null,
+        requestPermission: requestRuntimePermission,
+        requestQuestion: requestRuntimeQuestion,
         onChanged: () => publish()
       });
       const skillServices = createSkillServices({
         manager: managedSkillManager,
         installationManager,
         installationStore,
-        runtimeServices
+        runtimeServices,
+        revealPath: options2.revealPath ?? null
       });
       const selectedRuntimeId = () => configStore.read().runtime?.runtimeId ?? null;
       const selectedRuntimeDescriptor = () => {
@@ -61864,13 +62272,46 @@ var require_application = __commonJS({
         getRuntimeDescriptor: selectedRuntimeDescriptor,
         onChanged: () => publish()
       });
+      const automaticCurationManager = Object.freeze({
+        async createSession(input) {
+          const operation = conversationCurationOperationResolver.resolve(input.datasetId);
+          return curationManager.createSession({
+            ...input,
+            executionSkillReference: operation.executionSkillReference,
+            operationEvidence: operation.operationEvidence
+          });
+        },
+        archive: (sessionId) => curationManager.archive(sessionId),
+        hiddenThreadIds: () => curationManager.hiddenThreadIds()
+      });
       automaticCaptureService = createAutomaticCaptureService({
         store,
         configStore,
         runtimeServices,
         stateStore: automaticCaptureStateStore,
         rawCaseStore,
-        curationManager,
+        curationManager: automaticCurationManager,
+        listSkills: async (runtime) => {
+          if (typeof runtime.listSkills !== "function") return [];
+          const descriptor = selectedRuntimeDescriptor();
+          if (!descriptor) return [];
+          const response = await runtime.listSkills({ forceReload: true });
+          const runtimeSkills = (response?.data ?? []).flatMap((entry) => entry.skills ?? []).filter((skill) => skill.enabled !== false);
+          const verified = installationStore.listVerifiedInstallations({
+            runtimeId: descriptor.runtimeId,
+            providerId: descriptor.providerId
+          });
+          const matched = [];
+          for (const installation of verified) {
+            const skill = managedSkillStore.getSkill(installation.skillId);
+            const installedManifest = basename(installation.destination).toLocaleLowerCase("en-US") === "skill.md" ? installation.destination : join(installation.destination, "SKILL.md");
+            const observed = runtimeSkills.find(
+              (entry) => entry.name === skill.name && typeof entry.path === "string" && resolve(entry.path) === resolve(installedManifest)
+            );
+            if (observed) matched.push({ id: skill.id, name: skill.name });
+          }
+          return matched;
+        },
         listDatasets: () => store.listDatasets(),
         getHiddenThreadIds: () => /* @__PURE__ */ new Set([
           ...curationManager.hiddenThreadIds(),
@@ -61906,7 +62347,8 @@ var require_application = __commonJS({
         store,
         rawCaseStore,
         recycleService,
-        refreshManager
+        refreshManager,
+        dispatchRawCase: options2.rawCaseDispatcher ?? null
       });
       const evaluationRunner = options2.evaluationRunner ?? new EvaluationRunner({
         store,
@@ -61942,8 +62384,8 @@ var require_application = __commonJS({
         curationManager,
         rubricManager,
         workspaceRoot,
-        requestPermission: options2.requestRuntimePermission ?? null,
-        requestQuestion: options2.requestRuntimeQuestion ?? null,
+        requestPermission: requestRuntimePermission,
+        requestQuestion: requestRuntimeQuestion,
         operatorToolPath: options2.operatorToolPath ?? null,
         onChanged: () => publish()
       }));
@@ -62296,10 +62738,54 @@ var require_application = __commonJS({
             }
           )));
         },
+        "rawCases.createDraft": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["id", "datasetId", "idempotencyKey"]), "Raw Case Draft");
+          return idempotentReviewMutation("rawCases.createDraft", input, async () => {
+            const rawCase = rawCaseStore.requireRecord(requiredIdentifier(input.id, "Raw Case id"));
+            const datasetId = requiredIdentifier(input.datasetId, "Dataset id");
+            const dataset = store.getDataset(datasetId);
+            if (!rawCase.skill?.id || dataset.skillReference?.evidencePrecision !== "managed" || dataset.skillReference.id !== rawCase.skill.id) {
+              throw new Error("Raw Case Skill does not match the Dataset managed Skill");
+            }
+            const source = automaticRawCaseObservation(rawCase);
+            if (!source || source.outcome === "uncertain" || !source.threadId || !source.startItemId || !source.endItemId) {
+              throw new Error("Raw Case has no complete automatic Episode evidence");
+            }
+            const operation = conversationCurationOperationResolver.resolve(datasetId);
+            const session = await curationManager.createSession({
+              datasetId,
+              caseType: source.caseType,
+              sourceThreadId: source.threadId,
+              startItemId: source.startItemId,
+              startTurnId: source.startTurnId,
+              endItemId: source.endItemId,
+              endTurnId: source.endTurnId,
+              issueDescription: rawCase.note ?? source.reason ?? "",
+              executionSkillReference: operation.executionSkillReference,
+              operationEvidence: operation.operationEvidence
+            });
+            rawCaseStore.markDispatched(rawCase.id, {
+              mode: "curation-draft",
+              sessionId: session.id
+            });
+            return publicCurationSession(session);
+          });
+        },
         "settings.get": () => settingsSnapshot(),
         "settings.update": ({ rollingSkill = {}, plugin = {} }) => {
+          if (Object.hasOwn(plugin, "runtime") || Object.hasOwn(plugin, "worker")) {
+            throw new Error("Runtime and Worker settings require their dedicated Host operations");
+          }
           if (Object.keys(rollingSkill).length > 0) store.updateSettings(rollingSkill);
           if (Object.keys(plugin).length > 0) configStore.update(plugin);
+          return settingsSnapshot();
+        },
+        "settings.selectRuntime": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["runtimeId"]), "Runtime selection");
+          const descriptor = runtimeServices.descriptor(
+            requiredIdentifier(input.runtimeId, "Runtime id")
+          );
+          configStore.update({ runtime: descriptor });
           return settingsSnapshot();
         },
         "conversationCuration.inspect": (input) => inspectConversationCuration(input),
@@ -62320,6 +62806,21 @@ var require_application = __commonJS({
           return publicCurationSession(curationSession(
             requiredIdentifier(input.sessionId, "Curation Session id")
           ));
+        },
+        "curation.createCalibration": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["datasetId", "caseId", "idempotencyKey"]), "calibration");
+          return idempotentReviewMutation("curation.createCalibration", input, async () => {
+            const datasetId = requiredIdentifier(input.datasetId, "Dataset id");
+            const caseId = requiredIdentifier(input.caseId, "Case id");
+            store.getDataset(datasetId);
+            const profile = store.read().settings.curatorProfile;
+            return publicCurationSession(await curationManager.createCalibrationSession({
+              datasetId,
+              caseId,
+              modelId: profile.modelId,
+              effort: profile.effort
+            }));
+          });
         },
         "curation.send": (input) => curationMutation(input, ["text"], "curation.send", async (session) => {
           const text2 = requiredBodyText(input.text, "Curation review message");
@@ -62391,6 +62892,12 @@ var require_application = __commonJS({
             version: publicRubricVersion(version)
           };
         }),
+        "rubrics.migrateLegacy": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["datasetId", "idempotencyKey"]), "rubric migration");
+          return idempotentReviewMutation("rubrics.migrateLegacy", input, async () => publicRubricVersion(store.migrateActiveDatasetRubricToUnified(
+            requiredIdentifier(input.datasetId, "Dataset id")
+          )));
+        },
         "rubrics.discard": (input) => rubricMutation(input, [], "rubrics.discard", async (session) => publicRubricSession(await rubricManager.discard(session.id))),
         "rubrics.hidden": (input) => {
           exactFields(input, /* @__PURE__ */ new Set(), "rubric");
@@ -62402,6 +62909,7 @@ var require_application = __commonJS({
         "evaluations.list": (input) => evaluationServices.list(input),
         "evaluations.get": (input) => evaluationServices.get(input),
         "evaluations.cancel": (input) => evaluationServices.cancel(input),
+        "evaluations.delete": (input) => evaluationServices.delete(input),
         "skills.catalog": () => skillServices.catalog(),
         "skills.get": (input) => skillServices.get(input),
         "skills.versions": (input) => skillServices.versions(input),
@@ -62411,6 +62919,7 @@ var require_application = __commonJS({
         "skills.deprecate": (input) => skillServices.deprecate(input),
         "skills.import": (input) => skillServices.importSource(input),
         "skills.rescan": () => skillServices.rescan(),
+        "skills.reveal": (input) => skillServices.revealRepository(input),
         "installations.targets": () => skillServices.installationTargets(),
         "installations.list": (input) => skillServices.installations(input),
         "installations.get": (input) => skillServices.installation(input),
@@ -62418,6 +62927,8 @@ var require_application = __commonJS({
         "installations.cancel": (input) => skillServices.cancelInstallation(input),
         "installations.inspect": (input) => skillServices.inspectInstallation(input),
         "installations.send": (input) => skillServices.sendInstallation(input),
+        "interactions.list": (input) => runtimeInteractionBroker.list(input),
+        "interactions.resolve": (input) => runtimeInteractionBroker.resolve(input),
         "automatic.status": async () => ({
           ...automaticCaptureService.status(),
           scheduler: await schedulerStatus()
@@ -62464,10 +62975,13 @@ var require_application = __commonJS({
         "datasets.bindSkill",
         "rawCases.add",
         "rawCases.updateManaged",
+        "rawCases.createDraft",
         "rawCases.update",
         "settings.update",
+        "settings.selectRuntime",
         "conversationCuration.create",
         "curation.send",
+        "curation.createCalibration",
         "curation.retry",
         "curation.model",
         "curation.effort",
@@ -62479,18 +62993,22 @@ var require_application = __commonJS({
         "rubrics.model",
         "rubrics.effort",
         "rubrics.publish",
+        "rubrics.migrateLegacy",
         "rubrics.discard",
         "evaluations.start",
         "evaluations.cancel",
+        "evaluations.delete",
         "skills.createCandidate",
         "skills.release",
         "skills.deprecate",
         "skills.import",
         "skills.rescan",
+        "skills.reveal",
         "installations.start",
         "installations.cancel",
         "installations.inspect",
         "installations.send",
+        "interactions.resolve",
         "automatic.update",
         "automatic.runOnce",
         "scheduler.enable",
@@ -62547,6 +63065,7 @@ var require_application = __commonJS({
         automaticCaptureService.stopHostSchedule();
         await evaluationRunner.stopAll?.();
         await installationManager.stopAll?.();
+        runtimeInteractionBroker.close?.();
         await operatorRuntime.close();
         await runtimeServices.close();
       }
@@ -62564,7 +63083,7 @@ var require_application = __commonJS({
 // ../rolling-skill-core/src/run-lease.cjs
 var require_run_lease = __commonJS({
   "../rolling-skill-core/src/run-lease.cjs"(exports, module) {
-    var { randomUUID: randomUUID2 } = __require("node:crypto");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
     var {
       chmodSync,
       closeSync,
@@ -62627,7 +63146,7 @@ var require_run_lease = __commonJS({
       mkdirSync(lockDirectory, { recursive: true, mode: 448 });
       chmodSync(lockDirectory, 448);
       const path = join(lockDirectory, LEASE_FILENAME);
-      const token = randomUUID2();
+      const token = randomUUID3();
       let recovered = false;
       for (let attempt = 0; attempt < 4; attempt += 1) {
         const acquiredAt = timestamp(now(), "Run lease clock");
@@ -62658,7 +63177,7 @@ var require_run_lease = __commonJS({
           const age = Date.parse(acquiredAt) - Date.parse(current.acquiredAt);
           const stale = age >= staleAfterMs || !isProcessAlive(current.pid);
           if (!stale) throw busy(current);
-          const quarantine = join(lockDirectory, `${LEASE_FILENAME}.stale-${randomUUID2()}`);
+          const quarantine = join(lockDirectory, `${LEASE_FILENAME}.stale-${randomUUID3()}`);
           try {
             renameSync(path, quarantine);
             recovered = true;
@@ -62736,15 +63255,23 @@ var require_surface_parity_manifest = __commonJS({
       "CV-10",
       "CV-11",
       "DC-01",
+      "DC-02",
       "DC-03",
       "DC-04",
       "DC-05",
       "DC-06",
       "DC-07",
       "DC-08",
+      "DC-09",
+      "DC-10",
       "DC-11",
       "DC-12",
+      "DC-13",
+      "DC-14",
+      "DC-15",
+      "DC-16",
       "CU-01",
+      "CU-02",
       "CU-03",
       "CU-04",
       "CU-05",
@@ -62754,20 +63281,25 @@ var require_surface_parity_manifest = __commonJS({
       "CU-09",
       "CU-10",
       "CU-11",
+      "CU-12",
       "RB-01",
+      "RB-02",
       "RB-03",
       "RB-04",
       "RB-05",
       "RB-06",
       "RB-07",
+      "RB-08",
       "MS-01",
       "MS-02",
       "MS-03",
       "MS-04",
       "MS-05",
+      "MS-06",
       "MS-07",
       "MS-08",
       "MS-09",
+      "MS-10",
       "MS-11",
       "MS-12",
       "EV-01",
@@ -62776,6 +63308,7 @@ var require_surface_parity_manifest = __commonJS({
       "EV-04",
       "EV-05",
       "EV-06",
+      "EV-07",
       "EV-08",
       "EV-09",
       "EV-10",
@@ -62811,8 +63344,10 @@ var require_surface_parity_manifest = __commonJS({
       "ST-02",
       "ST-04",
       "ST-05",
+      "ST-06",
       "ST-07",
       "ST-08",
+      "ST-09",
       "DS-01",
       "DS-02",
       "DS-03",
@@ -62908,6 +63443,7 @@ var require_src = __commonJS({
     } = require_legacy_import();
     var { createOperatorRuntime, createOperatorServices } = require_operator_services();
     var { createRuntimeServices } = require_runtime_services();
+    var { RuntimeInteractionBroker } = require_runtime_interaction_broker();
     var { acquireRunLease } = require_run_lease();
     var { createSkillServices } = require_skill_services();
     var { RollingSkillConfigStore } = require_config_store();
@@ -62921,6 +63457,7 @@ var require_src = __commonJS({
     } = require_surface_parity_manifest();
     module.exports = {
       RollingSkillConfigStore,
+      RuntimeInteractionBroker,
       SURFACE_PARITY_MANIFEST,
       acquireRunLease,
       createAutomaticCaptureService,
@@ -63088,7 +63625,7 @@ var require_api2 = __commonJS({
 // src/host/session-evidence.cjs
 var require_session_evidence = __commonJS({
   "src/host/session-evidence.cjs"(exports, module) {
-    var { createHash, randomUUID: randomUUID2 } = __require("node:crypto");
+    var { createHash, randomUUID: randomUUID3 } = __require("node:crypto");
     var {
       chmodSync,
       existsSync,
@@ -63296,7 +63833,7 @@ var require_session_evidence = __commonJS({
         }
         return { digest, path };
       }
-      const temporary = `${path}.${process.pid}.${randomUUID2()}.tmp`;
+      const temporary = `${path}.${process.pid}.${randomUUID3()}.tmp`;
       try {
         writeFileSync(temporary, serialized, { encoding: "utf8", flag: "wx", mode: 384 });
         chmodSync(temporary, 384);
@@ -63916,11 +64453,66 @@ function registerRollingSkillTools(ctx, application) {
 
 // src/host/index.js
 var import_scheduler = __toESM(require_scheduler(), 1);
+
+// src/host/native-session-dispatcher.js
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
+function createNativeSessionDispatcher({ agents, createMessage = createUserMessage, createId = randomUUID2 } = {}) {
+  if (!agents || typeof agents.create !== "function") throw new Error("DSH Agent registry is required");
+  if (typeof createMessage !== "function" || typeof createId !== "function") {
+    throw new Error("DSH Session dispatch helpers are invalid");
+  }
+  return async ({ question, target, sessionId: currentSessionId }) => {
+    if (target !== "new" && target !== "current") throw new Error("DSH Session dispatch target is invalid");
+    if (typeof question !== "string" || !question.length || question.length > 12e4) {
+      throw new Error("Raw Case question is invalid");
+    }
+    const sessionId = target === "current" ? currentSessionId : createId();
+    if (typeof sessionId !== "string" || !sessionId) throw new Error("Current DSH Session is required");
+    const handle = target === "current" ? null : await agents.create({ sessionId });
+    const agent = handle?.agent ?? agents.get?.(sessionId);
+    if (!agent || typeof agent.followup !== "function") {
+      await handle?.dispose?.();
+      throw new Error("The current DSH Session is not active");
+    }
+    try {
+      agent.followup(createMessage({
+        content: [{ type: "text", text: question }],
+        source: { kind: "user" }
+      }));
+    } catch (error) {
+      await handle?.dispose?.();
+      throw error;
+    }
+    return { sessionId, status: "queued" };
+  };
+}
+
+// src/host/reveal-path.js
+import { spawn } from "node:child_process";
+function createPathRevealer({ platform = process.platform, spawnProcess = spawn } = {}) {
+  if (typeof spawnProcess !== "function") throw new Error("Path reveal launcher is invalid");
+  return (path) => new Promise((resolve, reject) => {
+    if (typeof path !== "string" || !path) {
+      reject(new Error("Trusted path is required"));
+      return;
+    }
+    const [command, args] = platform === "darwin" ? ["open", [path]] : platform === "win32" ? ["explorer.exe", [path]] : ["xdg-open", [path]];
+    const child = spawnProcess(command, args, { detached: true, shell: false, stdio: "ignore" });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref?.();
+      resolve();
+    });
+  });
+}
+
+// src/host/index.js
 var { createRollingSkillApplication, resolveDataPaths } = import_src.default;
 var { createRollingSkillApiHandler } = import_api.default;
 var { createSessionEvidenceSource } = import_session_evidence.default;
 var { createSchedulerAdapter, resolveWorkerExecutable } = import_scheduler.default;
-var inject = ["webServer", "tools", "sessionQuery"];
+var inject = ["webServer", "tools", "sessionQuery", "agents"];
 function apply(ctx, config = {}) {
   const dataPaths = resolveDataPaths({ dataRoot: config.dataRoot });
   const schedulerAdapter = createSchedulerAdapter({
@@ -63934,7 +64526,9 @@ function apply(ctx, config = {}) {
     conversationEpisodeSource: createSessionEvidenceSource({
       sessionQuery: ctx.sessionQuery,
       traceRoot: dataPaths.dshConversationTraces
-    })
+    }),
+    rawCaseDispatcher: createNativeSessionDispatcher({ agents: ctx.agents }),
+    revealPath: createPathRevealer()
   });
   ctx.effect(() => {
     const disposeTools = registerRollingSkillTools(ctx, application);

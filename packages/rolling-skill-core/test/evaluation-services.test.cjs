@@ -51,7 +51,14 @@ function fixture() {
             return structuredClone(run)
         },
         listEvaluationRunSummaries: () => [{id: "run-1", status: "running"}],
-        getEvaluationRun: () => ({...run, status: "running", results: [{id: "result-1"}]}),
+        getEvaluationRun: () => ({
+            ...run,
+            status: "running",
+            skillReference: {id: "skill-1", repositoryId: "repository-1", name: "billing", path: "/installed/private/SKILL.md"},
+            runtimeConfigurations: [{runtimeId: "codex:a", executablePath: "/opt/codex-a", skillReference: {path: "/installed/private/SKILL.md"}}],
+            results: [{id: "result-1", status: "running", threadId: "private-thread", traceReference: "/tmp/private-trace"}],
+        }),
+        deleteEvaluationRun: (id) => ({id, status: "completed"}),
     }
     const runtimeServices = {
         descriptor(id) {
@@ -189,8 +196,20 @@ describe("Rolling Skill evaluation services", () => {
     it("lists summaries, returns completed detail, and cancels through the runner", async () => {
         const test = fixture()
         assert.deepEqual(test.services.list({datasetId: "dataset-1"}), [{id: "run-1", status: "running"}])
-        assert.equal(test.services.get({runId: "run-1"}).results[0].id, "result-1")
+        const detail = test.services.get({runId: "run-1"})
+        assert.equal(detail.results[0].id, "result-1")
+        assert.equal(Object.hasOwn(detail.skillReference, "path"), false)
+        assert.equal(Object.hasOwn(detail.runtimeConfigurations[0], "executablePath"), false)
+        assert.equal(Object.hasOwn(detail.results[0], "traceReference"), false)
         assert.equal((await test.services.cancel({runId: "run-1"})).status, "cancelled")
         assert.deepEqual(test.cancelled, ["run-1"])
+    })
+
+    it("deletes terminal runs through the durable Store", () => {
+        const test = fixture()
+        assert.deepEqual(test.services.delete({runId: "run-1"}), {
+            id: "run-1",
+            status: "completed",
+        })
     })
 })

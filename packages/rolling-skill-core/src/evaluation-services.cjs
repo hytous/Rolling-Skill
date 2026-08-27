@@ -34,6 +34,108 @@ function installedSkillPath(destination) {
         : join(destination, "SKILL.md")
 }
 
+function boundedText(value, maximum = 40_000) {
+    const text = String(value ?? "")
+    return text.length <= maximum ? text : `${text.slice(0, maximum)}\n…[truncated]`
+}
+
+function publicSkillIdentity(reference) {
+    if (!reference) return null
+    return {
+        id: reference.id ?? null,
+        repositoryId: reference.repositoryId ?? null,
+        name: reference.name ?? null,
+        evidencePrecision: reference.evidencePrecision ?? null,
+    }
+}
+
+function publicEvaluationSummary(summary) {
+    if (!summary) return null
+    const {skillReference, ...rest} = summary
+    return {
+        ...rest,
+        ...(skillReference ? {skillReference: publicSkillIdentity(skillReference)} : {}),
+    }
+}
+
+function publicRuntime(configuration) {
+    if (!configuration) return null
+    return {
+        runtimeId: configuration.runtimeId ?? null,
+        providerId: configuration.providerId ?? null,
+        displayName: configuration.displayName ?? configuration.runtimeId ?? null,
+        version: configuration.version ?? null,
+        modelId: configuration.modelId ?? null,
+        effort: configuration.effort ?? null,
+        installationId: configuration.installationId ?? null,
+        installationJobId: configuration.installationJobId ?? null,
+        installationVerification: configuration.installationVerification ?? null,
+    }
+}
+
+function publicEvaluationResult(result) {
+    return {
+        id: result.id,
+        caseId: result.caseId ?? result.caseSnapshot?.id ?? null,
+        question: result.caseSnapshot?.question ?? result.question ?? null,
+        caseType: result.caseSnapshot?.caseType ?? null,
+        runtimeId: result.runtimeId ?? null,
+        status: result.status,
+        gradingStatus: result.gradingStatus ?? null,
+        durationMs: result.durationMs ?? null,
+        response: result.response ? boundedText(result.response) : null,
+        error: result.error ? boundedText(result.error, 4_000) : null,
+        gradingError: result.gradingError ? boundedText(result.gradingError, 4_000) : null,
+        scoreContract: result.scoreContract ?? null,
+        judgment: result.judgment ?? null,
+        computedScore: result.computedScore ?? null,
+        judge: result.judge ? {
+            runtimeId: result.judge.runtimeId ?? null,
+            modelId: result.judge.modelId ?? null,
+            effort: result.judge.effort ?? null,
+        } : null,
+        traceEvidence: result.traceEvidence ? {
+            schemaVersion: result.traceEvidence.schemaVersion ?? null,
+            entryCount: Array.isArray(result.traceEvidence.entries)
+                ? result.traceEvidence.entries.length
+                : 0,
+            truncated: result.traceEvidence.truncated === true,
+            omittedEntries: result.traceEvidence.omittedEntries ?? 0,
+        } : null,
+        startedAt: result.startedAt ?? null,
+        completedAt: result.completedAt ?? null,
+        gradingStartedAt: result.gradingStartedAt ?? null,
+        gradingCompletedAt: result.gradingCompletedAt ?? null,
+    }
+}
+
+function publicEvaluation(run) {
+    if (!run) return null
+    return {
+        id: run.id,
+        datasetId: run.datasetId,
+        selectionMode: run.selectionMode ?? null,
+        activationMode: run.activationMode ?? null,
+        status: run.status,
+        caseCount: run.caseSnapshots?.length ?? 0,
+        runtimeCount: run.runtimeConfigurations?.length ?? 0,
+        createdAt: run.createdAt ?? null,
+        startedAt: run.startedAt ?? null,
+        completedAt: run.completedAt ?? null,
+        skillReference: publicSkillIdentity(run.skillReference),
+        skillEvidence: run.skillEvidence ? {
+            schemaVersion: run.skillEvidence.schemaVersion ?? null,
+            digest: run.skillEvidence.digest ?? null,
+            managedSource: run.skillEvidence.managedSource ?? null,
+            complete: run.skillEvidence.complete ?? null,
+            warningCount: Array.isArray(run.skillEvidence.warnings) ? run.skillEvidence.warnings.length : 0,
+        } : null,
+        runtimeConfigurations: (run.runtimeConfigurations ?? []).map(publicRuntime),
+        judgeConfiguration: publicRuntime(run.judgeConfiguration),
+        results: (run.results ?? []).map(publicEvaluationResult),
+    }
+}
+
 function createEvaluationServices({
     store,
     runtimeServices,
@@ -176,11 +278,11 @@ function createEvaluationServices({
     }
 
     function list({datasetId = null} = {}) {
-        return copy(store.listEvaluationRunSummaries(datasetId))
+        return copy(store.listEvaluationRunSummaries(datasetId).map(publicEvaluationSummary))
     }
 
     function get({runId} = {}) {
-        return copy(store.getEvaluationRun(requiredText(runId, "Evaluation Run id")))
+        return copy(publicEvaluation(store.getEvaluationRun(requiredText(runId, "Evaluation Run id"))))
     }
 
     async function cancel({runId} = {}) {
@@ -190,7 +292,14 @@ function createEvaluationServices({
         return copy(value)
     }
 
-    return Object.freeze({cancel, get, list, start})
+    function remove({runId} = {}) {
+        const id = requiredText(runId, "Evaluation Run id")
+        const value = store.deleteEvaluationRun(id)
+        onChanged({runId: id, status: "deleted"})
+        return copy(value)
+    }
+
+    return Object.freeze({cancel, delete: remove, get, list, start})
 }
 
 module.exports = {createEvaluationServices}

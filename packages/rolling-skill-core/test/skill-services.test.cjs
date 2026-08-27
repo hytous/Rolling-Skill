@@ -15,18 +15,45 @@ function fixture() {
         deprecateVersion: async (input) => ({id: input.versionId, deprecatedAt: "now"}),
         importSource: async (input) => ({repository: {id: "repo-2", ...input}}),
         rescanAll: async () => ({repositories: [], skills: [], versions: [], failures: []}),
+        repositoryPath: (repositoryId) => `/managed/${repositoryId}`,
     }
     const installationManager = {
-        overview: (skillId) => ({skillId, jobs: [{id: "job-1"}], matrix: []}),
+        overview: (skillId) => ({
+            skillId,
+            jobs: [{
+                id: "job-1",
+                status: "succeeded",
+                rawResult: "private",
+                traceReference: "/tmp/trace",
+                request: {
+                    skillName: "Billing",
+                    source: {
+                        repositoryId: "repo-1",
+                        skillId: "skill-1",
+                        versionId: "version-1",
+                        commit: "a".repeat(40),
+                        expectedDigest: "sha256:test",
+                    },
+                },
+                runtime: {runtimeId: "codex:a", displayName: "Codex"},
+                messages: [{role: "assistant", content: "installed"}],
+                activities: [],
+            }],
+            matrix: [{
+                runtimeId: "codex:a",
+                destination: "/runtime/private",
+                verification: "verified",
+            }],
+        }),
         start: async (input) => { calls.push(["install", input]); return [{id: "job-2", status: "queued"}] },
         cancel: async (jobId) => ({id: jobId, status: "cancelled"}),
         inspect: async (jobId) => ({id: "inspect-1", parentJobId: jobId}),
-        send: async (jobId, text) => ({id: jobId, text}),
+        send: async (jobId, text) => ({id: jobId, status: "running", messages: [{role: "user", content: text}]}),
     }
-    const installationStore = {getJob: (jobId) => ({id: jobId, status: "running"})}
+    const installationStore = {getJob: (jobId) => ({id: jobId, status: "running", rawResult: "private", traceReference: "/tmp/trace", runtime: {runtimeId: "codex:a", displayName: "Codex"}, request: {skillName: "Billing", source: {repositoryId: "repo-1", skillId: "skill-1", versionId: "version-1"}}, messages: [], activities: []})}
     const runtimeServices = {list: () => [{runtimeId: "codex:a", executablePath: "/opt/codex-a"}]}
     return {
-        services: createSkillServices({manager, installationManager, installationStore, runtimeServices}),
+        services: createSkillServices({manager, installationManager, installationStore, runtimeServices, revealPath: async (path) => calls.push(["reveal", path])}),
         calls,
     }
 }
@@ -39,6 +66,8 @@ describe("Rolling Skill managed Skill services", () => {
         assert.equal(test.services.versions({skillId: "skill-1"}).items[0].id, "version-1")
         assert.equal((await test.services.candidateBase({skillId: "skill-1"})).dirty, true)
         assert.equal(test.services.installationTargets()[0].executablePath, "/opt/codex-a")
+        assert.deepEqual(await test.services.revealRepository({repositoryId: "repo-1"}), {repositoryId: "repo-1", opened: true})
+        assert.deepEqual(test.calls.at(-1), ["reveal", "/managed/repo-1"])
     })
 
     it("delegates Candidate and immutable Release operations to the manager", async () => {
@@ -76,9 +105,15 @@ describe("Rolling Skill managed Skill services", () => {
         })
         assert.equal(started[0].status, "queued")
         assert.equal(test.services.installations({skillId: "skill-1"}).jobs[0].id, "job-1")
-        assert.equal(test.services.installation({jobId: "job-1"}).status, "running")
+        const overview = test.services.installations({skillId: "skill-1"})
+        assert.equal(Object.hasOwn(overview.matrix[0], "destination"), false)
+        assert.equal(Object.hasOwn(overview.jobs[0], "rawResult"), false)
+        assert.equal(overview.jobs[0].traceAvailable, true)
+        const detail = test.services.installation({jobId: "job-1"})
+        assert.equal(detail.status, "running")
+        assert.equal(Object.hasOwn(detail, "traceReference"), false)
         assert.equal((await test.services.inspectInstallation({jobId: "job-1"})).parentJobId, "job-1")
-        assert.equal((await test.services.sendInstallation({jobId: "job-1", text: "retry"})).text, "retry")
+        assert.equal((await test.services.sendInstallation({jobId: "job-1", text: "retry"})).messages[0].content, "retry")
         assert.equal((await test.services.cancelInstallation({jobId: "job-1"})).status, "cancelled")
     })
 })
