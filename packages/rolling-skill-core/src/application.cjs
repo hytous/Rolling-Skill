@@ -120,6 +120,32 @@ function requiredIdentifier(value, label) {
     return normalized
 }
 
+function exactFields(input, allowed, label) {
+    const unsupported = Object.keys(input).find((field) => !allowed.has(field))
+    if (unsupported) throw new Error(`Unsupported ${label} field: ${unsupported}`)
+}
+
+function requiredSequence(value, label) {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} is invalid`)
+    return value
+}
+
+function publicConversationCuration(session) {
+    const source = session?.episode?.source ?? {}
+    return {
+        id: session.id,
+        datasetId: session.datasetId,
+        caseType: session.caseType,
+        status: session.status,
+        caseId: session.caseId ?? null,
+        sessionId: source.sessionId ?? null,
+        startSeq: source.startSeq ?? null,
+        endSeq: source.endSeq ?? null,
+        endMessageId: source.endMessageId ?? null,
+        digest: source.digest ?? null,
+    }
+}
+
 function managedSkillReference(repository, skill, confirmedAt = new Date().toISOString()) {
     return {
         schemaVersion: "rolling-skill-skill-reference/v1",
@@ -399,6 +425,7 @@ function createRollingSkillApplication(options = {}) {
         uninstall: async () => { throw new Error("System scheduling is unavailable") },
     })
     const subscribers = new Set()
+    const conversationCreates = new Map()
     let closed = false
 
     async function schedulerStatus() {
@@ -505,6 +532,103 @@ function createRollingSkillApplication(options = {}) {
         }
     }
 
+    function requireConversationEpisodeSource() {
+        const source = options.conversationEpisodeSource
+        if (
+            !source ||
+            typeof source.inspect !== "function" ||
+            typeof source.capture !== "function"
+        ) {
+            throw new Error("Trusted DSH conversation evidence is unavailable")
+        }
+        return source
+    }
+
+    async function inspectConversationCuration(input) {
+        exactFields(input, new Set(["sessionId", "endMessageId"]), "conversation curation")
+        const request = {
+            sessionId: requiredIdentifier(input.sessionId, "DSH Session id"),
+            endMessageId: requiredIdentifier(input.endMessageId, "Assistant message id"),
+        }
+        return requireConversationEpisodeSource().inspect(request)
+    }
+
+    async function createConversationCuration(input) {
+        exactFields(input, new Set([
+            "sessionId",
+            "endMessageId",
+            "startSeq",
+            "datasetId",
+            "label",
+            "note",
+            "idempotencyKey",
+        ]), "conversation curation")
+        const label = requiredIdentifier(input.label, "Case label")
+        if (label !== "good" && label !== "bad") throw new Error("Case label is invalid")
+        if (input.note !== undefined && input.note !== null && typeof input.note !== "string") {
+            throw new Error("Curation note must be text")
+        }
+        const note = input.note ?? ""
+        if (note.length > 120_000) throw new Error("Curation note is too large")
+        const request = {
+            sessionId: requiredIdentifier(input.sessionId, "DSH Session id"),
+            endMessageId: requiredIdentifier(input.endMessageId, "Assistant message id"),
+            startSeq: requiredSequence(input.startSeq, "Human start sequence"),
+            datasetId: requiredIdentifier(input.datasetId, "Dataset id"),
+            caseType: label === "good" ? "goodcase" : "badcase",
+            issueDescription: note,
+            idempotencyKey: requiredIdentifier(input.idempotencyKey, "Curation idempotency key"),
+        }
+        store.getDataset(request.datasetId)
+        const existing = store.findCurationSessionByIdempotencyKey(request.idempotencyKey)
+        if (existing) {
+            const source = existing.episode?.source
+            if (
+                existing.datasetId !== request.datasetId ||
+                existing.caseType !== request.caseType ||
+                existing.issueDescription !== request.issueDescription ||
+                source?.sessionId !== request.sessionId ||
+                source?.startSeq !== request.startSeq ||
+                source?.endMessageId !== request.endMessageId
+            ) {
+                throw new Error("Curation idempotency key was already used with different input")
+            }
+            return publicConversationCuration(existing)
+        }
+        const signature = JSON.stringify(request)
+        const pending = conversationCreates.get(request.idempotencyKey)
+        if (pending) {
+            if (pending.signature !== signature) {
+                throw new Error("Curation idempotency key was already used with different input")
+            }
+            return pending.value
+        }
+        const value = Promise.resolve().then(async () => {
+            const frozen = await requireConversationEpisodeSource().capture({
+                sessionId: request.sessionId,
+                endMessageId: request.endMessageId,
+                startSeq: request.startSeq,
+            })
+            const session = await curationManager.createSessionFromFrozenEpisode({
+                datasetId: request.datasetId,
+                caseType: request.caseType,
+                issueDescription: request.issueDescription,
+                idempotencyKey: request.idempotencyKey,
+                episode: frozen.episode,
+                source: frozen.source,
+            })
+            return publicConversationCuration(session)
+        })
+        conversationCreates.set(request.idempotencyKey, {signature, value})
+        try {
+            return await value
+        } finally {
+            if (conversationCreates.get(request.idempotencyKey)?.value === value) {
+                conversationCreates.delete(request.idempotencyKey)
+            }
+        }
+    }
+
     const methods = {
         "dashboard.get": () => dashboardSnapshot(),
         "datasets.list": () => store.listDatasets(),
@@ -523,6 +647,14 @@ function createRollingSkillApplication(options = {}) {
             if (Object.keys(rollingSkill).length > 0) store.updateSettings(rollingSkill)
             if (Object.keys(plugin).length > 0) configStore.update(plugin)
             return settingsSnapshot()
+        },
+        "conversationCuration.inspect": (input) => inspectConversationCuration(input),
+        "conversationCuration.create": (input) => createConversationCuration(input),
+        "conversationCuration.markers": (input) => {
+            exactFields(input, new Set(["sessionId"]), "conversation curation")
+            return store.listConversationCurationMarkers(
+                requiredIdentifier(input.sessionId, "DSH Session id"),
+            )
         },
         "runtimes.list": ({force = false}) => force
             ? runtimeServices.refresh()
@@ -594,6 +726,7 @@ function createRollingSkillApplication(options = {}) {
         "rawCases.add",
         "rawCases.update",
         "settings.update",
+        "conversationCuration.create",
         "evaluations.start",
         "evaluations.cancel",
         "skills.createCandidate",

@@ -646,6 +646,29 @@ function episodeFromCase(entry) {
     }
 }
 
+function dshConversationSource(value) {
+    if (
+        value?.kind !== "dsh-session" ||
+        typeof value.sessionId !== "string" ||
+        !value.sessionId.trim() ||
+        !Number.isSafeInteger(value.startSeq) ||
+        !Number.isSafeInteger(value.endSeq) ||
+        value.startSeq < 0 ||
+        value.endSeq < value.startSeq ||
+        typeof value.endMessageId !== "string" ||
+        !value.endMessageId.trim() ||
+        !/^sha256:[a-f0-9]{64}$/u.test(String(value.digest ?? ""))
+    ) return null
+    return {
+        kind: "dsh-session",
+        sessionId: value.sessionId,
+        startSeq: value.startSeq,
+        endSeq: value.endSeq,
+        endMessageId: value.endMessageId,
+        digest: value.digest,
+    }
+}
+
 function caseCalibrationBaseline(entry) {
     return {
         caseId: entry.id,
@@ -1775,6 +1798,60 @@ class LocalEvaluationStore {
         )
     }
 
+    listConversationCurationMarkers(sessionId) {
+        const normalizedSessionId = String(sessionId ?? "").trim()
+        if (!normalizedSessionId || normalizedSessionId.length > 200) {
+            throw new Error("DSH Session id is required")
+        }
+        const state = this.load()
+        const markers = []
+        const projectedCaseIds = new Set()
+        for (const session of state.curationSessions) {
+            const source = dshConversationSource(session.episode?.source)
+            if (!source || source.sessionId !== normalizedSessionId || session.status === "cancelled") {
+                continue
+            }
+            const caseRecord = state.cases.find((entry) =>
+                entry.id === session.caseId || entry.source?.curationSessionId === session.id,
+            )
+            if (!caseRecord && session.status === "archived") continue
+            if (caseRecord) projectedCaseIds.add(caseRecord.id)
+            markers.push({
+                sessionId: source.sessionId,
+                startSeq: source.startSeq,
+                endSeq: source.endSeq,
+                endMessageId: source.endMessageId,
+                curationSessionId: session.id,
+                caseId: caseRecord?.id ?? null,
+                status: caseRecord ? "saved" : "draft",
+                digest: source.digest,
+            })
+        }
+        for (const entry of state.cases) {
+            if (projectedCaseIds.has(entry.id)) continue
+            const source = dshConversationSource(entry.source)
+            if (!source || source.sessionId !== normalizedSessionId) continue
+            markers.push({
+                sessionId: source.sessionId,
+                startSeq: source.startSeq,
+                endSeq: source.endSeq,
+                endMessageId: source.endMessageId,
+                curationSessionId: entry.source?.curationSessionId ?? null,
+                caseId: entry.id,
+                status: "saved",
+                digest: source.digest,
+            })
+        }
+        markers.sort((left, right) =>
+            left.startSeq - right.startSeq ||
+            left.endSeq - right.endSeq ||
+            Number(right.status === "saved") - Number(left.status === "saved") ||
+            String(left.curationSessionId ?? "").localeCompare(String(right.curationSessionId ?? "")) ||
+            String(left.caseId ?? "").localeCompare(String(right.caseId ?? "")),
+        )
+        return copy(markers)
+    }
+
     hasCurationForSource(threadId, endItemId) {
         return this.load().curationSessions.some(
             (entry) =>
@@ -2079,6 +2156,7 @@ class LocalEvaluationStore {
                 modelProvider: session.episode.source.modelProvider,
                 modelId: session.episode.source.modelId,
                 traceReference: session.episode.source.traceReference,
+                ...dshConversationSource(session.episode.source),
                 curationSessionId: session.id,
                 curationRevisionId: latestRevision?.id ?? null,
                 curatorThreadId: session.curator.threadId,
@@ -2199,6 +2277,7 @@ class LocalEvaluationStore {
                 modelProvider: session.episode.source.modelProvider,
                 modelId: session.episode.source.modelId,
                 traceReference: session.episode.source.traceReference,
+                ...dshConversationSource(session.episode.source),
                 curationSessionId: session.id,
                 curationRevisionId: latestRevision?.id ?? null,
                 curatorThreadId: session.curator.threadId,

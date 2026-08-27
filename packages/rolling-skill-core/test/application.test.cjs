@@ -26,6 +26,146 @@ async function importManagedSkill(application) {
 }
 
 describe("shared Rolling Skill application", () => {
+    it("exposes strict trusted conversation curation methods with concurrent idempotency", async () => {
+        const {createRollingSkillApplication} = require(modulePath)
+        const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-conversation-"))
+        const calls = []
+        const frozen = {
+            episode: {
+                schemaVersion: "rolling-skill-episode/v1",
+                originalQuestion: "查七月账单",
+                source: {
+                    kind: "dsh-session",
+                    sessionId: "session-1",
+                    startSeq: 4,
+                    endSeq: 16,
+                    endMessageId: "assistant-2",
+                    digest: `sha256:${"a".repeat(64)}`,
+                },
+                items: [{id: "dsh:session-1:4", type: "userMessage", text: "查七月账单"}],
+                toolActivity: [],
+                capturedAt: "2026-08-27T00:00:00.000Z",
+            },
+            source: {
+                kind: "dsh-session",
+                sessionId: "session-1",
+                startSeq: 4,
+                endSeq: 16,
+                endMessageId: "assistant-2",
+                digest: `sha256:${"a".repeat(64)}`,
+                snapshotPath: "/trusted/dsh-evidence.json",
+            },
+        }
+        const sessions = new Map()
+        const curationManager = {
+            hiddenThreadIds: () => new Set(),
+            async createSessionFromFrozenEpisode(input) {
+                calls.push({type: "create", input: structuredClone(input)})
+                await new Promise((resolve) => setImmediate(resolve))
+                if (!sessions.has(input.idempotencyKey)) {
+                    sessions.set(input.idempotencyKey, {
+                        id: "curation-1",
+                        datasetId: input.datasetId,
+                        status: "queued",
+                        episode: structuredClone(input.episode),
+                    })
+                }
+                return sessions.get(input.idempotencyKey)
+            },
+        }
+        const conversationEpisodeSource = {
+            async inspect(input) {
+                calls.push({type: "inspect", input: structuredClone(input)})
+                return {sessionId: input.sessionId, startCandidates: [{seq: 4}]}
+            },
+            async capture(input) {
+                calls.push({type: "capture", input: structuredClone(input)})
+                return structuredClone(frozen)
+            },
+        }
+        const application = createRollingSkillApplication({
+            dataRoot,
+            curationManager,
+            conversationEpisodeSource,
+        })
+        const datasetId = (await application.dispatch("datasets.list", {}))[0].id
+
+        assert.deepEqual(
+            await application.dispatch("conversationCuration.inspect", {
+                sessionId: "session-1",
+                endMessageId: "assistant-2",
+            }),
+            {sessionId: "session-1", startCandidates: [{seq: 4}]},
+        )
+        const request = {
+            sessionId: "session-1",
+            endMessageId: "assistant-2",
+            startSeq: 4,
+            datasetId,
+            label: "good",
+            note: "保留证据",
+            idempotencyKey: "conversation-create-1",
+        }
+        const [first, second] = await Promise.all([
+            application.dispatch("conversationCuration.create", request),
+            application.dispatch("conversationCuration.create", request),
+        ])
+
+        assert.equal(first.id, "curation-1")
+        assert.equal(second.id, first.id)
+        assert.equal(calls.filter((entry) => entry.type === "capture").length, 1)
+        assert.equal(calls.filter((entry) => entry.type === "create").length, 1)
+        assert.deepEqual(calls.find((entry) => entry.type === "capture").input, {
+            sessionId: "session-1",
+            endMessageId: "assistant-2",
+            startSeq: 4,
+        })
+        const createInput = calls.find((entry) => entry.type === "create").input
+        assert.equal(createInput.caseType, "goodcase")
+        assert.equal(createInput.issueDescription, "保留证据")
+        assert.deepEqual(createInput.episode, frozen.episode)
+        assert.deepEqual(createInput.source, frozen.source)
+        assert.deepEqual(
+            await application.dispatch("conversationCuration.markers", {sessionId: "session-1"}),
+            [],
+        )
+
+        for (const field of ["episode", "events", "messages", "snapshotPath", "digest", "runtimePath"]) {
+            await assert.rejects(
+                () => application.dispatch("conversationCuration.create", {
+                    ...request,
+                    idempotencyKey: `hostile-${field}`,
+                    [field]: field === "events" || field === "messages" ? [] : "forged",
+                }),
+                /unsupported.*conversation.*field/i,
+            )
+        }
+        await assert.rejects(
+            () => application.dispatch("conversationCuration.inspect", {
+                sessionId: "session-1",
+                endMessageId: "assistant-2",
+                digest: frozen.source.digest,
+            }),
+            /unsupported.*conversation.*field/i,
+        )
+        await assert.rejects(
+            () => application.dispatch("conversationCuration.create", {
+                ...request,
+                idempotencyKey: "hostile-note",
+                note: {html: "<b>forged</b>"},
+            }),
+            /note.*text/i,
+        )
+        await assert.rejects(
+            () => application.dispatch("conversationCuration.markers", {
+                sessionId: "session-1",
+                snapshotPath: "/forged",
+            }),
+            /unsupported.*conversation.*field/i,
+        )
+        await application.close()
+    })
+
     it("reconciles only uniquely proven legacy Dataset paths to managed identity", () => {
         const {reconcileManagedDatasetBindings} = require(modulePath)
         const datasets = [

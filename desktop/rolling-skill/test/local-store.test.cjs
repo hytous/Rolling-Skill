@@ -46,6 +46,31 @@ function episode(question = "帮我随便看看这个账单呗？") {
     }
 }
 
+function dshEpisode({
+    sessionId = "dsh-session-1",
+    startSeq = 4,
+    endSeq = 16,
+    endMessageId = "assistant-2",
+    digest = `sha256:${"a".repeat(64)}`,
+} = {}) {
+    const value = episode("查七月账单")
+    value.source = {
+        ...value.source,
+        kind: "dsh-session",
+        sessionId,
+        startSeq,
+        endSeq,
+        endMessageId,
+        digest,
+        snapshotPath: `/trusted/${digest.slice(7)}.json`,
+    }
+    value.items = [
+        {id: `dsh:${sessionId}:${startSeq}`, type: "userMessage", text: value.originalQuestion},
+        {id: `dsh:${sessionId}:${endSeq - 2}`, type: "agentMessage", text: "结果"},
+    ]
+    return value
+}
+
 function curatedDraft() {
     return {
         schemaVersion: CURATED_CASE_SCHEMA,
@@ -120,6 +145,88 @@ function saveCuratedCase(store, datasetId, question) {
 }
 
 describe("local evaluation store", () => {
+    it("reconstructs deterministic DSH Draft and saved Case markers from durable records", () => {
+        const {path, store} = fixture()
+        const dataset = store.bindDatasetSkill(store.listDatasets()[0].id, skillReference())
+        const first = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            episode: dshEpisode(),
+            idempotencyKey: "marker-1",
+            curator: {},
+        })
+        const second = store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "badcase",
+            episode: dshEpisode({
+                startSeq: 12,
+                endSeq: 24,
+                endMessageId: "assistant-3",
+                digest: `sha256:${"b".repeat(64)}`,
+            }),
+            idempotencyKey: "marker-2",
+            curator: {},
+        })
+        store.createCurationSession({
+            datasetId: dataset.id,
+            caseType: "goodcase",
+            episode: dshEpisode({
+                sessionId: "other-session",
+                digest: `sha256:${"c".repeat(64)}`,
+            }),
+            idempotencyKey: "marker-other",
+            curator: {},
+        })
+
+        assert.deepEqual(store.listConversationCurationMarkers("dsh-session-1"), [
+            {
+                sessionId: "dsh-session-1",
+                startSeq: 4,
+                endSeq: 16,
+                endMessageId: "assistant-2",
+                curationSessionId: first.id,
+                caseId: null,
+                status: "draft",
+                digest: `sha256:${"a".repeat(64)}`,
+            },
+            {
+                sessionId: "dsh-session-1",
+                startSeq: 12,
+                endSeq: 24,
+                endMessageId: "assistant-3",
+                curationSessionId: second.id,
+                caseId: null,
+                status: "draft",
+                digest: `sha256:${"b".repeat(64)}`,
+            },
+        ])
+        assert.deepEqual(
+            new LocalEvaluationStore(path).listConversationCurationMarkers("dsh-session-1"),
+            store.listConversationCurationMarkers("dsh-session-1"),
+        )
+
+        store.recordCurationRevision(first.id, {
+            draft: curatedDraft(),
+            assistantText: "已整理",
+        })
+        const saved = store.archiveCurationSession(first.id)
+        store.cancelCurationSession(second.id)
+        const savedMarker = store.listConversationCurationMarkers("dsh-session-1")
+        assert.equal(savedMarker.length, 1)
+        assert.equal(savedMarker[0].status, "saved")
+        assert.equal(savedMarker[0].caseId, saved.id)
+        assert.equal(saved.source.kind, "dsh-session")
+        assert.equal(saved.source.sessionId, "dsh-session-1")
+        assert.equal(saved.source.startSeq, 4)
+        assert.equal(saved.source.endSeq, 16)
+        assert.equal(saved.source.endMessageId, "assistant-2")
+        assert.equal(saved.source.digest, `sha256:${"a".repeat(64)}`)
+
+        store.deleteCase(dataset.id, saved.id)
+        assert.deepEqual(store.listConversationCurationMarkers("dsh-session-1"), [])
+        assert.equal(store.listConversationCurationMarkers("other-session").length, 1)
+    })
+
     it("starts with manual capture disabled and a default dataset", () => {
         const {store} = fixture()
         const snapshot = store.read()
