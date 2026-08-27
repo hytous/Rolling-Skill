@@ -29,6 +29,9 @@ const {
     RubricManager,
 } = require("../../../desktop/rolling-skill/src/rubric-manager.cjs")
 const {
+    snapshotSkillEvidence,
+} = require("../../../desktop/rolling-skill/src/evaluation-skill-evidence.cjs")
+const {
     EvaluationRunner,
 } = require("../../../desktop/rolling-skill/src/evaluation-runner.cjs")
 const {
@@ -123,6 +126,13 @@ function requiredIdentifier(value, label) {
     return normalized
 }
 
+function requiredBodyText(value, label, maxLength = 120_000) {
+    const normalized = typeof value === "string" ? value.trim() : ""
+    if (!normalized) throw new Error(`${label} is required`)
+    if (value.length > maxLength) throw new Error(`${label} is too large`)
+    return value
+}
+
 function exactFields(input, allowed, label) {
     const unsupported = Object.keys(input).find((field) => !allowed.has(field))
     if (unsupported) throw new Error(`Unsupported ${label} field: ${unsupported}`)
@@ -146,6 +156,214 @@ function publicConversationCuration(session) {
         endSeq: source.endSeq ?? null,
         endMessageId: source.endMessageId ?? null,
         digest: source.digest ?? null,
+    }
+}
+
+function boundedText(value, limit = 20_000) {
+    const text = String(value ?? "")
+    return text.length <= limit ? text : `${text.slice(0, limit)}\n…[truncated]`
+}
+
+function publicSkillReference(reference) {
+    if (!reference) return null
+    return {
+        schemaVersion: reference.schemaVersion ?? null,
+        evidencePrecision: reference.evidencePrecision ?? null,
+        id: reference.id ?? null,
+        repositoryId: reference.repositoryId ?? null,
+        name: reference.name ?? null,
+        scope: reference.scope ?? null,
+        description: reference.description ?? null,
+        runtimeId: reference.runtimeId ?? null,
+        providerId: reference.providerId ?? null,
+        confirmedAt: reference.confirmedAt ?? null,
+    }
+}
+
+function publicOperationEvidence(evidence) {
+    if (!evidence) return null
+    return {
+        schemaVersion: evidence.schemaVersion ?? null,
+        kind: evidence.kind ?? null,
+        repositoryId: evidence.repositoryId ?? null,
+        skillId: evidence.skillId ?? null,
+        skillName: evidence.skillName ?? null,
+        versionId: evidence.versionId ?? null,
+        versionLabel: evidence.versionLabel ?? null,
+        commit: evidence.commit ?? null,
+        contentDigest: evidence.contentDigest ?? null,
+        rubricVersionId: evidence.rubricVersionId ?? null,
+        runtime: evidence.runtime ? {
+            runtimeId: evidence.runtime.runtimeId ?? null,
+            providerId: evidence.runtime.providerId ?? null,
+            displayName: evidence.runtime.displayName ?? null,
+            version: evidence.runtime.version ?? null,
+        } : null,
+        installation: evidence.installation ? {
+            installationId: evidence.installation.installationId ?? null,
+            jobId: evidence.installation.jobId ?? null,
+            verification: evidence.installation.verification ?? null,
+            installedAt: evidence.installation.installedAt ?? null,
+            marker: evidence.installation.marker ?? null,
+        } : null,
+        sourceSkill: evidence.sourceSkill ? {
+            name: evidence.sourceSkill.name ?? null,
+            provider: evidence.sourceSkill.provider ?? null,
+            resourceKind: evidence.sourceSkill.resourceBase?.kind ?? null,
+            callSeq: evidence.sourceSkill.callSeq ?? null,
+            resultSeq: evidence.sourceSkill.resultSeq ?? null,
+        } : null,
+    }
+}
+
+function publicEpisode(episode) {
+    if (!episode) return null
+    const source = episode.source ?? {}
+    return {
+        schemaVersion: episode.schemaVersion ?? null,
+        id: episode.id ?? null,
+        originalQuestion: boundedText(episode.originalQuestion, 120_000),
+        capturedAt: episode.capturedAt ?? null,
+        source: {
+            kind: source.kind ?? null,
+            sessionId: source.sessionId ?? null,
+            startSeq: source.startSeq ?? null,
+            endSeq: source.endSeq ?? null,
+            endMessageId: source.endMessageId ?? null,
+            digest: source.digest ?? null,
+            observedSkills: Array.isArray(source.observedSkills)
+                ? source.observedSkills.map((entry) => ({
+                    name: entry.name ?? null,
+                    provider: entry.provider ?? null,
+                    resourceKind: entry.resourceBase?.kind ?? null,
+                    callSeq: entry.callSeq ?? null,
+                    resultSeq: entry.resultSeq ?? null,
+                }))
+                : [],
+        },
+        items: Array.isArray(episode.items) ? episode.items.slice(0, 250).map((item) => ({
+            id: item.id ?? null,
+            type: item.type ?? null,
+            role: item.role ?? null,
+            text: boundedText(item.text),
+            turnId: item.turnId ?? null,
+            seq: item.seq ?? null,
+            toolName: item.toolName ?? item.name ?? null,
+            arguments: item.arguments ?? null,
+            usage: item.usage ?? null,
+        })) : [],
+    }
+}
+
+function publicConversationMessages(messages) {
+    return Array.isArray(messages) ? messages.slice(-100).map((message) => ({
+        id: message.id ?? null,
+        role: message.role ?? null,
+        text: boundedText(message.text),
+        turnId: message.turnId ?? null,
+        createdAt: message.createdAt ?? null,
+    })) : []
+}
+
+function publicCurationSession(session) {
+    return {
+        id: session.id,
+        datasetId: session.datasetId,
+        operation: session.operation ?? "curation",
+        targetCaseId: session.targetCaseId ?? null,
+        caseType: session.caseType,
+        issueDescription: boundedText(session.issueDescription, 120_000),
+        status: session.status,
+        caseId: session.caseId ?? null,
+        skillReference: publicSkillReference(session.skillReference),
+        episode: publicEpisode(session.episode),
+        operationEvidence: publicOperationEvidence(session.operationEvidence),
+        rubricVersionSnapshot: publicRubricVersion(session.rubricVersionSnapshot),
+        curator: session.curator ? {
+            runtimeId: session.curator.runtimeId ?? null,
+            modelProvider: session.curator.modelProvider ?? null,
+            modelId: session.curator.modelId ?? null,
+            effort: session.curator.effort ?? null,
+            effectiveModelId: session.curator.effectiveModelId ?? null,
+            effectiveEffort: session.curator.effectiveEffort ?? null,
+            working: Boolean(session.curator.currentTurnId),
+        } : null,
+        conversation: publicConversationMessages(session.conversation),
+        revisions: Array.isArray(session.revisions) ? session.revisions.map((entry) => ({
+            id: entry.id,
+            draft: entry.draft,
+            turnId: entry.turnId ?? null,
+            createdAt: entry.createdAt ?? null,
+        })) : [],
+        draft: session.draft ?? null,
+        error: session.error ?? null,
+        createdAt: session.createdAt ?? null,
+        updatedAt: session.updatedAt ?? null,
+        revision: session.updatedAt ?? null,
+    }
+}
+
+function publicRubricSession(session) {
+    return {
+        id: session.id,
+        datasetId: session.datasetId,
+        baseVersionId: session.baseVersionId ?? null,
+        publishedVersionId: session.publishedVersionId ?? null,
+        status: session.status,
+        skillReference: publicSkillReference(session.skillReference),
+        operationEvidence: publicOperationEvidence(session.operationEvidence),
+        skillEvidence: session.skillEvidence ? {
+            schemaVersion: session.skillEvidence.schemaVersion,
+            name: session.skillEvidence.name,
+            digest: session.skillEvidence.digest,
+            truncated: session.skillEvidence.truncated,
+            warnings: session.skillEvidence.warnings,
+            files: session.skillEvidence.files?.map((file) => ({
+                id: file.id,
+                path: file.path,
+                bytes: file.bytes,
+                digest: file.digest,
+            })) ?? [],
+        } : null,
+        rubricAgent: session.rubricAgent ? {
+            runtimeId: session.rubricAgent.runtimeId ?? null,
+            modelProvider: session.rubricAgent.modelProvider ?? null,
+            modelId: session.rubricAgent.modelId ?? null,
+            effort: session.rubricAgent.effort ?? null,
+            effectiveModelId: session.rubricAgent.effectiveModelId ?? null,
+            effectiveEffort: session.rubricAgent.effectiveEffort ?? null,
+            working: Boolean(session.rubricAgent.currentTurnId),
+        } : null,
+        conversation: publicConversationMessages(session.conversation),
+        revisions: Array.isArray(session.revisions) ? session.revisions.map((entry) => ({
+            id: entry.id,
+            rubric: entry.rubric,
+            rubricDigest: entry.rubricDigest,
+            turnId: entry.turnId ?? null,
+            createdAt: entry.createdAt ?? null,
+        })) : [],
+        draft: session.draft ?? null,
+        error: session.error ?? null,
+        createdAt: session.createdAt ?? null,
+        updatedAt: session.updatedAt ?? null,
+        revision: session.updatedAt ?? null,
+    }
+}
+
+function publicRubricVersion(version) {
+    if (!version) return null
+    return {
+        id: version.id,
+        datasetId: version.datasetId,
+        version: version.version,
+        rubric: version.rubric,
+        rubricDigest: version.rubricDigest,
+        skillReference: publicSkillReference(version.skillReference),
+        skillEvidenceDigest: version.skillEvidenceDigest ?? null,
+        operationEvidence: publicOperationEvidence(version.operationEvidence),
+        sourceSessionId: version.sourceSessionId ?? null,
+        createdAt: version.createdAt ?? null,
+        updatedAt: version.updatedAt ?? null,
     }
 }
 
@@ -438,6 +656,7 @@ function createRollingSkillApplication(options = {}) {
     })
     const subscribers = new Set()
     const conversationCreates = new Map()
+    const reviewMutationResults = new Map()
     let closed = false
 
     async function schedulerStatus() {
@@ -554,6 +773,81 @@ function createRollingSkillApplication(options = {}) {
             throw new Error("Trusted DSH conversation evidence is unavailable")
         }
         return source
+    }
+
+    function curationSession(id) {
+        return typeof curationManager.getSession === "function"
+            ? curationManager.getSession(id)
+            : store.getCurationSession(id)
+    }
+
+    function curationSessions(archived) {
+        if (typeof curationManager.listSessions === "function") {
+            return curationManager.listSessions({archived})
+        }
+        return archived ? store.listArchivedCurationSessions() : store.listCurationSessions()
+    }
+
+    function rubricSession(id) {
+        return typeof rubricManager.getSession === "function"
+            ? rubricManager.getSession(id)
+            : store.getRubricSession(id)
+    }
+
+    function rubricSessions(datasetId) {
+        return typeof rubricManager.listSessions === "function"
+            ? rubricManager.listSessions({datasetId})
+            : store.listRubricSessions(datasetId)
+    }
+
+    function expectedSessionRevision(input, getSession, label) {
+        const sessionId = requiredIdentifier(input.sessionId, `${label} Session id`)
+        const expectedRevision = requiredIdentifier(input.expectedRevision, `${label} revision`)
+        const session = getSession(sessionId)
+        if (session.updatedAt !== expectedRevision) {
+            throw new Error(`Stale ${label} revision; reload the latest Session`)
+        }
+        return session
+    }
+
+    function idempotentReviewMutation(method, input, operation) {
+        const idempotencyKey = requiredIdentifier(input.idempotencyKey, `${method} idempotency key`)
+        const cacheKey = `${method}:${idempotencyKey}`
+        const signature = JSON.stringify(input)
+        const existing = reviewMutationResults.get(cacheKey)
+        if (existing) {
+            if (existing.signature !== signature) {
+                throw new Error(`${method} idempotency key was already used with different input`)
+            }
+            return existing.value
+        }
+        const value = Promise.resolve().then(operation)
+        reviewMutationResults.set(cacheKey, {signature, value})
+        if (reviewMutationResults.size > 1_000) {
+            reviewMutationResults.delete(reviewMutationResults.keys().next().value)
+        }
+        value.catch(() => {
+            if (reviewMutationResults.get(cacheKey)?.value === value) {
+                reviewMutationResults.delete(cacheKey)
+            }
+        })
+        return value
+    }
+
+    function curationMutation(input, allowed, method, operation) {
+        exactFields(input, new Set(["sessionId", "expectedRevision", "idempotencyKey", ...allowed]), "curation")
+        return idempotentReviewMutation(method, input, async () => {
+            const session = expectedSessionRevision(input, curationSession, "Curation")
+            return operation(session)
+        })
+    }
+
+    function rubricMutation(input, allowed, method, operation) {
+        exactFields(input, new Set(["sessionId", "expectedRevision", "idempotencyKey", ...allowed]), "rubric")
+        return idempotentReviewMutation(method, input, async () => {
+            const session = expectedSessionRevision(input, rubricSession, "Rubric")
+            return operation(session)
+        })
     }
 
     async function inspectConversationCuration(input) {
@@ -679,6 +973,106 @@ function createRollingSkillApplication(options = {}) {
                 requiredIdentifier(input.sessionId, "DSH Session id"),
             )
         },
+        "curation.list": (input) => {
+            exactFields(input, new Set(["archived"]), "curation")
+            const archived = input.archived === true
+            return {items: curationSessions(archived).map(publicCurationSession), archived}
+        },
+        "curation.get": (input) => {
+            exactFields(input, new Set(["sessionId"]), "curation")
+            return publicCurationSession(curationSession(
+                requiredIdentifier(input.sessionId, "Curation Session id"),
+            ))
+        },
+        "curation.send": (input) => curationMutation(input, ["text"], "curation.send", async (session) => {
+            const text = requiredBodyText(input.text, "Curation review message")
+            return publicCurationSession(await curationManager.sendMessage(session.id, text))
+        }),
+        "curation.retry": (input) => curationMutation(input, [], "curation.retry", async (session) =>
+            publicCurationSession(await curationManager.retry(session.id))),
+        "curation.model": (input) => curationMutation(input, ["modelId"], "curation.model", async (session) =>
+            publicCurationSession(curationManager.updateModel(session.id, input.modelId ?? null))),
+        "curation.effort": (input) => curationMutation(input, ["effort"], "curation.effort", async (session) =>
+            publicCurationSession(curationManager.updateEffort(session.id, input.effort ?? null))),
+        "curation.save": (input) => curationMutation(input, [], "curation.save", async (session) => {
+            const caseRecord = await curationManager.archive(session.id)
+            const updated = curationSession(session.id)
+            return {
+                session: publicCurationSession(updated),
+                caseRecord: {
+                    id: caseRecord.id,
+                    datasetId: caseRecord.datasetId,
+                    caseType: caseRecord.caseType,
+                    updatedAt: caseRecord.updatedAt ?? caseRecord.createdAt ?? null,
+                },
+            }
+        }),
+        "curation.discard": (input) => curationMutation(input, [], "curation.discard", async (session) =>
+            publicCurationSession(await curationManager.discard(session.id))),
+        "curation.hidden": (input) => {
+            exactFields(input, new Set(), "curation")
+            return [...curationManager.hiddenThreadIds()].sort()
+        },
+        "rubrics.list": (input) => {
+            exactFields(input, new Set(["datasetId"]), "rubric")
+            const datasetId = input.datasetId
+                ? requiredIdentifier(input.datasetId, "Dataset id")
+                : null
+            return {
+                sessions: rubricSessions(datasetId).map(publicRubricSession),
+                versions: datasetId
+                    ? store.listDatasetRubricVersions(datasetId).map(publicRubricVersion)
+                    : [],
+                active: datasetId
+                    ? publicRubricVersion(store.getActiveDatasetRubric(datasetId))
+                    : null,
+            }
+        },
+        "rubrics.get": (input) => {
+            exactFields(input, new Set(["sessionId"]), "rubric")
+            return publicRubricSession(rubricSession(
+                requiredIdentifier(input.sessionId, "Rubric Session id"),
+            ))
+        },
+        "rubrics.create": (input) => {
+            exactFields(input, new Set(["datasetId", "modelId", "effort", "idempotencyKey"]), "rubric")
+            return idempotentReviewMutation("rubrics.create", input, async () => {
+                const datasetId = requiredIdentifier(input.datasetId, "Dataset id")
+                const operation = conversationCurationOperationResolver.resolveRubric(datasetId)
+                const skillEvidence = snapshotSkillEvidence(operation.executionSkillReference)
+                return publicRubricSession(await rubricManager.createSession({
+                    datasetId,
+                    modelId: input.modelId ?? null,
+                    effort: input.effort ?? null,
+                    skillEvidence,
+                    executionSkillReference: operation.executionSkillReference,
+                    operationEvidence: operation.operationEvidence,
+                }))
+            })
+        },
+        "rubrics.send": (input) => rubricMutation(input, ["text"], "rubrics.send", async (session) => {
+            const text = requiredBodyText(input.text, "Rubric review message")
+            return publicRubricSession(await rubricManager.sendMessage(session.id, text))
+        }),
+        "rubrics.retry": (input) => rubricMutation(input, [], "rubrics.retry", async (session) =>
+            publicRubricSession(await rubricManager.retry(session.id))),
+        "rubrics.model": (input) => rubricMutation(input, ["modelId"], "rubrics.model", async (session) =>
+            publicRubricSession(rubricManager.updateModel(session.id, input.modelId ?? null))),
+        "rubrics.effort": (input) => rubricMutation(input, ["effort"], "rubrics.effort", async (session) =>
+            publicRubricSession(rubricManager.updateEffort(session.id, input.effort ?? null))),
+        "rubrics.publish": (input) => rubricMutation(input, [], "rubrics.publish", async (session) => {
+            const version = await rubricManager.publish(session.id)
+            return {
+                session: publicRubricSession(rubricSession(session.id)),
+                version: publicRubricVersion(version),
+            }
+        }),
+        "rubrics.discard": (input) => rubricMutation(input, [], "rubrics.discard", async (session) =>
+            publicRubricSession(await rubricManager.discard(session.id))),
+        "rubrics.hidden": (input) => {
+            exactFields(input, new Set(), "rubric")
+            return [...rubricManager.hiddenThreadIds()].sort()
+        },
         "runtimes.list": ({force = false}) => force
             ? runtimeServices.refresh()
             : runtimeServices.list(),
@@ -750,6 +1144,19 @@ function createRollingSkillApplication(options = {}) {
         "rawCases.update",
         "settings.update",
         "conversationCuration.create",
+        "curation.send",
+        "curation.retry",
+        "curation.model",
+        "curation.effort",
+        "curation.save",
+        "curation.discard",
+        "rubrics.create",
+        "rubrics.send",
+        "rubrics.retry",
+        "rubrics.model",
+        "rubrics.effort",
+        "rubrics.publish",
+        "rubrics.discard",
         "evaluations.start",
         "evaluations.cancel",
         "skills.createCandidate",

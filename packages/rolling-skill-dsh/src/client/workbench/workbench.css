@@ -7,6 +7,43 @@
     padding: 4px 0 24px;
 }
 
+.rolling-skill-workbench-backdrop {
+    background: var(--dsw-alias-bg-mask-1);
+    display: flex;
+    inset: 0;
+    padding: 20px;
+    position: fixed;
+    z-index: 900;
+}
+
+.rolling-skill-workbench-overlay {
+    background: var(--dsw-alias-bg-base);
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: 14px;
+    color: var(--dsw-alias-label-primary);
+    margin: auto;
+    max-height: calc(100vh - 40px);
+    max-width: 1440px;
+    min-height: min(780px, calc(100vh - 40px));
+    overflow: auto;
+    padding: 24px;
+    position: relative;
+    width: 100%;
+}
+
+.rolling-skill-workbench-close {
+    position: absolute;
+    right: 12px;
+    top: 12px;
+    z-index: 1;
+}
+
+.rolling-skill-settings {
+    display: grid;
+    gap: 16px;
+    padding-bottom: 24px;
+}
+
 .rolling-skill-header {
     align-items: flex-start;
     display: flex;
@@ -191,6 +228,8 @@
 }
 
 .rolling-skill-select,
+.rolling-skill-form-stack input,
+.rolling-skill-field input,
 .rolling-skill-form-stack textarea {
     background: var(--dsw-alias-bg-layer-1);
     border: 1px solid var(--dsw-alias-border-l2);
@@ -198,6 +237,85 @@
     color: var(--dsw-alias-label-primary);
     font: inherit;
     padding: 8px 10px;
+}
+
+.rolling-skill-review-layout {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);
+    min-height: 560px;
+}
+
+.rolling-skill-review-list,
+.rolling-skill-review-detail,
+.rolling-skill-session-view {
+    min-width: 0;
+}
+
+.rolling-skill-review-list-button {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    color: var(--dsw-alias-label-primary);
+    cursor: pointer;
+    display: grid;
+    font: inherit;
+    gap: 5px;
+    padding: 10px;
+    text-align: left;
+    width: 100%;
+}
+
+.rolling-skill-review-list-button[data-selected="true"] {
+    border-color: var(--dsw-alias-state-business-primary);
+}
+
+.rolling-skill-review-list-button span {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+}
+
+.rolling-skill-session-view,
+.rolling-skill-evidence-card,
+.rolling-skill-conversation-log,
+.rolling-skill-rubric-draft {
+    display: grid;
+    gap: 12px;
+}
+
+.rolling-skill-session-view h4,
+.rolling-skill-review-list h4 {
+    margin: 8px 0 0;
+}
+
+.rolling-skill-session-view pre,
+.rolling-skill-evidence-card pre {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    max-height: 340px;
+    overflow: auto;
+    padding: 12px;
+    white-space: pre-wrap;
+}
+
+.rolling-skill-conversation-log > div,
+.rolling-skill-rubric-draft article {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    padding: 10px;
+}
+
+.rolling-skill-conversation-log p,
+.rolling-skill-rubric-draft p {
+    margin: 6px 0 0;
+    white-space: pre-wrap;
+}
+
+.rolling-skill-create-rubric {
+    border-bottom: 1px solid var(--dsw-alias-border-l2);
+    padding-bottom: 14px;
 }
 
 .rolling-skill-select {
@@ -235,7 +353,7 @@
 
 .rolling-skill-dialog-backdrop {
     align-items: center;
-    background: var(--dsw-alias-bg-mask);
+    background: var(--dsw-alias-bg-mask-1);
     display: flex;
     inset: 0;
     justify-content: center;
@@ -248,7 +366,6 @@
     background: var(--dsw-alias-bg-layer-2);
     border: 1px solid var(--dsw-alias-border-l2);
     border-radius: 12px;
-    box-shadow: var(--dsw-alias-shadow-modal);
     color: var(--dsw-alias-label-primary);
     display: grid;
     gap: 18px;
@@ -321,6 +438,21 @@
 }
 
 @media (max-width: 640px) {
+    .rolling-skill-workbench-backdrop {
+        padding: 0;
+    }
+
+    .rolling-skill-workbench-overlay {
+        border-radius: 0;
+        max-height: 100vh;
+        min-height: 100vh;
+        padding: 16px;
+    }
+
+    .rolling-skill-review-layout {
+        grid-template-columns: 1fr;
+    }
+
     .rolling-skill-dialog-backdrop {
         align-items: flex-end;
         padding: 0;

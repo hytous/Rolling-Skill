@@ -26,6 +26,117 @@ async function importManagedSkill(application) {
 }
 
 describe("shared Rolling Skill application", () => {
+    it("exposes strict review lifecycles for Curation and Rubric sessions", async () => {
+        const {createRollingSkillApplication} = require(modulePath)
+        const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-review-api-"))
+        const calls = []
+        const curation = {
+            id: "curation-1",
+            datasetId: "dataset-1",
+            status: "needs_review",
+            updatedAt: "2026-08-27T01:00:00.000Z",
+            episode: {originalQuestion: "Question", source: {kind: "dsh-session", sessionId: "session-1"}, items: []},
+            curator: {modelId: "model-a", effort: "high", threadId: "hidden-curator"},
+            conversation: [],
+            revisions: [],
+            draft: {schemaVersion: "draft/v1"},
+        }
+        const rubric = {
+            id: "rubric-1",
+            datasetId: "dataset-1",
+            status: "needs_review",
+            updatedAt: "2026-08-27T02:00:00.000Z",
+            rubricAgent: {modelId: "model-r", effort: "high", threadId: "hidden-rubric"},
+            conversation: [],
+            revisions: [],
+            draft: {schemaVersion: "rubric/v1"},
+        }
+        const curationManager = {
+            hiddenThreadIds: () => new Set(["hidden-curator"]),
+            listSessions: ({archived}) => archived ? [] : [curation],
+            getSession: () => curation,
+            async sendMessage(id, text) { calls.push(["curation.send", id, text]); return curation },
+            async retry(id) { calls.push(["curation.retry", id]); return curation },
+            updateModel(id, value) { calls.push(["curation.model", id, value]); return curation },
+            updateEffort(id, value) { calls.push(["curation.effort", id, value]); return curation },
+            async archive(id) { calls.push(["curation.save", id]); return {id: "case-1"} },
+            async discard(id) { calls.push(["curation.discard", id]); return {...curation, status: "cancelled"} },
+        }
+        const rubricManager = {
+            hiddenThreadIds: () => new Set(["hidden-rubric"]),
+            listSessions: () => [rubric],
+            getSession: () => rubric,
+            async createSession(input) { calls.push(["rubrics.create", input]); return rubric },
+            async sendMessage(id, text) { calls.push(["rubrics.send", id, text]); return rubric },
+            async retry(id) { calls.push(["rubrics.retry", id]); return rubric },
+            updateModel(id, value) { calls.push(["rubrics.model", id, value]); return rubric },
+            updateEffort(id, value) { calls.push(["rubrics.effort", id, value]); return rubric },
+            async publish(id) { calls.push(["rubrics.publish", id]); return {id: "rubric-version-1"} },
+            async discard(id) { calls.push(["rubrics.discard", id]); return {...rubric, status: "cancelled"} },
+        }
+        const application = createRollingSkillApplication({dataRoot, curationManager, rubricManager})
+
+        assert.equal((await application.dispatch("curation.list", {})).items[0].id, "curation-1")
+        assert.equal((await application.dispatch("curation.get", {sessionId: "curation-1"})).revision, curation.updatedAt)
+        assert.deepEqual(await application.dispatch("curation.hidden", {}), ["hidden-curator"])
+        await application.dispatch("curation.send", {
+            sessionId: "curation-1",
+            text: "Revise it",
+            expectedRevision: curation.updatedAt,
+            idempotencyKey: "curation-send-1",
+        })
+        await application.dispatch("curation.model", {
+            sessionId: "curation-1",
+            modelId: "model-b",
+            expectedRevision: curation.updatedAt,
+            idempotencyKey: "curation-model-1",
+        })
+        await application.dispatch("curation.save", {
+            sessionId: "curation-1",
+            expectedRevision: curation.updatedAt,
+            idempotencyKey: "curation-save-1",
+        })
+
+        assert.equal((await application.dispatch("rubrics.list", {})).sessions[0].id, "rubric-1")
+        assert.equal((await application.dispatch("rubrics.get", {sessionId: "rubric-1"})).revision, rubric.updatedAt)
+        assert.deepEqual(await application.dispatch("rubrics.hidden", {}), ["hidden-rubric"])
+        await application.dispatch("rubrics.send", {
+            sessionId: "rubric-1",
+            text: "Tighten R1",
+            expectedRevision: rubric.updatedAt,
+            idempotencyKey: "rubric-send-1",
+        })
+        await application.dispatch("rubrics.publish", {
+            sessionId: "rubric-1",
+            expectedRevision: rubric.updatedAt,
+            idempotencyKey: "rubric-publish-1",
+        })
+
+        assert.deepEqual(calls.map((entry) => entry[0]), [
+            "curation.send", "curation.model", "curation.save", "rubrics.send", "rubrics.publish",
+        ])
+        await assert.rejects(
+            () => application.dispatch("curation.send", {
+                sessionId: "curation-1",
+                text: "Stale",
+                expectedRevision: "stale",
+                idempotencyKey: "curation-send-stale",
+            }),
+            /stale.*revision/i,
+        )
+        await assert.rejects(
+            () => application.dispatch("rubrics.send", {
+                sessionId: "rubric-1",
+                text: "Bad shape",
+                expectedRevision: rubric.updatedAt,
+                idempotencyKey: "rubric-hostile",
+                path: "/forged/SKILL.md",
+            }),
+            /unsupported.*rubric.*field/i,
+        )
+        await application.close()
+    })
+
     it("exposes strict trusted conversation curation methods with concurrent idempotency", async () => {
         const {createRollingSkillApplication} = require(modulePath)
         const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-conversation-"))

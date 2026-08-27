@@ -132,6 +132,53 @@ describe("Rubric Agent manager", () => {
         return store.getRubricSession(session.id)
     }
 
+    it("keeps a managed Dataset pathless while freezing its Rubric execution installation", async () => {
+        const skillPath = join(directory, "SKILL.md")
+        dataset = store.bindDatasetSkill(dataset.id, {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            evidencePrecision: "managed",
+            id: "skill-1",
+            repositoryId: "repository-1",
+            name: "billing-cost-management",
+            path: null,
+            scope: "managed",
+            description: "Billing queries",
+            runtimeId: null,
+            providerId: null,
+            confirmedAt: "2026-08-27T00:00:00.000Z",
+        })
+        const executionSkillReference = {
+            ...dataset.skillReference,
+            evidencePrecision: null,
+            path: skillPath,
+            scope: "runtime",
+            runtimeId: "codex:alpha",
+            providerId: "codex",
+        }
+        const operationEvidence = {
+            schemaVersion: "rolling-skill-operation-evidence/v1",
+            kind: "rubric",
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            runtime: {runtimeId: "codex:alpha", providerId: "codex"},
+            installation: {destination: directory},
+        }
+
+        const created = await manager.createSession({
+            datasetId: dataset.id,
+            skillEvidence: snapshotSkillEvidence(executionSkillReference),
+            executionSkillReference,
+            operationEvidence,
+        })
+        await manager.waitForIdle(created.id)
+        const session = store.getRubricSession(created.id)
+
+        assert.equal(session.skillReference.path, null)
+        assert.equal(session.executionSkillReference.path, skillPath)
+        assert.equal(session.operationEvidence.kind, "rubric")
+        assert.equal(runtime.startedTurns[0].input[0].path, skillPath)
+    })
+
     it("starts a read-only subagent with frozen Skill evidence and selected effort", async () => {
         const session = await start()
 

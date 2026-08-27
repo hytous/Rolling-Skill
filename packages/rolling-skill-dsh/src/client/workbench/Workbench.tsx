@@ -12,6 +12,8 @@ import {OperatorPanel} from "./OperatorPanel"
 import {OptimizationPanel} from "./OptimizationPanel"
 import {RawCasesPanel} from "./RawCasesPanel"
 import {SkillsPanel} from "./SkillsPanel"
+import {CurationPanel} from "./CurationPanel"
+import {RubricPanel} from "./RubricPanel"
 
 interface DashboardSnapshot {
     counts: {
@@ -49,18 +51,41 @@ interface LocaleService {
 interface WorkbenchProps {
     locale: LocaleService
     t: Translate
+    initialRoute?: WorkbenchRoute
+    onRouteChange?: (route: WorkbenchRoute) => void
 }
 
-type TabId = "overview" | "cases" | "skills" | "evaluations" | "automatic" | "operator" | "settings"
+export type WorkbenchRoute =
+    | {page: "overview"}
+    | {page: "curation"; sessionId?: string}
+    | {page: "datasets"; datasetId?: string}
+    | {page: "cases"; datasetId?: string; caseId?: string}
+    | {page: "raw-cases"; rawCaseId?: string}
+    | {page: "rubrics"; datasetId?: string; sessionId?: string}
+    | {page: "skills"; repositoryId?: string; skillId?: string}
+    | {page: "installations"; jobId?: string}
+    | {page: "evaluations"; runId?: string}
+    | {page: "automatic"}
+    | {page: "operator"; sessionId?: string}
+    | {page: "optimization"; runId?: string}
+    | {page: "import"}
+    | {page: "diagnostics"}
 
-const TABS: Array<{id: TabId; label: TranslationKey}> = [
+const TABS: Array<{id: WorkbenchRoute["page"]; label: TranslationKey}> = [
     {id: "overview", label: "overview"},
+    {id: "curation", label: "curation"},
+    {id: "datasets", label: "datasets"},
     {id: "cases", label: "cases"},
+    {id: "raw-cases", label: "rawCases"},
+    {id: "rubrics", label: "rubrics"},
     {id: "skills", label: "skills"},
+    {id: "installations", label: "installations"},
     {id: "evaluations", label: "evaluations"},
     {id: "automatic", label: "automatic"},
     {id: "operator", label: "operator"},
-    {id: "settings", label: "settings"},
+    {id: "optimization", label: "optimizationTitle"},
+    {id: "import", label: "legacyImportTitle"},
+    {id: "diagnostics", label: "diagnostics"},
 ]
 
 function dateTime(value: string | null, fallback: string): string {
@@ -69,13 +94,13 @@ function dateTime(value: string | null, fallback: string): string {
     return Number.isFinite(date.getTime()) ? date.toLocaleString() : fallback
 }
 
-export function Workbench({locale, t}: WorkbenchProps) {
+export function Workbench({locale, t, initialRoute = {page: "overview"}, onRouteChange}: WorkbenchProps) {
     useSyncExternalStore(
         (listener) => locale.subscribe(listener),
         () => locale.getSnapshot().revision,
         () => 0,
     )
-    const [activeTab, setActiveTab] = useState<TabId>("overview")
+    const [route, setRoute] = useState<WorkbenchRoute>(initialRoute)
     const [reloadRevision, setReloadRevision] = useState(0)
     const [dataRevision, setDataRevision] = useState(0)
     const [state, setState] = useState<
@@ -100,6 +125,14 @@ export function Workbench({locale, t}: WorkbenchProps) {
     }, [reloadRevision])
 
     const reload = () => setReloadRevision((revision) => revision + 1)
+    const navigate = (next: WorkbenchRoute) => {
+        setRoute(next)
+        onRouteChange?.(next)
+    }
+
+    useEffect(() => {
+        setRoute(initialRoute)
+    }, [JSON.stringify(initialRoute)])
 
     return (
         <section className="rolling-skill-workbench" aria-labelledby="rolling-skill-title">
@@ -117,10 +150,10 @@ export function Workbench({locale, t}: WorkbenchProps) {
                 {TABS.map((tab) => (
                     <Button
                         key={tab.id}
-                        variant={activeTab === tab.id ? "outline" : "ghost"}
+                        variant={route.page === tab.id ? "outline" : "ghost"}
                         size="sm"
-                        aria-pressed={activeTab === tab.id}
-                        onClick={() => setActiveTab(tab.id)}
+                        aria-pressed={route.page === tab.id}
+                        onClick={() => navigate({page: tab.id} as WorkbenchRoute)}
                     >
                         {t(tab.label)}
                     </Button>
@@ -135,28 +168,38 @@ export function Workbench({locale, t}: WorkbenchProps) {
                     <span>{state.message}</span>
                     <Button variant="outline" size="sm" onClick={reload}>{t("retry")}</Button>
                 </div>
-            ) : activeTab === "cases" ? (
-                <div className="rolling-skill-data-stack">
-                    <DatasetsPanel t={t} onChanged={() => setDataRevision((value) => value + 1)}/>
-                    <CasesPanel t={t} revision={dataRevision} onChanged={() => setDataRevision((value) => value + 1)}/>
-                    <RawCasesPanel t={t} revision={dataRevision} onChanged={() => setDataRevision((value) => value + 1)}/>
-                </div>
-            ) : activeTab === "evaluations" ? (
+            ) : route.page === "curation" ? (
+                <CurationPanel t={t} initialSessionId={route.sessionId} onNavigate={navigate}/>
+            ) : route.page === "datasets" ? (
+                <DatasetsPanel t={t} onChanged={() => setDataRevision((value) => value + 1)}/>
+            ) : route.page === "cases" ? (
+                <CasesPanel t={t} revision={dataRevision} onChanged={() => setDataRevision((value) => value + 1)}/>
+            ) : route.page === "raw-cases" ? (
+                <RawCasesPanel t={t} revision={dataRevision} onChanged={() => setDataRevision((value) => value + 1)}/>
+            ) : route.page === "rubrics" ? (
+                <RubricPanel
+                    t={t}
+                    initialDatasetId={route.datasetId}
+                    initialSessionId={route.sessionId}
+                    onNavigate={navigate}
+                />
+            ) : route.page === "evaluations" ? (
                 <EvaluationsPanel t={t}/>
-            ) : activeTab === "skills" ? (
+            ) : route.page === "skills" || route.page === "installations" ? (
                 <SkillsPanel t={t}/>
-            ) : activeTab === "automatic" ? (
+            ) : route.page === "automatic" ? (
                 <AutomaticCapturePanel t={t}/>
-            ) : activeTab === "operator" ? (
-                <div className="rolling-skill-data-stack">
-                    <OperatorPanel t={t}/>
-                    <OptimizationPanel t={t}/>
-                </div>
-            ) : activeTab === "settings" ? (
+            ) : route.page === "operator" ? (
+                <OperatorPanel t={t}/>
+            ) : route.page === "optimization" ? (
+                <OptimizationPanel t={t}/>
+            ) : route.page === "import" ? (
                 <ImportPanel t={t}/>
-            ) : activeTab !== "overview" ? (
+            ) : route.page === "diagnostics" ? (
+                <Overview dashboard={state.dashboard} t={t}/>
+            ) : route.page !== "overview" ? (
                 <div className="rolling-skill-panel">
-                    <h3>{t(TABS.find((tab) => tab.id === activeTab)?.label ?? "overview")}</h3>
+                    <h3>{t(TABS.find((tab) => tab.id === route.page)?.label ?? "overview")}</h3>
                     <p>{t("comingSoon")}</p>
                 </div>
             ) : (

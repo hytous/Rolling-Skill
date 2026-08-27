@@ -1,8 +1,9 @@
-import {Workbench} from "./workbench/Workbench"
 import workbenchCss from "./workbench/workbench.css"
 import {DICTIONARIES, LOCALE_NAMESPACE} from "./locale"
 import {CaseCaptureAction} from "./conversation/CaseCaptureAction"
 import {ConversationCurationMarkers} from "./conversation/ConversationCurationMarkers"
+import {WorkbenchLauncher} from "./workbench/WorkbenchLauncher"
+import {RollingSkillSettings} from "./settings/RollingSkillSettings"
 
 interface ClientContext {
     effect(factory: () => (() => void), label: string): unknown
@@ -34,9 +35,7 @@ export function apply(ctx: ClientContext): void {
         return () => style.remove()
     }, "rolling-skill: workbench styles")
 
-    const RollingSkillSection = () => (
-        <Workbench locale={ctx.locale} t={t}/>
-    )
+    const RollingSkillSection = () => <RollingSkillSettings t={t}/>
     ctx.slots.inject("settings.section", () => ctx.slots.register({
         name: "settings.section",
         id: "rolling-skill",
@@ -44,6 +43,17 @@ export function apply(ctx: ClientContext): void {
         label: () => t("nav"),
         locale: LOCALE_NAMESPACE,
     }, RollingSkillSection))
+
+    const RollingSkillWorkbenchLauncher = (props: Record<string, unknown>) => (
+        <WorkbenchLauncher wide={Boolean(props.wide)} locale={ctx.locale} t={t}/>
+    )
+    ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
+        name: "sidebar.footer.action",
+        id: "rolling-skill-workbench",
+        order: 20,
+        label: () => t("nav"),
+        locale: LOCALE_NAMESPACE,
+    }, RollingSkillWorkbenchLauncher))
 
     const RollingSkillCaseCaptureAction = (props: Record<string, unknown>) => (
         <CaseCaptureAction

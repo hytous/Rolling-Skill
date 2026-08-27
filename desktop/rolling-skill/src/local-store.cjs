@@ -414,6 +414,16 @@ function migrateState(input) {
             changed = true
         }
     }
+    for (const session of state.rubricSessions) {
+        if (!("executionSkillReference" in session)) {
+            session.executionSkillReference = null
+            changed = true
+        }
+        if (!("operationEvidence" in session)) {
+            session.operationEvidence = null
+            changed = true
+        }
+    }
     for (const entry of state.cases) {
         if (!entry.source || typeof entry.source !== "object" || Array.isArray(entry.source)) {
             entry.source = {}
@@ -1471,6 +1481,35 @@ class LocalEvaluationStore {
         const state = this.load()
         const dataset = requireDataset(state, input.datasetId)
         const skillReference = copy(requireDatasetSkill(dataset))
+        const executionSkillReference = input.executionSkillReference
+            ? normalizeSkillReference(input.executionSkillReference)
+            : null
+        const operationEvidence = input.operationEvidence
+            ? structuredObject(input.operationEvidence, "Rubric operation evidence")
+            : null
+        if (executionSkillReference && skillReference.evidencePrecision === "managed") {
+            if (
+                executionSkillReference.id !== skillReference.id ||
+                executionSkillReference.repositoryId !== skillReference.repositoryId ||
+                executionSkillReference.name !== skillReference.name ||
+                !executionSkillReference.path ||
+                !executionSkillReference.runtimeId ||
+                !executionSkillReference.providerId
+            ) {
+                throw new Error("Rubric execution Skill does not match the Dataset managed Skill")
+            }
+            if (
+                operationEvidence?.schemaVersion !== "rolling-skill-operation-evidence/v1" ||
+                operationEvidence.kind !== "rubric" ||
+                operationEvidence.repositoryId !== skillReference.repositoryId ||
+                operationEvidence.skillId !== skillReference.id ||
+                operationEvidence.runtime?.runtimeId !== executionSkillReference.runtimeId ||
+                operationEvidence.runtime?.providerId !== executionSkillReference.providerId ||
+                operationEvidence.installation?.destination !== executionSkillReference.path.replace(/\/SKILL\.md$/iu, "")
+            ) {
+                throw new Error("Rubric operation evidence does not match its execution Skill")
+            }
+        }
         const skillEvidence = copy(validateSkillEvidence(input.skillEvidence, {
             expectedName: skillReference.name,
             requireComplete: true,
@@ -1490,6 +1529,8 @@ class LocalEvaluationStore {
             baseVersionId,
             status: "queued",
             skillReference,
+            executionSkillReference,
+            operationEvidence,
             skillEvidence,
             rubricAgent: {
                 runtimeId: input.rubricAgent?.runtimeId ?? null,
@@ -1662,6 +1703,7 @@ class LocalEvaluationStore {
             rubricDigest: datasetRubricDigest(rubric),
             skillReference: copy(session.skillReference),
             skillEvidenceDigest: session.skillEvidence.digest,
+            operationEvidence: copy(session.operationEvidence),
             sourceSessionId: session.id,
             baseVersionId: session.baseVersionId,
             createdAt: now,

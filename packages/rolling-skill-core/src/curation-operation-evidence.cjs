@@ -26,7 +26,14 @@ function createCurationOperationEvidenceResolver({
         throw new Error("Curation operation evidence dependencies are required")
     }
 
-    function resolveEvidence(datasetId, {observedSkills} = {}) {
+    function resolveEvidence(datasetId, {
+        observedSkills,
+        kind = "curation",
+        requireRubric = kind === "curation",
+    } = {}) {
+        if (kind !== "curation" && kind !== "rubric") {
+            throw new Error("Managed Skill operation kind is invalid")
+        }
         const dataset = store.getDataset(datasetId)
         const datasetSkill = dataset.skillReference
         if (
@@ -40,7 +47,9 @@ function createCurationOperationEvidenceResolver({
             throw new Error("Dataset must bind a pathless managed Skill before curation")
         }
         const rubric = store.getActiveDatasetRubric(dataset.id)
-        if (!rubric) throw new Error("A published dataset Rubric is required before curation")
+        if (requireRubric && !rubric) {
+            throw new Error("A published dataset Rubric is required before curation")
+        }
         const selectedRuntime = configStore.read().runtime
         if (!selectedRuntime?.runtimeId) {
             throw new Error("Select a Runtime before starting curation")
@@ -168,7 +177,7 @@ function createCurationOperationEvidenceResolver({
             },
             operationEvidence: {
                 schemaVersion: "rolling-skill-operation-evidence/v1",
-                kind: "curation",
+                kind,
                 repositoryId: repository.id,
                 skillId: skill.id,
                 skillName: skill.name,
@@ -177,7 +186,7 @@ function createCurationOperationEvidenceResolver({
                 commit: version.commit,
                 skillRoot: version.skillRoot,
                 contentDigest: version.contentDigest,
-                rubricVersionId: rubric.id,
+                rubricVersionId: rubric?.id ?? null,
                 runtime: runtimeSnapshot,
                 installation: {
                     installationId: installation.installationId ?? installation.id,
@@ -226,7 +235,11 @@ function createCurationOperationEvidenceResolver({
         }
     }
 
-    return Object.freeze({inspectDataset, resolve: resolveEvidence})
+    function resolveRubric(datasetId) {
+        return resolveEvidence(datasetId, {kind: "rubric", requireRubric: false})
+    }
+
+    return Object.freeze({inspectDataset, resolve: resolveEvidence, resolveRubric})
 }
 
 module.exports = {createCurationOperationEvidenceResolver}

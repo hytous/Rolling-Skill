@@ -51,10 +51,16 @@ describe("Rolling Skill native DSH Client", () => {
         assert.doesNotMatch(`${index}\n${controller}`, /conversation\.chat\.node/u)
     })
 
-    it("registers one localized additive Settings section", () => {
+    it("launches an independent workbench and keeps Settings administrative", () => {
         const index = source("index.tsx")
         const locale = source("locale.ts")
+        const launcher = source("workbench/WorkbenchLauncher.tsx")
+        const overlay = source("workbench/WorkbenchOverlay.tsx")
+        const settings = source("settings/RollingSkillSettings.tsx")
 
+        assert.match(index, /slots\.inject\("sidebar\.footer\.action"/u)
+        assert.match(index, /name:\s*"sidebar\.footer\.action"/u)
+        assert.match(index, /id:\s*"rolling-skill-workbench"/u)
         assert.match(index, /slots\.inject\("settings\.section"/u)
         assert.match(index, /name:\s*"settings\.section"/u)
         assert.match(index, /id:\s*"rolling-skill"/u)
@@ -63,7 +69,14 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(index, /locale\.register\(LOCALE_NAMESPACE,\s*DICTIONARIES\)/u)
         assert.match(locale, /export const zh/u)
         assert.match(locale, /export const en/u)
-        assert.doesNotMatch(index, /sidebar|replaceChildren|createRoot/u)
+        assert.match(launcher, /rolling-skill:open-workbench/u)
+        assert.match(overlay, /role="dialog"/u)
+        assert.match(overlay, /aria-modal="true"/u)
+        assert.match(overlay, /event\.key\s*===\s*"Escape"/u)
+        assert.match(settings, /<ImportPanel/u)
+        assert.doesNotMatch(settings, /<Workbench/u)
+        assert.doesNotMatch(index, /conversation\.session["']/u)
+        assert.doesNotMatch(index, /replaceChildren|createRoot/u)
     })
 
     it("uses the bounded same-origin API and aborts stale requests", () => {

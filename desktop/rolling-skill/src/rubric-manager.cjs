@@ -121,6 +121,8 @@ class RubricManager {
             datasetId: dataset.id,
             baseVersionId,
             skillEvidence: input.skillEvidence,
+            executionSkillReference: input.executionSkillReference,
+            operationEvidence: input.operationEvidence,
             rubricAgent: {
                 runtimeId: descriptor?.runtimeId ?? null,
                 modelProvider: descriptor?.providerId ?? null,
@@ -185,8 +187,8 @@ class RubricManager {
             const turnInput = [
                 {
                     type: "skill",
-                    name: session.skillReference.name,
-                    path: session.skillReference.path,
+                    name: (session.executionSkillReference ?? session.skillReference).name,
+                    path: (session.executionSkillReference ?? session.skillReference).path,
                 },
                 {type: "text", text: prompt, text_elements: []},
             ]

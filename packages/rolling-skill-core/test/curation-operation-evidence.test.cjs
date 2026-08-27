@@ -203,4 +203,15 @@ describe("Curation operation evidence", () => {
             /source.*Skill.*installation|observed.*Skill.*installation/i,
         )
     })
+
+    it("resolves Rubric authoring from the same managed Skill installation without requiring an active Rubric", () => {
+        const {resolver} = fixture({rubric: null})
+
+        const resolved = resolver.resolveRubric("dataset-1")
+
+        assert.equal(resolved.executionSkillReference.path, "/opt/dsh/skills/billing/SKILL.md")
+        assert.equal(resolved.operationEvidence.kind, "rubric")
+        assert.equal(resolved.operationEvidence.rubricVersionId, null)
+        assert.equal(resolved.operationEvidence.versionId, "version-1")
+    })
 })
