@@ -10,6 +10,47 @@ function source(path) {
 }
 
 describe("Rolling Skill native DSH Client", () => {
+    it("adds exactly one finalized Assistant action without replacing conversation nodes", () => {
+        const index = source("index.tsx")
+        const action = source("conversation/CaseCaptureAction.tsx")
+        const dialog = source("conversation/CaseCaptureDialog.tsx")
+        const combined = `${index}\n${action}\n${dialog}`
+
+        assert.equal((index.match(/slots\.inject\("conversation\.chat\.assistant-actions"/gu) ?? []).length, 1)
+        assert.match(index, /name:\s*"conversation\.chat\.assistant-actions"/u)
+        assert.match(index, /id:\s*"rolling-skill-case-capture"/u)
+        assert.match(action, /messageId/u)
+        assert.match(action, /sessionId/u)
+        assert.match(dialog, /conversationCuration\.inspect/u)
+        assert.match(dialog, /conversationCuration\.create/u)
+        assert.match(dialog, /startSeq/u)
+        assert.match(dialog, /datasetId/u)
+        assert.match(dialog, /idempotencyKey/u)
+        assert.doesNotMatch(combined, /conversation\.chat\.node/u)
+        assert.doesNotMatch(dialog, /dangerouslySetInnerHTML/u)
+        assert.doesNotMatch(dialog, /(?:episode|events|messages|snapshotPath|digest|runtimePath|providerId|installationId)\s*:/u)
+    })
+
+    it("projects durable Draft and saved ranges onto native flow keys", () => {
+        const index = source("index.tsx")
+        const controller = source("conversation/ConversationCurationMarkers.tsx")
+        const projection = source("conversation/curation-markers.cjs")
+        const css = source("workbench/workbench.css")
+
+        assert.match(index, /slots\.inject\("conversation\.session\.header\.utilities"/u)
+        assert.match(controller, /conversationCuration\.markers/u)
+        assert.match(controller, /useSession/u)
+        assert.match(controller, /data-chat-flow-key/u)
+        assert.match(controller, /CSS\.escape/u)
+        assert.match(controller, /rolling-skill:curation-markers-changed/u)
+        assert.match(projection, /anchorSeq/u)
+        assert.match(css, /rolling-skill-curation-draft/u)
+        assert.match(css, /rolling-skill-curation-saved/u)
+        assert.match(controller, /markerDraftLegend/u)
+        assert.match(controller, /markerSavedLegend/u)
+        assert.doesNotMatch(`${index}\n${controller}`, /conversation\.chat\.node/u)
+    })
+
     it("registers one localized additive Settings section", () => {
         const index = source("index.tsx")
         const locale = source("locale.ts")

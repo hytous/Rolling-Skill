@@ -233,6 +233,139 @@
     color: var(--dsw-alias-label-error) !important;
 }
 
+.rolling-skill-dialog-backdrop {
+    align-items: center;
+    background: var(--dsw-alias-bg-mask);
+    display: flex;
+    inset: 0;
+    justify-content: center;
+    padding: 20px;
+    position: fixed;
+    z-index: 1000;
+}
+
+.rolling-skill-dialog {
+    background: var(--dsw-alias-bg-layer-2);
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: 12px;
+    box-shadow: var(--dsw-alias-shadow-modal);
+    color: var(--dsw-alias-label-primary);
+    display: grid;
+    gap: 18px;
+    max-height: min(760px, calc(100vh - 40px));
+    max-width: 620px;
+    min-width: 0;
+    overflow: auto;
+    padding: 20px;
+    width: 100%;
+}
+
+.rolling-skill-dialog-header {
+    align-items: flex-start;
+    display: flex;
+    gap: 16px;
+    justify-content: space-between;
+}
+
+.rolling-skill-dialog-header h2,
+.rolling-skill-dialog-header p {
+    margin: 0;
+}
+
+.rolling-skill-dialog-header p {
+    color: var(--dsw-alias-label-secondary);
+    margin-top: 6px;
+}
+
+.rolling-skill-dialog .rolling-skill-select {
+    margin-top: 0;
+    max-width: none;
+}
+
+.rolling-skill-label-fieldset {
+    border: 0;
+    display: flex;
+    gap: 16px;
+    margin: 0;
+    padding: 0;
+}
+
+.rolling-skill-label-fieldset legend {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.rolling-skill-label-fieldset label {
+    align-items: center;
+    display: flex;
+    gap: 6px;
+}
+
+.rolling-skill-blockers {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-state-warning-primary);
+    border-radius: 8px;
+    color: var(--dsw-alias-label-primary);
+    padding: 12px;
+}
+
+.rolling-skill-blockers ul {
+    margin: 8px 0 0;
+    padding-left: 20px;
+}
+
+.rolling-skill-dialog-actions {
+    justify-content: flex-end;
+}
+
+@media (max-width: 640px) {
+    .rolling-skill-dialog-backdrop {
+        align-items: flex-end;
+        padding: 0;
+    }
+
+    .rolling-skill-dialog {
+        border-radius: 12px 12px 0 0;
+        max-height: 90vh;
+    }
+}
+
+[data-chat-flow-key].rolling-skill-curation-draft {
+    background: var(--dsw-alias-state-warn-tertiary);
+    box-shadow: inset 3px 0 var(--dsw-alias-state-warn-primary);
+}
+
+[data-chat-flow-key].rolling-skill-curation-saved {
+    background: var(--dsw-alias-state-success-tertiary);
+    box-shadow: inset 3px 0 var(--dsw-alias-state-success-primary);
+}
+
+.rolling-skill-marker-legend {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.rolling-skill-marker-chip,
+.rolling-skill-marker-compatibility {
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: 999px;
+    color: var(--dsw-alias-label-secondary);
+    font-size: 11px;
+    padding: 3px 7px;
+}
+
+.rolling-skill-marker-chip-draft {
+    border-color: var(--dsw-alias-state-warn-primary);
+}
+
+.rolling-skill-marker-chip-saved {
+    border-color: var(--dsw-alias-state-success-primary);
+}
+
 .rolling-skill-runtime-select {
     border: 0;
     display: grid;
