@@ -3,6 +3,8 @@ import {useEffect, useMemo, useState} from "react"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
+import {ModelEffortSelect} from "./ModelEffortSelect"
+import type {RuntimeModel} from "./ModelEffortSelect"
 import {RuntimeSelect} from "./RuntimeSelect"
 import type {RuntimeDescriptor} from "./RuntimeSelect"
 
@@ -17,7 +19,6 @@ interface Dataset {
         name?: string
     } | null
 }
-interface Model {id?: string; model?: string; displayName?: string}
 interface Version {
     id: string
     skillId: string
@@ -59,12 +60,12 @@ export function EvaluationsPanel({t, initialRunId}: {t: Translate; initialRunId?
     const [versions, setVersions] = useState<Version[]>([])
     const [versionId, setVersionId] = useState("")
     const [installations, setInstallations] = useState<Installation[]>([])
-    const [targetModels, setTargetModels] = useState<Model[]>([])
-    const [judgeModels, setJudgeModels] = useState<Model[]>([])
+    const [targetModels, setTargetModels] = useState<RuntimeModel[]>([])
+    const [judgeModels, setJudgeModels] = useState<RuntimeModel[]>([])
     const [targetModelId, setTargetModelId] = useState("")
     const [judgeModelId, setJudgeModelId] = useState("")
-    const [effort, setEffort] = useState("high")
-    const [judgeEffort, setJudgeEffort] = useState("high")
+    const [effort, setEffort] = useState("")
+    const [judgeEffort, setJudgeEffort] = useState("")
     const [activationMode, setActivationMode] = useState<"explicit" | "automatic">("explicit")
     const [caseScope, setCaseScope] = useState<"all" | "goodcase" | "badcase">("all")
     const [caseIds, setCaseIds] = useState<string[]>([])
@@ -146,7 +147,7 @@ export function EvaluationsPanel({t, initialRunId}: {t: Translate; initialRunId?
     useEffect(() => {
         if (!targetRuntimeId) return
         const controller = new AbortController()
-        requestRollingSkill<Model[]>("runtimes.models", {runtimeId: targetRuntimeId}, controller.signal)
+        requestRollingSkill<RuntimeModel[]>("runtimes.models", {runtimeId: targetRuntimeId}, controller.signal)
             .then((models) => {
                 setTargetModels(models)
                 setTargetModelId(models[0]?.id ?? models[0]?.model ?? "")
@@ -160,7 +161,7 @@ export function EvaluationsPanel({t, initialRunId}: {t: Translate; initialRunId?
     useEffect(() => {
         if (!judgeRuntimeId) return
         const controller = new AbortController()
-        requestRollingSkill<Model[]>("runtimes.models", {runtimeId: judgeRuntimeId}, controller.signal)
+        requestRollingSkill<RuntimeModel[]>("runtimes.models", {runtimeId: judgeRuntimeId}, controller.signal)
             .then((models) => {
                 setJudgeModels(models)
                 setJudgeModelId(models[0]?.id ?? models[0]?.model ?? "")
@@ -195,8 +196,8 @@ export function EvaluationsPanel({t, initialRunId}: {t: Translate; initialRunId?
         caseIds: caseScope === "all" ? [] : caseIds,
         selectionMode: caseScope === "all" ? "dataset" : "selected",
         activationMode,
-        targets: targetRuntimeIds.map((runtimeId) => ({runtimeId, modelId: runtimeId === targetRuntimeId ? targetModelId || null : null, effort})),
-        judge: {runtimeId: judgeRuntimeId, modelId: judgeModelId || null, effort: judgeEffort},
+        targets: targetRuntimeIds.map((runtimeId) => ({runtimeId, modelId: runtimeId === targetRuntimeId ? targetModelId || null : null, effort: effort || null})),
+        judge: {runtimeId: judgeRuntimeId, modelId: judgeModelId || null, effort: judgeEffort || null},
     }))
     const inspect = async (runId: string) => {
         setError(null)
@@ -225,10 +226,10 @@ export function EvaluationsPanel({t, initialRunId}: {t: Translate; initialRunId?
                 <p className={installationsReady ? "rolling-skill-inline-success" : "rolling-skill-inline-error"}>{installationsReady ? t("installationReady") : t("installationMissing")}</p>
                 <div className="rolling-skill-grid">
                     <label className="rolling-skill-field"><span>{t("model")}</span><select className="rolling-skill-select" value={targetModelId} onChange={(event) => setTargetModelId(event.target.value)}>{targetModels.map((model) => {const id = model.id ?? model.model ?? ""; return <option key={id} value={id}>{model.displayName ?? id}</option>})}</select></label>
-                    <label className="rolling-skill-field"><span>{t("effort")}</span><select className="rolling-skill-select" value={effort} onChange={(event) => setEffort(event.target.value)}>{["low", "medium", "high", "xhigh", "max"].map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+                    <ModelEffortSelect label={t("effort")} runtimeDefaultLabel={t("runtimeDefault")} models={targetModels} modelId={targetModelId} value={effort} onChange={setEffort}/>
                 </div>
                 <RuntimeSelect t={t} runtimes={runtimes} value={judgeRuntimeId} onChange={setJudgeRuntimeId} label={t("judgeRuntime")}/>
-                <div className="rolling-skill-grid"><label className="rolling-skill-field"><span>{t("judgeModel")}</span><select className="rolling-skill-select" value={judgeModelId} onChange={(event) => setJudgeModelId(event.target.value)}>{judgeModels.map((model) => {const id = model.id ?? model.model ?? ""; return <option key={id} value={id}>{model.displayName ?? id}</option>})}</select></label><label className="rolling-skill-field"><span>{t("effort")}</span><select className="rolling-skill-select" value={judgeEffort} onChange={(event) => setJudgeEffort(event.target.value)}>{["low", "medium", "high", "xhigh", "max"].map((item) => <option key={item} value={item}>{item}</option>)}</select></label></div>
+                <div className="rolling-skill-grid"><label className="rolling-skill-field"><span>{t("judgeModel")}</span><select className="rolling-skill-select" value={judgeModelId} onChange={(event) => setJudgeModelId(event.target.value)}>{judgeModels.map((model) => {const id = model.id ?? model.model ?? ""; return <option key={id} value={id}>{model.displayName ?? id}</option>})}</select></label><ModelEffortSelect label={t("effort")} runtimeDefaultLabel={t("runtimeDefault")} models={judgeModels} modelId={judgeModelId} value={judgeEffort} onChange={setJudgeEffort}/></div>
                 {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
                 <Button variant="outline" disabled={busy || !datasetId || !versionId || !targetRuntimeId || !judgeRuntimeId || !installationsReady || (caseScope !== "all" && caseIds.length === 0)} onClick={() => void start()}>{t("startEvaluation")}</Button>
             </section>

@@ -15,6 +15,14 @@ const {
 
 const MAX_TIMER_DELAY = 2_147_000_000
 const AUTOMATIC_CONFIDENCE_THRESHOLD = 0.8
+const ROLLING_SKILL_INTERNAL_PROMPT_PREFIXES = [
+    "Identify complete user problem ranges from incremental user messages only.",
+    "Classify only this completed problem episode. Identify the principal enabled Skill,",
+    "You are judging one agent Skill evaluation result.",
+    "You are the Curator for an agent Skill evaluation dataset.",
+    "You are the Rubric Agent for one Skill evaluation dataset.",
+    "Re-execute the immutable evaluation question below with the current Skill and current",
+]
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
@@ -77,6 +85,64 @@ function automaticDatasetFor(candidate, datasets, preferredDatasetId = null) {
     return matches.length === 1 ? matches[0] : null
 }
 
+function closeAnsweredPendingTail(boundary, batch) {
+    if (!boundary.pendingStartUserItemId) return boundary
+    const pendingIndex = batch.findIndex(
+        (message) => message.id === boundary.pendingStartUserItemId,
+    )
+    const pending = pendingIndex >= 0 ? batch.slice(pendingIndex) : []
+    if (!pending.length || pending.some((message) => !message.assistantCompleted)) return boundary
+    return {
+        segments: [
+            ...boundary.segments,
+            {
+                startUserItemId: pending[0].id,
+                endUserItemId: pending.at(-1).id,
+                summary: pending.map((message) => message.text.trim()).join(" ").slice(0, 500),
+            },
+        ],
+        pendingStartUserItemId: null,
+    }
+}
+
+function deferIncompleteSegments(boundary, batch) {
+    let pendingStartUserItemId = boundary.pendingStartUserItemId
+    const segments = []
+    for (const segment of boundary.segments) {
+        const end = batch.find((message) => message.id === segment.endUserItemId)
+        if (!end?.assistantCompleted) {
+            pendingStartUserItemId ??= segment.startUserItemId
+            continue
+        }
+        segments.push(segment)
+    }
+    return {segments, pendingStartUserItemId}
+}
+
+function isAutomaticAnalysisTask(messages) {
+    return messages.some((message) => ROLLING_SKILL_INTERNAL_PROMPT_PREFIXES.some(
+        (prefix) => {
+            const text = message.text.trimStart()
+            if (text.startsWith(prefix)) return true
+            const offset = text.indexOf(prefix)
+            return text.startsWith("/") && offset > 0 && offset <= 200
+        },
+    ))
+}
+
+function completedTurn(status) {
+    return status === undefined || status === null || status === "completed"
+}
+
+function sourceMatchesSession(observation, session) {
+    const source = session?.episode?.source ?? session?.source
+    if (!observation || !source) return false
+    return (
+        String(observation.threadId ?? "") === String(source.threadId ?? "") &&
+        String(observation.endItemId ?? "") === String(source.endItemId ?? "")
+    )
+}
+
 class ConversationDiscoveryManager {
     constructor({
         store,
@@ -88,6 +154,7 @@ class ConversationDiscoveryManager {
         listDatasets = () => store.listDatasets(),
         listSkills = async () => [],
         runAnalysis,
+        captureEpisode = null,
         getHiddenThreadIds = () => new Set(),
         now = () => new Date(),
         setTimer = (callback, delay) => setTimeout(callback, delay),
@@ -104,6 +171,7 @@ class ConversationDiscoveryManager {
         this.listDatasets = listDatasets
         this.listSkills = listSkills
         this.runAnalysis = runAnalysis
+        this.captureEpisode = captureEpisode
         this.getHiddenThreadIds = getHiddenThreadIds
         this.now = now
         this.setTimer = setTimer
@@ -113,6 +181,7 @@ class ConversationDiscoveryManager {
         this.analysisThreadIds = new Set()
         this.automaticSessions = new Map()
         this.automaticArchiveAttempts = new Set()
+        this.automaticRecoveryAttempts = new Set()
         this.runningPromise = null
         this.timer = null
         this.started = false
@@ -207,7 +276,7 @@ class ConversationDiscoveryManager {
     }
 
     async handleCurationChanged(session) {
-        const tracked = this.automaticSessions.get(session?.id)
+        const tracked = this.trackAutomaticSession(session)
         if (
             !tracked ||
             session.status !== "needs_review" ||
@@ -225,10 +294,56 @@ class ConversationDiscoveryManager {
             this.emitStatus()
             return true
         } catch (error) {
+            this.automaticArchiveAttempts.delete(session.id)
             this.onError(error)
             this.emitStatus()
             return false
         }
+    }
+
+    trackAutomaticSession(session) {
+        if (!session?.id) return null
+        const existing = this.automaticSessions.get(session.id)
+        if (existing) return existing
+        const rawCase = (this.rawCaseStore.list?.() ?? []).find((record) => {
+            const observations = Array.isArray(record?.source?.observations)
+                ? record.source.observations
+                : record?.source?.kind === "automatic_capture"
+                    ? [record.source]
+                    : []
+            return observations.some((observation) => sourceMatchesSession(observation, session))
+        })
+        if (!rawCase?.id) return null
+        const tracked = {rawCaseId: rawCase.id}
+        this.automaticSessions.set(session.id, tracked)
+        return tracked
+    }
+
+    async recoverAutomaticSessions() {
+        if (this.profile().mode !== "automatic" || !this.curationManager?.listSessions) {
+            return false
+        }
+        let recovered = false
+        const sessions = await Promise.resolve(this.curationManager.listSessions({archived: false}))
+        for (const session of arrays(sessions)) {
+            if (!this.trackAutomaticSession(session)) continue
+            recovered = true
+            if (session.status === "needs_review" && session.draft) {
+                await this.handleCurationChanged(session)
+                continue
+            }
+            if (
+                session.status === "failed" &&
+                /Curator task was interrupted when Rolling Skill stopped/u.test(session.error ?? "") &&
+                typeof this.curationManager.retry === "function" &&
+                !this.automaticRecoveryAttempts.has(session.id)
+            ) {
+                this.automaticRecoveryAttempts.add(session.id)
+                const retried = await this.curationManager.retry(session.id)
+                await this.handleCurationChanged(retried)
+            }
+        }
+        return recovered
     }
 
     async runDueScan() {
@@ -313,13 +428,33 @@ class ConversationDiscoveryManager {
     }
 
     userMessages(thread) {
-        return flattenThread(thread)
-            .filter(({item}) => item?.type === "userMessage")
-            .map(({turnId, item}) => ({
+        const flattened = flattenThread(thread)
+        const turnStatuses = new Map(
+            (thread?.turns ?? []).map((turn) => [String(turn.id ?? ""), turn.status]),
+        )
+        return flattened
+            .map(({turnId, item}, index) => ({
+                index,
                 id: String(item.id ?? ""),
                 turnId: String(turnId ?? ""),
                 text: messageText(item),
+                type: item?.type,
             }))
+            .filter((message) => message.type === "userMessage")
+            .map((message, index, messages) => {
+                const nextUserIndex = messages[index + 1]?.index ?? flattened.length
+                return {
+                    id: message.id,
+                    turnId: message.turnId,
+                    text: message.text,
+                    assistantCompleted: flattened.some(({turnId, item}, flattenedIndex) => (
+                        flattenedIndex > message.index &&
+                        flattenedIndex < nextUserIndex &&
+                        item?.type === "agentMessage" &&
+                        completedTurn(turnStatuses.get(String(turnId ?? "")))
+                    )),
+                }
+            })
             .filter((message) => message.id && message.turnId && message.text.trim())
     }
 
@@ -340,7 +475,7 @@ class ConversationDiscoveryManager {
         return responseText(result)
     }
 
-    episodeForSegment(thread, segment, runtimeId) {
+    async episodeForSegment(thread, segment, runtimeId) {
         const flattened = flattenThread(thread)
         const startIndex = flattened.findIndex(
             ({item}) => item.type === "userMessage" && item.id === segment.startUserItemId,
@@ -356,11 +491,36 @@ class ConversationDiscoveryManager {
         )
         if (nextUserIndex < 0) nextUserIndex = flattened.length
         let endIndex = -1
+        const turnStatuses = new Map(
+            (thread?.turns ?? []).map((turn) => [String(turn.id ?? ""), turn.status]),
+        )
         for (let index = endUserIndex + 1; index < nextUserIndex; index += 1) {
-            if (flattened[index].item.type === "agentMessage") endIndex = index
+            if (
+                flattened[index].item.type === "agentMessage" &&
+                completedTurn(turnStatuses.get(String(flattened[index].turnId ?? "")))
+            ) endIndex = index
         }
         if (endIndex < 0) {
             throw new Error("Automatic capture candidate has no final Assistant response")
+        }
+        if (thread.modelProvider === "deepseek-harness") {
+            if (typeof this.captureEpisode !== "function") {
+                throw new Error("Automatic capture trusted DSH episode source is unavailable")
+            }
+            const startSeq = flattened[startIndex].item.sourceSeq
+            const endMessageId = flattened[endIndex].item.sourceMessageId
+            if (!Number.isSafeInteger(startSeq) || !String(endMessageId ?? "").trim()) {
+                throw new Error("Automatic capture cannot freeze the DSH source range")
+            }
+            const captured = await this.captureEpisode({
+                sessionId: thread.id,
+                startSeq,
+                endMessageId,
+            })
+            if (!captured?.episode) {
+                throw new Error("Automatic capture returned no trusted DSH episode")
+            }
+            return captured.episode
         }
         return buildEpisodeSnapshot(thread, {
             startItemId: flattened[startIndex].item.id,
@@ -372,7 +532,15 @@ class ConversationDiscoveryManager {
     }
 
     async classifySegment({thread, threadId, runtimeId, segment, skills, datasets, profile}) {
-        const episode = this.episodeForSegment(thread, segment, runtimeId)
+        const episode = await this.episodeForSegment(thread, segment, runtimeId)
+        if (this.store.hasCurationForSource?.(threadId, episode.source.endItemId)) {
+            return {
+                irrelevant: true,
+                skipReason: "already_curated",
+                episode,
+                result: null,
+            }
+        }
         const prompt = buildOutcomePrompt({threadId, episode, skills, datasets})
         const result = parseOutcomeResult(await this.analyze("outcome", prompt, profile), {
             skillNames: skills.map((skill) => skill.name).filter(Boolean),
@@ -415,6 +583,7 @@ class ConversationDiscoveryManager {
         await this.createAutomaticCuration({
             saved,
             source,
+            episode,
             skill: candidateSkill,
             datasets,
             profile,
@@ -422,19 +591,31 @@ class ConversationDiscoveryManager {
         return {irrelevant: false, episode, result, saved}
     }
 
-    async createAutomaticCuration({saved, source, skill, datasets, profile}) {
-        if (profile.mode !== "automatic" || !this.curationManager?.createSession) return null
+    async createAutomaticCuration({saved, source, episode, skill, datasets, profile}) {
+        if (this.profile().mode !== "automatic") return null
+        if (!this.curationManager?.createSession) {
+            throw new Error("Automatic curation is unavailable")
+        }
         const dataset = automaticDatasetFor({
             confidence: source.confidence,
             outcome: source.outcome,
             skill,
         }, datasets, profile.datasetId)
-        if (!dataset?.activeRubricVersionId || !saved?.rawCase?.id) return null
+        if (!dataset?.activeRubricVersionId) {
+            throw new Error(
+                "Automatic curation requires one compatible Dataset with a published Rubric",
+            )
+        }
+        if (!saved?.rawCase?.id) {
+            throw new Error("Automatic curation requires a persisted Raw Case")
+        }
         const curatorProfile = this.store.read().settings.curatorProfile ?? {}
         try {
             const session = await this.curationManager.createSession({
                 datasetId: dataset.id,
                 caseType: source.caseType,
+                episode,
+                source: episode.source,
                 sourceThreadId: source.threadId,
                 startItemId: source.startItemId,
                 startTurnId: source.startTurnId,
@@ -452,7 +633,7 @@ class ConversationDiscoveryManager {
         } catch (error) {
             this.onError(error)
             this.emitStatus()
-            return null
+            throw error
         }
     }
 
@@ -462,12 +643,15 @@ class ConversationDiscoveryManager {
         if (!thread) throw new Error(`Automatic capture could not read task ${threadId}`)
         const messages = this.userMessages(thread)
         if (!messages.length) return false
+        if (isAutomaticAnalysisTask(messages)) return false
         const cursor = this.stateStore.thread(runtimeId, threadId)
         const cursorIndex = cursor.lastInspectedUserItemId
             ? messages.findIndex((message) => message.id === cursor.lastInspectedUserItemId)
             : -1
         const hasNewMessages = cursorIndex < messages.length - 1
-        if (cursor.lastInspectedUserItemId && !hasNewMessages) return false
+        if (cursor.lastInspectedUserItemId && !hasNewMessages && !cursor.pendingStartUserItemId) {
+            return false
+        }
         const pendingIndex = cursor.pendingStartUserItemId
             ? messages.findIndex((message) => message.id === cursor.pendingStartUserItemId)
             : -1
@@ -481,10 +665,13 @@ class ConversationDiscoveryManager {
             maxCharacters: 24_000,
         })) {
             const boundaryPrompt = buildBoundaryPrompt({threadId, userMessages: batch})
-            const boundary = parseBoundaryResult(
-                await this.analyze("boundary", boundaryPrompt, profile),
-                {userMessageIds: batch.map((message) => message.id)},
-            )
+            const boundary = deferIncompleteSegments(closeAnsweredPendingTail(
+                parseBoundaryResult(
+                    await this.analyze("boundary", boundaryPrompt, profile),
+                    {userMessageIds: batch.map((message) => message.id)},
+                ),
+                batch,
+            ), batch)
             for (const segment of boundary.segments) {
                 const classified = await this.classifySegment({
                     thread,
@@ -499,7 +686,7 @@ class ConversationDiscoveryManager {
                     checkedRanges.push({
                         startUserItemId: segment.startUserItemId,
                         endUserItemId: segment.endUserItemId,
-                        reason: "no_identifiable_skill",
+                        reason: classified.skipReason ?? "no_identifiable_skill",
                         checkedAt: this.now().toISOString(),
                     })
                 }

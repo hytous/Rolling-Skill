@@ -125,6 +125,31 @@ function skillResourceBase(value) {
     return null
 }
 
+function skillIdentityFromResult(result, args) {
+    const meta = result?.data?.meta
+    const metaName = typeof meta?.name === "string" ? meta.name.trim() : ""
+    const metaProvider = typeof meta?.provider === "string" ? meta.provider.trim() : ""
+    const metaResourceBase = skillResourceBase(meta?.resourceBase)
+    if (metaName && metaProvider && metaResourceBase) {
+        return {name: metaName, provider: metaProvider, resourceBase: metaResourceBase}
+    }
+    const text = (result?.data?.message?.content ?? []).flatMap((block) => {
+        if (block?.type === "text" || block?.type === "reasoning") return [String(block.text ?? "")]
+        if (block?.type !== "tool-result") return []
+        return (block.content ?? [])
+            .filter((entry) => entry?.type === "text" || entry?.type === "reasoning")
+            .map((entry) => String(entry.text ?? ""))
+    }).join("\n")
+    const name = text.match(/<skill_content\s+name="([^"\r\n]+)">/u)?.[1]?.trim() ?? ""
+    const path = text.match(/Base directory for this skill:\s*([^\r\n]+)/u)?.[1]?.trim() ?? ""
+    if (!name || name !== args?.name || !isAbsolute(path)) return null
+    return {
+        name,
+        provider: "dsh-skill-tool",
+        resourceBase: {kind: "directory", path},
+    }
+}
+
 function observedSkills(events) {
     const resultsByCallId = new Map(events
         .filter((event) => event.type === "tool/result")
@@ -134,22 +159,15 @@ function observedSkills(events) {
         if (call.type !== "tool/call" || call.data?.name !== "skill") continue
         const args = toolArguments(call.data.arguments)
         const result = resultsByCallId.get(call.data.callId)
-        const meta = result?.data?.meta
-        const name = typeof meta?.name === "string" ? meta.name.trim() : ""
-        const provider = typeof meta?.provider === "string" ? meta.provider.trim() : ""
-        const resourceBase = skillResourceBase(meta?.resourceBase)
+        const identity = skillIdentityFromResult(result, args)
         if (
             !result ||
             result.data?.error ||
-            !name ||
-            !provider ||
-            args?.name !== name ||
-            !resourceBase
+            !identity ||
+            args?.name !== identity.name
         ) continue
         observed.push({
-            name,
-            provider,
-            resourceBase,
+            ...identity,
             callSeq: call.seq,
             resultSeq: result.seq,
         })

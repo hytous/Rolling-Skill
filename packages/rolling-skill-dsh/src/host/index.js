@@ -14,6 +14,9 @@ const {createSchedulerAdapter, resolveWorkerExecutable} = schedulerModule
 export const inject = ["webServer", "tools", "sessionQuery", "agents"]
 
 export function apply(ctx, config = {}, dependencies = {}) {
+    const environment = dependencies.environment ?? process.env
+    if (environment.ROLLING_SKILL_OPERATOR_HOST === "1") return
+
     const dataPaths = resolveDataPaths({dataRoot: config.dataRoot})
     const schedulerAdapter = createSchedulerAdapter({
         dataRoot: config.dataRoot,

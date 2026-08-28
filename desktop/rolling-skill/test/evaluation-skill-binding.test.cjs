@@ -150,13 +150,40 @@ describe("evaluation Skill binding", () => {
         assert.equal(binding.effectiveBinding, "verified")
     })
 
-    it("observes DeepSeek Harness explicit Skill injection without claiming a content match", () => {
+    it("verifies DeepSeek Harness explicit Skill injection from its runtime-provided body", () => {
+        const content = "---\nname: billing-cost-management\n---\n\n# Billing\nUse CLI.\n"
+        const binding = resolveExecutedSkillEvidenceBinding({
+            declaredBinding: "unverified",
+            skillReference,
+            skillEvidence: {files: [{path: "SKILL.md", content}]},
+            traceEvidence: {entries: [{
+                sequence: 31,
+                message: {params: {event: {
+                    type: "user/message",
+                    data: {
+                        source: {kind: "skill-invocation", name: skillReference.name},
+                        content: [{
+                            type: "text",
+                            text: `<skill_content name="${skillReference.name}">\n<skill_resources>\nBase directory for this skill: /runtime/skills/billing-cost-management\n</skill_resources>\n\n<skill_instructions>\n# Billing\nUse CLI.\n</skill_instructions>\n</skill_content>`,
+                        }],
+                    },
+                }}},
+            }]},
+        })
+
+        assert.equal(binding.observedBinding, "matched")
+        assert.equal(binding.effectiveBinding, "verified-by-trace")
+        assert.equal(binding.observedContentDigest, skillContentDigest(content))
+        assert.deepEqual(binding.evidenceSequences, [31])
+    })
+
+    it("keeps DeepSeek Harness injection name-only when the runtime body is absent", () => {
         const binding = resolveExecutedSkillEvidenceBinding({
             declaredBinding: "unverified",
             skillReference,
             skillEvidence: {files: [{path: "SKILL.md", content: "# Billing\n"}]},
             traceEvidence: {entries: [{
-                sequence: 31,
+                sequence: 32,
                 message: {params: {event: {
                     type: "user/message",
                     data: {source: {kind: "skill-invocation", name: skillReference.name}},
@@ -166,6 +193,5 @@ describe("evaluation Skill binding", () => {
 
         assert.equal(binding.observedBinding, "name_only")
         assert.equal(binding.effectiveBinding, "unverified")
-        assert.deepEqual(binding.evidenceSequences, [31])
     })
 })

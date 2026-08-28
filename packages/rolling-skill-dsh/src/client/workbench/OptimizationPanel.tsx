@@ -111,9 +111,9 @@ export function OptimizationPanel({t, initialRunId}: {t: Translate; initialRunId
         skillId,
         baselineVersionId: versionId,
         datasetId,
-        operator: {runtimeId: operatorRuntimeId, effort: "high"},
-        targets: [{runtimeId: targetRuntimeId, effort: "high"}],
-        judge: {runtimeId: judgeRuntimeId, effort: "high"},
+        operator: {runtimeId: operatorRuntimeId, effort: null},
+        targets: [{runtimeId: targetRuntimeId, effort: null}],
+        judge: {runtimeId: judgeRuntimeId, effort: null},
         activationMode: "explicit",
         mode: "adaptive",
         limits: {

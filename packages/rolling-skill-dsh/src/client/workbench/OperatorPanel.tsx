@@ -3,6 +3,8 @@ import {useEffect, useState} from "react"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
+import {ModelEffortSelect} from "./ModelEffortSelect"
+import type {RuntimeModel} from "./ModelEffortSelect"
 import {RuntimeInteractions} from "./RuntimeInteractions"
 import {RuntimeSelect} from "./RuntimeSelect"
 import type {RuntimeDescriptor} from "./RuntimeSelect"
@@ -10,7 +12,6 @@ import type {RuntimeDescriptor} from "./RuntimeSelect"
 interface Dataset {id: string}
 interface Skill {id: string; repositoryId: string}
 interface Catalog {skills: Skill[]; repositories: Array<{id: string}>}
-interface Model {id?: string; model?: string; displayName?: string}
 interface OperatorSession {id: string; runtime: {displayName: string; version?: string}; modelId?: string; updatedAt?: string}
 interface OperatorJob {id: string; sessionId: string; status: string; objective?: string}
 interface OperatorApproval {id: string; jobId: string; action: string; risk: string; status: string}
@@ -32,9 +33,9 @@ interface OperatorArtifact {id: string; jobId: string; name?: string; mediaType?
 export function OperatorPanel({t, initialSessionId}: {t: Translate; initialSessionId?: string}) {
     const [runtimes, setRuntimes] = useState<RuntimeDescriptor[]>([])
     const [runtimeId, setRuntimeId] = useState("")
-    const [models, setModels] = useState<Model[]>([])
+    const [models, setModels] = useState<RuntimeModel[]>([])
     const [modelId, setModelId] = useState("")
-    const [effort, setEffort] = useState("high")
+    const [effort, setEffort] = useState("")
     const [objective, setObjective] = useState("")
     const [datasets, setDatasets] = useState<Dataset[]>([])
     const [catalog, setCatalog] = useState<Catalog>({skills: [], repositories: []})
@@ -74,7 +75,7 @@ export function OperatorPanel({t, initialSessionId}: {t: Translate; initialSessi
     useEffect(() => {
         if (!runtimeId) return
         const controller = new AbortController()
-        requestRollingSkill<Model[]>("runtimes.models", {runtimeId}, controller.signal)
+        requestRollingSkill<RuntimeModel[]>("runtimes.models", {runtimeId}, controller.signal)
             .then((items) => {
                 setModels(items)
                 setModelId((current) => current || items[0]?.id || items[0]?.model || "")
@@ -100,7 +101,7 @@ export function OperatorPanel({t, initialSessionId}: {t: Translate; initialSessi
     const start = () => mutate(() => requestRollingSkill("operators.start", {
         runtimeId,
         modelId: modelId || null,
-        effort,
+        effort: effort || null,
         objective,
         actions: [
             "raw_cases.read",
@@ -177,7 +178,7 @@ export function OperatorPanel({t, initialSessionId}: {t: Translate; initialSessi
             <RuntimeSelect t={t} runtimes={runtimes} value={runtimeId} onChange={setRuntimeId} label={t("operatorRuntime")}/>
             <div className="rolling-skill-grid">
                 <label className="rolling-skill-field"><span>{t("model")}</span><select className="rolling-skill-select" value={modelId} onChange={(event) => setModelId(event.target.value)}>{models.map((model) => {const id = model.id ?? model.model ?? ""; return <option key={id} value={id}>{model.displayName ?? id}</option>})}</select></label>
-                <label className="rolling-skill-field"><span>{t("effort")}</span><select className="rolling-skill-select" value={effort} onChange={(event) => setEffort(event.target.value)}>{["low", "medium", "high", "xhigh", "max"].map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+                <ModelEffortSelect label={t("effort")} runtimeDefaultLabel={t("runtimeDefault")} models={models} modelId={modelId} value={effort} onChange={setEffort}/>
             </div>
             <label className="rolling-skill-field"><span>{t("operatorObjective")}</span><Input value={objective} placeholder={t("operatorObjectivePlaceholder")} onChange={(event: {target: {value: string}}) => setObjective(event.target.value)}/></label>
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}

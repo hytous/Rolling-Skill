@@ -519,6 +519,32 @@ function workerOperatorRuntime() {
     return Object.freeze({services: Object.freeze(services), close: async () => {}})
 }
 
+function runtimeSkillMatchesVerifiedInstallation({
+    runtimeSkill,
+    managedSkillName,
+    installedManifest,
+    allowNameOnly = false,
+}) {
+    if (runtimeSkill?.enabled === false || runtimeSkill?.name !== managedSkillName) return false
+    if (typeof runtimeSkill.path === "string") {
+        return resolve(runtimeSkill.path) === resolve(installedManifest)
+    }
+    return allowNameOnly && runtimeSkill?.evidencePrecision === "name-only"
+}
+
+function evaluationRuntimeThreadIds(state) {
+    const ids = new Set()
+    for (const run of state?.evaluationRuns ?? []) {
+        for (const result of run?.results ?? []) {
+            if (typeof result?.threadId === "string" && result.threadId) ids.add(result.threadId)
+            if (typeof result?.judge?.threadId === "string" && result.judge.threadId) {
+                ids.add(result.judge.threadId)
+            }
+        }
+    }
+    return ids
+}
+
 function createRollingSkillApplication(options = {}) {
     const paths = ensureDataLayout(resolveDataPaths(options))
     const legacySourceRoot = options.legacySourceRoot ?? detectLegacyElectronDataRoot()
@@ -539,12 +565,14 @@ function createRollingSkillApplication(options = {}) {
         (request) => runtimeInteractionBroker.requestQuestion(request)
     )
     let automaticCaptureService = null
+    let routeRuntimeNotification = () => {}
     const workspaceRoot = options.workspaceRoot ?? process.cwd()
     const runtimeServices = createRuntimeServices({
         registry: options.runtimeRegistry,
         configStore,
         workspaceRoot,
         traceDirectory: paths.traces,
+        onNotification: (message) => routeRuntimeNotification(message),
     })
     const managedSkillManager = new ManagedSkillManager({
         applicationSupportDirectory: paths.managedSkills,
@@ -610,17 +638,49 @@ function createRollingSkillApplication(options = {}) {
         getRuntimeDescriptor: selectedRuntimeDescriptor,
         onChanged: () => publish(),
     })
+    routeRuntimeNotification = (message) => {
+        if (typeof curationManager.handleNotification === "function") {
+            void curationManager.handleNotification(message)
+        }
+        if (typeof rubricManager.handleNotification === "function") {
+            void rubricManager.handleNotification(message)
+        }
+        if (typeof automaticCaptureService?.handleNotification === "function") {
+            void automaticCaptureService.handleNotification(message)
+        }
+    }
     const automaticCurationManager = Object.freeze({
         async createSession(input) {
             const operation = conversationCurationOperationResolver.resolve(input.datasetId)
-            return curationManager.createSession({
+            const request = {
                 ...input,
                 executionSkillReference: operation.executionSkillReference,
                 operationEvidence: operation.operationEvidence,
-            })
+            }
+            if (
+                input.episode?.source?.kind === "dsh-session" &&
+                input.source?.kind === "dsh-session" &&
+                typeof curationManager.createSessionFromFrozenEpisode === "function"
+            ) {
+                return curationManager.createSessionFromFrozenEpisode({
+                    ...request,
+                    idempotencyKey:
+                        input.idempotencyKey ??
+                        `automatic:${input.datasetId}:${input.source.digest}`,
+                    curator: {
+                        modelId: input.modelId ?? null,
+                        effort: input.effort ?? null,
+                    },
+                })
+            }
+            return curationManager.createSession(request)
         },
         archive: (sessionId) => curationManager.archive(sessionId),
         hiddenThreadIds: () => curationManager.hiddenThreadIds(),
+        listSessions: (options) => typeof curationManager.listSessions === "function"
+            ? curationManager.listSessions(options)
+            : store.listCurationSessions(),
+        retry: (sessionId) => curationManager.retry(sessionId),
     })
     automaticCaptureService = createAutomaticCaptureService({
         store,
@@ -629,6 +689,9 @@ function createRollingSkillApplication(options = {}) {
         stateStore: automaticCaptureStateStore,
         rawCaseStore,
         curationManager: automaticCurationManager,
+        captureEpisode: typeof options.conversationEpisodeSource?.capture === "function"
+            ? (input) => options.conversationEpisodeSource.capture(input)
+            : null,
         listSkills: async (runtime) => {
             if (typeof runtime.listSkills !== "function") return []
             const descriptor = selectedRuntimeDescriptor()
@@ -640,17 +703,19 @@ function createRollingSkillApplication(options = {}) {
                 runtimeId: descriptor.runtimeId,
                 providerId: descriptor.providerId,
             })
+            const allowNameOnly = descriptor.capabilities?.includes("skills-name-only") === true
             const matched = []
             for (const installation of verified) {
                 const skill = managedSkillStore.getSkill(installation.skillId)
                 const installedManifest = basename(installation.destination).toLocaleLowerCase("en-US") === "skill.md"
                     ? installation.destination
                     : join(installation.destination, "SKILL.md")
-                const observed = runtimeSkills.find((entry) =>
-                    entry.name === skill.name &&
-                    typeof entry.path === "string" &&
-                    resolve(entry.path) === resolve(installedManifest),
-                )
+                const observed = runtimeSkills.find((entry) => runtimeSkillMatchesVerifiedInstallation({
+                    runtimeSkill: entry,
+                    managedSkillName: skill.name,
+                    installedManifest,
+                    allowNameOnly,
+                }))
                 if (observed) matched.push({id: skill.id, name: skill.name})
             }
             return matched
@@ -659,6 +724,7 @@ function createRollingSkillApplication(options = {}) {
         getHiddenThreadIds: () => new Set([
             ...curationManager.hiddenThreadIds(),
             ...rubricManager.hiddenThreadIds(),
+            ...evaluationRuntimeThreadIds(store.read()),
         ]),
         onChanged: () => publish(),
     })
@@ -1174,7 +1240,13 @@ function createRollingSkillApplication(options = {}) {
             const descriptor = runtimeServices.descriptor(
                 requiredIdentifier(input.runtimeId, "Runtime id"),
             )
-            configStore.update({runtime: descriptor})
+            configStore.update({runtime: {
+                providerId: descriptor.providerId,
+                runtimeId: descriptor.runtimeId,
+                displayName: descriptor.displayName,
+                version: descriptor.version,
+                executablePath: descriptor.executablePath,
+            }})
             return settingsSnapshot()
         },
         "conversationCuration.inspect": (input) => inspectConversationCuration(input),
@@ -1487,5 +1559,7 @@ function createRollingSkillApplication(options = {}) {
 module.exports = {
     MAX_DISPATCH_BYTES,
     createRollingSkillApplication,
+    evaluationRuntimeThreadIds,
     reconcileManagedDatasetBindings,
+    runtimeSkillMatchesVerifiedInstallation,
 }

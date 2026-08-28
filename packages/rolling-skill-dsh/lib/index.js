@@ -17772,6 +17772,20 @@ var require_evaluation_skill_binding = __commonJS({
       }
       return false;
     }
+    function dshInjectedSkillDigest(event, expectedName) {
+      if (event?.type !== "user/message" || event.data?.source?.kind !== "skill-invocation" || String(event.data.source.name ?? "") !== expectedName) return null;
+      for (const block of event.data?.content ?? []) {
+        if (block?.type !== "text") continue;
+        const text2 = String(block.text ?? "");
+        const opening = text2.match(/<skill_content\s+name=(["'])([^"']+)\1[^>]*>/u);
+        if (!opening || opening[2] !== expectedName) continue;
+        const instructions = text2.match(
+          /<skill_instructions>\r?\n?([\s\S]*?)\r?\n?<\/skill_instructions>/u
+        );
+        if (instructions) return skillContentDigest(instructions[1]);
+      }
+      return null;
+    }
     async function resolveSkillEvidenceBinding({
       descriptor,
       selectedRuntimeId,
@@ -17821,7 +17835,7 @@ var require_evaluation_skill_binding = __commonJS({
         if (String(observedSkill ?? "") !== skillName) continue;
         observed.push({
           sequence: entry.sequence,
-          contentDigest: update.skillContentDigest ?? null
+          contentDigest: update.skillContentDigest ?? dshInjectedSkillDigest(event, skillName)
         });
       }
       const matching = observed.find(
@@ -18876,7 +18890,7 @@ var require_skill_installation_protocol = __commonJS({
           experimentResult = {
             actualDigest: null,
             markerWritten: false,
-            runtimeDiscovered: "true | false | null",
+            runtimeDiscovered: null,
             beforeDigest: null,
             mutationPerformed: false,
             markerBefore: null,
@@ -18886,7 +18900,7 @@ var require_skill_installation_protocol = __commonJS({
           experimentResult = {
             actualDigest: request.source.expectedDigest,
             markerWritten: true,
-            runtimeDiscovered: "true | false | null",
+            runtimeDiscovered: null,
             beforeDigest: request.source.expectedDigest,
             mutationPerformed: false,
             markerBefore: currentMarker,
@@ -18896,7 +18910,7 @@ var require_skill_installation_protocol = __commonJS({
           experimentResult = {
             actualDigest: request.experiment.baseline.expectedDigest,
             markerWritten: true,
-            runtimeDiscovered: "true | false | null",
+            runtimeDiscovered: null,
             beforeDigest: request.source.expectedDigest,
             mutationPerformed: true,
             markerBefore: currentMarker,
@@ -18918,7 +18932,7 @@ var require_skill_installation_protocol = __commonJS({
           experimentResult = {
             actualDigest: request.source.expectedDigest,
             markerWritten: true,
-            runtimeDiscovered: "true | false | null",
+            runtimeDiscovered: null,
             beforeDigest,
             mutationPerformed: true,
             markerBefore: previous?.marker ?? null,
@@ -18938,7 +18952,7 @@ var require_skill_installation_protocol = __commonJS({
         result: experimentResult ?? {
           actualDigest: request.source.expectedDigest,
           markerWritten: true,
-          runtimeDiscovered: "true | false | null"
+          runtimeDiscovered: null
         },
         warnings: [],
         error: null
@@ -19039,6 +19053,7 @@ var require_skill_installation_protocol = __commonJS({
         "",
         "Required procedure:",
         ...procedure,
+        'In result.runtimeDiscovered, runtimeDiscovered must be the JSON boolean true, the JSON boolean false, or null. Never return the strings "true", "false", or "null".',
         "",
         INSTALL_RESULT_SENTINEL.open,
         JSON.stringify(finalShape, null, 2),
@@ -21296,6 +21311,14 @@ var require_automatic_capture = __commonJS({
     } = require_episode_curation();
     var MAX_TIMER_DELAY = 2147e6;
     var AUTOMATIC_CONFIDENCE_THRESHOLD = 0.8;
+    var ROLLING_SKILL_INTERNAL_PROMPT_PREFIXES = [
+      "Identify complete user problem ranges from incremental user messages only.",
+      "Classify only this completed problem episode. Identify the principal enabled Skill,",
+      "You are judging one agent Skill evaluation result.",
+      "You are the Curator for an agent Skill evaluation dataset.",
+      "You are the Rubric Agent for one Skill evaluation dataset.",
+      "Re-execute the immutable evaluation question below with the current Skill and current"
+    ];
     function copy(value) {
       return JSON.parse(JSON.stringify(value));
     }
@@ -21342,6 +21365,56 @@ var require_automatic_capture = __commonJS({
       if (preferred) return preferred;
       return matches.length === 1 ? matches[0] : null;
     }
+    function closeAnsweredPendingTail(boundary, batch) {
+      if (!boundary.pendingStartUserItemId) return boundary;
+      const pendingIndex = batch.findIndex(
+        (message) => message.id === boundary.pendingStartUserItemId
+      );
+      const pending = pendingIndex >= 0 ? batch.slice(pendingIndex) : [];
+      if (!pending.length || pending.some((message) => !message.assistantCompleted)) return boundary;
+      return {
+        segments: [
+          ...boundary.segments,
+          {
+            startUserItemId: pending[0].id,
+            endUserItemId: pending.at(-1).id,
+            summary: pending.map((message) => message.text.trim()).join(" ").slice(0, 500)
+          }
+        ],
+        pendingStartUserItemId: null
+      };
+    }
+    function deferIncompleteSegments(boundary, batch) {
+      let pendingStartUserItemId = boundary.pendingStartUserItemId;
+      const segments = [];
+      for (const segment of boundary.segments) {
+        const end = batch.find((message) => message.id === segment.endUserItemId);
+        if (!end?.assistantCompleted) {
+          pendingStartUserItemId ??= segment.startUserItemId;
+          continue;
+        }
+        segments.push(segment);
+      }
+      return { segments, pendingStartUserItemId };
+    }
+    function isAutomaticAnalysisTask(messages) {
+      return messages.some((message) => ROLLING_SKILL_INTERNAL_PROMPT_PREFIXES.some(
+        (prefix) => {
+          const text2 = message.text.trimStart();
+          if (text2.startsWith(prefix)) return true;
+          const offset = text2.indexOf(prefix);
+          return text2.startsWith("/") && offset > 0 && offset <= 200;
+        }
+      ));
+    }
+    function completedTurn(status) {
+      return status === void 0 || status === null || status === "completed";
+    }
+    function sourceMatchesSession(observation, session) {
+      const source = session?.episode?.source ?? session?.source;
+      if (!observation || !source) return false;
+      return String(observation.threadId ?? "") === String(source.threadId ?? "") && String(observation.endItemId ?? "") === String(source.endItemId ?? "");
+    }
     var ConversationDiscoveryManager = class {
       constructor({
         store,
@@ -21353,6 +21426,7 @@ var require_automatic_capture = __commonJS({
         listDatasets = () => store.listDatasets(),
         listSkills = async () => [],
         runAnalysis,
+        captureEpisode = null,
         getHiddenThreadIds = () => /* @__PURE__ */ new Set(),
         now = () => /* @__PURE__ */ new Date(),
         setTimer = (callback, delay) => setTimeout(callback, delay),
@@ -21371,6 +21445,7 @@ var require_automatic_capture = __commonJS({
         this.listDatasets = listDatasets;
         this.listSkills = listSkills;
         this.runAnalysis = runAnalysis;
+        this.captureEpisode = captureEpisode;
         this.getHiddenThreadIds = getHiddenThreadIds;
         this.now = now;
         this.setTimer = setTimer;
@@ -21380,6 +21455,7 @@ var require_automatic_capture = __commonJS({
         this.analysisThreadIds = /* @__PURE__ */ new Set();
         this.automaticSessions = /* @__PURE__ */ new Map();
         this.automaticArchiveAttempts = /* @__PURE__ */ new Set();
+        this.automaticRecoveryAttempts = /* @__PURE__ */ new Set();
         this.runningPromise = null;
         this.timer = null;
         this.started = false;
@@ -21462,7 +21538,7 @@ var require_automatic_capture = __commonJS({
         return false;
       }
       async handleCurationChanged(session) {
-        const tracked = this.automaticSessions.get(session?.id);
+        const tracked = this.trackAutomaticSession(session);
         if (!tracked || session.status !== "needs_review" || !session.draft || this.automaticArchiveAttempts.has(session.id)) return false;
         this.automaticArchiveAttempts.add(session.id);
         try {
@@ -21475,10 +21551,45 @@ var require_automatic_capture = __commonJS({
           this.emitStatus();
           return true;
         } catch (error) {
+          this.automaticArchiveAttempts.delete(session.id);
           this.onError(error);
           this.emitStatus();
           return false;
         }
+      }
+      trackAutomaticSession(session) {
+        if (!session?.id) return null;
+        const existing = this.automaticSessions.get(session.id);
+        if (existing) return existing;
+        const rawCase = (this.rawCaseStore.list?.() ?? []).find((record) => {
+          const observations = Array.isArray(record?.source?.observations) ? record.source.observations : record?.source?.kind === "automatic_capture" ? [record.source] : [];
+          return observations.some((observation) => sourceMatchesSession(observation, session));
+        });
+        if (!rawCase?.id) return null;
+        const tracked = { rawCaseId: rawCase.id };
+        this.automaticSessions.set(session.id, tracked);
+        return tracked;
+      }
+      async recoverAutomaticSessions() {
+        if (this.profile().mode !== "automatic" || !this.curationManager?.listSessions) {
+          return false;
+        }
+        let recovered = false;
+        const sessions = await Promise.resolve(this.curationManager.listSessions({ archived: false }));
+        for (const session of arrays(sessions)) {
+          if (!this.trackAutomaticSession(session)) continue;
+          recovered = true;
+          if (session.status === "needs_review" && session.draft) {
+            await this.handleCurationChanged(session);
+            continue;
+          }
+          if (session.status === "failed" && /Curator task was interrupted when Rolling Skill stopped/u.test(session.error ?? "") && typeof this.curationManager.retry === "function" && !this.automaticRecoveryAttempts.has(session.id)) {
+            this.automaticRecoveryAttempts.add(session.id);
+            const retried = await this.curationManager.retry(session.id);
+            await this.handleCurationChanged(retried);
+          }
+        }
+        return recovered;
       }
       async runDueScan() {
         const profile = this.profile();
@@ -21559,11 +21670,25 @@ var require_automatic_capture = __commonJS({
         return [...found.values()];
       }
       userMessages(thread) {
-        return flattenThread(thread).filter(({ item }) => item?.type === "userMessage").map(({ turnId, item }) => ({
+        const flattened = flattenThread(thread);
+        const turnStatuses = new Map(
+          (thread?.turns ?? []).map((turn) => [String(turn.id ?? ""), turn.status])
+        );
+        return flattened.map(({ turnId, item }, index) => ({
+          index,
           id: String(item.id ?? ""),
           turnId: String(turnId ?? ""),
-          text: messageText(item)
-        })).filter((message) => message.id && message.turnId && message.text.trim());
+          text: messageText(item),
+          type: item?.type
+        })).filter((message) => message.type === "userMessage").map((message, index, messages) => {
+          const nextUserIndex = messages[index + 1]?.index ?? flattened.length;
+          return {
+            id: message.id,
+            turnId: message.turnId,
+            text: message.text,
+            assistantCompleted: flattened.some(({ turnId, item }, flattenedIndex) => flattenedIndex > message.index && flattenedIndex < nextUserIndex && item?.type === "agentMessage" && completedTurn(turnStatuses.get(String(turnId ?? ""))))
+          };
+        }).filter((message) => message.id && message.turnId && message.text.trim());
       }
       async analyze(stage, prompt, profile) {
         if (typeof this.runAnalysis !== "function") {
@@ -21581,7 +21706,7 @@ var require_automatic_capture = __commonJS({
         if (result?.threadId) this.analysisThreadIds.add(result.threadId);
         return responseText(result);
       }
-      episodeForSegment(thread, segment, runtimeId) {
+      async episodeForSegment(thread, segment, runtimeId) {
         const flattened = flattenThread(thread);
         const startIndex = flattened.findIndex(
           ({ item }) => item.type === "userMessage" && item.id === segment.startUserItemId
@@ -21597,11 +21722,33 @@ var require_automatic_capture = __commonJS({
         );
         if (nextUserIndex < 0) nextUserIndex = flattened.length;
         let endIndex = -1;
+        const turnStatuses = new Map(
+          (thread?.turns ?? []).map((turn) => [String(turn.id ?? ""), turn.status])
+        );
         for (let index = endUserIndex + 1; index < nextUserIndex; index += 1) {
-          if (flattened[index].item.type === "agentMessage") endIndex = index;
+          if (flattened[index].item.type === "agentMessage" && completedTurn(turnStatuses.get(String(flattened[index].turnId ?? "")))) endIndex = index;
         }
         if (endIndex < 0) {
           throw new Error("Automatic capture candidate has no final Assistant response");
+        }
+        if (thread.modelProvider === "deepseek-harness") {
+          if (typeof this.captureEpisode !== "function") {
+            throw new Error("Automatic capture trusted DSH episode source is unavailable");
+          }
+          const startSeq = flattened[startIndex].item.sourceSeq;
+          const endMessageId = flattened[endIndex].item.sourceMessageId;
+          if (!Number.isSafeInteger(startSeq) || !String(endMessageId ?? "").trim()) {
+            throw new Error("Automatic capture cannot freeze the DSH source range");
+          }
+          const captured = await this.captureEpisode({
+            sessionId: thread.id,
+            startSeq,
+            endMessageId
+          });
+          if (!captured?.episode) {
+            throw new Error("Automatic capture returned no trusted DSH episode");
+          }
+          return captured.episode;
         }
         return buildEpisodeSnapshot(thread, {
           startItemId: flattened[startIndex].item.id,
@@ -21612,7 +21759,15 @@ var require_automatic_capture = __commonJS({
         });
       }
       async classifySegment({ thread, threadId, runtimeId, segment, skills, datasets, profile }) {
-        const episode = this.episodeForSegment(thread, segment, runtimeId);
+        const episode = await this.episodeForSegment(thread, segment, runtimeId);
+        if (this.store.hasCurationForSource?.(threadId, episode.source.endItemId)) {
+          return {
+            irrelevant: true,
+            skipReason: "already_curated",
+            episode,
+            result: null
+          };
+        }
         const prompt = buildOutcomePrompt({ threadId, episode, skills, datasets });
         const result = parseOutcomeResult(await this.analyze("outcome", prompt, profile), {
           skillNames: skills.map((skill2) => skill2.name).filter(Boolean),
@@ -21651,25 +21806,38 @@ var require_automatic_capture = __commonJS({
         await this.createAutomaticCuration({
           saved,
           source,
+          episode,
           skill: candidateSkill,
           datasets,
           profile
         });
         return { irrelevant: false, episode, result, saved };
       }
-      async createAutomaticCuration({ saved, source, skill, datasets, profile }) {
-        if (profile.mode !== "automatic" || !this.curationManager?.createSession) return null;
+      async createAutomaticCuration({ saved, source, episode, skill, datasets, profile }) {
+        if (this.profile().mode !== "automatic") return null;
+        if (!this.curationManager?.createSession) {
+          throw new Error("Automatic curation is unavailable");
+        }
         const dataset = automaticDatasetFor({
           confidence: source.confidence,
           outcome: source.outcome,
           skill
         }, datasets, profile.datasetId);
-        if (!dataset?.activeRubricVersionId || !saved?.rawCase?.id) return null;
+        if (!dataset?.activeRubricVersionId) {
+          throw new Error(
+            "Automatic curation requires one compatible Dataset with a published Rubric"
+          );
+        }
+        if (!saved?.rawCase?.id) {
+          throw new Error("Automatic curation requires a persisted Raw Case");
+        }
         const curatorProfile = this.store.read().settings.curatorProfile ?? {};
         try {
           const session = await this.curationManager.createSession({
             datasetId: dataset.id,
             caseType: source.caseType,
+            episode,
+            source: episode.source,
             sourceThreadId: source.threadId,
             startItemId: source.startItemId,
             startTurnId: source.startTurnId,
@@ -21687,7 +21855,7 @@ var require_automatic_capture = __commonJS({
         } catch (error) {
           this.onError(error);
           this.emitStatus();
-          return null;
+          throw error;
         }
       }
       async scanThread({ runtime, runtimeId, threadId, skills, datasets, profile }) {
@@ -21696,10 +21864,13 @@ var require_automatic_capture = __commonJS({
         if (!thread) throw new Error(`Automatic capture could not read task ${threadId}`);
         const messages = this.userMessages(thread);
         if (!messages.length) return false;
+        if (isAutomaticAnalysisTask(messages)) return false;
         const cursor = this.stateStore.thread(runtimeId, threadId);
         const cursorIndex = cursor.lastInspectedUserItemId ? messages.findIndex((message) => message.id === cursor.lastInspectedUserItemId) : -1;
         const hasNewMessages = cursorIndex < messages.length - 1;
-        if (cursor.lastInspectedUserItemId && !hasNewMessages) return false;
+        if (cursor.lastInspectedUserItemId && !hasNewMessages && !cursor.pendingStartUserItemId) {
+          return false;
+        }
         const pendingIndex = cursor.pendingStartUserItemId ? messages.findIndex((message) => message.id === cursor.pendingStartUserItemId) : -1;
         const startIndex = pendingIndex >= 0 ? pendingIndex : cursorIndex + 1;
         const incremental = messages.slice(Math.max(0, startIndex));
@@ -21710,10 +21881,13 @@ var require_automatic_capture = __commonJS({
           maxCharacters: 24e3
         })) {
           const boundaryPrompt = buildBoundaryPrompt({ threadId, userMessages: batch });
-          const boundary = parseBoundaryResult(
-            await this.analyze("boundary", boundaryPrompt, profile),
-            { userMessageIds: batch.map((message) => message.id) }
-          );
+          const boundary = deferIncompleteSegments(closeAnsweredPendingTail(
+            parseBoundaryResult(
+              await this.analyze("boundary", boundaryPrompt, profile),
+              { userMessageIds: batch.map((message) => message.id) }
+            ),
+            batch
+          ), batch);
           for (const segment of boundary.segments) {
             const classified = await this.classifySegment({
               thread,
@@ -21728,7 +21902,7 @@ var require_automatic_capture = __commonJS({
               checkedRanges.push({
                 startUserItemId: segment.startUserItemId,
                 endUserItemId: segment.endUserItemId,
-                reason: "no_identifiable_skill",
+                reason: classified.skipReason ?? "no_identifiable_skill",
                 checkedAt: this.now().toISOString()
               });
             }
@@ -21938,6 +22112,16 @@ var require_automatic_capture_service = __commonJS({
       if (value === null || value === void 0 || value === "") return null;
       return requiredText(value, label, maximum);
     }
+    function stableRuntimeIdentity(descriptor) {
+      if (!descriptor) return null;
+      return {
+        providerId: descriptor.providerId,
+        runtimeId: descriptor.runtimeId,
+        displayName: descriptor.displayName,
+        version: descriptor.version,
+        executablePath: descriptor.executablePath
+      };
+    }
     function createAutomaticCaptureService({
       store,
       configStore,
@@ -21947,6 +22131,7 @@ var require_automatic_capture_service = __commonJS({
       curationManager = null,
       listSkills = null,
       listDatasets = () => store.listDatasets(),
+      captureEpisode = null,
       getHiddenThreadIds = () => /* @__PURE__ */ new Set(),
       manager = null,
       now = () => /* @__PURE__ */ new Date(),
@@ -21979,6 +22164,7 @@ var require_automatic_capture_service = __commonJS({
         getRuntime: runtimeClient,
         getRuntimeDescriptor: runtimeDescriptor,
         listDatasets,
+        captureEpisode,
         listSkills: listSkills ?? (async (runtime) => {
           if (typeof runtime.listSkills !== "function") return [];
           const response = await runtime.listSkills({ forceReload: true });
@@ -22038,7 +22224,7 @@ var require_automatic_capture_service = __commonJS({
         }
         const runtimeId = optionalText(input.runtimeId, "Automatic capture Runtime id", 500);
         const current = configStore.read();
-        const runtime = runtimeId ? runtimeServices.descriptor(runtimeId) : current.runtime;
+        const runtime = runtimeId ? stableRuntimeIdentity(runtimeServices.descriptor(runtimeId)) : current.runtime;
         if (mode !== "off" && !runtime) {
           throw new Error("Select a Runtime before enabling automatic capture");
         }
@@ -22076,6 +22262,7 @@ var require_automatic_capture_service = __commonJS({
         if (profile.mode === "off") return { status: "disabled", slot: null };
         runtimeDescriptor();
         if (running) return { status: "busy", slot: null };
+        await captureManager.recoverAutomaticSessions?.();
         const selectedSlot = slot === "manual" ? now() : new Date(slot);
         if (!Number.isFinite(selectedSlot.getTime())) {
           throw new Error("Automatic capture slot is invalid");
@@ -22099,6 +22286,7 @@ var require_automatic_capture_service = __commonJS({
         hostStarted = true;
         if (configStore.read().executionLocation === "always") captureManager.stop();
         else captureManager.start();
+        void Promise.resolve(captureManager.recoverAutomaticSessions?.()).catch(onError);
         return status();
       }
       function stopHostSchedule() {
@@ -59772,6 +59960,8 @@ var require_deepseek_harness_client = __commonJS({
           ensureTurn(turnNumber).items.push({
             id: event.data.id ?? `dsh-user-${event.seq}`,
             type: "userMessage",
+            sourceSeq: event.seq,
+            sourceMessageId: event.data.id ?? null,
             content: (event.data.content ?? []).filter((block) => block?.type === "text").map((block) => ({ type: "text", text: String(block.text ?? ""), text_elements: [] }))
           });
           continue;
@@ -59804,6 +59994,8 @@ var require_deepseek_harness_client = __commonJS({
             turn.items.push({
               id: `dsh-assistant-${event.data.turn}-${event.data.step}-text`,
               type: "agentMessage",
+              sourceSeq: event.seq,
+              sourceMessageId: event.data.message?.id ?? null,
               text: text2
             });
           }
@@ -59979,7 +60171,8 @@ var require_deepseek_harness_client = __commonJS({
                 ...process.env,
                 PATH: `${dirname(this.binaryPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
                 DSH_PERMISSION_MODE: this.defaultPermissionMode
-              }, this.childEnvironment)
+              }, this.childEnvironment),
+              ROLLING_SKILL_OPERATOR_HOST: "1"
             },
             shell: false,
             stdio: ["ignore", "pipe", "pipe"]
@@ -60589,7 +60782,7 @@ var require_deepseek_harness_client = __commonJS({
         const permissionMode = DSH_PERMISSION_MODES.has(requestedPermission) ? requestedPermission : this.defaultPermissionMode;
         if (this.sessionPermissions.get(sessionId) !== permissionMode) {
           const command = await this.request("commands/execute", {
-            args: { agentId: sessionId, line: `/permission ${permissionMode}` }
+            args: { agentId: sessionId, line: `/permission ${permissionMode}`, images: [] }
           });
           const result = command?.result ?? command;
           if (result?.kind === "error") {
@@ -61302,10 +61495,18 @@ var require_runtime_services = __commonJS({
       configStore = null,
       workspaceRoot = process.cwd(),
       traceDirectory = null,
-      clientOptions = {}
+      clientOptions = {},
+      onNotification = null
     } = {}) {
       let available = null;
       const activeClients = /* @__PURE__ */ new Map();
+      const notificationListeners = /* @__PURE__ */ new Map();
+      function observeNotifications(client) {
+        if (typeof onNotification !== "function" || typeof client?.on !== "function" || notificationListeners.has(client)) return;
+        const listener = (message) => onNotification(message);
+        client.on("notification", listener);
+        notificationListeners.set(client, listener);
+      }
       function discoveryOptions() {
         const selected = configStore?.read?.().runtime ?? null;
         return {
@@ -61366,6 +61567,7 @@ var require_runtime_services = __commonJS({
           ...clientOptions,
           ...options2
         });
+        observeNotifications(client);
         try {
           await client.start?.();
           activeClients.set(selected.runtimeId, client);
@@ -61381,6 +61583,10 @@ var require_runtime_services = __commonJS({
       async function close() {
         const clients = [...activeClients.values()];
         activeClients.clear();
+        for (const [client, listener] of notificationListeners) {
+          client.off?.("notification", listener);
+        }
+        notificationListeners.clear();
         await Promise.allSettled(clients.map((client) => client.stop?.()));
       }
       return Object.freeze({ close, createClient, descriptor, getClient, list, models, refresh });
@@ -62189,6 +62395,30 @@ var require_application = __commonJS({
       return Object.freeze({ services: Object.freeze(services), close: async () => {
       } });
     }
+    function runtimeSkillMatchesVerifiedInstallation({
+      runtimeSkill,
+      managedSkillName,
+      installedManifest,
+      allowNameOnly = false
+    }) {
+      if (runtimeSkill?.enabled === false || runtimeSkill?.name !== managedSkillName) return false;
+      if (typeof runtimeSkill.path === "string") {
+        return resolve(runtimeSkill.path) === resolve(installedManifest);
+      }
+      return allowNameOnly && runtimeSkill?.evidencePrecision === "name-only";
+    }
+    function evaluationRuntimeThreadIds(state) {
+      const ids = /* @__PURE__ */ new Set();
+      for (const run of state?.evaluationRuns ?? []) {
+        for (const result of run?.results ?? []) {
+          if (typeof result?.threadId === "string" && result.threadId) ids.add(result.threadId);
+          if (typeof result?.judge?.threadId === "string" && result.judge.threadId) {
+            ids.add(result.judge.threadId);
+          }
+        }
+      }
+      return ids;
+    }
     function createRollingSkillApplication2(options2 = {}) {
       const paths = ensureDataLayout(resolveDataPaths2(options2));
       const legacySourceRoot = options2.legacySourceRoot ?? detectLegacyElectronDataRoot();
@@ -62205,12 +62435,15 @@ var require_application = __commonJS({
       const requestRuntimePermission = options2.requestRuntimePermission ?? ((request) => runtimeInteractionBroker.requestPermission(request));
       const requestRuntimeQuestion = options2.requestRuntimeQuestion ?? ((request) => runtimeInteractionBroker.requestQuestion(request));
       let automaticCaptureService = null;
+      let routeRuntimeNotification = () => {
+      };
       const workspaceRoot = options2.workspaceRoot ?? process.cwd();
       const runtimeServices = createRuntimeServices({
         registry: options2.runtimeRegistry,
         configStore,
         workspaceRoot,
-        traceDirectory: paths.traces
+        traceDirectory: paths.traces,
+        onNotification: (message) => routeRuntimeNotification(message)
       });
       const managedSkillManager = new ManagedSkillManager({
         applicationSupportDirectory: paths.managedSkills,
@@ -62272,17 +62505,41 @@ var require_application = __commonJS({
         getRuntimeDescriptor: selectedRuntimeDescriptor,
         onChanged: () => publish()
       });
+      routeRuntimeNotification = (message) => {
+        if (typeof curationManager.handleNotification === "function") {
+          void curationManager.handleNotification(message);
+        }
+        if (typeof rubricManager.handleNotification === "function") {
+          void rubricManager.handleNotification(message);
+        }
+        if (typeof automaticCaptureService?.handleNotification === "function") {
+          void automaticCaptureService.handleNotification(message);
+        }
+      };
       const automaticCurationManager = Object.freeze({
         async createSession(input) {
           const operation = conversationCurationOperationResolver.resolve(input.datasetId);
-          return curationManager.createSession({
+          const request = {
             ...input,
             executionSkillReference: operation.executionSkillReference,
             operationEvidence: operation.operationEvidence
-          });
+          };
+          if (input.episode?.source?.kind === "dsh-session" && input.source?.kind === "dsh-session" && typeof curationManager.createSessionFromFrozenEpisode === "function") {
+            return curationManager.createSessionFromFrozenEpisode({
+              ...request,
+              idempotencyKey: input.idempotencyKey ?? `automatic:${input.datasetId}:${input.source.digest}`,
+              curator: {
+                modelId: input.modelId ?? null,
+                effort: input.effort ?? null
+              }
+            });
+          }
+          return curationManager.createSession(request);
         },
         archive: (sessionId) => curationManager.archive(sessionId),
-        hiddenThreadIds: () => curationManager.hiddenThreadIds()
+        hiddenThreadIds: () => curationManager.hiddenThreadIds(),
+        listSessions: (options3) => typeof curationManager.listSessions === "function" ? curationManager.listSessions(options3) : store.listCurationSessions(),
+        retry: (sessionId) => curationManager.retry(sessionId)
       });
       automaticCaptureService = createAutomaticCaptureService({
         store,
@@ -62291,6 +62548,7 @@ var require_application = __commonJS({
         stateStore: automaticCaptureStateStore,
         rawCaseStore,
         curationManager: automaticCurationManager,
+        captureEpisode: typeof options2.conversationEpisodeSource?.capture === "function" ? (input) => options2.conversationEpisodeSource.capture(input) : null,
         listSkills: async (runtime) => {
           if (typeof runtime.listSkills !== "function") return [];
           const descriptor = selectedRuntimeDescriptor();
@@ -62301,13 +62559,17 @@ var require_application = __commonJS({
             runtimeId: descriptor.runtimeId,
             providerId: descriptor.providerId
           });
+          const allowNameOnly = descriptor.capabilities?.includes("skills-name-only") === true;
           const matched = [];
           for (const installation of verified) {
             const skill = managedSkillStore.getSkill(installation.skillId);
             const installedManifest = basename(installation.destination).toLocaleLowerCase("en-US") === "skill.md" ? installation.destination : join(installation.destination, "SKILL.md");
-            const observed = runtimeSkills.find(
-              (entry) => entry.name === skill.name && typeof entry.path === "string" && resolve(entry.path) === resolve(installedManifest)
-            );
+            const observed = runtimeSkills.find((entry) => runtimeSkillMatchesVerifiedInstallation({
+              runtimeSkill: entry,
+              managedSkillName: skill.name,
+              installedManifest,
+              allowNameOnly
+            }));
             if (observed) matched.push({ id: skill.id, name: skill.name });
           }
           return matched;
@@ -62315,7 +62577,8 @@ var require_application = __commonJS({
         listDatasets: () => store.listDatasets(),
         getHiddenThreadIds: () => /* @__PURE__ */ new Set([
           ...curationManager.hiddenThreadIds(),
-          ...rubricManager.hiddenThreadIds()
+          ...rubricManager.hiddenThreadIds(),
+          ...evaluationRuntimeThreadIds(store.read())
         ]),
         onChanged: () => publish()
       });
@@ -62785,7 +63048,13 @@ var require_application = __commonJS({
           const descriptor = runtimeServices.descriptor(
             requiredIdentifier(input.runtimeId, "Runtime id")
           );
-          configStore.update({ runtime: descriptor });
+          configStore.update({ runtime: {
+            providerId: descriptor.providerId,
+            runtimeId: descriptor.runtimeId,
+            displayName: descriptor.displayName,
+            version: descriptor.version,
+            executablePath: descriptor.executablePath
+          } });
           return settingsSnapshot();
         },
         "conversationCuration.inspect": (input) => inspectConversationCuration(input),
@@ -63075,7 +63344,9 @@ var require_application = __commonJS({
     module.exports = {
       MAX_DISPATCH_BYTES,
       createRollingSkillApplication: createRollingSkillApplication2,
-      reconcileManagedDatasetBindings
+      evaluationRuntimeThreadIds,
+      reconcileManagedDatasetBindings,
+      runtimeSkillMatchesVerifiedInstallation
     };
   }
 });
@@ -63365,6 +63636,22 @@ var require_surface_parity_manifest = __commonJS({
       "QL-11",
       "QL-12"
     ]);
+    var UI_VERIFIED = /* @__PURE__ */ new Set([
+      "SH-01",
+      "SH-02",
+      "SH-03",
+      "SH-04",
+      "SH-05",
+      "SH-06",
+      "SH-07",
+      "SH-08",
+      "SH-09",
+      "SH-10",
+      "SH-11",
+      "SH-12",
+      "ST-03",
+      "QL-09"
+    ]);
     var IMPLEMENTATION_BY_PREFIX = Object.freeze({
       SH: "DSH native shell; plugin registers only additive slots in packages/rolling-skill-dsh/src/client/index.tsx",
       CV: "packages/rolling-skill-dsh/src/client/conversation and packages/rolling-skill-dsh/src/host/session-evidence.cjs",
@@ -63402,7 +63689,7 @@ var require_surface_parity_manifest = __commonJS({
     var SURFACE_PARITY_MANIFEST = Object.freeze(FAMILIES.flatMap(
       (definition) => Array.from({ length: definition.count }, (_, index) => {
         const id = `${definition.prefix}-${String(index + 1).padStart(2, "0")}`;
-        const status = GREEN.has(id) ? "green" : definition.prefix === "SH" || id === "ST-03" ? "baseline" : "red";
+        const status = UI_VERIFIED.has(id) ? "ui-verified" : GREEN.has(id) ? "green" : definition.prefix === "SH" || id === "ST-03" ? "baseline" : "red";
         return Object.freeze({
           id,
           family: definition.family,
@@ -63723,6 +64010,28 @@ var require_session_evidence = __commonJS({
       }
       return null;
     }
+    function skillIdentityFromResult(result, args) {
+      const meta = result?.data?.meta;
+      const metaName = typeof meta?.name === "string" ? meta.name.trim() : "";
+      const metaProvider = typeof meta?.provider === "string" ? meta.provider.trim() : "";
+      const metaResourceBase = skillResourceBase(meta?.resourceBase);
+      if (metaName && metaProvider && metaResourceBase) {
+        return { name: metaName, provider: metaProvider, resourceBase: metaResourceBase };
+      }
+      const text2 = (result?.data?.message?.content ?? []).flatMap((block) => {
+        if (block?.type === "text" || block?.type === "reasoning") return [String(block.text ?? "")];
+        if (block?.type !== "tool-result") return [];
+        return (block.content ?? []).filter((entry) => entry?.type === "text" || entry?.type === "reasoning").map((entry) => String(entry.text ?? ""));
+      }).join("\n");
+      const name = text2.match(/<skill_content\s+name="([^"\r\n]+)">/u)?.[1]?.trim() ?? "";
+      const path = text2.match(/Base directory for this skill:\s*([^\r\n]+)/u)?.[1]?.trim() ?? "";
+      if (!name || name !== args?.name || !isAbsolute(path)) return null;
+      return {
+        name,
+        provider: "dsh-skill-tool",
+        resourceBase: { kind: "directory", path }
+      };
+    }
     function observedSkills(events) {
       const resultsByCallId = new Map(events.filter((event) => event.type === "tool/result").map((event) => [event.data?.message?.source?.callId, event]));
       const observed = [];
@@ -63730,15 +64039,10 @@ var require_session_evidence = __commonJS({
         if (call.type !== "tool/call" || call.data?.name !== "skill") continue;
         const args = toolArguments(call.data.arguments);
         const result = resultsByCallId.get(call.data.callId);
-        const meta = result?.data?.meta;
-        const name = typeof meta?.name === "string" ? meta.name.trim() : "";
-        const provider = typeof meta?.provider === "string" ? meta.provider.trim() : "";
-        const resourceBase = skillResourceBase(meta?.resourceBase);
-        if (!result || result.data?.error || !name || !provider || args?.name !== name || !resourceBase) continue;
+        const identity = skillIdentityFromResult(result, args);
+        if (!result || result.data?.error || !identity || args?.name !== identity.name) continue;
         observed.push({
-          name,
-          provider,
-          resourceBase,
+          ...identity,
           callSeq: call.seq,
           resultSeq: result.seq
         });
@@ -64514,6 +64818,8 @@ var { createSessionEvidenceSource } = import_session_evidence.default;
 var { createSchedulerAdapter, resolveWorkerExecutable } = import_scheduler.default;
 var inject = ["webServer", "tools", "sessionQuery", "agents"];
 function apply(ctx, config = {}, dependencies = {}) {
+  const environment = dependencies.environment ?? process.env;
+  if (environment.ROLLING_SKILL_OPERATOR_HOST === "1") return;
   const dataPaths = resolveDataPaths({ dataRoot: config.dataRoot });
   const schedulerAdapter = createSchedulerAdapter({
     dataRoot: config.dataRoot,

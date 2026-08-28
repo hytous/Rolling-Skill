@@ -73,6 +73,10 @@ function fixture({mode = "off", executionLocation = "while-harness-running"} = {
             calls.push(["curation", session.id])
             return true
         },
+        async recoverAutomaticSessions() {
+            calls.push(["recover"])
+            return true
+        },
     }
     if (executionLocation === "always") {
         configStore.update({
@@ -141,7 +145,7 @@ describe("Rolling Skill automatic capture composition", () => {
         })
         assert.equal((await service.runOnce({slot: "2026-08-26T09:00:00.000Z"})).status, "completed")
         assert.equal(await service.handleCurationChanged({id: "curation-1"}), true)
-        assert.deepEqual(calls.filter(([kind]) => ["runSlot", "curation"].includes(kind)).map(([kind]) => kind), ["runSlot", "curation"])
+        assert.deepEqual(calls.filter(([kind]) => ["recover", "runSlot", "curation"].includes(kind)).map(([kind]) => kind), ["recover", "runSlot", "curation"])
     })
 
     it("starts Host timers only while Harness owns execution", () => {
@@ -151,7 +155,7 @@ describe("Rolling Skill automatic capture composition", () => {
 
         const worker = fixture({mode: "scheduled", executionLocation: "always"})
         worker.service.startHostSchedule()
-        assert.deepEqual(worker.calls, [["stop"]])
+        assert.deepEqual(worker.calls, [["stop"], ["recover"]])
     })
 
     it("fails closed before changing settings when the selected Runtime is unavailable", () => {
@@ -168,5 +172,31 @@ describe("Rolling Skill automatic capture composition", () => {
             datasetId: null,
         }), /Runtime unavailable/u)
         assert.equal(settingUpdates.length, 0)
+    })
+
+    it("persists only stable Runtime identity fields from discovery", () => {
+        const {configStore, runtime, service} = fixture()
+        runtime.capabilities = ["skills-name-only"]
+        runtime.models = [{id: "model-a"}]
+
+        service.update({
+            mode: "automatic",
+            executionLocation: "while-harness-running",
+            runtimeId: runtime.runtimeId,
+            cadence: "daily",
+            time: "09:00",
+            weekday: 1,
+            modelId: "model-a",
+            effort: null,
+            datasetId: null,
+        })
+
+        assert.deepEqual(configStore.read().runtime, {
+            providerId: runtime.providerId,
+            runtimeId: runtime.runtimeId,
+            displayName: runtime.displayName,
+            version: runtime.version,
+            executablePath: runtime.executablePath,
+        })
     })
 })

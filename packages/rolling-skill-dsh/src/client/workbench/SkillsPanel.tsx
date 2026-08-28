@@ -113,7 +113,7 @@ export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; in
     const install = () => mutate(() => requestRollingSkill("installations.start", {
         skillId: detail?.skill.id,
         versionId: released?.id,
-        targets: runtimeIds.map((selectedRuntimeId) => ({runtimeId: selectedRuntimeId, modelId: null, effort: "high", permissionMode: null})),
+        targets: runtimeIds.map((selectedRuntimeId) => ({runtimeId: selectedRuntimeId, modelId: null, effort: null, permissionMode: null})),
     }))
     const deprecate = (version: Version) => mutate(() => requestRollingSkill("skills.deprecate", {versionId: version.id}))
     const revealRepository = (repositoryId: string) => mutate(() => requestRollingSkill("skills.reveal", {repositoryId}))

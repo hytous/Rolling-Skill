@@ -203,6 +203,48 @@ describe("DSH trusted session evidence", () => {
         ])
     })
 
+    it("derives Skill identity from the current DSH tool-result body when meta is absent", async () => {
+        const traceRoot = mkdtempSync(join(tmpdir(), "rolling-skill-dsh-evidence-"))
+        directories.push(traceRoot)
+        const log = sessionLog()
+        const result = log.events.find((event) => event.type === "tool/result")
+        delete result.data.meta
+        result.data.message.content = [{
+            type: "tool-result",
+            toolCallId: "call-1",
+            isError: false,
+            content: [{
+                type: "text",
+                text: '<skill_content name="billing">\n<skill_resources>\nBase directory for this skill: /runtime/skills/billing\n</skill_resources>\n</skill_content>',
+            }],
+        }]
+        const sessionQuery = {
+            async readSession() { return log },
+            async traceEvent({sessionId, seq}) {
+                return {
+                    session: log.session,
+                    target: {sessionId, seq, type: seq === 14 ? "assistant/message" : "user/message", time: 114, surface: "current"},
+                    replacementChain: [], replacedEventSeqs: [], sourceEventSeqs: [], derivedEventSeqs: [],
+                }
+            },
+        }
+        const source = createSessionEvidenceSource({sessionQuery, traceRoot})
+
+        const captured = await source.capture({
+            sessionId: "session-1",
+            startSeq: 4,
+            endMessageId: "assistant-2",
+        })
+
+        assert.deepEqual(captured.source.observedSkills, [{
+            name: "billing",
+            provider: "dsh-skill-tool",
+            resourceBase: {kind: "directory", path: "/runtime/skills/billing"},
+            callSeq: 6,
+            resultSeq: 7,
+        }])
+    })
+
     it("rejects an Assistant boundary that the trusted trace marks as shadowed", async () => {
         const traceRoot = mkdtempSync(join(tmpdir(), "rolling-skill-dsh-evidence-"))
         directories.push(traceRoot)

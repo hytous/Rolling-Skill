@@ -176,6 +176,8 @@ describe("Runtime-driven Skill installation protocol", () => {
         assert.match(prompt, /uncertain/u)
         assert.match(prompt, new RegExp(request.source.commit))
         assert.match(prompt, new RegExp(INSTALL_RESULT_SCHEMA.replaceAll("/", "\\/")))
+        assert.match(prompt, /runtimeDiscovered must be the JSON boolean true, the JSON boolean false, or null/u)
+        assert.doesNotMatch(prompt, /"runtimeDiscovered": "true \| false \| null"/u)
         assert.doesNotMatch(prompt, /\.codex\/skills|\.codebuddy\/skills|\.dsh\/skills/u)
         assert.doesNotMatch(prompt, /Codex|CodeBuddy|DeepSeek Harness/u)
     })

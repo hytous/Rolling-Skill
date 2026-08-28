@@ -18,6 +18,17 @@ function optionalText(value, label, maximum = 4_096) {
     return requiredText(value, label, maximum)
 }
 
+function stableRuntimeIdentity(descriptor) {
+    if (!descriptor) return null
+    return {
+        providerId: descriptor.providerId,
+        runtimeId: descriptor.runtimeId,
+        displayName: descriptor.displayName,
+        version: descriptor.version,
+        executablePath: descriptor.executablePath,
+    }
+}
+
 function createAutomaticCaptureService({
     store,
     configStore,
@@ -27,6 +38,7 @@ function createAutomaticCaptureService({
     curationManager = null,
     listSkills = null,
     listDatasets = () => store.listDatasets(),
+    captureEpisode = null,
     getHiddenThreadIds = () => new Set(),
     manager = null,
     now = () => new Date(),
@@ -60,6 +72,7 @@ function createAutomaticCaptureService({
         getRuntime: runtimeClient,
         getRuntimeDescriptor: runtimeDescriptor,
         listDatasets,
+        captureEpisode,
         listSkills: listSkills ?? (async (runtime) => {
             if (typeof runtime.listSkills !== "function") return []
             const response = await runtime.listSkills({forceReload: true})
@@ -122,7 +135,9 @@ function createAutomaticCaptureService({
         }
         const runtimeId = optionalText(input.runtimeId, "Automatic capture Runtime id", 500)
         const current = configStore.read()
-        const runtime = runtimeId ? runtimeServices.descriptor(runtimeId) : current.runtime
+        const runtime = runtimeId
+            ? stableRuntimeIdentity(runtimeServices.descriptor(runtimeId))
+            : current.runtime
         if (mode !== "off" && !runtime) {
             throw new Error("Select a Runtime before enabling automatic capture")
         }
@@ -161,6 +176,7 @@ function createAutomaticCaptureService({
         if (profile.mode === "off") return {status: "disabled", slot: null}
         runtimeDescriptor()
         if (running) return {status: "busy", slot: null}
+        await captureManager.recoverAutomaticSessions?.()
         const selectedSlot = slot === "manual" ? now() : new Date(slot)
         if (!Number.isFinite(selectedSlot.getTime())) {
             throw new Error("Automatic capture slot is invalid")
@@ -185,6 +201,7 @@ function createAutomaticCaptureService({
         hostStarted = true
         if (configStore.read().executionLocation === "always") captureManager.stop()
         else captureManager.start()
+        void Promise.resolve(captureManager.recoverAutomaticSessions?.()).catch(onError)
         return status()
     }
 

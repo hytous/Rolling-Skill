@@ -337,7 +337,7 @@ function buildSkillInstallationPrompt(request, options = {}) {
             experimentResult = {
                 actualDigest: null,
                 markerWritten: false,
-                runtimeDiscovered: "true | false | null",
+                runtimeDiscovered: null,
                 beforeDigest: null,
                 mutationPerformed: false,
                 markerBefore: null,
@@ -347,7 +347,7 @@ function buildSkillInstallationPrompt(request, options = {}) {
             experimentResult = {
                 actualDigest: request.source.expectedDigest,
                 markerWritten: true,
-                runtimeDiscovered: "true | false | null",
+                runtimeDiscovered: null,
                 beforeDigest: request.source.expectedDigest,
                 mutationPerformed: false,
                 markerBefore: currentMarker,
@@ -357,7 +357,7 @@ function buildSkillInstallationPrompt(request, options = {}) {
             experimentResult = {
                 actualDigest: request.experiment.baseline.expectedDigest,
                 markerWritten: true,
-                runtimeDiscovered: "true | false | null",
+                runtimeDiscovered: null,
                 beforeDigest: request.source.expectedDigest,
                 mutationPerformed: true,
                 markerBefore: currentMarker,
@@ -383,7 +383,7 @@ function buildSkillInstallationPrompt(request, options = {}) {
             experimentResult = {
                 actualDigest: request.source.expectedDigest,
                 markerWritten: true,
-                runtimeDiscovered: "true | false | null",
+                runtimeDiscovered: null,
                 beforeDigest,
                 mutationPerformed: true,
                 markerBefore: previous?.marker ?? null,
@@ -408,7 +408,7 @@ function buildSkillInstallationPrompt(request, options = {}) {
         result: experimentResult ?? {
             actualDigest: request.source.expectedDigest,
             markerWritten: true,
-            runtimeDiscovered: "true | false | null",
+            runtimeDiscovered: null,
         },
         warnings: [],
         error: null,
@@ -515,6 +515,7 @@ function buildSkillInstallationPrompt(request, options = {}) {
         "",
         "Required procedure:",
         ...procedure,
+        "In result.runtimeDiscovered, runtimeDiscovered must be the JSON boolean true, the JSON boolean false, or null. Never return the strings \"true\", \"false\", or \"null\".",
         "",
         INSTALL_RESULT_SENTINEL.open,
         JSON.stringify(finalShape, null, 2),

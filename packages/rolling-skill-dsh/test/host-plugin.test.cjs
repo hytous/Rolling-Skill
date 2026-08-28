@@ -216,6 +216,33 @@ async function callRoute(handler, method, input) {
     return {status: response.statusCode, headers, body: JSON.parse(body)}
 }
 
+it("does not mount a second Rolling Skill Host inside a managed DSH Runtime", async () => {
+    const source = pathToFileURL(join(__dirname, "../src/host/index.js"))
+    const plugin = await import(`${source.href}?nested-host=${Date.now()}`)
+    const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-nested-host-"))
+    let effects = 0
+    let cleanup = null
+    const context = {
+        agents: {},
+        sessionQuery: {},
+        tools: {register: () => () => {}},
+        webServer: {register: () => () => {}},
+        effect(factory) {
+            effects += 1
+            cleanup = factory()
+        },
+    }
+
+    try {
+        plugin.apply(context, {dataRoot}, {
+            environment: {ROLLING_SKILL_OPERATOR_HOST: "1"},
+        })
+        assert.equal(effects, 0)
+    } finally {
+        await cleanup?.()
+    }
+})
+
 it("registers and disposes the Rolling Skill Cordis Host route", async () => {
     const hostSource = readFileSync(join(__dirname, "../src/host/index.js"), "utf8")
     assert.doesNotMatch(hostSource, /ctx\.runtimeRegistry/u)

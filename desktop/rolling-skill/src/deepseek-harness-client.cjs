@@ -158,6 +158,8 @@ function threadFromHistory({summary = {}, entries = [], workspaceRoot = null}) {
             ensureTurn(turnNumber).items.push({
                 id: event.data.id ?? `dsh-user-${event.seq}`,
                 type: "userMessage",
+                sourceSeq: event.seq,
+                sourceMessageId: event.data.id ?? null,
                 content: (event.data.content ?? [])
                     .filter((block) => block?.type === "text")
                     .map((block) => ({type: "text", text: String(block.text ?? ""), text_elements: []})),
@@ -200,6 +202,8 @@ function threadFromHistory({summary = {}, entries = [], workspaceRoot = null}) {
                 turn.items.push({
                     id: `dsh-assistant-${event.data.turn}-${event.data.step}-text`,
                     type: "agentMessage",
+                    sourceSeq: event.seq,
+                    sourceMessageId: event.data.message?.id ?? null,
                     text,
                 })
             }
@@ -397,6 +401,7 @@ class DeepSeekHarnessClient extends EventEmitter {
                         PATH: `${dirname(this.binaryPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
                         DSH_PERMISSION_MODE: this.defaultPermissionMode,
                     }, this.childEnvironment),
+                    ROLLING_SKILL_OPERATOR_HOST: "1",
                 },
                 shell: false,
                 stdio: ["ignore", "pipe", "pipe"],
@@ -1075,7 +1080,7 @@ class DeepSeekHarnessClient extends EventEmitter {
             : this.defaultPermissionMode
         if (this.sessionPermissions.get(sessionId) !== permissionMode) {
             const command = await this.request("commands/execute", {
-                args: {agentId: sessionId, line: `/permission ${permissionMode}`},
+                args: {agentId: sessionId, line: `/permission ${permissionMode}`, images: []},
             })
             const result = command?.result ?? command
             if (result?.kind === "error") {

@@ -20,6 +20,25 @@ function runtimeReportsSkill(response, skillReference, {
     return false
 }
 
+function dshInjectedSkillDigest(event, expectedName) {
+    if (
+        event?.type !== "user/message" ||
+        event.data?.source?.kind !== "skill-invocation" ||
+        String(event.data.source.name ?? "") !== expectedName
+    ) return null
+    for (const block of event.data?.content ?? []) {
+        if (block?.type !== "text") continue
+        const text = String(block.text ?? "")
+        const opening = text.match(/<skill_content\s+name=(["'])([^"']+)\1[^>]*>/u)
+        if (!opening || opening[2] !== expectedName) continue
+        const instructions = text.match(
+            /<skill_instructions>\r?\n?([\s\S]*?)\r?\n?<\/skill_instructions>/u,
+        )
+        if (instructions) return skillContentDigest(instructions[1])
+    }
+    return null
+}
+
 async function resolveSkillEvidenceBinding({
     descriptor,
     selectedRuntimeId,
@@ -81,7 +100,8 @@ function resolveExecutedSkillEvidenceBinding({
         if (String(observedSkill ?? "") !== skillName) continue
         observed.push({
             sequence: entry.sequence,
-            contentDigest: update.skillContentDigest ?? null,
+            contentDigest:
+                update.skillContentDigest ?? dshInjectedSkillDigest(event, skillName),
         })
     }
     const matching = observed.find((entry) =>

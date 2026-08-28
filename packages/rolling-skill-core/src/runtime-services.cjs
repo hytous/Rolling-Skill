@@ -48,9 +48,22 @@ function createRuntimeServices({
     workspaceRoot = process.cwd(),
     traceDirectory = null,
     clientOptions = {},
+    onNotification = null,
 } = {}) {
     let available = null
     const activeClients = new Map()
+    const notificationListeners = new Map()
+
+    function observeNotifications(client) {
+        if (
+            typeof onNotification !== "function" ||
+            typeof client?.on !== "function" ||
+            notificationListeners.has(client)
+        ) return
+        const listener = (message) => onNotification(message)
+        client.on("notification", listener)
+        notificationListeners.set(client, listener)
+    }
 
     function discoveryOptions() {
         const selected = configStore?.read?.().runtime ?? null
@@ -119,6 +132,7 @@ function createRuntimeServices({
             ...clientOptions,
             ...options,
         })
+        observeNotifications(client)
         try {
             await client.start?.()
             activeClients.set(selected.runtimeId, client)
@@ -134,6 +148,10 @@ function createRuntimeServices({
     async function close() {
         const clients = [...activeClients.values()]
         activeClients.clear()
+        for (const [client, listener] of notificationListeners) {
+            client.off?.("notification", listener)
+        }
+        notificationListeners.clear()
         await Promise.allSettled(clients.map((client) => client.stop?.()))
     }
 

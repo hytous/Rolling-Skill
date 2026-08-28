@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict")
+const {EventEmitter} = require("node:events")
 const {mkdtempSync, mkdirSync, writeFileSync} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
@@ -27,6 +28,55 @@ async function importManagedSkill(application) {
 }
 
 describe("shared Rolling Skill application", () => {
+    it("accepts a verified managed installation from a name-only Runtime inventory", () => {
+        const {runtimeSkillMatchesVerifiedInstallation} = require(modulePath)
+
+        assert.equal(runtimeSkillMatchesVerifiedInstallation({
+            runtimeSkill: {
+                name: "billing",
+                enabled: true,
+                evidencePrecision: "name-only",
+            },
+            managedSkillName: "billing",
+            installedManifest: "/Users/test/.dsh/skills/billing/SKILL.md",
+            allowNameOnly: true,
+        }), true)
+        assert.equal(runtimeSkillMatchesVerifiedInstallation({
+            runtimeSkill: {
+                name: "billing",
+                enabled: true,
+                evidencePrecision: "name-only",
+            },
+            managedSkillName: "billing",
+            installedManifest: "/Users/test/.dsh/skills/billing/SKILL.md",
+            allowNameOnly: false,
+        }), false)
+        assert.equal(runtimeSkillMatchesVerifiedInstallation({
+            runtimeSkill: {
+                name: "other",
+                enabled: true,
+                evidencePrecision: "name-only",
+            },
+            managedSkillName: "billing",
+            installedManifest: "/Users/test/.dsh/skills/billing/SKILL.md",
+            allowNameOnly: true,
+        }), false)
+    })
+
+    it("hides evaluation target and Judge Runtime threads from automatic capture", () => {
+        const {evaluationRuntimeThreadIds} = require(modulePath)
+        const hidden = evaluationRuntimeThreadIds({
+            evaluationRuns: [{
+                results: [
+                    {threadId: "target-thread", judge: {threadId: "judge-thread"}},
+                    {threadId: null, judge: null},
+                ],
+            }],
+        })
+
+        assert.deepEqual([...hidden].sort(), ["judge-thread", "target-thread"])
+    })
+
     it("exposes strict review lifecycles for Curation and Rubric sessions", async () => {
         const {createRollingSkillApplication} = require(modulePath)
         const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-review-api-"))
@@ -435,6 +485,135 @@ describe("shared Rolling Skill application", () => {
         assert.equal(settings.rollingSkill.language, "en")
         assert.equal(settings.rollingSkill.autoCaptureProfile.mode, "scheduled")
         assert.equal(settings.plugin.locale, "en")
+        await application.close()
+    })
+
+    it("persists only stable Runtime identity fields from discovery", async () => {
+        const {createRollingSkillApplication} = require(modulePath)
+        const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-runtime-settings-"))
+        const discovered = {
+            runtimeId: "deepseek-harness:test",
+            providerId: "deepseek-harness",
+            displayName: "DeepSeek Harness",
+            version: "0.1.1-rc.1",
+            executablePath: "/usr/local/bin/dsh",
+            source: "path",
+            transport: "localhost-http-websocket",
+            capabilities: ["threads", "turns"],
+            label: "DeepSeek Harness 0.1.1-rc.1 · /usr/local/bin/dsh",
+        }
+        const application = createRollingSkillApplication({
+            dataRoot,
+            runtimeRegistry: {
+                discover: () => ({available: [discovered]}),
+                createClient: () => { throw new Error("not used") },
+            },
+        })
+
+        const settings = await application.dispatch("settings.selectRuntime", {
+            runtimeId: discovered.runtimeId,
+        })
+
+        assert.deepEqual(settings.plugin.runtime, {
+            runtimeId: discovered.runtimeId,
+            providerId: discovered.providerId,
+            displayName: discovered.displayName,
+            version: discovered.version,
+            executablePath: discovered.executablePath,
+        })
+        await application.close()
+    })
+
+    it("routes active Runtime notifications to the Rubric manager", async () => {
+        const {createRollingSkillApplication} = require(modulePath)
+        const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-runtime-events-"))
+        const skillRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-runtime-skill-"))
+        const skillPath = join(skillRoot, "SKILL.md")
+        writeFileSync(skillPath, "---\nname: incident-response-planner\ndescription: Plan incidents\n---\n")
+        const client = new EventEmitter()
+        client.start = async () => {}
+        client.stop = async () => {}
+        client.startThread = async () => ({thread: {id: "rubric-thread", modelProvider: "deepseek-harness"}})
+        client.startTurn = async () => ({turn: {id: "rubric-turn"}})
+        const runtime = {
+            runtimeId: "deepseek-harness:test",
+            providerId: "deepseek-harness",
+            displayName: "DeepSeek Harness",
+            version: "0.1.1-rc.1",
+            executablePath: "/usr/local/bin/dsh",
+        }
+        let managedIdentity = null
+        const application = createRollingSkillApplication({
+            dataRoot,
+            runtimeRegistry: {
+                discover: () => ({available: [runtime]}),
+                createClient: () => client,
+            },
+            conversationCurationOperationResolver: {
+                inspectDataset: () => ({ready: true, blockers: []}),
+                resolve: () => { throw new Error("not used") },
+                resolveRubric: () => ({
+                    executionSkillReference: {
+                        schemaVersion: "rolling-skill-skill-reference/v1",
+                        id: managedIdentity.skill.id,
+                        repositoryId: managedIdentity.repository.id,
+                        name: managedIdentity.skill.name,
+                        path: skillPath,
+                        scope: "runtime",
+                        description: null,
+                        runtimeId: runtime.runtimeId,
+                        providerId: runtime.providerId,
+                        confirmedAt: "2026-08-27T00:00:00.000Z",
+                    },
+                    operationEvidence: {
+                        schemaVersion: "rolling-skill-operation-evidence/v1",
+                        kind: "rubric",
+                        repositoryId: managedIdentity.repository.id,
+                        skillId: managedIdentity.skill.id,
+                        runtime: {
+                            runtimeId: runtime.runtimeId,
+                            providerId: runtime.providerId,
+                        },
+                        installation: {destination: skillRoot},
+                    },
+                }),
+            },
+        })
+        await application.dispatch("settings.selectRuntime", {runtimeId: runtime.runtimeId})
+        const managed = await importManagedSkill(application)
+        managedIdentity = managed
+        const dataset = await application.dispatch("datasets.create", {
+            name: "Runtime notification cases",
+            repositoryId: managed.repository.id,
+            skillId: managed.skill.id,
+        })
+        const datasetId = dataset.id
+        const session = await application.dispatch("rubrics.create", {
+            datasetId,
+            modelId: null,
+            effort: null,
+            idempotencyKey: "rubric-runtime-notification-1",
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+        await new Promise((resolve) => setImmediate(resolve))
+
+        client.emit("notification", {
+            method: "turn/completed",
+            params: {
+                threadId: "rubric-thread",
+                turn: {
+                    id: "rubric-turn",
+                    status: "failed",
+                    items: [],
+                    error: {message: "synthetic Runtime failure"},
+                },
+            },
+        })
+        await new Promise((resolve) => setImmediate(resolve))
+
+        const updated = await application.dispatch("rubrics.get", {sessionId: session.id})
+        assert.equal(updated.status, "failed")
+        assert.equal(updated.error, "synthetic Runtime failure")
         await application.close()
     })
 

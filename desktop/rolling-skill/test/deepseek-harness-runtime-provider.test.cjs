@@ -244,6 +244,9 @@ describe("DeepSeek Harness session adapter", () => {
         assert.equal(thread.turns[0].items[1].command, "billing-cli cost query")
         assert.equal(thread.turns[0].items[1].status, "completed")
         assert.equal(thread.turns[0].items[3].text, "The check passed.")
+        assert.equal(thread.turns[0].items[0].sourceSeq, 1)
+        assert.equal(thread.turns[0].items[3].sourceSeq, 5)
+        assert.equal(thread.turns[0].items[3].sourceMessageId, "assistant-1")
     })
 
     it("records DSH tool results as completed and failed Judge evidence", () => {
@@ -476,6 +479,7 @@ describe("DeepSeek Harness session adapter", () => {
 
             assert.equal(spawnCalls.length, 1)
             assert.equal(spawnCalls[0].options.env.DSH_PERMISSION_MODE, "danger-full-access")
+            assert.equal(spawnCalls[0].options.env.ROLLING_SKILL_OPERATOR_HOST, "1")
         } finally {
             await client.stop()
         }
@@ -794,7 +798,7 @@ describe("DeepSeek Harness session adapter", () => {
 
         assert.deepEqual(requests, [{
             method: "commands/execute",
-            payload: {args: {agentId: "hidden-session", line: "/permission read-only"}},
+            payload: {args: {agentId: "hidden-session", line: "/permission read-only", images: []}},
         }])
         assert.equal(client.sessionPermissions.get("hidden-session"), "read-only")
     })

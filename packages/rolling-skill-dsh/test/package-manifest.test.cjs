@@ -32,7 +32,10 @@ describe("Rolling Skill DSH package manifest", () => {
             [...manifest.files].sort(),
             ["README.md", "cordis.patch.yml", "lib", "package.json"].sort(),
         )
-        assert.equal(manifest.dependencies["@deepseek-ai/dsh-tools"], "^0.1.1-rc.1")
+        assert.equal(manifest.dependencies?.["@deepseek-ai/dsh-tools"], undefined)
+        assert.equal(manifest.dependencies?.["@deepseek-ai/dsh-llm"], undefined)
+        assert.equal(manifest.peerDependencies["@deepseek-ai/dsh-tools"], "^0.1.1-rc.1")
+        assert.equal(manifest.peerDependencies["@deepseek-ai/dsh-llm"], "^0.1.1-rc.1")
     })
 
     it("builds an executable Worker with exactly one shebang", () => {

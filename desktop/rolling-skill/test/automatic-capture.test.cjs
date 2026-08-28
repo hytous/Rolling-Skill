@@ -49,6 +49,8 @@ function fixture({
     hidden = new Set(),
     datasets = null,
     curationManager = null,
+    alreadyCurated = () => false,
+    captureEpisode = null,
 } = {}) {
     const directory = mkdtempSync(join(tmpdir(), "rolling-skill-discovery-"))
     directories.push(directory)
@@ -114,7 +116,10 @@ function fixture({
     const statuses = []
     const errors = []
     const manager = new ConversationDiscoveryManager({
-        store: {read: () => ({settings})},
+        store: {
+            read: () => ({settings}),
+            hasCurationForSource: alreadyCurated,
+        },
         stateStore,
         rawCaseStore: raw,
         getRuntime: async () => activeRuntime,
@@ -131,6 +136,7 @@ function fixture({
             runtimeId: "codex:/opt/codex-a",
         }],
         runAnalysis: analysis,
+        captureEpisode,
         getHiddenThreadIds: () => hidden,
         now: () => new Date(2026, 7, 26, 9, 5, 0, 0),
         onStatus: (status) => statuses.push(status),
@@ -187,6 +193,63 @@ describe("automatic dataset routing", () => {
 })
 
 describe("scheduled conversation discovery manager", () => {
+    it("freezes a DSH source range through the trusted episode source before classification", async () => {
+        const captured = []
+        const value = fixture({
+            captureEpisode: async (input) => {
+                captured.push(input)
+                return {episode: {schemaVersion: "rolling-skill-episode/v1", source: {kind: "dsh-session"}}}
+            },
+        })
+        value.sourceThread.modelProvider = "deepseek-harness"
+        value.sourceThread.turns[0].items[0].sourceSeq = 7
+        value.sourceThread.turns[1].items[1].sourceSeq = 42
+        value.sourceThread.turns[1].items[1].sourceMessageId = "assistant-native-id"
+
+        const episode = await value.manager.episodeForSegment(value.sourceThread, {
+            startUserItemId: "thread-1-user-1",
+            endUserItemId: "thread-1-user-2",
+        }, "deepseek-harness:runtime")
+
+        assert.deepEqual(captured, [{
+            sessionId: "thread-1",
+            startSeq: 7,
+            endMessageId: "assistant-native-id",
+        }])
+        assert.equal(episode.source.kind, "dsh-session")
+    })
+
+    it("fails closed instead of synthesizing evidence when a DSH episode source is unavailable", async () => {
+        const value = fixture()
+        value.sourceThread.modelProvider = "deepseek-harness"
+
+        await assert.rejects(
+            value.manager.episodeForSegment(value.sourceThread, {
+                startUserItemId: "thread-1-user-1",
+                endUserItemId: "thread-1-user-2",
+            }, "deepseek-harness:runtime"),
+            /trusted DSH episode source is unavailable/u,
+        )
+    })
+
+    it("does not treat Assistant text from non-completed turns as a final response", async () => {
+        for (const status of ["inProgress", "interrupted", "failed"]) {
+            const value = fixture()
+            value.sourceThread.turns[1].status = status
+
+            const messages = value.manager.userMessages(value.sourceThread)
+            assert.equal(messages[1].assistantCompleted, false, status)
+            await assert.rejects(
+                value.manager.episodeForSegment(value.sourceThread, {
+                    startUserItemId: "thread-1-user-1",
+                    endUserItemId: "thread-1-user-2",
+                }, "codex:/opt/codex-a"),
+                /no final Assistant response/u,
+                status,
+            )
+        }
+    })
+
     it("does nothing while capture is off and ignores turn completion notifications", async () => {
         const {analyses, manager, stateStore} = fixture({mode: "off"})
 
@@ -216,7 +279,13 @@ describe("scheduled conversation discovery manager", () => {
             },
             async readThread(id) {
                 reads.push(id)
-                return {thread: threads[id === "current-thread-2" ? "current2" : id === "archived-thread" ? "archived" : "current"]}
+                const selected = structuredClone(
+                    threads[id === "current-thread-2" ? "current2" : id === "archived-thread" ? "archived" : "current"],
+                )
+                for (const turn of selected.turns) {
+                    turn.items = turn.items.filter((item) => item.type !== "agentMessage")
+                }
+                return {thread: selected}
             },
         }
         const prompts = []
@@ -238,6 +307,27 @@ describe("scheduled conversation discovery manager", () => {
             {archived: true, cursor: null},
         ])
         assert.equal(prompts.every((prompt) => !/本月账单为|产品 A/u.test(prompt)), true)
+    })
+
+    it("does not recursively scan Rolling Skill internal tasks after a service restart", async () => {
+        const internalThreads = [
+            thread("thread-1", "Identify complete user problem ranges from incremental user messages only.\n<incremental-user-messages>{}</incremental-user-messages>"),
+            thread("thread-2", "You are judging one agent Skill evaluation result. Evaluate only the supplied answer."),
+            thread("thread-3", "/billing-cost-managementYou are the Curator for an agent Skill evaluation dataset.\nThe source episode follows."),
+        ]
+        const runtime = {
+            async listThreads({archived}) {
+                return {data: archived ? [] : internalThreads.map(({id}) => ({id})), nextCursor: null}
+            },
+            async readThread(threadId) {
+                return {thread: internalThreads.find(({id}) => id === threadId)}
+            },
+        }
+        const value = fixture({runtime})
+
+        assert.equal(await value.manager.runDueScan(), true)
+        assert.deepEqual(value.analyses, [])
+        assert.deepEqual(value.candidates, [])
     })
 
     it("resumes a pending tail, persists the candidate before advancing its cursor, and deduplicates the slot", async () => {
@@ -277,6 +367,135 @@ describe("scheduled conversation discovery manager", () => {
         )
         assert.equal(fixtureValue.stateStore.read().lastScheduledSlot !== null, true)
         assert.equal(fixtureValue.statuses.some((status) => status.running), true)
+    })
+
+    it("rescans a persisted pending tail even when no newer user message exists", async () => {
+        const value = fixture()
+        value.stateStore.commitThread("codex:/opt/codex-a", "thread-1", {
+            lastInspectedUserItemId: "thread-1-user-2",
+            pendingStartUserItemId: "thread-1-user-1",
+        }, "2026-08-25T09:05:00.000Z")
+
+        assert.equal(await value.manager.runDueScan(), true)
+        assert.deepEqual(value.analyses.map((entry) => entry.stage), ["boundary", "outcome"])
+        assert.equal(value.candidates.length, 1)
+        assert.equal(
+            value.stateStore.thread("codex:/opt/codex-a", "thread-1").pendingStartUserItemId,
+            null,
+        )
+    })
+
+    it("closes a model-pending tail when every user turn already has a final Assistant response", async () => {
+        const value = fixture({
+            runAnalysis: async (input) => {
+                value.analyses.push(input)
+                if (input.stage === "boundary") {
+                    return JSON.stringify({
+                        segments: [],
+                        pendingStartUserItemId: "thread-1-user-1",
+                    })
+                }
+                return JSON.stringify({
+                    skillName: "billing-cost-management",
+                    outcome: "resolved",
+                    caseType: "goodcase",
+                    finalAssistantItemId: "thread-1-agent-2",
+                    confidence: 0.92,
+                    reason: "The completed response contains the requested breakdown.",
+                })
+            },
+        })
+
+        assert.equal(await value.manager.runDueScan(), true)
+        assert.deepEqual(value.analyses.map((entry) => entry.stage), ["boundary", "outcome"])
+        assert.equal(value.candidates.length, 1)
+        assert.equal(value.candidates[0].source.startItemId, "thread-1-user-1")
+        assert.equal(value.candidates[0].source.endItemId, "thread-1-agent-2")
+        assert.equal(
+            value.stateStore.thread("codex:/opt/codex-a", "thread-1").pendingStartUserItemId,
+            null,
+        )
+    })
+
+    it("keeps a model-pending tail open when its final user turn has no Assistant response", async () => {
+        const incomplete = thread("thread-1")
+        incomplete.turns[1].items = incomplete.turns[1].items.filter((item) => item.type !== "agentMessage")
+        const runtime = {
+            async listThreads({archived}) {
+                return {data: archived ? [] : [{id: incomplete.id}], nextCursor: null}
+            },
+            async readThread() { return {thread: incomplete} },
+        }
+        const value = fixture({
+            runtime,
+            runAnalysis: async (input) => {
+                value.analyses.push(input)
+                return JSON.stringify({
+                    segments: [],
+                    pendingStartUserItemId: "thread-1-user-1",
+                })
+            },
+        })
+
+        assert.equal(await value.manager.runDueScan(), true)
+        assert.deepEqual(value.analyses.map((entry) => entry.stage), ["boundary"])
+        assert.deepEqual(value.candidates, [])
+        assert.equal(
+            value.stateStore.thread("codex:/opt/codex-a", "thread-1").pendingStartUserItemId,
+            "thread-1-user-1",
+        )
+    })
+
+    it("defers a model-closed segment whose final user turn has no Assistant response", async () => {
+        const incomplete = thread("thread-1")
+        incomplete.turns[1].items = incomplete.turns[1].items.filter((item) => item.type !== "agentMessage")
+        const runtime = {
+            async listThreads({archived}) {
+                return {data: archived ? [] : [{id: incomplete.id}], nextCursor: null}
+            },
+            async readThread() { return {thread: incomplete} },
+        }
+        const value = fixture({
+            runtime,
+            runAnalysis: async (input) => {
+                value.analyses.push(input)
+                return JSON.stringify({
+                    segments: [{
+                        startUserItemId: "thread-1-user-1",
+                        endUserItemId: "thread-1-user-2",
+                        summary: "The model closed an incomplete range",
+                    }],
+                    pendingStartUserItemId: null,
+                })
+            },
+        })
+
+        assert.equal(await value.manager.runDueScan(), true)
+        assert.deepEqual(value.analyses.map((entry) => entry.stage), ["boundary"])
+        assert.deepEqual(value.candidates, [])
+        assert.equal(
+            value.stateStore.thread("codex:/opt/codex-a", "thread-1").pendingStartUserItemId,
+            "thread-1-user-1",
+        )
+    })
+
+    it("does not reclassify or duplicate a conversation range already curated by a human", async () => {
+        const checked = []
+        const value = fixture({
+            alreadyCurated(threadId, endItemId) {
+                checked.push({threadId, endItemId})
+                return threadId === "thread-1" && endItemId === "thread-1-agent-2"
+            },
+        })
+
+        assert.equal(await value.manager.runDueScan(), true)
+        assert.deepEqual(value.analyses.map((entry) => entry.stage), ["boundary"])
+        assert.deepEqual(value.candidates, [])
+        assert.deepEqual(checked, [{threadId: "thread-1", endItemId: "thread-1-agent-2"}])
+        assert.equal(
+            value.stateStore.thread("codex:/opt/codex-a", "thread-1").checkedRanges[0].reason,
+            "already_curated",
+        )
     })
 
     it("does not advance a candidate cursor or satisfy the slot when Raw Case persistence fails", async () => {
@@ -345,6 +564,9 @@ describe("scheduled conversation discovery manager", () => {
         assert.equal(created[0].sourceThreadId, "thread-1")
         assert.equal(created[0].startItemId, "thread-1-user-1")
         assert.equal(created[0].endItemId, "thread-1-agent-2")
+        assert.equal(created[0].episode.source.threadId, "thread-1")
+        assert.equal(created[0].episode.source.startItemId, "thread-1-user-1")
+        assert.equal(created[0].episode.source.endItemId, "thread-1-agent-2")
         assert.deepEqual(value.dispatches, [])
 
         await value.manager.handleCurationChanged({
@@ -365,6 +587,43 @@ describe("scheduled conversation discovery manager", () => {
         }])
     })
 
+    it("uses the current automatic mode when a scan started with a stale profile", async () => {
+        const created = []
+        const value = fixture({
+            mode: "automatic",
+            curationManager: {
+                async createSession(input) { created.push(input); return {id: "session-live", status: "queued"} },
+                hiddenThreadIds: () => new Set(),
+            },
+        })
+        const episode = {
+            originalQuestion: "查本月账单",
+            source: {
+                threadId: "thread-1",
+                startItemId: "thread-1-user-1",
+                startTurnId: "thread-1-turn-1",
+                endItemId: "thread-1-agent-2",
+                endTurnId: "thread-1-turn-2",
+            },
+            items: [],
+        }
+
+        await value.manager.createAutomaticCuration({
+            saved: {rawCase: {id: "raw-live"}},
+            source: {confidence: 0.92, outcome: "resolved", caseType: "goodcase", threadId: "thread-1"},
+            episode,
+            skill: {name: "billing-cost-management"},
+            datasets: [{
+                id: "dataset-1",
+                activeRubricVersionId: "rubric-1",
+                skillReference: {name: "billing-cost-management"},
+            }],
+            profile: {mode: "scheduled", datasetId: "dataset-1"},
+        })
+
+        assert.equal(created.length, 1)
+    })
+
     it("retains the Raw Case when the route lacks a Rubric or Draft creation fails", async () => {
         let creates = 0
         const missingRubric = fixture({
@@ -383,10 +642,11 @@ describe("scheduled conversation discovery manager", () => {
             }],
         })
 
-        assert.equal(await missingRubric.manager.runDueScan(), true)
+        assert.equal(await missingRubric.manager.runDueScan(), false)
         assert.equal(creates, 0)
         assert.equal(missingRubric.candidates.length, 1)
         assert.deepEqual(missingRubric.dispatches, [])
+        assert.match(missingRubric.stateStore.read().lastError.message, /published Rubric/u)
 
         const failedDraft = fixture({
             mode: "automatic",
@@ -407,10 +667,15 @@ describe("scheduled conversation discovery manager", () => {
             }],
         })
 
-        assert.equal(await failedDraft.manager.runDueScan(), true)
+        assert.equal(await failedDraft.manager.runDueScan(), false)
         assert.equal(failedDraft.candidates.length, 1)
         assert.deepEqual(failedDraft.dispatches, [])
         assert.match(failedDraft.errors.at(-1).message, /Curator unavailable/u)
+        assert.match(failedDraft.stateStore.read().lastError.message, /Curator unavailable/u)
+        assert.equal(
+            failedDraft.stateStore.thread("codex:/opt/codex-a", "thread-1").lastInspectedUserItemId,
+            null,
+        )
     })
 
     it("marks a Raw Case dispatched only after automatic Case persistence succeeds", async () => {
@@ -445,5 +710,64 @@ describe("scheduled conversation discovery manager", () => {
         resolveArchive({id: "case-1"})
         await saving
         assert.equal(value.dispatches.length, 1)
+    })
+
+    it("recovers an interrupted automatic curation after restart from persisted source evidence", async () => {
+        const dispatches = []
+        const retries = []
+        const archives = []
+        const rawCaseStore = {
+            list: () => [{
+                id: "raw-restart",
+                source: {
+                    kind: "automatic_capture",
+                    observations: [{
+                        threadId: "thread-source",
+                        endItemId: "thread-source-agent-2",
+                    }],
+                },
+            }],
+            markDispatched(id, dispatch) {
+                dispatches.push({id, dispatch})
+            },
+        }
+        const interrupted = {
+            id: "session-restart",
+            status: "failed",
+            error: "The Curator task was interrupted when Rolling Skill stopped. Retry to continue.",
+            draft: null,
+            episode: {
+                source: {
+                    threadId: "thread-source",
+                    endItemId: "thread-source-agent-2",
+                },
+            },
+        }
+        const curationManager = {
+            listSessions: () => [interrupted],
+            async retry(id) {
+                retries.push(id)
+                return {
+                    ...interrupted,
+                    status: "needs_review",
+                    error: null,
+                    draft: {schemaVersion: "rolling-skill-curated-case/v1"},
+                }
+            },
+            async archive(id) {
+                archives.push(id)
+                return {id: "case-recovered"}
+            },
+            hiddenThreadIds: () => new Set(),
+        }
+        const value = fixture({mode: "automatic", rawCaseStore, curationManager})
+
+        assert.equal(await value.manager.recoverAutomaticSessions(), true)
+        assert.deepEqual(retries, ["session-restart"])
+        assert.deepEqual(archives, ["session-restart"])
+        assert.deepEqual(dispatches, [{
+            id: "raw-restart",
+            dispatch: {mode: "automatic", caseId: "case-recovered"},
+        }])
     })
 })
