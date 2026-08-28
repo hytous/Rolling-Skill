@@ -50,6 +50,9 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(projection, /anchorSeq/u)
         assert.match(css, /rolling-skill-curation-draft/u)
         assert.match(css, /rolling-skill-curation-saved/u)
+        assert.match(css, /data-rolling-skill-curation-status="draft"/u)
+        assert.match(css, /data-rolling-skill-curation-status="saved"/u)
+        assert.match(css, /border-inline-start/u)
         assert.match(controller, /markerDraftLegend/u)
         assert.match(controller, /markerSavedLegend/u)
         assert.doesNotMatch(`${index}\n${controller}`, /conversation\.chat\.node/u)
@@ -77,7 +80,7 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(overlay, /role="dialog"/u)
         assert.match(overlay, /aria-modal="true"/u)
         assert.match(overlay, /event\.key\s*===\s*"Escape"/u)
-        assert.match(settings, /<ImportPanel/u)
+        assert.doesNotMatch(settings, /<ImportPanel/u)
         assert.match(settings, /settings\.selectRuntime/u)
         assert.match(settings, /curatorModelId/u)
         assert.match(settings, /rubricModelId/u)
@@ -85,6 +88,29 @@ describe("Rolling Skill native DSH Client", () => {
         assert.doesNotMatch(settings, /<Workbench/u)
         assert.doesNotMatch(index, /conversation\.session["']/u)
         assert.doesNotMatch(index, /replaceChildren|createRoot/u)
+    })
+
+    it("groups workbench pages into four workflow sections", () => {
+        const workbench = source("workbench/Workbench.tsx")
+        const settings = source("settings/RollingSkillSettings.tsx")
+        const locale = source("locale.ts")
+        const css = source("workbench/workbench.css")
+
+        assert.match(workbench, /const NAVIGATION_GROUPS/u)
+        assert.match(workbench, /id:\s*"case-management"[\s\S]+label:\s*"caseManagement"/u)
+        assert.match(workbench, /id:\s*"skill-installation"[\s\S]+label:\s*"skillAndInstallation"/u)
+        assert.match(workbench, /id:\s*"evaluation-optimization"[\s\S]+label:\s*"evaluationAndOptimization"/u)
+        assert.match(workbench, /rolling-skill-primary-tabs/u)
+        assert.match(workbench, /rolling-skill-secondary-tabs/u)
+        assert.match(workbench, /normalizeWorkbenchRoute/u)
+        assert.match(locale, /caseManagement:\s*"Case 沉淀与管理"/u)
+        assert.match(locale, /skillAndInstallation:\s*"Skill 与安装"/u)
+        assert.match(locale, /evaluationAndOptimization:\s*"评测与优化"/u)
+        assert.match(locale, /runtimeInstallation:\s*"Runtime 安装"/u)
+        assert.match(css, /\.rolling-skill-primary-tabs/u)
+        assert.match(css, /\.rolling-skill-secondary-tabs/u)
+        assert.doesNotMatch(workbench, /ImportPanel|page:\s*"import"|page:\s*"diagnostics"/u)
+        assert.doesNotMatch(settings, /ImportPanel|legacyImport|diagnostics/u)
     })
 
     it("uses the bounded same-origin API and aborts stale requests", () => {
@@ -109,10 +135,54 @@ describe("Rolling Skill native DSH Client", () => {
         assert.doesNotMatch(css, /#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/iu)
     })
 
+    it("gives workbench actions visible semantics without stretching or text overflow", () => {
+        const actionButton = source("workbench/ActionButton.tsx")
+        const workbench = source("workbench/Workbench.tsx")
+        const css = source("workbench/workbench.css")
+        const panels = [
+            "AutomaticCapturePanel.tsx",
+            "CasesPanel.tsx",
+            "CurationPanel.tsx",
+            "CurationSessionView.tsx",
+            "DatasetsPanel.tsx",
+            "EvaluationsPanel.tsx",
+            "InstallationsPanel.tsx",
+            "OperatorPanel.tsx",
+            "OptimizationPanel.tsx",
+            "RawCasesPanel.tsx",
+            "RubricPanel.tsx",
+            "RubricSessionView.tsx",
+            "RuntimeInteractions.tsx",
+            "SkillsPanel.tsx",
+        ].map((name) => source(`workbench/${name}`))
+
+        assert.match(actionButton, /tone\s*=\s*"secondary"/u)
+        assert.match(actionButton, /primary:\s*"primary"/u)
+        assert.match(actionButton, /secondary:\s*"outline"/u)
+        assert.match(actionButton, /quiet:\s*"ghost"/u)
+        for (const panel of panels) {
+            assert.match(panel, /ActionButton as Button/u)
+            assert.doesNotMatch(panel, /import\s*\{[^}]*\bButton\b[^}]*\}\s*from\s*"@deepseek-ai\/dsh-client-ui-primitives"/u)
+            assert.doesNotMatch(panel, /variant="(?:outline|ghost)"/u)
+        }
+        assert.match(workbench, /import\s*\{Button\}\s*from\s*"@deepseek-ai\/dsh-client-ui-primitives"/u)
+        assert.match(workbench, /import\s*\{ActionButton\}\s*from\s*"\.\/ActionButton"/u)
+        assert.match(workbench, /<ActionButton\s+size="sm"\s+onClick=\{reload\}/u)
+        assert.match(css, /\.rolling-skill-action-button\s*\{[\s\S]*flex:\s*0 0 auto/u)
+        assert.match(css, /\.rolling-skill-action-button\s*\{[\s\S]*white-space:\s*nowrap/u)
+        assert.match(css, /text-overflow:\s*ellipsis/u)
+        assert.match(css, /\.rolling-skill-actions\s*\{[\s\S]*flex-wrap:\s*wrap/u)
+        assert.match(css, /@media \(max-width: 760px\)[\s\S]*align-items:\s*flex-start/u)
+        assert.match(css, /@media \(max-width: 760px\)[\s\S]*box-sizing:\s*border-box/u)
+        assert.match(css, /@media \(max-width: 760px\)[\s\S]*\.rolling-skill-review-layout\s*\{[\s\S]*grid-template-columns:\s*1fr/u)
+        assert.match(css, /@media \(max-width: 640px\)[\s\S]*\.rolling-skill-header\s*\{[\s\S]*align-items:\s*flex-start/u)
+    })
+
     it("ships native Dataset, Case, and Raw Case panels with refresh and recovery actions", () => {
         const datasets = source("workbench/DatasetsPanel.tsx")
         const cases = source("workbench/CasesPanel.tsx")
         const rawCases = source("workbench/RawCasesPanel.tsx")
+        const markdown = source("workbench/MarkdownContent.tsx")
         const workbench = source("workbench/Workbench.tsx")
 
         assert.match(datasets, /datasets\.create/u)
@@ -125,8 +195,13 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(cases, /curation\.createCalibration/u)
         assert.match(cases, /caseScope/u)
         assert.match(cases, /pageSize/u)
+        assert.match(cases, /<MarkdownContent/u)
+        assert.match(markdown, /skipHtml/u)
+        assert.match(markdown, /safeMarkdownLink/u)
+        assert.doesNotMatch(markdown, /dangerouslySetInnerHTML|rehypeRaw|rehype-raw/u)
         assert.match(rawCases, /rawCases\.add/u)
         assert.match(rawCases, /rawCases\.createDraft/u)
+        assert.match(rawCases, /rawCases\.evidence/u)
         assert.match(rawCases, /rawCases\.dispatch/u)
         assert.match(rawCases, /validateInNewSession/u)
         assert.match(rawCases, /rawCases\.update/u)
@@ -134,6 +209,24 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(rawCases, /repositoryId/u)
         assert.match(rawCases, /skillId/u)
         assert.match(rawCases, /search/u)
+        assert.match(rawCases, /rawCaseSkillOptions/u)
+        assert.match(rawCases, /rawCaseSkillGroups/u)
+        assert.match(rawCases, /aria-label=\{t\("rawCaseSkillFilter"\)\}/u)
+        assert.match(rawCases, /aria-pressed=\{skillScope === group\.key\}/u)
+        assert.match(rawCases, /viewCaptureRange/u)
+        assert.match(rawCases, /rawCaseEvidenceAdvanced/u)
+        assert.match(rawCases, /captureEvidenceLoading/u)
+        assert.match(rawCases, /rolling-skill-capture-evidence-timeline/u)
+        assert.match(rawCases, /<details className="rolling-skill-capture-tool"/u)
+        assert.match(rawCases, /setEvidenceAttempt/u)
+        assert.match(rawCases, /rolling-skill:reveal-capture-range/u)
+        assert.match(rawCases, /<details className="rolling-skill-advanced-evidence">[\s\S]+<pre>\{JSON\.stringify\(inspecting\.source/u)
+        assert.doesNotMatch(rawCases, /<h4>\{t\("caseEvidence"\)\}<\/h4><pre>/u)
+        assert.doesNotMatch(rawCases, /rangeOtherConversationHint/u)
+        assert.doesNotMatch(source("locale.ts"), /请先在侧栏打开|Open the source conversation from the sidebar/u)
+        assert.match(source("workbench/workbench.css"), /\.rolling-skill-capture-evidence-timeline/u)
+        assert.match(source("workbench/workbench.css"), /\.rolling-skill-raw-group-filter/u)
+        assert.match(source("workbench/workbench.css"), /\[role="dialog"\]:has\(> div > div > \.rolling-skill-capture-evidence\)[\s\S]+max-height:\s*calc\(100vh - 32px\)/u)
         assert.match(`${datasets}\n${cases}`, /recoverQuestions/u)
         assert.match(workbench, /<DatasetsPanel/u)
         assert.match(workbench, /<CasesPanel/u)
@@ -190,6 +283,7 @@ describe("Rolling Skill native DSH Client", () => {
 
     it("exposes managed Skill release and Runtime installation as separate native flows", () => {
         const skills = source("workbench/SkillsPanel.tsx")
+        const installations = source("workbench/InstallationsPanel.tsx")
         const workbench = source("workbench/Workbench.tsx")
 
         assert.match(skills, /skills\.catalog/u)
@@ -198,14 +292,34 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(skills, /skills\.deprecate/u)
         assert.match(skills, /installations\.start/u)
         assert.match(skills, /installations\.cancel/u)
-        assert.match(skills, /installations\.inspect/u)
+        assert.doesNotMatch(skills, /installations\.inspect/u)
         assert.match(skills, /installations\.get/u)
         assert.match(skills, /installations\.send/u)
         assert.match(skills, /RuntimeInteractions/u)
-        assert.match(skills, /<RuntimeSelect/u)
         assert.match(skills, /targets:\s*runtimeIds\.map\(\(selectedRuntimeId\)\s*=>\s*\(\{runtimeId:\s*selectedRuntimeId,\s*modelId:\s*null,\s*effort:\s*null,/u)
         assert.doesNotMatch(skills, /targets:[^\n]+effort:\s*"high"/u)
         assert.match(workbench, /<SkillsPanel/u)
+        assert.match(workbench, /<InstallationsPanel/u)
+        assert.match(installations, /installations\.list/u)
+        assert.match(installations, /installations\.get/u)
+        assert.doesNotMatch(installations, /installations\.inspect/u)
+        assert.match(installations, /installationAudit/u)
+        assert.match(installations, /trustedJobId/u)
+        assert.match(installations, /expectedDigest/u)
+        assert.match(installations, /RuntimeInteractions/u)
+    })
+
+    it("renders structured Judge, score, and Case-scoped Trace evidence", () => {
+        const evaluations = source("workbench/EvaluationsPanel.tsx")
+
+        assert.match(evaluations, /EvaluationRunEvidence/u)
+        assert.match(evaluations, /EvaluationScoreBreakdown/u)
+        assert.match(evaluations, /EvaluationTrace/u)
+        assert.match(evaluations, /criterionScores/u)
+        assert.match(evaluations, /assessments/u)
+        assert.match(evaluations, /traceEvidence\.entries/u)
+        assert.match(evaluations, /traceScopeCase/u)
+        assert.doesNotMatch(evaluations, /JSON\.stringify\(\{computedScore/u)
     })
 
     it("ships native Operator and Optimization panels without private control fields", () => {
@@ -267,13 +381,76 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(workbench, /<AutomaticCapturePanel/u)
     })
 
-    it("ships an explicit copy-only legacy import panel", () => {
+    it("uses explicit hour and minute selectors for automatic capture time", () => {
+        const automatic = source("workbench/AutomaticCapturePanel.tsx")
+        const css = source("workbench/workbench.css")
+
+        assert.doesNotMatch(automatic, /type="time"/u)
+        assert.match(automatic, /const HOURS = Array\.from\(\{length:\s*24\}/u)
+        assert.match(automatic, /const MINUTES = Array\.from\(\{length:\s*60\}/u)
+        assert.match(automatic, /aria-label=\{t\("captureHour"\)\}/u)
+        assert.match(automatic, /aria-label=\{t\("captureMinute"\)\}/u)
+        assert.match(css, /\.rolling-skill-time-selects/u)
+    })
+
+    it("explains automatic model roles and background scheduling in user language", () => {
+        const automatic = source("workbench/AutomaticCapturePanel.tsx")
+        const locale = source("locale.ts")
+        const css = source("workbench/workbench.css")
+
+        assert.match(automatic, /settings\.get/u)
+        assert.match(automatic, /rolling-skill-automatic-flow-summary/u)
+        assert.match(automatic, /automaticFlowSummaryPrefix/u)
+        assert.match(automatic, /automaticFlowSummarySuffix/u)
+        assert.doesNotMatch(automatic, /rolling-skill-step|<article>/u)
+        assert.match(automatic, /schedulerExplanation/u)
+        assert.match(locale, /automaticFlowSummaryPrefix:\s*"检测模型识别完整 Case 并判断归属；完全自动模式由 Curator（"/u)
+        assert.match(locale, /automaticFlowSummarySuffix:\s*"）整理，校验通过后保存为 Case，不运行 Judge。"/u)
+        assert.match(locale, /enableScheduler:\s*"启用后台定时运行"/u)
+        assert.match(locale, /disableScheduler:\s*"停止关闭后定时运行"/u)
+        assert.match(locale, /schedulerExplanation:\s*"需要在当前用户下创建系统定时任务[^"\n]*不会安装新软件。"/u)
+        assert.match(css, /\.rolling-skill-automatic-flow-summary/u)
+        assert.doesNotMatch(css, /\.rolling-skill-automatic-flow article|\.rolling-skill-step/u)
+    })
+
+    it("makes automatic capture routing and scheduler actions explicit", () => {
+        const automatic = source("workbench/AutomaticCapturePanel.tsx")
+        const modelEffort = source("workbench/ModelEffortSelect.tsx")
+        const locale = source("locale.ts")
+        const css = source("workbench/workbench.css")
+
+        assert.match(automatic, /skills\.catalog/u)
+        assert.match(automatic, /candidateTargets/u)
+        assert.match(automatic, /candidateDatasetOptions/u)
+        assert.match(automatic, /disabled=\{selectableDatasets\.length\s*===\s*0\s*&&\s*!target\}/u)
+        assert.match(automatic, /disabled=\{option\.disabled\}/u)
+        assert.match(automatic, /candidateDatasetOnlyOne/u)
+        assert.match(automatic, /targets:\s*candidateTargets/u)
+        assert.match(automatic, /await updateAutomaticSettings\(\)[\s\S]{0,180}scheduler\.enable/u)
+        assert.doesNotMatch(automatic, /status\?\.executionLocation\s*!==\s*"always"/u)
+        assert.match(modelEffort, /supportedReasoningEfforts/u)
+        assert.match(automatic, /modelCatalogRevision/u)
+        assert.match(automatic, /setModels\(\[\]\)[\s\S]{0,120}setModelId\(""\)/u)
+        assert.match(automatic, /candidateSkillRows/u)
+        assert.match(automatic, /skill\.status\s*!==\s*"valid"/u)
+        assert.match(locale, /automaticRuntime:\s*"Case 检测 Runtime"/u)
+        assert.match(locale, /automaticDetectionModel:\s*"Case 检测模型"/u)
+        assert.match(locale, /candidateSkills:\s*"候选 Skill 与数据集"/u)
+        assert.match(locale, /enableScheduler:\s*"启用后台定时运行"/u)
+        assert.match(automatic, /rolling-skill-form-actions/u)
+        assert.match(css, /\.rolling-skill-form-actions[\s\S]{0,240}justify-content:\s*space-between/u)
+        assert.match(css, /\.rolling-skill-candidate-target-list[\s\S]{0,220}max-height:[^;]+;[\s\S]{0,120}overflow-y:\s*auto/u)
+    })
+
+    it("keeps copy-only legacy migration code hidden from released UI", () => {
         const panel = source("workbench/ImportPanel.tsx")
         const workbench = source("workbench/Workbench.tsx")
+        const settings = source("settings/RollingSkillSettings.tsx")
 
         assert.match(panel, /legacyImport\.status/u)
         assert.match(panel, /legacyImport\.run/u)
         assert.match(panel, /confirmImport/u)
-        assert.match(workbench, /<ImportPanel/u)
+        assert.doesNotMatch(workbench, /<ImportPanel/u)
+        assert.doesNotMatch(settings, /<ImportPanel/u)
     })
 })

@@ -51,6 +51,8 @@ function fixture({
     curationManager = null,
     alreadyCurated = () => false,
     captureEpisode = null,
+    saveEvidence = null,
+    skills = null,
 } = {}) {
     const directory = mkdtempSync(join(tmpdir(), "rolling-skill-discovery-"))
     directories.push(directory)
@@ -63,6 +65,7 @@ function fixture({
             modelId: "gpt-small",
             effort: "low",
             datasetId: null,
+            targets: [],
         },
     }
     const sourceThread = thread("thread-1")
@@ -105,6 +108,8 @@ function fixture({
             })
         }
         return JSON.stringify({
+            eligibleForCase: true,
+            sourceKind: "human_task",
             skillName: "billing-cost-management",
             outcome: "resolved",
             caseType: "goodcase",
@@ -130,13 +135,14 @@ function fixture({
             name: "Billing",
             skillReference: {name: "billing-cost-management", path: "/skills/billing/SKILL.md"},
         }],
-        listSkills: async () => [{
+        listSkills: async () => skills ?? [{
             name: "billing-cost-management",
             path: "/skills/billing/SKILL.md",
             runtimeId: "codex:/opt/codex-a",
         }],
         runAnalysis: analysis,
         captureEpisode,
+        saveEvidence,
         getHiddenThreadIds: () => hidden,
         now: () => new Date(2026, 7, 26, 9, 5, 0, 0),
         onStatus: (status) => statuses.push(status),
@@ -190,9 +196,48 @@ describe("automatic dataset routing", () => {
         assert.equal(automaticDatasetFor(candidate, [{id: "other", skillReference: {name: "other"}}]), null)
         assert.equal(automaticDatasetFor(candidate, [matching("dataset-1"), matching("dataset-2")]), null)
     })
+
+    it("uses an explicit candidate Skill route when several compatible Datasets exist", () => {
+        const datasets = [matching("dataset-1"), matching("dataset-2")]
+        const targets = [{skillId: "skill-billing", datasetId: "dataset-2"}]
+
+        assert.equal(automaticDatasetFor(candidate, datasets, targets)?.id, "dataset-2")
+    })
 })
 
 describe("scheduled conversation discovery manager", () => {
+    it("passes only configured candidate Skills to Case detection", async () => {
+        const datasets = [
+            {
+                id: "dataset-billing",
+                name: "Billing",
+                skillReference: {id: "skill-billing", name: "billing-cost-management"},
+            },
+            {
+                id: "dataset-incident",
+                name: "Incidents",
+                skillReference: {id: "skill-incident", name: "incident-response-planner"},
+            },
+        ]
+        const value = fixture({
+            datasets,
+            skills: [
+                {name: "billing-cost-management"},
+                {name: "incident-response-planner"},
+            ],
+        })
+        value.settings.autoCaptureProfile.targets = [{
+            skillId: "skill-billing",
+            datasetId: "dataset-billing",
+        }]
+
+        await value.manager.runDueScan()
+
+        const outcome = value.analyses.find((entry) => entry.stage === "outcome")
+        assert.match(outcome.prompt, /billing-cost-management/u)
+        assert.doesNotMatch(outcome.prompt, /incident-response-planner/u)
+    })
+
     it("freezes a DSH source range through the trusted episode source before classification", async () => {
         const captured = []
         const value = fixture({
@@ -310,6 +355,7 @@ describe("scheduled conversation discovery manager", () => {
     })
 
     it("does not recursively scan Rolling Skill internal tasks after a service restart", async () => {
+        const reads = []
         const internalThreads = [
             thread("thread-1", "Identify complete user problem ranges from incremental user messages only.\n<incremental-user-messages>{}</incremental-user-messages>"),
             thread("thread-2", "You are judging one agent Skill evaluation result. Evaluate only the supplied answer."),
@@ -320,6 +366,7 @@ describe("scheduled conversation discovery manager", () => {
                 return {data: archived ? [] : internalThreads.map(({id}) => ({id})), nextCursor: null}
             },
             async readThread(threadId) {
+                reads.push(threadId)
                 return {thread: internalThreads.find(({id}) => id === threadId)}
             },
         }
@@ -328,6 +375,90 @@ describe("scheduled conversation discovery manager", () => {
         assert.equal(await value.manager.runDueScan(), true)
         assert.deepEqual(value.analyses, [])
         assert.deepEqual(value.candidates, [])
+        assert.equal(
+            value.stateStore.thread("codex:/opt/codex-a", "thread-1").lastInspectedUserItemId,
+            "thread-1-user-2",
+        )
+
+        await value.manager.runSlot(new Date(2026, 7, 27, 9, 0), value.settings.autoCaptureProfile)
+        assert.deepEqual(reads.sort(), ["thread-1", "thread-2", "thread-3"])
+    })
+
+    it("does not persist an ineligible internal or installation episode as a Raw Case", async () => {
+        for (const sourceKind of ["rolling_skill_internal", "skill_installation", "evaluation_or_optimization"]) {
+            const value = fixture({
+                runAnalysis: async (input) => {
+                    value.analyses.push(input)
+                    if (input.stage === "boundary") {
+                        return JSON.stringify({
+                            segments: [{
+                                startUserItemId: "thread-1-user-1",
+                                endUserItemId: "thread-1-user-2",
+                                summary: "Internal task",
+                            }],
+                            pendingStartUserItemId: null,
+                        })
+                    }
+                    return JSON.stringify({
+                        eligibleForCase: false,
+                        sourceKind,
+                        skillName: null,
+                        outcome: "uncertain",
+                        caseType: null,
+                        finalAssistantItemId: null,
+                        confidence: 0.99,
+                        reason: "This is not a human evaluation Case.",
+                    })
+                },
+            })
+
+            assert.equal(await value.manager.runDueScan(), true)
+            assert.deepEqual(value.candidates, [])
+            assert.equal(
+                value.stateStore.thread("codex:/opt/codex-a", "thread-1").checkedRanges[0].reason,
+                `ineligible_${sourceKind}`,
+            )
+        }
+    })
+
+    it("does not persist uncertain or low-confidence classifications as Raw Cases", async () => {
+        for (const classification of [
+            {outcome: "uncertain", confidence: 0.99, reason: "uncertain_outcome"},
+            {outcome: "resolved", confidence: 0.79, reason: "low_confidence"},
+        ]) {
+            const value = fixture({
+                runAnalysis: async (input) => {
+                    value.analyses.push(input)
+                    if (input.stage === "boundary") {
+                        return JSON.stringify({
+                            segments: [{
+                                startUserItemId: "thread-1-user-1",
+                                endUserItemId: "thread-1-user-2",
+                                summary: "Candidate task",
+                            }],
+                            pendingStartUserItemId: null,
+                        })
+                    }
+                    return JSON.stringify({
+                        eligibleForCase: true,
+                        sourceKind: "human_task",
+                        skillName: "billing-cost-management",
+                        outcome: classification.outcome,
+                        caseType: "goodcase",
+                        finalAssistantItemId: "thread-1-agent-2",
+                        confidence: classification.confidence,
+                        reason: "Classification evidence.",
+                    })
+                },
+            })
+
+            assert.equal(await value.manager.runDueScan(), true)
+            assert.deepEqual(value.candidates, [])
+            assert.equal(
+                value.stateStore.thread("codex:/opt/codex-a", "thread-1").checkedRanges[0].reason,
+                classification.reason,
+            )
+        }
     })
 
     it("resumes a pending tail, persists the candidate before advancing its cursor, and deduplicates the slot", async () => {
@@ -369,6 +500,58 @@ describe("scheduled conversation discovery manager", () => {
         assert.equal(fixtureValue.statuses.some((status) => status.running), true)
     })
 
+    it("freezes the classified Episode reference only for a saved automatic candidate", async () => {
+        const savedEpisodes = []
+        const reference = {
+            schemaVersion: "rolling-skill-automatic-evidence-reference/v1",
+            digest: `sha256:${"b".repeat(64)}`,
+        }
+        const value = fixture({
+            saveEvidence(episode) {
+                savedEpisodes.push(structuredClone(episode))
+                return reference
+            },
+        })
+
+        await value.manager.runDueScan()
+
+        assert.equal(savedEpisodes.length, 1)
+        assert.equal(savedEpisodes[0].source.startItemId, "thread-1-user-1")
+        assert.equal(savedEpisodes[0].source.endItemId, "thread-1-agent-2")
+        assert.deepEqual(value.candidates[0].source.evidence, reference)
+
+        const rejectedEpisodes = []
+        const rejected = fixture({
+            runAnalysis: async (input) => input.stage === "boundary"
+                ? JSON.stringify({
+                    segments: [{
+                        startUserItemId: "thread-1-user-1",
+                        endUserItemId: "thread-1-user-2",
+                        summary: "Billing question",
+                    }],
+                    pendingStartUserItemId: null,
+                })
+                : JSON.stringify({
+                    eligibleForCase: false,
+                    sourceKind: "internal_agent_work",
+                    skillName: null,
+                    outcome: "uncertain",
+                    caseType: "goodcase",
+                    finalAssistantItemId: null,
+                    confidence: 1,
+                    reason: "Internal work",
+                }),
+            saveEvidence(episode) {
+                rejectedEpisodes.push(episode)
+                return reference
+            },
+        })
+
+        await rejected.manager.runDueScan()
+        assert.deepEqual(rejectedEpisodes, [])
+        assert.deepEqual(rejected.candidates, [])
+    })
+
     it("rescans a persisted pending tail even when no newer user message exists", async () => {
         const value = fixture()
         value.stateStore.commitThread("codex:/opt/codex-a", "thread-1", {
@@ -396,6 +579,8 @@ describe("scheduled conversation discovery manager", () => {
                     })
                 }
                 return JSON.stringify({
+                    eligibleForCase: true,
+                    sourceKind: "human_task",
                     skillName: "billing-cost-management",
                     outcome: "resolved",
                     caseType: "goodcase",
@@ -595,6 +780,11 @@ describe("scheduled conversation discovery manager", () => {
                 async createSession(input) { created.push(input); return {id: "session-live", status: "queued"} },
                 hiddenThreadIds: () => new Set(),
             },
+            datasets: [{
+                id: "dataset-1",
+                activeRubricVersionId: "rubric-1",
+                skillReference: {name: "billing-cost-management"},
+            }],
         })
         const episode = {
             originalQuestion: "查本月账单",
@@ -622,6 +812,67 @@ describe("scheduled conversation discovery manager", () => {
         })
 
         assert.equal(created.length, 1)
+    })
+
+    it("uses the current Skill route and Dataset inventory before creating a Draft", async () => {
+        const created = []
+        const datasets = [{
+            id: "dataset-current",
+            activeRubricVersionId: "rubric-current",
+            skillReference: {id: "skill-billing", name: "billing-cost-management"},
+        }]
+        const value = fixture({
+            mode: "automatic",
+            datasets,
+            curationManager: {
+                async createSession(input) { created.push(input); return {id: "session-current", status: "queued"} },
+                hiddenThreadIds: () => new Set(),
+            },
+        })
+        value.settings.autoCaptureProfile.targets = [{
+            skillId: "skill-billing",
+            datasetId: "dataset-current",
+        }]
+
+        await value.manager.createAutomaticCuration({
+            saved: {rawCase: {id: "raw-current"}},
+            source: {confidence: 0.92, outcome: "resolved", caseType: "goodcase", threadId: "thread-1"},
+            episode: {
+                originalQuestion: "查本月账单",
+                source: {threadId: "thread-1", startItemId: "user-1", endItemId: "agent-1"},
+                items: [],
+            },
+            skill: {id: "skill-billing", name: "billing-cost-management"},
+            datasets: [{
+                id: "dataset-stale",
+                activeRubricVersionId: "rubric-stale",
+                skillReference: {id: "skill-billing", name: "billing-cost-management"},
+            }],
+            profile: {targets: [{skillId: "skill-billing", datasetId: "dataset-stale"}]},
+        })
+
+        assert.equal(created[0].datasetId, "dataset-current")
+    })
+
+    it("fails closed when selected managed Skills have an ambiguous name", async () => {
+        const duplicateSkills = [
+            {id: "skill-billing-a", name: "billing-cost-management"},
+            {id: "skill-billing-b", name: "billing-cost-management"},
+        ]
+        const duplicateDatasets = duplicateSkills.map((skill, index) => ({
+            id: `dataset-${index}`,
+            activeRubricVersionId: `rubric-${index}`,
+            skillReference: skill,
+        }))
+        const value = fixture({mode: "automatic", skills: duplicateSkills, datasets: duplicateDatasets})
+        value.settings.autoCaptureProfile.targets = duplicateDatasets.map((dataset) => ({
+            skillId: dataset.skillReference.id,
+            datasetId: dataset.id,
+        }))
+
+        assert.equal(await value.manager.runDueScan(), false)
+        assert.equal(value.candidates.length, 0)
+        assert.match(value.errors.at(-1).message, /ambiguous.*Skill name/i)
     })
 
     it("retains the Raw Case when the route lacks a Rubric or Draft creation fails", async () => {

@@ -72,11 +72,14 @@ function resolveExecutedSkillEvidenceBinding({
     skillEvidence,
     traceEvidence,
     expectedContentDigest = null,
+    verifyContentDigest = true,
 }) {
     const frozenSkill = skillEvidence?.files?.find((entry) => entry.path === "SKILL.md")
-    expectedContentDigest = expectedContentDigest ?? (
-        frozenSkill?.content === undefined ? null : skillContentDigest(frozenSkill.content)
-    )
+    expectedContentDigest = verifyContentDigest
+        ? expectedContentDigest ?? (
+            frozenSkill?.content === undefined ? null : skillContentDigest(frozenSkill.content)
+        )
+        : null
     const skillName = String(skillReference?.name ?? skillEvidence?.name ?? "")
     const observed = []
     for (const entry of traceEvidence?.entries ?? []) {
@@ -104,20 +107,24 @@ function resolveExecutedSkillEvidenceBinding({
                 update.skillContentDigest ?? dshInjectedSkillDigest(event, skillName),
         })
     }
-    const matching = observed.find((entry) =>
-        expectedContentDigest && entry.contentDigest === expectedContentDigest,
-    )
+    const matching = verifyContentDigest
+        ? observed.find((entry) =>
+            expectedContentDigest && entry.contentDigest === expectedContentDigest,
+        )
+        : null
     const observedDigests = observed.map((entry) => entry.contentDigest).filter(Boolean)
-    const observedBinding = matching
-        ? "matched"
-        : observedDigests.length
-          ? "mismatched"
-          : observed.length
-            ? "name_only"
-            : "not_observed"
-    const effectiveBinding = observedBinding === "matched"
+    const observedBinding = !verifyContentDigest
+        ? observed.length ? "name_only" : "not_observed"
+        : matching
+          ? "matched"
+          : observedDigests.length
+            ? "mismatched"
+            : observed.length
+              ? "name_only"
+              : "not_observed"
+    const effectiveBinding = verifyContentDigest && observedBinding === "matched"
         ? "verified-by-trace"
-        : observedBinding === "mismatched"
+        : verifyContentDigest && observedBinding === "mismatched"
           ? "unverified"
           : declaredBinding === "verified"
             ? "verified"

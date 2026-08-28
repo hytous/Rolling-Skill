@@ -1,5 +1,7 @@
-import {Button, Input, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
+import {Input, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
 import {useEffect, useMemo, useState} from "react"
+
+import {ActionButton as Button} from "./ActionButton"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
@@ -15,6 +17,8 @@ interface Version {
     versionLabel: string | null
     commit: string
     contentDigest: string
+    createdAt?: string | null
+    releasedAt?: string | null
     deprecatedAt?: string | null
 }
 interface Catalog {repositories: Repository[]; skills: SkillEntry[]}
@@ -117,10 +121,6 @@ export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; in
     }))
     const deprecate = (version: Version) => mutate(() => requestRollingSkill("skills.deprecate", {versionId: version.id}))
     const revealRepository = (repositoryId: string) => mutate(() => requestRollingSkill("skills.reveal", {repositoryId}))
-    const inspectInstallation = (jobId: string) => mutate(async () => {
-        const created = await requestRollingSkill<InstallationJob>("installations.inspect", {jobId})
-        await loadJob(created.id)
-    })
     const sendFollowUp = () => {
         const job = selectedJob
         if (!job || !followUp.trim()) return
@@ -139,31 +139,33 @@ export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; in
     return (
         <div className="rolling-skill-data-stack">
             <section className="rolling-skill-panel">
-                <div className="rolling-skill-panel-header"><div><h3>{t("skillRepositories")}</h3><p>{t("skillRepositoriesDescription")}</p></div><Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("skills.rescan", {}))}>{t("rescan")}</Button></div>
+                <div className="rolling-skill-panel-header"><div><h3>{t("skillRepositories")}</h3><p>{t("skillRepositoriesDescription")}</p></div><Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("skills.rescan", {}))}>{t("rescan")}</Button></div>
                 <div className="rolling-skill-form-row">
                     <select className="rolling-skill-select" value={sourceKind} onChange={(event) => setSourceKind(event.target.value)}><option value="folder">folder</option><option value="local-git">local-git</option><option value="git-url">git-url</option><option value="zip">zip</option></select>
                     <Input value={sourceLocation} placeholder={t("skillSourceLocation")} onChange={(event: {target: {value: string}}) => setSourceLocation(event.target.value)}/>
-                    <Button variant="outline" size="sm" disabled={busy || !sourceLocation.trim()} onClick={() => void mutate(() => requestRollingSkill("skills.import", {kind: sourceKind, location: sourceLocation}))}>{t("importSkill")}</Button>
+                    <Button size="sm" disabled={busy || !sourceLocation.trim()} onClick={() => void mutate(() => requestRollingSkill("skills.import", {kind: sourceKind, location: sourceLocation}))}>{t("importSkill")}</Button>
                 </div>
-                <div className="rolling-skill-list">{catalog.repositories.map((repository) => <article className="rolling-skill-list-row" key={repository.id}><div><strong>{repository.displayName}</strong><span>{repository.id}</span></div><Button variant="ghost" size="sm" disabled={busy} onClick={() => void revealRepository(repository.id)}>{t("revealRepository")}</Button></article>)}</div>
-                <div className="rolling-skill-list">{catalog.skills.map((skill) => <button type="button" className="rolling-skill-skill-row" key={skill.id} onClick={() => void loadSkill(skill.id)}><strong>{skill.name}</strong><span>{skill.description || skill.status}</span></button>)}{catalog.skills.length === 0 ? <p>{t("emptySkills")}</p> : null}</div>
+                <div className="rolling-skill-list">{catalog.skills.map((skill) => {
+                    const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId)
+                    return <article className="rolling-skill-list-row rolling-skill-managed-skill-row" key={skill.id}><button type="button" className="rolling-skill-skill-row" onClick={() => void loadSkill(skill.id)}><strong>{skill.name}</strong><span>{repository?.displayName ?? skill.repositoryId} · {skill.description || skill.status}</span></button><Button size="sm" disabled={busy} onClick={() => void revealRepository(skill.repositoryId)}>{t("revealRepository")}</Button></article>
+                })}{catalog.skills.length === 0 ? <p>{t("emptySkills")}</p> : null}</div>
             </section>
             {detail ? <section className="rolling-skill-panel">
                 <div className="rolling-skill-panel-header"><div><h3>{detail.skill.name}</h3><p>{detail.skill.description || detail.skill.status}</p></div></div>
                 <pre className="rolling-skill-manifest">{detail.manifest}</pre>
                 <div className="rolling-skill-list">
-                    {detail.versions.map((version) => <article className="rolling-skill-list-row" key={version.id}><div><strong>{version.versionLabel ?? t("candidateVersion")}</strong><span>{version.state} · {version.commit.slice(0, 12)} · {version.contentDigest}</span></div>{version.state === "released" && !version.deprecatedAt ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void deprecate(version)}>{t("deprecateVersion")}</Button> : version.deprecatedAt ? <span>{t("deprecatedVersion")}</span> : null}</article>)}
+                    {detail.versions.map((version) => <article className="rolling-skill-version-card" key={version.id}><header><div><strong>{version.versionLabel ?? t("candidateVersion")}</strong><span className="rolling-skill-badge">{version.state}</span></div>{version.state === "released" && !version.deprecatedAt ? <Button size="sm" disabled={busy} onClick={() => void deprecate(version)}>{t("deprecateVersion")}</Button> : version.deprecatedAt ? <span>{t("deprecatedVersion")}</span> : null}</header><dl><div><dt>{t("installationCommit")}</dt><dd><code>{version.commit.slice(0, 12)}</code></dd></div><div><dt>{t("installationDigest")}</dt><dd title={version.contentDigest}><code>{version.contentDigest}</code></dd></div><div><dt>{t("createdAt")}</dt><dd>{version.releasedAt ?? version.createdAt ?? t("notAvailable")}</dd></div></dl></article>)}
                 </div>
                 <div className="rolling-skill-grid">
-                    <div className="rolling-skill-subpanel"><h4>{t("candidateVersion")}</h4><Input value={candidateMessage} onChange={(event: {target: {value: string}}) => setCandidateMessage(event.target.value)}/><Button variant="outline" size="sm" disabled={busy} onClick={() => void createCandidate()}>{t("createCandidate")}</Button></div>
-                    <div className="rolling-skill-subpanel"><h4>{t("releaseVersion")}</h4><Input value={releaseLabel} placeholder="1.0.0" onChange={(event: {target: {value: string}}) => setReleaseLabel(event.target.value)}/><Button variant="outline" size="sm" disabled={busy || !candidate || !releaseLabel.trim()} onClick={() => void release()}>{t("release")}</Button></div>
+                    <div className="rolling-skill-subpanel"><h4>{t("candidateVersion")}</h4><Input value={candidateMessage} onChange={(event: {target: {value: string}}) => setCandidateMessage(event.target.value)}/><Button size="sm" disabled={busy} onClick={() => void createCandidate()}>{t("createCandidate")}</Button></div>
+                    <div className="rolling-skill-subpanel"><h4>{t("releaseVersion")}</h4><Input value={releaseLabel} placeholder="1.0.0" onChange={(event: {target: {value: string}}) => setReleaseLabel(event.target.value)}/><Button size="sm" disabled={busy || !candidate || !releaseLabel.trim()} onClick={() => void release()}>{t("release")}</Button></div>
                 </div>
                 <RuntimeSelectionGrid t={t} runtimes={runtimes} values={runtimeIds} onChange={setRuntimeIds}/>
-                <Button variant="outline" disabled={busy || !released || runtimeIds.length === 0} onClick={() => void install()}>{t("installReleased")}</Button>
+                <Button disabled={busy || !released || runtimeIds.length === 0} onClick={() => void install()}>{t("installReleased")}</Button>
             </section> : null}
-            <section className="rolling-skill-panel"><h3>{t("installationJobs")}</h3>{error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}<div className="rolling-skill-list">{installations.jobs.map((job) => <article className="rolling-skill-list-row" key={job.id}><div><strong>{job.status}</strong><span>{job.runtime.displayName} {job.runtime.version || ""} · {job.request.versionLabel ?? job.id}</span></div><div className="rolling-skill-actions"><Button variant="ghost" size="sm" onClick={() => void loadJob(job.id)}>{t("details")}</Button><Button variant="ghost" size="sm" disabled={busy} onClick={() => void inspectInstallation(job.id)}>{t("inspect")}</Button>{["queued", "running", "verifying", "awaiting_permission", "awaiting_confirmation"].includes(job.status) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("installations.cancel", {jobId: job.id}))}>{t("cancelRun")}</Button> : null}</div></article>)}</div></section>
+            <section className="rolling-skill-panel"><h3>{t("installationJobs")}</h3>{error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}<div className="rolling-skill-list">{installations.jobs.map((job) => <article className="rolling-skill-list-row" key={job.id}><div><strong>{job.status}</strong><span>{job.runtime.displayName} {job.runtime.version || ""} · {job.request.versionLabel ?? job.id}</span></div><div className="rolling-skill-actions"><Button size="sm" onClick={() => void loadJob(job.id)}>{t("details")}</Button>{["queued", "running", "verifying", "awaiting_permission", "awaiting_confirmation"].includes(job.status) ? <Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("installations.cancel", {jobId: job.id}))}>{t("cancelRun")}</Button> : null}</div></article>)}</div></section>
             <RuntimeInteractions t={t} ownerKind="installation"/>
-            <Modal open={selectedJob !== null} onClose={() => setSelectedJob(null)} title={t("installationDetail")} closeLabel={t("close")} footer={<Button variant="outline" onClick={() => setSelectedJob(null)}>{t("close")}</Button>}>
+            <Modal open={selectedJob !== null} onClose={() => setSelectedJob(null)} title={t("installationDetail")} closeLabel={t("close")} footer={<Button onClick={() => setSelectedJob(null)}>{t("close")}</Button>}>
                 {selectedJob ? <div className="rolling-skill-detail-stack">
                     <p>{selectedJob.status} · {selectedJob.runtime.displayName} {selectedJob.runtime.version ?? ""}</p>
                     {selectedJob.parsedResult ? <p>{t("installationVerification")}: {selectedJob.parsedResult.verification ?? t("notAvailable")}</p> : null}
@@ -172,7 +174,7 @@ export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; in
                     <div className="rolling-skill-conversation-log">{selectedJob.messages?.map((message, index) => <div key={`${message.recordedAt ?? index}`} data-role={message.role}><strong>{message.role}</strong><p>{message.content}</p></div>)}</div>
                     <h4>{t("installerActivity")}</h4>
                     <div className="rolling-skill-list">{selectedJob.activities?.map((activity, index) => <div className="rolling-skill-list-row" key={`${activity.recordedAt ?? index}`}><div><strong>{activity.title ?? activity.type}</strong><span>{activity.summary}</span></div></div>)}</div>
-                    {selectedJob.canFollowUp ? <div className="rolling-skill-form-row"><Input value={followUp} placeholder={t("installerFollowUp")} onChange={(event: {target: {value: string}}) => setFollowUp(event.target.value)}/><Button variant="outline" disabled={busy || !followUp.trim()} onClick={sendFollowUp}>{t("sendRevision")}</Button></div> : null}
+                    {selectedJob.canFollowUp ? <div className="rolling-skill-form-row"><Input value={followUp} placeholder={t("installerFollowUp")} onChange={(event: {target: {value: string}}) => setFollowUp(event.target.value)}/><Button disabled={busy || !followUp.trim()} onClick={sendFollowUp}>{t("sendRevision")}</Button></div> : null}
                 </div> : null}
             </Modal>
         </div>

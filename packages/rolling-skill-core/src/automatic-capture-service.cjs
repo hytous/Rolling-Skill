@@ -29,6 +29,23 @@ function stableRuntimeIdentity(descriptor) {
     }
 }
 
+function automaticTargets(value, datasets) {
+    if (!Array.isArray(value)) throw new Error("Automatic capture candidate Skill routes are invalid")
+    if (value.length > 100) throw new Error("Automatic capture candidate Skill routes are too large")
+    const skillIds = new Set()
+    return value.map((entry) => {
+        const skillId = requiredText(entry?.skillId, "Automatic capture candidate Skill id", 200)
+        const datasetId = requiredText(entry?.datasetId, "Automatic capture Dataset id", 200)
+        if (skillIds.has(skillId)) throw new Error("Automatic capture candidate Skill is duplicated")
+        const dataset = datasets.find((candidate) => candidate?.id === datasetId)
+        if (!dataset || dataset.skillReference?.id !== skillId) {
+            throw new Error("Automatic capture candidate Skill does not match the Dataset binding")
+        }
+        skillIds.add(skillId)
+        return {skillId, datasetId}
+    })
+}
+
 function createAutomaticCaptureService({
     store,
     configStore,
@@ -39,6 +56,7 @@ function createAutomaticCaptureService({
     listSkills = null,
     listDatasets = () => store.listDatasets(),
     captureEpisode = null,
+    saveEvidence = null,
     getHiddenThreadIds = () => new Set(),
     manager = null,
     now = () => new Date(),
@@ -73,6 +91,7 @@ function createAutomaticCaptureService({
         getRuntimeDescriptor: runtimeDescriptor,
         listDatasets,
         captureEpisode,
+        saveEvidence,
         listSkills: listSkills ?? (async (runtime) => {
             if (typeof runtime.listSkills !== "function") return []
             const response = await runtime.listSkills({forceReload: true})
@@ -106,6 +125,7 @@ function createAutomaticCaptureService({
             modelId: profile.modelId,
             effort: profile.effort,
             datasetId: profile.datasetId,
+            targets: structuredClone(profile.targets ?? []),
             executionLocation: plugin.executionLocation,
             runtime: plugin.runtime,
             worker: plugin.worker,
@@ -135,6 +155,9 @@ function createAutomaticCaptureService({
         }
         const runtimeId = optionalText(input.runtimeId, "Automatic capture Runtime id", 500)
         const current = configStore.read()
+        const targetSettings = input.targets === undefined
+            ? {}
+            : {autoCaptureTargets: automaticTargets(input.targets, listDatasets())}
         const runtime = runtimeId
             ? stableRuntimeIdentity(runtimeServices.descriptor(runtimeId))
             : current.runtime
@@ -157,6 +180,7 @@ function createAutomaticCaptureService({
             autoCaptureModelId: optionalText(input.modelId, "Automatic capture model id", 300),
             autoCaptureEffort: optionalText(input.effort, "Automatic capture effort", 100),
             autoCaptureDatasetId: optionalText(input.datasetId, "Automatic capture Dataset id", 200),
+            ...targetSettings,
         })
         configStore.update({executionLocation, runtime, worker})
         if (hostStarted) {

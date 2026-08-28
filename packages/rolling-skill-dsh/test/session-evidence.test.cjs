@@ -203,6 +203,44 @@ describe("DSH trusted session evidence", () => {
         ])
     })
 
+    it("reconstructs only an exact legacy source range without requiring trace lookup", async () => {
+        const traceRoot = mkdtempSync(join(tmpdir(), "rolling-skill-dsh-evidence-"))
+        directories.push(traceRoot)
+        const source = createSessionEvidenceSource({
+            sessionQuery: {async readSession() { return sessionLog() }},
+            traceRoot,
+        })
+
+        const episode = await source.readRange({
+            sessionId: "session-1",
+            startSeq: 4,
+            endSeq: 14,
+        })
+
+        assert.equal(episode.originalQuestion, "查七月账单")
+        assert.deepEqual(episode.items.map((item) => item.id), [
+            "dsh:session-1:4",
+            "dsh:session-1:6",
+            "dsh:session-1:8",
+            "dsh:session-1:12",
+            "dsh:session-1:14",
+        ])
+        assert.equal(episode.items.some((item) => item.id === "dsh:session-1:3"), false)
+        assert.equal(episode.source.startSeq, 4)
+        assert.equal(episode.source.endSeq, 16)
+        assert.equal(episode.source.kind, "dsh-session-live")
+        assert.deepEqual(readdirSync(traceRoot), [])
+
+        await assert.rejects(
+            source.readRange({sessionId: "session-1", startSeq: 3, endSeq: 14}),
+            /direct-human start boundary/u,
+        )
+        await assert.rejects(
+            source.readRange({sessionId: "session-1", startSeq: 4, endSeq: 13}),
+            /finalized Assistant boundary/u,
+        )
+    })
+
     it("derives Skill identity from the current DSH tool-result body when meta is absent", async () => {
         const traceRoot = mkdtempSync(join(tmpdir(), "rolling-skill-dsh-evidence-"))
         directories.push(traceRoot)

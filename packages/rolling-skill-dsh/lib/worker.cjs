@@ -275,7 +275,10 @@ var require_conversation_discovery = __commonJS({
       return `Identify complete user problem ranges from incremental user messages only.
 Keep follow-ups, corrections, and clarifications for the same problem in one range. Close a range
 when a new intent begins. Leave the final unfinished problem in pendingStartUserItemId. Use only
-the supplied stable IDs. Return JSON only with this exact schema:
+the supplied stable IDs. Do not create a range for Rolling Skill internal orchestration, Skill
+installation or maintenance, Rubric/Curator/Judge work, evaluation or optimization tasks, generated
+agent-to-agent prompts, or test fixtures; for a batch containing only those messages, return no
+segments and no pending range. Return JSON only with this exact schema:
 {"segments":[{"startUserItemId":"id","endUserItemId":"id","summary":"short text"}],"pendingStartUserItemId":"id-or-null"}
 <incremental-user-messages>${JSON.stringify(input)}</incremental-user-messages>`;
     }
@@ -349,19 +352,45 @@ the supplied stable IDs. Return JSON only with this exact schema:
           } : null
         }))
       };
-      return `Classify only this completed problem episode. Identify the principal enabled Skill,
-whether the problem was resolved, the recommended Case type, and the final Assistant Item. Return
-JSON only with this exact schema:
-{"skillName":"name-or-null","outcome":"resolved|unresolved|uncertain","caseType":"goodcase|badcase","finalAssistantItemId":"id-or-null","confidence":0.8,"reason":"short text"}
+      return `Decide whether this completed episode is eligible to become a Skill evaluation Case.
+A Case must be a human-authored real-world problem intended for one enabled Skill. Exclude Rolling
+Skill internal orchestration, automatic detection, Curator, Rubric, Judge, Case refresh, evaluation,
+optimization, Skill installation/audit/maintenance, generated agent-to-agent prompts, and test
+fixtures. Embedded source questions, Skill names, rubrics, or successful outputs do not make an
+internal task eligible. For an ineligible episode set skillName and caseType to null. Otherwise
+identify the principal enabled Skill, outcome, recommended Case type, and final Assistant Item.
+Return JSON only with this exact schema:
+{"eligibleForCase":true,"sourceKind":"human_task|rolling_skill_internal|skill_installation|evaluation_or_optimization|other_internal","skillName":"name-or-null","outcome":"resolved|unresolved|uncertain","caseType":"goodcase|badcase|null","finalAssistantItemId":"id-or-null","confidence":0.8,"reason":"short text"}
 <candidate-episode>${JSON.stringify(input)}</candidate-episode>`;
     }
     function parseOutcomeResult(text, { skillNames = [], assistantItemIds = [] } = {}) {
       const value = firstJsonObject(text);
       exactKeys(
         value,
-        ["skillName", "outcome", "caseType", "finalAssistantItemId", "confidence", "reason"],
+        [
+          "eligibleForCase",
+          "sourceKind",
+          "skillName",
+          "outcome",
+          "caseType",
+          "finalAssistantItemId",
+          "confidence",
+          "reason"
+        ],
         "Outcome result"
       );
+      if (typeof value.eligibleForCase !== "boolean") {
+        throw new Error("Outcome Case eligibility is invalid");
+      }
+      if (!(/* @__PURE__ */ new Set([
+        "human_task",
+        "rolling_skill_internal",
+        "skill_installation",
+        "evaluation_or_optimization",
+        "other_internal"
+      ])).has(value.sourceKind)) {
+        throw new Error("Outcome source kind is invalid");
+      }
       const skillName = value.skillName === null ? null : requiredText(value.skillName, "Outcome Skill name");
       if (skillName !== null && !skillNames.includes(skillName)) {
         throw new Error("Outcome result references an unknown Skill");
@@ -369,8 +398,18 @@ JSON only with this exact schema:
       if (!(/* @__PURE__ */ new Set(["resolved", "unresolved", "uncertain"])).has(value.outcome)) {
         throw new Error("Outcome result status is invalid");
       }
-      if (!(/* @__PURE__ */ new Set(["goodcase", "badcase"])).has(value.caseType)) {
+      const caseType = value.caseType === null ? null : value.caseType;
+      if (caseType !== null && !(/* @__PURE__ */ new Set(["goodcase", "badcase"])).has(caseType)) {
         throw new Error("Outcome result Case type is invalid");
+      }
+      if (value.eligibleForCase && value.sourceKind !== "human_task") {
+        throw new Error("Eligible Case must come from a human task");
+      }
+      if (value.eligibleForCase && (skillName === null || caseType === null)) {
+        throw new Error("Eligible Case requires a Skill and Case type");
+      }
+      if (!value.eligibleForCase && (skillName !== null || caseType !== null)) {
+        throw new Error("Ineligible episode cannot select a Skill or Case type");
       }
       const finalAssistantItemId = value.finalAssistantItemId === null ? null : requiredText(value.finalAssistantItemId, "Final Assistant Item id");
       if (finalAssistantItemId !== null && !assistantItemIds.includes(finalAssistantItemId)) {
@@ -380,9 +419,11 @@ JSON only with this exact schema:
         throw new Error("Outcome confidence must be between 0 and 1");
       }
       return {
+        eligibleForCase: value.eligibleForCase,
+        sourceKind: value.sourceKind,
         skillName,
         outcome: value.outcome,
-        caseType: value.caseType,
+        caseType,
         finalAssistantItemId,
         confidence: value.confidence,
         reason: requiredText(value.reason, "Outcome reason", 1e3)
@@ -2143,6 +2184,40 @@ var require_local_store = __commonJS({
       }
       return normalized;
     }
+    function captureTargets(state, value) {
+      if (!Array.isArray(value)) throw new Error("Automatic capture candidate Skill routes are invalid");
+      if (value.length > 100) throw new Error("Automatic capture candidate Skill routes are too large");
+      const skillIds = /* @__PURE__ */ new Set();
+      return value.map((entry) => {
+        const skillId = modelId(entry?.skillId, "Automatic capture candidate Skill id");
+        const datasetId = modelId(entry?.datasetId, "Automatic capture Dataset id");
+        if (!skillId || !datasetId) {
+          throw new Error("Automatic capture candidate Skill and Dataset are required");
+        }
+        if (skillIds.has(skillId)) {
+          throw new Error("Automatic capture candidate Skill is duplicated");
+        }
+        const dataset = requireDataset(state, datasetId);
+        if (dataset.skillReference?.id !== skillId) {
+          throw new Error("Automatic capture candidate Skill does not match the Dataset binding");
+        }
+        skillIds.add(skillId);
+        return { skillId, datasetId };
+      });
+    }
+    function removeCaptureTargetDataset(state, datasetId) {
+      const automatic = state.settings.autoCaptureProfile;
+      const current = Array.isArray(automatic.targets) ? automatic.targets : [];
+      const next = current.filter((target) => target.datasetId !== datasetId);
+      if (next.length === current.length) return false;
+      automatic.targets = next;
+      automatic.datasetId = next.length === 1 ? next[0].datasetId : null;
+      if (next.length === 0) {
+        automatic.mode = "off";
+        state.settings.autoCapture = false;
+      }
+      return true;
+    }
     function defaultSettings() {
       return {
         autoCapture: false,
@@ -2159,7 +2234,8 @@ var require_local_store = __commonJS({
           schedule: { cadence: "daily", time: "09:00", weekday: 1 },
           modelId: null,
           effort: null,
-          datasetId: null
+          datasetId: null,
+          targets: []
         }
       };
     }
@@ -2261,6 +2337,10 @@ var require_local_store = __commonJS({
           changed = true;
         }
       }
+      if (!Array.isArray(automatic.targets)) {
+        automatic.targets = [];
+        changed = true;
+      }
       if ("caseType" in automatic) {
         delete automatic.caseType;
         changed = true;
@@ -2337,6 +2417,17 @@ var require_local_store = __commonJS({
           dataset.activeRubricVersionId = null;
           changed = true;
         }
+      }
+      const hadConfiguredCaptureTargets = Array.isArray(automatic.targets) && automatic.targets.length > 0;
+      try {
+        automatic.targets = captureTargets(state, automatic.targets);
+      } catch {
+        automatic.targets = [];
+        if (hadConfiguredCaptureTargets) {
+          automatic.mode = "off";
+          state.settings.autoCapture = false;
+        }
+        changed = true;
       }
       for (const session of state.curationSessions) {
         if (!session.operation) {
@@ -3061,6 +3152,7 @@ var require_local_store = __commonJS({
         if (unfinishedRubric) {
           throw new Error("Dataset Skill cannot change with an unfinished Rubric Agent session");
         }
+        removeCaptureTargetDataset(state, datasetId);
         dataset.skillReference = skillReference;
         dataset.activeRubricVersionId = null;
         this.persist();
@@ -3119,6 +3211,7 @@ var require_local_store = __commonJS({
         const preservedEvaluationRunCount = state.evaluationRuns.filter(
           (entry) => entry.datasetId === datasetId
         ).length;
+        removeCaptureTargetDataset(state, datasetId);
         state.datasets = state.datasets.filter((entry) => entry.id !== datasetId);
         state.cases = state.cases.filter((entry) => entry.datasetId !== datasetId);
         state.curationSessions = state.curationSessions.filter(
@@ -3271,6 +3364,10 @@ var require_local_store = __commonJS({
           const datasetId = modelId(input.autoCaptureDatasetId, "Automatic capture dataset id");
           if (datasetId) requireDataset(state, datasetId);
           automatic.datasetId = datasetId;
+        }
+        if (input.autoCaptureTargets !== void 0) {
+          automatic.targets = captureTargets(state, input.autoCaptureTargets);
+          automatic.datasetId = automatic.targets.length === 1 ? automatic.targets[0].datasetId : null;
         }
         settings.autoCaptureProfile = automatic;
         settings.autoCapture = automatic.mode !== "off";
@@ -4665,6 +4762,7 @@ var require_data_root = __commonJS({
         automaticCaptureState: join(root, "automatic-capture-state.json"),
         rawCases,
         rawCaseEvents: join(rawCases, "events.jsonl"),
+        rawCaseEvidence: join(rawCases, "evidence"),
         managedSkills,
         managedSkillRegistry: join(managedSkills, "registry.json"),
         skillInstallations: join(root, "skill-installations.json"),
@@ -15572,6 +15670,119 @@ var require_managed_skill_manager = __commonJS({
   }
 });
 
+// ../../desktop/rolling-skill/src/automatic-capture-evidence-store.cjs
+var require_automatic_capture_evidence_store = __commonJS({
+  "../../desktop/rolling-skill/src/automatic-capture-evidence-store.cjs"(exports2, module2) {
+    var { createHash, randomUUID } = require("node:crypto");
+    var {
+      chmodSync,
+      existsSync,
+      mkdirSync,
+      readFileSync,
+      renameSync,
+      unlinkSync,
+      writeFileSync
+    } = require("node:fs");
+    var { isAbsolute, join, resolve } = require("node:path");
+    var AUTOMATIC_EVIDENCE_REFERENCE_SCHEMA = "rolling-skill-automatic-evidence-reference/v1";
+    var EPISODE_SCHEMA = "rolling-skill-episode/v1";
+    var DIGEST_PATTERN = /^sha256:([a-f0-9]{64})$/u;
+    function stableValue(value) {
+      if (Array.isArray(value)) return value.map(stableValue);
+      if (!value || typeof value !== "object") return value;
+      const normalized = {};
+      for (const key of Object.keys(value).sort()) normalized[key] = stableValue(value[key]);
+      return normalized;
+    }
+    function stableJson(value) {
+      return `${JSON.stringify(stableValue(value))}
+`;
+    }
+    function validatedEpisode(value) {
+      if (!value || value.schemaVersion !== EPISODE_SCHEMA) {
+        throw new Error("Automatic capture evidence Episode schema is invalid");
+      }
+      if (!Array.isArray(value.items) || !value.source || typeof value.source !== "object") {
+        throw new Error("Automatic capture evidence Episode is invalid");
+      }
+      return JSON.parse(JSON.stringify(value));
+    }
+    function validatedReference(value) {
+      if (value?.schemaVersion !== AUTOMATIC_EVIDENCE_REFERENCE_SCHEMA) {
+        throw new Error("Automatic capture evidence reference schema is invalid");
+      }
+      const match = String(value?.digest ?? "").match(DIGEST_PATTERN);
+      if (!match) throw new Error("Automatic capture evidence digest is invalid");
+      return {
+        schemaVersion: AUTOMATIC_EVIDENCE_REFERENCE_SCHEMA,
+        digest: `sha256:${match[1]}`
+      };
+    }
+    var AutomaticCaptureEvidenceStore = class {
+      constructor(root) {
+        const requested = String(root ?? "").trim();
+        if (!requested || !isAbsolute(requested)) {
+          throw new Error("Automatic capture evidence root must be absolute");
+        }
+        this.root = resolve(requested);
+      }
+      pathFor(reference) {
+        const normalized = validatedReference(reference);
+        return join(this.root, `${normalized.digest.slice(7)}.json`);
+      }
+      save(episode) {
+        const normalized = validatedEpisode(episode);
+        const serialized = stableJson(normalized);
+        const digest = `sha256:${createHash("sha256").update(serialized).digest("hex")}`;
+        const reference = {
+          schemaVersion: AUTOMATIC_EVIDENCE_REFERENCE_SCHEMA,
+          digest
+        };
+        const path = this.pathFor(reference);
+        mkdirSync(this.root, { recursive: true, mode: 448 });
+        chmodSync(this.root, 448);
+        if (existsSync(path)) {
+          if (readFileSync(path, "utf8") !== serialized) {
+            throw new Error("Automatic capture evidence digest collided with different content");
+          }
+          return reference;
+        }
+        const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+        try {
+          writeFileSync(temporary, serialized, { encoding: "utf8", flag: "wx", mode: 384 });
+          chmodSync(temporary, 384);
+          renameSync(temporary, path);
+        } finally {
+          if (existsSync(temporary)) unlinkSync(temporary);
+        }
+        return reference;
+      }
+      read(reference) {
+        const normalized = validatedReference(reference);
+        const path = this.pathFor(normalized);
+        if (!existsSync(path)) throw new Error("Automatic capture evidence snapshot is unavailable");
+        const serialized = readFileSync(path, "utf8");
+        const actual = `sha256:${createHash("sha256").update(serialized).digest("hex")}`;
+        if (actual !== normalized.digest) {
+          throw new Error("Automatic capture evidence digest does not match the stored snapshot");
+        }
+        let episode;
+        try {
+          episode = JSON.parse(serialized);
+        } catch {
+          throw new Error("Automatic capture evidence snapshot is invalid JSON");
+        }
+        return validatedEpisode(episode);
+      }
+    };
+    module2.exports = {
+      AUTOMATIC_EVIDENCE_REFERENCE_SCHEMA,
+      AutomaticCaptureEvidenceStore,
+      validatedReference
+    };
+  }
+});
+
 // ../../desktop/rolling-skill/src/raw-case-store.cjs
 var require_raw_case_store = __commonJS({
   "../../desktop/rolling-skill/src/raw-case-store.cjs"(exports2, module2) {
@@ -15587,6 +15798,9 @@ var require_raw_case_store = __commonJS({
     var { homedir } = require("node:os");
     var { dirname, join } = require("node:path");
     var { randomUUID } = require("node:crypto");
+    var {
+      validatedReference: validatedAutomaticEvidenceReference
+    } = require_automatic_capture_evidence_store();
     var RAW_CASE_EVENT_SCHEMA = "rolling-skill-raw-case-event/v1";
     var MAX_QUESTION_LENGTH = 12e4;
     var MAX_BATCH_SIZE = 200;
@@ -15711,7 +15925,10 @@ var require_raw_case_store = __commonJS({
         confidence: Number(source.confidence),
         inspectedAt: automaticIdentifier(source.inspectedAt, "Automatic capture inspection time"),
         ...source.summary ? { summary: String(source.summary).slice(0, 1e3) } : {},
-        ...source.reason ? { reason: String(source.reason).slice(0, 2e3) } : {}
+        ...source.reason ? { reason: String(source.reason).slice(0, 2e3) } : {},
+        ...source.evidence ? {
+          evidence: validatedAutomaticEvidenceReference(source.evidence)
+        } : {}
       };
       if (!(/* @__PURE__ */ new Set(["resolved", "unresolved", "uncertain"])).has(observation.outcome)) {
         throw new Error("Automatic capture outcome is invalid");
@@ -18434,10 +18651,11 @@ var require_evaluation_skill_binding = __commonJS({
       skillReference,
       skillEvidence,
       traceEvidence,
-      expectedContentDigest = null
+      expectedContentDigest = null,
+      verifyContentDigest = true
     }) {
       const frozenSkill = skillEvidence?.files?.find((entry) => entry.path === "SKILL.md");
-      expectedContentDigest = expectedContentDigest ?? (frozenSkill?.content === void 0 ? null : skillContentDigest(frozenSkill.content));
+      expectedContentDigest = verifyContentDigest ? expectedContentDigest ?? (frozenSkill?.content === void 0 ? null : skillContentDigest(frozenSkill.content)) : null;
       const skillName = String(skillReference?.name ?? skillEvidence?.name ?? "");
       const observed = [];
       for (const entry of traceEvidence?.entries ?? []) {
@@ -18458,12 +18676,12 @@ var require_evaluation_skill_binding = __commonJS({
           contentDigest: update.skillContentDigest ?? dshInjectedSkillDigest(event, skillName)
         });
       }
-      const matching = observed.find(
+      const matching = verifyContentDigest ? observed.find(
         (entry) => expectedContentDigest && entry.contentDigest === expectedContentDigest
-      );
+      ) : null;
       const observedDigests = observed.map((entry) => entry.contentDigest).filter(Boolean);
-      const observedBinding = matching ? "matched" : observedDigests.length ? "mismatched" : observed.length ? "name_only" : "not_observed";
-      const effectiveBinding = observedBinding === "matched" ? "verified-by-trace" : observedBinding === "mismatched" ? "unverified" : declaredBinding === "verified" ? "verified" : "unverified";
+      const observedBinding = !verifyContentDigest ? observed.length ? "name_only" : "not_observed" : matching ? "matched" : observedDigests.length ? "mismatched" : observed.length ? "name_only" : "not_observed";
+      const effectiveBinding = verifyContentDigest && observedBinding === "matched" ? "verified-by-trace" : verifyContentDigest && observedBinding === "mismatched" ? "unverified" : declaredBinding === "verified" ? "verified" : "unverified";
       return {
         declaredBinding: declaredBinding === "verified" ? "verified" : "unverified",
         observedBinding,
@@ -18495,10 +18713,7 @@ var require_evaluation_runner = __commonJS({
     var { buildEvidenceCatalog } = require_evaluation_evidence_catalog();
     var { snapshotSkillEvidence } = require_evaluation_skill_evidence();
     var { resolveExecutedSkillEvidenceBinding } = require_evaluation_skill_binding();
-    var { skillContentDigest } = require_skill_content();
     var SKILL_DRIFT_ERROR = "Skill changed after evaluation snapshot";
-    var SKILL_VERSION_CHANGED = "SKILL_VERSION_CHANGED";
-    var SKILL_VERSION_UNVERIFIED = "SKILL_VERSION_UNVERIFIED";
     var CANCELLATION_ERROR = "Evaluation cancelled by user";
     var AsyncTaskQueue = class {
       constructor() {
@@ -18620,29 +18835,6 @@ var require_evaluation_runner = __commonJS({
           throw new Error(SKILL_DRIFT_ERROR);
         }
       }
-      async verifyManagedRuntimeVersion(client, run, configuration) {
-        if (!run.managedVersionSnapshot) return configuration.skillEvidenceBinding ?? "unverified";
-        const targetSkillReference = configuration.skillReference ?? run.skillReference;
-        const expected = configuration.expectedContentDigest;
-        if (expected !== run.managedVersionSnapshot.contentDigest || !(configuration.installationJobId ?? configuration.experimentInstallationJobId) || !targetSkillReference?.path) {
-          const error2 = new Error(`${SKILL_VERSION_CHANGED}: frozen target binding is incomplete`);
-          error2.code = SKILL_VERSION_CHANGED;
-          throw error2;
-        }
-        if (typeof client.listSkills !== "function") return "unverified";
-        const response = await client.listSkills({ forceReload: true });
-        const matchingName = (response?.data ?? []).flatMap((entry) => entry.skills ?? []).filter((skill) => skill?.enabled && skill.name === targetSkillReference.name);
-        const pathPrecise = matchingName.filter(
-          (skill) => skill.path || skill.evidencePrecision !== "name-only"
-        );
-        if (!pathPrecise.length) return "unverified";
-        if (pathPrecise.some(
-          (skill) => skill.path === targetSkillReference.path && skill.contentDigest === expected
-        )) return "verified";
-        const error = new Error(`${SKILL_VERSION_CHANGED}: Runtime Skill digest no longer matches Candidate`);
-        error.code = SKILL_VERSION_CHANGED;
-        throw error;
-      }
       run(run) {
         if (this.running.has(run.id)) return this.running.get(run.id);
         const control = {
@@ -18748,14 +18940,6 @@ var require_evaluation_runner = __commonJS({
             try {
               const targetSkillReference = configuration.skillReference ?? run.skillReference;
               this.assertSkillSnapshotUnchanged(run);
-              let preExecutionBinding = configuration.skillEvidenceBinding ?? "unverified";
-              if (run.managedVersionSnapshot) {
-                preExecutionBinding = await this.verifyManagedRuntimeVersion(
-                  client,
-                  run,
-                  configuration
-                );
-              }
               const output = await client.runEvaluationCase({
                 question: result.caseSnapshot.question,
                 activationMode: run.activationMode,
@@ -18764,44 +18948,19 @@ var require_evaluation_runner = __commonJS({
                 effort: configuration.effort
               });
               this.assertSkillSnapshotUnchanged(run);
-              let postExecutionBinding = preExecutionBinding;
-              if (run.managedVersionSnapshot) {
-                postExecutionBinding = await this.verifyManagedRuntimeVersion(
-                  client,
-                  run,
-                  configuration
-                );
-              }
               if (control.cancelRequested) {
                 this.cancelExecutionResult(run, result, control);
                 continue;
               }
               const gradingQueuedAt = (/* @__PURE__ */ new Date()).toISOString();
-              const declaredBinding = (run.managedVersionSnapshot ? postExecutionBinding === "verified" && preExecutionBinding === "verified" ? "verified" : "unverified" : null) ?? result.runtimeConfiguration?.skillEvidenceBinding ?? configuration.skillEvidenceBinding ?? "unverified";
+              const declaredBinding = result.runtimeConfiguration?.skillEvidenceBinding ?? configuration.skillEvidenceBinding ?? "unverified";
               const skillExecutionBinding = resolveExecutedSkillEvidenceBinding({
                 declaredBinding,
                 skillReference: targetSkillReference,
                 skillEvidence: run.skillEvidence,
                 traceEvidence: output.traceEvidence,
-                expectedContentDigest: run.managedVersionSnapshot ? (() => {
-                  const content = run.skillEvidence?.files?.find(
-                    (entry) => entry.path === "SKILL.md"
-                  )?.content;
-                  return content === void 0 ? null : skillContentDigest(content);
-                })() : null
+                verifyContentDigest: !run.managedVersionSnapshot
               });
-              if (run.managedVersionSnapshot && skillExecutionBinding.observedBinding === "mismatched") {
-                const error = new Error(`${SKILL_VERSION_CHANGED}: executed Skill body digest changed`);
-                error.code = SKILL_VERSION_CHANGED;
-                throw error;
-              }
-              if (run.managedVersionSnapshot && preExecutionBinding !== "verified" && skillExecutionBinding.effectiveBinding !== "verified-by-trace") {
-                const error = new Error(
-                  `${SKILL_VERSION_UNVERIFIED}: name-only Runtime did not expose the frozen Skill body digest`
-                );
-                error.code = SKILL_VERSION_UNVERIFIED;
-                throw error;
-              }
               output.skillExecutionBinding = skillExecutionBinding;
               this.store.updateEvaluationResult(run.id, result.id, {
                 status: "completed",
@@ -20716,9 +20875,11 @@ var require_skill_installation_manager = __commonJS({
         return this.store.getJob(job.id);
       }
       overview(skillId = null) {
+        const jobs = this.store.listJobs(skillId ? { skillId } : {});
+        const skillIds = skillId ? [skillId] : [...new Set(jobs.filter((job) => job.request?.purpose === "managed-installation").map((job) => job.request?.source?.skillId).filter(Boolean))];
         return {
-          jobs: this.store.listJobs(skillId ? { skillId } : {}),
-          matrix: skillId ? this.store.installationMatrix(skillId) : []
+          jobs,
+          matrix: skillIds.flatMap((id) => this.store.installationMatrix(id))
         };
       }
       async stopAll() {
@@ -21715,6 +21876,10 @@ var require_automatic_capture = __commonJS({
       const confidence = Number(candidate?.confidence);
       if (!Number.isFinite(confidence) || confidence < AUTOMATIC_CONFIDENCE_THRESHOLD || candidate?.outcome === "uncertain" || !candidate?.skill) return null;
       const matches = arrays(datasets).filter((dataset) => sameAutomaticSkill(dataset?.skillReference, candidate.skill));
+      if (Array.isArray(preferredDatasetId) && preferredDatasetId.length) {
+        const routed = matches.filter((dataset) => preferredDatasetId.some((target) => target?.datasetId === dataset.id && target?.skillId === dataset.skillReference?.id));
+        return routed.length === 1 ? routed[0] : null;
+      }
       const preferred = matches.find((dataset) => dataset.id === preferredDatasetId);
       if (preferred) return preferred;
       return matches.length === 1 ? matches[0] : null;
@@ -21781,6 +21946,7 @@ var require_automatic_capture = __commonJS({
         listSkills = async () => [],
         runAnalysis,
         captureEpisode = null,
+        saveEvidence = null,
         getHiddenThreadIds = () => /* @__PURE__ */ new Set(),
         now = () => /* @__PURE__ */ new Date(),
         setTimer = (callback, delay) => setTimeout(callback, delay),
@@ -21800,6 +21966,7 @@ var require_automatic_capture = __commonJS({
         this.listSkills = listSkills;
         this.runAnalysis = runAnalysis;
         this.captureEpisode = captureEpisode;
+        this.saveEvidence = saveEvidence;
         this.getHiddenThreadIds = getHiddenThreadIds;
         this.now = now;
         this.setTimer = setTimer;
@@ -21987,6 +22154,9 @@ var require_automatic_capture = __commonJS({
         ]);
         const skills = arrays(skillsValue);
         const datasets = arrays(datasetsValue);
+        const targets = arrays(profile.targets);
+        const scopedDatasets = targets.length ? datasets.filter((dataset) => targets.some((target) => target?.datasetId === dataset.id && target?.skillId === dataset.skillReference?.id)) : datasets;
+        const scopedSkills = targets.length ? skills.filter((skill) => scopedDatasets.some((dataset) => sameAutomaticSkill(dataset.skillReference, skill))) : skills;
         const hidden = this.allHiddenThreadIds();
         for (const summary of threads) {
           if (!summary?.id || hidden.has(summary.id)) continue;
@@ -21994,8 +22164,8 @@ var require_automatic_capture = __commonJS({
             runtime,
             runtimeId,
             threadId: summary.id,
-            skills,
-            datasets,
+            skills: scopedSkills,
+            datasets: scopedDatasets,
             profile
           });
         }
@@ -22127,7 +22297,25 @@ var require_automatic_capture = __commonJS({
           skillNames: skills.map((skill2) => skill2.name).filter(Boolean),
           assistantItemIds: episode.items.filter((item) => item.type === "agentMessage").map((item) => item.id)
         });
-        const skill = skills.find((entry) => entry.name === result.skillName) ?? null;
+        if (!result.eligibleForCase) {
+          return {
+            irrelevant: true,
+            skipReason: `ineligible_${result.sourceKind}`,
+            episode,
+            result
+          };
+        }
+        if (result.outcome === "uncertain") {
+          return { irrelevant: true, skipReason: "uncertain_outcome", episode, result };
+        }
+        if (result.confidence < AUTOMATIC_CONFIDENCE_THRESHOLD) {
+          return { irrelevant: true, skipReason: "low_confidence", episode, result };
+        }
+        const matchingSkills = skills.filter((entry) => entry.name === result.skillName);
+        if (matchingSkills.length > 1) {
+          throw new Error(`Automatic capture has an ambiguous managed Skill name: ${result.skillName}`);
+        }
+        const skill = matchingSkills[0] ?? null;
         if (!skill) return { irrelevant: true, episode, result };
         const finalItem = result.finalAssistantItemId ? episode.items.find((item) => item.id === result.finalAssistantItemId) : null;
         const endItemId = finalItem?.id ?? episode.source.endItemId;
@@ -22151,6 +22339,8 @@ var require_automatic_capture = __commonJS({
           ...skill.id ? { id: skill.id } : {},
           name: skill.name
         };
+        const evidence = typeof this.saveEvidence === "function" ? await Promise.resolve(this.saveEvidence(episode)) : null;
+        if (evidence) source.evidence = evidence;
         const saved = this.rawCaseStore.addAutomaticCandidate({
           question: episode.originalQuestion,
           skill: candidateSkill,
@@ -22167,16 +22357,18 @@ var require_automatic_capture = __commonJS({
         });
         return { irrelevant: false, episode, result, saved };
       }
-      async createAutomaticCuration({ saved, source, episode, skill, datasets, profile }) {
-        if (this.profile().mode !== "automatic") return null;
+      async createAutomaticCuration({ saved, source, episode, skill }) {
+        const currentProfile = this.profile();
+        if (currentProfile.mode !== "automatic") return null;
         if (!this.curationManager?.createSession) {
           throw new Error("Automatic curation is unavailable");
         }
+        const currentDatasets = arrays(await Promise.resolve(this.listDatasets()));
         const dataset = automaticDatasetFor({
           confidence: source.confidence,
           outcome: source.outcome,
           skill
-        }, datasets, profile.datasetId);
+        }, currentDatasets, arrays(currentProfile.targets).length ? currentProfile.targets : currentProfile.datasetId);
         if (!dataset?.activeRubricVersionId) {
           throw new Error(
             "Automatic curation requires one compatible Dataset with a published Rubric"
@@ -22218,8 +22410,18 @@ var require_automatic_capture = __commonJS({
         if (!thread) throw new Error(`Automatic capture could not read task ${threadId}`);
         const messages = this.userMessages(thread);
         if (!messages.length) return false;
-        if (isAutomaticAnalysisTask(messages)) return false;
         const cursor = this.stateStore.thread(runtimeId, threadId);
+        if (isAutomaticAnalysisTask(messages)) {
+          this.analysisThreadIds.add(threadId);
+          if (cursor.lastInspectedUserItemId !== messages.at(-1).id || cursor.pendingStartUserItemId !== null) {
+            this.stateStore.commitThread(runtimeId, threadId, {
+              lastInspectedUserItemId: messages.at(-1).id,
+              pendingStartUserItemId: null,
+              checkedRanges: cursor.checkedRanges ?? []
+            }, this.now());
+          }
+          return false;
+        }
         const cursorIndex = cursor.lastInspectedUserItemId ? messages.findIndex((message) => message.id === cursor.lastInspectedUserItemId) : -1;
         const hasNewMessages = cursorIndex < messages.length - 1;
         if (cursor.lastInspectedUserItemId && !hasNewMessages && !cursor.pendingStartUserItemId) {
@@ -22308,6 +22510,22 @@ var require_automatic_capture_service = __commonJS({
         executablePath: descriptor.executablePath
       };
     }
+    function automaticTargets(value, datasets) {
+      if (!Array.isArray(value)) throw new Error("Automatic capture candidate Skill routes are invalid");
+      if (value.length > 100) throw new Error("Automatic capture candidate Skill routes are too large");
+      const skillIds = /* @__PURE__ */ new Set();
+      return value.map((entry) => {
+        const skillId = requiredText(entry?.skillId, "Automatic capture candidate Skill id", 200);
+        const datasetId = requiredText(entry?.datasetId, "Automatic capture Dataset id", 200);
+        if (skillIds.has(skillId)) throw new Error("Automatic capture candidate Skill is duplicated");
+        const dataset = datasets.find((candidate) => candidate?.id === datasetId);
+        if (!dataset || dataset.skillReference?.id !== skillId) {
+          throw new Error("Automatic capture candidate Skill does not match the Dataset binding");
+        }
+        skillIds.add(skillId);
+        return { skillId, datasetId };
+      });
+    }
     function createAutomaticCaptureService({
       store,
       configStore,
@@ -22318,6 +22536,7 @@ var require_automatic_capture_service = __commonJS({
       listSkills = null,
       listDatasets = () => store.listDatasets(),
       captureEpisode = null,
+      saveEvidence = null,
       getHiddenThreadIds = () => /* @__PURE__ */ new Set(),
       manager = null,
       now = () => /* @__PURE__ */ new Date(),
@@ -22351,6 +22570,7 @@ var require_automatic_capture_service = __commonJS({
         getRuntimeDescriptor: runtimeDescriptor,
         listDatasets,
         captureEpisode,
+        saveEvidence,
         listSkills: listSkills ?? (async (runtime) => {
           if (typeof runtime.listSkills !== "function") return [];
           const response = await runtime.listSkills({ forceReload: true });
@@ -22382,6 +22602,7 @@ var require_automatic_capture_service = __commonJS({
           modelId: profile.modelId,
           effort: profile.effort,
           datasetId: profile.datasetId,
+          targets: structuredClone(profile.targets ?? []),
           executionLocation: plugin.executionLocation,
           runtime: plugin.runtime,
           worker: plugin.worker
@@ -22410,6 +22631,7 @@ var require_automatic_capture_service = __commonJS({
         }
         const runtimeId = optionalText(input.runtimeId, "Automatic capture Runtime id", 500);
         const current = configStore.read();
+        const targetSettings = input.targets === void 0 ? {} : { autoCaptureTargets: automaticTargets(input.targets, listDatasets()) };
         const runtime = runtimeId ? stableRuntimeIdentity(runtimeServices.descriptor(runtimeId)) : current.runtime;
         if (mode !== "off" && !runtime) {
           throw new Error("Select a Runtime before enabling automatic capture");
@@ -22429,7 +22651,8 @@ var require_automatic_capture_service = __commonJS({
           autoCaptureWeekday: weekday,
           autoCaptureModelId: optionalText(input.modelId, "Automatic capture model id", 300),
           autoCaptureEffort: optionalText(input.effort, "Automatic capture effort", 100),
-          autoCaptureDatasetId: optionalText(input.datasetId, "Automatic capture Dataset id", 200)
+          autoCaptureDatasetId: optionalText(input.datasetId, "Automatic capture Dataset id", 200),
+          ...targetSettings
         });
         configStore.update({ executionLocation, runtime, worker });
         if (hostStarted) {
@@ -22779,6 +23002,45 @@ var require_evaluation_services = __commonJS({
         installationVerification: configuration2.installationVerification ?? null
       };
     }
+    function publicManagedVersion(snapshot) {
+      if (!snapshot) return null;
+      return {
+        repositoryId: snapshot.repositoryId ?? null,
+        skillId: snapshot.skillId ?? null,
+        versionId: snapshot.versionId ?? null,
+        commit: snapshot.commit ?? null,
+        contentDigest: snapshot.contentDigest ?? null,
+        installationJobIdsByRuntime: snapshot.installationJobIdsByRuntime ?? {}
+      };
+    }
+    function publicRubricVersion(version) {
+      if (!version) return null;
+      return {
+        id: version.id ?? null,
+        version: version.version ?? null,
+        rubricDigest: version.rubricDigest ?? null,
+        rubric: version.rubric ?? null,
+        createdAt: version.createdAt ?? null
+      };
+    }
+    function publicTraceEvidence(evidence) {
+      if (!evidence) return null;
+      const entries = Array.isArray(evidence.entries) ? evidence.entries.slice(0, 500) : [];
+      return {
+        scope: "case",
+        schemaVersion: evidence.schemaVersion ?? null,
+        entryCount: entries.length,
+        sourceEntryCount: evidence.sourceEntryCount ?? entries.length,
+        includedEntries: evidence.includedEntries ?? entries.length,
+        compactedEntries: evidence.compactedEntries ?? 0,
+        contentCompactedEntries: evidence.contentCompactedEntries ?? 0,
+        semanticCoverageComplete: evidence.semanticCoverageComplete === true,
+        samplingStrategy: evidence.samplingStrategy ?? null,
+        truncated: evidence.truncated === true || (evidence.entries?.length ?? 0) > entries.length,
+        omittedEntries: (evidence.omittedEntries ?? 0) + Math.max(0, (evidence.entries?.length ?? 0) - entries.length),
+        entries
+      };
+    }
     function publicEvaluationResult(result) {
       return {
         id: result.id,
@@ -22797,15 +23059,17 @@ var require_evaluation_services = __commonJS({
         computedScore: result.computedScore ?? null,
         judge: result.judge ? {
           runtimeId: result.judge.runtimeId ?? null,
+          providerId: result.judge.providerId ?? null,
+          displayName: result.judge.displayName ?? null,
+          version: result.judge.version ?? null,
           modelId: result.judge.modelId ?? null,
-          effort: result.judge.effort ?? null
+          effort: result.judge.effort ?? null,
+          status: result.judge.status ?? null,
+          attempts: result.judge.attempts ?? null,
+          durationMs: result.judge.durationMs ?? null,
+          contractDigest: result.judge.contractDigest ?? null
         } : null,
-        traceEvidence: result.traceEvidence ? {
-          schemaVersion: result.traceEvidence.schemaVersion ?? null,
-          entryCount: Array.isArray(result.traceEvidence.entries) ? result.traceEvidence.entries.length : 0,
-          truncated: result.traceEvidence.truncated === true,
-          omittedEntries: result.traceEvidence.omittedEntries ?? 0
-        } : null,
+        traceEvidence: publicTraceEvidence(result.traceEvidence),
         startedAt: result.startedAt ?? null,
         completedAt: result.completedAt ?? null,
         gradingStartedAt: result.gradingStartedAt ?? null,
@@ -22819,6 +23083,7 @@ var require_evaluation_services = __commonJS({
         datasetId: run.datasetId,
         selectionMode: run.selectionMode ?? null,
         activationMode: run.activationMode ?? null,
+        traceScope: "case",
         status: run.status,
         caseCount: run.caseSnapshots?.length ?? 0,
         runtimeCount: run.runtimeConfigurations?.length ?? 0,
@@ -22826,6 +23091,8 @@ var require_evaluation_services = __commonJS({
         startedAt: run.startedAt ?? null,
         completedAt: run.completedAt ?? null,
         skillReference: publicSkillIdentity(run.skillReference),
+        managedVersionSnapshot: publicManagedVersion(run.managedVersionSnapshot),
+        rubricVersionSnapshot: publicRubricVersion(run.rubricVersionSnapshot),
         skillEvidence: run.skillEvidence ? {
           schemaVersion: run.skillEvidence.schemaVersion ?? null,
           digest: run.skillEvidence.digest ?? null,
@@ -62048,6 +62315,12 @@ var require_application = __commonJS({
       RawCaseStore
     } = require_raw_case_store();
     var {
+      AutomaticCaptureEvidenceStore
+    } = require_automatic_capture_evidence_store();
+    var {
+      buildEpisodeSnapshot
+    } = require_episode_curation();
+    var {
       CaseRecycleService
     } = require_case_recycle_service();
     var {
@@ -62180,6 +62453,15 @@ var require_application = __commonJS({
       return text.length <= limit ? text : `${text.slice(0, limit)}
 \u2026[truncated]`;
     }
+    function boundedDetail(value, limit = 2e4) {
+      if (value === void 0 || value === null) return null;
+      if (typeof value === "string") return boundedText(value, limit);
+      try {
+        return boundedText(JSON.stringify(value, null, 2), limit);
+      } catch {
+        return "[unserializable]";
+      }
+    }
     function publicSkillReference(reference) {
       if (!reference) return null;
       return {
@@ -62247,7 +62529,7 @@ var require_application = __commonJS({
         } : null
       };
     }
-    function publicEpisode(episode) {
+    function publicEpisode(episode, { itemLimit = 250 } = {}) {
       if (!episode) return null;
       const source = episode.source ?? {};
       return {
@@ -62270,15 +62552,19 @@ var require_application = __commonJS({
             resultSeq: entry.resultSeq ?? null
           })) : []
         },
-        items: Array.isArray(episode.items) ? episode.items.slice(0, 250).map((item) => ({
+        items: Array.isArray(episode.items) ? (itemLimit === null ? episode.items : episode.items.slice(0, itemLimit)).map((item) => ({
           id: item.id ?? null,
           type: item.type ?? null,
           role: item.role ?? null,
-          text: boundedText(item.text),
+          text: boundedText(item.text ?? item.summary),
+          ...item.source?.kind ? { sourceKind: item.source.kind } : {},
           turnId: item.turnId ?? null,
           seq: item.seq ?? null,
-          toolName: item.toolName ?? item.name ?? null,
-          arguments: item.arguments ?? null,
+          toolName: item.toolName ?? item.tool ?? item.name ?? null,
+          status: item.status ?? null,
+          arguments: boundedDetail(item.arguments ?? item.command),
+          result: boundedDetail(item.result ?? item.output),
+          error: boundedDetail(item.error),
           usage: item.usage ?? null
         })) : []
       };
@@ -62536,11 +62822,19 @@ var require_application = __commonJS({
       }
       return ids;
     }
+    function installationRuntimeThreadIds(installationStore) {
+      const ids = /* @__PURE__ */ new Set();
+      for (const job of installationStore?.listJobs?.() ?? []) {
+        if (typeof job?.threadId === "string" && job.threadId) ids.add(job.threadId);
+      }
+      return ids;
+    }
     function createRollingSkillApplication(options2 = {}) {
       const paths = ensureDataLayout(resolveDataPaths(options2));
       const legacySourceRoot = options2.legacySourceRoot ?? detectLegacyElectronDataRoot();
       const store = new LocalEvaluationStore(paths.evaluationStore);
       const rawCaseStore = new RawCaseStore(paths.rawCaseEvents);
+      const automaticEvidenceStore = new AutomaticCaptureEvidenceStore(paths.rawCaseEvidence);
       const automaticCaptureStateStore = new AutomaticCaptureStateStore(
         paths.automaticCaptureState
       );
@@ -62666,6 +62960,7 @@ var require_application = __commonJS({
         rawCaseStore,
         curationManager: automaticCurationManager,
         captureEpisode: typeof options2.conversationEpisodeSource?.capture === "function" ? (input) => options2.conversationEpisodeSource.capture(input) : null,
+        saveEvidence: (episode) => automaticEvidenceStore.save(episode),
         listSkills: async (runtime) => {
           if (typeof runtime.listSkills !== "function") return [];
           const descriptor = selectedRuntimeDescriptor();
@@ -62695,7 +62990,8 @@ var require_application = __commonJS({
         getHiddenThreadIds: () => /* @__PURE__ */ new Set([
           ...curationManager.hiddenThreadIds(),
           ...rubricManager.hiddenThreadIds(),
-          ...evaluationRuntimeThreadIds(store.read())
+          ...evaluationRuntimeThreadIds(store.read()),
+          ...installationRuntimeThreadIds(installationStore)
         ]),
         onChanged: () => publish()
       });
@@ -62890,6 +63186,54 @@ var require_application = __commonJS({
         }
         return source;
       }
+      function dshSequence(itemId, sessionId) {
+        const id = typeof itemId === "string" ? itemId : "";
+        const prefix = `dsh:${sessionId}:`;
+        if (!sessionId || !id.startsWith(prefix)) return null;
+        const sequence = Number(id.slice(prefix.length));
+        return Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : null;
+      }
+      async function automaticRawCaseEvidence(rawCase) {
+        const observation = automaticRawCaseObservation(rawCase);
+        if (!observation) throw new Error("Raw Case has no automatic source evidence");
+        if (observation.evidence) {
+          return {
+            provenance: "snapshot",
+            episode: publicEpisode(automaticEvidenceStore.read(observation.evidence), {
+              itemLimit: null
+            })
+          };
+        }
+        const startSeq = dshSequence(observation.startItemId, observation.threadId);
+        const endSeq = dshSequence(observation.endItemId, observation.threadId);
+        if (startSeq !== null || endSeq !== null) {
+          if (startSeq === null || endSeq === null || startSeq > endSeq || typeof options2.conversationEpisodeSource?.readRange !== "function") {
+            throw new Error("Trusted DSH source range is unavailable");
+          }
+          const episode2 = await options2.conversationEpisodeSource.readRange({
+            sessionId: observation.threadId,
+            startSeq,
+            endSeq
+          });
+          return { provenance: "source", episode: publicEpisode(episode2, { itemLimit: null }) };
+        }
+        const runtime = await runtimeServices.getClient(observation.runtimeId, {
+          nonInteractive: true
+        });
+        if (typeof runtime.readThread !== "function") {
+          throw new Error("Source Runtime cannot read the captured conversation");
+        }
+        const response = await runtime.readThread(observation.threadId);
+        const thread = response?.thread ?? response;
+        const episode = buildEpisodeSnapshot(thread, {
+          startItemId: observation.startItemId,
+          startTurnId: observation.startTurnId,
+          endItemId: observation.endItemId,
+          endTurnId: observation.endTurnId,
+          runtimeId: observation.runtimeId
+        });
+        return { provenance: "source", episode: publicEpisode(episode, { itemLimit: null }) };
+      }
       function curationSession(id) {
         return typeof curationManager.getSession === "function" ? curationManager.getSession(id) : store.getCurationSession(id);
       }
@@ -63077,6 +63421,11 @@ var require_application = __commonJS({
           });
         },
         "rawCases.list": () => rawCaseStore.list().map(publicRawCase),
+        "rawCases.evidence": (input) => {
+          exactFields(input, /* @__PURE__ */ new Set(["id"]), "Raw Case evidence");
+          const rawCase = rawCaseStore.requireRecord(requiredIdentifier(input.id, "Raw Case id"));
+          return automaticRawCaseEvidence(rawCase);
+        },
         "rawCases.add": (input) => {
           exactFields(input, /* @__PURE__ */ new Set([
             "question",
@@ -63462,6 +63811,7 @@ var require_application = __commonJS({
       MAX_DISPATCH_BYTES,
       createRollingSkillApplication,
       evaluationRuntimeThreadIds,
+      installationRuntimeThreadIds,
       reconcileManagedDatasetBindings,
       runtimeSkillMatchesVerifiedInstallation
     };

@@ -73,6 +73,49 @@ function publicRuntime(configuration) {
     }
 }
 
+function publicManagedVersion(snapshot) {
+    if (!snapshot) return null
+    return {
+        repositoryId: snapshot.repositoryId ?? null,
+        skillId: snapshot.skillId ?? null,
+        versionId: snapshot.versionId ?? null,
+        commit: snapshot.commit ?? null,
+        contentDigest: snapshot.contentDigest ?? null,
+        installationJobIdsByRuntime: snapshot.installationJobIdsByRuntime ?? {},
+    }
+}
+
+function publicRubricVersion(version) {
+    if (!version) return null
+    return {
+        id: version.id ?? null,
+        version: version.version ?? null,
+        rubricDigest: version.rubricDigest ?? null,
+        rubric: version.rubric ?? null,
+        createdAt: version.createdAt ?? null,
+    }
+}
+
+function publicTraceEvidence(evidence) {
+    if (!evidence) return null
+    const entries = Array.isArray(evidence.entries) ? evidence.entries.slice(0, 500) : []
+    return {
+        scope: "case",
+        schemaVersion: evidence.schemaVersion ?? null,
+        entryCount: entries.length,
+        sourceEntryCount: evidence.sourceEntryCount ?? entries.length,
+        includedEntries: evidence.includedEntries ?? entries.length,
+        compactedEntries: evidence.compactedEntries ?? 0,
+        contentCompactedEntries: evidence.contentCompactedEntries ?? 0,
+        semanticCoverageComplete: evidence.semanticCoverageComplete === true,
+        samplingStrategy: evidence.samplingStrategy ?? null,
+        truncated: evidence.truncated === true || (evidence.entries?.length ?? 0) > entries.length,
+        omittedEntries:
+            (evidence.omittedEntries ?? 0) + Math.max(0, (evidence.entries?.length ?? 0) - entries.length),
+        entries,
+    }
+}
+
 function publicEvaluationResult(result) {
     return {
         id: result.id,
@@ -91,17 +134,17 @@ function publicEvaluationResult(result) {
         computedScore: result.computedScore ?? null,
         judge: result.judge ? {
             runtimeId: result.judge.runtimeId ?? null,
+            providerId: result.judge.providerId ?? null,
+            displayName: result.judge.displayName ?? null,
+            version: result.judge.version ?? null,
             modelId: result.judge.modelId ?? null,
             effort: result.judge.effort ?? null,
+            status: result.judge.status ?? null,
+            attempts: result.judge.attempts ?? null,
+            durationMs: result.judge.durationMs ?? null,
+            contractDigest: result.judge.contractDigest ?? null,
         } : null,
-        traceEvidence: result.traceEvidence ? {
-            schemaVersion: result.traceEvidence.schemaVersion ?? null,
-            entryCount: Array.isArray(result.traceEvidence.entries)
-                ? result.traceEvidence.entries.length
-                : 0,
-            truncated: result.traceEvidence.truncated === true,
-            omittedEntries: result.traceEvidence.omittedEntries ?? 0,
-        } : null,
+        traceEvidence: publicTraceEvidence(result.traceEvidence),
         startedAt: result.startedAt ?? null,
         completedAt: result.completedAt ?? null,
         gradingStartedAt: result.gradingStartedAt ?? null,
@@ -116,6 +159,7 @@ function publicEvaluation(run) {
         datasetId: run.datasetId,
         selectionMode: run.selectionMode ?? null,
         activationMode: run.activationMode ?? null,
+        traceScope: "case",
         status: run.status,
         caseCount: run.caseSnapshots?.length ?? 0,
         runtimeCount: run.runtimeConfigurations?.length ?? 0,
@@ -123,6 +167,8 @@ function publicEvaluation(run) {
         startedAt: run.startedAt ?? null,
         completedAt: run.completedAt ?? null,
         skillReference: publicSkillIdentity(run.skillReference),
+        managedVersionSnapshot: publicManagedVersion(run.managedVersionSnapshot),
+        rubricVersionSnapshot: publicRubricVersion(run.rubricVersionSnapshot),
         skillEvidence: run.skillEvidence ? {
             schemaVersion: run.skillEvidence.schemaVersion ?? null,
             digest: run.skillEvidence.digest ?? null,

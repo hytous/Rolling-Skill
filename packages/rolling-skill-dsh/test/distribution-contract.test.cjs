@@ -18,7 +18,8 @@ it("documents DSH distribution and rejects unsafe package entries", async () => 
     const scriptPath = join(packageRoot, "scripts", "inspect-package.mjs")
     assert.equal(existsSync(scriptPath), true)
     const {inspectEntries} = await import(`${pathToFileURL(scriptPath).href}?test=${Date.now()}`)
-    const manifest = JSON.stringify({name: "@rolling-skill/dsh-plugin", version: "0.1.0"})
+    const packageManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"))
+    const manifest = JSON.stringify({name: "@rolling-skill/dsh-plugin", version: packageManifest.version})
     const safe = new Map([
         ["package/package.json", Buffer.from(manifest)],
         ["package/README.md", Buffer.from("Rolling Skill")],

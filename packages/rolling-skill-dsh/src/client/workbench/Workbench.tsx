@@ -3,11 +3,12 @@ import {useEffect, useState, useSyncExternalStore} from "react"
 
 import {requestRollingSkill} from "../api"
 import type {Translate, TranslationKey} from "../locale"
+import {ActionButton} from "./ActionButton"
 import {AutomaticCapturePanel} from "./AutomaticCapturePanel"
 import {CasesPanel} from "./CasesPanel"
 import {DatasetsPanel} from "./DatasetsPanel"
 import {EvaluationsPanel} from "./EvaluationsPanel"
-import {ImportPanel} from "./ImportPanel"
+import {InstallationsPanel} from "./InstallationsPanel"
 import {OperatorPanel} from "./OperatorPanel"
 import {OptimizationPanel} from "./OptimizationPanel"
 import {RawCasesPanel} from "./RawCasesPanel"
@@ -68,25 +69,70 @@ export type WorkbenchRoute =
     | {page: "automatic"}
     | {page: "operator"; sessionId?: string}
     | {page: "optimization"; runId?: string}
-    | {page: "import"}
-    | {page: "diagnostics"}
 
-const TABS: Array<{id: WorkbenchRoute["page"]; label: TranslationKey}> = [
-    {id: "overview", label: "overview"},
-    {id: "curation", label: "curation"},
-    {id: "datasets", label: "datasets"},
-    {id: "cases", label: "cases"},
-    {id: "raw-cases", label: "rawCases"},
-    {id: "rubrics", label: "rubrics"},
-    {id: "skills", label: "skills"},
-    {id: "installations", label: "installations"},
-    {id: "evaluations", label: "evaluations"},
-    {id: "automatic", label: "automatic"},
-    {id: "operator", label: "operator"},
-    {id: "optimization", label: "optimizationTitle"},
-    {id: "import", label: "legacyImportTitle"},
-    {id: "diagnostics", label: "diagnostics"},
+interface NavigationPage {
+    id: WorkbenchRoute["page"]
+    label: TranslationKey
+}
+
+interface NavigationGroup {
+    id: "overview" | "case-management" | "skill-installation" | "evaluation-optimization"
+    label: TranslationKey
+    defaultPage: WorkbenchRoute["page"]
+    pages: NavigationPage[]
+}
+
+const NAVIGATION_GROUPS: NavigationGroup[] = [
+    {
+        id: "overview",
+        label: "overview",
+        defaultPage: "overview",
+        pages: [{id: "overview", label: "overview"}],
+    },
+    {
+        id: "case-management",
+        label: "caseManagement",
+        defaultPage: "automatic",
+        pages: [
+            {id: "automatic", label: "automatic"},
+            {id: "raw-cases", label: "rawCases"},
+            {id: "curation", label: "curation"},
+            {id: "cases", label: "cases"},
+            {id: "datasets", label: "datasets"},
+        ],
+    },
+    {
+        id: "skill-installation",
+        label: "skillAndInstallation",
+        defaultPage: "skills",
+        pages: [
+            {id: "skills", label: "skills"},
+            {id: "installations", label: "runtimeInstallation"},
+        ],
+    },
+    {
+        id: "evaluation-optimization",
+        label: "evaluationAndOptimization",
+        defaultPage: "rubrics",
+        pages: [
+            {id: "rubrics", label: "rubrics"},
+            {id: "evaluations", label: "evaluations"},
+            {id: "operator", label: "operator"},
+            {id: "optimization", label: "optimizationTitle"},
+        ],
+    },
 ]
+
+const VISIBLE_PAGES = new Set(NAVIGATION_GROUPS.flatMap((group) => group.pages.map((page) => page.id)))
+
+export function normalizeWorkbenchRoute(route: unknown): WorkbenchRoute {
+    if (!route || typeof route !== "object") return {page: "overview"}
+    const candidate = route as {page?: unknown}
+    if (typeof candidate.page !== "string" || !VISIBLE_PAGES.has(candidate.page as WorkbenchRoute["page"])) {
+        return {page: "overview"}
+    }
+    return route as WorkbenchRoute
+}
 
 function dateTime(value: string | null, fallback: string): string {
     if (!value) return fallback
@@ -100,7 +146,7 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
         () => locale.getSnapshot().revision,
         () => 0,
     )
-    const [route, setRoute] = useState<WorkbenchRoute>(initialRoute)
+    const [route, setRoute] = useState<WorkbenchRoute>(() => normalizeWorkbenchRoute(initialRoute))
     const [reloadRevision, setReloadRevision] = useState(0)
     const [dataRevision, setDataRevision] = useState(0)
     const [state, setState] = useState<
@@ -131,8 +177,14 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
     }
 
     useEffect(() => {
-        setRoute(initialRoute)
+        const next = normalizeWorkbenchRoute(initialRoute)
+        setRoute(next)
+        if (next.page !== (initialRoute as {page?: string}).page) onRouteChange?.(next)
     }, [JSON.stringify(initialRoute)])
+
+    const activeGroup = NAVIGATION_GROUPS.find((group) =>
+        group.pages.some((page) => page.id === route.page),
+    ) ?? NAVIGATION_GROUPS[0]
 
     return (
         <section className="rolling-skill-workbench" aria-labelledby="rolling-skill-title">
@@ -141,24 +193,39 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
                     <h2 id="rolling-skill-title">{t("title")}</h2>
                     <p>{t("subtitle")}</p>
                 </div>
-                <Button variant="outline" size="sm" onClick={reload} disabled={state.status === "loading"}>
+                <ActionButton size="sm" onClick={reload} disabled={state.status === "loading"}>
                     {t("refresh")}
-                </Button>
+                </ActionButton>
             </header>
 
-            <nav className="rolling-skill-tabs" aria-label={t("title")}>
-                {TABS.map((tab) => (
+            <nav className="rolling-skill-tabs rolling-skill-primary-tabs" aria-label={t("workbenchSections")}>
+                {NAVIGATION_GROUPS.map((group) => (
                     <Button
-                        key={tab.id}
-                        variant={route.page === tab.id ? "outline" : "ghost"}
+                        key={group.id}
+                        variant={activeGroup.id === group.id ? "outline" : "ghost"}
                         size="sm"
-                        aria-pressed={route.page === tab.id}
-                        onClick={() => navigate({page: tab.id} as WorkbenchRoute)}
+                        aria-pressed={activeGroup.id === group.id}
+                        onClick={() => navigate({page: group.defaultPage} as WorkbenchRoute)}
                     >
-                        {t(tab.label)}
+                        {t(group.label)}
                     </Button>
                 ))}
             </nav>
+            {activeGroup.id !== "overview" ? (
+                <nav className="rolling-skill-tabs rolling-skill-secondary-tabs" aria-label={t("workbenchPages")}>
+                    {activeGroup.pages.map((page) => (
+                        <Button
+                            key={page.id}
+                            variant={route.page === page.id ? "outline" : "ghost"}
+                            size="sm"
+                            aria-pressed={route.page === page.id}
+                            onClick={() => navigate({page: page.id} as WorkbenchRoute)}
+                        >
+                            {t(page.label)}
+                        </Button>
+                    ))}
+                </nav>
+            ) : null}
 
             {state.status === "loading" ? (
                 <div className="rolling-skill-state" role="status">{t("loading")}</div>
@@ -166,7 +233,7 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
                 <div className="rolling-skill-state rolling-skill-error" role="alert">
                     <strong>{t("loadError")}</strong>
                     <span>{state.message}</span>
-                    <Button variant="outline" size="sm" onClick={reload}>{t("retry")}</Button>
+                    <ActionButton size="sm" onClick={reload}>{t("retry")}</ActionButton>
                 </div>
             ) : route.page === "curation" ? (
                 <CurationPanel t={t} initialSessionId={route.sessionId} onNavigate={navigate}/>
@@ -185,23 +252,16 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
                 />
             ) : route.page === "evaluations" ? (
                 <EvaluationsPanel t={t} initialRunId={route.runId}/>
-            ) : route.page === "skills" || route.page === "installations" ? (
-                <SkillsPanel t={t} initialSkillId={route.page === "skills" ? route.skillId : undefined} initialJobId={route.page === "installations" ? route.jobId : undefined}/>
+            ) : route.page === "skills" ? (
+                <SkillsPanel t={t} initialSkillId={route.skillId}/>
+            ) : route.page === "installations" ? (
+                <InstallationsPanel t={t} initialJobId={route.jobId}/>
             ) : route.page === "automatic" ? (
                 <AutomaticCapturePanel t={t}/>
             ) : route.page === "operator" ? (
                 <OperatorPanel t={t} initialSessionId={route.sessionId}/>
             ) : route.page === "optimization" ? (
                 <OptimizationPanel t={t} initialRunId={route.runId}/>
-            ) : route.page === "import" ? (
-                <ImportPanel t={t}/>
-            ) : route.page === "diagnostics" ? (
-                <Overview dashboard={state.dashboard} t={t}/>
-            ) : route.page !== "overview" ? (
-                <div className="rolling-skill-panel">
-                    <h3>{t(TABS.find((tab) => tab.id === route.page)?.label ?? "overview")}</h3>
-                    <p>{t("comingSoon")}</p>
-                </div>
             ) : (
                 <Overview dashboard={state.dashboard} t={t}/>
             )}

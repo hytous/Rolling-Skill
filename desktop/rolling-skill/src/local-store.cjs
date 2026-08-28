@@ -127,6 +127,42 @@ function captureWeekday(value) {
     return normalized
 }
 
+function captureTargets(state, value) {
+    if (!Array.isArray(value)) throw new Error("Automatic capture candidate Skill routes are invalid")
+    if (value.length > 100) throw new Error("Automatic capture candidate Skill routes are too large")
+    const skillIds = new Set()
+    return value.map((entry) => {
+        const skillId = modelId(entry?.skillId, "Automatic capture candidate Skill id")
+        const datasetId = modelId(entry?.datasetId, "Automatic capture Dataset id")
+        if (!skillId || !datasetId) {
+            throw new Error("Automatic capture candidate Skill and Dataset are required")
+        }
+        if (skillIds.has(skillId)) {
+            throw new Error("Automatic capture candidate Skill is duplicated")
+        }
+        const dataset = requireDataset(state, datasetId)
+        if (dataset.skillReference?.id !== skillId) {
+            throw new Error("Automatic capture candidate Skill does not match the Dataset binding")
+        }
+        skillIds.add(skillId)
+        return {skillId, datasetId}
+    })
+}
+
+function removeCaptureTargetDataset(state, datasetId) {
+    const automatic = state.settings.autoCaptureProfile
+    const current = Array.isArray(automatic.targets) ? automatic.targets : []
+    const next = current.filter((target) => target.datasetId !== datasetId)
+    if (next.length === current.length) return false
+    automatic.targets = next
+    automatic.datasetId = next.length === 1 ? next[0].datasetId : null
+    if (next.length === 0) {
+        automatic.mode = "off"
+        state.settings.autoCapture = false
+    }
+    return true
+}
+
 function defaultSettings() {
     return {
         autoCapture: false,
@@ -144,6 +180,7 @@ function defaultSettings() {
             modelId: null,
             effort: null,
             datasetId: null,
+            targets: [],
         },
     }
 }
@@ -251,6 +288,10 @@ function migrateState(input) {
             changed = true
         }
     }
+    if (!Array.isArray(automatic.targets)) {
+        automatic.targets = []
+        changed = true
+    }
     if ("caseType" in automatic) {
         delete automatic.caseType
         changed = true
@@ -335,6 +376,17 @@ function migrateState(input) {
             dataset.activeRubricVersionId = null
             changed = true
         }
+    }
+    const hadConfiguredCaptureTargets = Array.isArray(automatic.targets) && automatic.targets.length > 0
+    try {
+        automatic.targets = captureTargets(state, automatic.targets)
+    } catch {
+        automatic.targets = []
+        if (hadConfiguredCaptureTargets) {
+            automatic.mode = "off"
+            state.settings.autoCapture = false
+        }
+        changed = true
     }
     for (const session of state.curationSessions) {
         if (!session.operation) {
@@ -1194,6 +1246,7 @@ class LocalEvaluationStore {
         if (unfinishedRubric) {
             throw new Error("Dataset Skill cannot change with an unfinished Rubric Agent session")
         }
+        removeCaptureTargetDataset(state, datasetId)
         dataset.skillReference = skillReference
         dataset.activeRubricVersionId = null
         this.persist()
@@ -1265,6 +1318,8 @@ class LocalEvaluationStore {
         const preservedEvaluationRunCount = state.evaluationRuns.filter(
             (entry) => entry.datasetId === datasetId,
         ).length
+
+        removeCaptureTargetDataset(state, datasetId)
 
         state.datasets = state.datasets.filter((entry) => entry.id !== datasetId)
         state.cases = state.cases.filter((entry) => entry.datasetId !== datasetId)
@@ -1428,6 +1483,12 @@ class LocalEvaluationStore {
             const datasetId = modelId(input.autoCaptureDatasetId, "Automatic capture dataset id")
             if (datasetId) requireDataset(state, datasetId)
             automatic.datasetId = datasetId
+        }
+        if (input.autoCaptureTargets !== undefined) {
+            automatic.targets = captureTargets(state, input.autoCaptureTargets)
+            automatic.datasetId = automatic.targets.length === 1
+                ? automatic.targets[0].datasetId
+                : null
         }
         settings.autoCaptureProfile = automatic
         settings.autoCapture = automatic.mode !== "off"

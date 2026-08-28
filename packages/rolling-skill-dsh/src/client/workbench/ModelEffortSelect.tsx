@@ -1,28 +1,25 @@
 import {useEffect} from "react"
 
+import {reasoningEffortsFor} from "./model-catalog.cjs"
+
 export interface RuntimeModel {
     id?: string
     model?: string
     displayName?: string
-    reasoningEfforts?: Array<{
+    reasoningEfforts?: Array<string | {
         reasoningEffort?: string
+        effort?: string
         id?: string
+        value?: string
         displayName?: string
     }>
-}
-
-function modelId(model: RuntimeModel) {
-    return model.id ?? model.model ?? ""
-}
-
-export function reasoningEffortsFor(models: RuntimeModel[], selectedModelId: string) {
-    const selected = models.find((model) => modelId(model) === selectedModelId)
-    return (selected?.reasoningEfforts ?? [])
-        .map((effort) => ({
-            id: effort.reasoningEffort ?? effort.id ?? "",
-            label: effort.displayName ?? effort.reasoningEffort ?? effort.id ?? "",
-        }))
-        .filter((effort) => effort.id)
+    supportedReasoningEfforts?: Array<string | {
+        reasoningEffort?: string
+        effort?: string
+        id?: string
+        value?: string
+        displayName?: string
+    }>
 }
 
 export function ModelEffortSelect({

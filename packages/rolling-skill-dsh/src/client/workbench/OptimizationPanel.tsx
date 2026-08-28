@@ -1,5 +1,7 @@
-import {Button, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
+import {Modal} from "@deepseek-ai/dsh-client-ui-primitives"
 import {useEffect, useMemo, useState} from "react"
+
+import {ActionButton as Button} from "./ActionButton"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
@@ -193,7 +195,7 @@ export function OptimizationPanel({t, initialRunId}: {t: Translate; initialRunId
 
     return (
         <section className="rolling-skill-panel">
-            <div className="rolling-skill-panel-header"><div><h3>{t("optimizationTitle")}</h3><p>{t("optimizationDescription")}</p></div><Button variant="ghost" size="sm" onClick={() => setRevision((value) => value + 1)}>{t("refresh")}</Button></div>
+            <div className="rolling-skill-panel-header"><div><h3>{t("optimizationTitle")}</h3><p>{t("optimizationDescription")}</p></div><Button size="sm" onClick={() => setRevision((value) => value + 1)}>{t("refresh")}</Button></div>
             <div className="rolling-skill-grid">
                 <label className="rolling-skill-field"><span>{t("optimizationSkill")}</span><select className="rolling-skill-select" value={skillId} onChange={(event) => setSkillId(event.target.value)}>{catalog.skills.map((skill) => <option key={skill.id} value={skill.id}>{skill.name}</option>)}</select></label>
                 <label className="rolling-skill-field"><span>{t("optimizationBaseline")}</span><select className="rolling-skill-select" value={versionId} onChange={(event) => {setVersionId(event.target.value); setPreflightReady(false)}}>{released.map((version) => <option key={version.id} value={version.id}>{version.versionLabel || version.id}</option>)}</select></label>
@@ -203,13 +205,13 @@ export function OptimizationPanel({t, initialRunId}: {t: Translate; initialRunId
             <RuntimeSelect t={t} runtimes={runtimes} value={targetRuntimeId} onChange={(value) => {setTargetRuntimeId(value); setPreflightReady(false)}} label={t("optimizationTargetRuntime")}/>
             <RuntimeSelect t={t} runtimes={runtimes} value={judgeRuntimeId} onChange={(value) => {setJudgeRuntimeId(value); setPreflightReady(false)}} label={t("judgeRuntime")}/>
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
-            <div className="rolling-skill-actions"><Button variant="outline" disabled={busy || !ready} onClick={() => void preflight()}>{t("optimizationPreflight")}</Button><Button variant="outline" disabled={busy || !preflightReady} onClick={() => void start()}>{t("startOptimization")}</Button></div>
+            <div className="rolling-skill-actions"><Button disabled={busy || !ready} onClick={() => void preflight()}>{t("optimizationPreflight")}</Button><Button disabled={busy || !preflightReady} onClick={() => void start()}>{t("startOptimization")}</Button></div>
             {preflightResult ? <section className="rolling-skill-subpanel rolling-skill-section-gap"><h4>{t("optimizationPreflightResult")}</h4><pre>{JSON.stringify(preflightResult, null, 2)}</pre></section> : null}
             <div className="rolling-skill-list rolling-skill-section-gap">
-                {runs.map((run) => <article className="rolling-skill-list-row" key={run.id}><div><strong>{run.state}</strong><span>{run.id} · Epoch {run.currentEpoch ?? 0}</span>{run.error?.message ? <small>{run.error.message}</small> : null}</div><div className="rolling-skill-actions"><Button variant="ghost" size="sm" onClick={() => void inspect(run.id)}>{t("details")}</Button>{!["paused", "completed", "failed", "cancelled"].includes(run.state) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.pause", {runId: run.id}))}>{t("pause")}</Button> : null}{["paused", "needs_recovery"].includes(run.state) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.resume", {runId: run.id}))}>{t("resume")}</Button> : null}{!["completed", "failed", "cancelled"].includes(run.state) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.cancel", {runId: run.id}))}>{t("cancelRun")}</Button> : null}</div></article>)}
+                {runs.map((run) => <article className="rolling-skill-list-row" key={run.id}><div><strong>{run.state}</strong><span>{run.id} · Epoch {run.currentEpoch ?? 0}</span>{run.error?.message ? <small>{run.error.message}</small> : null}</div><div className="rolling-skill-actions"><Button size="sm" onClick={() => void inspect(run.id)}>{t("details")}</Button>{!["paused", "completed", "failed", "cancelled"].includes(run.state) ? <Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.pause", {runId: run.id}))}>{t("pause")}</Button> : null}{["paused", "needs_recovery"].includes(run.state) ? <Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.resume", {runId: run.id}))}>{t("resume")}</Button> : null}{!["completed", "failed", "cancelled"].includes(run.state) ? <Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("optimizations.cancel", {runId: run.id}))}>{t("cancelRun")}</Button> : null}</div></article>)}
                 {runs.length === 0 ? <p>{t("emptyOptimizations")}</p> : null}
             </div>
-            <Modal open={runDetail !== null} onClose={() => setRunDetail(null)} title={t("optimizationDetail")} closeLabel={t("close")} footer={<><Button variant="outline" disabled={busy} onClick={() => void generateReport()}>{t("generateOptimizationReport")}</Button><Button variant="outline" onClick={() => setRunDetail(null)}>{t("close")}</Button></>}>
+            <Modal open={runDetail !== null} onClose={() => setRunDetail(null)} title={t("optimizationDetail")} closeLabel={t("close")} footer={<><Button disabled={busy} onClick={() => void generateReport()}>{t("generateOptimizationReport")}</Button><Button onClick={() => setRunDetail(null)}>{t("close")}</Button></>}>
                 {runDetail ? <div className="rolling-skill-detail-stack">
                     <p><strong>{runDetail.state}</strong> · {runDetail.id} · Epoch {runDetail.currentEpoch ?? 0}</p>
                     <pre>{JSON.stringify({snapshotDigest: runDetail.snapshotDigest, baseline: runDetail.baseline, dataset: runDetail.dataset, rubric: runDetail.rubric, operator: runDetail.operator, targets: runDetail.targets, judge: runDetail.judge, checkpoint: runDetail.checkpoint, error: runDetail.error}, null, 2)}</pre>

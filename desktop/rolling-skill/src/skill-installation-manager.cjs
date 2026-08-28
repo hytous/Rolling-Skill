@@ -777,9 +777,16 @@ class SkillInstallationManager {
     }
 
     overview(skillId = null) {
+        const jobs = this.store.listJobs(skillId ? {skillId} : {})
+        const skillIds = skillId
+            ? [skillId]
+            : [...new Set(jobs
+                .filter((job) => job.request?.purpose === "managed-installation")
+                .map((job) => job.request?.source?.skillId)
+                .filter(Boolean))]
         return {
-            jobs: this.store.listJobs(skillId ? {skillId} : {}),
-            matrix: skillId ? this.store.installationMatrix(skillId) : [],
+            jobs,
+            matrix: skillIds.flatMap((id) => this.store.installationMatrix(id)),
         }
     }
 

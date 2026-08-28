@@ -301,6 +301,30 @@ describe("raw case event store", () => {
         store.close()
     })
 
+    it("persists only validated optional automatic Episode evidence references", () => {
+        const {store} = fixture()
+        const reference = {
+            schemaVersion: "rolling-skill-automatic-evidence-reference/v1",
+            digest: `sha256:${"a".repeat(64)}`,
+        }
+
+        const created = store.addAutomaticCandidate({
+            ...automaticInput("thread-evidence"),
+            source: {...automaticInput("thread-evidence").source, evidence: reference},
+        })
+
+        assert.deepEqual(created.rawCase.source.observations[0].evidence, reference)
+        assert.throws(() => store.addAutomaticCandidate({
+            ...automaticInput("thread-invalid"),
+            source: {
+                ...automaticInput("thread-invalid").source,
+                evidence: {...reference, digest: "sha256:not-a-digest"},
+            },
+        }), /evidence digest/u)
+        assert.equal(store.addAutomaticCandidate(automaticInput("thread-legacy")).observed, true)
+        store.close()
+    })
+
     it("keeps normal duplicate behavior from mutating source observations", () => {
         const {store} = fixture()
         const created = store.add(input("manual duplicate"))

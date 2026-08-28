@@ -3,6 +3,24 @@ function nodeFor(nodes, key) {
     return nodes?.[key]
 }
 
+function projectSequenceRange(snapshot, startSeq, endSeq) {
+    if (
+        !Number.isSafeInteger(startSeq) ||
+        !Number.isSafeInteger(endSeq) ||
+        startSeq > endSeq
+    ) return []
+    const order = Array.isArray(snapshot?.chat?.order) ? snapshot.chat.order : []
+    return order.filter((key) => {
+        const node = nodeFor(snapshot?.chat?.nodes, key)
+        return Boolean(
+            node &&
+            Number.isSafeInteger(node.anchorSeq) &&
+            node.anchorSeq >= startSeq &&
+            node.anchorSeq <= endSeq
+        )
+    })
+}
+
 function projectMarkers(snapshot, markers) {
     const projection = new Map()
     const order = Array.isArray(snapshot?.chat?.order) ? snapshot.chat.order : []
@@ -31,4 +49,4 @@ function projectMarkers(snapshot, markers) {
     return projection
 }
 
-module.exports = {projectMarkers}
+module.exports = {projectMarkers, projectSequenceRange}

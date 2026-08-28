@@ -54,6 +54,12 @@ export function WorkbenchLauncher({wide, locale, t}: WorkbenchLauncherProps) {
         return () => window.removeEventListener("rolling-skill:open-workbench", openWorkbench)
     }, [changeRoute])
 
+    useEffect(() => {
+        const closeWorkbench = () => setOpen(false)
+        window.addEventListener("rolling-skill:close-workbench", closeWorkbench)
+        return () => window.removeEventListener("rolling-skill:close-workbench", closeWorkbench)
+    }, [])
+
     return (
         <>
             <Button

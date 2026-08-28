@@ -60,6 +60,27 @@ function finalizedAssistantBoundary(events, endMessageId) {
     return {assistant, turnEnd}
 }
 
+function finalizedAssistantSequence(events, endSeq) {
+    if (!Number.isSafeInteger(endSeq) || endSeq < 0) {
+        throw new Error("DSH Assistant sequence is invalid")
+    }
+    const assistant = events.find(
+        (event) => event.seq === endSeq &&
+            event.type === "assistant/message" &&
+            event.data?.interrupted !== true,
+    )
+    if (!assistant) throw new Error("Selected message is not a finalized Assistant boundary")
+    const turnEnd = events.find(
+        (event) => event.seq > assistant.seq &&
+            event.type === "turn/end" &&
+            event.data?.turn === assistant.data?.turn,
+    )
+    if (turnEnd?.data?.reason?.kind !== "completed") {
+        throw new Error("Selected message is not a finalized Assistant boundary")
+    }
+    return {assistant, turnEnd}
+}
+
 function traceProjection(observation) {
     return {
         target: observation.target,
@@ -238,7 +259,7 @@ function episodeFromSlice({session, events, start, startTurn, assistant, turnEnd
         runtimeId: null,
         modelProvider: provider,
         modelId: model,
-        traceReference: `dsh-conversation:${source.digest}`,
+        traceReference: source.digest ? `dsh-conversation:${source.digest}` : null,
         ...source,
     }
     return {
@@ -385,7 +406,52 @@ function createSessionEvidenceSource({sessionQuery, traceRoot}) {
         }
     }
 
-    return Object.freeze({capture, inspect})
+    async function readRange(input) {
+        const sessionId = requiredText(input?.sessionId, "DSH Session id")
+        const startSeq = input?.startSeq
+        if (!Number.isSafeInteger(startSeq) || startSeq < 0) {
+            throw new Error("Selected message is not a valid direct-human start boundary")
+        }
+        const snapshot = await sessionQuery.readSession(sessionId)
+        const {assistant, turnEnd} = finalizedAssistantSequence(snapshot.events, input?.endSeq)
+        const start = snapshot.events.find(
+            (event) => event.seq === startSeq && directHumanEvent(event),
+        )
+        if (!start || start.seq > assistant.seq) {
+            throw new Error("Selected message is not a valid direct-human start boundary")
+        }
+        const startTurnEvent = snapshot.events
+            .filter((event) => event.seq < start.seq && event.type === "turn/start")
+            .at(-1)
+        const startTurn = startTurnEvent?.data?.turn
+        if (!Number.isSafeInteger(startTurn)) {
+            throw new Error("Selected Human boundary is not enclosed by a DSH turn")
+        }
+        const events = snapshot.events.filter(
+            (event) => event.seq >= start.seq && event.seq <= turnEnd.seq,
+        )
+        const source = {
+            kind: "dsh-session-live",
+            sessionId,
+            startSeq: start.seq,
+            endSeq: turnEnd.seq,
+            endMessageId: assistant.data?.message?.id ?? null,
+            digest: null,
+            snapshotPath: null,
+            observedSkills: observedSkills(events),
+        }
+        return episodeFromSlice({
+            session: snapshot.session,
+            events,
+            start,
+            startTurn,
+            assistant,
+            turnEnd,
+            source,
+        })
+    }
+
+    return Object.freeze({capture, inspect, readRange})
 }
 
 module.exports = {createSessionEvidenceSource}

@@ -34,6 +34,7 @@ function resolveDataPaths({
         automaticCaptureState: join(root, "automatic-capture-state.json"),
         rawCases,
         rawCaseEvents: join(rawCases, "events.jsonl"),
+        rawCaseEvidence: join(rawCases, "evidence"),
         managedSkills,
         managedSkillRegistry: join(managedSkills, "registry.json"),
         skillInstallations: join(root, "skill-installations.json"),

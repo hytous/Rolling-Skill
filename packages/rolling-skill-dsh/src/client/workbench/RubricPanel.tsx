@@ -1,5 +1,6 @@
-import {Button} from "@deepseek-ai/dsh-client-ui-primitives"
 import {useEffect, useState} from "react"
+
+import {ActionButton as Button} from "./ActionButton"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
@@ -8,7 +9,38 @@ import {RubricSessionView} from "./RubricSessionView"
 
 interface Dataset {id: string; name: string; activeRubricVersionId: string | null}
 interface RubricSessionSummary {id: string; status: string; updatedAt: string; baseVersionId: string | null}
-interface RubricVersion {id: string; version: number; rubric: {title?: string; scoringModel?: string}; createdAt: string}
+interface RollingSettings {rollingSkill: {rubricProfile: {modelId: string | null; effort: string | null}}}
+interface RubricCriterion {
+    id?: string
+    title?: string
+    criterion?: string
+    weight?: number
+    evidenceRequirements?: string[]
+    scoringAnchors?: Record<string, string>
+    criticalFailure?: boolean
+}
+interface RubricAutomaticFailure {id?: string; condition?: string; rationale?: string}
+interface RubricVersion {
+    id: string
+    version: number
+    rubricDigest?: string | null
+    rubric: {
+        title?: string
+        summary?: string
+        scoringModel?: string
+        criteria?: RubricCriterion[]
+        automaticFailures?: RubricAutomaticFailure[]
+    }
+    operationEvidence?: {
+        skillName?: string | null
+        versionLabel?: string | null
+        commit?: string | null
+        contentDigest?: string | null
+        runtime?: {displayName?: string | null; version?: string | null} | null
+        installation?: {jobId?: string | null; verification?: string | null; installedAt?: string | null} | null
+    } | null
+    createdAt: string
+}
 
 export function RubricPanel({
     t,
@@ -35,10 +67,15 @@ export function RubricPanel({
 
     useEffect(() => {
         const controller = new AbortController()
-        requestRollingSkill<Dataset[]>("datasets.list", {}, controller.signal)
-            .then((rows) => {
+        Promise.all([
+            requestRollingSkill<Dataset[]>("datasets.list", {}, controller.signal),
+            requestRollingSkill<RollingSettings>("settings.get", {}, controller.signal),
+        ])
+            .then(([rows, settings]) => {
                 setDatasets(rows)
                 setDatasetId((current) => current || rows[0]?.id || "")
+                setModelId((current) => current || settings.rollingSkill.rubricProfile.modelId || "")
+                setEffort((current) => current || settings.rollingSkill.rubricProfile.effort || "")
             }).catch((reason: unknown) => {
                 if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"))
             })
@@ -107,9 +144,9 @@ export function RubricPanel({
                 <div className="rolling-skill-panel-header"><div><h3>{t("rubrics")}</h3><p>{t("rubricDescription")}</p></div></div>
                 <label className="rolling-skill-field"><span>{t("selectDataset")}</span><select className="rolling-skill-select" value={datasetId} onChange={(event) => { setDatasetId(event.target.value); setSelectedSessionId("") }}>{datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}</select></label>
                 <div className="rolling-skill-form-stack rolling-skill-create-rubric">
-                    <label className="rolling-skill-field"><span>{t("model")}</span><input value={modelId} onChange={(event) => setModelId(event.target.value)}/></label>
-                    <label className="rolling-skill-field"><span>{t("effort")}</span><select className="rolling-skill-select" value={effort} onChange={(event) => setEffort(event.target.value)}><option value="">—</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></label>
-                    <Button disabled={!datasetId || busy} onClick={create}>{t("createRubric")}</Button>
+                    <label className="rolling-skill-field"><span>{t("model")}</span><input value={modelId} placeholder={t("configuredDefault")} onChange={(event) => setModelId(event.target.value)}/></label>
+                    <label className="rolling-skill-field"><span>{t("effort")}</span><select className="rolling-skill-select" value={effort} onChange={(event) => setEffort(event.target.value)}><option value="">{t("configuredDefault")}</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></select></label>
+                    <Button tone="primary" disabled={!datasetId || busy} onClick={create}>{t("createRubric")}</Button>
                 </div>
                 {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
                 <h4>{t("rubricSessions")}</h4>
@@ -118,12 +155,50 @@ export function RubricPanel({
                 </div>
                 <h4>{t("rubricHistory")}</h4>
                 {active ? <p className="rolling-skill-badge">{t("activeRubric")} · v{active.version}</p> : <p>{t("noActiveRubric")}</p>}
-                {active && active.rubric.scoringModel !== "unified-100/v1" ? <section className="rolling-skill-subpanel"><p>{t("legacyRubricNotice")}</p><Button variant="outline" size="sm" disabled={busy} onClick={() => void migrateLegacy()}>{t("migrateLegacyRubric")}</Button></section> : null}
-                <div className="rolling-skill-list">{versions.map((version) => <div className="rolling-skill-list-row" key={version.id}><div><strong>v{version.version} · {version.rubric.title}</strong><span>{version.createdAt}</span></div></div>)}</div>
+                {active && active.rubric.scoringModel !== "unified-100/v1" ? <section className="rolling-skill-subpanel"><p>{t("legacyRubricNotice")}</p><Button size="sm" disabled={busy} onClick={() => void migrateLegacy()}>{t("migrateLegacyRubric")}</Button></section> : null}
+                <div className="rolling-skill-list">{versions.map((version) => <RubricVersionCard key={version.id} version={version} active={version.id === active?.id} t={t}/>)}</div>
             </aside>
             <main className="rolling-skill-review-detail">
-                {selectedSessionId ? <RubricSessionView sessionId={selectedSessionId} t={t} onChanged={() => setRevision((value) => value + 1)}/> : <div className="rolling-skill-state">{t("selectRubricSession")}</div>}
+                {selectedSessionId ? <RubricSessionView sessionId={selectedSessionId} t={t} onChanged={() => setRevision((value) => value + 1)}/> : active ? <RubricVersionCard version={active} active t={t}/> : <div className="rolling-skill-state">{t("selectRubricSession")}</div>}
             </main>
         </div>
+    )
+}
+
+function RubricVersionCard({version, active, t}: {version: RubricVersion; active: boolean; t: Translate}) {
+    const evidence = version.operationEvidence
+    return (
+        <details className="rolling-skill-rubric-version" open={active}>
+            <summary>
+                <span><strong>v{version.version} · {version.rubric.title ?? t("notAvailable")}</strong><small>{new Date(version.createdAt).toLocaleString()}</small></span>
+                {active ? <span className="rolling-skill-badge">{t("activeRubric")}</span> : null}
+            </summary>
+            <div className="rolling-skill-rubric-version-body">
+                <p>{version.rubric.summary}</p>
+                <dl>
+                    <div><dt>{t("scoringModel")}</dt><dd>{version.rubric.scoringModel ?? t("notAvailable")}</dd></div>
+                    <div><dt>{t("rubricDigest")}</dt><dd title={version.rubricDigest ?? undefined}><code>{version.rubricDigest ?? t("notAvailable")}</code></dd></div>
+                    {evidence ? <>
+                        <div><dt>{t("skillRepositories")}</dt><dd>{evidence.skillName ?? t("notAvailable")} · {evidence.versionLabel ?? t("notAvailable")}</dd></div>
+                        <div><dt>{t("installationCommit")}</dt><dd><code>{evidence.commit?.slice(0, 12) ?? t("notAvailable")}</code></dd></div>
+                        <div><dt>{t("installationRuntime")}</dt><dd>{evidence.runtime?.displayName ?? t("notAvailable")} {evidence.runtime?.version ?? ""}</dd></div>
+                        <div><dt>{t("installationJob")}</dt><dd>{evidence.installation?.jobId ?? t("notAvailable")} · {evidence.installation?.verification ?? t("notAvailable")}</dd></div>
+                    </> : null}
+                </dl>
+                <h4>{t("rubricCriteria")}</h4>
+                <div className="rolling-skill-rubric-criteria">
+                    {version.rubric.criteria?.map((criterion) => (
+                        <article key={criterion.id}>
+                            <header><strong>{criterion.id} · {criterion.title}</strong><span>{t("weight")} {criterion.weight}</span></header>
+                            <p>{criterion.criterion}</p>
+                            {criterion.evidenceRequirements?.length ? <p><b>{t("rubricEvidenceRequirements")}: </b>{criterion.evidenceRequirements.join(" · ")}</p> : null}
+                            {criterion.scoringAnchors ? <details><summary>{t("scoringAnchors")}</summary><dl>{Object.entries(criterion.scoringAnchors).map(([score, anchor]) => <div key={score}><dt>{score}</dt><dd>{anchor}</dd></div>)}</dl></details> : null}
+                            {criterion.criticalFailure ? <span className="rolling-skill-inline-error">{t("criticalFailure")}</span> : null}
+                        </article>
+                    ))}
+                </div>
+                {version.rubric.automaticFailures?.length ? <section><h4>{t("automaticFailures")}</h4><div className="rolling-skill-rubric-criteria">{version.rubric.automaticFailures.map((failure) => <article key={failure.id}><strong>{failure.id} · {failure.condition}</strong><p>{failure.rationale}</p></article>)}</div></section> : null}
+            </div>
+        </details>
     )
 }

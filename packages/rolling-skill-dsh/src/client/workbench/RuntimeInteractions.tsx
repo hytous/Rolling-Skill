@@ -1,5 +1,7 @@
-import {Button, Input} from "@deepseek-ai/dsh-client-ui-primitives"
+import {Input} from "@deepseek-ai/dsh-client-ui-primitives"
 import {useEffect, useState} from "react"
+
+import {ActionButton as Button} from "./ActionButton"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
@@ -72,12 +74,12 @@ export function RuntimeInteractions({
                 <span>{interaction.runtime?.displayName ?? interaction.ownerId} {interaction.runtime?.version ?? ""} · {interaction.jobId ?? interaction.ownerId}</span>
                 {interaction.kind === "permission" ? <div className="rolling-skill-actions">{(interaction.options ?? []).map((option) => {
                     const decision = option.optionId ?? option.id ?? option.value ?? ""
-                    return <Button key={decision} variant="outline" size="sm" disabled={busyId === interaction.id || !decision} onClick={() => void resolve(interaction, {decision})}>{option.label ?? option.name ?? decision}</Button>
-                })}<Button variant="ghost" size="sm" disabled={busyId === interaction.id} onClick={() => void resolve(interaction, {decision: "decline"})}>{t("reject")}</Button></div> : <div className="rolling-skill-detail-stack">{(interaction.questions ?? []).map((question, index) => {
+                    return <Button key={decision} size="sm" disabled={busyId === interaction.id || !decision} onClick={() => void resolve(interaction, {decision})}>{option.label ?? option.name ?? decision}</Button>
+                })}<Button size="sm" disabled={busyId === interaction.id} onClick={() => void resolve(interaction, {decision: "decline"})}>{t("reject")}</Button></div> : <div className="rolling-skill-detail-stack">{(interaction.questions ?? []).map((question, index) => {
                     const questionId = question.id ?? question.questionId ?? `question-${index}`
                     const key = `${interaction.id}:${questionId}`
                     return <label className="rolling-skill-field" key={questionId}><span>{question.prompt ?? question.question ?? questionId}</span><Input value={answers[key] ?? ""} onChange={(event: {target: {value: string}}) => setAnswers((current) => ({...current, [key]: event.target.value}))}/></label>
-                })}<Button variant="outline" size="sm" disabled={busyId === interaction.id} onClick={() => void resolve(interaction, {answers: (interaction.questions ?? []).map((question, index) => {const questionId = question.id ?? question.questionId ?? `question-${index}`; return {questionId, answer: answers[`${interaction.id}:${questionId}`] ?? ""}})})}>{t("submitAnswers")}</Button></div>}
+                })}<Button size="sm" disabled={busyId === interaction.id} onClick={() => void resolve(interaction, {answers: (interaction.questions ?? []).map((question, index) => {const questionId = question.id ?? question.questionId ?? `question-${index}`; return {questionId, answer: answers[`${interaction.id}:${questionId}`] ?? ""}})})}>{t("submitAnswers")}</Button></div>}
             </div>
         </article>)}</div>
     </section>

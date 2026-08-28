@@ -260,6 +260,7 @@ describe("local evaluation store", () => {
             modelId: null,
             effort: null,
             datasetId: null,
+            targets: [],
         })
         assert.equal(snapshot.datasets.length, 1)
         assert.equal(snapshot.datasets[0].name, "Skill evaluation cases")
@@ -570,6 +571,7 @@ describe("local evaluation store", () => {
             modelId: "gpt-5.6-terra",
             effort: null,
             datasetId: dataset.id,
+            targets: [],
         })
         assert.throws(() => store.updateSettings({language: "fr"}), /language/i)
         assert.throws(() => store.updateSettings({theme: "neon"}), /theme/i)
@@ -579,6 +581,65 @@ describe("local evaluation store", () => {
         assert.throws(() => store.updateSettings({autoCaptureCadence: "hourly"}), /cadence/i)
         assert.throws(() => store.updateSettings({autoCaptureTime: "25:10"}), /time/i)
         assert.throws(() => store.updateSettings({autoCaptureWeekday: 7}), /weekday/i)
+    })
+
+    it("persists candidate managed Skill to Dataset routes for automatic capture", () => {
+        const {store} = fixture()
+        const billing = store.createDataset({
+            name: "Billing regression",
+            skillReference: managedSkillReference({id: "skill-billing"}),
+        })
+        const incident = store.createDataset({
+            name: "Incident regression",
+            skillReference: managedSkillReference({
+                id: "skill-incident",
+                repositoryId: "repository-incident",
+                name: "incident-response-planner",
+            }),
+        })
+
+        const targets = [
+            {skillId: "skill-billing", datasetId: billing.id},
+            {skillId: "skill-incident", datasetId: incident.id},
+        ]
+        const settings = store.updateSettings({autoCaptureTargets: targets})
+
+        assert.deepEqual(settings.autoCaptureProfile.targets, targets)
+        assert.deepEqual(store.read().settings.autoCaptureProfile.targets, targets)
+        assert.throws(
+            () => store.updateSettings({
+                autoCaptureTargets: [{skillId: "skill-incident", datasetId: billing.id}],
+            }),
+            /candidate Skill.*Dataset binding|Dataset binding.*candidate Skill/i,
+        )
+
+        store.updateSettings({autoCaptureMode: "automatic"})
+        store.bindDatasetSkill(billing.id, managedSkillReference({id: "skill-billing-v2"}))
+        assert.deepEqual(store.read().settings.autoCaptureProfile.targets, [targets[1]])
+        assert.equal(store.read().settings.autoCaptureProfile.mode, "automatic")
+
+        store.deleteDataset(incident.id)
+        const afterDeletion = store.read().settings
+        assert.deepEqual(afterDeletion.autoCaptureProfile.targets, [])
+        assert.equal(afterDeletion.autoCaptureProfile.mode, "off")
+        assert.equal(afterDeletion.autoCapture, false)
+    })
+
+    it("fails closed when a persisted nonempty candidate route becomes invalid", () => {
+        const {path, store} = fixture()
+        const state = store.read()
+        state.settings.autoCapture = true
+        state.settings.autoCaptureProfile.mode = "automatic"
+        state.settings.autoCaptureProfile.targets = [{
+            skillId: "skill-missing",
+            datasetId: "dataset-missing",
+        }]
+        writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`)
+
+        const migrated = new LocalEvaluationStore(path).read().settings
+        assert.deepEqual(migrated.autoCaptureProfile.targets, [])
+        assert.equal(migrated.autoCaptureProfile.mode, "off")
+        assert.equal(migrated.autoCapture, false)
     })
 
     it("migrates a legacy enabled capture profile to scheduled discovery", () => {
@@ -604,6 +665,7 @@ describe("local evaluation store", () => {
             modelId: "gpt-5.6-terra",
             effort: "low",
             datasetId: null,
+            targets: [],
         })
     })
 

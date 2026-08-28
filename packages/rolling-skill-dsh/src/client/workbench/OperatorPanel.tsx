@@ -1,5 +1,7 @@
-import {Button, Input, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
+import {Input, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
 import {useEffect, useState} from "react"
+
+import {ActionButton as Button} from "./ActionButton"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
@@ -173,7 +175,7 @@ export function OperatorPanel({t, initialSessionId}: {t: Translate; initialSessi
         <section className="rolling-skill-panel">
             <div className="rolling-skill-panel-header">
                 <div><h3>{t("operatorTitle")}</h3><p>{t("operatorDescription")}</p></div>
-                <Button variant="ghost" size="sm" onClick={() => setRevision((value) => value + 1)}>{t("refresh")}</Button>
+                <Button size="sm" onClick={() => setRevision((value) => value + 1)}>{t("refresh")}</Button>
             </div>
             <RuntimeSelect t={t} runtimes={runtimes} value={runtimeId} onChange={setRuntimeId} label={t("operatorRuntime")}/>
             <div className="rolling-skill-grid">
@@ -182,23 +184,23 @@ export function OperatorPanel({t, initialSessionId}: {t: Translate; initialSessi
             </div>
             <label className="rolling-skill-field"><span>{t("operatorObjective")}</span><Input value={objective} placeholder={t("operatorObjectivePlaceholder")} onChange={(event: {target: {value: string}}) => setObjective(event.target.value)}/></label>
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
-            <Button variant="outline" disabled={busy || !runtimeId || !objective.trim()} onClick={() => void start()}>{t("startOperator")}</Button>
+            <Button disabled={busy || !runtimeId || !objective.trim()} onClick={() => void start()}>{t("startOperator")}</Button>
 
             <div className="rolling-skill-list rolling-skill-section-gap">
                 {summary.sessions.map((session) => {
                     const job = parentJob(session.id)
-                    return <article className="rolling-skill-list-row" key={session.id}><div><strong>{job?.status ?? t("notAvailable")}</strong><span>{session.runtime.displayName} {session.runtime.version || ""} · {session.modelId || session.id}</span><small>{job?.objective}</small></div><div className="rolling-skill-actions"><Button variant="ghost" size="sm" onClick={() => void inspect(session.id)}>{t("details")}</Button>{job?.status === "running" ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("operators.pause", {sessionId: session.id}))}>{t("pause")}</Button> : null}{["paused", "needs_recovery"].includes(job?.status ?? "") ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("operators.resume", {sessionId: session.id}))}>{t("resume")}</Button> : null}{!(["cancelled", "failed", "succeeded"].includes(job?.status ?? "")) ? <Button variant="ghost" size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("operators.cancel", {sessionId: session.id}))}>{t("cancelRun")}</Button> : null}</div></article>
+                    return <article className="rolling-skill-list-row" key={session.id}><div><strong>{job?.status ?? t("notAvailable")}</strong><span>{session.runtime.displayName} {session.runtime.version || ""} · {session.modelId || session.id}</span><small>{job?.objective}</small></div><div className="rolling-skill-actions"><Button size="sm" onClick={() => void inspect(session.id)}>{t("details")}</Button>{job?.status === "running" ? <Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("operators.pause", {sessionId: session.id}))}>{t("pause")}</Button> : null}{["paused", "needs_recovery"].includes(job?.status ?? "") ? <Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("operators.resume", {sessionId: session.id}))}>{t("resume")}</Button> : null}{!(["cancelled", "failed", "succeeded"].includes(job?.status ?? "")) ? <Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("operators.cancel", {sessionId: session.id}))}>{t("cancelRun")}</Button> : null}</div></article>
                 })}
                 {summary.sessions.length === 0 ? <p>{t("emptyOperators")}</p> : null}
             </div>
-            {pendingApprovals.length ? <div className="rolling-skill-subpanel rolling-skill-section-gap"><h4>{t("pendingApprovals")}</h4>{pendingApprovals.map((approval) => {const job = summary.jobs.find((item) => item.id === approval.jobId); return <article className="rolling-skill-list-row" key={approval.id}><div><strong>{approval.action}</strong><span>{approval.risk}</span></div><div className="rolling-skill-actions"><Button variant="outline" size="sm" disabled={busy || !job} onClick={() => void mutate(() => requestRollingSkill("operators.approve", {sessionId: job?.sessionId, approvalId: approval.id, decision: "approve", scope: "once"}))}>{t("approve")}</Button><Button variant="ghost" size="sm" disabled={busy || !job} onClick={() => void mutate(() => requestRollingSkill("operators.approve", {sessionId: job?.sessionId, approvalId: approval.id, decision: "reject", scope: "once"}))}>{t("reject")}</Button></div></article>})}</div> : null}
+            {pendingApprovals.length ? <div className="rolling-skill-subpanel rolling-skill-section-gap"><h4>{t("pendingApprovals")}</h4>{pendingApprovals.map((approval) => {const job = summary.jobs.find((item) => item.id === approval.jobId); return <article className="rolling-skill-list-row" key={approval.id}><div><strong>{approval.action}</strong><span>{approval.risk}</span></div><div className="rolling-skill-actions"><Button size="sm" disabled={busy || !job} onClick={() => void mutate(() => requestRollingSkill("operators.approve", {sessionId: job?.sessionId, approvalId: approval.id, decision: "approve", scope: "once"}))}>{t("approve")}</Button><Button size="sm" disabled={busy || !job} onClick={() => void mutate(() => requestRollingSkill("operators.approve", {sessionId: job?.sessionId, approvalId: approval.id, decision: "reject", scope: "once"}))}>{t("reject")}</Button></div></article>})}</div> : null}
             <RuntimeInteractions t={t} ownerKind="operator"/>
-            <Modal open={detail !== null} onClose={() => setDetail(null)} title={t("operatorDetail")} closeLabel={t("close")} footer={<Button variant="outline" onClick={() => setDetail(null)}>{t("close")}</Button>}>
+            <Modal open={detail !== null} onClose={() => setDetail(null)} title={t("operatorDetail")} closeLabel={t("close")} footer={<Button onClick={() => setDetail(null)}>{t("close")}</Button>}>
                 {detail ? <div className="rolling-skill-detail-stack">
                     <p><strong>{detail.state}</strong> · {detail.session.runtime.displayName} · {detail.parentJob.objective}</p>
                     <section className="rolling-skill-subpanel"><h4>{t("operatorTranscript")}</h4><div className="rolling-skill-list">{(detail.session.transcript ?? []).map((entry, index) => <article className="rolling-skill-list-row" key={String(entry.id ?? index)}><div><strong>{String(entry.kind ?? t("notAvailable"))}</strong><pre>{JSON.stringify(entry, null, 2)}</pre></div></article>)}{!detail.session.transcript?.length ? <p>{t("emptyOperatorTranscript")}</p> : null}</div></section>
                     <section className="rolling-skill-subpanel"><h4>{t("operatorArtifacts")}</h4><div className="rolling-skill-list">{artifacts.map((artifact) => <article className="rolling-skill-list-row" key={artifact.id}><div><strong>{artifact.name ?? artifact.id}</strong><span>{artifact.mediaType ?? ""} {artifact.byteLength === undefined ? "" : `· ${artifact.byteLength} B`}</span></div></article>)}{artifacts.length === 0 ? <p>{t("emptyOperatorArtifacts")}</p> : null}</div></section>
-                    {!(["cancelled", "failed", "succeeded"].includes(detail.parentJob.status)) ? <div className="rolling-skill-actions"><Input value={message} placeholder={t("operatorFollowUp")} onChange={(event: {target: {value: string}}) => setMessage(event.target.value)}/><Button variant="outline" disabled={busy || !message.trim()} onClick={() => void send()}>{t("send")}</Button></div> : null}
+                    {!(["cancelled", "failed", "succeeded"].includes(detail.parentJob.status)) ? <div className="rolling-skill-actions"><Input value={message} placeholder={t("operatorFollowUp")} onChange={(event: {target: {value: string}}) => setMessage(event.target.value)}/><Button disabled={busy || !message.trim()} onClick={() => void send()}>{t("send")}</Button></div> : null}
                 </div> : null}
             </Modal>
         </section>

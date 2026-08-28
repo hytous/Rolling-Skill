@@ -1,5 +1,7 @@
-import {Button} from "@deepseek-ai/dsh-client-ui-primitives"
 import {useEffect, useState} from "react"
+
+import {ActionButton as Button} from "./ActionButton"
+import selectionModel from "./curation-selection.cjs"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
@@ -20,6 +22,11 @@ interface CurationPanelProps {
     initialSessionId?: string
     onNavigate: (route: WorkbenchRoute) => void
 }
+
+const visibleCurationSelection = selectionModel.visibleCurationSelection as (
+    currentId: string,
+    items: CurationSummary[],
+) => string
 
 export function CurationPanel({t, initialSessionId, onNavigate}: CurationPanelProps) {
     const [selectedId, setSelectedId] = useState(initialSessionId ?? "")
@@ -42,7 +49,6 @@ export function CurationPanel({t, initialSessionId, onNavigate}: CurationPanelPr
             requestRollingSkill<{items: CurationSummary[]}>("curation.list", {archived: true}, controller.signal),
         ]).then(([active, archived]) => {
             setState({status: "ready", active: active.items, archived: archived.items})
-            setSelectedId((current) => current || active.items[0]?.id || archived.items[0]?.id || "")
         }).catch((error: unknown) => {
             if (!controller.signal.aborted) {
                 setState({status: "error", message: error instanceof Error ? error.message : t("loadError")})
@@ -51,14 +57,31 @@ export function CurationPanel({t, initialSessionId, onNavigate}: CurationPanelPr
         return () => controller.abort()
     }, [revision])
 
+    const items = state.status === "ready"
+        ? (showArchived ? state.archived : state.active)
+        : []
+    const visibleSelectedId = state.status === "ready"
+        ? visibleCurationSelection(selectedId, items)
+        : selectedId
+
+    useEffect(() => {
+        if (state.status !== "ready") return
+        setSelectedId((current) => visibleCurationSelection(current, items))
+    }, [state, showArchived])
+
+    useEffect(() => {
+        if (!initialSessionId || state.status !== "ready" || selectedId !== initialSessionId) return
+        if (state.archived.some((session) => session.id === initialSessionId)) setShowArchived(true)
+        if (state.active.some((session) => session.id === initialSessionId)) setShowArchived(false)
+    }, [initialSessionId, selectedId, state])
+
     if (state.status === "loading") return <div className="rolling-skill-state" role="status">{t("loading")}</div>
     if (state.status === "error") return (
         <div className="rolling-skill-state rolling-skill-error" role="alert">
             <span>{state.message}</span>
-            <Button variant="outline" size="sm" onClick={() => setRevision((value) => value + 1)}>{t("retry")}</Button>
+            <Button size="sm" onClick={() => setRevision((value) => value + 1)}>{t("retry")}</Button>
         </div>
     )
-    const items = showArchived ? state.archived : state.active
     return (
         <div className="rolling-skill-review-layout">
             <aside className="rolling-skill-panel rolling-skill-review-list">
@@ -67,18 +90,18 @@ export function CurationPanel({t, initialSessionId, onNavigate}: CurationPanelPr
                         <h3>{t("curation")}</h3>
                         <p>{t("curationDescription")}</p>
                     </div>
-                    <Button variant="outline" size="sm" onClick={() => setRevision((value) => value + 1)}>{t("refresh")}</Button>
+                    <Button size="sm" onClick={() => setRevision((value) => value + 1)}>{t("refresh")}</Button>
                 </div>
-                <div className="rolling-skill-actions">
-                    <Button size="sm" variant={!showArchived ? "outline" : "ghost"} onClick={() => setShowArchived(false)}>{t("activeDrafts")}</Button>
-                    <Button size="sm" variant={showArchived ? "outline" : "ghost"} onClick={() => setShowArchived(true)}>{t("archivedDrafts")}</Button>
+                <div className="rolling-skill-review-scope" role="group" aria-label={t("draftStatusFilter")}>
+                    <button type="button" aria-pressed={!showArchived} onClick={() => setShowArchived(false)}>{t("activeDrafts")} <span>{state.active.length}</span></button>
+                    <button type="button" aria-pressed={showArchived} onClick={() => setShowArchived(true)}>{t("archivedDrafts")} <span>{state.archived.length}</span></button>
                 </div>
                 <div className="rolling-skill-list">
                     {items.length === 0 ? <p>{t("emptyDrafts")}</p> : items.map((session) => (
                         <button
                             type="button"
                             className="rolling-skill-review-list-button"
-                            data-selected={selectedId === session.id}
+                            data-selected={visibleSelectedId === session.id}
                             key={session.id}
                             onClick={() => {
                                 setSelectedId(session.id)
@@ -92,9 +115,10 @@ export function CurationPanel({t, initialSessionId, onNavigate}: CurationPanelPr
                 </div>
             </aside>
             <main className="rolling-skill-review-detail">
-                {selectedId ? (
+                {visibleSelectedId ? (
                     <CurationSessionView
-                        sessionId={selectedId}
+                        key={visibleSelectedId}
+                        sessionId={visibleSelectedId}
                         t={t}
                         onChanged={() => setRevision((value) => value + 1)}
                         onNavigate={onNavigate}

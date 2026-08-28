@@ -98,6 +98,7 @@ describe("scheduled conversation discovery helpers", () => {
         assert.match(prompt, /查本月账单/u)
         assert.doesNotMatch(prompt, /assistant secret|tool secret|reasoning|command output/iu)
         assert.match(prompt, /pendingStartUserItemId/u)
+        assert.match(prompt, /internal orchestration|installation|evaluation/iu)
     })
 
     it("parses ordered boundary segments and rejects unknown or overlapping IDs", () => {
@@ -140,6 +141,9 @@ describe("scheduled conversation discovery helpers", () => {
         assert.match(prompt, /billing-cost-management/u)
         assert.match(prompt, /dataset-1/u)
         assert.doesNotMatch(prompt, /reasoning secret|tool output secret|outside episode|skill secret|dataset secret/u)
+        assert.match(prompt, /eligibleForCase/u)
+        assert.match(prompt, /human-authored|internal orchestration/iu)
+        assert.match(prompt, /installation|Rubric|Curator|Judge/iu)
     })
 
     it("strictly parses outcome classification and confidence", () => {
@@ -148,6 +152,8 @@ describe("scheduled conversation discovery helpers", () => {
             assistantItemIds: ["agent-1"],
         }
         const valid = {
+            eligibleForCase: true,
+            sourceKind: "human_task",
             skillName: "billing-cost-management",
             outcome: "resolved",
             caseType: "goodcase",
@@ -156,9 +162,22 @@ describe("scheduled conversation discovery helpers", () => {
             reason: "The answer contains queried values.",
         }
         assert.deepEqual(parseOutcomeResult(JSON.stringify(valid), context), valid)
+        const rejected = {
+            eligibleForCase: false,
+            sourceKind: "skill_installation",
+            skillName: null,
+            outcome: "uncertain",
+            caseType: null,
+            finalAssistantItemId: null,
+            confidence: 0.98,
+            reason: "This episode installs a Skill for Rolling Skill itself.",
+        }
+        assert.deepEqual(parseOutcomeResult(JSON.stringify(rejected), context), rejected)
         assert.throws(() => parseOutcomeResult(JSON.stringify({...valid, skillName: "unknown"}), context), /skill/i)
         assert.throws(() => parseOutcomeResult(JSON.stringify({...valid, confidence: 1.1}), context), /confidence/i)
         assert.throws(() => parseOutcomeResult(JSON.stringify({...valid, finalAssistantItemId: "agent-2"}), context), /assistant/i)
+        assert.throws(() => parseOutcomeResult(JSON.stringify({...rejected, skillName: "billing-cost-management"}), context), /ineligible|skill/i)
+        assert.throws(() => parseOutcomeResult(JSON.stringify({...rejected, caseType: "goodcase"}), context), /ineligible|case type/i)
         assert.throws(() => parseOutcomeResult(JSON.stringify({...valid, extra: true}), context), /schema|field/i)
         assert.throws(() => parseOutcomeResult("not json", context), /JSON/i)
     })

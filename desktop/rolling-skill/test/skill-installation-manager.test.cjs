@@ -281,6 +281,18 @@ describe("Runtime Skill installation manager", () => {
         assert.equal(stored.parsedResult.trusted, true)
     })
 
+    it("returns trusted installation records in the unfiltered audit overview", async () => {
+        const {manager, start} = fixture()
+        const [job] = await start()
+        await manager.wait(job.id)
+
+        const overview = manager.overview()
+        assert.equal(overview.jobs[0].id, job.id)
+        assert.equal(overview.matrix.length, 1)
+        assert.equal(overview.matrix[0].skillId, "skill-1")
+        assert.equal(overview.matrix[0].trustedJobId, job.id)
+    })
+
     it("refuses Candidate versions before creating a Runtime client", async () => {
         const {manager, clients, managed} = fixture({versionState: "candidate"})
         await assert.rejects(

@@ -407,30 +407,32 @@ describe("Optimization Evaluation managed Candidate binding", () => {
         assert.equal(binding.effectiveBinding, "verified-by-trace")
     })
 
-    it("fails before execution when path-precise inventory exposes a previous Candidate", async () => {
+    it("trusts the frozen installation receipt without querying Runtime Skill inventory", async () => {
         const evidence = localEvidence()
         const patches = []
         let targetCalls = 0
-        let judgeCreated = false
+        let inventoryCalls = 0
         const runner = new EvaluationRunner({
             store: {
                 updateEvaluationRun() {},
                 updateEvaluationResult(_runId, _resultId, patch) { patches.push(patch) },
             },
             runtimeRegistry: {
-                createClient(descriptor) {
-                    if (descriptor.runtimeId === "judge") judgeCreated = true
+                createClient() {
                     return {
                         start: async () => {},
-                        listSkills: async () => ({data: [{skills: [{
-                            name: "billing",
-                            path: "/runtime/skills/billing/SKILL.md",
-                            enabled: true,
-                            contentDigest: digest("f"),
-                        }]}]}),
+                        listSkills: async () => {
+                            inventoryCalls += 1
+                            return {data: [{skills: [{
+                                name: "billing",
+                                path: "/runtime/skills/billing/SKILL.md",
+                                enabled: true,
+                                contentDigest: digest("f"),
+                            }]}]}
+                        },
                         runEvaluationCase: async () => {
                             targetCalls += 1
-                            return {response: "must not run"}
+                            return {response: "installed Skill ran", durationMs: 1}
                         },
                         stop: async () => {},
                     }
@@ -439,29 +441,30 @@ describe("Optimization Evaluation managed Candidate binding", () => {
             workspaceRoot: "/workspace",
             traceDirectory: "/traces",
         })
-        const completed = await runner.run(candidateRun(evidence))
+        const run = candidateRun(evidence)
+        run.judgeConfiguration = null
+        const completed = await runner.run(run)
 
-        assert.equal(completed.status, "failed")
-        assert.equal(targetCalls, 0)
-        assert.equal(judgeCreated, false)
-        const failed = patches.find((patch) => patch.status === "failed")
-        assert.equal(failed.failureDiagnostics.code, "SKILL_VERSION_CHANGED")
-        assert.match(failed.error, /SKILL_VERSION_CHANGED/u)
+        assert.equal(completed.status, "completed")
+        assert.equal(targetCalls, 1)
+        assert.equal(inventoryCalls, 0)
+        const execution = patches.find((patch) => patch.skillExecutionBinding)
+        assert.equal(execution.skillExecutionBinding.declaredBinding, "verified")
+        assert.equal(execution.skillExecutionBinding.effectiveBinding, "verified")
     })
 
-    it("checks again after execution and does not grade a Runtime that rotated mid-Case", async () => {
+    it("records Skill activation without comparing the installed content digest", async () => {
         const evidence = localEvidence()
         const patches = []
         let inventoryCalls = 0
-        let judgeCreated = false
+        let targetCalls = 0
         const runner = new EvaluationRunner({
             store: {
                 updateEvaluationRun() {},
                 updateEvaluationResult(_runId, _resultId, patch) { patches.push(patch) },
             },
             runtimeRegistry: {
-                createClient(descriptor) {
-                    if (descriptor.runtimeId === "judge") judgeCreated = true
+                createClient() {
                     return {
                         start: async () => {},
                         listSkills: async () => {
@@ -473,7 +476,20 @@ describe("Optimization Evaluation managed Candidate binding", () => {
                                 contentDigest: inventoryCalls === 1 ? digest("d") : digest("f"),
                             }]}]}
                         },
-                        runEvaluationCase: async () => ({response: "stale answer", durationMs: 1}),
+                        runEvaluationCase: async () => {
+                            targetCalls += 1
+                            return {
+                                response: "installed Skill ran",
+                                durationMs: 1,
+                                traceEvidence: {entries: [{
+                                    sequence: 7,
+                                    message: {params: {update: {
+                                        rawInput: {skill: "billing"},
+                                        skillContentDigest: digest("f"),
+                                    }}},
+                                }]},
+                            }
+                        },
                         stop: async () => {},
                     }
                 },
@@ -481,16 +497,19 @@ describe("Optimization Evaluation managed Candidate binding", () => {
             workspaceRoot: "/workspace",
             traceDirectory: "/traces",
         })
-        const completed = await runner.run(candidateRun(evidence))
+        const run = candidateRun(evidence)
+        run.judgeConfiguration = null
+        const completed = await runner.run(run)
 
-        assert.equal(completed.status, "failed")
-        assert.equal(inventoryCalls, 2)
-        assert.equal(judgeCreated, false)
-        assert.equal(patches.some((patch) => patch.status === "completed"), false)
-        assert.equal(
-            patches.find((patch) => patch.status === "failed").failureDiagnostics.code,
-            "SKILL_VERSION_CHANGED",
-        )
+        assert.equal(completed.status, "completed")
+        assert.equal(targetCalls, 1)
+        assert.equal(inventoryCalls, 0)
+        const execution = patches.find((patch) => patch.skillExecutionBinding)
+        assert.equal(execution.skillExecutionBinding.declaredBinding, "verified")
+        assert.equal(execution.skillExecutionBinding.observedBinding, "name_only")
+        assert.equal(execution.skillExecutionBinding.effectiveBinding, "verified")
+        assert.equal(execution.skillExecutionBinding.expectedContentDigest, null)
+        assert.equal(execution.skillExecutionBinding.observedContentDigest, digest("f"))
     })
 })
 

@@ -10,6 +10,9 @@ const {
 const {homedir} = require("node:os")
 const {dirname, join} = require("node:path")
 const {randomUUID} = require("node:crypto")
+const {
+    validatedReference: validatedAutomaticEvidenceReference,
+} = require("./automatic-capture-evidence-store.cjs")
 
 const RAW_CASE_EVENT_SCHEMA = "rolling-skill-raw-case-event/v1"
 const MAX_QUESTION_LENGTH = 120_000
@@ -157,6 +160,9 @@ function normalizeAutomaticObservation(source = {}) {
         inspectedAt: automaticIdentifier(source.inspectedAt, "Automatic capture inspection time"),
         ...(source.summary ? {summary: String(source.summary).slice(0, 1_000)} : {}),
         ...(source.reason ? {reason: String(source.reason).slice(0, 2_000)} : {}),
+        ...(source.evidence ? {
+            evidence: validatedAutomaticEvidenceReference(source.evidence),
+        } : {}),
     }
     if (!new Set(["resolved", "unresolved", "uncertain"]).has(observation.outcome)) {
         throw new Error("Automatic capture outcome is invalid")

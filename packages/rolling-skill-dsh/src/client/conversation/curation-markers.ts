@@ -19,3 +19,9 @@ export const projectMarkers = markerProjection.projectMarkers as (
     snapshot: MarkerConversationSnapshot,
     markers: readonly ConversationCurationMarker[],
 ) => Map<string, CurationMarkerStatus>
+
+export const projectSequenceRange = markerProjection.projectSequenceRange as (
+    snapshot: MarkerConversationSnapshot,
+    startSeq: number,
+    endSeq: number,
+) => string[]

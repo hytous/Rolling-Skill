@@ -77,6 +77,19 @@ describe("shared Rolling Skill application", () => {
         assert.deepEqual([...hidden].sort(), ["judge-thread", "target-thread"])
     })
 
+    it("hides persisted Skill installation Runtime threads from automatic capture", () => {
+        const {installationRuntimeThreadIds} = require(modulePath)
+        const hidden = installationRuntimeThreadIds({
+            listJobs: () => [
+                {id: "job-1", threadId: "install-thread"},
+                {id: "job-2", threadId: "inspect-thread"},
+                {id: "job-3", threadId: null},
+            ],
+        })
+
+        assert.deepEqual([...hidden].sort(), ["inspect-thread", "install-thread"])
+    })
+
     it("exposes strict review lifecycles for Curation and Rubric sessions", async () => {
         const {createRollingSkillApplication} = require(modulePath)
         const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-review-api-"))
@@ -821,6 +834,198 @@ describe("shared Rolling Skill application", () => {
         assert.equal(calls[0].sourceThreadId, "thread-1")
         assert.equal(calls[0].executionSkillReference.path, "/runtime/billing/SKILL.md")
         assert.equal((await application.dispatch("rawCases.list", {})).length, 0)
+        await application.close()
+    })
+
+    it("reads frozen automatic Raw Case evidence without publishing a mutation", async () => {
+        const {createRollingSkillApplication} = require(modulePath)
+        const {
+            AutomaticCaptureEvidenceStore,
+        } = require("../../../desktop/rolling-skill/src/automatic-capture-evidence-store.cjs")
+        const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-raw-evidence-"))
+        const episode = {
+            schemaVersion: "rolling-skill-episode/v1",
+            originalQuestion: "Evidence question",
+            source: {
+                runtimeId: "codex:/opt/codex",
+                threadId: "thread-evidence",
+                startTurnId: "turn-1",
+                startItemId: "user-1",
+                endTurnId: "turn-1",
+                endItemId: "agent-1",
+            },
+            items: [
+                {id: "user-1", turnId: "turn-1", type: "userMessage", text: "Evidence question"},
+                {id: "tool-1", turnId: "turn-1", type: "dynamicToolCall", tool: "billing", status: "completed", arguments: "{}", result: "100", error: null},
+                {id: "agent-1", turnId: "turn-1", type: "agentMessage", text: "Evidence answer"},
+            ],
+            toolActivity: [],
+            capturedAt: "2026-08-28T10:00:00.000Z",
+        }
+        const evidenceStore = new AutomaticCaptureEvidenceStore(
+            join(dataRoot, "raw-cases", "evidence"),
+        )
+        const reference = evidenceStore.save(episode)
+        const rawStore = new RawCaseStore(join(dataRoot, "raw-cases", "events.jsonl"))
+        const saved = rawStore.addAutomaticCandidate({
+            question: episode.originalQuestion,
+            skill: {name: "billing"},
+            note: "automatic",
+            source: {
+                kind: "automatic_capture",
+                runtimeId: episode.source.runtimeId,
+                threadId: episode.source.threadId,
+                startTurnId: episode.source.startTurnId,
+                startItemId: episode.source.startItemId,
+                endTurnId: episode.source.endTurnId,
+                endItemId: episode.source.endItemId,
+                outcome: "resolved",
+                caseType: "goodcase",
+                confidence: 0.98,
+                inspectedAt: "2026-08-28T10:01:00.000Z",
+                evidence: reference,
+            },
+        })
+        rawStore.close()
+        const application = createRollingSkillApplication({dataRoot})
+        const publications = []
+        const unsubscribe = application.subscribe((value) => publications.push(value))
+
+        const result = await application.dispatch("rawCases.evidence", {id: saved.rawCase.id})
+
+        assert.equal(result.provenance, "snapshot")
+        assert.equal(result.episode.originalQuestion, "Evidence question")
+        assert.deepEqual(result.episode.items[1], {
+            id: "tool-1",
+            type: "dynamicToolCall",
+            role: null,
+            text: "",
+            turnId: "turn-1",
+            seq: null,
+            toolName: "billing",
+            status: "completed",
+            arguments: "{}",
+            result: "100",
+            error: null,
+            usage: null,
+        })
+        assert.deepEqual(publications, [])
+        unsubscribe()
+        await application.close()
+    })
+
+    it("reconstructs legacy DSH and non-DSH Raw Case evidence from exact recorded boundaries", async () => {
+        const {createRollingSkillApplication} = require(modulePath)
+        const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-legacy-evidence-"))
+        const descriptor = {
+            runtimeId: "codex:/opt/codex",
+            providerId: "codex",
+            displayName: "Codex",
+            version: "1.0.0",
+            executablePath: "/opt/codex",
+            capabilities: [],
+            models: [],
+            efforts: [],
+        }
+        const readRanges = []
+        const runtimeReads = []
+        const runtimeRegistry = {
+            discover: () => ({available: [descriptor], selected: descriptor}),
+            createClient() {
+                return {
+                    async start() {},
+                    async stop() {},
+                    async readThread(threadId) {
+                        runtimeReads.push(threadId)
+                        return {thread: {
+                            id: threadId,
+                            cwd: "/workspace",
+                            modelProvider: "openai",
+                            turns: [{
+                                id: "turn-1",
+                                items: [
+                                    {id: "before-user", type: "userMessage", content: [{type: "text", text: "Before"}]},
+                                    {id: "before-agent", type: "agentMessage", text: "Before answer"},
+                                    {id: "user-1", type: "userMessage", content: [{type: "text", text: "Legacy question"}]},
+                                    {id: "tool-1", type: "dynamicToolCall", tool: "lookup", status: "completed", arguments: {month: 7}, result: {cost: 100}},
+                                    {id: "agent-1", type: "agentMessage", text: "Legacy answer"},
+                                    {id: "after-user", type: "userMessage", content: [{type: "text", text: "After"}]},
+                                ],
+                            }],
+                        }}
+                    },
+                }
+            },
+        }
+        const application = createRollingSkillApplication({
+            dataRoot,
+            runtimeRegistry,
+            conversationEpisodeSource: {
+                async readRange(input) {
+                    readRanges.push(structuredClone(input))
+                    return {
+                        schemaVersion: "rolling-skill-episode/v1",
+                        originalQuestion: "DSH legacy question",
+                        source: {kind: "dsh-session-live", sessionId: input.sessionId, startSeq: input.startSeq, endSeq: input.endSeq},
+                        items: [
+                            {id: `dsh:${input.sessionId}:${input.startSeq}`, type: "userMessage", text: "DSH legacy question"},
+                            {id: `dsh:${input.sessionId}:${input.endSeq}`, type: "agentMessage", text: "DSH legacy answer"},
+                        ],
+                        toolActivity: [],
+                        capturedAt: "2026-08-28T10:00:00.000Z",
+                    }
+                },
+            },
+        })
+        const rawStore = new RawCaseStore(join(dataRoot, "raw-cases", "events.jsonl"))
+        const dsh = rawStore.addAutomaticCandidate({
+            question: "DSH legacy question",
+            skill: {name: "billing"},
+            note: "legacy",
+            source: {
+                kind: "automatic_capture",
+                runtimeId: "deepseek-harness:/opt/dsh",
+                threadId: "session-1",
+                startTurnId: "dsh:session-1:turn:1",
+                startItemId: "dsh:session-1:12",
+                endTurnId: "dsh:session-1:turn:1",
+                endItemId: "dsh:session-1:20",
+                outcome: "resolved",
+                caseType: "goodcase",
+                confidence: 0.99,
+                inspectedAt: "2026-08-28T10:00:00.000Z",
+            },
+        })
+        const codex = rawStore.addAutomaticCandidate({
+            question: "Legacy question",
+            skill: {name: "billing"},
+            note: "legacy",
+            source: {
+                kind: "automatic_capture",
+                runtimeId: descriptor.runtimeId,
+                threadId: "thread-legacy",
+                startTurnId: "turn-1",
+                startItemId: "user-1",
+                endTurnId: "turn-1",
+                endItemId: "agent-1",
+                outcome: "resolved",
+                caseType: "goodcase",
+                confidence: 0.99,
+                inspectedAt: "2026-08-28T10:00:00.000Z",
+            },
+        })
+        rawStore.close()
+
+        const dshEvidence = await application.dispatch("rawCases.evidence", {id: dsh.rawCase.id})
+        const codexEvidence = await application.dispatch("rawCases.evidence", {id: codex.rawCase.id})
+
+        assert.equal(dshEvidence.provenance, "source")
+        assert.deepEqual(readRanges, [{sessionId: "session-1", startSeq: 12, endSeq: 20}])
+        assert.equal(codexEvidence.provenance, "source")
+        assert.deepEqual(runtimeReads, ["thread-legacy"])
+        assert.deepEqual(codexEvidence.episode.items.map((item) => item.id), [
+            "user-1", "tool-1", "agent-1",
+        ])
         await application.close()
     })
 

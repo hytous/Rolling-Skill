@@ -2,7 +2,7 @@ import {useEffect, useRef, useState} from "react"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
-import {projectMarkers, type ConversationCurationMarker, type CurationMarkerStatus} from "./curation-markers"
+import {projectMarkers, projectSequenceRange, type ConversationCurationMarker, type CurationMarkerStatus} from "./curation-markers"
 
 interface ChatSnapshot {
     chat: {
@@ -25,13 +25,22 @@ interface MarkerRecord extends ConversationCurationMarker {
 }
 
 const MARKER_CLASSES = ["rolling-skill-curation-draft", "rolling-skill-curation-saved"]
+const CAPTURE_RANGE_CLASS = "rolling-skill-capture-range"
+
+interface CaptureRangeReveal {
+    sessionId: string
+    startSeq: number
+    endSeq: number
+}
 
 export function ConversationCurationMarkers({sessionId, useSession, t}: ConversationCurationMarkersProps) {
     const snapshot = useSession((value) => value)
     const [markers, setMarkers] = useState<MarkerRecord[]>([])
     const [revision, setRevision] = useState(0)
     const [compatibilityMissing, setCompatibilityMissing] = useState(false)
+    const [captureRange, setCaptureRange] = useState<CaptureRangeReveal | null>(null)
     const applied = useRef(new Set<HTMLElement>())
+    const scrollToCaptureRange = useRef(false)
 
     useEffect(() => {
         const controller = new AbortController()
@@ -57,10 +66,26 @@ export function ConversationCurationMarkers({sessionId, useSession, t}: Conversa
     }, [sessionId])
 
     useEffect(() => {
+        const reveal = (event: Event) => {
+            const detail = (event as CustomEvent<CaptureRangeReveal>).detail
+            if (
+                detail?.sessionId !== sessionId ||
+                !Number.isSafeInteger(detail.startSeq) ||
+                !Number.isSafeInteger(detail.endSeq)
+            ) return
+            scrollToCaptureRange.current = true
+            setCaptureRange({...detail})
+        }
+        window.addEventListener("rolling-skill:reveal-capture-range", reveal)
+        return () => window.removeEventListener("rolling-skill:reveal-capture-range", reveal)
+    }, [sessionId])
+
+    useEffect(() => {
         const clear = () => {
             for (const row of applied.current) {
-                row.classList.remove(...MARKER_CLASSES)
+                row.classList.remove(...MARKER_CLASSES, CAPTURE_RANGE_CLASS)
                 row.removeAttribute("data-rolling-skill-curation-marker")
+                row.removeAttribute("data-rolling-skill-capture-range")
             }
             applied.current.clear()
         }
@@ -78,6 +103,23 @@ export function ConversationCurationMarkers({sessionId, useSession, t}: Conversa
                     applied.current.add(row)
                 }
             }
+            const captureKeys = captureRange
+                ? projectSequenceRange(snapshot, captureRange.startSeq, captureRange.endSeq)
+                : []
+            let firstCaptureRow: HTMLElement | null = null
+            for (const key of captureKeys) {
+                const selector = `[data-chat-flow-key="${CSS.escape(key)}"]`
+                for (const row of document.querySelectorAll<HTMLElement>(selector)) {
+                    row.classList.add(CAPTURE_RANGE_CLASS)
+                    row.dataset.rollingSkillCaptureRange = "true"
+                    firstCaptureRow ??= row
+                    applied.current.add(row)
+                }
+            }
+            if (firstCaptureRow && scrollToCaptureRange.current) {
+                scrollToCaptureRange.current = false
+                window.setTimeout(() => firstCaptureRow?.scrollIntoView({behavior: "smooth", block: "center"}), 0)
+            }
             setCompatibilityMissing((current) => current === missing ? current : missing)
         }
         render()
@@ -87,7 +129,7 @@ export function ConversationCurationMarkers({sessionId, useSession, t}: Conversa
             observer.disconnect()
             clear()
         }
-    }, [snapshot, markers])
+    }, [snapshot, markers, captureRange])
 
     const totals = markers.reduce((result, marker) => {
         result[marker.status] += 1

@@ -18,6 +18,7 @@ describe("Rolling Skill DSH data root", () => {
 
         assert.equal(paths.root, root)
         assert.equal(paths.dshConversationTraces, join(root, "traces", "dsh-conversations"))
+        assert.equal(paths.rawCaseEvidence, join(root, "raw-cases", "evidence"))
         for (const [key, value] of Object.entries(paths)) {
             assert.equal(isAbsolute(value), true, `${key} should be absolute`)
             assert.equal(value === root || value.startsWith(`${root}/`), true, `${key} escaped root`)

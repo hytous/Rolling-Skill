@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict")
 const {describe, it} = require("node:test")
 
-const {projectMarkers} = require("../src/client/conversation/curation-markers.cjs")
+const {projectMarkers, projectSequenceRange} = require("../src/client/conversation/curation-markers.cjs")
 
 function snapshot() {
     const rows = new Map([
@@ -16,6 +16,14 @@ function snapshot() {
 }
 
 describe("DSH conversation curation marker projection", () => {
+    it("projects a Raw Case evidence range through native flow keys", () => {
+        assert.deepEqual(
+            projectSequenceRange(snapshot(), 6, 16),
+            ["flow-6", "flow-12", "flow-14", "flow-16"],
+        )
+        assert.deepEqual(projectSequenceRange(snapshot(), 20, 12), [])
+    })
+
     it("projects inclusive ranges through stable flow keys", () => {
         assert.deepEqual(
             [...projectMarkers(snapshot(), [{startSeq: 6, endSeq: 16, status: "draft"}])],

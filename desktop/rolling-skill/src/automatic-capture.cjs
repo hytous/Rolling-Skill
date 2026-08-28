@@ -80,6 +80,13 @@ function automaticDatasetFor(candidate, datasets, preferredDatasetId = null) {
     const matches = arrays(datasets).filter((dataset) => (
         sameAutomaticSkill(dataset?.skillReference, candidate.skill)
     ))
+    if (Array.isArray(preferredDatasetId) && preferredDatasetId.length) {
+        const routed = matches.filter((dataset) => preferredDatasetId.some((target) => (
+            target?.datasetId === dataset.id &&
+            target?.skillId === dataset.skillReference?.id
+        )))
+        return routed.length === 1 ? routed[0] : null
+    }
     const preferred = matches.find((dataset) => dataset.id === preferredDatasetId)
     if (preferred) return preferred
     return matches.length === 1 ? matches[0] : null
@@ -155,6 +162,7 @@ class ConversationDiscoveryManager {
         listSkills = async () => [],
         runAnalysis,
         captureEpisode = null,
+        saveEvidence = null,
         getHiddenThreadIds = () => new Set(),
         now = () => new Date(),
         setTimer = (callback, delay) => setTimeout(callback, delay),
@@ -172,6 +180,7 @@ class ConversationDiscoveryManager {
         this.listSkills = listSkills
         this.runAnalysis = runAnalysis
         this.captureEpisode = captureEpisode
+        this.saveEvidence = saveEvidence
         this.getHiddenThreadIds = getHiddenThreadIds
         this.now = now
         this.setTimer = setTimer
@@ -389,6 +398,18 @@ class ConversationDiscoveryManager {
         ])
         const skills = arrays(skillsValue)
         const datasets = arrays(datasetsValue)
+        const targets = arrays(profile.targets)
+        const scopedDatasets = targets.length
+            ? datasets.filter((dataset) => targets.some((target) => (
+                target?.datasetId === dataset.id &&
+                target?.skillId === dataset.skillReference?.id
+            )))
+            : datasets
+        const scopedSkills = targets.length
+            ? skills.filter((skill) => scopedDatasets.some((dataset) => (
+                sameAutomaticSkill(dataset.skillReference, skill)
+            )))
+            : skills
         const hidden = this.allHiddenThreadIds()
         for (const summary of threads) {
             if (!summary?.id || hidden.has(summary.id)) continue
@@ -396,8 +417,8 @@ class ConversationDiscoveryManager {
                 runtime,
                 runtimeId,
                 threadId: summary.id,
-                skills,
-                datasets,
+                skills: scopedSkills,
+                datasets: scopedDatasets,
                 profile,
             })
         }
@@ -548,7 +569,25 @@ class ConversationDiscoveryManager {
                 .filter((item) => item.type === "agentMessage")
                 .map((item) => item.id),
         })
-        const skill = skills.find((entry) => entry.name === result.skillName) ?? null
+        if (!result.eligibleForCase) {
+            return {
+                irrelevant: true,
+                skipReason: `ineligible_${result.sourceKind}`,
+                episode,
+                result,
+            }
+        }
+        if (result.outcome === "uncertain") {
+            return {irrelevant: true, skipReason: "uncertain_outcome", episode, result}
+        }
+        if (result.confidence < AUTOMATIC_CONFIDENCE_THRESHOLD) {
+            return {irrelevant: true, skipReason: "low_confidence", episode, result}
+        }
+        const matchingSkills = skills.filter((entry) => entry.name === result.skillName)
+        if (matchingSkills.length > 1) {
+            throw new Error(`Automatic capture has an ambiguous managed Skill name: ${result.skillName}`)
+        }
+        const skill = matchingSkills[0] ?? null
         if (!skill) return {irrelevant: true, episode, result}
         const finalItem = result.finalAssistantItemId
             ? episode.items.find((item) => item.id === result.finalAssistantItemId)
@@ -574,6 +613,10 @@ class ConversationDiscoveryManager {
             ...(skill.id ? {id: skill.id} : {}),
             name: skill.name,
         }
+        const evidence = typeof this.saveEvidence === "function"
+            ? await Promise.resolve(this.saveEvidence(episode))
+            : null
+        if (evidence) source.evidence = evidence
         const saved = this.rawCaseStore.addAutomaticCandidate({
             question: episode.originalQuestion,
             skill: candidateSkill,
@@ -591,16 +634,20 @@ class ConversationDiscoveryManager {
         return {irrelevant: false, episode, result, saved}
     }
 
-    async createAutomaticCuration({saved, source, episode, skill, datasets, profile}) {
-        if (this.profile().mode !== "automatic") return null
+    async createAutomaticCuration({saved, source, episode, skill}) {
+        const currentProfile = this.profile()
+        if (currentProfile.mode !== "automatic") return null
         if (!this.curationManager?.createSession) {
             throw new Error("Automatic curation is unavailable")
         }
+        const currentDatasets = arrays(await Promise.resolve(this.listDatasets()))
         const dataset = automaticDatasetFor({
             confidence: source.confidence,
             outcome: source.outcome,
             skill,
-        }, datasets, profile.datasetId)
+        }, currentDatasets, arrays(currentProfile.targets).length
+            ? currentProfile.targets
+            : currentProfile.datasetId)
         if (!dataset?.activeRubricVersionId) {
             throw new Error(
                 "Automatic curation requires one compatible Dataset with a published Rubric",
@@ -643,8 +690,21 @@ class ConversationDiscoveryManager {
         if (!thread) throw new Error(`Automatic capture could not read task ${threadId}`)
         const messages = this.userMessages(thread)
         if (!messages.length) return false
-        if (isAutomaticAnalysisTask(messages)) return false
         const cursor = this.stateStore.thread(runtimeId, threadId)
+        if (isAutomaticAnalysisTask(messages)) {
+            this.analysisThreadIds.add(threadId)
+            if (
+                cursor.lastInspectedUserItemId !== messages.at(-1).id ||
+                cursor.pendingStartUserItemId !== null
+            ) {
+                this.stateStore.commitThread(runtimeId, threadId, {
+                    lastInspectedUserItemId: messages.at(-1).id,
+                    pendingStartUserItemId: null,
+                    checkedRanges: cursor.checkedRanges ?? [],
+                }, this.now())
+            }
+            return false
+        }
         const cursorIndex = cursor.lastInspectedUserItemId
             ? messages.findIndex((message) => message.id === cursor.lastInspectedUserItemId)
             : -1

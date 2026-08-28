@@ -17,6 +17,12 @@ const {
     RawCaseStore,
 } = require("../../../desktop/rolling-skill/src/raw-case-store.cjs")
 const {
+    AutomaticCaptureEvidenceStore,
+} = require("../../../desktop/rolling-skill/src/automatic-capture-evidence-store.cjs")
+const {
+    buildEpisodeSnapshot,
+} = require("../../../desktop/rolling-skill/src/episode-curation.cjs")
+const {
     CaseRecycleService,
 } = require("../../../desktop/rolling-skill/src/case-recycle-service.cjs")
 const {
@@ -165,6 +171,16 @@ function boundedText(value, limit = 20_000) {
     return text.length <= limit ? text : `${text.slice(0, limit)}\n…[truncated]`
 }
 
+function boundedDetail(value, limit = 20_000) {
+    if (value === undefined || value === null) return null
+    if (typeof value === "string") return boundedText(value, limit)
+    try {
+        return boundedText(JSON.stringify(value, null, 2), limit)
+    } catch {
+        return "[unserializable]"
+    }
+}
+
 function publicSkillReference(reference) {
     if (!reference) return null
     return {
@@ -236,7 +252,7 @@ function publicOperationEvidence(evidence) {
     }
 }
 
-function publicEpisode(episode) {
+function publicEpisode(episode, {itemLimit = 250} = {}) {
     if (!episode) return null
     const source = episode.source ?? {}
     return {
@@ -261,15 +277,21 @@ function publicEpisode(episode) {
                 }))
                 : [],
         },
-        items: Array.isArray(episode.items) ? episode.items.slice(0, 250).map((item) => ({
+        items: Array.isArray(episode.items) ? (itemLimit === null
+            ? episode.items
+            : episode.items.slice(0, itemLimit)).map((item) => ({
             id: item.id ?? null,
             type: item.type ?? null,
             role: item.role ?? null,
-            text: boundedText(item.text),
+            text: boundedText(item.text ?? item.summary),
+            ...(item.source?.kind ? {sourceKind: item.source.kind} : {}),
             turnId: item.turnId ?? null,
             seq: item.seq ?? null,
-            toolName: item.toolName ?? item.name ?? null,
-            arguments: item.arguments ?? null,
+            toolName: item.toolName ?? item.tool ?? item.name ?? null,
+            status: item.status ?? null,
+            arguments: boundedDetail(item.arguments ?? item.command),
+            result: boundedDetail(item.result ?? item.output),
+            error: boundedDetail(item.error),
             usage: item.usage ?? null,
         })) : [],
     }
@@ -545,11 +567,20 @@ function evaluationRuntimeThreadIds(state) {
     return ids
 }
 
+function installationRuntimeThreadIds(installationStore) {
+    const ids = new Set()
+    for (const job of installationStore?.listJobs?.() ?? []) {
+        if (typeof job?.threadId === "string" && job.threadId) ids.add(job.threadId)
+    }
+    return ids
+}
+
 function createRollingSkillApplication(options = {}) {
     const paths = ensureDataLayout(resolveDataPaths(options))
     const legacySourceRoot = options.legacySourceRoot ?? detectLegacyElectronDataRoot()
     const store = new LocalEvaluationStore(paths.evaluationStore)
     const rawCaseStore = new RawCaseStore(paths.rawCaseEvents)
+    const automaticEvidenceStore = new AutomaticCaptureEvidenceStore(paths.rawCaseEvidence)
     const automaticCaptureStateStore = new AutomaticCaptureStateStore(
         paths.automaticCaptureState,
     )
@@ -692,6 +723,7 @@ function createRollingSkillApplication(options = {}) {
         captureEpisode: typeof options.conversationEpisodeSource?.capture === "function"
             ? (input) => options.conversationEpisodeSource.capture(input)
             : null,
+        saveEvidence: (episode) => automaticEvidenceStore.save(episode),
         listSkills: async (runtime) => {
             if (typeof runtime.listSkills !== "function") return []
             const descriptor = selectedRuntimeDescriptor()
@@ -725,6 +757,7 @@ function createRollingSkillApplication(options = {}) {
             ...curationManager.hiddenThreadIds(),
             ...rubricManager.hiddenThreadIds(),
             ...evaluationRuntimeThreadIds(store.read()),
+            ...installationRuntimeThreadIds(installationStore),
         ]),
         onChanged: () => publish(),
     })
@@ -929,6 +962,61 @@ function createRollingSkillApplication(options = {}) {
             throw new Error("Trusted DSH conversation evidence is unavailable")
         }
         return source
+    }
+
+    function dshSequence(itemId, sessionId) {
+        const id = typeof itemId === "string" ? itemId : ""
+        const prefix = `dsh:${sessionId}:`
+        if (!sessionId || !id.startsWith(prefix)) return null
+        const sequence = Number(id.slice(prefix.length))
+        return Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : null
+    }
+
+    async function automaticRawCaseEvidence(rawCase) {
+        const observation = automaticRawCaseObservation(rawCase)
+        if (!observation) throw new Error("Raw Case has no automatic source evidence")
+        if (observation.evidence) {
+            return {
+                provenance: "snapshot",
+                episode: publicEpisode(automaticEvidenceStore.read(observation.evidence), {
+                    itemLimit: null,
+                }),
+            }
+        }
+        const startSeq = dshSequence(observation.startItemId, observation.threadId)
+        const endSeq = dshSequence(observation.endItemId, observation.threadId)
+        if (startSeq !== null || endSeq !== null) {
+            if (
+                startSeq === null ||
+                endSeq === null ||
+                startSeq > endSeq ||
+                typeof options.conversationEpisodeSource?.readRange !== "function"
+            ) {
+                throw new Error("Trusted DSH source range is unavailable")
+            }
+            const episode = await options.conversationEpisodeSource.readRange({
+                sessionId: observation.threadId,
+                startSeq,
+                endSeq,
+            })
+            return {provenance: "source", episode: publicEpisode(episode, {itemLimit: null})}
+        }
+        const runtime = await runtimeServices.getClient(observation.runtimeId, {
+            nonInteractive: true,
+        })
+        if (typeof runtime.readThread !== "function") {
+            throw new Error("Source Runtime cannot read the captured conversation")
+        }
+        const response = await runtime.readThread(observation.threadId)
+        const thread = response?.thread ?? response
+        const episode = buildEpisodeSnapshot(thread, {
+            startItemId: observation.startItemId,
+            startTurnId: observation.startTurnId,
+            endItemId: observation.endItemId,
+            endTurnId: observation.endTurnId,
+            runtimeId: observation.runtimeId,
+        })
+        return {provenance: "source", episode: publicEpisode(episode, {itemLimit: null})}
     }
 
     function curationSession(id) {
@@ -1141,6 +1229,11 @@ function createRollingSkillApplication(options = {}) {
             })
         },
         "rawCases.list": () => rawCaseStore.list().map(publicRawCase),
+        "rawCases.evidence": (input) => {
+            exactFields(input, new Set(["id"]), "Raw Case evidence")
+            const rawCase = rawCaseStore.requireRecord(requiredIdentifier(input.id, "Raw Case id"))
+            return automaticRawCaseEvidence(rawCase)
+        },
         "rawCases.add": (input) => {
             exactFields(input, new Set([
                 "question",
@@ -1560,6 +1653,7 @@ module.exports = {
     MAX_DISPATCH_BYTES,
     createRollingSkillApplication,
     evaluationRuntimeThreadIds,
+    installationRuntimeThreadIds,
     reconcileManagedDatasetBindings,
     runtimeSkillMatchesVerifiedInstallation,
 }

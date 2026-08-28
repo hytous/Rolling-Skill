@@ -13,6 +13,7 @@ const ALLOWED_FILES = new Set([
 ])
 const REQUIRED_FILES = new Set(ALLOWED_FILES)
 const DEVELOPER_PATH_PATTERN = /(?:\/(?:Users|home)\/[^/\s"'<>]+\/|\/(?:data\/)?workspace\/|\/private\/var\/folders\/|[A-Za-z]:\\Users\\[^\\\s"'<>]+\\)/iu
+const EXPECTED_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version
 
 function tarText(bytes, start, length) {
     const end = bytes.indexOf(0, start)
@@ -93,7 +94,7 @@ export function inspectEntries(entries) {
         if (!entries.has(name)) throw new Error(`Package is missing required entry: ${name}`)
     }
     const manifest = JSON.parse(text(entries, "package/package.json"))
-    if (manifest.name !== "@rolling-skill/dsh-plugin" || manifest.version !== "0.1.0") {
+    if (manifest.name !== "@rolling-skill/dsh-plugin" || manifest.version !== EXPECTED_VERSION) {
         throw new Error("Package manifest identity is invalid")
     }
     const combined = [...entries.values()].map((body) => body.toString("utf8")).join("\n")

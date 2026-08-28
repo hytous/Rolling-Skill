@@ -1,5 +1,7 @@
-import {Button, Input, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
+import {Input, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
 import {useEffect, useState} from "react"
+
+import {ActionButton as Button} from "./ActionButton"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
@@ -146,7 +148,7 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
         <section className="rolling-skill-panel rolling-skill-data-panel">
             <div className="rolling-skill-panel-header">
                 <div><h3>{t("datasetsTitle")}</h3><p>{t("datasetsDescription")}</p></div>
-                <Button variant="ghost" size="sm" onClick={reload}>{t("refresh")}</Button>
+                <Button size="sm" onClick={reload}>{t("refresh")}</Button>
             </div>
             <div className="rolling-skill-form-row">
                 <Input
@@ -166,7 +168,7 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
                         return <option key={skill.id} value={skill.id}>{skill.name} · {repository?.displayName ?? skill.repositoryId}</option>
                     })}
                 </select>
-                <Button variant="outline" size="sm" disabled={busy || !name.trim() || !skillId} onClick={create}>
+                <Button size="sm" disabled={busy || !name.trim() || !skillId} onClick={create}>
                     {t("createDataset")}
                 </Button>
             </div>
@@ -185,9 +187,9 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
                                 .replace("{bad}", String(dataset.badcaseCount))}</span>
                         </div>
                         <div className="rolling-skill-actions">
-                            <Button variant="ghost" size="sm" onClick={() => beginBinding(dataset)}>{t("changeManagedSkill")}</Button>
-                            <Button variant="ghost" size="sm" onClick={() => void exportCsv(dataset.id)}>{t("exportCsv")}</Button>
-                            <Button variant="ghost" size="sm" onClick={() => setDeleting(dataset)}>{t("delete")}</Button>
+                            <Button size="sm" onClick={() => beginBinding(dataset)}>{t("changeManagedSkill")}</Button>
+                            <Button size="sm" onClick={() => void exportCsv(dataset.id)}>{t("exportCsv")}</Button>
+                            <Button size="sm" onClick={() => setDeleting(dataset)}>{t("delete")}</Button>
                         </div>
                     </article>
                 ))}
@@ -199,8 +201,8 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
                 title={t("deleteDatasetTitle")}
                 closeLabel={t("cancel")}
                 footer={<>
-                    <Button variant="outline" onClick={() => setDeleting(null)}>{t("cancel")}</Button>
-                    <Button variant="outline" disabled={busy} onClick={remove}>{t("confirmDelete")}</Button>
+                    <Button onClick={() => setDeleting(null)}>{t("cancel")}</Button>
+                    <Button disabled={busy} onClick={remove}>{t("confirmDelete")}</Button>
                 </>}
             >
                 <p>{t("deleteRecoveryPrompt")}</p>
@@ -215,8 +217,8 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
                 title={t("bindManagedSkillTitle")}
                 closeLabel={t("cancel")}
                 footer={<>
-                    <Button variant="outline" onClick={() => setBinding(null)}>{t("cancel")}</Button>
-                    <Button variant="outline" disabled={busy || !bindingSkillId} onClick={bindSkill}>{t("save")}</Button>
+                    <Button onClick={() => setBinding(null)}>{t("cancel")}</Button>
+                    <Button disabled={busy || !bindingSkillId} onClick={bindSkill}>{t("save")}</Button>
                 </>}
             >
                 <p>{t("bindManagedSkillDescription")}</p>

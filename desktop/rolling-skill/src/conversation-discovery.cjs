@@ -121,7 +121,10 @@ function buildBoundaryPrompt({threadId, userMessages} = {}) {
     return `Identify complete user problem ranges from incremental user messages only.
 Keep follow-ups, corrections, and clarifications for the same problem in one range. Close a range
 when a new intent begins. Leave the final unfinished problem in pendingStartUserItemId. Use only
-the supplied stable IDs. Return JSON only with this exact schema:
+the supplied stable IDs. Do not create a range for Rolling Skill internal orchestration, Skill
+installation or maintenance, Rubric/Curator/Judge work, evaluation or optimization tasks, generated
+agent-to-agent prompts, or test fixtures; for a batch containing only those messages, return no
+segments and no pending range. Return JSON only with this exact schema:
 {"segments":[{"startUserItemId":"id","endUserItemId":"id","summary":"short text"}],"pendingStartUserItemId":"id-or-null"}
 <incremental-user-messages>${JSON.stringify(input)}</incremental-user-messages>`
 }
@@ -205,10 +208,15 @@ function buildOutcomePrompt({threadId, episode = {}, skills = [], datasets = []}
                 : null,
         })),
     }
-    return `Classify only this completed problem episode. Identify the principal enabled Skill,
-whether the problem was resolved, the recommended Case type, and the final Assistant Item. Return
-JSON only with this exact schema:
-{"skillName":"name-or-null","outcome":"resolved|unresolved|uncertain","caseType":"goodcase|badcase","finalAssistantItemId":"id-or-null","confidence":0.8,"reason":"short text"}
+    return `Decide whether this completed episode is eligible to become a Skill evaluation Case.
+A Case must be a human-authored real-world problem intended for one enabled Skill. Exclude Rolling
+Skill internal orchestration, automatic detection, Curator, Rubric, Judge, Case refresh, evaluation,
+optimization, Skill installation/audit/maintenance, generated agent-to-agent prompts, and test
+fixtures. Embedded source questions, Skill names, rubrics, or successful outputs do not make an
+internal task eligible. For an ineligible episode set skillName and caseType to null. Otherwise
+identify the principal enabled Skill, outcome, recommended Case type, and final Assistant Item.
+Return JSON only with this exact schema:
+{"eligibleForCase":true,"sourceKind":"human_task|rolling_skill_internal|skill_installation|evaluation_or_optimization|other_internal","skillName":"name-or-null","outcome":"resolved|unresolved|uncertain","caseType":"goodcase|badcase|null","finalAssistantItemId":"id-or-null","confidence":0.8,"reason":"short text"}
 <candidate-episode>${JSON.stringify(input)}</candidate-episode>`
 }
 
@@ -216,9 +224,30 @@ function parseOutcomeResult(text, {skillNames = [], assistantItemIds = []} = {})
     const value = firstJsonObject(text)
     exactKeys(
         value,
-        ["skillName", "outcome", "caseType", "finalAssistantItemId", "confidence", "reason"],
+        [
+            "eligibleForCase",
+            "sourceKind",
+            "skillName",
+            "outcome",
+            "caseType",
+            "finalAssistantItemId",
+            "confidence",
+            "reason",
+        ],
         "Outcome result",
     )
+    if (typeof value.eligibleForCase !== "boolean") {
+        throw new Error("Outcome Case eligibility is invalid")
+    }
+    if (!new Set([
+        "human_task",
+        "rolling_skill_internal",
+        "skill_installation",
+        "evaluation_or_optimization",
+        "other_internal",
+    ]).has(value.sourceKind)) {
+        throw new Error("Outcome source kind is invalid")
+    }
     const skillName = value.skillName === null ? null : requiredText(value.skillName, "Outcome Skill name")
     if (skillName !== null && !skillNames.includes(skillName)) {
         throw new Error("Outcome result references an unknown Skill")
@@ -226,8 +255,18 @@ function parseOutcomeResult(text, {skillNames = [], assistantItemIds = []} = {})
     if (!new Set(["resolved", "unresolved", "uncertain"]).has(value.outcome)) {
         throw new Error("Outcome result status is invalid")
     }
-    if (!new Set(["goodcase", "badcase"]).has(value.caseType)) {
+    const caseType = value.caseType === null ? null : value.caseType
+    if (caseType !== null && !new Set(["goodcase", "badcase"]).has(caseType)) {
         throw new Error("Outcome result Case type is invalid")
+    }
+    if (value.eligibleForCase && value.sourceKind !== "human_task") {
+        throw new Error("Eligible Case must come from a human task")
+    }
+    if (value.eligibleForCase && (skillName === null || caseType === null)) {
+        throw new Error("Eligible Case requires a Skill and Case type")
+    }
+    if (!value.eligibleForCase && (skillName !== null || caseType !== null)) {
+        throw new Error("Ineligible episode cannot select a Skill or Case type")
     }
     const finalAssistantItemId = value.finalAssistantItemId === null
         ? null
@@ -239,9 +278,11 @@ function parseOutcomeResult(text, {skillNames = [], assistantItemIds = []} = {})
         throw new Error("Outcome confidence must be between 0 and 1")
     }
     return {
+        eligibleForCase: value.eligibleForCase,
+        sourceKind: value.sourceKind,
         skillName,
         outcome: value.outcome,
-        caseType: value.caseType,
+        caseType,
         finalAssistantItemId,
         confidence: value.confidence,
         reason: requiredText(value.reason, "Outcome reason", 1_000),

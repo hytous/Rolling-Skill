@@ -1,6 +1,6 @@
 {
   "name": "@rolling-skill/dsh-plugin",
-  "version": "0.1.0",
+  "version": "0.1.16",
   "description": "Rolling Skill evaluation and continuous case curation workbench for DeepSeek Harness",
   "license": "MIT",
   "type": "module",
@@ -49,6 +49,7 @@
   "devDependencies": {
     "@rolling-skill/core": "0.1.0",
     "esbuild": "^0.25.12",
+    "react-markdown": "^10.1.0",
     "typescript": "^5.9.2"
   },
   "engines": {

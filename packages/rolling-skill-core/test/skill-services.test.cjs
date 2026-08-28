@@ -109,6 +109,8 @@ describe("Rolling Skill managed Skill services", () => {
         assert.equal(Object.hasOwn(overview.matrix[0], "destination"), false)
         assert.equal(Object.hasOwn(overview.jobs[0], "rawResult"), false)
         assert.equal(overview.jobs[0].traceAvailable, true)
+        assert.equal(overview.jobs[0].request.source.versionId, "version-1")
+        assert.equal(overview.jobs[0].request.source.expectedDigest, "sha256:test")
         const detail = test.services.installation({jobId: "job-1"})
         assert.equal(detail.status, "running")
         assert.equal(Object.hasOwn(detail, "traceReference"), false)

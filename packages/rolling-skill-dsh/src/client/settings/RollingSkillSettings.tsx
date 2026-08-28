@@ -3,16 +3,6 @@ import {useEffect, useState} from "react"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
-import {ImportPanel} from "../workbench/ImportPanel"
-
-interface SettingsDashboard {
-    dataRoot: string
-    settings: {
-        plugin: {
-            runtime: {displayName?: string; version?: string; runtimeId: string} | null
-        }
-    }
-}
 interface RuntimeDescriptor {runtimeId: string; displayName: string; version?: string}
 interface Model {id?: string; model?: string; displayName?: string}
 interface Profile {modelId: string | null; effort: string | null}
@@ -36,17 +26,16 @@ export function RollingSkillSettings({t}: {t: Translate}) {
     const [state, setState] = useState<
         {status: "loading"} |
         {status: "error"; message: string} |
-        {status: "ready"; dashboard: SettingsDashboard}
+        {status: "ready"}
     >({status: "loading"})
 
     useEffect(() => {
         const controller = new AbortController()
         Promise.all([
-            requestRollingSkill<SettingsDashboard>("dashboard.get", {}, controller.signal),
             requestRollingSkill<RollingSettings>("settings.get", {}, controller.signal),
             requestRollingSkill<RuntimeDescriptor[]>("runtimes.list", {}, controller.signal),
-        ]).then(([dashboard, settings, runtimeItems]) => {
-            setState({status: "ready", dashboard})
+        ]).then(([settings, runtimeItems]) => {
+            setState({status: "ready"})
             setRuntimes(runtimeItems)
             setRuntimeId(settings.plugin.runtime?.runtimeId ?? runtimeItems[0]?.runtimeId ?? "")
             setProfiles({
@@ -101,7 +90,6 @@ export function RollingSkillSettings({t}: {t: Translate}) {
         }
     }
 
-    const runtime = state.status === "ready" ? state.dashboard.settings.plugin.runtime : null
     return (
         <section className="rolling-skill-settings" aria-labelledby="rolling-skill-settings-title">
             <header className="rolling-skill-header">
@@ -124,20 +112,8 @@ export function RollingSkillSettings({t}: {t: Translate}) {
                     <div className="rolling-skill-grid">{(["curator", "rubric", "judge"] as const).map((kind) => <section className="rolling-skill-subpanel" key={kind}><h4>{t(kind === "curator" ? "curatorDefault" : kind === "rubric" ? "rubricDefault" : "judgeDefault")}</h4><label className="rolling-skill-field"><span>{t("model")}</span><select className="rolling-skill-select" value={profiles[kind].modelId ?? ""} onChange={(event) => updateProfile(kind, {modelId: event.target.value || null})}><option value="">{t("runtimeDefault")}</option>{models.map((model) => {const id = model.id ?? model.model ?? ""; return <option key={id} value={id}>{model.displayName ?? id}</option>})}</select></label><label className="rolling-skill-field"><span>{t("effort")}</span><select className="rolling-skill-select" value={profiles[kind].effort ?? ""} onChange={(event) => updateProfile(kind, {effort: event.target.value || null})}><option value="">{t("runtimeDefault")}</option>{["low", "medium", "high", "xhigh", "max"].map((value) => <option key={value} value={value}>{value}</option>)}</select></label></section>)}</div>
                     {saveError ? <p className="rolling-skill-inline-error" role="alert">{saveError}</p> : null}
                     <Button variant="outline" disabled={busy || !runtimeId} onClick={() => void save()}>{t("saveDefaults")}</Button>
-                </section><section className="rolling-skill-panel">
-                    <h3>{t("diagnostics")}</h3>
-                    <dl>
-                        <div><dt>{t("dataDirectory")}</dt><dd><code>{state.dashboard.dataRoot}</code></dd></div>
-                        <div>
-                            <dt>{t("runtime")}</dt>
-                            <dd>{runtime
-                                ? [runtime.displayName ?? runtime.runtimeId, runtime.version].filter(Boolean).join(" ")
-                                : t("noRuntime")}</dd>
-                        </div>
-                    </dl>
                 </section></div>
             )}
-            <ImportPanel t={t}/>
         </section>
     )
 }

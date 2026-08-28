@@ -54,9 +54,46 @@ function fixture() {
         getEvaluationRun: () => ({
             ...run,
             status: "running",
+            managedVersionSnapshot: {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                versionId: "released-1",
+                commit: "a".repeat(40),
+                contentDigest: `sha256:${"b".repeat(64)}`,
+                installationJobIdsByRuntime: {"codex:a": "job-codex:a"},
+            },
+            rubricVersionSnapshot: {
+                id: "rubric-1",
+                version: 3,
+                rubricDigest: "sha256:rubric",
+                rubric: {title: "Billing rubric", scoringModel: "unified-100/v1", criteria: []},
+            },
             skillReference: {id: "skill-1", repositoryId: "repository-1", name: "billing", path: "/installed/private/SKILL.md"},
             runtimeConfigurations: [{runtimeId: "codex:a", executablePath: "/opt/codex-a", skillReference: {path: "/installed/private/SKILL.md"}}],
-            results: [{id: "result-1", status: "running", threadId: "private-thread", traceReference: "/tmp/private-trace"}],
+            results: [{
+                id: "result-1",
+                status: "completed",
+                gradingStatus: "completed",
+                threadId: "private-thread",
+                traceReference: "/tmp/private-trace",
+                traceEvidence: {
+                    schemaVersion: "rolling-skill-trace-evidence/v1",
+                    reference: "trace://case.jsonl#L7-L8",
+                    sourceEntryCount: 2,
+                    includedEntries: 2,
+                    semanticCoverageComplete: true,
+                    truncated: false,
+                    omittedEntries: 0,
+                    entries: [
+                        {sequence: 7, direction: "outbound", message: {method: "turn/start"}},
+                        {sequence: 8, direction: "inbound", message: {method: "turn/completed"}},
+                    ],
+                },
+                scoreContract: {criteria: [{id: "R1", title: "Workflow", weight: 1}]},
+                judgment: {assessments: [{criterionId: "R1", rating: 8, rationale: "Observed", evidenceRefs: ["trace:L7"]}]},
+                computedScore: {totalScore: 80, overallVerdict: "pass", criterionScores: [{id: "R1", points: 80, maxPoints: 100, rating: 8}]},
+                judge: {runtimeId: "deepseek-harness:b", modelId: "judge-model", effort: "high", threadId: "private-judge-thread"},
+            }],
         }),
         deleteEvaluationRun: (id) => ({id, status: "completed"}),
     }
@@ -201,6 +238,18 @@ describe("Rolling Skill evaluation services", () => {
         assert.equal(Object.hasOwn(detail.skillReference, "path"), false)
         assert.equal(Object.hasOwn(detail.runtimeConfigurations[0], "executablePath"), false)
         assert.equal(Object.hasOwn(detail.results[0], "traceReference"), false)
+        assert.equal(detail.traceScope, "case")
+        assert.equal(detail.managedVersionSnapshot.versionId, "released-1")
+        assert.equal(detail.rubricVersionSnapshot.version, 3)
+        assert.equal(detail.results[0].traceEvidence.scope, "case")
+        assert.deepEqual(
+            detail.results[0].traceEvidence.entries.map((entry) => entry.sequence),
+            [7, 8],
+        )
+        assert.equal(detail.results[0].traceEvidence.semanticCoverageComplete, true)
+        assert.equal(detail.results[0].computedScore.totalScore, 80)
+        assert.equal(detail.results[0].judgment.assessments[0].criterionId, "R1")
+        assert.equal(Object.hasOwn(detail.results[0].judge, "threadId"), false)
         assert.equal((await test.services.cancel({runId: "run-1"})).status, "cancelled")
         assert.deepEqual(test.cancelled, ["run-1"])
     })

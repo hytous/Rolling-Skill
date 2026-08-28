@@ -24,6 +24,7 @@ function fixture({mode = "off", executionLocation = "while-harness-running"} = {
             modelId: null,
             effort: null,
             datasetId: null,
+            targets: [],
         },
     }
     const settingUpdates = []
@@ -43,9 +44,14 @@ function fixture({mode = "off", executionLocation = "while-harness-running"} = {
                 modelId: input.autoCaptureModelId ?? settings.autoCaptureProfile.modelId,
                 effort: input.autoCaptureEffort ?? settings.autoCaptureProfile.effort,
                 datasetId: input.autoCaptureDatasetId ?? settings.autoCaptureProfile.datasetId,
+                targets: input.autoCaptureTargets ?? settings.autoCaptureProfile.targets,
             }
             return structuredClone(settings)
         },
+        listDatasets: () => [{
+            id: "dataset-incident",
+            skillReference: {id: "skill-incident", name: "incident-response-planner"},
+        }],
     }
     const runtime = {
         providerId: "deepseek-harness",
@@ -127,6 +133,47 @@ describe("Rolling Skill automatic capture composition", () => {
         assert.equal(weekly.schedule.cadence, "weekly")
         assert.equal(weekly.schedule.weekday, 5)
         assert.equal(settingUpdates.at(-1).autoCaptureCadence, "weekly")
+    })
+
+    it("persists candidate Skill routes and exposes them in automatic status", () => {
+        const {runtime, service, settingUpdates} = fixture()
+        const targets = [{skillId: "skill-incident", datasetId: "dataset-incident"}]
+
+        const updated = service.update({
+            mode: "automatic",
+            executionLocation: "while-harness-running",
+            runtimeId: runtime.runtimeId,
+            cadence: "daily",
+            time: "09:00",
+            weekday: 1,
+            modelId: null,
+            effort: null,
+            datasetId: null,
+            targets,
+        })
+
+        assert.deepEqual(updated.targets, targets)
+        assert.deepEqual(settingUpdates.at(-1).autoCaptureTargets, targets)
+    })
+
+    it("preserves a legacy Dataset route when an older caller omits targets", () => {
+        const {runtime, service, settingUpdates, settings} = fixture()
+        settings.autoCaptureProfile.datasetId = "dataset-incident"
+
+        const updated = service.update({
+            mode: "automatic",
+            executionLocation: "while-harness-running",
+            runtimeId: runtime.runtimeId,
+            cadence: "daily",
+            time: "09:00",
+            weekday: 1,
+            modelId: null,
+            effort: null,
+            datasetId: "dataset-incident",
+        })
+
+        assert.equal(updated.datasetId, "dataset-incident")
+        assert.equal("autoCaptureTargets" in settingUpdates.at(-1), false)
     })
 
     it("keeps off disabled, runs one explicit slot, and delegates automatic Case completion", async () => {
