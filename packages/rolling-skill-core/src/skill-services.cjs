@@ -108,6 +108,10 @@ function createSkillServices({manager, installationManager, installationStore, r
     return Object.freeze({
         catalog: () => copy(manager.catalog()),
         get: ({skillId}) => copy(manager.readSkill(requiredText(skillId, "Skill id", 200))),
+        path: ({skillId}) => {
+            skillId = requiredText(skillId, "Skill id", 200)
+            return {skillId, path: manager.skillPath(skillId)}
+        },
         versions: (input = {}) => copy(manager.listVersionPage(input)),
         candidateBase: ({skillId}) => manager.candidateBase(requiredText(skillId, "Skill id", 200)),
         createCandidate: (input = {}) => manager.createCandidate(copy(input)),

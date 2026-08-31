@@ -16,6 +16,7 @@ function fixture() {
         importSource: async (input) => ({repository: {id: "repo-2", ...input}}),
         rescanAll: async () => ({repositories: [], skills: [], versions: [], failures: []}),
         repositoryPath: (repositoryId) => `/managed/${repositoryId}`,
+        skillPath: (skillId) => `/managed/repo-1/skills/${skillId}`,
     }
     const installationManager = {
         overview: (skillId) => ({
@@ -67,6 +68,10 @@ describe("Rolling Skill managed Skill services", () => {
         assert.equal((await test.services.candidateBase({skillId: "skill-1"})).dirty, true)
         assert.equal(test.services.installationTargets()[0].executablePath, "/opt/codex-a")
         assert.deepEqual(await test.services.revealRepository({repositoryId: "repo-1"}), {repositoryId: "repo-1", opened: true})
+        assert.deepEqual(test.services.path({skillId: "skill-1"}), {
+            skillId: "skill-1",
+            path: "/managed/repo-1/skills/skill-1",
+        })
         assert.deepEqual(test.calls.at(-1), ["reveal", "/managed/repo-1"])
     })
 

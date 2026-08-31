@@ -14,6 +14,12 @@ const {
     ManagedSkillManager,
 } = require("../../../desktop/rolling-skill/src/managed-skill-manager.cjs")
 const {
+    SkillEditStore,
+} = require("../../../desktop/rolling-skill/src/skill-edit-store.cjs")
+const {
+    SkillEditWorkspaceManager,
+} = require("../../../desktop/rolling-skill/src/skill-edit-workspace.cjs")
+const {
     RawCaseStore,
 } = require("../../../desktop/rolling-skill/src/raw-case-store.cjs")
 const {
@@ -66,6 +72,7 @@ const {
 const {createOperatorRuntime} = require("./operator-services.cjs")
 const {createRuntimeServices} = require("./runtime-services.cjs")
 const {RuntimeInteractionBroker} = require("./runtime-interaction-broker.cjs")
+const {createSkillEditServices} = require("./skill-edit-services.cjs")
 const {createSkillServices} = require("./skill-services.cjs")
 
 const MAX_DISPATCH_BYTES = 1024 * 1024
@@ -609,6 +616,10 @@ function createRollingSkillApplication(options = {}) {
         applicationSupportDirectory: paths.managedSkills,
         store: managedSkillStore,
     })
+    const skillEditStore = new SkillEditStore(paths.skillEdits)
+    const skillEditWorkspaceManager = new SkillEditWorkspaceManager({
+        workspacesRoot: paths.skillEditWorkspaces,
+    })
     const installationStore = new SkillInstallationStore(paths.skillInstallations)
     reconcileManagedDatasetBindings({store, managedSkillStore, installationStore})
     const installationManager = new SkillInstallationManager({
@@ -834,9 +845,29 @@ function createRollingSkillApplication(options = {}) {
         requestPermission: requestRuntimePermission,
         requestQuestion: requestRuntimeQuestion,
         operatorToolPath: options.operatorToolPath ?? null,
+        resolveSkillEditWorkspace: (binding) => {
+            const edit = skillEditStore.require(binding.skillEditSessionId)
+            if (
+                edit.repositoryId !== binding.repositoryId ||
+                edit.skillId !== binding.skillId ||
+                ["published", "discarded", "failed"].includes(edit.state)
+            ) throw new Error("Skill edit workspace does not match an active edit session")
+            return {
+                repositoryId: edit.repositoryId,
+                skillId: edit.skillId,
+                skillEditSessionId: edit.id,
+                workspaceRoot: skillEditWorkspaceManager.resolve(edit.id),
+            }
+        },
         onChanged: () => publish(),
         }))
     const operatorServices = operatorRuntime.services
+    const skillEditServices = createSkillEditServices({
+        store: skillEditStore,
+        workspaceManager: skillEditWorkspaceManager,
+        managedSkillManager,
+        operatorServices,
+    })
     const schedulerAdapter = options.schedulerAdapter ?? Object.freeze({
         capabilities: () => ({platform: process.platform, supported: false}),
         status: async () => ({platform: process.platform, supported: false, installed: false}),
@@ -1483,6 +1514,7 @@ function createRollingSkillApplication(options = {}) {
         "evaluations.delete": (input) => evaluationServices.delete(input),
         "skills.catalog": () => skillServices.catalog(),
         "skills.get": (input) => skillServices.get(input),
+        "skills.path": (input) => skillServices.path(input),
         "skills.versions": (input) => skillServices.versions(input),
         "skills.candidateBase": (input) => skillServices.candidateBase(input),
         "skills.createCandidate": (input) => skillServices.createCandidate(input),
@@ -1491,6 +1523,13 @@ function createRollingSkillApplication(options = {}) {
         "skills.import": (input) => skillServices.importSource(input),
         "skills.rescan": () => skillServices.rescan(),
         "skills.reveal": (input) => skillServices.revealRepository(input),
+        "skillEdits.list": (input) => skillEditServices.list(input),
+        "skillEdits.start": (input) => skillEditServices.start(input),
+        "skillEdits.get": (input) => skillEditServices.get(input),
+        "skillEdits.send": (input) => skillEditServices.send(input),
+        "skillEdits.diff": (input) => skillEditServices.diff(input),
+        "skillEdits.applyAndRelease": (input) => skillEditServices.applyAndRelease(input),
+        "skillEdits.discard": (input) => skillEditServices.discard(input),
         "installations.targets": () => skillServices.installationTargets(),
         "installations.list": (input) => skillServices.installations(input),
         "installations.get": (input) => skillServices.installation(input),
@@ -1575,6 +1614,10 @@ function createRollingSkillApplication(options = {}) {
         "skills.import",
         "skills.rescan",
         "skills.reveal",
+        "skillEdits.start",
+        "skillEdits.send",
+        "skillEdits.applyAndRelease",
+        "skillEdits.discard",
         "installations.start",
         "installations.cancel",
         "installations.inspect",
@@ -1641,6 +1684,7 @@ function createRollingSkillApplication(options = {}) {
         await evaluationRunner.stopAll?.()
         await installationManager.stopAll?.()
         runtimeInteractionBroker.close?.()
+        await skillEditServices.close()
         await operatorRuntime.close()
         await runtimeServices.close()
     }

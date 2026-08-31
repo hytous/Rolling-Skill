@@ -28,6 +28,59 @@ async function importManagedSkill(application) {
 }
 
 describe("shared Rolling Skill application", () => {
+    it("exposes managed Skill paths and the durable Agent edit lifecycle", async () => {
+        const {createRollingSkillApplication} = require(modulePath)
+        const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-core-skill-edit-api-"))
+        let operatorState = "idle"
+        const operatorRuntime = {
+            services: {
+                operatorSummary: () => ({totals: {sessions: 1}}),
+                optimizationList: () => [],
+                async operatorStart() {
+                    return {
+                        session: {id: "operator-edit-1", transcript: []},
+                        parentJob: {id: "operator-job-1", status: "running"},
+                        state: operatorState,
+                    }
+                },
+                operatorGet: ({sessionId}) => ({
+                    session: {id: sessionId, transcript: []},
+                    parentJob: {id: "operator-job-1", status: "running"},
+                    state: operatorState,
+                }),
+                async operatorSend() { operatorState = "active"; return {queued: false} },
+                async operatorCancel() { operatorState = "stopped"; return {state: "stopped"} },
+            },
+            async close() {},
+        }
+        const application = createRollingSkillApplication({dataRoot, operatorRuntime})
+        const managed = await importManagedSkill(application)
+
+        const path = await application.dispatch("skills.path", {skillId: managed.skill.id})
+        assert.equal(path.skillId, managed.skill.id)
+        assert.equal(typeof path.path, "string")
+        const started = await application.dispatch("skillEdits.start", {
+            skillId: managed.skill.id,
+            runtimeId: "codex:one",
+            modelId: "gpt-5.6-sol",
+            effort: "high",
+            objective: "Clarify the workflow",
+        })
+        assert.equal(started.skillId, managed.skill.id)
+        assert.equal((await application.dispatch("skillEdits.list", {
+            skillId: managed.skill.id,
+        })).sessions[0].id, started.id)
+        assert.equal((await application.dispatch("skillEdits.diff", {
+            sessionId: started.id,
+        })).changed, false)
+        const discarded = await application.dispatch("skillEdits.discard", {
+            sessionId: started.id,
+            expectedRevision: started.revision,
+        })
+        assert.equal(discarded.state, "discarded")
+        await application.close()
+    })
+
     it("accepts a verified managed installation from a name-only Runtime inventory", () => {
         const {runtimeSkillMatchesVerifiedInstallation} = require(modulePath)
 

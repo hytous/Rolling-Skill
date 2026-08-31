@@ -212,7 +212,7 @@ class SkillEditStore {
         const now = timestamp(this.now())
         const record = normalizeRecord({
             ...copy(input),
-            id: requiredText(this.idFactory(), "Skill edit id", 1_024),
+            id: requiredText(input?.id ?? this.idFactory(), "Skill edit id", 1_024),
             skillId: normalizedSkillId,
             state: "draft",
             revision: 1,
