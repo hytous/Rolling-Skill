@@ -2,6 +2,7 @@ import {Input, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
 import {useEffect, useState} from "react"
 
 import {ActionButton as Button} from "./ActionButton"
+import datasetModel from "./dataset-view-model.cjs"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
@@ -37,6 +38,11 @@ interface CsvExport {
     content: string
 }
 
+const managedSkillOptionLabel = datasetModel.managedSkillOptionLabel as (
+    skill: ManagedSkill,
+    repositories: Repository[],
+) => string
+
 export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => void}) {
     const [datasets, setDatasets] = useState<DatasetSummary[]>([])
     const [catalog, setCatalog] = useState<SkillCatalog>({repositories: [], skills: []})
@@ -45,6 +51,8 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
     const [deleting, setDeleting] = useState<DatasetSummary | null>(null)
     const [binding, setBinding] = useState<DatasetSummary | null>(null)
     const [bindingSkillId, setBindingSkillId] = useState("")
+    const [exporting, setExporting] = useState<DatasetSummary | null>(null)
+    const [exportScope, setExportScope] = useState<"all" | "goodcase">("all")
     const [recoverQuestions, setRecoverQuestions] = useState(true)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -129,18 +137,28 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
             setBinding(null)
         })
     }
-    const exportCsv = async (datasetId: string) => {
+    const beginExport = (dataset: DatasetSummary) => {
+        setExporting(dataset)
+        setExportScope("all")
+    }
+    const exportCsv = async () => {
+        const datasetId = exporting?.id
+        if (!datasetId) return
+        setBusy(true)
         setError(null)
         try {
-            const exported = await requestRollingSkill<CsvExport>("datasets.exportCsv", {datasetId})
+            const exported = await requestRollingSkill<CsvExport>("datasets.exportCsv", {datasetId, caseScope: exportScope})
             const url = URL.createObjectURL(new Blob([exported.content], {type: "text/csv;charset=utf-8"}))
             const anchor = document.createElement("a")
             anchor.href = url
             anchor.download = exported.filename
             anchor.click()
             URL.revokeObjectURL(url)
+            setExporting(null)
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : t("loadError"))
+        } finally {
+            setBusy(false)
         }
     }
 
@@ -163,12 +181,9 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
                     value={skillId}
                     onChange={(event) => setSkillId(event.target.value)}
                 >
-                    {catalog.skills.filter((skill) => skill.status === "valid").map((skill) => {
-                        const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId)
-                        return <option key={skill.id} value={skill.id}>{skill.name} · {repository?.displayName ?? skill.repositoryId}</option>
-                    })}
+                    {catalog.skills.filter((skill) => skill.status === "valid").map((skill) => <option key={skill.id} value={skill.id}>{managedSkillOptionLabel(skill, catalog.repositories)}</option>)}
                 </select>
-                <Button size="sm" disabled={busy || !name.trim() || !skillId} onClick={create}>
+                <Button size="sm" tone="primary" disabled={busy || !name.trim() || !skillId} onClick={create}>
                     {t("createDataset")}
                 </Button>
             </div>
@@ -188,7 +203,7 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
                         </div>
                         <div className="rolling-skill-actions">
                             <Button size="sm" onClick={() => beginBinding(dataset)}>{t("changeManagedSkill")}</Button>
-                            <Button size="sm" onClick={() => void exportCsv(dataset.id)}>{t("exportCsv")}</Button>
+                            <Button size="sm" onClick={() => beginExport(dataset)}>{t("exportCsv")}</Button>
                             <Button size="sm" onClick={() => setDeleting(dataset)}>{t("delete")}</Button>
                         </div>
                     </article>
@@ -223,11 +238,26 @@ export function DatasetsPanel({t, onChanged}: {t: Translate; onChanged: () => vo
             >
                 <p>{t("bindManagedSkillDescription")}</p>
                 <select className="rolling-skill-select" value={bindingSkillId} onChange={(event) => setBindingSkillId(event.target.value)}>
-                    {catalog.skills.filter((skill) => skill.status === "valid").map((skill) => {
-                        const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId)
-                        return <option key={skill.id} value={skill.id}>{skill.name} · {repository?.displayName ?? skill.repositoryId}</option>
-                    })}
+                    {catalog.skills.filter((skill) => skill.status === "valid").map((skill) => <option key={skill.id} value={skill.id}>{managedSkillOptionLabel(skill, catalog.repositories)}</option>)}
                 </select>
+            </Modal>
+            <Modal
+                open={exporting !== null}
+                onClose={() => setExporting(null)}
+                title={t("exportCsv")}
+                closeLabel={t("cancel")}
+                footer={<>
+                    <Button onClick={() => setExporting(null)}>{t("cancel")}</Button>
+                    <Button tone="primary" disabled={busy} onClick={() => void exportCsv()}>{t("exportCsv")}</Button>
+                </>}
+            >
+                <label className="rolling-skill-field">
+                    <span>{t("exportScope")}</span>
+                    <select className="rolling-skill-select" aria-label={t("exportScope")} value={exportScope} onChange={(event) => setExportScope(event.target.value as typeof exportScope)}>
+                        <option value="all">{t("exportAllCases")}</option>
+                        <option value="goodcase">{t("exportGoodCases")}</option>
+                    </select>
+                </label>
             </Modal>
         </section>
     )

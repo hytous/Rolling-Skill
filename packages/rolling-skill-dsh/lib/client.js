@@ -474,6 +474,21 @@ var require_markdown_policy = __commonJS({
   }
 });
 
+// src/client/workbench/dataset-view-model.cjs
+var require_dataset_view_model = __commonJS({
+  "src/client/workbench/dataset-view-model.cjs"(exports, module2) {
+    function managedSkillOptionLabel2(skill, repositories = []) {
+      const skillName = String(skill?.name || "").trim() || "Unknown Skill";
+      const repository = repositories.find((entry) => entry?.id === skill?.repositoryId);
+      const repositoryName = String(repository?.displayName || "").trim();
+      return repositoryName && repositoryName !== skillName ? `${skillName} \xB7 ${repositoryName}` : skillName;
+    }
+    module2.exports = {
+      managedSkillOptionLabel: managedSkillOptionLabel2
+    };
+  }
+});
+
 // src/client/workbench/raw-case-evidence.cjs
 var require_raw_case_evidence = __commonJS({
   "src/client/workbench/raw-case-evidence.cjs"(exports, module2) {
@@ -812,6 +827,9 @@ var zh = {
   createDataset: "\u65B0\u5EFA\u6570\u636E\u96C6",
   caseBreakdown: "\u5171 {all} \xB7 Good {good} \xB7 Bad {bad}",
   exportCsv: "\u5BFC\u51FA CSV",
+  exportScope: "\u5BFC\u51FA\u8303\u56F4",
+  exportAllCases: "\u5168\u90E8 Case",
+  exportGoodCases: "\u4EC5 Good Case",
   delete: "\u5220\u9664",
   emptyDatasets: "\u6682\u65E0\u6570\u636E\u96C6",
   deleteDatasetTitle: "\u5220\u9664\u6570\u636E\u96C6",
@@ -1278,6 +1296,9 @@ var en = {
   createDataset: "Create Dataset",
   caseBreakdown: "{all} total \xB7 {good} Good \xB7 {bad} Bad",
   exportCsv: "Export CSV",
+  exportScope: "Export scope",
+  exportAllCases: "All Cases",
+  exportGoodCases: "Good Cases only",
   delete: "Delete",
   emptyDatasets: "No datasets yet",
   deleteDatasetTitle: "Delete Dataset",
@@ -12352,7 +12373,9 @@ function CasesPanel({ t, revision, onChanged, initialDatasetId, initialCaseId, o
 // src/client/workbench/DatasetsPanel.tsx
 var import_dsh_client_ui_primitives5 = require("@deepseek-ai/dsh-client-ui-primitives");
 var import_react8 = require("react");
+var import_dataset_view_model = __toESM(require_dataset_view_model(), 1);
 var import_jsx_runtime11 = require("react/jsx-runtime");
+var managedSkillOptionLabel = import_dataset_view_model.default.managedSkillOptionLabel;
 function DatasetsPanel({ t, onChanged }) {
   const [datasets, setDatasets] = (0, import_react8.useState)([]);
   const [catalog, setCatalog] = (0, import_react8.useState)({ repositories: [], skills: [] });
@@ -12361,6 +12384,8 @@ function DatasetsPanel({ t, onChanged }) {
   const [deleting, setDeleting] = (0, import_react8.useState)(null);
   const [binding, setBinding] = (0, import_react8.useState)(null);
   const [bindingSkillId, setBindingSkillId] = (0, import_react8.useState)("");
+  const [exporting, setExporting] = (0, import_react8.useState)(null);
+  const [exportScope, setExportScope] = (0, import_react8.useState)("all");
   const [recoverQuestions, setRecoverQuestions] = (0, import_react8.useState)(true);
   const [busy, setBusy] = (0, import_react8.useState)(false);
   const [error, setError] = (0, import_react8.useState)(null);
@@ -12437,18 +12462,28 @@ function DatasetsPanel({ t, onChanged }) {
       setBinding(null);
     });
   };
-  const exportCsv = async (datasetId) => {
+  const beginExport = (dataset) => {
+    setExporting(dataset);
+    setExportScope("all");
+  };
+  const exportCsv = async () => {
+    const datasetId = exporting?.id;
+    if (!datasetId) return;
+    setBusy(true);
     setError(null);
     try {
-      const exported = await requestRollingSkill("datasets.exportCsv", { datasetId });
+      const exported = await requestRollingSkill("datasets.exportCsv", { datasetId, caseScope: exportScope });
       const url = URL.createObjectURL(new Blob([exported.content], { type: "text/csv;charset=utf-8" }));
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = exported.filename;
       anchor.click();
       URL.revokeObjectURL(url);
+      setExporting(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("loadError"));
+    } finally {
+      setBusy(false);
     }
   };
   return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("section", { className: "rolling-skill-panel rolling-skill-data-panel", children: [
@@ -12476,17 +12511,10 @@ function DatasetsPanel({ t, onChanged }) {
           "aria-label": t("datasetSkill"),
           value: skillId,
           onChange: (event) => setSkillId(event.target.value),
-          children: catalog.skills.filter((skill) => skill.status === "valid").map((skill) => {
-            const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId);
-            return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("option", { value: skill.id, children: [
-              skill.name,
-              " \xB7 ",
-              repository?.displayName ?? skill.repositoryId
-            ] }, skill.id);
-          })
+          children: catalog.skills.filter((skill) => skill.status === "valid").map((skill) => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("option", { value: skill.id, children: managedSkillOptionLabel(skill, catalog.repositories) }, skill.id))
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ActionButton, { size: "sm", disabled: busy || !name2.trim() || !skillId, onClick: create2, children: t("createDataset") })
+      /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ActionButton, { size: "sm", tone: "primary", disabled: busy || !name2.trim() || !skillId, onClick: create2, children: t("createDataset") })
     ] }),
     error ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "rolling-skill-list", children: [
@@ -12498,7 +12526,7 @@ function DatasetsPanel({ t, onChanged }) {
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: "rolling-skill-actions", children: [
           /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ActionButton, { size: "sm", onClick: () => beginBinding(dataset), children: t("changeManagedSkill") }),
-          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ActionButton, { size: "sm", onClick: () => void exportCsv(dataset.id), children: t("exportCsv") }),
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ActionButton, { size: "sm", onClick: () => beginExport(dataset), children: t("exportCsv") }),
           /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ActionButton, { size: "sm", onClick: () => setDeleting(dataset), children: t("delete") })
         ] })
       ] }, dataset.id)),
@@ -12537,15 +12565,28 @@ function DatasetsPanel({ t, onChanged }) {
         ] }),
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("p", { children: t("bindManagedSkillDescription") }),
-          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("select", { className: "rolling-skill-select", value: bindingSkillId, onChange: (event) => setBindingSkillId(event.target.value), children: catalog.skills.filter((skill) => skill.status === "valid").map((skill) => {
-            const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId);
-            return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("option", { value: skill.id, children: [
-              skill.name,
-              " \xB7 ",
-              repository?.displayName ?? skill.repositoryId
-            ] }, skill.id);
-          }) })
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("select", { className: "rolling-skill-select", value: bindingSkillId, onChange: (event) => setBindingSkillId(event.target.value), children: catalog.skills.filter((skill) => skill.status === "valid").map((skill) => /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("option", { value: skill.id, children: managedSkillOptionLabel(skill, catalog.repositories) }, skill.id)) })
         ]
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
+      import_dsh_client_ui_primitives5.Modal,
+      {
+        open: exporting !== null,
+        onClose: () => setExporting(null),
+        title: t("exportCsv"),
+        closeLabel: t("cancel"),
+        footer: /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)(import_jsx_runtime11.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ActionButton, { onClick: () => setExporting(null), children: t("cancel") }),
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ActionButton, { tone: "primary", disabled: busy, onClick: () => void exportCsv(), children: t("exportCsv") })
+        ] }),
+        children: /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("span", { children: t("exportScope") }),
+          /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("select", { className: "rolling-skill-select", "aria-label": t("exportScope"), value: exportScope, onChange: (event) => setExportScope(event.target.value), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("option", { value: "all", children: t("exportAllCases") }),
+            /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("option", { value: "goodcase", children: t("exportGoodCases") })
+          ] })
+        ] })
       }
     )
   ] });

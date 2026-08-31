@@ -244,6 +244,19 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(source("workbench/RubricPanel.tsx"), /rubrics\.migrateLegacy/u)
     })
 
+    it("makes Dataset creation visible and asks for the CSV Case scope", () => {
+        const datasets = source("workbench/DatasetsPanel.tsx")
+        const locale = source("locale.ts")
+
+        assert.match(datasets, /<Button size="sm" tone="primary" disabled=\{busy \|\| !name\.trim\(\) \|\| !skillId\}/u)
+        assert.match(datasets, /managedSkillOptionLabel/u)
+        assert.match(datasets, /const \[exportScope, setExportScope\] = useState<"all" \| "goodcase">\("all"\)/u)
+        assert.match(datasets, /datasets\.exportCsv", \{datasetId, caseScope: exportScope\}/u)
+        assert.match(datasets, /aria-label=\{t\("exportScope"\)\}/u)
+        assert.match(locale, /exportScope:\s*"导出范围"/u)
+        assert.match(locale, /exportGoodCases:\s*"仅 Good Case"/u)
+    })
+
     it("creates Datasets from stable managed Skill IDs without deployment evidence", () => {
         const datasets = source("workbench/DatasetsPanel.tsx")
 
