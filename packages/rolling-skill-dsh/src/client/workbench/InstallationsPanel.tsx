@@ -70,7 +70,7 @@ function dateTime(value?: string | null): string {
     return Number.isFinite(date.getTime()) ? date.toLocaleString() : value
 }
 
-export function InstallationsPanel({t, initialJobId}: {t: Translate; initialJobId?: string}) {
+export function InstallationsPanel({t, initialJobId, refreshRevision = 0}: {t: Translate; initialJobId?: string; refreshRevision?: number}) {
     const [overview, setOverview] = useState<InstallationOverview>({jobs: [], matrix: []})
     const [selectedJob, setSelectedJob] = useState<InstallationJob | null>(null)
     const [followUp, setFollowUp] = useState("")
@@ -94,7 +94,7 @@ export function InstallationsPanel({t, initialJobId}: {t: Translate; initialJobI
                 if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"))
             })
         return () => controller.abort()
-    }, [revision, initialJobId])
+    }, [revision, initialJobId, refreshRevision])
 
     useEffect(() => {
         if (!overview.jobs.some((job) => ACTIVE_STATUSES.has(job.status))) return

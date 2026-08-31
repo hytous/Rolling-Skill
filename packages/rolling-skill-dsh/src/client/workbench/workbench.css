@@ -95,25 +95,6 @@
     font-weight: 600;
 }
 
-.rolling-skill-skill-tabs {
-    background: var(--dsw-alias-bg-layer-1);
-    border: 1px solid var(--dsw-alias-border-l3);
-    border-radius: 9px;
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    padding: 4px;
-}
-
-.rolling-skill-skill-tabs .rolling-skill-action-button {
-    justify-content: center;
-    width: 100%;
-}
-
-.rolling-skill-skill-tabs [aria-pressed="true"] {
-    background: var(--dsw-alias-bg-layer-2);
-    font-weight: 600;
-}
-
 .rolling-skill-current-skill {
     align-items: center;
     display: grid;

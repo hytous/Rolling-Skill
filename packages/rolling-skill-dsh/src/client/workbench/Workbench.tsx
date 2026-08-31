@@ -8,7 +8,6 @@ import {AutomaticCapturePanel} from "./AutomaticCapturePanel"
 import {CasesPanel} from "./CasesPanel"
 import {DatasetsPanel} from "./DatasetsPanel"
 import {EvaluationsPanel} from "./EvaluationsPanel"
-import {InstallationsPanel} from "./InstallationsPanel"
 import {OperatorPanel} from "./OperatorPanel"
 import {OptimizationPanel} from "./OptimizationPanel"
 import {RawCasesPanel} from "./RawCasesPanel"
@@ -63,8 +62,9 @@ export type WorkbenchRoute =
     | {page: "cases"; datasetId?: string; caseId?: string}
     | {page: "raw-cases"; rawCaseId?: string}
     | {page: "rubrics"; datasetId?: string; sessionId?: string}
-    | {page: "skills"; repositoryId?: string; skillId?: string}
-    | {page: "installations"; jobId?: string}
+    | {page: "skill-import"; skillId?: string}
+    | {page: "skill-versions"; skillId?: string}
+    | {page: "skill-install"; skillId?: string; jobId?: string}
     | {page: "evaluations"; runId?: string}
     | {page: "automatic"}
     | {page: "operator"; sessionId?: string}
@@ -104,10 +104,11 @@ const NAVIGATION_GROUPS: NavigationGroup[] = [
     {
         id: "skill-installation",
         label: "skillAndInstallation",
-        defaultPage: "skills",
+        defaultPage: "skill-import",
         pages: [
-            {id: "skills", label: "skills"},
-            {id: "installations", label: "runtimeInstallation"},
+            {id: "skill-import", label: "skillImportTab"},
+            {id: "skill-versions", label: "skillVersionsTab"},
+            {id: "skill-install", label: "skillInstallTab"},
         ],
     },
     {
@@ -127,11 +128,29 @@ const VISIBLE_PAGES = new Set(NAVIGATION_GROUPS.flatMap((group) => group.pages.m
 
 export function normalizeWorkbenchRoute(route: unknown): WorkbenchRoute {
     if (!route || typeof route !== "object") return {page: "overview"}
-    const candidate = route as {page?: unknown}
+    const candidate = route as {page?: unknown; skillId?: unknown; jobId?: unknown}
+    if (candidate.page === "skills") {
+        return typeof candidate.skillId === "string"
+            ? {page: "skill-versions", skillId: candidate.skillId}
+            : {page: "skill-import"}
+    }
+    if (candidate.page === "installations") {
+        return typeof candidate.jobId === "string"
+            ? {page: "skill-install", jobId: candidate.jobId}
+            : {page: "skill-install"}
+    }
     if (typeof candidate.page !== "string" || !VISIBLE_PAGES.has(candidate.page as WorkbenchRoute["page"])) {
         return {page: "overview"}
     }
     return route as WorkbenchRoute
+}
+
+function navigationRoute(page: WorkbenchRoute["page"], current: WorkbenchRoute): WorkbenchRoute {
+    const skillId = "skillId" in current ? current.skillId : undefined
+    if (page === "skill-import") return {page, skillId}
+    if (page === "skill-versions") return {page, skillId}
+    if (page === "skill-install") return {page, skillId}
+    return {page} as WorkbenchRoute
 }
 
 function dateTime(value: string | null, fallback: string): string {
@@ -219,7 +238,7 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
                             variant={route.page === page.id ? "outline" : "ghost"}
                             size="sm"
                             aria-pressed={route.page === page.id}
-                            onClick={() => navigate({page: page.id} as WorkbenchRoute)}
+                            onClick={() => navigate(navigationRoute(page.id, route))}
                         >
                             {t(page.label)}
                         </Button>
@@ -252,10 +271,15 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
                 />
             ) : route.page === "evaluations" ? (
                 <EvaluationsPanel t={t} initialRunId={route.runId}/>
-            ) : route.page === "skills" ? (
-                <SkillsPanel t={t} initialSkillId={route.skillId}/>
-            ) : route.page === "installations" ? (
-                <InstallationsPanel t={t} initialJobId={route.jobId}/>
+            ) : route.page === "skill-import" || route.page === "skill-versions" || route.page === "skill-install" ? (
+                <SkillsPanel
+                    t={t}
+                    mode={route.page === "skill-import" ? "import" : route.page === "skill-versions" ? "versions" : "install"}
+                    initialSkillId={route.skillId}
+                    initialJobId={route.page === "skill-install" ? route.jobId : undefined}
+                    onSkillChange={(skillId) => navigate({...route, skillId})}
+                    onOpenVersions={(skillId) => navigate({page: "skill-versions", skillId})}
+                />
             ) : route.page === "automatic" ? (
                 <AutomaticCapturePanel t={t}/>
             ) : route.page === "operator" ? (

@@ -1,11 +1,11 @@
-import {Input, Modal} from "@deepseek-ai/dsh-client-ui-primitives"
+import {Input} from "@deepseek-ai/dsh-client-ui-primitives"
 import {useEffect, useMemo, useState} from "react"
 
 import {ActionButton as Button} from "./ActionButton"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
-import {RuntimeInteractions} from "./RuntimeInteractions"
+import {InstallationsPanel} from "./InstallationsPanel"
 import type {RuntimeDescriptor} from "./RuntimeSelect"
 
 interface SkillEntry {id: string; repositoryId: string; name: string; description?: string; status: string}
@@ -23,38 +23,26 @@ interface Version {
 }
 interface Catalog {repositories: Repository[]; skills: SkillEntry[]}
 interface SkillDetail {skill: SkillEntry; manifest: string; versions: Version[]}
-interface InstallationJob {
-    id: string
-    status: string
-    operation?: string
-    runtime: {displayName: string; version?: string; runtimeId?: string}
-    request: {skillName?: string; versionLabel?: string}
-    messages?: Array<{role?: string; content?: string; recordedAt?: string}>
-    activities?: Array<{type?: string; title?: string; summary?: string; recordedAt?: string}>
-    error?: {code?: string; message?: string} | null
-    conversationStatus?: string | null
-    conversationError?: {message?: string} | null
-    parsedResult?: {verification?: string; trusted?: boolean} | null
-    traceAvailable?: boolean
-    canFollowUp?: boolean
-}
-interface InstallationOverview {jobs: InstallationJob[]}
 type SkillSourceKind = "folder" | "local-git" | "git-url" | "zip"
-type SkillManagementTab = "import" | "versions" | "install"
 
-export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; initialSkillId?: string; initialJobId?: string}) {
+interface SkillsPanelProps {
+    t: Translate
+    mode: "import" | "versions" | "install"
+    initialSkillId?: string
+    initialJobId?: string
+    onSkillChange?: (skillId: string) => void
+    onOpenVersions?: (skillId: string) => void
+}
+
+export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChange, onOpenVersions}: SkillsPanelProps) {
     const [catalog, setCatalog] = useState<Catalog>({repositories: [], skills: []})
     const [detail, setDetail] = useState<SkillDetail | null>(null)
     const [runtimes, setRuntimes] = useState<RuntimeDescriptor[]>([])
     const [runtimeIds, setRuntimeIds] = useState<string[]>([])
-    const [skillTab, setSkillTab] = useState<SkillManagementTab>(initialJobId ? "install" : "import")
     const [sourceKind, setSourceKind] = useState<SkillSourceKind>("folder")
     const [sourceLocation, setSourceLocation] = useState("")
     const [candidateMessage, setCandidateMessage] = useState("Update Skill workflow")
     const [releaseLabel, setReleaseLabel] = useState("")
-    const [installations, setInstallations] = useState<InstallationOverview>({jobs: []})
-    const [selectedJob, setSelectedJob] = useState<InstallationJob | null>(null)
-    const [followUp, setFollowUp] = useState("")
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [revision, setRevision] = useState(0)
@@ -64,17 +52,14 @@ export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; in
         Promise.all([
             requestRollingSkill<Catalog>("skills.catalog", {}, controller.signal),
             requestRollingSkill<RuntimeDescriptor[]>("installations.targets", {}, controller.signal),
-            requestRollingSkill<InstallationOverview>("installations.list", {}, controller.signal),
-        ]).then(([nextCatalog, runtimeItems, jobs]) => {
+        ]).then(([nextCatalog, runtimeItems]) => {
             setCatalog(nextCatalog)
             setRuntimes(runtimeItems)
             setRuntimeIds((current) => current.length ? current : runtimeItems[0]?.runtimeId ? [runtimeItems[0].runtimeId] : [])
-            setInstallations(jobs)
             const selectedSkillId = detail?.skill.id ?? initialSkillId
             const requestedSkill = nextCatalog.skills.find((skill) => skill.id === selectedSkillId) ?? nextCatalog.skills[0]
             if (requestedSkill) void loadSkill(requestedSkill.id, controller.signal)
             else setDetail(null)
-            if (initialJobId) void loadJob(initialJobId, controller.signal)
         }).catch((reason: unknown) => {
             if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"))
         })
@@ -84,10 +69,6 @@ export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; in
     const loadSkill = async (skillId: string, signal?: AbortSignal) => {
         const next = await requestRollingSkill<SkillDetail>("skills.get", {skillId}, signal)
         setDetail(next)
-        setInstallations(await requestRollingSkill<InstallationOverview>("installations.list", {skillId}, signal))
-    }
-    const loadJob = async (jobId: string, signal?: AbortSignal) => {
-        setSelectedJob(await requestRollingSkill<InstallationJob>("installations.get", {jobId}, signal))
     }
     const mutate = async (operation: () => Promise<unknown>) => {
         setBusy(true)
@@ -139,34 +120,12 @@ export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; in
             setBusy(false)
         }
     }
-    const sendFollowUp = () => {
-        const job = selectedJob
-        if (!job || !followUp.trim()) return
-        void mutate(async () => {
-            setSelectedJob(await requestRollingSkill<InstallationJob>("installations.send", {jobId: job.id, text: followUp.trim()}))
-            setFollowUp("")
-        })
-    }
-
-    useEffect(() => {
-        if (!installations.jobs.some((job) => ["queued", "running", "verifying", "awaiting_permission", "awaiting_confirmation"].includes(job.status))) return
-        const timer = window.setInterval(() => setRevision((value) => value + 1), 1_500)
-        return () => window.clearInterval(timer)
-    }, [installations.jobs])
-
     return (
         <div className="rolling-skill-data-stack">
-            <nav className="rolling-skill-tabs rolling-skill-skill-tabs" aria-label={t("skillManagementSections")}>
-                {([
-                    ["import", "skillImportTab"],
-                    ["versions", "skillVersionsTab"],
-                    ["install", "skillInstallTab"],
-                ] as Array<[SkillManagementTab, "skillImportTab" | "skillVersionsTab" | "skillInstallTab"]>).map(([tab, label]) => <Button key={tab} size="sm" aria-pressed={skillTab === tab} onClick={() => setSkillTab(tab)}>{t(label)}</Button>)}
-            </nav>
-            {skillTab !== "import" ? <label className="rolling-skill-current-skill"><span>{t("currentManagedSkill")}</span><select aria-label={t("currentManagedSkill")} className="rolling-skill-select" value={detail?.skill.id ?? ""} disabled={busy || catalog.skills.length === 0} onChange={(event) => void loadSkill(event.target.value)}>{catalog.skills.length === 0 ? <option value="">{t("emptySkills")}</option> : catalog.skills.map((skill) => <option key={skill.id} value={skill.id}>{skill.name}</option>)}</select></label> : null}
+            {mode !== "import" ? <label className="rolling-skill-current-skill"><span>{t("currentManagedSkill")}</span><select aria-label={t("currentManagedSkill")} className="rolling-skill-select" value={detail?.skill.id ?? ""} disabled={busy || catalog.skills.length === 0} onChange={(event) => {onSkillChange?.(event.target.value); void loadSkill(event.target.value)}}>{catalog.skills.length === 0 ? <option value="">{t("emptySkills")}</option> : catalog.skills.map((skill) => <option key={skill.id} value={skill.id}>{skill.name}</option>)}</select></label> : null}
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
 
-            {skillTab === "import" ? <section className="rolling-skill-panel">
+            {mode === "import" ? <section className="rolling-skill-panel">
                 <div className="rolling-skill-panel-header"><div><h3>{t("skillRepositories")}</h3><p>{t("skillRepositoriesDescription")}</p></div><Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("skills.rescan", {}))}>{t("rescan")}</Button></div>
                 <div className="rolling-skill-skill-import">
                     <select aria-label={t("skillSourceKind")} className="rolling-skill-select" value={sourceKind} onChange={(event) => {setSourceKind(event.target.value as SkillSourceKind); setSourceLocation("")}}><option value="folder">{t("skillSourceFolder")}</option><option value="local-git">{t("skillSourceLocalGit")}</option><option value="git-url">{t("skillSourceGitUrl")}</option><option value="zip">{t("skillSourceZip")}</option></select>
@@ -176,11 +135,11 @@ export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; in
                 <div className="rolling-skill-list">{catalog.skills.map((skill) => {
                     const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId)
                     const repositoryLabel = repository?.displayName && repository.displayName !== skill.name ? `${repository.displayName} · ` : ""
-                    return <article className="rolling-skill-list-row rolling-skill-managed-skill-row" key={skill.id}><button type="button" className="rolling-skill-skill-row" aria-current={detail?.skill.id === skill.id ? "true" : undefined} onClick={() => {setSkillTab("versions"); void loadSkill(skill.id)}}><strong>{skill.name}</strong><span>{repositoryLabel}{skill.description || skill.status}</span></button><Button size="sm" disabled={busy} onClick={() => void revealRepository(skill.repositoryId)}>{t("revealRepository")}</Button></article>
+                    return <article className="rolling-skill-list-row rolling-skill-managed-skill-row" key={skill.id}><button type="button" className="rolling-skill-skill-row" aria-current={detail?.skill.id === skill.id ? "true" : undefined} onClick={() => onOpenVersions?.(skill.id)}><strong>{skill.name}</strong><span>{repositoryLabel}{skill.description || skill.status}</span></button><Button size="sm" disabled={busy} onClick={() => void revealRepository(skill.repositoryId)}>{t("revealRepository")}</Button></article>
                 })}{catalog.skills.length === 0 ? <p>{t("emptySkills")}</p> : null}</div>
             </section> : null}
 
-            {skillTab === "versions" ? detail ? <section className="rolling-skill-panel">
+            {mode === "versions" ? detail ? <section className="rolling-skill-panel">
                 <div className="rolling-skill-panel-header"><div><h3>{detail.skill.name}</h3><p>{detail.skill.description || detail.skill.status}</p></div></div>
                 <pre className="rolling-skill-manifest">{detail.manifest}</pre>
                 <div className="rolling-skill-list">
@@ -192,27 +151,14 @@ export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; in
                 </div>
             </section> : <section className="rolling-skill-panel"><p>{t("emptySkills")}</p></section> : null}
 
-            {skillTab === "install" ? <>
+            {mode === "install" ? <>
                 {detail ? <section className="rolling-skill-panel">
                     <div className="rolling-skill-panel-header"><div><h3>{t("skillInstallTab")}</h3><p>{detail.skill.name} · {released?.versionLabel ?? t("notAvailable")}</p></div></div>
                     <RuntimeSelectionGrid t={t} runtimes={runtimes} values={runtimeIds} onChange={setRuntimeIds}/>
                     <Button tone="primary" disabled={busy || !released || runtimeIds.length === 0} onClick={() => void install()}>{t("installReleased")}</Button>
                 </section> : <section className="rolling-skill-panel"><p>{t("emptySkills")}</p></section>}
-                <section className="rolling-skill-panel"><h3>{t("installationJobs")}</h3><div className="rolling-skill-list">{installations.jobs.map((job) => <article className="rolling-skill-list-row" key={job.id}><div><strong>{job.status}</strong><span>{job.runtime.displayName} {job.runtime.version || ""} · {job.request.versionLabel ?? job.id}</span></div><div className="rolling-skill-actions"><Button size="sm" onClick={() => void loadJob(job.id)}>{t("details")}</Button>{["queued", "running", "verifying", "awaiting_permission", "awaiting_confirmation"].includes(job.status) ? <Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("installations.cancel", {jobId: job.id}))}>{t("cancelRun")}</Button> : null}</div></article>)}{installations.jobs.length === 0 ? <p>{t("emptyInstallationJobs")}</p> : null}</div></section>
-                <RuntimeInteractions t={t} ownerKind="installation"/>
+                <InstallationsPanel t={t} initialJobId={initialJobId} refreshRevision={revision}/>
             </> : null}
-            <Modal open={selectedJob !== null} onClose={() => setSelectedJob(null)} title={t("installationDetail")} closeLabel={t("close")} footer={<Button onClick={() => setSelectedJob(null)}>{t("close")}</Button>}>
-                {selectedJob ? <div className="rolling-skill-detail-stack">
-                    <p>{selectedJob.status} · {selectedJob.runtime.displayName} {selectedJob.runtime.version ?? ""}</p>
-                    {selectedJob.parsedResult ? <p>{t("installationVerification")}: {selectedJob.parsedResult.verification ?? t("notAvailable")}</p> : null}
-                    {selectedJob.error ? <p className="rolling-skill-inline-error">{selectedJob.error.code} · {selectedJob.error.message}</p> : null}
-                    <h4>{t("installerConversation")}</h4>
-                    <div className="rolling-skill-conversation-log">{selectedJob.messages?.map((message, index) => <div key={`${message.recordedAt ?? index}`} data-role={message.role}><strong>{message.role}</strong><p>{message.content}</p></div>)}</div>
-                    <h4>{t("installerActivity")}</h4>
-                    <div className="rolling-skill-list">{selectedJob.activities?.map((activity, index) => <div className="rolling-skill-list-row" key={`${activity.recordedAt ?? index}`}><div><strong>{activity.title ?? activity.type}</strong><span>{activity.summary}</span></div></div>)}</div>
-                    {selectedJob.canFollowUp ? <div className="rolling-skill-form-row"><Input value={followUp} placeholder={t("installerFollowUp")} onChange={(event: {target: {value: string}}) => setFollowUp(event.target.value)}/><Button disabled={busy || !followUp.trim()} onClick={sendFollowUp}>{t("sendRevision")}</Button></div> : null}
-                </div> : null}
-            </Modal>
         </div>
     )
 }
