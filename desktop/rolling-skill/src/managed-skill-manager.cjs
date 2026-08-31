@@ -3,6 +3,7 @@ const {
     chmodSync,
     closeSync,
     constants,
+    existsSync,
     fstatSync,
     lstatSync,
     mkdirSync,
@@ -41,6 +42,61 @@ function isContained(root, candidate) {
 
 function compareText(left, right) {
     return left < right ? -1 : left > right ? 1 : 0
+}
+
+function nextPatchVersion(versions) {
+    const used = new Set(versions.map((entry) => entry.versionLabel).filter(Boolean))
+    const stable = versions
+        .filter((entry) => entry.state === "released")
+        .flatMap((entry) => {
+            const match = String(entry.versionLabel ?? "").match(/^(\d+)\.(\d+)\.(\d+)$/u)
+            if (!match) return []
+            const tuple = match.slice(1).map(Number)
+            return tuple.every(Number.isSafeInteger) ? [tuple] : []
+        })
+        .sort((left, right) => (
+            left[0] - right[0] || left[1] - right[1] || left[2] - right[2]
+        ))
+    let [major, minor, patch] = stable.at(-1) ?? [1, 0, -1]
+    let candidate
+    do {
+        patch += 1
+        candidate = `${major}.${minor}.${patch}`
+    } while (used.has(candidate))
+    return candidate
+}
+
+function clearSkillTree(path, {preserveGit = false} = {}) {
+    for (const entry of readdirSync(path, {withFileTypes: true})) {
+        if (preserveGit && entry.name === ".git") continue
+        rmSync(join(path, entry.name), {recursive: true, force: true})
+    }
+}
+
+function movePreparedTree(preparedPath, targetPath, repositoryRoot) {
+    if (targetPath !== repositoryRoot) {
+        rmSync(targetPath, {recursive: true, force: true})
+        mkdirSync(dirname(targetPath), {recursive: true, mode: 0o700})
+        renameSync(preparedPath, targetPath)
+        return
+    }
+    clearSkillTree(targetPath, {preserveGit: true})
+    for (const entry of readdirSync(preparedPath, {withFileTypes: true})) {
+        renameSync(join(preparedPath, entry.name), join(targetPath, entry.name))
+    }
+    rmSync(preparedPath, {recursive: true, force: true})
+}
+
+function expectedEditBase(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value) ||
+        Object.keys(value).sort().join(",") !== "commit,contentDigest,snapshotDigest") {
+        throw new Error("Expected Skill edit base is invalid")
+    }
+    return {
+        commit: requiredText(value.commit, "Expected Skill edit commit", 64),
+        contentDigest: requiredText(value.contentDigest, "Expected Skill edit content digest", 80),
+        snapshotDigest: requiredText(value.snapshotDigest, "Expected Skill edit snapshot digest", 80),
+    }
 }
 
 function defaultManagedSkillPaths({applicationSupportDirectory}) {
@@ -536,11 +592,165 @@ class ManagedSkillManager {
         ))
     }
 
+    applyEditedSkill(input = {}) {
+        return this.enqueue(async () => {
+            const skill = this.store.getSkill(requiredText(input.skillId, "Skill id", 200))
+            const repository = this.store.getRepository(skill.repositoryId)
+            const repositoryRoot = this.repositoryPath(repository.id)
+            const selectedRoot = this.skillPath(skill.id)
+            const expected = expectedEditBase(input.expectedBase)
+            const current = await candidateBaseSnapshot(this, skill, repository)
+            if (
+                current.commit !== expected.commit ||
+                current.contentDigest !== expected.contentDigest ||
+                current.contentDigest !== expected.snapshotDigest
+            ) {
+                const error = new Error("Managed Skill changed while the Agent edit was open")
+                error.code = "RESOURCE_CHANGED"
+                throw error
+            }
+
+            const sourceRoot = realpathSync(requiredText(input.sourceRoot, "Skill edit source", 16_384))
+            const sourceScan = scanManagedSkillRepository(sourceRoot, this.scanLimits)
+            if (
+                sourceScan.skills.length !== 1 ||
+                sourceScan.skills[0].skillRoot !== "." ||
+                sourceScan.skills[0].status !== "valid" ||
+                sourceScan.skills[0].name !== skill.name
+            ) throw new Error("Edited Skill is invalid or changed identity")
+            const sourceSnapshot = snapshotManagedSkill(sourceRoot, this.scanLimits)
+            if (sourceSnapshot.digest === current.contentDigest) {
+                const error = new Error("Edited Skill has no content changes")
+                error.code = "NO_CHANGES"
+                throw error
+            }
+
+            const versions = this.store.listVersions(skill.id)
+            const versionLabel = nextPatchVersion(versions)
+            const message = requiredText(input.message, "Agent edit commit message", 2_000)
+            const operationId = randomUUID()
+            const backupPath = join(this.paths.applicationSupportDirectory, `.skill-edit-backup-${operationId}`)
+            const preparedPath = join(this.paths.applicationSupportDirectory, `.skill-edit-stage-${operationId}`)
+            const beforeHead = await this.git.head(repositoryRoot)
+            let tagName = null
+            let committed = false
+            let backupReady = false
+            try {
+                copyFolderWithoutGit(selectedRoot, backupPath, this.scanLimits)
+                backupReady = true
+                const backupSnapshot = snapshotManagedSkill(backupPath, this.scanLimits)
+                if (backupSnapshot.digest !== current.contentDigest) {
+                    const error = new Error("Managed Skill changed while its edit was being applied")
+                    error.code = "RESOURCE_CHANGED"
+                    throw error
+                }
+                copyFolderWithoutGit(sourceRoot, preparedPath, this.scanLimits)
+                if (snapshotManagedSkill(preparedPath, this.scanLimits).digest !== sourceSnapshot.digest) {
+                    throw new Error("Edited Skill changed while it was being applied")
+                }
+
+                movePreparedTree(preparedPath, selectedRoot, repositoryRoot)
+                const commit = await this.git.commitPaths(repositoryRoot, message, [skill.skillRoot])
+                committed = true
+                const committedSnapshot = await this.git.snapshotSkill(
+                    repositoryRoot,
+                    commit,
+                    skill.skillRoot,
+                    this.scanLimits,
+                )
+                if (committedSnapshot.digest !== sourceSnapshot.digest) {
+                    throw new Error("Committed Agent Skill edit digest is inconsistent")
+                }
+                const committedScan = scanManagedSkillRepository(repositoryRoot, this.scanLimits)
+                const committedSkill = committedScan.skills.find((entry) => entry.skillRoot === skill.skillRoot)
+                if (!committedSkill || committedSkill.status !== "valid" || committedSkill.name !== skill.name) {
+                    throw new Error("Committed Agent Skill edit changed Skill identity")
+                }
+                tagName = `rolling-skill/${skill.name}/${versionLabel}`
+                await this.git.createAnnotatedTag(
+                    repositoryRoot,
+                    tagName,
+                    `Release ${skill.name} ${versionLabel}`,
+                    commit,
+                )
+                const version = this.store.transaction(() => {
+                    const refreshed = this.store.replaceRepositorySkills(repository.id, committedScan.skills)
+                    if (!refreshed.some((entry) => entry.id === skill.id && entry.status === "valid")) {
+                        throw new Error("Managed Skill identity changed during release")
+                    }
+                    const candidate = this.store.addVersion({
+                        repositoryId: repository.id,
+                        skillId: skill.id,
+                        commit,
+                        contentDigest: committedSnapshot.digest,
+                        state: "candidate",
+                        createdBy: "user",
+                    })
+                    return this.store.releaseVersion(candidate.id, versionLabel)
+                })
+                rmSync(backupPath, {recursive: true, force: true})
+                backupReady = false
+                return {version, commit, contentDigest: committedSnapshot.digest}
+            } catch (error) {
+                const rollbackErrors = []
+                if (tagName) {
+                    try {
+                        await this.git.deleteTag(repositoryRoot, tagName)
+                    } catch (rollbackError) {
+                        rollbackErrors.push(rollbackError)
+                    }
+                }
+                if (committed) {
+                    try {
+                        await this.git.softReset(repositoryRoot, beforeHead)
+                    } catch (rollbackError) {
+                        rollbackErrors.push(rollbackError)
+                    }
+                }
+                if (backupReady && existsSync(backupPath)) {
+                    try {
+                        movePreparedTree(backupPath, selectedRoot, repositoryRoot)
+                        backupReady = false
+                    } catch (rollbackError) {
+                        rollbackErrors.push(rollbackError)
+                    }
+                }
+                try {
+                    await this.git.resetPaths(repositoryRoot, beforeHead, [skill.skillRoot])
+                } catch (rollbackError) {
+                    rollbackErrors.push(rollbackError)
+                }
+                if (rollbackErrors.length) {
+                    const recovery = new Error("Agent Skill edit failed and requires recovery", {cause: error})
+                    recovery.code = "NEEDS_RECOVERY"
+                    recovery.rollbackErrors = rollbackErrors
+                    throw recovery
+                }
+                throw error
+            } finally {
+                for (const path of [preparedPath, backupReady ? backupPath : null]) {
+                    if (path && existsSync(path)) rmSync(path, {recursive: true, force: true})
+                }
+            }
+        })
+    }
+
     repositoryPath(repositoryId) {
         const repository = this.store.getRepository(requiredText(repositoryId, "Repository id", 200))
         const path = realpathSync(repository.managedPath)
-        if (!isContained(this.paths.repositoriesRoot, path)) {
+        const repositoriesRoot = realpathSync(this.paths.repositoriesRoot)
+        if (!isContained(repositoriesRoot, path)) {
             throw new Error("Managed repository path is outside Application Support")
+        }
+        return path
+    }
+
+    skillPath(skillId) {
+        const skill = this.store.getSkill(requiredText(skillId, "Skill id", 200))
+        const repositoryRoot = this.repositoryPath(skill.repositoryId)
+        const path = realpathSync(join(repositoryRoot, skill.skillRoot))
+        if (!isContained(repositoryRoot, path)) {
+            throw new Error("Managed Skill path is outside its repository")
         }
         return path
     }
@@ -549,4 +759,5 @@ class ManagedSkillManager {
 module.exports = {
     ManagedSkillManager,
     defaultManagedSkillPaths,
+    nextPatchVersion,
 }

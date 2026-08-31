@@ -21,6 +21,7 @@ const {
     defaultManagedSkillPaths,
 } = require("../src/managed-skill-manager.cjs")
 const {ManagedSkillStore} = require("../src/managed-skill-store.cjs")
+const {snapshotManagedSkill} = require("../src/managed-skill-snapshot.cjs")
 
 const temporaryDirectories = []
 
@@ -330,6 +331,120 @@ describe("managed Skill repository manager", () => {
                 imported.repository.managedPath,
                 "rolling-skill/billing/v1.0.0",
             ),
+        )
+    })
+
+    it("applies one edited Skill and releases the next patch without committing siblings", async () => {
+        const {manager, store, git} = managerFixture()
+        const source = temporaryDirectory("rolling-skill-managed-agent-source-")
+        write(join(source, "skills", "one", "SKILL.md"), manifest("one", "One Skill", "First"))
+        write(join(source, "skills", "two", "SKILL.md"), manifest("two", "Two Skill", "First"))
+        const imported = await manager.importSource({kind: "folder", location: source})
+        const skillOne = imported.skills.find((entry) => entry.name === "one")
+        const skillTwo = imported.skills.find((entry) => entry.name === "two")
+        const initial = imported.versions.find((entry) => entry.skillId === skillOne.id)
+        await manager.releaseVersion({versionId: initial.id, versionLabel: "1.0.0"})
+        write(join(imported.repository.managedPath, skillTwo.skillRoot, "local.txt"), "uncommitted\n")
+        const editWorkspace = temporaryDirectory("rolling-skill-managed-agent-edit-")
+        write(join(editWorkspace, "SKILL.md"), manifest("one", "One Skill", "Agent improved"))
+        const expectedBase = await manager.candidateBase(skillOne.id)
+
+        const result = await manager.applyEditedSkill({
+            skillId: skillOne.id,
+            sourceRoot: editWorkspace,
+            expectedBase: {
+                commit: expectedBase.commit,
+                contentDigest: expectedBase.contentDigest,
+                snapshotDigest: expectedBase.contentDigest,
+            },
+            message: "Agent edit",
+        })
+
+        assert.equal(result.version.versionLabel, "1.0.1")
+        assert.equal(result.version.state, "released")
+        assert.equal(result.version.createdBy, "user")
+        assert.match(
+            readFileSync(join(imported.repository.managedPath, skillOne.skillRoot, "SKILL.md"), "utf8"),
+            /Agent improved/u,
+        )
+        assert.equal(
+            readFileSync(join(imported.repository.managedPath, skillTwo.skillRoot, "local.txt"), "utf8"),
+            "uncommitted\n",
+        )
+        assert.equal((await git.status(imported.repository.managedPath)).entries.some(
+            (entry) => entry.includes("skills/two/local.txt"),
+        ), true)
+        assert.equal(store.listVersions(skillOne.id).length, 2)
+        assert.equal(
+            await git.resolve(imported.repository.managedPath, "rolling-skill/one/1.0.1"),
+            result.version.commit,
+        )
+    })
+
+    it("uses 1.0.0 for the first automatic release", async () => {
+        const {manager} = managerFixture()
+        const source = temporaryDirectory("rolling-skill-managed-first-release-")
+        write(join(source, "SKILL.md"), manifest("billing", "Billing Skill", "First"))
+        const imported = await manager.importSource({kind: "folder", location: source})
+        const editWorkspace = temporaryDirectory("rolling-skill-managed-first-edit-")
+        write(join(editWorkspace, "SKILL.md"), manifest("billing", "Billing Skill", "Second"))
+        const base = await manager.candidateBase(imported.skills[0].id)
+
+        const result = await manager.applyEditedSkill({
+            skillId: imported.skills[0].id,
+            sourceRoot: editWorkspace,
+            expectedBase: {
+                commit: base.commit,
+                contentDigest: base.contentDigest,
+                snapshotDigest: base.contentDigest,
+            },
+            message: "Agent edit",
+        })
+
+        assert.equal(result.version.versionLabel, "1.0.0")
+    })
+
+    it("restores selected files and metadata when the atomic release fails", async () => {
+        const fixture = managerFixture()
+        const source = temporaryDirectory("rolling-skill-managed-agent-rollback-")
+        write(join(source, "SKILL.md"), manifest("billing", "Billing Skill", "First"))
+        const imported = await fixture.manager.importSource({kind: "folder", location: source})
+        const skill = imported.skills[0]
+        const editWorkspace = temporaryDirectory("rolling-skill-managed-agent-failing-edit-")
+        write(join(editWorkspace, "SKILL.md"), manifest("billing", "Billing Skill", "Second"))
+        const base = await fixture.manager.candidateBase(skill.id)
+        const beforeHead = await fixture.git.head(imported.repository.managedPath)
+        const beforeSnapshot = snapshotManagedSkill(imported.repository.managedPath)
+        const versionCount = fixture.store.listVersions(skill.id).length
+        const failingStore = new Proxy(fixture.store, {
+            get(target, property) {
+                if (property === "releaseVersion") return () => { throw new Error("release failed") }
+                const value = Reflect.get(target, property, target)
+                return typeof value === "function" ? value.bind(target) : value
+            },
+        })
+        const failingManager = new ManagedSkillManager({
+            applicationSupportDirectory: fixture.applicationSupportDirectory,
+            store: failingStore,
+            git: fixture.git,
+        })
+
+        await assert.rejects(() => failingManager.applyEditedSkill({
+            skillId: skill.id,
+            sourceRoot: editWorkspace,
+            expectedBase: {
+                commit: base.commit,
+                contentDigest: base.contentDigest,
+                snapshotDigest: base.contentDigest,
+            },
+            message: "Agent edit",
+        }), /release failed/iu)
+
+        assert.equal(await fixture.git.head(imported.repository.managedPath), beforeHead)
+        assert.equal(snapshotManagedSkill(imported.repository.managedPath).digest, beforeSnapshot.digest)
+        assert.equal(fixture.store.listVersions(skill.id).length, versionCount)
+        await assert.rejects(
+            () => fixture.git.resolve(imported.repository.managedPath, "rolling-skill/billing/1.0.0"),
         )
     })
 
