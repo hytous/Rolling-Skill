@@ -404,6 +404,7 @@ class OperatorSessionManager {
             "repositoryId",
             "skillId",
             "optimizationRunId",
+            "skillEditSessionId",
             ...(persisted ? ["workspaceDigest"] : []),
         ])
         const required = new Set([
@@ -425,6 +426,16 @@ class OperatorSessionManager {
                     200,
                 ),
             }),
+            ...(value.skillEditSessionId === undefined ? {} : {
+                skillEditSessionId: requiredText(
+                    value.skillEditSessionId,
+                    "Skill edit session id",
+                    200,
+                ),
+            }),
+        }
+        if (binding.optimizationRunId && binding.skillEditSessionId) {
+            throw new TypeError("Managed Skill binding cannot select two workspaces")
         }
         if (!Array.isArray(scope?.repositoryIds) || !scope.repositoryIds.includes(binding.repositoryId) ||
             !Array.isArray(scope?.skillIds) || !scope.skillIds.includes(binding.skillId)) {
@@ -438,6 +449,7 @@ class OperatorSessionManager {
             resolvedWorkspace.repositoryId !== binding.repositoryId ||
             resolvedWorkspace.skillId !== binding.skillId ||
             resolvedWorkspace.optimizationRunId !== binding.optimizationRunId ||
+            resolvedWorkspace.skillEditSessionId !== binding.skillEditSessionId ||
             typeof resolvedWorkspace.workspaceRoot !== "string" ||
             !isAbsolute(resolvedWorkspace.workspaceRoot)) {
             throw new Error("Managed Skill workspace resolution is invalid")
@@ -1261,7 +1273,9 @@ class OperatorSessionManager {
                 budget: context.budget,
                 checkpoint: managedWorkspace.binding?.optimizationRunId
                     ? {optimizationRunId: managedWorkspace.binding.optimizationRunId}
-                    : null,
+                    : managedWorkspace.binding?.skillEditSessionId
+                        ? {skillEditSessionId: managedWorkspace.binding.skillEditSessionId}
+                        : null,
             })
             control = this.#createControl({
                 session,

@@ -245,6 +245,55 @@ function optimizationRuntimeSkillBinding({
     }
 }
 
+function createManagedWorkspaceResolver({
+    workspaceManager,
+    managedSkillStore,
+    managedSkillManager,
+    resolveSkillEditWorkspace = null,
+} = {}) {
+    return async (binding = {}) => {
+        if (binding.skillEditSessionId) {
+            if (typeof resolveSkillEditWorkspace !== "function") {
+                throw new Error("Skill edit workspace resolution is unavailable")
+            }
+            const selected = await resolveSkillEditWorkspace(Object.freeze({...binding}))
+            if (
+                selected?.repositoryId !== binding.repositoryId ||
+                selected?.skillId !== binding.skillId ||
+                selected?.skillEditSessionId !== binding.skillEditSessionId ||
+                typeof selected?.workspaceRoot !== "string"
+            ) throw new Error("Skill edit workspace does not match the managed Skill binding")
+            return {
+                repositoryId: selected.repositoryId,
+                skillId: selected.skillId,
+                skillEditSessionId: selected.skillEditSessionId,
+                workspaceRoot: selected.workspaceRoot,
+            }
+        }
+        if (binding.optimizationRunId) {
+            const selected = workspaceManager.get(binding.optimizationRunId)
+            if (selected.repositoryId !== binding.repositoryId || selected.skillId !== binding.skillId) {
+                throw new Error("Optimization workspace does not match the managed Skill binding")
+            }
+            return {
+                repositoryId: selected.repositoryId,
+                skillId: selected.skillId,
+                optimizationRunId: selected.runId,
+                workspaceRoot: selected.workspacePath,
+            }
+        }
+        const skill = managedSkillStore.getSkill(binding.skillId)
+        if (skill.repositoryId !== binding.repositoryId) {
+            throw new Error("Managed Skill does not belong to the selected repository")
+        }
+        return {
+            repositoryId: binding.repositoryId,
+            skillId: binding.skillId,
+            workspaceRoot: managedSkillManager.repositoryPath(binding.repositoryId),
+        }
+    }
+}
+
 function createOperatorRuntime({
     paths,
     store,
@@ -262,6 +311,7 @@ function createOperatorRuntime({
     requestPermission = null,
     requestQuestion = null,
     operatorToolPath = null,
+    resolveSkillEditWorkspace = null,
     onChanged = () => {},
 } = {}) {
     if (!paths || !store || !runtimeServices || !evaluationRunner) {
@@ -352,29 +402,12 @@ function createOperatorRuntime({
         applicationSupportDirectory: paths.root,
         store: managedSkillStore,
     })
-    const resolveManagedWorkspace = (binding = {}) => {
-        if (binding.optimizationRunId) {
-            const selected = workspaceManager.get(binding.optimizationRunId)
-            if (selected.repositoryId !== binding.repositoryId || selected.skillId !== binding.skillId) {
-                throw new Error("Optimization workspace does not match the managed Skill binding")
-            }
-            return {
-                repositoryId: selected.repositoryId,
-                skillId: selected.skillId,
-                optimizationRunId: selected.runId,
-                workspaceRoot: selected.workspacePath,
-            }
-        }
-        const skill = managedSkillStore.getSkill(binding.skillId)
-        if (skill.repositoryId !== binding.repositoryId) {
-            throw new Error("Managed Skill does not belong to the selected repository")
-        }
-        return {
-            repositoryId: binding.repositoryId,
-            skillId: binding.skillId,
-            workspaceRoot: managedSkillManager.repositoryPath(binding.repositoryId),
-        }
-    }
+    const resolveManagedWorkspace = createManagedWorkspaceResolver({
+        workspaceManager,
+        managedSkillStore,
+        managedSkillManager,
+        resolveSkillEditWorkspace,
+    })
     sessionManager = new OperatorSessionManager({
         store: jobStore,
         engine: jobEngine,
@@ -677,6 +710,7 @@ function createOperatorRuntime({
 }
 
 module.exports = {
+    createManagedWorkspaceResolver,
     createOperatorRuntime,
     createOperatorServices,
     optimizationRuntimeSkillBinding,

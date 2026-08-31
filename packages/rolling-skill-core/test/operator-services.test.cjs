@@ -2,6 +2,7 @@ const assert = require("node:assert/strict")
 const {describe, it} = require("node:test")
 
 const {
+    createManagedWorkspaceResolver,
     createOperatorServices,
     optimizationRuntimeSkillBinding,
 } = require("../src/operator-services.cjs")
@@ -95,6 +96,55 @@ function fixture() {
 }
 
 describe("Rolling Skill Operator services", () => {
+    it("resolves a Skill edit binding before managed and Optimization workspaces", async () => {
+        const calls = []
+        const resolve = createManagedWorkspaceResolver({
+            workspaceManager: {
+                get(runId) {
+                    calls.push(["optimization", runId])
+                    return {
+                        runId,
+                        repositoryId: "repository-1",
+                        skillId: "skill-1",
+                        workspacePath: "/private/optimization/run-1",
+                    }
+                },
+            },
+            managedSkillStore: {
+                getSkill(skillId) {
+                    calls.push(["managed", skillId])
+                    return {id: skillId, repositoryId: "repository-1"}
+                },
+            },
+            managedSkillManager: {
+                repositoryPath(repositoryId) {
+                    return `/private/managed/${repositoryId}`
+                },
+            },
+            resolveSkillEditWorkspace(binding) {
+                calls.push(["edit", binding.skillEditSessionId])
+                return {
+                    repositoryId: "repository-1",
+                    skillId: "skill-1",
+                    skillEditSessionId: "edit-1",
+                    workspaceRoot: "/private/skill-edits/edit-1",
+                }
+            },
+        })
+
+        assert.deepEqual(await resolve({
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            skillEditSessionId: "edit-1",
+        }), {
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            skillEditSessionId: "edit-1",
+            workspaceRoot: "/private/skill-edits/edit-1",
+        })
+        assert.deepEqual(calls, [["edit", "edit-1"]])
+    })
+
     it("freezes each Optimization target's experiment installation path", () => {
         const runtimeConfiguration = {
             runtimeId: "codex:one",

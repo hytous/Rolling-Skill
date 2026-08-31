@@ -534,6 +534,51 @@ describe("OperatorSessionManager", () => {
             },
         })), /binding|unsupported/iu)
     })
+
+    it("binds a Skill edit session workspace and rejects two workspace specializations", async () => {
+        const resolved = []
+        const context = fixture({
+            resolveManagedSkillWorkspace: async (binding) => {
+                resolved.push(structuredClone(binding))
+                return {
+                    ...binding,
+                    workspaceRoot: "/private/skill-edit-workspaces/edit-1",
+                }
+            },
+        })
+
+        const created = await context.manager.create(createInput({
+            actions: ["skills.read"],
+            managedSkillBinding: {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                skillEditSessionId: "edit-1",
+            },
+        }))
+
+        assert.deepEqual(resolved, [{
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            skillEditSessionId: "edit-1",
+        }])
+        assert.equal(context.clients[0].options.workspaceRoot, "/private/skill-edit-workspaces/edit-1")
+        assert.deepEqual(created.parentJob.checkpoint, {skillEditSessionId: "edit-1"})
+        const configuration = context.store.getSession(created.session.id).transcript.findLast(
+            (entry) => entry.kind === "operator_session_configuration",
+        )
+        assert.equal(configuration.managedSkillBinding.skillEditSessionId, "edit-1")
+        assert.doesNotMatch(JSON.stringify(configuration), /private\/skill-edit-workspaces/iu)
+
+        await assert.rejects(context.manager.create(createInput({
+            managedSkillBinding: {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                optimizationRunId: "run-1",
+                skillEditSessionId: "edit-2",
+            },
+        })), /two workspaces|binding/iu)
+    })
+
     it("rejects UI-only authority before issuing an Operator capability", async () => {
         const context = fixture()
 
