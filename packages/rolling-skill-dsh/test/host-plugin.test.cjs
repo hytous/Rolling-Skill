@@ -253,6 +253,7 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
     let routeDisposed = false
     const toolNames = []
     let sessionReads = 0
+    const pickedSourceKinds = []
     const context = {
         agents: {
             get: () => null,
@@ -326,7 +327,13 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
     assert.deepEqual(plugin.inject, ["webServer", "tools", "sessionQuery", "agents"])
     const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-host-"))
     const dataset = seedCurationPrerequisites(dataRoot)
-    plugin.apply(context, {dataRoot}, {runtimeRegistry: context.runtimeRegistry})
+    plugin.apply(context, {dataRoot}, {
+        runtimeRegistry: context.runtimeRegistry,
+        skillSourcePicker: async (kind) => {
+            pickedSourceKinds.push(kind)
+            return "/tmp/selected-skill-source"
+        },
+    })
 
     assert.equal(registeredRoute.kind, "exact")
     assert.equal(registeredRoute.path, "/rolling-skill/api")
@@ -338,6 +345,18 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
         "rolling_skill_start_evaluation",
         "rolling_skill_run_capture",
     ])
+
+    const pickedSource = await callRoute(
+        registeredRoute.handler,
+        "skills.chooseSource",
+        {kind: "folder"},
+    )
+    assert.equal(pickedSource.status, 200)
+    assert.deepEqual(pickedSource.body.value, {
+        kind: "folder",
+        location: "/tmp/selected-skill-source",
+    })
+    assert.deepEqual(pickedSourceKinds, ["folder"])
 
     const inspected = await callRoute(
         registeredRoute.handler,

@@ -5,11 +5,13 @@ import {registerRollingSkillTools} from "./tools.js"
 import schedulerModule from "../scheduler/index.cjs"
 import {createNativeSessionDispatcher} from "./native-session-dispatcher.js"
 import {createPathRevealer} from "./reveal-path.js"
+import skillSourcePickerModule from "./skill-source-picker.cjs"
 
 const {createRollingSkillApplication, resolveDataPaths} = applicationModule
 const {createRollingSkillApiHandler} = apiModule
 const {createSessionEvidenceSource} = sessionEvidenceModule
 const {createSchedulerAdapter, resolveWorkerExecutable} = schedulerModule
+const {createNativeSkillSourcePicker, createSkillSourceDispatch} = skillSourcePickerModule
 
 export const inject = ["webServer", "tools", "sessionQuery", "agents"]
 
@@ -33,12 +35,16 @@ export function apply(ctx, config = {}, dependencies = {}) {
         rawCaseDispatcher: createNativeSessionDispatcher({agents: ctx.agents}),
         revealPath: createPathRevealer(),
     })
+    const publicApplication = createSkillSourceDispatch(
+        application,
+        dependencies.skillSourcePicker ?? createNativeSkillSourcePicker(),
+    )
     ctx.effect(() => {
         const disposeTools = registerRollingSkillTools(ctx, application)
         const disposeRoute = ctx.webServer.register({
             kind: "exact",
             path: "/rolling-skill/api",
-            handler: createRollingSkillApiHandler(application),
+            handler: createRollingSkillApiHandler(publicApplication),
         })
         return async () => {
             disposeTools()

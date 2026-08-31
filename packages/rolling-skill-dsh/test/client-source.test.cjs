@@ -309,6 +309,20 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(installations, /RuntimeInteractions/u)
     })
 
+    it("opens native source pickers for local Skill imports", () => {
+        const skills = source("workbench/SkillsPanel.tsx")
+        const locale = source("locale.ts")
+
+        assert.match(skills, /skills\.chooseSource/u)
+        assert.match(skills, /sourceKind === "git-url"/u)
+        assert.match(skills, /chooseSkillFolder/u)
+        assert.match(skills, /chooseSkillZip/u)
+        assert.match(skills, /selectedSkillSource/u)
+        assert.match(locale, /chooseSkillFolder:\s*"选择文件夹"/u)
+        assert.match(locale, /chooseSkillZip:\s*"选择 ZIP 文件"/u)
+        assert.doesNotMatch(skills, /placeholder=\{t\("skillSourceLocation"\)\}/u)
+    })
+
     it("renders structured Judge, score, and Case-scoped Trace evidence", () => {
         const evaluations = source("workbench/EvaluationsPanel.tsx")
 

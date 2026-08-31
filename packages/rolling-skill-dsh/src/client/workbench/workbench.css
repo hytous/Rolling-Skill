@@ -375,6 +375,43 @@
     min-width: 0;
 }
 
+.rolling-skill-skill-import {
+    align-items: end;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto;
+    margin-top: 14px;
+}
+
+.rolling-skill-skill-source-picker {
+    align-items: end;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-width: 0;
+}
+
+.rolling-skill-selected-source {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 7px;
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    padding: 7px 10px;
+}
+
+.rolling-skill-selected-source span {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+}
+
+.rolling-skill-selected-source code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .rolling-skill-list-row,
 .rolling-skill-case-row {
     background: var(--dsw-alias-bg-layer-1);
@@ -1552,6 +1589,15 @@
 
     .rolling-skill-candidate-target {
         grid-template-columns: minmax(0, 1fr);
+    }
+
+    .rolling-skill-skill-import {
+        align-items: stretch;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .rolling-skill-skill-source-picker {
+        grid-template-columns: minmax(0, 1fr) auto;
     }
 
     .rolling-skill-candidate-target .rolling-skill-select {

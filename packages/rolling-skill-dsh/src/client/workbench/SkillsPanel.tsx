@@ -39,13 +39,14 @@ interface InstallationJob {
     canFollowUp?: boolean
 }
 interface InstallationOverview {jobs: InstallationJob[]}
+type SkillSourceKind = "folder" | "local-git" | "git-url" | "zip"
 
 export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; initialSkillId?: string; initialJobId?: string}) {
     const [catalog, setCatalog] = useState<Catalog>({repositories: [], skills: []})
     const [detail, setDetail] = useState<SkillDetail | null>(null)
     const [runtimes, setRuntimes] = useState<RuntimeDescriptor[]>([])
     const [runtimeIds, setRuntimeIds] = useState<string[]>([])
-    const [sourceKind, setSourceKind] = useState("folder")
+    const [sourceKind, setSourceKind] = useState<SkillSourceKind>("folder")
     const [sourceLocation, setSourceLocation] = useState("")
     const [candidateMessage, setCandidateMessage] = useState("Update Skill workflow")
     const [releaseLabel, setReleaseLabel] = useState("")
@@ -121,6 +122,19 @@ export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; in
     }))
     const deprecate = (version: Version) => mutate(() => requestRollingSkill("skills.deprecate", {versionId: version.id}))
     const revealRepository = (repositoryId: string) => mutate(() => requestRollingSkill("skills.reveal", {repositoryId}))
+    const chooseSource = async () => {
+        if (sourceKind === "git-url") return
+        setBusy(true)
+        setError(null)
+        try {
+            const selected = await requestRollingSkill<{kind: SkillSourceKind; location: string | null}>("skills.chooseSource", {kind: sourceKind})
+            if (selected.location) setSourceLocation(selected.location)
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : t("loadError"))
+        } finally {
+            setBusy(false)
+        }
+    }
     const sendFollowUp = () => {
         const job = selectedJob
         if (!job || !followUp.trim()) return
@@ -140,10 +154,10 @@ export function SkillsPanel({t, initialSkillId, initialJobId}: {t: Translate; in
         <div className="rolling-skill-data-stack">
             <section className="rolling-skill-panel">
                 <div className="rolling-skill-panel-header"><div><h3>{t("skillRepositories")}</h3><p>{t("skillRepositoriesDescription")}</p></div><Button size="sm" disabled={busy} onClick={() => void mutate(() => requestRollingSkill("skills.rescan", {}))}>{t("rescan")}</Button></div>
-                <div className="rolling-skill-form-row">
-                    <select className="rolling-skill-select" value={sourceKind} onChange={(event) => setSourceKind(event.target.value)}><option value="folder">folder</option><option value="local-git">local-git</option><option value="git-url">git-url</option><option value="zip">zip</option></select>
-                    <Input value={sourceLocation} placeholder={t("skillSourceLocation")} onChange={(event: {target: {value: string}}) => setSourceLocation(event.target.value)}/>
-                    <Button size="sm" disabled={busy || !sourceLocation.trim()} onClick={() => void mutate(() => requestRollingSkill("skills.import", {kind: sourceKind, location: sourceLocation}))}>{t("importSkill")}</Button>
+                <div className="rolling-skill-skill-import">
+                    <select aria-label={t("skillSourceKind")} className="rolling-skill-select" value={sourceKind} onChange={(event) => {setSourceKind(event.target.value as SkillSourceKind); setSourceLocation("")}}><option value="folder">{t("skillSourceFolder")}</option><option value="local-git">{t("skillSourceLocalGit")}</option><option value="git-url">{t("skillSourceGitUrl")}</option><option value="zip">{t("skillSourceZip")}</option></select>
+                    {sourceKind === "git-url" ? <Input value={sourceLocation} placeholder={t("skillGitUrlPlaceholder")} onChange={(event: {target: {value: string}}) => setSourceLocation(event.target.value)}/> : <div className="rolling-skill-skill-source-picker"><div className="rolling-skill-selected-source" title={sourceLocation || t("noSkillSourceSelected")}><span>{t("selectedSkillSource")}</span><code>{sourceLocation || t("noSkillSourceSelected")}</code></div><Button size="sm" disabled={busy} onClick={() => void chooseSource()}>{t(sourceKind === "zip" ? "chooseSkillZip" : "chooseSkillFolder")}</Button></div>}
+                    <Button tone="primary" size="sm" disabled={busy || !sourceLocation.trim()} onClick={() => void mutate(() => requestRollingSkill("skills.import", {kind: sourceKind, location: sourceLocation}))}>{t("importSkill")}</Button>
                 </div>
                 <div className="rolling-skill-list">{catalog.skills.map((skill) => {
                     const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId)
