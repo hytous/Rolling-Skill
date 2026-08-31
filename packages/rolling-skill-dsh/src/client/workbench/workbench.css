@@ -95,6 +95,37 @@
     font-weight: 600;
 }
 
+.rolling-skill-skill-tabs {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 9px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 4px;
+}
+
+.rolling-skill-skill-tabs .rolling-skill-action-button {
+    justify-content: center;
+    width: 100%;
+}
+
+.rolling-skill-skill-tabs [aria-pressed="true"] {
+    background: var(--dsw-alias-bg-layer-2);
+    font-weight: 600;
+}
+
+.rolling-skill-current-skill {
+    align-items: center;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: auto minmax(180px, 360px);
+}
+
+.rolling-skill-current-skill > span {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 13px;
+}
+
 .rolling-skill-counts {
     display: grid;
     gap: 10px;
@@ -387,7 +418,7 @@
     align-items: end;
     display: grid;
     gap: 10px;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr);
     min-width: 0;
 }
 
@@ -1597,7 +1628,12 @@
     }
 
     .rolling-skill-skill-source-picker {
-        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .rolling-skill-current-skill {
+        align-items: stretch;
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .rolling-skill-candidate-target .rolling-skill-select {

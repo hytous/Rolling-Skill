@@ -320,7 +320,27 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(skills, /selectedSkillSource/u)
         assert.match(locale, /chooseSkillFolder:\s*"选择文件夹"/u)
         assert.match(locale, /chooseSkillZip:\s*"选择 ZIP 文件"/u)
+        assert.match(skills, /sourceLocation\s*\?\s*<div className="rolling-skill-selected-source"/u)
+        assert.match(locale, /revealRepository:\s*"打开受管 Skill 文件夹"/u)
         assert.doesNotMatch(skills, /placeholder=\{t\("skillSourceLocation"\)\}/u)
+    })
+
+    it("separates Skill import, version management, and installation without losing the selected Skill", () => {
+        const skills = source("workbench/SkillsPanel.tsx")
+        const locale = source("locale.ts")
+
+        assert.match(skills, /type SkillManagementTab = "import" \| "versions" \| "install"/u)
+        assert.match(skills, /aria-label=\{t\("skillManagementSections"\)\}/u)
+        assert.match(skills, /skillTab === "import"/u)
+        assert.match(skills, /skillTab === "versions"/u)
+        assert.match(skills, /skillTab === "install"/u)
+        assert.match(skills, /value=\{detail\?\.skill\.id \?\? ""\}/u)
+        assert.match(skills, /detail\?\.skill\.id \?\? initialSkillId/u)
+        assert.doesNotMatch(skills, /if \(!detail && requestedSkill\)/u)
+        assert.match(locale, /skillImportTab:\s*"导入"/u)
+        assert.match(locale, /skillVersionsTab:\s*"版本管理"/u)
+        assert.match(locale, /skillInstallTab:\s*"安装"/u)
+        assert.match(locale, /currentManagedSkill:\s*"当前 Skill"/u)
     })
 
     it("renders structured Judge, score, and Case-scoped Trace evidence", () => {
