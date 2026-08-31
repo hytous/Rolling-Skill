@@ -957,16 +957,15 @@ var zh = {
   importSkill: "\u5BFC\u5165",
   revealRepository: "\u6253\u5F00\u53D7\u7BA1 Skill \u6587\u4EF6\u5939",
   emptySkills: "\u6682\u65E0 Managed Skill",
-  candidateMessageDefault: "\u66F4\u65B0 Skill \u5185\u5BB9",
   publishedVersions: "\u5DF2\u53D1\u5E03\u7248\u672C",
   emptyPublishedVersions: "\u8FD8\u6CA1\u6709\u5DF2\u53D1\u5E03\u7248\u672C",
   viewSkillContent: "\u67E5\u770B Skill \u5185\u5BB9",
-  prepareVersion: "\u51C6\u5907\u65B0\u7248\u672C",
-  prepareVersionDescription: "\u5148\u4FDD\u5B58\u5F53\u524D Skill \u5185\u5BB9\uFF0C\u518D\u8BBE\u7F6E\u7248\u672C\u53F7\u53D1\u5E03\u3002",
+  prepareVersion: "\u51C6\u5907\u53D1\u5E03",
+  prepareVersionDescription: "\u68C0\u6D4B\u5230 Skill \u5185\u5BB9\u6709\u53D8\u66F4\u3002\u4FDD\u5B58\u540E\u4F1A\u751F\u6210\u4E00\u4E2A\u5F85\u53D1\u5E03\u5FEB\u7167\uFF0C\u4E0D\u4F1A\u7ACB\u5373\u53D1\u5E03\u6216\u5B89\u88C5\u3002",
+  versionUnchanged: "\u5F53\u524D Skill \u5185\u5BB9\u4E0E\u5DF2\u8BB0\u5F55\u7248\u672C\u4E00\u81F4\uFF0C\u65E0\u9700\u518D\u6B21\u4FDD\u5B58\u3002\u4FEE\u6539 Skill \u540E\u5237\u65B0\u6B64\u9875\u5373\u53EF\u51C6\u5907\u65B0\u7248\u672C\u3002",
   versionReady: "\u5F53\u524D\u5185\u5BB9\u5DF2\u51C6\u5907\u597D\uFF0C\u586B\u5199\u7248\u672C\u53F7\u5373\u53EF\u53D1\u5E03\u3002",
-  versionChangeNote: "\u7248\u672C\u8BF4\u660E",
   versionNumber: "\u7248\u672C\u53F7",
-  saveVersionContent: "\u4FDD\u5B58\u5F53\u524D\u5185\u5BB9",
+  saveVersionContent: "\u4FDD\u5B58\u4E3A\u5F85\u53D1\u5E03\u7248\u672C",
   releaseVersion: "\u53D1\u5E03\u65B0\u7248\u672C",
   release: "\u53D1\u5E03",
   installationRuntime: "\u5B89\u88C5\u76EE\u6807 Runtime",
@@ -1388,16 +1387,15 @@ var en = {
   importSkill: "Import",
   revealRepository: "Open Managed Skill Folder",
   emptySkills: "No Managed Skills",
-  candidateMessageDefault: "Update Skill content",
   publishedVersions: "Published Versions",
   emptyPublishedVersions: "No published versions yet",
   viewSkillContent: "View Skill Content",
-  prepareVersion: "Prepare a New Version",
-  prepareVersionDescription: "Save the current Skill content, then assign a version number and publish it.",
+  prepareVersion: "Prepare to Publish",
+  prepareVersionDescription: "Skill content has changed. Saving creates a pending snapshot without publishing or installing it.",
+  versionUnchanged: "The current Skill content matches a recorded version and does not need to be saved again. Refresh this page after changing the Skill to prepare a new version.",
   versionReady: "The current content is ready. Enter a version number to publish it.",
-  versionChangeNote: "Version note",
   versionNumber: "Version number",
-  saveVersionContent: "Save Current Content",
+  saveVersionContent: "Save as Pending Version",
   releaseVersion: "Publish New Version",
   release: "Release",
   installationRuntime: "Installation Target Runtime",
@@ -14169,7 +14167,7 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
   const [runtimeIds, setRuntimeIds] = (0, import_react15.useState)([]);
   const [sourceKind, setSourceKind] = (0, import_react15.useState)("folder");
   const [sourceLocation, setSourceLocation] = (0, import_react15.useState)("");
-  const [candidateMessage, setCandidateMessage] = (0, import_react15.useState)(() => t("candidateMessageDefault"));
+  const [candidateBase, setCandidateBase] = (0, import_react15.useState)(null);
   const [releaseLabel, setReleaseLabel] = (0, import_react15.useState)("");
   const [busy, setBusy] = (0, import_react15.useState)(false);
   const [error, setError] = (0, import_react15.useState)(null);
@@ -14186,13 +14184,26 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
       const selectedSkillId = initialSkillId ?? detail?.skill.id;
       const requestedSkill = nextCatalog.skills.find((skill) => skill.id === selectedSkillId) ?? nextCatalog.skills[0];
       if (requestedSkill) void loadSkill(requestedSkill.id, controller.signal);
-      else setDetail(null);
+      else {
+        setDetail(null);
+        setCandidateBase(null);
+      }
     }).catch((reason) => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
     });
     return () => controller.abort();
-  }, [revision, initialSkillId, initialJobId]);
+  }, [revision, initialSkillId, initialJobId, mode]);
   const loadSkill = async (skillId, signal) => {
+    setCandidateBase(null);
+    if (mode === "versions") {
+      const [next2, nextCandidateBase] = await Promise.all([
+        requestRollingSkill("skills.get", { skillId }, signal),
+        requestRollingSkill("skills.candidateBase", { skillId }, signal)
+      ]);
+      setDetail(next2);
+      setCandidateBase(nextCandidateBase);
+      return;
+    }
     const next = await requestRollingSkill("skills.get", { skillId }, signal);
     setDetail(next);
   };
@@ -14212,10 +14223,13 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
   const publishedVersions = (0, import_react15.useMemo)(() => detail?.versions.filter((version) => version.state === "released") ?? [], [detail]);
   const releasedVersions = (0, import_react15.useMemo)(() => detail?.versions.filter((version) => version.state === "released" && !version.deprecatedAt) ?? [], [detail]);
   const released = releasedVersions[0] ?? null;
+  const contentAlreadyRecorded = Boolean(candidateBase && detail?.versions.some((version) => version.contentDigest === candidateBase.contentDigest));
   const createCandidate = () => mutate(async () => {
     if (!detail) return;
     const expectedBase = await requestRollingSkill("skills.candidateBase", { skillId: detail.skill.id });
-    await requestRollingSkill("skills.createCandidate", { skillId: detail.skill.id, message: candidateMessage, expectedBase });
+    setCandidateBase(expectedBase);
+    if (detail.versions.some((version) => version.contentDigest === expectedBase.contentDigest)) return;
+    await requestRollingSkill("skills.createCandidate", { skillId: detail.skill.id, message: "Update managed Skill content", expectedBase });
   });
   const release = () => mutate(() => requestRollingSkill("skills.release", {
     versionId: candidate?.id,
@@ -14327,7 +14341,7 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
       /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("section", { className: "rolling-skill-version-workflow", children: [
         /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("h4", { children: candidate ? t("releaseVersion") : t("prepareVersion") }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: candidate ? t("versionReady") : t("prepareVersionDescription") })
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: candidate ? t("versionReady") : contentAlreadyRecorded ? t("versionUnchanged") : t("prepareVersionDescription") })
         ] }),
         candidate ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-form-row", children: [
           /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("label", { className: "rolling-skill-field", children: [
@@ -14335,13 +14349,7 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
             /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(import_dsh_client_ui_primitives12.Input, { value: releaseLabel, placeholder: "1.0.0", onChange: (event) => setReleaseLabel(event.target.value) })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { tone: "primary", size: "sm", disabled: busy || !releaseLabel.trim(), onClick: () => void release(), children: t("release") })
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-form-row", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("label", { className: "rolling-skill-field", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("span", { children: t("versionChangeNote") }),
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(import_dsh_client_ui_primitives12.Input, { value: candidateMessage, onChange: (event) => setCandidateMessage(event.target.value) })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { size: "sm", disabled: busy || !candidateMessage.trim(), onClick: () => void createCandidate(), children: t("saveVersionContent") })
-        ] })
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("div", { className: "rolling-skill-form-row", children: /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { size: "sm", disabled: busy || !candidateBase || contentAlreadyRecorded, onClick: () => void createCandidate(), children: t("saveVersionContent") }) })
       ] })
     ] }) : /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("section", { className: "rolling-skill-panel", children: /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: t("emptySkills") }) }) : null,
     mode === "install" ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)(import_jsx_runtime18.Fragment, { children: [

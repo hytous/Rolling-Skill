@@ -23,6 +23,7 @@ interface Version {
 }
 interface Catalog {repositories: Repository[]; skills: SkillEntry[]}
 interface SkillDetail {skill: SkillEntry; manifest: string; versions: Version[]}
+interface CandidateBase {commit: string | null; contentDigest: string; dirty: boolean}
 type SkillSourceKind = "folder" | "local-git" | "git-url" | "zip"
 
 function dateTime(value: string | null | undefined, fallback: string): string {
@@ -47,7 +48,7 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
     const [runtimeIds, setRuntimeIds] = useState<string[]>([])
     const [sourceKind, setSourceKind] = useState<SkillSourceKind>("folder")
     const [sourceLocation, setSourceLocation] = useState("")
-    const [candidateMessage, setCandidateMessage] = useState(() => t("candidateMessageDefault"))
+    const [candidateBase, setCandidateBase] = useState<CandidateBase | null>(null)
     const [releaseLabel, setReleaseLabel] = useState("")
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -65,14 +66,27 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
             const selectedSkillId = initialSkillId ?? detail?.skill.id
             const requestedSkill = nextCatalog.skills.find((skill) => skill.id === selectedSkillId) ?? nextCatalog.skills[0]
             if (requestedSkill) void loadSkill(requestedSkill.id, controller.signal)
-            else setDetail(null)
+            else {
+                setDetail(null)
+                setCandidateBase(null)
+            }
         }).catch((reason: unknown) => {
             if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"))
         })
         return () => controller.abort()
-    }, [revision, initialSkillId, initialJobId])
+    }, [revision, initialSkillId, initialJobId, mode])
 
     const loadSkill = async (skillId: string, signal?: AbortSignal) => {
+        setCandidateBase(null)
+        if (mode === "versions") {
+            const [next, nextCandidateBase] = await Promise.all([
+                requestRollingSkill<SkillDetail>("skills.get", {skillId}, signal),
+                requestRollingSkill<CandidateBase>("skills.candidateBase", {skillId}, signal),
+            ])
+            setDetail(next)
+            setCandidateBase(nextCandidateBase)
+            return
+        }
         const next = await requestRollingSkill<SkillDetail>("skills.get", {skillId}, signal)
         setDetail(next)
     }
@@ -92,10 +106,13 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
     const publishedVersions = useMemo(() => detail?.versions.filter((version) => version.state === "released") ?? [], [detail])
     const releasedVersions = useMemo(() => detail?.versions.filter((version) => version.state === "released" && !version.deprecatedAt) ?? [], [detail])
     const released = releasedVersions[0] ?? null
+    const contentAlreadyRecorded = Boolean(candidateBase && detail?.versions.some((version) => version.contentDigest === candidateBase.contentDigest))
     const createCandidate = () => mutate(async () => {
         if (!detail) return
-        const expectedBase = await requestRollingSkill<{commit: string | null; contentDigest: string; dirty: boolean}>("skills.candidateBase", {skillId: detail.skill.id})
-        await requestRollingSkill("skills.createCandidate", {skillId: detail.skill.id, message: candidateMessage, expectedBase})
+        const expectedBase = await requestRollingSkill<CandidateBase>("skills.candidateBase", {skillId: detail.skill.id})
+        setCandidateBase(expectedBase)
+        if (detail.versions.some((version) => version.contentDigest === expectedBase.contentDigest)) return
+        await requestRollingSkill("skills.createCandidate", {skillId: detail.skill.id, message: "Update managed Skill content", expectedBase})
     })
     const release = () => mutate(() => requestRollingSkill("skills.release", {
         versionId: candidate?.id,
@@ -155,8 +172,8 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
                     {publishedVersions.length === 0 ? <p>{t("emptyPublishedVersions")}</p> : null}
                 </div>
                 <section className="rolling-skill-version-workflow">
-                    <div><h4>{candidate ? t("releaseVersion") : t("prepareVersion")}</h4><p>{candidate ? t("versionReady") : t("prepareVersionDescription")}</p></div>
-                    {candidate ? <div className="rolling-skill-form-row"><label className="rolling-skill-field"><span>{t("versionNumber")}</span><Input value={releaseLabel} placeholder="1.0.0" onChange={(event: {target: {value: string}}) => setReleaseLabel(event.target.value)}/></label><Button tone="primary" size="sm" disabled={busy || !releaseLabel.trim()} onClick={() => void release()}>{t("release")}</Button></div> : <div className="rolling-skill-form-row"><label className="rolling-skill-field"><span>{t("versionChangeNote")}</span><Input value={candidateMessage} onChange={(event: {target: {value: string}}) => setCandidateMessage(event.target.value)}/></label><Button size="sm" disabled={busy || !candidateMessage.trim()} onClick={() => void createCandidate()}>{t("saveVersionContent")}</Button></div>}
+                    <div><h4>{candidate ? t("releaseVersion") : t("prepareVersion")}</h4><p>{candidate ? t("versionReady") : contentAlreadyRecorded ? t("versionUnchanged") : t("prepareVersionDescription")}</p></div>
+                    {candidate ? <div className="rolling-skill-form-row"><label className="rolling-skill-field"><span>{t("versionNumber")}</span><Input value={releaseLabel} placeholder="1.0.0" onChange={(event: {target: {value: string}}) => setReleaseLabel(event.target.value)}/></label><Button tone="primary" size="sm" disabled={busy || !releaseLabel.trim()} onClick={() => void release()}>{t("release")}</Button></div> : <div className="rolling-skill-form-row"><Button size="sm" disabled={busy || !candidateBase || contentAlreadyRecorded} onClick={() => void createCandidate()}>{t("saveVersionContent")}</Button></div>}
                 </section>
             </section> : <section className="rolling-skill-panel"><p>{t("emptySkills")}</p></section> : null}
 
