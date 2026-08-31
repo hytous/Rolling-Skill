@@ -24073,6 +24073,7 @@ var require_legacy_import = __commonJS({
       if (schema === "installations") return ["jobs", "installations"].every((key) => Array.isArray(value[key]) && value[key].length === 0);
       if (schema === "operator") return ["sessions", "jobs", "steps", "approvals", "artifacts", "events"].every((key) => Array.isArray(value[key]) && value[key].length === 0);
       if (schema === "optimization") return Array.isArray(value.runs) && value.runs.length === 0 && Array.isArray(value.creationKeys) && value.creationKeys.length === 0;
+      if (schema === "skill-edits") return value.schemaVersion === "rolling-skill-skill-edits/v1" && Array.isArray(value.edits) && value.edits.length === 0;
       return false;
     }
     function assertPristineDestination(destinationRoot) {
@@ -24086,6 +24087,7 @@ var require_legacy_import = __commonJS({
         ["skill-installations.json", "installations"],
         ["jobs/operator-jobs.json", "operator"],
         ["jobs/optimization-runs.json", "optimization"],
+        ["jobs/skill-edits.json", "skill-edits"],
         ["jobs/.optimization-runs.json.owner", "optimization-owner"]
       ]);
       const allowedEmptyDirectories = /* @__PURE__ */ new Set([
@@ -24097,7 +24099,8 @@ var require_legacy_import = __commonJS({
         "logs",
         "locks",
         "scheduler",
-        "optimization-workspaces"
+        "optimization-workspaces",
+        "skill-edit-workspaces"
       ]);
       function visit(directory) {
         for (const name of readdirSync(directory)) {
