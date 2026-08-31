@@ -14544,8 +14544,7 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
     targets: runtimeIds.map((selectedRuntimeId) => ({ runtimeId: selectedRuntimeId, modelId: null, effort: null, permissionMode: null }))
   }));
   const deprecate = (version) => mutate(() => requestRollingSkill("skills.deprecate", { versionId: version.id }));
-  const revealRepository = (repositoryId) => mutate(() => requestRollingSkill("skills.reveal", { repositoryId }));
-  const revealManagedSkill = () => mutate(() => requestRollingSkill("skills.revealSkill", { skillId: detail?.skill.id }));
+  const revealManagedSkill = (skillId) => mutate(() => requestRollingSkill("skills.revealSkill", { skillId }));
   const copyManagedSkillPath = async () => {
     if (!managedSkillPath) return;
     setError(null);
@@ -14618,7 +14617,7 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
                 skill.description || skill.status
               ] })
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void revealRepository(skill.repositoryId), children: t("revealRepository") })
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void revealManagedSkill(skill.id), children: t("revealRepository") })
           ] }, skill.id);
         }),
         catalog.skills.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: t("emptySkills") }) : null
@@ -14632,7 +14631,7 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-actions", children: [
           /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { tone: "primary", size: "sm", disabled: busy, onClick: () => setEditOpen(true), children: t(hasActiveEdit ? "continueSkillEdit" : "editSkillWithAgent") }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void revealManagedSkill(), children: t("revealRepository") })
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void revealManagedSkill(detail.skill.id), children: t("revealRepository") })
         ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-managed-path", children: [

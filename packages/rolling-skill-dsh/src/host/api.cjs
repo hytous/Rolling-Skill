@@ -33,6 +33,20 @@ function publicFailure(request, response, error) {
         })
         return
     }
+    const publicCodes = {
+        RESOURCE_CHANGED: {status: 409, message: "The Skill changed. Refresh before continuing."},
+        NO_CHANGES: {status: 409, message: "The Skill edit has no changes to apply."},
+        NEEDS_RECOVERY: {status: 409, message: "The Skill edit needs recovery before it can continue."},
+        NOT_FOUND: {status: 404, message: "The requested Rolling Skill resource was not found."},
+    }
+    const publicCode = typeof error?.code === "string" ? publicCodes[error.code] : null
+    if (publicCode) {
+        writeJson(request, response, publicCode.status, {
+            ok: false,
+            error: {code: error.code, message: publicCode.message},
+        })
+        return
+    }
     const message = String(error?.message ?? "")
     if (
         message.startsWith("Unknown Rolling Skill method") ||

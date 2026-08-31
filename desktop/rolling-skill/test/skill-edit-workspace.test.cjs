@@ -114,4 +114,30 @@ describe("Skill edit workspace manager", () => {
         assert.equal(Buffer.byteLength(diff.files[0].patch), 128)
         assert.equal(diff.truncated, true)
     })
+
+    it("restores a persisted workspace through a canonical path alias", async () => {
+        const root = temporaryDirectory()
+        const sourceRoot = join(root, "skill")
+        const workspacesRoot = join(root, "workspaces")
+        const aliasRoot = join(root, "workspaces-alias")
+        write(join(sourceRoot, "SKILL.md"), manifest("restored"))
+        const first = new SkillEditWorkspaceManager({workspacesRoot})
+        const created = await first.create({
+            sessionId: "edit-restored",
+            sourceRoot,
+            skillName: "restored",
+        })
+        symlinkSync(workspacesRoot, aliasRoot)
+        const restored = new SkillEditWorkspaceManager({workspacesRoot})
+
+        const registered = await restored.register({
+            sessionId: "edit-restored",
+            skillName: "restored",
+            workspacePath: join(aliasRoot, "edit-restored"),
+            baselineDigest: created.baselineDigest,
+        })
+
+        assert.equal(registered.workspacePath, created.workspacePath)
+        assert.equal((await restored.validate("edit-restored")).skill.name, "restored")
+    })
 })

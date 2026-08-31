@@ -16092,6 +16092,9 @@ var require_skill_edit_store = __commonJS({
           createdAt: now,
           updatedAt: now
         });
+        if (this.load().edits.some((edit) => edit.id === record.id)) {
+          throw new Error("Duplicate Skill edit id");
+        }
         this.load().edits.push(record);
         this.persist();
         return copy(record);
@@ -16352,7 +16355,9 @@ var require_skill_edit_workspace = __commonJS({
           const sessionId = requiredId(input.sessionId);
           const skillName = requiredText(input.skillName, "Skill name", 128);
           const workspacePath = this.workspacePath(sessionId);
-          if (resolve(requiredText(input.workspacePath, "Skill edit workspace path", 16384)) !== workspacePath) {
+          const persistedPath = resolve(requiredText(input.workspacePath, "Skill edit workspace path", 16384));
+          const canonicalPersistedPath = existsSync(persistedPath) ? realpathSync(persistedPath) : persistedPath;
+          if (canonicalPersistedPath !== workspacePath) {
             throw new Error("Persisted Skill edit workspace identity changed");
           }
           this.#verifyPath(workspacePath);

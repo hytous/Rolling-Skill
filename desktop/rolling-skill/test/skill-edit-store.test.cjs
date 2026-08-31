@@ -71,4 +71,17 @@ describe("Skill edit store", () => {
             /terminal state/iu,
         )
     })
+
+    it("rejects duplicate edit ids before persisting another Skill", () => {
+        const root = mkdtempSync(join(tmpdir(), "rolling-skill-edit-duplicate-"))
+        const store = new SkillEditStore(join(root, "skill-edits.json"))
+        store.create(input(root, {id: "edit-fixed"}))
+
+        assert.throws(() => store.create(input(root, {
+            id: "edit-fixed",
+            skillId: "skill-2",
+            workspacePath: join(root, "workspaces", "edit-fixed-2"),
+        })), /duplicate Skill edit id/iu)
+        assert.equal(store.list().length, 1)
+    })
 })

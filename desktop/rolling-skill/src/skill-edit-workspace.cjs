@@ -215,7 +215,9 @@ class SkillEditWorkspaceManager {
             const sessionId = requiredId(input.sessionId)
             const skillName = requiredText(input.skillName, "Skill name", 128)
             const workspacePath = this.workspacePath(sessionId)
-            if (resolve(requiredText(input.workspacePath, "Skill edit workspace path", 16_384)) !== workspacePath) {
+            const persistedPath = resolve(requiredText(input.workspacePath, "Skill edit workspace path", 16_384))
+            const canonicalPersistedPath = existsSync(persistedPath) ? realpathSync(persistedPath) : persistedPath
+            if (canonicalPersistedPath !== workspacePath) {
                 throw new Error("Persisted Skill edit workspace identity changed")
             }
             this.#verifyPath(workspacePath)

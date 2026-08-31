@@ -94,6 +94,11 @@ function fixture() {
         async operatorCancel(input) { calls.push(["operator.cancel", input]); operatorState = "stopped"; return {state: "stopped"} },
     }
     return {
+        root,
+        store,
+        workspaceManager,
+        managedSkillManager,
+        operatorServices,
         calls,
         setOperatorState(value) { operatorState = value },
         services: createSkillEditServices({
@@ -188,5 +193,30 @@ describe("Rolling Skill Agent edit services", () => {
             sessionId: started.id,
             expectedRevision: started.revision,
         }), /still running/iu)
+    })
+
+    it("marks an interrupted session for recovery when its workspace is missing", async () => {
+        const test = fixture()
+        const started = await test.services.start({
+            skillId: "skill-1",
+            runtimeId: "codex:one",
+            modelId: "gpt-5.6-sol",
+            effort: "high",
+            objective: "Improve it",
+        })
+        const recoveringServices = createSkillEditServices({
+            store: test.store,
+            workspaceManager: {
+                ...test.workspaceManager,
+                async register() { throw new Error("workspace is missing") },
+            },
+            managedSkillManager: test.managedSkillManager,
+            operatorServices: test.operatorServices,
+        })
+
+        await recoveringServices.list({skillId: "skill-1"})
+        const recovered = test.store.require(started.id)
+        assert.equal(recovered.state, "needs_recovery")
+        assert.match(recovered.error.message, /workspace is missing/iu)
     })
 })

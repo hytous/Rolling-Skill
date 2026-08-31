@@ -142,6 +142,29 @@ describe("Rolling Skill Host JSON API", () => {
         assert.doesNotMatch(response.text, /snapshotPath|private/u)
     })
 
+    it("returns actionable edit conflicts without exposing internal paths", async () => {
+        const {createRollingSkillApiHandler} = require("../src/host/api.cjs")
+        const handler = createRollingSkillApiHandler({
+            dispatch: async () => {
+                const error = new Error("changed at /private/rolling-skill/repositories/secret")
+                error.code = "RESOURCE_CHANGED"
+                throw error
+            },
+        })
+
+        const response = await request(handler, {
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({method: "skillEdits.applyAndRelease", input: {}}),
+        })
+
+        assert.equal(response.status, 409)
+        assert.deepEqual(JSON.parse(response.text), {
+            ok: false,
+            error: {code: "RESOURCE_CHANGED", message: "The Skill changed. Refresh before continuing."},
+        })
+        assert.doesNotMatch(response.text, /private|repositories|secret/u)
+    })
+
     it("does not dispatch an already-aborted request", async () => {
         const {PassThrough} = require("node:stream")
         const {createRollingSkillApiHandler} = require("../src/host/api.cjs")

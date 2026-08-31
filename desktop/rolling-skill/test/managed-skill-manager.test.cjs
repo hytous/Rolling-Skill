@@ -404,6 +404,36 @@ describe("managed Skill repository manager", () => {
         assert.equal(result.version.versionLabel, "1.0.0")
     })
 
+    it("rejects applying a draft after the selected managed Skill changes", async () => {
+        const {manager} = managerFixture()
+        const source = temporaryDirectory("rolling-skill-managed-agent-conflict-")
+        write(join(source, "SKILL.md"), manifest("billing", "Billing Skill", "First"))
+        const imported = await manager.importSource({kind: "folder", location: source})
+        const skill = imported.skills[0]
+        const editWorkspace = temporaryDirectory("rolling-skill-managed-agent-conflict-edit-")
+        write(join(editWorkspace, "SKILL.md"), manifest("billing", "Billing Skill", "Agent change"))
+        const base = await manager.candidateBase(skill.id)
+        write(
+            join(imported.repository.managedPath, skill.skillRoot, "SKILL.md"),
+            manifest("billing", "Billing Skill", "External change"),
+        )
+
+        await assert.rejects(() => manager.applyEditedSkill({
+            skillId: skill.id,
+            sourceRoot: editWorkspace,
+            expectedBase: {
+                commit: base.commit,
+                contentDigest: base.contentDigest,
+                snapshotDigest: base.contentDigest,
+            },
+            message: "Agent edit",
+        }), error => error.code === "RESOURCE_CHANGED")
+        assert.match(
+            readFileSync(join(imported.repository.managedPath, skill.skillRoot, "SKILL.md"), "utf8"),
+            /External change/u,
+        )
+    })
+
     it("restores selected files and metadata when the atomic release fails", async () => {
         const fixture = managerFixture()
         const source = temporaryDirectory("rolling-skill-managed-agent-rollback-")

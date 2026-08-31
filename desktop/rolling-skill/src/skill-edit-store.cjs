@@ -222,6 +222,9 @@ class SkillEditStore {
             createdAt: now,
             updatedAt: now,
         })
+        if (this.load().edits.some(edit => edit.id === record.id)) {
+            throw new Error("Duplicate Skill edit id")
+        }
         this.load().edits.push(record)
         this.persist()
         return copy(record)

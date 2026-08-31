@@ -15426,6 +15426,9 @@ var require_skill_edit_store = __commonJS({
           createdAt: now,
           updatedAt: now
         });
+        if (this.load().edits.some((edit) => edit.id === record.id)) {
+          throw new Error("Duplicate Skill edit id");
+        }
         this.load().edits.push(record);
         this.persist();
         return copy(record);
@@ -15686,7 +15689,9 @@ var require_skill_edit_workspace = __commonJS({
           const sessionId = requiredId(input.sessionId);
           const skillName = requiredText(input.skillName, "Skill name", 128);
           const workspacePath = this.workspacePath(sessionId);
-          if (resolve(requiredText(input.workspacePath, "Skill edit workspace path", 16384)) !== workspacePath) {
+          const persistedPath = resolve(requiredText(input.workspacePath, "Skill edit workspace path", 16384));
+          const canonicalPersistedPath = existsSync(persistedPath) ? realpathSync(persistedPath) : persistedPath;
+          if (canonicalPersistedPath !== workspacePath) {
             throw new Error("Persisted Skill edit workspace identity changed");
           }
           this.#verifyPath(workspacePath);
@@ -65376,6 +65381,20 @@ var require_api2 = __commonJS({
         writeJson(request, response, error.status, {
           ok: false,
           error: { code: error.code, message: error.message }
+        });
+        return;
+      }
+      const publicCodes = {
+        RESOURCE_CHANGED: { status: 409, message: "The Skill changed. Refresh before continuing." },
+        NO_CHANGES: { status: 409, message: "The Skill edit has no changes to apply." },
+        NEEDS_RECOVERY: { status: 409, message: "The Skill edit needs recovery before it can continue." },
+        NOT_FOUND: { status: 404, message: "The requested Rolling Skill resource was not found." }
+      };
+      const publicCode = typeof error?.code === "string" ? publicCodes[error.code] : null;
+      if (publicCode) {
+        writeJson(request, response, publicCode.status, {
+          ok: false,
+          error: { code: error.code, message: publicCode.message }
         });
         return;
       }
