@@ -19,13 +19,15 @@ describe("Rolling Skill DSH data root", () => {
         assert.equal(paths.root, root)
         assert.equal(paths.dshConversationTraces, join(root, "traces", "dsh-conversations"))
         assert.equal(paths.rawCaseEvidence, join(root, "raw-cases", "evidence"))
+        assert.equal(paths.skillEdits, join(root, "jobs", "skill-edits.json"))
+        assert.equal(paths.skillEditWorkspaces, join(root, "skill-edit-workspaces"))
         for (const [key, value] of Object.entries(paths)) {
             assert.equal(isAbsolute(value), true, `${key} should be absolute`)
             assert.equal(value === root || value.startsWith(`${root}/`), true, `${key} escaped root`)
         }
 
         ensureDataLayout(paths)
-        for (const directory of [paths.root, paths.rawCases, paths.managedSkills, paths.traces, paths.jobs, paths.logs, paths.locks, paths.scheduler]) {
+        for (const directory of [paths.root, paths.rawCases, paths.managedSkills, paths.skillEditWorkspaces, paths.traces, paths.jobs, paths.logs, paths.locks, paths.scheduler]) {
             assert.equal(statSync(directory).isDirectory(), true)
             assert.equal(statSync(directory).mode & 0o777, 0o700)
         }

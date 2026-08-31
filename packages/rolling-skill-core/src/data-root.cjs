@@ -21,6 +21,7 @@ function resolveDataPaths({
             : join(absoluteRoot(homeDirectory, "Home directory"), ".dsh", "rolling-skill")
     const rawCases = join(root, "raw-cases")
     const managedSkills = join(root, "managed-skills")
+    const skillEditWorkspaces = join(root, "skill-edit-workspaces")
     const traces = join(root, "traces")
     const jobs = join(root, "jobs")
     const logs = join(root, "logs")
@@ -37,12 +38,14 @@ function resolveDataPaths({
         rawCaseEvidence: join(rawCases, "evidence"),
         managedSkills,
         managedSkillRegistry: join(managedSkills, "registry.json"),
+        skillEditWorkspaces,
         skillInstallations: join(root, "skill-installations.json"),
         traces,
         dshConversationTraces: join(traces, "dsh-conversations"),
         jobs,
         operatorJobs: join(jobs, "operator-jobs.json"),
         optimizationRuns: join(jobs, "optimization-runs.json"),
+        skillEdits: join(jobs, "skill-edits.json"),
         logs,
         workerLog: join(logs, "worker.log"),
         locks,
@@ -62,6 +65,7 @@ function ensureDataLayout(paths) {
         paths.root,
         paths.rawCases,
         paths.managedSkills,
+        paths.skillEditWorkspaces,
         paths.traces,
         paths.jobs,
         paths.logs,
