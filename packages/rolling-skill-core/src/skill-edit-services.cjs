@@ -37,7 +37,17 @@ function sanitizedError(error, workspacePath = null) {
     }
 }
 
-function messages(operator) {
+function publicMessageText(value, workspacePath) {
+    let text = boundedText(value)
+    if (workspacePath) {
+        for (const privatePath of [workspacePath, encodeURI(workspacePath)]) {
+            text = text.split(privatePath).join("Skill edit workspace")
+        }
+    }
+    return text
+}
+
+function messages(operator, workspacePath) {
     return (operator?.session?.transcript ?? [])
         .filter((entry) => (
             entry?.kind === "message" &&
@@ -47,7 +57,7 @@ function messages(operator) {
         .slice(-200)
         .map((entry) => ({
             role: entry.role,
-            content: boundedText(entry.content),
+            content: publicMessageText(entry.content, workspacePath),
             recordedAt: entry.recordedAt ?? null,
         }))
 }
@@ -66,7 +76,7 @@ function publicRecord(record, {operator = null, diff = null} = {}) {
             state: operator.state ?? null,
             jobStatus: operator.parentJob?.status ?? null,
         } : null,
-        messages: messages(operator),
+        messages: messages(operator, record.workspacePath),
         diff,
         publishedVersionId: record.publishedVersion?.id ?? null,
         publishedVersionLabel: record.publishedVersion?.label ?? null,

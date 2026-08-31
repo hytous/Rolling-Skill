@@ -62894,10 +62894,19 @@ var require_skill_edit_services = __commonJS({
         message
       };
     }
-    function messages(operator) {
+    function publicMessageText(value, workspacePath) {
+      let text2 = boundedText(value);
+      if (workspacePath) {
+        for (const privatePath of [workspacePath, encodeURI(workspacePath)]) {
+          text2 = text2.split(privatePath).join("Skill edit workspace");
+        }
+      }
+      return text2;
+    }
+    function messages(operator, workspacePath) {
       return (operator?.session?.transcript ?? []).filter((entry) => entry?.kind === "message" && (entry.role === "user" || entry.role === "assistant") && typeof entry.content === "string").slice(-200).map((entry) => ({
         role: entry.role,
-        content: boundedText(entry.content),
+        content: publicMessageText(entry.content, workspacePath),
         recordedAt: entry.recordedAt ?? null
       }));
     }
@@ -62915,7 +62924,7 @@ var require_skill_edit_services = __commonJS({
           state: operator.state ?? null,
           jobStatus: operator.parentJob?.status ?? null
         } : null,
-        messages: messages(operator),
+        messages: messages(operator, record.workspacePath),
         diff,
         publishedVersionId: record.publishedVersion?.id ?? null,
         publishedVersionLabel: record.publishedVersion?.label ?? null,

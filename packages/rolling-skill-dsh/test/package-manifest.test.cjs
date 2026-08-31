@@ -13,7 +13,7 @@ describe("Rolling Skill DSH package manifest", () => {
         const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
 
         assert.equal(manifest.name, "@rolling-skill/dsh-plugin")
-        assert.equal(manifest.version, "0.1.23")
+        assert.equal(manifest.version, "0.1.24")
         assert.equal(manifest.type, "module")
         assert.equal(manifest.main, "./lib/index.js")
         assert.equal(manifest.exports["."], "./lib/index.js")

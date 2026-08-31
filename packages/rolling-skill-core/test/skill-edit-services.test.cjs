@@ -84,7 +84,7 @@ function fixture() {
                 session: {id: sessionId, transcript: [
                     {kind: "operator_session_configuration", workspaceDigest: "secret"},
                     {kind: "message", role: "user", content: "Improve it"},
-                    {kind: "message", role: "assistant", content: "I updated the draft."},
+                    {kind: "message", role: "assistant", content: `I updated ${join(root, "workspaces", "edit-1")}/SKILL.md.`},
                 ]},
                 parentJob: {id: "job-1", status: "running"},
                 state: operatorState,
@@ -124,10 +124,12 @@ describe("Rolling Skill Agent edit services", () => {
 
         assert.equal(started.skillId, "skill-1")
         assert.equal(started.state, "idle")
-        assert.equal(started.messages.at(-1).content, "I updated the draft.")
+        assert.equal(started.messages.at(-1).content, "I updated Skill edit workspace/SKILL.md.")
         await test.services.send({sessionId: started.id, text: "Also add an example"})
         test.setOperatorState("idle")
         const ready = await test.services.get({sessionId: started.id})
+        assert.equal(ready.messages.at(-1).content.includes(test.root), false)
+        assert.match(ready.messages.at(-1).content, /Skill edit workspace/u)
         assert.equal((await test.services.diff({sessionId: started.id})).changed, true)
         const applied = await test.services.applyAndRelease({
             sessionId: started.id,
