@@ -31,7 +31,7 @@ function rawCaseSkillGroups(entries = [], search = "", scope = "all") {
     for (const entry of entries) {
         const key = skillKey(entry)
         if (scope !== "all" && key !== scope) continue
-        const haystack = `${entry?.question || ""}\n${entry?.note || ""}\n${entry?.skill?.name || ""}`
+        const haystack = `${entry?.question || ""}\n${entry?.note || ""}`
             .toLocaleLowerCase()
         if (query && !haystack.includes(query)) continue
         const group = groups.get(key) || {

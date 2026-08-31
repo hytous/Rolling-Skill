@@ -342,7 +342,7 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId, onNavig
                 return <option key={skill.id} value={skill.id}>{skill.name} · {repository?.displayName ?? skill.repositoryId}</option>
             })}
         </select></label>
-        <label><span>{t("note")}</span><Input value={note} onChange={(event: {target: {value: string}}) => setNote(event.target.value)}/></label>
+        <label><span>{t("note")}</span><input value={note} onChange={(event) => setNote(event.target.value)}/></label>
     </div>
 
     return (

@@ -51,6 +51,18 @@ describe("Rolling Skill workbench selection", () => {
         assert.deepEqual(rawCaseSkillGroups(entries, "Alpha", "skill-b"), [])
     })
 
+    it("searches Raw Case questions and notes without duplicating the Skill filter", () => {
+        const skillNameOnly = [{
+            id: "search-1",
+            question: "Payment failed",
+            note: "customer timeout",
+            skill: {id: "skill-search", name: "Billing Assistant"},
+        }]
+
+        assert.deepEqual(rawCaseSkillGroups(skillNameOnly, "timeout", "all")[0].items, skillNameOnly)
+        assert.deepEqual(rawCaseSkillGroups(skillNameOnly, "Billing Assistant", "all"), [])
+    })
+
     it("falls back to all Skills when a selected Skill disappears", () => {
         assert.equal(resolveRawCaseSkillScope("skill-a", entries), "skill-a")
         assert.equal(resolveRawCaseSkillScope("missing", entries), "all")

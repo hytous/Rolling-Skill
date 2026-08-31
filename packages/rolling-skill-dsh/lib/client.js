@@ -571,8 +571,7 @@ var require_raw_case_skill_filter = __commonJS({
         const key = skillKey(entry);
         if (scope !== "all" && key !== scope) continue;
         const haystack = `${entry?.question || ""}
-${entry?.note || ""}
-${entry?.skill?.name || ""}`.toLocaleLowerCase();
+${entry?.note || ""}`.toLocaleLowerCase();
         if (query && !haystack.includes(query)) continue;
         const group = groups.get(key) || {
           key,
@@ -850,7 +849,7 @@ var zh = {
   rawCasesDescription: "\u7F16\u8F91\u5F85\u6C89\u6DC0\u7684\u95EE\u9898\uFF0C\u6216\u79FB\u9664\u4E0D\u518D\u9700\u8981\u7684\u6761\u76EE\u3002",
   addRawCase: "\u65B0\u589E Raw Case",
   addRawCaseTitle: "\u624B\u5DE5\u65B0\u589E Raw Case",
-  searchRawCases: "\u641C\u7D22\u95EE\u9898\u3001\u5907\u6CE8\u6216 Skill",
+  searchRawCases: "\u641C\u7D22\u95EE\u9898\u6216\u5907\u6CE8",
   rawCaseSkillFilter: "\u6309 Skill \u7B5B\u9009",
   allSkills: "\u5168\u90E8 Skill",
   manualSource: "\u624B\u5DE5\u6765\u6E90",
@@ -1316,7 +1315,7 @@ var en = {
   rawCasesDescription: "Edit pending questions or remove entries that are no longer useful.",
   addRawCase: "Add Raw Case",
   addRawCaseTitle: "Add Manual Raw Case",
-  searchRawCases: "Search questions, notes, or Skills",
+  searchRawCases: "Search questions or notes",
   rawCaseSkillFilter: "Filter by Skill",
   allSkills: "All Skills",
   manualSource: "Manual source",
@@ -13859,7 +13858,7 @@ function RawCasesPanel({ t, revision, onChanged, initialRawCaseId, onNavigate })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("label", { children: [
       /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("span", { children: t("note") }),
-      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(import_dsh_client_ui_primitives10.Input, { value: note, onChange: (event) => setNote(event.target.value) })
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("input", { value: note, onChange: (event) => setNote(event.target.value) })
     ] })
   ] });
   return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("section", { className: "rolling-skill-panel rolling-skill-data-panel", children: [
