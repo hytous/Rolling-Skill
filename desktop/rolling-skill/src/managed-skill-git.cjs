@@ -325,6 +325,45 @@ class ManagedSkillGit {
         return this.head(repositoryPath)
     }
 
+    async commitPaths(repositoryPath, message, inputPaths) {
+        message = requiredText(message, "Commit message", 2_000)
+        const paths = [...new Set((inputPaths ?? []).map(normalizedSkillRoot))]
+        if (!paths.length) throw new Error("At least one commit path is required")
+        await this.run(["add", "-f", "-A", "--", ...paths], {cwd: repositoryPath})
+        const staged = await this.run(
+            ["diff", "--cached", "--quiet", "--exit-code", "--", ...paths],
+            {cwd: repositoryPath, allowExitCodes: [0, 1]},
+        )
+        if (staged.exitCode === 0) {
+            throw new Error("Managed Skill paths have no working changes to commit")
+        }
+        await this.run(
+            ["commit", "--no-gpg-sign", "--only", "-m", message, "--", ...paths],
+            {cwd: repositoryPath},
+        )
+        return this.head(repositoryPath)
+    }
+
+    async softReset(repositoryPath, inputCommit) {
+        const target = await this.resolve(
+            repositoryPath,
+            requiredText(inputCommit, "Reset commit", 500),
+        )
+        await this.run(["reset", "--soft", target], {cwd: repositoryPath})
+        return this.head(repositoryPath)
+    }
+
+    async resetPaths(repositoryPath, inputCommit, inputPaths) {
+        const target = await this.resolve(
+            repositoryPath,
+            requiredText(inputCommit, "Reset commit", 500),
+        )
+        const paths = [...new Set((inputPaths ?? []).map(normalizedSkillRoot))]
+        if (!paths.length) throw new Error("At least one reset path is required")
+        await this.run(["reset", target, "--", ...paths], {cwd: repositoryPath})
+        return {commit: target, paths}
+    }
+
     async snapshotSkill(repositoryPath, commit, inputSkillRoot, inputLimits = {}) {
         commit = await this.resolve(repositoryPath, requiredText(commit, "Commit", 500))
         const skillRoot = normalizedSkillRoot(inputSkillRoot)

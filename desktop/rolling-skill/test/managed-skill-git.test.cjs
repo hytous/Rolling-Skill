@@ -238,6 +238,46 @@ describe("managed Skill Git service", () => {
         )
     })
 
+    it("commits and resets only selected paths without disturbing sibling staged changes", async () => {
+        const repository = temporaryDirectory()
+        const git = new ManagedSkillGit()
+        await git.initialize(repository)
+        mkdirSync(join(repository, "skills", "one"), {recursive: true})
+        mkdirSync(join(repository, "skills", "two"), {recursive: true})
+        writeFileSync(join(repository, "skills", "one", "SKILL.md"), "one baseline\n")
+        writeFileSync(join(repository, "skills", "two", "SKILL.md"), "two baseline\n")
+        const baseline = await git.commitAll(repository, "Baseline")
+
+        writeFileSync(join(repository, "skills", "one", "SKILL.md"), "one changed\n")
+        writeFileSync(join(repository, "skills", "two", "SKILL.md"), "two staged\n")
+        await git.run(["add", "--", "skills/two"], {cwd: repository})
+        const committed = await git.commitPaths(repository, "Edit one", ["skills/one"])
+
+        assert.notEqual(committed, baseline)
+        assert.equal((await git.run(
+            ["diff", "--name-only", `${baseline}..${committed}`],
+            {cwd: repository},
+        )).stdout, "skills/one/SKILL.md")
+        assert.equal((await git.run(
+            ["diff", "--cached", "--name-only"],
+            {cwd: repository},
+        )).stdout, "skills/two/SKILL.md")
+
+        await git.softReset(repository, baseline)
+        writeFileSync(join(repository, "skills", "one", "SKILL.md"), "one restored external\n")
+        await git.resetPaths(repository, baseline, ["skills/one"])
+
+        assert.equal(await git.head(repository), baseline)
+        assert.equal((await git.run(
+            ["diff", "--cached", "--name-only"],
+            {cwd: repository},
+        )).stdout, "skills/two/SKILL.md")
+        assert.equal((await git.run(
+            ["diff", "--name-only", "--", "skills/one"],
+            {cwd: repository},
+        )).stdout, "skills/one/SKILL.md")
+    })
+
     it("snapshots committed bytes rather than later Working changes", async () => {
         const repository = temporaryDirectory()
         const git = new ManagedSkillGit()
