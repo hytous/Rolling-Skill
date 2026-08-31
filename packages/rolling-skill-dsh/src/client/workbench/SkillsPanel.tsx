@@ -41,7 +41,7 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
     const [runtimeIds, setRuntimeIds] = useState<string[]>([])
     const [sourceKind, setSourceKind] = useState<SkillSourceKind>("folder")
     const [sourceLocation, setSourceLocation] = useState("")
-    const [candidateMessage, setCandidateMessage] = useState("Update Skill workflow")
+    const [candidateMessage, setCandidateMessage] = useState(() => t("candidateMessageDefault"))
     const [releaseLabel, setReleaseLabel] = useState("")
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -143,7 +143,7 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
                 <div className="rolling-skill-panel-header"><div><h3>{detail.skill.name}</h3><p>{detail.skill.description || detail.skill.status}</p></div></div>
                 <pre className="rolling-skill-manifest">{detail.manifest}</pre>
                 <div className="rolling-skill-list">
-                    {detail.versions.map((version) => <article className="rolling-skill-version-card" key={version.id}><header><div><strong>{version.versionLabel ?? t("candidateVersion")}</strong><span className="rolling-skill-badge">{version.state}</span></div>{version.state === "released" && !version.deprecatedAt ? <Button size="sm" disabled={busy} onClick={() => void deprecate(version)}>{t("deprecateVersion")}</Button> : version.deprecatedAt ? <span>{t("deprecatedVersion")}</span> : null}</header><dl><div><dt>{t("installationCommit")}</dt><dd><code>{version.commit.slice(0, 12)}</code></dd></div><div><dt>{t("installationDigest")}</dt><dd title={version.contentDigest}><code>{version.contentDigest}</code></dd></div><div><dt>{t("createdAt")}</dt><dd>{version.releasedAt ?? version.createdAt ?? t("notAvailable")}</dd></div></dl></article>)}
+                    {detail.versions.map((version) => <article className="rolling-skill-version-card" key={version.id}><header><strong>{version.versionLabel ?? t("candidateVersion")}</strong>{version.state === "released" && !version.deprecatedAt ? <Button size="sm" disabled={busy} onClick={() => void deprecate(version)}>{t("deprecateVersion")}</Button> : version.deprecatedAt ? <span>{t("deprecatedVersion")}</span> : null}</header><dl><div><dt>{t("createdAt")}</dt><dd>{version.releasedAt ?? version.createdAt ?? t("notAvailable")}</dd></div></dl></article>)}
                 </div>
                 <div className="rolling-skill-grid">
                     <div className="rolling-skill-subpanel"><h4>{t("candidateVersion")}</h4><Input value={candidateMessage} onChange={(event: {target: {value: string}}) => setCandidateMessage(event.target.value)}/><Button size="sm" disabled={busy} onClick={() => void createCandidate()}>{t("createCandidate")}</Button></div>

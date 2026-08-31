@@ -351,6 +351,10 @@ describe("Rolling Skill native DSH Client", () => {
         assert.match(locale, /skillVersionsTab:\s*"版本管理"/u)
         assert.match(locale, /skillInstallTab:\s*"安装"/u)
         assert.match(locale, /currentManagedSkill:\s*"当前 Skill"/u)
+        assert.doesNotMatch(skills, /t\("installationCommit"\)|t\("installationDigest"\)|\{version\.state\}/u)
+        assert.match(locale, /candidateVersion:\s*"候选版本"/u)
+        assert.match(locale, /createCandidate:\s*"创建候选版本"/u)
+        assert.match(locale, /releaseVersion:\s*"发布版本"/u)
     })
 
     it("renders structured Judge, score, and Case-scoped Trace evidence", () => {

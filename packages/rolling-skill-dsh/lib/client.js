@@ -957,9 +957,10 @@ var zh = {
   importSkill: "\u5BFC\u5165",
   revealRepository: "\u6253\u5F00\u53D7\u7BA1 Skill \u6587\u4EF6\u5939",
   emptySkills: "\u6682\u65E0 Managed Skill",
-  candidateVersion: "Candidate",
-  createCandidate: "\u521B\u5EFA Candidate",
-  releaseVersion: "Release",
+  candidateVersion: "\u5019\u9009\u7248\u672C",
+  candidateMessageDefault: "\u66F4\u65B0 Skill \u5185\u5BB9",
+  createCandidate: "\u521B\u5EFA\u5019\u9009\u7248\u672C",
+  releaseVersion: "\u53D1\u5E03\u7248\u672C",
   release: "\u53D1\u5E03",
   installationRuntime: "\u5B89\u88C5\u76EE\u6807 Runtime",
   installReleased: "\u5B89\u88C5\u5DF2\u53D1\u5E03\u7248\u672C",
@@ -1381,6 +1382,7 @@ var en = {
   revealRepository: "Open Managed Skill Folder",
   emptySkills: "No Managed Skills",
   candidateVersion: "Candidate",
+  candidateMessageDefault: "Update Skill content",
   createCandidate: "Create Candidate",
   releaseVersion: "Release",
   release: "Release",
@@ -14148,7 +14150,7 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
   const [runtimeIds, setRuntimeIds] = (0, import_react15.useState)([]);
   const [sourceKind, setSourceKind] = (0, import_react15.useState)("folder");
   const [sourceLocation, setSourceLocation] = (0, import_react15.useState)("");
-  const [candidateMessage, setCandidateMessage] = (0, import_react15.useState)("Update Skill workflow");
+  const [candidateMessage, setCandidateMessage] = (0, import_react15.useState)(() => t("candidateMessageDefault"));
   const [releaseLabel, setReleaseLabel] = (0, import_react15.useState)("");
   const [busy, setBusy] = (0, import_react15.useState)(false);
   const [error, setError] = (0, import_react15.useState)(null);
@@ -14287,26 +14289,13 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
       /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("pre", { className: "rolling-skill-manifest", children: detail.manifest }),
       /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("div", { className: "rolling-skill-list", children: detail.versions.map((version) => /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("article", { className: "rolling-skill-version-card", children: [
         /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("header", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("strong", { children: version.versionLabel ?? t("candidateVersion") }),
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("span", { className: "rolling-skill-badge", children: version.state })
-          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("strong", { children: version.versionLabel ?? t("candidateVersion") }),
           version.state === "released" && !version.deprecatedAt ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void deprecate(version), children: t("deprecateVersion") }) : version.deprecatedAt ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("span", { children: t("deprecatedVersion") }) : null
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("dl", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("dt", { children: t("installationCommit") }),
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("code", { children: version.commit.slice(0, 12) }) })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("dt", { children: t("installationDigest") }),
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("dd", { title: version.contentDigest, children: /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("code", { children: version.contentDigest }) })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("dt", { children: t("createdAt") }),
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("dd", { children: version.releasedAt ?? version.createdAt ?? t("notAvailable") })
-          ] })
-        ] })
+        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("dl", { children: /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("dt", { children: t("createdAt") }),
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("dd", { children: version.releasedAt ?? version.createdAt ?? t("notAvailable") })
+        ] }) })
       ] }, version.id)) }),
       /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-grid", children: [
         /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-subpanel", children: [
