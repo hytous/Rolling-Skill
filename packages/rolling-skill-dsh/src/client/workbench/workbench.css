@@ -535,11 +535,23 @@
 
 .rolling-skill-skill-edit-modal {
     box-sizing: border-box;
-    max-height: min(72vh, 860px);
-    max-width: 1120px;
     min-width: 0;
-    overflow: auto;
-    width: min(80vw, 1120px);
+}
+
+[role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) {
+    max-height: calc(100vh - 32px);
+    max-width: 1120px;
+    width: min(92vw, 1120px);
+}
+
+[role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) > div:first-child {
+    min-height: 0;
+    overflow: hidden;
+}
+
+[role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) > div:first-child > div:last-child {
+    min-height: 0;
+    overflow-y: auto;
 }
 
 .rolling-skill-textarea {
@@ -1849,7 +1861,7 @@
         grid-template-columns: minmax(0, 1fr);
     }
 
-    .rolling-skill-skill-edit-modal {
+    [role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) {
         width: min(88vw, 760px);
     }
 }
@@ -1870,7 +1882,9 @@
         grid-template-columns: minmax(0, 1fr);
     }
 
-    .rolling-skill-skill-edit-modal {
-        width: 100%;
+    [role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) {
+        max-height: calc(100vh - 16px);
+        max-width: calc(100vw - 16px);
+        width: calc(100vw - 16px);
     }
 }

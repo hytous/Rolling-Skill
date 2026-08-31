@@ -8,7 +8,6 @@ import type {Translate} from "../locale"
 import {ModelEffortSelect} from "./ModelEffortSelect"
 import type {RuntimeModel} from "./ModelEffortSelect"
 import {RuntimeInteractions} from "./RuntimeInteractions"
-import {RuntimeSelect} from "./RuntimeSelect"
 import type {RuntimeDescriptor} from "./RuntimeSelect"
 
 const SETTINGS_KEY = "rolling-skill:skill-edit-runtime-settings/v1"
@@ -225,7 +224,7 @@ export function SkillEditModal({
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
             {!session && !loading ? <div className="rolling-skill-detail-stack">
                 <p className="rolling-skill-help">{t("skillEditDescription")}</p>
-                <RuntimeSelect t={t} runtimes={runtimes} value={runtimeId} onChange={setRuntimeId} label={t("skillEditRuntime")}/>
+                <label className="rolling-skill-field"><span>{t("skillEditRuntime")}</span><select className="rolling-skill-select" aria-label={t("skillEditRuntime")} disabled={runtimes.length === 0} value={runtimeId} onChange={(event) => setRuntimeId(event.target.value)}>{runtimes.length === 0 ? <option value="">{t("noRuntimes")}</option> : runtimes.map((runtime) => <option key={runtime.runtimeId} value={runtime.runtimeId}>{runtime.displayName} {runtime.version}</option>)}</select></label>
                 <div className="rolling-skill-grid">
                     <label className="rolling-skill-field"><span>{t("model")}</span><select className="rolling-skill-select" value={modelId} onChange={(event) => {setModelId(event.target.value); setEffort("")}}>{models.map((model) => {const id = modelIdentifier(model); return <option key={id} value={id}>{model.displayName ?? id}</option>})}</select></label>
                     <ModelEffortSelect label={t("effort")} runtimeDefaultLabel={t("selectSkillEditEffort")} models={models} modelId={modelId} value={effort} onChange={setEffort}/>

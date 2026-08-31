@@ -162,7 +162,7 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
             </section> : null}
 
             {mode === "versions" ? detail ? <section className="rolling-skill-panel">
-                <div className="rolling-skill-panel-header"><div><h3>{detail.skill.name}</h3><p>{detail.skill.description || detail.skill.status}</p></div><div className="rolling-skill-actions"><Button tone="primary" size="sm" disabled={busy} onClick={() => setEditOpen(true)}>{t(hasActiveEdit ? "continueSkillEdit" : "editSkillWithAgent")}</Button><Button size="sm" disabled={busy} onClick={() => void revealManagedSkill(detail.skill.id)}>{t("revealRepository")}</Button></div></div>
+                <div className="rolling-skill-panel-header"><div><h3>{detail.skill.name}</h3><p>{detail.skill.description || detail.skill.status}</p></div><div className="rolling-skill-actions"><Button size="sm" disabled={busy} onClick={() => setEditOpen(true)}>{t(hasActiveEdit ? "continueSkillEdit" : "editSkillWithAgent")}</Button><Button size="sm" disabled={busy} onClick={() => void revealManagedSkill(detail.skill.id)}>{t("revealRepository")}</Button></div></div>
                 <div className="rolling-skill-managed-path"><span>{t("managedSkillPath")}</span><code title={managedSkillPath}>{managedSkillPath}</code><Button size="sm" disabled={!managedSkillPath} onClick={() => void copyManagedSkillPath()}>{t(pathCopied ? "pathCopied" : "copyPath")}</Button></div>
                 <details className="rolling-skill-manifest-details"><summary>{t("viewSkillContent")}</summary><pre className="rolling-skill-manifest">{detail.manifest}</pre></details>
                 <h4 className="rolling-skill-version-heading">{t("publishedVersions")}</h4>
