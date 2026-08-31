@@ -472,6 +472,56 @@
     overflow-wrap: anywhere;
 }
 
+.rolling-skill-manifest-details {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    margin-top: 14px;
+    padding: 10px 12px;
+}
+
+.rolling-skill-manifest-details > summary {
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.rolling-skill-manifest-details .rolling-skill-manifest {
+    border: 0;
+    border-radius: 0;
+    border-top: 1px solid var(--dsw-alias-border-l3);
+    margin: 10px 0 0;
+    padding: 10px 0 0;
+}
+
+.rolling-skill-version-heading {
+    margin: 18px 0 0;
+}
+
+.rolling-skill-version-workflow {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: 8px;
+    display: grid;
+    gap: 12px;
+    margin-top: 18px;
+    padding: 14px;
+}
+
+.rolling-skill-version-workflow h4,
+.rolling-skill-version-workflow p {
+    margin: 0;
+}
+
+.rolling-skill-version-workflow p {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 13px;
+}
+
+.rolling-skill-version-workflow .rolling-skill-form-row {
+    margin-top: 0;
+}
+
 .rolling-skill-pagination {
     align-items: center;
     color: var(--dsw-alias-label-secondary);

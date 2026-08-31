@@ -25,6 +25,12 @@ interface Catalog {repositories: Repository[]; skills: SkillEntry[]}
 interface SkillDetail {skill: SkillEntry; manifest: string; versions: Version[]}
 type SkillSourceKind = "folder" | "local-git" | "git-url" | "zip"
 
+function dateTime(value: string | null | undefined, fallback: string): string {
+    if (!value) return fallback
+    const date = new Date(value)
+    return Number.isFinite(date.getTime()) ? date.toLocaleString() : fallback
+}
+
 interface SkillsPanelProps {
     t: Translate
     mode: "import" | "versions" | "install"
@@ -56,7 +62,7 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
             setCatalog(nextCatalog)
             setRuntimes(runtimeItems)
             setRuntimeIds((current) => current.length ? current : runtimeItems[0]?.runtimeId ? [runtimeItems[0].runtimeId] : [])
-            const selectedSkillId = detail?.skill.id ?? initialSkillId
+            const selectedSkillId = initialSkillId ?? detail?.skill.id
             const requestedSkill = nextCatalog.skills.find((skill) => skill.id === selectedSkillId) ?? nextCatalog.skills[0]
             if (requestedSkill) void loadSkill(requestedSkill.id, controller.signal)
             else setDetail(null)
@@ -83,6 +89,7 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
         }
     }
     const candidate = detail?.versions.find((version) => version.state === "candidate") ?? null
+    const publishedVersions = useMemo(() => detail?.versions.filter((version) => version.state === "released") ?? [], [detail])
     const releasedVersions = useMemo(() => detail?.versions.filter((version) => version.state === "released" && !version.deprecatedAt) ?? [], [detail])
     const released = releasedVersions[0] ?? null
     const createCandidate = () => mutate(async () => {
@@ -141,14 +148,16 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
 
             {mode === "versions" ? detail ? <section className="rolling-skill-panel">
                 <div className="rolling-skill-panel-header"><div><h3>{detail.skill.name}</h3><p>{detail.skill.description || detail.skill.status}</p></div></div>
-                <pre className="rolling-skill-manifest">{detail.manifest}</pre>
+                <details className="rolling-skill-manifest-details"><summary>{t("viewSkillContent")}</summary><pre className="rolling-skill-manifest">{detail.manifest}</pre></details>
+                <h4 className="rolling-skill-version-heading">{t("publishedVersions")}</h4>
                 <div className="rolling-skill-list">
-                    {detail.versions.map((version) => <article className="rolling-skill-version-card" key={version.id}><header><strong>{version.versionLabel ?? t("candidateVersion")}</strong>{version.state === "released" && !version.deprecatedAt ? <Button size="sm" disabled={busy} onClick={() => void deprecate(version)}>{t("deprecateVersion")}</Button> : version.deprecatedAt ? <span>{t("deprecatedVersion")}</span> : null}</header><dl><div><dt>{t("createdAt")}</dt><dd>{version.releasedAt ?? version.createdAt ?? t("notAvailable")}</dd></div></dl></article>)}
+                    {publishedVersions.map((version) => <article className="rolling-skill-version-card" key={version.id}><header><strong>{version.versionLabel ?? t("notAvailable")}</strong>{!version.deprecatedAt ? <Button size="sm" disabled={busy} onClick={() => void deprecate(version)}>{t("deprecateVersion")}</Button> : <span>{t("deprecatedVersion")}</span>}</header><dl><div><dt>{t("createdAt")}</dt><dd>{dateTime(version.releasedAt ?? version.createdAt, t("notAvailable"))}</dd></div></dl></article>)}
+                    {publishedVersions.length === 0 ? <p>{t("emptyPublishedVersions")}</p> : null}
                 </div>
-                <div className="rolling-skill-grid">
-                    <div className="rolling-skill-subpanel"><h4>{t("candidateVersion")}</h4><Input value={candidateMessage} onChange={(event: {target: {value: string}}) => setCandidateMessage(event.target.value)}/><Button size="sm" disabled={busy} onClick={() => void createCandidate()}>{t("createCandidate")}</Button></div>
-                    <div className="rolling-skill-subpanel"><h4>{t("releaseVersion")}</h4><Input value={releaseLabel} placeholder="1.0.0" onChange={(event: {target: {value: string}}) => setReleaseLabel(event.target.value)}/><Button size="sm" disabled={busy || !candidate || !releaseLabel.trim()} onClick={() => void release()}>{t("release")}</Button></div>
-                </div>
+                <section className="rolling-skill-version-workflow">
+                    <div><h4>{candidate ? t("releaseVersion") : t("prepareVersion")}</h4><p>{candidate ? t("versionReady") : t("prepareVersionDescription")}</p></div>
+                    {candidate ? <div className="rolling-skill-form-row"><label className="rolling-skill-field"><span>{t("versionNumber")}</span><Input value={releaseLabel} placeholder="1.0.0" onChange={(event: {target: {value: string}}) => setReleaseLabel(event.target.value)}/></label><Button tone="primary" size="sm" disabled={busy || !releaseLabel.trim()} onClick={() => void release()}>{t("release")}</Button></div> : <div className="rolling-skill-form-row"><label className="rolling-skill-field"><span>{t("versionChangeNote")}</span><Input value={candidateMessage} onChange={(event: {target: {value: string}}) => setCandidateMessage(event.target.value)}/></label><Button size="sm" disabled={busy || !candidateMessage.trim()} onClick={() => void createCandidate()}>{t("saveVersionContent")}</Button></div>}
+                </section>
             </section> : <section className="rolling-skill-panel"><p>{t("emptySkills")}</p></section> : null}
 
             {mode === "install" ? <>
