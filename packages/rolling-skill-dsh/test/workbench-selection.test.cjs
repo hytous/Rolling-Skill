@@ -17,6 +17,12 @@ describe("Rolling Skill workbench selection", () => {
         {id: "b-1", question: "Beta billing", note: "third", skill: {id: "skill-b", name: "Beta"}},
         {id: "legacy-1", question: "Legacy issue", note: "", skill: {name: "Legacy"}},
     ]
+    const managedSkills = [
+        {id: "skill-a", name: "Alpha", status: "valid"},
+        {id: "skill-b", name: "Beta", status: "valid"},
+        {id: "skill-c", name: "Gamma", status: "valid"},
+        {id: "skill-invalid", name: "Invalid", status: "invalid"},
+    ]
 
     it("keeps managed Skills separate and counts every group", () => {
         assert.deepEqual(rawCaseSkillOptions(entries), [
@@ -24,6 +30,16 @@ describe("Rolling Skill workbench selection", () => {
             {key: "skill-b", name: "Beta", count: 1},
             {key: "legacy:Legacy", name: "Legacy", count: 1},
         ])
+    })
+
+    it("lists every valid managed Skill even before it has a Raw Case", () => {
+        assert.deepEqual(rawCaseSkillOptions(entries, managedSkills), [
+            {key: "skill-a", name: "Alpha", count: 2},
+            {key: "skill-b", name: "Beta", count: 1},
+            {key: "skill-c", name: "Gamma", count: 0},
+            {key: "legacy:Legacy", name: "Legacy", count: 1},
+        ])
+        assert.equal(resolveRawCaseSkillScope("skill-c", entries, managedSkills), "skill-c")
     })
 
     it("filters by stable Skill id before applying text search", () => {

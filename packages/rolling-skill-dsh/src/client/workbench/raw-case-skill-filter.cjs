@@ -2,8 +2,16 @@ function skillKey(entry) {
     return entry?.skill?.id || `legacy:${entry?.skill?.name || "unknown"}`
 }
 
-function rawCaseSkillOptions(entries = []) {
+function rawCaseSkillOptions(entries = [], managedSkills = []) {
     const options = new Map()
+    for (const skill of managedSkills) {
+        if (!skill?.id || skill.status !== "valid") continue
+        options.set(skill.id, {
+            key: skill.id,
+            name: skill.name || "Unknown Skill",
+            count: 0,
+        })
+    }
     for (const entry of entries) {
         const key = skillKey(entry)
         const current = options.get(key) || {
@@ -37,8 +45,8 @@ function rawCaseSkillGroups(entries = [], search = "", scope = "all") {
     return [...groups.values()].sort((left, right) => left.name.localeCompare(right.name))
 }
 
-function resolveRawCaseSkillScope(scope, entries = []) {
-    return scope === "all" || rawCaseSkillOptions(entries).some((entry) => entry.key === scope)
+function resolveRawCaseSkillScope(scope, entries = [], managedSkills = []) {
+    return scope === "all" || rawCaseSkillOptions(entries, managedSkills).some((entry) => entry.key === scope)
         ? scope
         : "all"
 }

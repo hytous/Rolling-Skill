@@ -542,8 +542,16 @@ var require_raw_case_skill_filter = __commonJS({
     function skillKey(entry) {
       return entry?.skill?.id || `legacy:${entry?.skill?.name || "unknown"}`;
     }
-    function rawCaseSkillOptions2(entries = []) {
+    function rawCaseSkillOptions2(entries = [], managedSkills = []) {
       const options = /* @__PURE__ */ new Map();
+      for (const skill of managedSkills) {
+        if (!skill?.id || skill.status !== "valid") continue;
+        options.set(skill.id, {
+          key: skill.id,
+          name: skill.name || "Unknown Skill",
+          count: 0
+        });
+      }
       for (const entry of entries) {
         const key = skillKey(entry);
         const current = options.get(key) || {
@@ -576,8 +584,8 @@ ${entry?.skill?.name || ""}`.toLocaleLowerCase();
       }
       return [...groups.values()].sort((left, right) => left.name.localeCompare(right.name));
     }
-    function resolveRawCaseSkillScope2(scope, entries = []) {
-      return scope === "all" || rawCaseSkillOptions2(entries).some((entry) => entry.key === scope) ? scope : "all";
+    function resolveRawCaseSkillScope2(scope, entries = [], managedSkills = []) {
+      return scope === "all" || rawCaseSkillOptions2(entries, managedSkills).some((entry) => entry.key === scope) ? scope : "all";
     }
     module2.exports = {
       rawCaseSkillGroups: rawCaseSkillGroups2,
@@ -13672,7 +13680,7 @@ function RawCasesPanel({ t, revision, onChanged, initialRawCaseId, onNavigate })
     () => evidenceTimeline(loadedEvidence?.episode),
     [loadedEvidence?.episode]
   );
-  const skillOptions = (0, import_react13.useMemo)(() => rawCaseSkillOptions(entries), [entries]);
+  const skillOptions = (0, import_react13.useMemo)(() => rawCaseSkillOptions(entries, catalog.skills), [entries, catalog.skills]);
   const filteredGroups = (0, import_react13.useMemo)(
     () => rawCaseSkillGroups(entries, search2, skillScope),
     [entries, search2, skillScope]
@@ -13696,8 +13704,8 @@ function RawCasesPanel({ t, revision, onChanged, initialRawCaseId, onNavigate })
     return () => controller.abort();
   }, [revision, initialRawCaseId]);
   (0, import_react13.useEffect)(() => {
-    setSkillScope((current) => resolveRawCaseSkillScope(current, entries));
-  }, [entries]);
+    setSkillScope((current) => resolveRawCaseSkillScope(current, entries, catalog.skills));
+  }, [entries, catalog.skills]);
   (0, import_react13.useEffect)(() => {
     const controller = new AbortController();
     setLoadedEvidence(null);

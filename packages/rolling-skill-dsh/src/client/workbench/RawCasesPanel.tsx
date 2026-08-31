@@ -81,6 +81,7 @@ const evidenceTimeline = evidenceModel.evidenceTimeline as (
 ) => TimelineItem[]
 const rawCaseSkillOptions = skillFilterModel.rawCaseSkillOptions as (
     entries: RawCase[],
+    managedSkills?: ManagedSkill[],
 ) => RawCaseSkillOption[]
 const rawCaseSkillGroups = skillFilterModel.rawCaseSkillGroups as (
     entries: RawCase[],
@@ -90,6 +91,7 @@ const rawCaseSkillGroups = skillFilterModel.rawCaseSkillGroups as (
 const resolveRawCaseSkillScope = skillFilterModel.resolveRawCaseSkillScope as (
     scope: string,
     entries: RawCase[],
+    managedSkills?: ManagedSkill[],
 ) => string
 
 function dateTime(value: string | undefined, fallback: string): string {
@@ -157,7 +159,7 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId, onNavig
         () => evidenceTimeline(loadedEvidence?.episode),
         [loadedEvidence?.episode],
     )
-    const skillOptions = useMemo(() => rawCaseSkillOptions(entries), [entries])
+    const skillOptions = useMemo(() => rawCaseSkillOptions(entries, catalog.skills), [entries, catalog.skills])
     const filteredGroups = useMemo(
         () => rawCaseSkillGroups(entries, search, skillScope),
         [entries, search, skillScope],
@@ -183,8 +185,8 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId, onNavig
     }, [revision, initialRawCaseId])
 
     useEffect(() => {
-        setSkillScope((current) => resolveRawCaseSkillScope(current, entries))
-    }, [entries])
+        setSkillScope((current) => resolveRawCaseSkillScope(current, entries, catalog.skills))
+    }, [entries, catalog.skills])
 
     useEffect(() => {
         const controller = new AbortController()
