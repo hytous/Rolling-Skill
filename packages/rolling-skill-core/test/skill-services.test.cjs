@@ -72,7 +72,8 @@ describe("Rolling Skill managed Skill services", () => {
             skillId: "skill-1",
             path: "/managed/repo-1/skills/skill-1",
         })
-        assert.deepEqual(test.calls.at(-1), ["reveal", "/managed/repo-1"])
+        assert.deepEqual(await test.services.revealSkill({skillId: "skill-1"}), {skillId: "skill-1", opened: true})
+        assert.deepEqual(test.calls.at(-1), ["reveal", "/managed/repo-1/skills/skill-1"])
     })
 
     it("delegates Candidate and immutable Release operations to the manager", async () => {

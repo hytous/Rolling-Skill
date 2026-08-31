@@ -498,6 +498,163 @@
     margin: 18px 0 0;
 }
 
+.rolling-skill-managed-path {
+    align-items: center;
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    margin-top: 14px;
+    min-width: 0;
+    padding: 9px 10px;
+}
+
+.rolling-skill-managed-path > span {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+}
+
+.rolling-skill-managed-path code {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rolling-skill-skill-edit-modal {
+    box-sizing: border-box;
+    max-height: min(72vh, 860px);
+    max-width: 1120px;
+    min-width: 0;
+    overflow: auto;
+    width: min(80vw, 1120px);
+}
+
+.rolling-skill-textarea {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    box-sizing: border-box;
+    color: var(--dsw-alias-label-primary);
+    font: inherit;
+    line-height: 1.5;
+    min-height: 92px;
+    padding: 9px 10px;
+    resize: vertical;
+    width: 100%;
+}
+
+.rolling-skill-skill-edit-status {
+    align-items: center;
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    min-width: 0;
+    padding: 10px 12px;
+}
+
+.rolling-skill-skill-edit-status > div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+.rolling-skill-skill-edit-status span {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.rolling-skill-skill-edit-layout {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    min-width: 0;
+}
+
+.rolling-skill-skill-edit-conversation,
+.rolling-skill-skill-edit-diff {
+    background: var(--dsw-alias-bg-layer-1);
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    min-width: 0;
+    padding: 12px;
+}
+
+.rolling-skill-skill-edit-messages,
+.rolling-skill-skill-edit-files {
+    display: grid;
+    gap: 8px;
+    max-height: 430px;
+    min-width: 0;
+    overflow: auto;
+}
+
+.rolling-skill-skill-edit-messages article,
+.rolling-skill-skill-edit-files article {
+    border: 1px solid var(--dsw-alias-border-l3);
+    border-radius: 8px;
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    padding: 10px;
+}
+
+.rolling-skill-skill-edit-messages article[data-role="assistant"] {
+    background: var(--dsw-alias-bg-layer-2);
+}
+
+.rolling-skill-skill-edit-messages p {
+    color: var(--dsw-alias-label-primary);
+    margin: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.rolling-skill-skill-edit-follow-up {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin-top: 10px;
+    min-width: 0;
+}
+
+.rolling-skill-skill-edit-follow-up .rolling-skill-textarea {
+    min-height: 72px;
+}
+
+.rolling-skill-skill-edit-files article header {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    min-width: 0;
+}
+
+.rolling-skill-skill-edit-files article header strong,
+.rolling-skill-skill-edit-files article header span {
+    overflow-wrap: anywhere;
+}
+
+.rolling-skill-skill-edit-files article header span,
+.rolling-skill-skill-edit-files article small {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+}
+
+.rolling-skill-skill-edit-files pre {
+    font-size: 12px;
+    margin: 0;
+    max-height: 320px;
+    overflow: auto;
+    white-space: pre;
+}
+
 .rolling-skill-version-workflow {
     background: var(--dsw-alias-bg-layer-1);
     border: 1px solid var(--dsw-alias-border-l2);
@@ -1672,6 +1829,16 @@
     }
 }
 
+@media (max-width: 960px) {
+    .rolling-skill-skill-edit-layout {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .rolling-skill-skill-edit-modal {
+        width: min(88vw, 760px);
+    }
+}
+
 @media (max-width: 640px) {
     .rolling-skill-header {
         align-items: flex-start;
@@ -1679,6 +1846,16 @@
     }
 
     .rolling-skill-header > :first-child {
+        width: 100%;
+    }
+
+    .rolling-skill-managed-path,
+    .rolling-skill-skill-edit-follow-up {
+        align-items: stretch;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .rolling-skill-skill-edit-modal {
         width: 100%;
     }
 }

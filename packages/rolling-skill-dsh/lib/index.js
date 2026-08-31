@@ -14375,6 +14375,42 @@ var require_managed_skill_git = __commonJS({
         await this.run(["commit", "--no-gpg-sign", "-m", message], { cwd: repositoryPath });
         return this.head(repositoryPath);
       }
+      async commitPaths(repositoryPath, message, inputPaths) {
+        message = requiredText(message, "Commit message", 2e3);
+        const paths = [...new Set((inputPaths ?? []).map(normalizedSkillRoot))];
+        if (!paths.length) throw new Error("At least one commit path is required");
+        await this.run(["add", "-f", "-A", "--", ...paths], { cwd: repositoryPath });
+        const staged = await this.run(
+          ["diff", "--cached", "--quiet", "--exit-code", "--", ...paths],
+          { cwd: repositoryPath, allowExitCodes: [0, 1] }
+        );
+        if (staged.exitCode === 0) {
+          throw new Error("Managed Skill paths have no working changes to commit");
+        }
+        await this.run(
+          ["commit", "--no-gpg-sign", "--only", "-m", message, "--", ...paths],
+          { cwd: repositoryPath }
+        );
+        return this.head(repositoryPath);
+      }
+      async softReset(repositoryPath, inputCommit) {
+        const target = await this.resolve(
+          repositoryPath,
+          requiredText(inputCommit, "Reset commit", 500)
+        );
+        await this.run(["reset", "--soft", target], { cwd: repositoryPath });
+        return this.head(repositoryPath);
+      }
+      async resetPaths(repositoryPath, inputCommit, inputPaths) {
+        const target = await this.resolve(
+          repositoryPath,
+          requiredText(inputCommit, "Reset commit", 500)
+        );
+        const paths = [...new Set((inputPaths ?? []).map(normalizedSkillRoot))];
+        if (!paths.length) throw new Error("At least one reset path is required");
+        await this.run(["reset", target, "--", ...paths], { cwd: repositoryPath });
+        return { commit: target, paths };
+      }
       async snapshotSkill(repositoryPath, commit, inputSkillRoot, inputLimits = {}) {
         commit = await this.resolve(repositoryPath, requiredText(commit, "Commit", 500));
         const skillRoot = normalizedSkillRoot(inputSkillRoot);
@@ -14505,6 +14541,7 @@ var require_managed_skill_manager = __commonJS({
       chmodSync,
       closeSync,
       constants,
+      existsSync,
       fstatSync,
       lstatSync,
       mkdirSync,
@@ -14538,6 +14575,51 @@ var require_managed_skill_manager = __commonJS({
     }
     function compareText(left, right) {
       return left < right ? -1 : left > right ? 1 : 0;
+    }
+    function nextPatchVersion(versions) {
+      const used = new Set(versions.map((entry) => entry.versionLabel).filter(Boolean));
+      const stable = versions.filter((entry) => entry.state === "released").flatMap((entry) => {
+        const match = String(entry.versionLabel ?? "").match(/^(\d+)\.(\d+)\.(\d+)$/u);
+        if (!match) return [];
+        const tuple = match.slice(1).map(Number);
+        return tuple.every(Number.isSafeInteger) ? [tuple] : [];
+      }).sort((left, right) => left[0] - right[0] || left[1] - right[1] || left[2] - right[2]);
+      let [major, minor, patch] = stable.at(-1) ?? [1, 0, -1];
+      let candidate;
+      do {
+        patch += 1;
+        candidate = `${major}.${minor}.${patch}`;
+      } while (used.has(candidate));
+      return candidate;
+    }
+    function clearSkillTree(path, { preserveGit = false } = {}) {
+      for (const entry of readdirSync(path, { withFileTypes: true })) {
+        if (preserveGit && entry.name === ".git") continue;
+        rmSync(join(path, entry.name), { recursive: true, force: true });
+      }
+    }
+    function movePreparedTree(preparedPath, targetPath, repositoryRoot) {
+      if (targetPath !== repositoryRoot) {
+        rmSync(targetPath, { recursive: true, force: true });
+        mkdirSync(dirname(targetPath), { recursive: true, mode: 448 });
+        renameSync(preparedPath, targetPath);
+        return;
+      }
+      clearSkillTree(targetPath, { preserveGit: true });
+      for (const entry of readdirSync(preparedPath, { withFileTypes: true })) {
+        renameSync(join(preparedPath, entry.name), join(targetPath, entry.name));
+      }
+      rmSync(preparedPath, { recursive: true, force: true });
+    }
+    function expectedEditBase(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "commit,contentDigest,snapshotDigest") {
+        throw new Error("Expected Skill edit base is invalid");
+      }
+      return {
+        commit: requiredText(value.commit, "Expected Skill edit commit", 64),
+        contentDigest: requiredText(value.contentDigest, "Expected Skill edit content digest", 80),
+        snapshotDigest: requiredText(value.snapshotDigest, "Expected Skill edit snapshot digest", 80)
+      };
     }
     function defaultManagedSkillPaths({ applicationSupportDirectory }) {
       const root = resolve(requiredText(applicationSupportDirectory, "Application Support directory"));
@@ -14992,18 +15074,714 @@ var require_managed_skill_manager = __commonJS({
           requiredText(input.versionId, "Version id", 200)
         ));
       }
+      applyEditedSkill(input = {}) {
+        return this.enqueue(async () => {
+          const skill = this.store.getSkill(requiredText(input.skillId, "Skill id", 200));
+          const repository = this.store.getRepository(skill.repositoryId);
+          const repositoryRoot = this.repositoryPath(repository.id);
+          const selectedRoot = this.skillPath(skill.id);
+          const expected = expectedEditBase(input.expectedBase);
+          const current = await candidateBaseSnapshot(this, skill, repository);
+          if (current.commit !== expected.commit || current.contentDigest !== expected.contentDigest || current.contentDigest !== expected.snapshotDigest) {
+            const error = new Error("Managed Skill changed while the Agent edit was open");
+            error.code = "RESOURCE_CHANGED";
+            throw error;
+          }
+          const sourceRoot = realpathSync(requiredText(input.sourceRoot, "Skill edit source", 16384));
+          const sourceScan = scanManagedSkillRepository(sourceRoot, this.scanLimits);
+          if (sourceScan.skills.length !== 1 || sourceScan.skills[0].skillRoot !== "." || sourceScan.skills[0].status !== "valid" || sourceScan.skills[0].name !== skill.name) throw new Error("Edited Skill is invalid or changed identity");
+          const sourceSnapshot = snapshotManagedSkill(sourceRoot, this.scanLimits);
+          if (sourceSnapshot.digest === current.contentDigest) {
+            const error = new Error("Edited Skill has no content changes");
+            error.code = "NO_CHANGES";
+            throw error;
+          }
+          const versions = this.store.listVersions(skill.id);
+          const versionLabel = nextPatchVersion(versions);
+          const message = requiredText(input.message, "Agent edit commit message", 2e3);
+          const operationId = randomUUID3();
+          const backupPath = join(this.paths.applicationSupportDirectory, `.skill-edit-backup-${operationId}`);
+          const preparedPath = join(this.paths.applicationSupportDirectory, `.skill-edit-stage-${operationId}`);
+          const beforeHead = await this.git.head(repositoryRoot);
+          let tagName = null;
+          let committed = false;
+          let backupReady = false;
+          try {
+            copyFolderWithoutGit(selectedRoot, backupPath, this.scanLimits);
+            backupReady = true;
+            const backupSnapshot = snapshotManagedSkill(backupPath, this.scanLimits);
+            if (backupSnapshot.digest !== current.contentDigest) {
+              const error = new Error("Managed Skill changed while its edit was being applied");
+              error.code = "RESOURCE_CHANGED";
+              throw error;
+            }
+            copyFolderWithoutGit(sourceRoot, preparedPath, this.scanLimits);
+            if (snapshotManagedSkill(preparedPath, this.scanLimits).digest !== sourceSnapshot.digest) {
+              throw new Error("Edited Skill changed while it was being applied");
+            }
+            movePreparedTree(preparedPath, selectedRoot, repositoryRoot);
+            const commit = await this.git.commitPaths(repositoryRoot, message, [skill.skillRoot]);
+            committed = true;
+            const committedSnapshot = await this.git.snapshotSkill(
+              repositoryRoot,
+              commit,
+              skill.skillRoot,
+              this.scanLimits
+            );
+            if (committedSnapshot.digest !== sourceSnapshot.digest) {
+              throw new Error("Committed Agent Skill edit digest is inconsistent");
+            }
+            const committedScan = scanManagedSkillRepository(repositoryRoot, this.scanLimits);
+            const committedSkill = committedScan.skills.find((entry) => entry.skillRoot === skill.skillRoot);
+            if (!committedSkill || committedSkill.status !== "valid" || committedSkill.name !== skill.name) {
+              throw new Error("Committed Agent Skill edit changed Skill identity");
+            }
+            tagName = `rolling-skill/${skill.name}/${versionLabel}`;
+            await this.git.createAnnotatedTag(
+              repositoryRoot,
+              tagName,
+              `Release ${skill.name} ${versionLabel}`,
+              commit
+            );
+            const version = this.store.transaction(() => {
+              const refreshed = this.store.replaceRepositorySkills(repository.id, committedScan.skills);
+              if (!refreshed.some((entry) => entry.id === skill.id && entry.status === "valid")) {
+                throw new Error("Managed Skill identity changed during release");
+              }
+              const candidate = this.store.addVersion({
+                repositoryId: repository.id,
+                skillId: skill.id,
+                commit,
+                contentDigest: committedSnapshot.digest,
+                state: "candidate",
+                createdBy: "user"
+              });
+              return this.store.releaseVersion(candidate.id, versionLabel);
+            });
+            rmSync(backupPath, { recursive: true, force: true });
+            backupReady = false;
+            return { version, commit, contentDigest: committedSnapshot.digest };
+          } catch (error) {
+            const rollbackErrors = [];
+            if (tagName) {
+              try {
+                await this.git.deleteTag(repositoryRoot, tagName);
+              } catch (rollbackError) {
+                rollbackErrors.push(rollbackError);
+              }
+            }
+            if (committed) {
+              try {
+                await this.git.softReset(repositoryRoot, beforeHead);
+              } catch (rollbackError) {
+                rollbackErrors.push(rollbackError);
+              }
+            }
+            if (backupReady && existsSync(backupPath)) {
+              try {
+                movePreparedTree(backupPath, selectedRoot, repositoryRoot);
+                backupReady = false;
+              } catch (rollbackError) {
+                rollbackErrors.push(rollbackError);
+              }
+            }
+            try {
+              await this.git.resetPaths(repositoryRoot, beforeHead, [skill.skillRoot]);
+            } catch (rollbackError) {
+              rollbackErrors.push(rollbackError);
+            }
+            if (rollbackErrors.length) {
+              const recovery = new Error("Agent Skill edit failed and requires recovery", { cause: error });
+              recovery.code = "NEEDS_RECOVERY";
+              recovery.rollbackErrors = rollbackErrors;
+              throw recovery;
+            }
+            throw error;
+          } finally {
+            for (const path of [preparedPath, backupReady ? backupPath : null]) {
+              if (path && existsSync(path)) rmSync(path, { recursive: true, force: true });
+            }
+          }
+        });
+      }
       repositoryPath(repositoryId) {
         const repository = this.store.getRepository(requiredText(repositoryId, "Repository id", 200));
         const path = realpathSync(repository.managedPath);
-        if (!isContained(this.paths.repositoriesRoot, path)) {
+        const repositoriesRoot = realpathSync(this.paths.repositoriesRoot);
+        if (!isContained(repositoriesRoot, path)) {
           throw new Error("Managed repository path is outside Application Support");
+        }
+        return path;
+      }
+      skillPath(skillId) {
+        const skill = this.store.getSkill(requiredText(skillId, "Skill id", 200));
+        const repositoryRoot = this.repositoryPath(skill.repositoryId);
+        const path = realpathSync(join(repositoryRoot, skill.skillRoot));
+        if (!isContained(repositoryRoot, path)) {
+          throw new Error("Managed Skill path is outside its repository");
         }
         return path;
       }
     };
     module.exports = {
       ManagedSkillManager,
-      defaultManagedSkillPaths
+      defaultManagedSkillPaths,
+      nextPatchVersion
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/skill-edit-store.cjs
+var require_skill_edit_store = __commonJS({
+  "../../desktop/rolling-skill/src/skill-edit-store.cjs"(exports, module) {
+    var {
+      chmodSync,
+      existsSync,
+      mkdirSync,
+      readFileSync,
+      renameSync,
+      writeFileSync
+    } = __require("node:fs");
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
+    var { dirname, isAbsolute } = __require("node:path");
+    var SKILL_EDIT_STORE_SCHEMA = "rolling-skill-skill-edits/v1";
+    var ACTIVE_STATES = /* @__PURE__ */ new Set(["draft", "running", "idle", "applying", "needs_recovery"]);
+    var TERMINAL_STATES = /* @__PURE__ */ new Set(["published", "discarded", "failed"]);
+    var STATES = /* @__PURE__ */ new Set([...ACTIVE_STATES, ...TERMINAL_STATES]);
+    function copy(value) {
+      return value === void 0 ? void 0 : JSON.parse(JSON.stringify(value));
+    }
+    function requiredText(value, label, maximum = 4096) {
+      const normalized = String(value ?? "").trim();
+      if (!normalized || normalized.length > maximum) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function optionalText(value, label, maximum = 4096) {
+      if (value === null || value === void 0 || value === "") return null;
+      return requiredText(value, label, maximum);
+    }
+    function timestamp(value = /* @__PURE__ */ new Date()) {
+      const date = value instanceof Date ? value : new Date(value);
+      if (!Number.isFinite(date.getTime())) throw new Error("Skill edit timestamp is invalid");
+      return date.toISOString();
+    }
+    function digest(value, label) {
+      const normalized = requiredText(value, label, 80);
+      if (!/^sha256:[a-f0-9]{64}$/u.test(normalized)) throw new Error(`${label} is invalid`);
+      return normalized;
+    }
+    function commit(value) {
+      const normalized = requiredText(value, "Base commit", 128);
+      if (!/^[a-f0-9]{7,64}$/u.test(normalized)) throw new Error("Base commit is invalid");
+      return normalized;
+    }
+    function state(value) {
+      const normalized = requiredText(value, "Skill edit state", 32);
+      if (!STATES.has(normalized)) throw new Error("Skill edit state is invalid");
+      return normalized;
+    }
+    function runtime(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Skill edit Runtime is required");
+      }
+      return {
+        runtimeId: requiredText(value.runtimeId, "Runtime id", 1024),
+        modelId: requiredText(value.modelId, "Model id", 1024),
+        effort: requiredText(value.effort, "Reasoning effort", 64)
+      };
+    }
+    function publishedVersion(value) {
+      if (value === null || value === void 0) return null;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Published version is invalid");
+      }
+      return {
+        id: requiredText(value.id, "Published version id", 1024),
+        label: requiredText(value.label, "Published version label", 128)
+      };
+    }
+    function publicError(value) {
+      if (value === null || value === void 0) return null;
+      if (typeof value === "string") return { message: requiredText(value, "Skill edit error", 4e3) };
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Skill edit error is invalid");
+      }
+      return {
+        code: optionalText(value.code, "Skill edit error code", 128),
+        message: requiredText(value.message, "Skill edit error", 4e3)
+      };
+    }
+    function normalizeRecord(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("Skill edit record is invalid");
+      }
+      const workspacePath = requiredText(value.workspacePath, "Skill edit workspace path", 16384);
+      if (!isAbsolute(workspacePath)) throw new Error("Skill edit workspace path must be absolute");
+      const revision = Number(value.revision);
+      if (!Number.isSafeInteger(revision) || revision < 1) throw new Error("Skill edit revision is invalid");
+      return {
+        id: requiredText(value.id, "Skill edit id", 1024),
+        repositoryId: requiredText(value.repositoryId, "Repository id", 1024),
+        skillId: requiredText(value.skillId, "Skill id", 1024),
+        skillRoot: requiredText(value.skillRoot, "Skill root", 16384),
+        baseCommit: commit(value.baseCommit),
+        baseContentDigest: digest(value.baseContentDigest, "Base content digest"),
+        baseSnapshotDigest: digest(value.baseSnapshotDigest, "Base snapshot digest"),
+        workspacePath,
+        runtime: runtime(value.runtime),
+        objective: requiredText(value.objective, "Skill edit objective", 2e4),
+        state: state(value.state),
+        revision,
+        operatorSessionId: optionalText(value.operatorSessionId, "Operator session id", 1024),
+        publishedVersion: publishedVersion(value.publishedVersion),
+        error: publicError(value.error),
+        createdAt: timestamp(value.createdAt),
+        updatedAt: timestamp(value.updatedAt)
+      };
+    }
+    function emptyState() {
+      return { schemaVersion: SKILL_EDIT_STORE_SCHEMA, edits: [] };
+    }
+    var SkillEditStore = class {
+      constructor(path, { now = () => /* @__PURE__ */ new Date(), idFactory = randomUUID3 } = {}) {
+        this.path = requiredText(path, "Skill edit store path", 16384);
+        if (!isAbsolute(this.path)) throw new Error("Skill edit store path must be absolute");
+        this.now = now;
+        this.idFactory = idFactory;
+        this.state = null;
+      }
+      load() {
+        if (this.state) return this.state;
+        if (!existsSync(this.path)) {
+          this.state = emptyState();
+          this.persist();
+          return this.state;
+        }
+        const parsed = JSON.parse(readFileSync(this.path, "utf8"));
+        if (!parsed || parsed.schemaVersion !== SKILL_EDIT_STORE_SCHEMA || !Array.isArray(parsed.edits)) throw new Error("Unsupported Skill edit store schema");
+        const edits = parsed.edits.map(normalizeRecord);
+        const ids = /* @__PURE__ */ new Set();
+        const activeSkills = /* @__PURE__ */ new Set();
+        for (const edit of edits) {
+          if (ids.has(edit.id)) throw new Error("Duplicate Skill edit id");
+          ids.add(edit.id);
+          if (!ACTIVE_STATES.has(edit.state)) continue;
+          if (activeSkills.has(edit.skillId)) throw new Error("Duplicate active Skill edit session");
+          activeSkills.add(edit.skillId);
+        }
+        this.state = { schemaVersion: SKILL_EDIT_STORE_SCHEMA, edits };
+        return this.state;
+      }
+      persist() {
+        const directory = dirname(this.path);
+        mkdirSync(directory, { recursive: true, mode: 448 });
+        chmodSync(directory, 448);
+        const temporary = `${this.path}.tmp-${process.pid}-${randomUUID3()}`;
+        writeFileSync(temporary, `${JSON.stringify(this.state, null, 2)}
+`, { mode: 384 });
+        chmodSync(temporary, 384);
+        renameSync(temporary, this.path);
+        chmodSync(this.path, 384);
+      }
+      get(id) {
+        const normalizedId = requiredText(id, "Skill edit id", 1024);
+        const record = this.load().edits.find((edit) => edit.id === normalizedId);
+        return record ? copy(record) : null;
+      }
+      require(id) {
+        const record = this.get(id);
+        if (!record) {
+          const error = new Error("Skill edit session was not found");
+          error.code = "NOT_FOUND";
+          throw error;
+        }
+        return record;
+      }
+      list({ skillId = null } = {}) {
+        const normalizedSkillId = skillId === null ? null : requiredText(skillId, "Skill id", 1024);
+        return this.load().edits.filter((edit) => normalizedSkillId === null || edit.skillId === normalizedSkillId).slice().sort((left, right) => right.createdAt.localeCompare(left.createdAt)).map(copy);
+      }
+      activeForSkill(skillId) {
+        const normalizedSkillId = requiredText(skillId, "Skill id", 1024);
+        const record = this.load().edits.find((edit) => edit.skillId === normalizedSkillId && ACTIVE_STATES.has(edit.state));
+        return record ? copy(record) : null;
+      }
+      create(input) {
+        const normalizedSkillId = requiredText(input?.skillId, "Skill id", 1024);
+        if (this.activeForSkill(normalizedSkillId)) {
+          const error = new Error("This Skill already has an active edit session");
+          error.code = "RESOURCE_CHANGED";
+          throw error;
+        }
+        const now = timestamp(this.now());
+        const record = normalizeRecord({
+          ...copy(input),
+          id: requiredText(input?.id ?? this.idFactory(), "Skill edit id", 1024),
+          skillId: normalizedSkillId,
+          state: "draft",
+          revision: 1,
+          operatorSessionId: null,
+          publishedVersion: null,
+          error: null,
+          createdAt: now,
+          updatedAt: now
+        });
+        this.load().edits.push(record);
+        this.persist();
+        return copy(record);
+      }
+      update(id, expectedRevision, patch = {}) {
+        const current = this.require(id);
+        if (current.revision !== expectedRevision) {
+          const error = new Error("Skill edit changed since it was loaded");
+          error.code = "RESOURCE_CHANGED";
+          throw error;
+        }
+        if (TERMINAL_STATES.has(current.state)) throw new Error("Skill edit is already closed");
+        const allowed = /* @__PURE__ */ new Set(["state", "operatorSessionId", "publishedVersion", "error"]);
+        for (const key of Object.keys(patch)) {
+          if (!allowed.has(key)) throw new Error(`Skill edit field cannot be updated: ${key}`);
+        }
+        const next = normalizeRecord({
+          ...current,
+          ...copy(patch),
+          revision: current.revision + 1,
+          updatedAt: timestamp(this.now())
+        });
+        if (TERMINAL_STATES.has(next.state)) {
+          throw new Error("Use close to enter a terminal state");
+        }
+        const index = this.load().edits.findIndex((edit) => edit.id === current.id);
+        this.state.edits[index] = next;
+        this.persist();
+        return copy(next);
+      }
+      close(id, expectedRevision, patch = {}) {
+        const current = this.require(id);
+        if (current.revision !== expectedRevision) {
+          const error = new Error("Skill edit changed since it was loaded");
+          error.code = "RESOURCE_CHANGED";
+          throw error;
+        }
+        const nextState = state(patch.state);
+        if (!TERMINAL_STATES.has(nextState)) throw new Error("Skill edit terminal state is required");
+        const next = normalizeRecord({
+          ...current,
+          state: nextState,
+          publishedVersion: Object.hasOwn(patch, "publishedVersion") ? patch.publishedVersion : current.publishedVersion,
+          error: Object.hasOwn(patch, "error") ? patch.error : current.error,
+          revision: current.revision + 1,
+          updatedAt: timestamp(this.now())
+        });
+        const index = this.load().edits.findIndex((edit) => edit.id === current.id);
+        this.state.edits[index] = next;
+        this.persist();
+        return copy(next);
+      }
+    };
+    module.exports = {
+      ACTIVE_STATES,
+      SKILL_EDIT_STORE_SCHEMA,
+      SkillEditStore,
+      TERMINAL_STATES
+    };
+  }
+});
+
+// ../../desktop/rolling-skill/src/skill-edit-workspace.cjs
+var require_skill_edit_workspace = __commonJS({
+  "../../desktop/rolling-skill/src/skill-edit-workspace.cjs"(exports, module) {
+    "use strict";
+    var {
+      chmodSync,
+      copyFileSync,
+      existsSync,
+      lstatSync,
+      mkdirSync,
+      realpathSync,
+      rmSync,
+      symlinkSync
+    } = __require("node:fs");
+    var { dirname, join, resolve, sep } = __require("node:path");
+    var { ManagedSkillGit } = require_managed_skill_git();
+    var {
+      DEFAULT_SCAN_LIMITS,
+      scanManagedSkillRepository,
+      snapshotManagedSkill
+    } = require_managed_skill_snapshot();
+    var DEFAULT_MAX_DIFF_FILES = 500;
+    var DEFAULT_MAX_PATCH_BYTES = 256 * 1024;
+    var DEFAULT_MAX_TOTAL_PATCH_BYTES = 2 * 1024 * 1024;
+    function requiredText(value, label, maximum = 4096) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized || normalized.length > maximum) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function requiredId(value) {
+      const id = requiredText(value, "Skill edit session id", 200);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u.test(id)) {
+        throw new Error("Skill edit session id contains unsupported characters");
+      }
+      return id;
+    }
+    function positiveInteger(value, label, fallback) {
+      if (value === void 0) return fallback;
+      const normalized = Number(value);
+      if (!Number.isSafeInteger(normalized) || normalized <= 0) {
+        throw new Error(`${label} must be a positive integer`);
+      }
+      return normalized;
+    }
+    function isContained(root, candidate) {
+      return candidate === root || candidate.startsWith(`${root}${sep}`);
+    }
+    function ensurePrivateRoot(inputPath) {
+      const requested = resolve(requiredText(inputPath, "Skill edit workspace root", 16384));
+      if (existsSync(requested)) {
+        const status = lstatSync(requested);
+        if (status.isSymbolicLink() || !status.isDirectory()) {
+          throw new Error("Skill edit workspace root must be a regular directory");
+        }
+      } else {
+        mkdirSync(requested, { recursive: true, mode: 448 });
+      }
+      chmodSync(requested, 448);
+      const actual = realpathSync(requested);
+      return actual;
+    }
+    function copyValidatedSkillTree(sourceRoot, destinationPath, limits) {
+      const sourceSnapshot = snapshotManagedSkill(sourceRoot, limits);
+      mkdirSync(destinationPath, { mode: 448 });
+      chmodSync(destinationPath, 448);
+      for (const file of sourceSnapshot.files) {
+        const target = resolve(destinationPath, file.path);
+        if (!isContained(destinationPath, target) || target === destinationPath) {
+          throw new Error("Skill file path escapes the edit workspace");
+        }
+        mkdirSync(dirname(target), { recursive: true, mode: 448 });
+        if (file.type === "symlink") {
+          symlinkSync(file.linkTarget, target);
+          continue;
+        }
+        copyFileSync(resolve(sourceRoot, file.path), target);
+        chmodSync(target, file.executable ? 493 : 420);
+      }
+      const copiedSnapshot = snapshotManagedSkill(destinationPath, limits);
+      if (copiedSnapshot.digest !== sourceSnapshot.digest) {
+        throw new Error("Managed Skill changed while creating the edit workspace");
+      }
+      return copiedSnapshot;
+    }
+    function statusName(value) {
+      return { A: "added", D: "deleted", M: "modified", T: "modified" }[value] ?? "modified";
+    }
+    function parseNameStatus(buffer) {
+      const tokens = buffer.toString("utf8").split("\0").filter(Boolean);
+      const records = [];
+      for (let index = 0; index < tokens.length; ) {
+        let status = tokens[index++];
+        let path;
+        const tab = status.indexOf("	");
+        if (tab >= 0) {
+          path = status.slice(tab + 1);
+          status = status.slice(0, tab);
+        } else {
+          path = tokens[index++];
+        }
+        if (!path) throw new Error("Git Diff returned an invalid path record");
+        records.push({ path, status: statusName(status[0]) });
+      }
+      return records.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+    }
+    function parseNumstat(buffer) {
+      const result = /* @__PURE__ */ new Map();
+      for (const record of buffer.toString("utf8").split("\0").filter(Boolean)) {
+        const [added, deleted, ...pathParts] = record.split("	");
+        const path = pathParts.join("	");
+        if (!path) continue;
+        const binary = added === "-" || deleted === "-";
+        result.set(path, {
+          binary,
+          additions: binary ? null : Number(added),
+          deletions: binary ? null : Number(deleted)
+        });
+      }
+      return result;
+    }
+    function boundedPatch(buffer, limit) {
+      const truncated = buffer.length > limit;
+      const bounded = truncated ? buffer.subarray(0, limit) : buffer;
+      return {
+        patch: bounded.toString("utf8"),
+        patchBytes: bounded.length,
+        truncated
+      };
+    }
+    var SkillEditWorkspaceManager = class {
+      constructor(options2 = {}) {
+        this.workspacesRoot = ensurePrivateRoot(options2.workspacesRoot);
+        this.git = options2.git ?? new ManagedSkillGit();
+        this.scanLimits = { ...DEFAULT_SCAN_LIMITS, ...options2.scanLimits ?? {} };
+        this.maxDiffFiles = positiveInteger(
+          options2.maxDiffFiles,
+          "Maximum Diff files",
+          DEFAULT_MAX_DIFF_FILES
+        );
+        this.maxPatchBytes = positiveInteger(
+          options2.maxPatchBytes,
+          "Maximum patch bytes",
+          DEFAULT_MAX_PATCH_BYTES
+        );
+        this.maxTotalPatchBytes = positiveInteger(
+          options2.maxTotalPatchBytes,
+          "Maximum total patch bytes",
+          DEFAULT_MAX_TOTAL_PATCH_BYTES
+        );
+        this.workspaces = /* @__PURE__ */ new Map();
+        this.operationTail = Promise.resolve();
+      }
+      enqueue(operation) {
+        const result = this.operationTail.then(operation, operation);
+        this.operationTail = result.catch(() => {
+        });
+        return result;
+      }
+      workspacePath(sessionId) {
+        const path = resolve(this.workspacesRoot, requiredId(sessionId));
+        if (path === this.workspacesRoot || !isContained(this.workspacesRoot, path)) {
+          throw new Error("Skill edit workspace path escapes its private root");
+        }
+        return path;
+      }
+      create(input = {}) {
+        return this.enqueue(async () => {
+          const sessionId = requiredId(input.sessionId);
+          const skillName = requiredText(input.skillName, "Skill name", 128);
+          const sourceRoot = realpathSync(requiredText(input.sourceRoot, "Skill source root", 16384));
+          if (this.workspaces.has(sessionId)) throw new Error("Skill edit workspace is already registered");
+          const workspacePath = this.workspacePath(sessionId);
+          if (existsSync(workspacePath)) throw new Error("Skill edit workspace already exists");
+          try {
+            const baseline = copyValidatedSkillTree(sourceRoot, workspacePath, this.scanLimits);
+            const scan = scanManagedSkillRepository(workspacePath, this.scanLimits);
+            if (scan.skills.length !== 1 || scan.skills[0].skillRoot !== "." || scan.skills[0].status !== "valid" || scan.skills[0].name !== skillName) throw new Error("Selected Skill is invalid or changed identity");
+            await this.git.initialize(workspacePath);
+            const baselineCommit = await this.git.commitAll(
+              workspacePath,
+              "Rolling Skill edit baseline",
+              { forcePaths: ["."] }
+            );
+            const record = { sessionId, skillName, workspacePath, baselineCommit, baselineDigest: baseline.digest };
+            this.workspaces.set(sessionId, record);
+            return { ...record };
+          } catch (error) {
+            this.workspaces.delete(sessionId);
+            if (existsSync(workspacePath)) rmSync(workspacePath, { recursive: true, force: true });
+            throw error;
+          }
+        });
+      }
+      register(input = {}) {
+        return this.enqueue(async () => {
+          const sessionId = requiredId(input.sessionId);
+          const skillName = requiredText(input.skillName, "Skill name", 128);
+          const workspacePath = this.workspacePath(sessionId);
+          if (resolve(requiredText(input.workspacePath, "Skill edit workspace path", 16384)) !== workspacePath) {
+            throw new Error("Persisted Skill edit workspace identity changed");
+          }
+          this.#verifyPath(workspacePath);
+          const baselineCommit = await this.git.resolve(workspacePath, input.baselineCommit ?? "HEAD");
+          const baseline = await this.git.snapshotSkill(workspacePath, baselineCommit, ".", this.scanLimits);
+          const baselineDigest = requiredText(input.baselineDigest, "Skill edit baseline digest", 80);
+          if (baseline.digest !== baselineDigest) throw new Error("Skill edit baseline digest changed");
+          const record = { sessionId, skillName, workspacePath, baselineCommit, baselineDigest };
+          this.workspaces.set(sessionId, record);
+          await this.validate(sessionId);
+          return { ...record };
+        });
+      }
+      resolve(sessionId) {
+        const record = this.#record(sessionId);
+        return record.workspacePath;
+      }
+      async validate(sessionId) {
+        const record = this.#record(sessionId);
+        const scan = scanManagedSkillRepository(record.workspacePath, this.scanLimits);
+        if (scan.skills.length !== 1 || scan.skills[0].skillRoot !== "." || scan.skills[0].status !== "valid" || scan.skills[0].name !== record.skillName) throw new Error("Edited Skill is invalid or changed identity");
+        return {
+          skill: scan.skills[0],
+          snapshot: snapshotManagedSkill(record.workspacePath, this.scanLimits)
+        };
+      }
+      async diff(sessionId) {
+        const record = this.#record(sessionId);
+        snapshotManagedSkill(record.workspacePath, this.scanLimits);
+        await this.git.run(["add", "-N", "-f", "--", "."], { cwd: record.workspacePath });
+        const statuses = parseNameStatus(await this.git.runRaw(
+          ["diff", "--no-renames", "--name-status", "-z", "HEAD", "--", "."],
+          { cwd: record.workspacePath }
+        ));
+        if (statuses.length > this.maxDiffFiles) throw new Error("Skill edit Diff file limit exceeded");
+        const numstat = parseNumstat(await this.git.runRaw(
+          ["diff", "--no-renames", "--numstat", "-z", "HEAD", "--", "."],
+          { cwd: record.workspacePath }
+        ));
+        let remaining = this.maxTotalPatchBytes;
+        let truncated = false;
+        const files = [];
+        for (const entry of statuses) {
+          const stats = numstat.get(entry.path) ?? { binary: false, additions: 0, deletions: 0 };
+          let patch = { patch: "", patchBytes: 0, truncated: false };
+          if (!stats.binary && remaining > 0) {
+            const raw = await this.git.runRaw(
+              ["diff", "--no-color", "--no-ext-diff", "HEAD", "--", entry.path],
+              { cwd: record.workspacePath }
+            );
+            patch = boundedPatch(raw, Math.min(this.maxPatchBytes, remaining));
+            remaining -= patch.patchBytes;
+            truncated ||= patch.truncated;
+          } else if (!stats.binary) {
+            patch.truncated = true;
+            truncated = true;
+          }
+          files.push({ ...entry, ...stats, ...patch });
+        }
+        return {
+          changed: files.length > 0,
+          truncated,
+          files,
+          currentSnapshotDigest: snapshotManagedSkill(record.workspacePath, this.scanLimits).digest
+        };
+      }
+      cleanup(sessionId) {
+        return this.enqueue(() => {
+          const record = this.#record(sessionId);
+          rmSync(record.workspacePath, { recursive: true, force: true });
+          this.workspaces.delete(record.sessionId);
+          return { sessionId: record.sessionId };
+        });
+      }
+      #record(sessionId) {
+        const id = requiredId(sessionId);
+        const record = this.workspaces.get(id);
+        if (!record) throw new Error("Unknown registered Skill edit workspace");
+        this.#verifyPath(record.workspacePath);
+        return record;
+      }
+      #verifyPath(workspacePath) {
+        const status = lstatSync(workspacePath);
+        if (status.isSymbolicLink() || !status.isDirectory()) {
+          throw new Error("Skill edit workspace must be a regular directory");
+        }
+        const actual = realpathSync(workspacePath);
+        if (actual !== workspacePath || !isContained(this.workspacesRoot, actual)) {
+          throw new Error("Skill edit workspace identity changed or escaped its private root");
+        }
+      }
+    };
+    module.exports = {
+      SkillEditWorkspaceManager,
+      copyValidatedSkillTree
     };
   }
 });
@@ -22768,6 +23546,7 @@ var require_data_root = __commonJS({
       const root = dataRoot ? absoluteRoot(dataRoot, "Rolling Skill data root") : dshHome ? join(absoluteRoot(dshHome, "DSH_HOME"), "rolling-skill") : join(absoluteRoot(homeDirectory, "Home directory"), ".dsh", "rolling-skill");
       const rawCases = join(root, "raw-cases");
       const managedSkills = join(root, "managed-skills");
+      const skillEditWorkspaces = join(root, "skill-edit-workspaces");
       const traces = join(root, "traces");
       const jobs = join(root, "jobs");
       const logs = join(root, "logs");
@@ -22783,12 +23562,14 @@ var require_data_root = __commonJS({
         rawCaseEvidence: join(rawCases, "evidence"),
         managedSkills,
         managedSkillRegistry: join(managedSkills, "registry.json"),
+        skillEditWorkspaces,
         skillInstallations: join(root, "skill-installations.json"),
         traces,
         dshConversationTraces: join(traces, "dsh-conversations"),
         jobs,
         operatorJobs: join(jobs, "operator-jobs.json"),
         optimizationRuns: join(jobs, "optimization-runs.json"),
+        skillEdits: join(jobs, "skill-edits.json"),
         logs,
         workerLog: join(logs, "worker.log"),
         locks,
@@ -22806,6 +23587,7 @@ var require_data_root = __commonJS({
         paths.root,
         paths.rawCases,
         paths.managedSkills,
+        paths.skillEditWorkspaces,
         paths.traces,
         paths.jobs,
         paths.logs,
@@ -51044,6 +51826,7 @@ var require_operator_session_manager = __commonJS({
           "repositoryId",
           "skillId",
           "optimizationRunId",
+          "skillEditSessionId",
           ...persisted ? ["workspaceDigest"] : []
         ]);
         const required = /* @__PURE__ */ new Set([
@@ -51063,8 +51846,18 @@ var require_operator_session_manager = __commonJS({
               "Optimization Run id",
               200
             )
+          },
+          ...value.skillEditSessionId === void 0 ? {} : {
+            skillEditSessionId: requiredText(
+              value.skillEditSessionId,
+              "Skill edit session id",
+              200
+            )
           }
         };
+        if (binding.optimizationRunId && binding.skillEditSessionId) {
+          throw new TypeError("Managed Skill binding cannot select two workspaces");
+        }
         if (!Array.isArray(scope?.repositoryIds) || !scope.repositoryIds.includes(binding.repositoryId) || !Array.isArray(scope?.skillIds) || !scope.skillIds.includes(binding.skillId)) {
           throw new Error("Managed Skill binding is outside the frozen capability scope");
         }
@@ -51072,7 +51865,7 @@ var require_operator_session_manager = __commonJS({
           throw new Error("Managed Skill workspace resolution is unavailable");
         }
         const resolvedWorkspace = await this.#resolveManagedSkillWorkspace(Object.freeze({ ...binding }));
-        if (!plainObject(resolvedWorkspace) || resolvedWorkspace.repositoryId !== binding.repositoryId || resolvedWorkspace.skillId !== binding.skillId || resolvedWorkspace.optimizationRunId !== binding.optimizationRunId || typeof resolvedWorkspace.workspaceRoot !== "string" || !isAbsolute(resolvedWorkspace.workspaceRoot)) {
+        if (!plainObject(resolvedWorkspace) || resolvedWorkspace.repositoryId !== binding.repositoryId || resolvedWorkspace.skillId !== binding.skillId || resolvedWorkspace.optimizationRunId !== binding.optimizationRunId || resolvedWorkspace.skillEditSessionId !== binding.skillEditSessionId || typeof resolvedWorkspace.workspaceRoot !== "string" || !isAbsolute(resolvedWorkspace.workspaceRoot)) {
           throw new Error("Managed Skill workspace resolution is invalid");
         }
         const workspaceRoot = resolve(resolvedWorkspace.workspaceRoot);
@@ -51806,7 +52599,7 @@ var require_operator_session_manager = __commonJS({
             type: "operator-session",
             objective,
             budget: context.budget,
-            checkpoint: managedWorkspace.binding?.optimizationRunId ? { optimizationRunId: managedWorkspace.binding.optimizationRunId } : null
+            checkpoint: managedWorkspace.binding?.optimizationRunId ? { optimizationRunId: managedWorkspace.binding.optimizationRunId } : managedWorkspace.binding?.skillEditSessionId ? { skillEditSessionId: managedWorkspace.binding.skillEditSessionId } : null
           });
           control = this.#createControl({
             session,
@@ -57169,6 +57962,49 @@ var require_operator_services = __commonJS({
         expectedContentDigest: candidate.contentDigest
       };
     }
+    function createManagedWorkspaceResolver({
+      workspaceManager,
+      managedSkillStore,
+      managedSkillManager,
+      resolveSkillEditWorkspace = null
+    } = {}) {
+      return async (binding = {}) => {
+        if (binding.skillEditSessionId) {
+          if (typeof resolveSkillEditWorkspace !== "function") {
+            throw new Error("Skill edit workspace resolution is unavailable");
+          }
+          const selected = await resolveSkillEditWorkspace(Object.freeze({ ...binding }));
+          if (selected?.repositoryId !== binding.repositoryId || selected?.skillId !== binding.skillId || selected?.skillEditSessionId !== binding.skillEditSessionId || typeof selected?.workspaceRoot !== "string") throw new Error("Skill edit workspace does not match the managed Skill binding");
+          return {
+            repositoryId: selected.repositoryId,
+            skillId: selected.skillId,
+            skillEditSessionId: selected.skillEditSessionId,
+            workspaceRoot: selected.workspaceRoot
+          };
+        }
+        if (binding.optimizationRunId) {
+          const selected = workspaceManager.get(binding.optimizationRunId);
+          if (selected.repositoryId !== binding.repositoryId || selected.skillId !== binding.skillId) {
+            throw new Error("Optimization workspace does not match the managed Skill binding");
+          }
+          return {
+            repositoryId: selected.repositoryId,
+            skillId: selected.skillId,
+            optimizationRunId: selected.runId,
+            workspaceRoot: selected.workspacePath
+          };
+        }
+        const skill = managedSkillStore.getSkill(binding.skillId);
+        if (skill.repositoryId !== binding.repositoryId) {
+          throw new Error("Managed Skill does not belong to the selected repository");
+        }
+        return {
+          repositoryId: binding.repositoryId,
+          skillId: binding.skillId,
+          workspaceRoot: managedSkillManager.repositoryPath(binding.repositoryId)
+        };
+      };
+    }
     function createOperatorRuntime({
       paths,
       store,
@@ -57186,6 +58022,7 @@ var require_operator_services = __commonJS({
       requestPermission = null,
       requestQuestion = null,
       operatorToolPath = null,
+      resolveSkillEditWorkspace = null,
       onChanged = () => {
       }
     } = {}) {
@@ -57270,29 +58107,12 @@ var require_operator_services = __commonJS({
         applicationSupportDirectory: paths.root,
         store: managedSkillStore
       });
-      const resolveManagedWorkspace = (binding = {}) => {
-        if (binding.optimizationRunId) {
-          const selected = workspaceManager.get(binding.optimizationRunId);
-          if (selected.repositoryId !== binding.repositoryId || selected.skillId !== binding.skillId) {
-            throw new Error("Optimization workspace does not match the managed Skill binding");
-          }
-          return {
-            repositoryId: selected.repositoryId,
-            skillId: selected.skillId,
-            optimizationRunId: selected.runId,
-            workspaceRoot: selected.workspacePath
-          };
-        }
-        const skill = managedSkillStore.getSkill(binding.skillId);
-        if (skill.repositoryId !== binding.repositoryId) {
-          throw new Error("Managed Skill does not belong to the selected repository");
-        }
-        return {
-          repositoryId: binding.repositoryId,
-          skillId: binding.skillId,
-          workspaceRoot: managedSkillManager.repositoryPath(binding.repositoryId)
-        };
-      };
+      const resolveManagedWorkspace = createManagedWorkspaceResolver({
+        workspaceManager,
+        managedSkillStore,
+        managedSkillManager,
+        resolveSkillEditWorkspace
+      });
       sessionManager = new OperatorSessionManager({
         store: jobStore,
         engine: jobEngine,
@@ -57576,6 +58396,7 @@ var require_operator_services = __commonJS({
       });
     }
     module.exports = {
+      createManagedWorkspaceResolver,
       createOperatorRuntime,
       createOperatorServices,
       optimizationRuntimeSkillBinding,
@@ -62030,6 +62851,363 @@ var require_runtime_interaction_broker = __commonJS({
   }
 });
 
+// ../rolling-skill-core/src/skill-edit-services.cjs
+var require_skill_edit_services = __commonJS({
+  "../rolling-skill-core/src/skill-edit-services.cjs"(exports, module) {
+    var { randomUUID: randomUUID3 } = __require("node:crypto");
+    var ACTIVE_OPERATOR_STATES = /* @__PURE__ */ new Set(["active", "queued", "running"]);
+    var TERMINAL_EDIT_STATES = /* @__PURE__ */ new Set(["published", "discarded", "failed"]);
+    function requiredText(value, label, maximum = 4096) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized || normalized.length > maximum) throw new Error(`${label} is required`);
+      return normalized;
+    }
+    function exactKeys2(value, allowed, label) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} must be an object`);
+      }
+      const unsupported = Object.keys(value).find((key) => !allowed.has(key));
+      if (unsupported) throw new Error(`${label} contains an unsupported field: ${unsupported}`);
+      return value;
+    }
+    function revision(value) {
+      if (!Number.isSafeInteger(value) || value < 1) throw new Error("Skill edit revision is invalid");
+      return value;
+    }
+    function boundedText(value, maximum = 32e3) {
+      const text2 = String(value ?? "");
+      return text2.length <= maximum ? text2 : `${text2.slice(0, maximum - 1)}\u2026`;
+    }
+    function sanitizedError(error, workspacePath = null) {
+      let message = boundedText(error?.message ?? error ?? "Skill edit failed", 2e3);
+      if (workspacePath) message = message.split(workspacePath).join("Skill edit workspace");
+      return {
+        code: typeof error?.code === "string" ? boundedText(error.code, 128) : null,
+        message
+      };
+    }
+    function messages(operator) {
+      return (operator?.session?.transcript ?? []).filter((entry) => entry?.kind === "message" && (entry.role === "user" || entry.role === "assistant") && typeof entry.content === "string").slice(-200).map((entry) => ({
+        role: entry.role,
+        content: boundedText(entry.content),
+        recordedAt: entry.recordedAt ?? null
+      }));
+    }
+    function publicRecord(record, { operator = null, diff = null } = {}) {
+      return {
+        id: record.id,
+        repositoryId: record.repositoryId,
+        skillId: record.skillId,
+        state: record.state,
+        revision: record.revision,
+        runtime: { ...record.runtime },
+        objective: boundedText(record.objective, 2e4),
+        operatorSessionId: record.operatorSessionId,
+        operator: operator ? {
+          state: operator.state ?? null,
+          jobStatus: operator.parentJob?.status ?? null
+        } : null,
+        messages: messages(operator),
+        diff,
+        publishedVersionId: record.publishedVersion?.id ?? null,
+        publishedVersionLabel: record.publishedVersion?.label ?? null,
+        error: record.error ? { ...record.error } : null,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt
+      };
+    }
+    function createSkillEditServices({
+      store,
+      workspaceManager,
+      managedSkillManager,
+      operatorServices,
+      idFactory = randomUUID3
+    } = {}) {
+      for (const [dependency, methods] of [
+        [store, ["create", "require", "list", "activeForSkill", "update", "close"]],
+        [workspaceManager, ["workspacePath", "create", "register", "resolve", "diff", "validate", "cleanup"]],
+        [managedSkillManager, ["readSkill", "candidateBase", "skillPath", "applyEditedSkill"]],
+        [operatorServices, ["operatorStart", "operatorGet", "operatorSend", "operatorCancel"]]
+      ]) {
+        if (!dependency || methods.some((method) => typeof dependency[method] !== "function")) {
+          throw new Error("Rolling Skill Agent edit dependencies are incomplete");
+        }
+      }
+      if (typeof idFactory !== "function") throw new Error("Skill edit id factory is invalid");
+      async function reconcile() {
+        for (const record of store.list()) {
+          if (TERMINAL_EDIT_STATES.has(record.state)) continue;
+          try {
+            if (record.state === "applying") throw new Error("Interrupted apply requires recovery");
+            const detail = managedSkillManager.readSkill(record.skillId, { includeVersions: false });
+            await workspaceManager.register({
+              sessionId: record.id,
+              skillName: detail.skill.name,
+              workspacePath: record.workspacePath,
+              baselineDigest: record.baseSnapshotDigest
+            });
+          } catch (error) {
+            if (record.state !== "needs_recovery") {
+              store.update(record.id, record.revision, {
+                state: "needs_recovery",
+                error: sanitizedError(error, record.workspacePath)
+              });
+            }
+          }
+        }
+      }
+      const ready = reconcile();
+      function operatorFor(record) {
+        if (!record.operatorSessionId) return null;
+        return operatorServices.operatorGet({ sessionId: record.operatorSessionId });
+      }
+      function synchronizedRecord(record, operator) {
+        if (!operator || TERMINAL_EDIT_STATES.has(record.state) || record.state === "applying" || record.state === "needs_recovery") {
+          return record;
+        }
+        const nextState = ACTIVE_OPERATOR_STATES.has(operator.state) ? "running" : "idle";
+        if (record.state === nextState) return record;
+        return store.update(record.id, record.revision, { state: nextState, error: null });
+      }
+      async function diffFor(record) {
+        try {
+          const diff = await workspaceManager.diff(record.id);
+          await workspaceManager.validate(record.id);
+          return { ...diff, valid: true, validationError: null };
+        } catch (error) {
+          return {
+            changed: false,
+            truncated: false,
+            files: [],
+            currentSnapshotDigest: null,
+            valid: false,
+            validationError: sanitizedError(error, record.workspacePath)
+          };
+        }
+      }
+      async function getRecord(sessionId, { includeDiff = true } = {}) {
+        await ready;
+        let record = store.require(requiredText(sessionId, "Skill edit session id", 200));
+        let operator = null;
+        if (record.operatorSessionId) {
+          try {
+            operator = await operatorFor(record);
+            record = synchronizedRecord(record, operator);
+          } catch (error) {
+            if (!TERMINAL_EDIT_STATES.has(record.state) && record.state !== "needs_recovery") {
+              record = store.update(record.id, record.revision, {
+                state: "idle",
+                error: sanitizedError(error, record.workspacePath)
+              });
+            }
+          }
+        }
+        const diff = includeDiff && !TERMINAL_EDIT_STATES.has(record.state) ? await diffFor(record) : null;
+        return publicRecord(record, { operator, diff });
+      }
+      const services = {
+        async list(input = {}) {
+          exactKeys2(input, /* @__PURE__ */ new Set(["skillId"]), "Skill edit list request");
+          await ready;
+          const skillId = requiredText(input.skillId, "Skill id", 200);
+          return {
+            sessions: store.list({ skillId }).map((record) => publicRecord(record))
+          };
+        },
+        async start(input = {}) {
+          exactKeys2(
+            input,
+            /* @__PURE__ */ new Set(["skillId", "runtimeId", "modelId", "effort", "objective"]),
+            "Skill edit start request"
+          );
+          await ready;
+          const skillId = requiredText(input.skillId, "Skill id", 200);
+          const runtimeId = requiredText(input.runtimeId, "Runtime id", 1024);
+          const modelId = requiredText(input.modelId, "Model id", 1024);
+          const effort = requiredText(input.effort, "Reasoning effort", 64);
+          const objective = requiredText(input.objective, "Skill edit objective", 2e4);
+          const detail = managedSkillManager.readSkill(skillId, { includeVersions: false });
+          const base = await managedSkillManager.candidateBase(skillId);
+          const sessionId = requiredText(idFactory(), "Skill edit session id", 200);
+          const workspacePath = workspaceManager.workspacePath(sessionId);
+          let workspaceCreated = false;
+          let record = null;
+          try {
+            const workspace = await workspaceManager.create({
+              sessionId,
+              sourceRoot: managedSkillManager.skillPath(skillId),
+              skillName: detail.skill.name
+            });
+            workspaceCreated = true;
+            record = store.create({
+              id: sessionId,
+              repositoryId: detail.repository.id,
+              skillId,
+              skillRoot: detail.skill.skillRoot,
+              baseCommit: base.commit,
+              baseContentDigest: base.contentDigest,
+              baseSnapshotDigest: workspace.baselineDigest,
+              workspacePath,
+              runtime: { runtimeId, modelId, effort },
+              objective
+            });
+            const operator = await operatorServices.operatorStart({
+              runtimeId,
+              modelId,
+              effort,
+              objective: [
+                "Edit the isolated managed Skill draft in this workspace.",
+                "Work only inside the current workspace. Do not publish, install, or modify another Skill.",
+                "Inspect the existing files, make the requested changes directly, and explain the result briefly.",
+                "",
+                `User request: ${objective}`
+              ].join("\n"),
+              actions: ["skills.read"],
+              scopes: {
+                repositoryIds: [detail.repository.id],
+                skillIds: [skillId],
+                runtimeIds: [runtimeId],
+                datasetIds: []
+              },
+              managedSkillBinding: {
+                repositoryId: detail.repository.id,
+                skillId,
+                skillEditSessionId: record.id
+              },
+              budget: {
+                maxDurationMs: 60 * 60 * 1e3,
+                maxRuntimeTurns: 100,
+                maxEvaluations: 0,
+                maxTargetExecutions: 0,
+                maxJudgeExecutions: 0,
+                maxTokens: null,
+                maxReportedCost: null
+              }
+            });
+            record = store.update(record.id, record.revision, {
+              state: ACTIVE_OPERATOR_STATES.has(operator.state) ? "running" : "idle",
+              operatorSessionId: requiredText(operator.session?.id, "Operator session id", 200),
+              error: null
+            });
+            return getRecord(record.id);
+          } catch (error) {
+            if (record) {
+              store.update(record.id, record.revision, {
+                state: "needs_recovery",
+                error: sanitizedError(error, workspacePath)
+              });
+            } else if (workspaceCreated) {
+              await workspaceManager.cleanup(sessionId).catch(() => {
+              });
+            }
+            throw error;
+          }
+        },
+        async get(input = {}) {
+          exactKeys2(input, /* @__PURE__ */ new Set(["sessionId"]), "Skill edit get request");
+          return getRecord(input.sessionId);
+        },
+        async send(input = {}) {
+          exactKeys2(input, /* @__PURE__ */ new Set(["sessionId", "text"]), "Skill edit message request");
+          await ready;
+          let record = store.require(requiredText(input.sessionId, "Skill edit session id", 200));
+          if (!record.operatorSessionId || TERMINAL_EDIT_STATES.has(record.state) || record.state === "applying") {
+            throw new Error("Skill edit session cannot accept a message");
+          }
+          await operatorServices.operatorSend({
+            sessionId: record.operatorSessionId,
+            text: requiredText(input.text, "Skill edit message", 32e3)
+          });
+          if (record.state !== "running") {
+            record = store.update(record.id, record.revision, { state: "running", error: null });
+          }
+          return getRecord(record.id);
+        },
+        async diff(input = {}) {
+          exactKeys2(input, /* @__PURE__ */ new Set(["sessionId"]), "Skill edit Diff request");
+          await ready;
+          const record = store.require(requiredText(input.sessionId, "Skill edit session id", 200));
+          return diffFor(record);
+        },
+        async applyAndRelease(input = {}) {
+          exactKeys2(input, /* @__PURE__ */ new Set(["sessionId", "expectedRevision"]), "Skill edit apply request");
+          await ready;
+          let record = store.require(requiredText(input.sessionId, "Skill edit session id", 200));
+          const expectedRevision = revision(input.expectedRevision);
+          if (record.revision !== expectedRevision) {
+            const error = new Error("Skill edit changed since it was loaded");
+            error.code = "RESOURCE_CHANGED";
+            throw error;
+          }
+          const operator = await operatorFor(record);
+          if (operator?.state !== "idle") throw new Error("Skill edit Agent is still running");
+          const diff = await diffFor(record);
+          if (!diff.valid) throw new Error(diff.validationError?.message ?? "Edited Skill is invalid");
+          if (!diff.changed) {
+            const error = new Error("Edited Skill has no content changes");
+            error.code = "NO_CHANGES";
+            throw error;
+          }
+          record = store.update(record.id, record.revision, { state: "applying", error: null });
+          try {
+            const result = await managedSkillManager.applyEditedSkill({
+              skillId: record.skillId,
+              sourceRoot: workspaceManager.resolve(record.id),
+              expectedBase: {
+                commit: record.baseCommit,
+                contentDigest: record.baseContentDigest,
+                snapshotDigest: record.baseSnapshotDigest
+              },
+              message: `Apply Agent edit for ${record.skillId}`
+            });
+            const closed = store.close(record.id, record.revision, {
+              state: "published",
+              publishedVersion: {
+                id: result.version.id,
+                label: result.version.versionLabel
+              },
+              error: null
+            });
+            await workspaceManager.cleanup(record.id).catch(() => {
+            });
+            return publicRecord(closed);
+          } catch (error) {
+            store.update(record.id, record.revision, {
+              state: error?.code === "NEEDS_RECOVERY" ? "needs_recovery" : "idle",
+              error: sanitizedError(error, record.workspacePath)
+            });
+            throw error;
+          }
+        },
+        async discard(input = {}) {
+          exactKeys2(input, /* @__PURE__ */ new Set(["sessionId", "expectedRevision"]), "Skill edit discard request");
+          await ready;
+          let record = store.require(requiredText(input.sessionId, "Skill edit session id", 200));
+          if (record.revision !== revision(input.expectedRevision)) {
+            const error = new Error("Skill edit changed since it was loaded");
+            error.code = "RESOURCE_CHANGED";
+            throw error;
+          }
+          if (record.operatorSessionId) {
+            const operator = await Promise.resolve(operatorFor(record)).catch(() => null);
+            if (operator?.state !== "stopped") {
+              await operatorServices.operatorCancel({ sessionId: record.operatorSessionId });
+            }
+          }
+          await workspaceManager.cleanup(record.id);
+          record = store.close(record.id, record.revision, { state: "discarded", error: null });
+          return publicRecord(record);
+        },
+        async close() {
+          await ready;
+        }
+      };
+      return Object.freeze(services);
+    }
+    module.exports = { createSkillEditServices };
+  }
+});
+
 // ../rolling-skill-core/src/skill-services.cjs
 var require_skill_services = __commonJS({
   "../rolling-skill-core/src/skill-services.cjs"(exports, module) {
@@ -62138,6 +63316,10 @@ var require_skill_services = __commonJS({
       return Object.freeze({
         catalog: () => copy(manager.catalog()),
         get: ({ skillId }) => copy(manager.readSkill(requiredText(skillId, "Skill id", 200))),
+        path: ({ skillId }) => {
+          skillId = requiredText(skillId, "Skill id", 200);
+          return { skillId, path: manager.skillPath(skillId) };
+        },
         versions: (input = {}) => copy(manager.listVersionPage(input)),
         candidateBase: ({ skillId }) => manager.candidateBase(requiredText(skillId, "Skill id", 200)),
         createCandidate: (input = {}) => manager.createCandidate(copy(input)),
@@ -62152,6 +63334,12 @@ var require_skill_services = __commonJS({
           repositoryId = requiredText(repositoryId, "Repository id", 200);
           await revealPath(manager.repositoryPath(repositoryId));
           return { repositoryId, opened: true };
+        },
+        revealSkill: async ({ skillId }) => {
+          if (typeof revealPath !== "function") throw new Error("Opening local Skills is unavailable");
+          skillId = requiredText(skillId, "Skill id", 200);
+          await revealPath(manager.skillPath(skillId));
+          return { skillId, opened: true };
         },
         installationTargets: () => copy(runtimeServices.list()),
         installations: ({ skillId = null } = {}) => publicInstallationOverview(
@@ -62194,6 +63382,12 @@ var require_application = __commonJS({
     var {
       ManagedSkillManager
     } = require_managed_skill_manager();
+    var {
+      SkillEditStore
+    } = require_skill_edit_store();
+    var {
+      SkillEditWorkspaceManager
+    } = require_skill_edit_workspace();
     var {
       RawCaseStore
     } = require_raw_case_store();
@@ -62247,6 +63441,7 @@ var require_application = __commonJS({
     var { createOperatorRuntime } = require_operator_services();
     var { createRuntimeServices } = require_runtime_services();
     var { RuntimeInteractionBroker } = require_runtime_interaction_broker();
+    var { createSkillEditServices } = require_skill_edit_services();
     var { createSkillServices } = require_skill_services();
     var MAX_DISPATCH_BYTES = 1024 * 1024;
     function assertPlainJson(value, ancestors = /* @__PURE__ */ new Set()) {
@@ -62743,6 +63938,10 @@ var require_application = __commonJS({
         applicationSupportDirectory: paths.managedSkills,
         store: managedSkillStore
       });
+      const skillEditStore = new SkillEditStore(paths.skillEdits);
+      const skillEditWorkspaceManager = new SkillEditWorkspaceManager({
+        workspacesRoot: paths.skillEditWorkspaces
+      });
       const installationStore = new SkillInstallationStore(paths.skillInstallations);
       reconcileManagedDatasetBindings({ store, managedSkillStore, installationStore });
       const installationManager = new SkillInstallationManager({
@@ -62946,9 +64145,25 @@ var require_application = __commonJS({
         requestPermission: requestRuntimePermission,
         requestQuestion: requestRuntimeQuestion,
         operatorToolPath: options2.operatorToolPath ?? null,
+        resolveSkillEditWorkspace: (binding) => {
+          const edit = skillEditStore.require(binding.skillEditSessionId);
+          if (edit.repositoryId !== binding.repositoryId || edit.skillId !== binding.skillId || ["published", "discarded", "failed"].includes(edit.state)) throw new Error("Skill edit workspace does not match an active edit session");
+          return {
+            repositoryId: edit.repositoryId,
+            skillId: edit.skillId,
+            skillEditSessionId: edit.id,
+            workspaceRoot: skillEditWorkspaceManager.resolve(edit.id)
+          };
+        },
         onChanged: () => publish()
       }));
       const operatorServices = operatorRuntime.services;
+      const skillEditServices = createSkillEditServices({
+        store: skillEditStore,
+        workspaceManager: skillEditWorkspaceManager,
+        managedSkillManager,
+        operatorServices
+      });
       const schedulerAdapter = options2.schedulerAdapter ?? Object.freeze({
         capabilities: () => ({ platform: process.platform, supported: false }),
         status: async () => ({ platform: process.platform, supported: false, installed: false }),
@@ -63530,6 +64745,7 @@ var require_application = __commonJS({
         "evaluations.delete": (input) => evaluationServices.delete(input),
         "skills.catalog": () => skillServices.catalog(),
         "skills.get": (input) => skillServices.get(input),
+        "skills.path": (input) => skillServices.path(input),
         "skills.versions": (input) => skillServices.versions(input),
         "skills.candidateBase": (input) => skillServices.candidateBase(input),
         "skills.createCandidate": (input) => skillServices.createCandidate(input),
@@ -63538,6 +64754,14 @@ var require_application = __commonJS({
         "skills.import": (input) => skillServices.importSource(input),
         "skills.rescan": () => skillServices.rescan(),
         "skills.reveal": (input) => skillServices.revealRepository(input),
+        "skills.revealSkill": (input) => skillServices.revealSkill(input),
+        "skillEdits.list": (input) => skillEditServices.list(input),
+        "skillEdits.start": (input) => skillEditServices.start(input),
+        "skillEdits.get": (input) => skillEditServices.get(input),
+        "skillEdits.send": (input) => skillEditServices.send(input),
+        "skillEdits.diff": (input) => skillEditServices.diff(input),
+        "skillEdits.applyAndRelease": (input) => skillEditServices.applyAndRelease(input),
+        "skillEdits.discard": (input) => skillEditServices.discard(input),
         "installations.targets": () => skillServices.installationTargets(),
         "installations.list": (input) => skillServices.installations(input),
         "installations.get": (input) => skillServices.installation(input),
@@ -63622,6 +64846,11 @@ var require_application = __commonJS({
         "skills.import",
         "skills.rescan",
         "skills.reveal",
+        "skills.revealSkill",
+        "skillEdits.start",
+        "skillEdits.send",
+        "skillEdits.applyAndRelease",
+        "skillEdits.discard",
         "installations.start",
         "installations.cancel",
         "installations.inspect",
@@ -63684,6 +64913,7 @@ var require_application = __commonJS({
         await evaluationRunner.stopAll?.();
         await installationManager.stopAll?.();
         runtimeInteractionBroker.close?.();
+        await skillEditServices.close();
         await operatorRuntime.close();
         await runtimeServices.close();
       }

@@ -127,6 +127,12 @@ function createSkillServices({manager, installationManager, installationStore, r
             await revealPath(manager.repositoryPath(repositoryId))
             return {repositoryId, opened: true}
         },
+        revealSkill: async ({skillId}) => {
+            if (typeof revealPath !== "function") throw new Error("Opening local Skills is unavailable")
+            skillId = requiredText(skillId, "Skill id", 200)
+            await revealPath(manager.skillPath(skillId))
+            return {skillId, opened: true}
+        },
         installationTargets: () => copy(runtimeServices.list()),
         installations: ({skillId = null} = {}) => publicInstallationOverview(
             installationManager.overview(skillId),

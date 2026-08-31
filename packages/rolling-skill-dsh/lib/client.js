@@ -606,7 +606,7 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 
 // src/client/workbench/workbench.css
-var workbench_default = '.rolling-skill-workbench {\n    box-sizing: border-box;\n    color: var(--dsw-alias-label-primary);\n    display: grid;\n    gap: 20px;\n    min-width: 0;\n    padding: 4px 0 24px;\n}\n\n.rolling-skill-workbench-backdrop {\n    background: var(--dsw-alias-bg-mask-1);\n    display: flex;\n    inset: 0;\n    padding: 20px;\n    position: fixed;\n    z-index: 900;\n}\n\n.rolling-skill-workbench-overlay {\n    background: var(--dsw-alias-bg-base);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 14px;\n    color: var(--dsw-alias-label-primary);\n    margin: auto;\n    max-height: calc(100vh - 40px);\n    max-width: 1440px;\n    min-height: min(780px, calc(100vh - 40px));\n    overflow: auto;\n    padding: 24px;\n    position: relative;\n    width: 100%;\n}\n\n.rolling-skill-workbench-close {\n    position: absolute;\n    right: 12px;\n    top: 12px;\n    z-index: 1;\n}\n\n.rolling-skill-settings {\n    display: grid;\n    gap: 16px;\n    padding-bottom: 24px;\n}\n\n.rolling-skill-header {\n    align-items: flex-start;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n}\n\n.rolling-skill-header h2,\n.rolling-skill-panel h3 {\n    margin: 0;\n}\n\n.rolling-skill-header p,\n.rolling-skill-panel p {\n    color: var(--dsw-alias-label-secondary);\n    margin: 6px 0 0;\n}\n\n.rolling-skill-tabs {\n    align-items: center;\n    border-bottom: 1px solid var(--dsw-alias-border-l2);\n    display: flex;\n    flex-wrap: wrap;\n    gap: 4px;\n    padding-bottom: 10px;\n}\n\n.rolling-skill-primary-tabs {\n    gap: 8px;\n    padding-bottom: 12px;\n}\n\n.rolling-skill-primary-tabs [aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    font-weight: 600;\n}\n\n.rolling-skill-secondary-tabs {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 10px;\n    gap: 4px;\n    margin-top: -12px;\n    padding: 6px 8px;\n}\n\n.rolling-skill-secondary-tabs [aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    font-weight: 600;\n}\n\n.rolling-skill-current-skill {\n    align-items: center;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: auto minmax(180px, 360px);\n}\n\n.rolling-skill-current-skill > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 13px;\n}\n\n.rolling-skill-counts {\n    display: grid;\n    gap: 10px;\n    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));\n}\n\n.rolling-skill-count,\n.rolling-skill-panel,\n.rolling-skill-state {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 10px;\n}\n\n.rolling-skill-count {\n    display: grid;\n    gap: 4px;\n    padding: 14px;\n}\n\n.rolling-skill-count strong {\n    font-size: 22px;\n    line-height: 28px;\n}\n\n.rolling-skill-count span,\n.rolling-skill-panel dt {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-overview {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-grid {\n    display: grid;\n    gap: 12px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-time-selects {\n    align-items: center;\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n}\n\n.rolling-skill-time-selects label {\n    align-items: center;\n    display: grid;\n    gap: 6px;\n    grid-template-columns: minmax(0, 1fr) auto;\n    min-width: 0;\n}\n\n.rolling-skill-time-selects label > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-automatic-flow-summary {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    line-height: 1.5;\n    margin: 10px 0;\n}\n\n.rolling-skill-automatic-flow-summary strong {\n    color: var(--dsw-alias-label-primary);\n    font-weight: 600;\n}\n\n.rolling-skill-scheduler-explanation {\n    margin-top: 8px;\n}\n\n.rolling-skill-candidate-targets {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 10px;\n    margin: 14px 0 0;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-candidate-targets legend {\n    font-size: 13px;\n    font-weight: 600;\n    padding: 0 4px;\n}\n\n.rolling-skill-candidate-targets > p {\n    margin: 0;\n}\n\n.rolling-skill-candidate-target-list {\n    display: grid;\n    gap: 8px;\n    max-height: min(420px, 52vh);\n    overflow-y: auto;\n    padding-right: 4px;\n    scrollbar-gutter: stable;\n}\n\n.rolling-skill-candidate-target {\n    align-items: center;\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    display: grid;\n    gap: 10px;\n    grid-template-columns: minmax(180px, 1fr) minmax(180px, 360px);\n    min-width: 0;\n    padding-top: 10px;\n}\n\n.rolling-skill-candidate-skill {\n    align-items: flex-start;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: auto minmax(0, 1fr);\n    min-width: 0;\n}\n\n.rolling-skill-candidate-skill > span {\n    display: grid;\n    gap: 3px;\n    min-width: 0;\n}\n\n.rolling-skill-candidate-skill strong {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-candidate-target small {\n    color: var(--dsw-alias-label-secondary);\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-candidate-dataset {\n    display: grid;\n    gap: 4px;\n    min-width: 0;\n}\n\n.rolling-skill-candidate-target .rolling-skill-select {\n    margin-top: 0;\n    max-width: none;\n    min-width: 0;\n    width: 100%;\n}\n\n.rolling-skill-form-actions {\n    align-items: center;\n    display: flex;\n    flex-wrap: wrap;\n    gap: 10px;\n    justify-content: space-between;\n    margin-top: 14px;\n    min-width: 0;\n}\n\n.rolling-skill-panel,\n.rolling-skill-state {\n    min-width: 0;\n    padding: 16px;\n}\n\n.rolling-skill-panel dl {\n    display: grid;\n    gap: 10px;\n    margin: 14px 0 0;\n}\n\n.rolling-skill-panel dl > div {\n    align-items: baseline;\n    display: flex;\n    gap: 12px;\n    justify-content: space-between;\n}\n\n.rolling-skill-panel dd {\n    margin: 0;\n    max-width: 68%;\n    overflow-wrap: anywhere;\n    text-align: right;\n}\n\n.rolling-skill-runtime,\n.rolling-skill-state {\n    display: grid;\n    gap: 8px;\n}\n\n.rolling-skill-runtime {\n    margin-top: 14px;\n}\n\n.rolling-skill-runtime code,\n.rolling-skill-path code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-path code {\n    display: block;\n    margin-top: 10px;\n}\n\n.rolling-skill-error {\n    border-color: var(--dsw-alias-state-error-primary);\n    color: var(--dsw-alias-label-error);\n}\n\n.rolling-skill-data-stack,\n.rolling-skill-form-stack,\n.rolling-skill-list {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row,\n.rolling-skill-form-row,\n.rolling-skill-actions {\n    align-items: center;\n    display: flex;\n    gap: 10px;\n}\n\n.rolling-skill-action-button {\n    flex: 0 0 auto;\n    max-width: 100%;\n    overflow: hidden;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.rolling-skill-action-button[data-rolling-skill-tone="secondary"] {\n    background: var(--dsw-alias-bg-layer-1);\n}\n\n.rolling-skill-action-button[data-rolling-skill-tone="secondary"]:hover:not(:disabled) {\n    background: var(--dsw-alias-interactive-bg-hover);\n}\n\n.rolling-skill-action-button[data-rolling-skill-tone="secondary"]:active:not(:disabled) {\n    background: var(--dsw-alias-interactive-bg-active);\n}\n\n.rolling-skill-actions {\n    flex-wrap: wrap;\n    min-width: 0;\n}\n\n.rolling-skill-panel-header {\n    min-width: 0;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    justify-content: space-between;\n}\n\n.rolling-skill-form-row,\n.rolling-skill-list {\n    margin-top: 14px;\n}\n\n.rolling-skill-form-row > :first-child {\n    flex: 1 1 0;\n    min-width: 0;\n}\n\n.rolling-skill-skill-import {\n    align-items: end;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto;\n    margin-top: 14px;\n}\n\n.rolling-skill-skill-source-picker {\n    align-items: end;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: auto minmax(0, 1fr);\n    min-width: 0;\n}\n\n.rolling-skill-selected-source {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 7px;\n    display: grid;\n    gap: 3px;\n    min-width: 0;\n    padding: 7px 10px;\n}\n\n.rolling-skill-selected-source span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-selected-source code {\n    overflow: hidden;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-list-row > div:first-child,\n.rolling-skill-case-copy {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-list-row span,\n.rolling-skill-case-copy p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-managed-skill-row .rolling-skill-skill-row {\n    flex: 1;\n    min-width: 0;\n}\n\n.rolling-skill-version-card {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-version-card header,\n.rolling-skill-version-card header > div {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    justify-content: space-between;\n}\n\n.rolling-skill-version-card code {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-manifest-details {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    margin-top: 14px;\n    padding: 10px 12px;\n}\n\n.rolling-skill-manifest-details > summary {\n    cursor: pointer;\n    font-size: 13px;\n    font-weight: 600;\n}\n\n.rolling-skill-manifest-details .rolling-skill-manifest {\n    border: 0;\n    border-radius: 0;\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    margin: 10px 0 0;\n    padding: 10px 0 0;\n}\n\n.rolling-skill-version-heading {\n    margin: 18px 0 0;\n}\n\n.rolling-skill-version-workflow {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    display: grid;\n    gap: 12px;\n    margin-top: 18px;\n    padding: 14px;\n}\n\n.rolling-skill-version-workflow h4,\n.rolling-skill-version-workflow p {\n    margin: 0;\n}\n\n.rolling-skill-version-workflow p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 13px;\n}\n\n.rolling-skill-version-workflow .rolling-skill-form-row {\n    margin-top: 0;\n}\n\n.rolling-skill-pagination {\n    align-items: center;\n    color: var(--dsw-alias-label-secondary);\n    display: flex;\n    gap: 10px;\n    justify-content: center;\n    margin-top: 14px;\n}\n\n.rolling-skill-group-list,\n.rolling-skill-raw-group,\n.rolling-skill-detail-stack {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-group-list {\n    margin-top: 14px;\n}\n\n.rolling-skill-raw-filter-toolbar {\n    align-items: end;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: minmax(0, 1fr) minmax(190px, 280px);\n}\n\n.rolling-skill-raw-skill-select {\n    color: var(--dsw-alias-label-secondary);\n    display: grid;\n    font-size: 12px;\n    gap: 5px;\n}\n\n.rolling-skill-raw-skill-select .rolling-skill-select {\n    margin-top: 0;\n    max-width: none;\n}\n\n.rolling-skill-raw-group-filter {\n    align-items: center;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 7px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: flex;\n    font: inherit;\n    gap: 8px;\n    justify-content: space-between;\n    max-width: 100%;\n    min-width: 0;\n    padding: 7px 10px;\n    text-align: left;\n    width: fit-content;\n}\n\n.rolling-skill-raw-group-filter[aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-raw-group-filter strong {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-raw-group-filter span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-verbatim {\n    overflow-wrap: anywhere;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-detail-stack h4,\n.rolling-skill-detail-stack p {\n    margin: 0;\n}\n\n.rolling-skill-detail-stack pre {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    max-height: 320px;\n    overflow: auto;\n    padding: 10px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-muted,\n.rolling-skill-range-hint {\n    color: var(--dsw-alias-label-secondary);\n}\n\n.rolling-skill-evidence-summary {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));\n    margin: 0;\n}\n\n.rolling-skill-evidence-summary > div {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 4px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-evidence-summary dt {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-evidence-summary dd {\n    margin: 0;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-capture-range-card {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 10px;\n    display: grid;\n    gap: 10px;\n    padding: 12px;\n}\n\n.rolling-skill-capture-evidence-timeline {\n    display: grid;\n    gap: 8px;\n    list-style: none;\n    margin: 0;\n    padding: 0;\n}\n\n.rolling-skill-capture-evidence-timeline > li {\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-inline-start: 3px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    min-width: 0;\n    overflow: hidden;\n}\n\n.rolling-skill-capture-evidence-timeline > li[data-kind="user"] {\n    background: var(--dsw-alias-bg-layer-2);\n}\n\n.rolling-skill-capture-evidence-timeline > li[data-kind="assistant"] {\n    background: var(--dsw-alias-bg-layer-1);\n}\n\n.rolling-skill-capture-evidence-timeline > li[data-boundary="start"],\n.rolling-skill-capture-evidence-timeline > li[data-boundary="end"] {\n    border-inline-start-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-capture-evidence-timeline article {\n    display: grid;\n    gap: 8px;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-evidence-timeline article header,\n.rolling-skill-capture-tool summary {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    justify-content: space-between;\n}\n\n.rolling-skill-capture-context summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-context p {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    margin: 0;\n    max-height: 240px;\n    overflow: auto;\n    padding: 10px 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-capture-evidence-timeline article header span,\n.rolling-skill-capture-tool summary span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-capture-evidence-timeline article p {\n    margin: 0;\n    overflow-wrap: anywhere;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-capture-tool summary {\n    cursor: pointer;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-tool-details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    display: grid;\n    gap: 10px;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-tool-details > div {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-capture-tool-details pre {\n    background: var(--dsw-alias-bg-layer-2);\n    border-radius: 6px;\n    margin: 0;\n    max-height: 240px;\n    overflow: auto;\n    padding: 8px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-capture-evidence-error {\n    align-items: flex-start;\n    border: 1px solid var(--dsw-alias-state-error-primary);\n    border-radius: 8px;\n    display: grid;\n    gap: 6px;\n    padding: 10px;\n}\n\n.rolling-skill-capture-evidence-error p,\n.rolling-skill-capture-evidence-error small {\n    margin: 0;\n}\n\n.rolling-skill-capture-boundaries {\n    display: grid;\n    gap: 8px;\n}\n\n.rolling-skill-capture-boundaries article {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: 26px minmax(0, 1fr);\n    padding: 10px;\n}\n\n.rolling-skill-capture-boundaries article > div {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-capture-boundaries p,\n.rolling-skill-capture-boundaries code,\n.rolling-skill-range-hint {\n    margin: 0;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-capture-boundaries code {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 11px;\n}\n\n.rolling-skill-range-index {\n    align-items: center;\n    border: 1px solid var(--dsw-alias-state-business-primary);\n    border-radius: 50%;\n    color: var(--dsw-alias-state-business-primary);\n    display: inline-flex;\n    font-size: 12px;\n    height: 24px;\n    justify-content: center;\n    width: 24px;\n}\n\n.rolling-skill-advanced-evidence {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 10px;\n}\n\n.rolling-skill-advanced-evidence > summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-capture-evidence) {\n    max-height: calc(100vh - 32px);\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-capture-evidence) > div:first-child {\n    min-height: 0;\n    overflow: hidden;\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-capture-evidence) > div:first-child > div:last-child {\n    min-height: 0;\n    overflow-y: auto;\n}\n\n.rolling-skill-case-copy p {\n    margin: 0;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-markdown {\n    line-height: 1.55;\n    min-width: 0;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-markdown > :first-child {\n    margin-top: 0;\n}\n\n.rolling-skill-markdown > :last-child {\n    margin-bottom: 0;\n}\n\n.rolling-skill-case-copy .rolling-skill-markdown p,\n.rolling-skill-detail-stack .rolling-skill-markdown p {\n    margin: 0 0 8px;\n    white-space: normal;\n}\n\n.rolling-skill-markdown h1,\n.rolling-skill-markdown h2,\n.rolling-skill-markdown h3,\n.rolling-skill-markdown h4,\n.rolling-skill-markdown h5,\n.rolling-skill-markdown h6 {\n    line-height: 1.3;\n    margin: 12px 0 7px;\n}\n\n.rolling-skill-markdown ul,\n.rolling-skill-markdown ol {\n    margin: 7px 0;\n    padding-inline-start: 22px;\n}\n\n.rolling-skill-markdown li + li {\n    margin-top: 3px;\n}\n\n.rolling-skill-markdown blockquote {\n    border-inline-start: 3px solid var(--dsw-alias-border-l2);\n    color: var(--dsw-alias-label-secondary);\n    margin: 8px 0;\n    padding-inline-start: 10px;\n}\n\n.rolling-skill-markdown code {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 4px;\n    font-family: ui-monospace, monospace;\n    font-size: 0.92em;\n    padding: 1px 4px;\n}\n\n.rolling-skill-markdown pre {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    max-width: 100%;\n    overflow: auto;\n    padding: 10px;\n    white-space: pre;\n}\n\n.rolling-skill-markdown pre code {\n    background: transparent;\n    border: 0;\n    padding: 0;\n}\n\n.rolling-skill-markdown a {\n    color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-markdown-image-placeholder {\n    color: var(--dsw-alias-label-secondary);\n    font-style: italic;\n}\n\n.rolling-skill-markdown-compact {\n    max-height: 9.5em;\n    overflow: hidden;\n}\n\n.rolling-skill-case-question .rolling-skill-markdown {\n    color: var(--dsw-alias-label-primary);\n    font-weight: 600;\n}\n\n.rolling-skill-select,\n.rolling-skill-form-stack input,\n.rolling-skill-field input,\n.rolling-skill-form-stack textarea {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 7px;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    padding: 8px 10px;\n}\n\n.rolling-skill-review-layout {\n    display: grid;\n    gap: 14px;\n    grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);\n    min-height: 560px;\n}\n\n.rolling-skill-review-list,\n.rolling-skill-review-detail,\n.rolling-skill-session-view {\n    min-width: 0;\n}\n\n.rolling-skill-review-list-button {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: grid;\n    font: inherit;\n    gap: 5px;\n    padding: 10px;\n    text-align: left;\n    width: 100%;\n}\n\n.rolling-skill-review-list-button[data-selected="true"] {\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-review-list-button span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-review-scope {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 9px;\n    display: grid;\n    gap: 3px;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n    margin-top: 12px;\n    padding: 3px;\n}\n\n.rolling-skill-review-scope button {\n    background: transparent;\n    border: 1px solid transparent;\n    border-radius: 7px;\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n    font: inherit;\n    min-width: 0;\n    padding: 7px 9px;\n}\n\n.rolling-skill-review-scope button[aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    border-color: var(--dsw-alias-border-l2);\n    color: var(--dsw-alias-label-primary);\n    font-weight: 600;\n}\n\n.rolling-skill-review-scope span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 11px;\n}\n\n.rolling-skill-session-view,\n.rolling-skill-evidence-card,\n.rolling-skill-conversation-log,\n.rolling-skill-rubric-draft {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-curation-draft-card {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 12px;\n    padding: 12px;\n}\n\n.rolling-skill-curation-draft-card > header {\n    align-items: flex-start;\n    display: flex;\n    gap: 10px;\n    justify-content: space-between;\n}\n\n.rolling-skill-curation-draft-card h4,\n.rolling-skill-curation-draft-card p {\n    margin: 0;\n}\n\n.rolling-skill-curation-draft-details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 9px;\n}\n\n.rolling-skill-curation-draft-details > summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n}\n\n.rolling-skill-curation-draft-details > div {\n    display: grid;\n    gap: 12px;\n    margin-top: 10px;\n}\n\n.rolling-skill-curation-primary,\n.rolling-skill-curation-composer,\n.rolling-skill-curation-runtime-details > .rolling-skill-evidence-card {\n    display: grid;\n    gap: 10px;\n}\n\n.rolling-skill-curation-composer {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-state-business-primary);\n    border-radius: 10px;\n    padding: 12px;\n}\n\n.rolling-skill-curation-composer h4,\n.rolling-skill-curation-composer p {\n    margin: 0;\n}\n\n.rolling-skill-curation-composer > div:first-child p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    margin-top: 4px;\n}\n\n.rolling-skill-curation-composer textarea {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    min-height: 104px;\n    padding: 10px;\n    resize: vertical;\n}\n\n.rolling-skill-curation-runtime-details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 10px;\n}\n\n.rolling-skill-curation-runtime-details > summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n}\n\n.rolling-skill-curation-runtime-details > .rolling-skill-evidence-card {\n    margin-top: 10px;\n}\n\n.rolling-skill-curation-model-controls {\n    display: grid;\n    gap: 10px;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n}\n\n.rolling-skill-session-view h4,\n.rolling-skill-review-list h4 {\n    margin: 8px 0 0;\n}\n\n.rolling-skill-session-view pre,\n.rolling-skill-evidence-card pre {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    max-height: 340px;\n    overflow: auto;\n    padding: 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-conversation-log > div,\n.rolling-skill-rubric-draft article {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    padding: 10px;\n}\n\n.rolling-skill-conversation-log p,\n.rolling-skill-rubric-draft p {\n    margin: 6px 0 0;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-create-rubric {\n    border-bottom: 1px solid var(--dsw-alias-border-l2);\n    padding-bottom: 14px;\n}\n\n.rolling-skill-select {\n    margin-top: 14px;\n    max-width: 360px;\n    width: 100%;\n}\n\n.rolling-skill-form-stack label {\n    display: grid;\n    gap: 6px;\n}\n\n.rolling-skill-form-stack textarea {\n    min-height: 120px;\n    resize: vertical;\n}\n\n.rolling-skill-check {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    margin-top: 12px;\n}\n\n.rolling-skill-badge {\n    color: var(--dsw-alias-state-business-primary);\n    font-size: 11px;\n    font-weight: 600;\n}\n\n.rolling-skill-audit-grid,\n.rolling-skill-rubric-criteria,\n.rolling-skill-evaluation-results,\n.rolling-skill-score-list {\n    display: grid;\n    gap: 10px;\n}\n\n.rolling-skill-audit-grid {\n    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));\n    margin-top: 12px;\n}\n\n.rolling-skill-audit-card,\n.rolling-skill-rubric-version,\n.rolling-skill-evaluation-result,\n.rolling-skill-score-item {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-audit-card header,\n.rolling-skill-rubric-version > summary,\n.rolling-skill-rubric-criteria article header,\n.rolling-skill-evaluation-result > header,\n.rolling-skill-score-item > header {\n    align-items: flex-start;\n    display: flex;\n    gap: 10px;\n    justify-content: space-between;\n}\n\n.rolling-skill-audit-card > button {\n    margin-top: 10px;\n}\n\n.rolling-skill-audit-card code,\n.rolling-skill-rubric-version code,\n.rolling-skill-evidence-card code {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-rubric-version > summary {\n    cursor: pointer;\n}\n\n.rolling-skill-rubric-version > summary > span:first-child,\n.rolling-skill-evaluation-result > header > div,\n.rolling-skill-score-item > header + small {\n    display: grid;\n    gap: 4px;\n}\n\n.rolling-skill-rubric-version-body {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    display: grid;\n    gap: 12px;\n    margin-top: 12px;\n    padding-top: 12px;\n}\n\n.rolling-skill-rubric-version-body h4 {\n    margin: 4px 0 0;\n}\n\n.rolling-skill-rubric-criteria article {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    padding: 10px;\n}\n\n.rolling-skill-evaluation-result {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-score-total {\n    color: var(--dsw-alias-state-business-primary);\n    font-size: 24px;\n    font-weight: 700;\n    white-space: nowrap;\n}\n\n.rolling-skill-score-total small {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-score-breakdown,\n.rolling-skill-trace,\n.rolling-skill-evaluation-result > details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 10px;\n}\n\n.rolling-skill-score-breakdown > summary,\n.rolling-skill-trace > summary,\n.rolling-skill-evaluation-result > details > summary {\n    cursor: pointer;\n    font-weight: 600;\n}\n\n.rolling-skill-score-list,\n.rolling-skill-trace-list {\n    margin-top: 10px;\n}\n\n.rolling-skill-score-item p {\n    margin: 6px 0 0;\n}\n\n.rolling-skill-score-critical {\n    border-color: var(--dsw-alias-state-error-primary);\n}\n\n.rolling-skill-judge-meta,\n.rolling-skill-trace-summary {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-trace-summary {\n    align-items: center;\n    display: flex;\n    flex-wrap: wrap;\n    gap: 8px;\n    margin-top: 10px;\n}\n\n.rolling-skill-trace-list {\n    display: grid;\n    gap: 6px;\n    max-height: 360px;\n    overflow: auto;\n    padding-left: 0;\n}\n\n.rolling-skill-trace-list li {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 7px;\n    display: grid;\n    gap: 8px;\n    grid-template-columns: minmax(48px, auto) 1fr;\n    list-style: none;\n    padding: 8px;\n}\n\n.rolling-skill-trace-list li > span {\n    display: grid;\n    gap: 4px;\n    min-width: 0;\n}\n\n.rolling-skill-inline-error {\n    color: var(--dsw-alias-label-error) !important;\n}\n\n.rolling-skill-dialog-backdrop {\n    align-items: center;\n    background: var(--dsw-alias-bg-mask-1);\n    display: flex;\n    inset: 0;\n    justify-content: center;\n    padding: 20px;\n    position: fixed;\n    z-index: 1000;\n}\n\n.rolling-skill-dialog {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 12px;\n    color: var(--dsw-alias-label-primary);\n    display: grid;\n    gap: 18px;\n    max-height: min(760px, calc(100vh - 40px));\n    max-width: 620px;\n    min-width: 0;\n    overflow: auto;\n    padding: 20px;\n    width: 100%;\n}\n\n.rolling-skill-dialog-header {\n    align-items: flex-start;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n}\n\n.rolling-skill-dialog-header h2,\n.rolling-skill-dialog-header p {\n    margin: 0;\n}\n\n.rolling-skill-dialog-header p {\n    color: var(--dsw-alias-label-secondary);\n    margin-top: 6px;\n}\n\n.rolling-skill-dialog .rolling-skill-select {\n    margin-top: 0;\n    max-width: none;\n}\n\n.rolling-skill-label-fieldset {\n    border: 0;\n    display: flex;\n    gap: 16px;\n    margin: 0;\n    padding: 0;\n}\n\n.rolling-skill-label-fieldset legend {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    font-weight: 600;\n    margin-bottom: 8px;\n}\n\n.rolling-skill-label-fieldset label {\n    align-items: center;\n    display: flex;\n    gap: 6px;\n}\n\n.rolling-skill-blockers {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-state-warning-primary);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    padding: 12px;\n}\n\n.rolling-skill-blockers ul {\n    margin: 8px 0 0;\n    padding-left: 20px;\n}\n\n.rolling-skill-dialog-actions {\n    justify-content: flex-end;\n}\n\n@media (max-width: 640px) {\n    .rolling-skill-workbench-backdrop {\n        padding: 0;\n    }\n\n    .rolling-skill-workbench-overlay {\n        border-radius: 0;\n        max-height: 100vh;\n        min-height: 100vh;\n        padding: 16px;\n    }\n\n    .rolling-skill-review-layout {\n        grid-template-columns: 1fr;\n    }\n\n    .rolling-skill-raw-filter-toolbar,\n    .rolling-skill-curation-model-controls {\n        grid-template-columns: 1fr;\n    }\n\n    .rolling-skill-dialog-backdrop {\n        align-items: flex-end;\n        padding: 0;\n    }\n\n    .rolling-skill-dialog {\n        border-radius: 12px 12px 0 0;\n        max-height: 90vh;\n    }\n}\n\n[data-chat-flow-key].rolling-skill-curation-draft {\n    background: var(--dsw-alias-state-warn-tertiary);\n    border-inline-start: 3px solid var(--dsw-alias-state-warn-primary);\n    box-shadow: inset 3px 0 var(--dsw-alias-state-warn-primary);\n}\n\n[data-chat-flow-key].rolling-skill-curation-saved {\n    background: var(--dsw-alias-state-success-tertiary);\n    border-inline-start: 3px solid var(--dsw-alias-state-success-primary);\n    box-shadow: inset 3px 0 var(--dsw-alias-state-success-primary);\n}\n\n[data-chat-flow-key].rolling-skill-capture-range {\n    background: var(--dsw-alias-interactive-bg-active);\n    border-inline-start: 3px solid var(--dsw-alias-state-business-primary);\n    box-shadow: inset 3px 0 var(--dsw-alias-state-business-primary);\n    scroll-margin-block: 96px;\n}\n\n[data-rolling-skill-curation-status="draft"] {\n    background: var(--dsw-alias-state-warn-tertiary);\n    border-color: var(--dsw-alias-state-warn-primary);\n    color: var(--dsw-alias-state-warn-primary);\n}\n\n[data-rolling-skill-curation-status="saved"] {\n    background: var(--dsw-alias-state-success-tertiary);\n    border-color: var(--dsw-alias-state-success-primary);\n    color: var(--dsw-alias-state-success-primary);\n}\n\n.rolling-skill-marker-legend {\n    align-items: center;\n    display: flex;\n    flex-wrap: wrap;\n    gap: 6px;\n}\n\n.rolling-skill-marker-chip,\n.rolling-skill-marker-compatibility {\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 999px;\n    color: var(--dsw-alias-label-secondary);\n    font-size: 11px;\n    padding: 3px 7px;\n}\n\n.rolling-skill-marker-chip-draft {\n    border-color: var(--dsw-alias-state-warn-primary);\n}\n\n.rolling-skill-marker-chip-saved {\n    border-color: var(--dsw-alias-state-success-primary);\n}\n\n.rolling-skill-runtime-select {\n    border: 0;\n    display: grid;\n    gap: 8px;\n    margin: 16px 0;\n    min-width: 0;\n    padding: 0;\n}\n\n.rolling-skill-runtime-select legend,\n.rolling-skill-field > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    font-weight: 600;\n}\n\n.rolling-skill-runtime-list {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-runtime-option {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    display: flex;\n    gap: 9px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-runtime-option:has(input:checked) {\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-runtime-option > span,\n.rolling-skill-field {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-runtime-option code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 11px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-link-button {\n    background: transparent;\n    border: 0;\n    color: var(--dsw-alias-state-business-primary);\n    cursor: pointer;\n    padding: 0;\n    text-align: left;\n}\n\n.rolling-skill-field .rolling-skill-select {\n    margin-top: 0;\n}\n\n.rolling-skill-skill-row {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: grid;\n    gap: 4px;\n    padding: 11px;\n    text-align: left;\n}\n\n.rolling-skill-skill-row span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-manifest {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-secondary);\n    max-height: 240px;\n    overflow: auto;\n    padding: 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-subpanel {\n    display: grid;\n    gap: 9px;\n}\n\n.rolling-skill-subpanel h4 {\n    margin: 0;\n}\n\n.rolling-skill-section-gap {\n    margin-top: 14px;\n}\n\n.rolling-skill-list-row small {\n    color: var(--dsw-alias-label-secondary);\n    overflow-wrap: anywhere;\n}\n\n@media (max-width: 760px) {\n    .rolling-skill-panel-header,\n    .rolling-skill-list-row,\n    .rolling-skill-case-row,\n    .rolling-skill-form-row {\n        align-items: flex-start;\n        flex-direction: column;\n    }\n\n    .rolling-skill-panel-header > :first-child,\n    .rolling-skill-list-row > :first-child,\n    .rolling-skill-case-row > :first-child,\n    .rolling-skill-form-row > :first-child:not(.rolling-skill-action-button),\n    .rolling-skill-list-row > .rolling-skill-actions,\n    .rolling-skill-case-row > .rolling-skill-actions {\n        box-sizing: border-box;\n        max-width: 100%;\n        width: 100%;\n    }\n\n    .rolling-skill-review-layout {\n        grid-template-columns: 1fr;\n    }\n\n    .rolling-skill-candidate-target {\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-skill-import {\n        align-items: stretch;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-skill-source-picker {\n        grid-template-columns: auto minmax(0, 1fr);\n    }\n\n    .rolling-skill-current-skill {\n        align-items: stretch;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-candidate-target .rolling-skill-select {\n        grid-column: 1;\n    }\n}\n\n@media (max-width: 640px) {\n    .rolling-skill-header {\n        align-items: flex-start;\n        flex-direction: column;\n    }\n\n    .rolling-skill-header > :first-child {\n        width: 100%;\n    }\n}\n';
+var workbench_default = '.rolling-skill-workbench {\n    box-sizing: border-box;\n    color: var(--dsw-alias-label-primary);\n    display: grid;\n    gap: 20px;\n    min-width: 0;\n    padding: 4px 0 24px;\n}\n\n.rolling-skill-workbench-backdrop {\n    background: var(--dsw-alias-bg-mask-1);\n    display: flex;\n    inset: 0;\n    padding: 20px;\n    position: fixed;\n    z-index: 900;\n}\n\n.rolling-skill-workbench-overlay {\n    background: var(--dsw-alias-bg-base);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 14px;\n    color: var(--dsw-alias-label-primary);\n    margin: auto;\n    max-height: calc(100vh - 40px);\n    max-width: 1440px;\n    min-height: min(780px, calc(100vh - 40px));\n    overflow: auto;\n    padding: 24px;\n    position: relative;\n    width: 100%;\n}\n\n.rolling-skill-workbench-close {\n    position: absolute;\n    right: 12px;\n    top: 12px;\n    z-index: 1;\n}\n\n.rolling-skill-settings {\n    display: grid;\n    gap: 16px;\n    padding-bottom: 24px;\n}\n\n.rolling-skill-header {\n    align-items: flex-start;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n}\n\n.rolling-skill-header h2,\n.rolling-skill-panel h3 {\n    margin: 0;\n}\n\n.rolling-skill-header p,\n.rolling-skill-panel p {\n    color: var(--dsw-alias-label-secondary);\n    margin: 6px 0 0;\n}\n\n.rolling-skill-tabs {\n    align-items: center;\n    border-bottom: 1px solid var(--dsw-alias-border-l2);\n    display: flex;\n    flex-wrap: wrap;\n    gap: 4px;\n    padding-bottom: 10px;\n}\n\n.rolling-skill-primary-tabs {\n    gap: 8px;\n    padding-bottom: 12px;\n}\n\n.rolling-skill-primary-tabs [aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    font-weight: 600;\n}\n\n.rolling-skill-secondary-tabs {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 10px;\n    gap: 4px;\n    margin-top: -12px;\n    padding: 6px 8px;\n}\n\n.rolling-skill-secondary-tabs [aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    font-weight: 600;\n}\n\n.rolling-skill-current-skill {\n    align-items: center;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: auto minmax(180px, 360px);\n}\n\n.rolling-skill-current-skill > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 13px;\n}\n\n.rolling-skill-counts {\n    display: grid;\n    gap: 10px;\n    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));\n}\n\n.rolling-skill-count,\n.rolling-skill-panel,\n.rolling-skill-state {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 10px;\n}\n\n.rolling-skill-count {\n    display: grid;\n    gap: 4px;\n    padding: 14px;\n}\n\n.rolling-skill-count strong {\n    font-size: 22px;\n    line-height: 28px;\n}\n\n.rolling-skill-count span,\n.rolling-skill-panel dt {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-overview {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-grid {\n    display: grid;\n    gap: 12px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-time-selects {\n    align-items: center;\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n}\n\n.rolling-skill-time-selects label {\n    align-items: center;\n    display: grid;\n    gap: 6px;\n    grid-template-columns: minmax(0, 1fr) auto;\n    min-width: 0;\n}\n\n.rolling-skill-time-selects label > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-automatic-flow-summary {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    line-height: 1.5;\n    margin: 10px 0;\n}\n\n.rolling-skill-automatic-flow-summary strong {\n    color: var(--dsw-alias-label-primary);\n    font-weight: 600;\n}\n\n.rolling-skill-scheduler-explanation {\n    margin-top: 8px;\n}\n\n.rolling-skill-candidate-targets {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 10px;\n    margin: 14px 0 0;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-candidate-targets legend {\n    font-size: 13px;\n    font-weight: 600;\n    padding: 0 4px;\n}\n\n.rolling-skill-candidate-targets > p {\n    margin: 0;\n}\n\n.rolling-skill-candidate-target-list {\n    display: grid;\n    gap: 8px;\n    max-height: min(420px, 52vh);\n    overflow-y: auto;\n    padding-right: 4px;\n    scrollbar-gutter: stable;\n}\n\n.rolling-skill-candidate-target {\n    align-items: center;\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    display: grid;\n    gap: 10px;\n    grid-template-columns: minmax(180px, 1fr) minmax(180px, 360px);\n    min-width: 0;\n    padding-top: 10px;\n}\n\n.rolling-skill-candidate-skill {\n    align-items: flex-start;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: auto minmax(0, 1fr);\n    min-width: 0;\n}\n\n.rolling-skill-candidate-skill > span {\n    display: grid;\n    gap: 3px;\n    min-width: 0;\n}\n\n.rolling-skill-candidate-skill strong {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-candidate-target small {\n    color: var(--dsw-alias-label-secondary);\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-candidate-dataset {\n    display: grid;\n    gap: 4px;\n    min-width: 0;\n}\n\n.rolling-skill-candidate-target .rolling-skill-select {\n    margin-top: 0;\n    max-width: none;\n    min-width: 0;\n    width: 100%;\n}\n\n.rolling-skill-form-actions {\n    align-items: center;\n    display: flex;\n    flex-wrap: wrap;\n    gap: 10px;\n    justify-content: space-between;\n    margin-top: 14px;\n    min-width: 0;\n}\n\n.rolling-skill-panel,\n.rolling-skill-state {\n    min-width: 0;\n    padding: 16px;\n}\n\n.rolling-skill-panel dl {\n    display: grid;\n    gap: 10px;\n    margin: 14px 0 0;\n}\n\n.rolling-skill-panel dl > div {\n    align-items: baseline;\n    display: flex;\n    gap: 12px;\n    justify-content: space-between;\n}\n\n.rolling-skill-panel dd {\n    margin: 0;\n    max-width: 68%;\n    overflow-wrap: anywhere;\n    text-align: right;\n}\n\n.rolling-skill-runtime,\n.rolling-skill-state {\n    display: grid;\n    gap: 8px;\n}\n\n.rolling-skill-runtime {\n    margin-top: 14px;\n}\n\n.rolling-skill-runtime code,\n.rolling-skill-path code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-path code {\n    display: block;\n    margin-top: 10px;\n}\n\n.rolling-skill-error {\n    border-color: var(--dsw-alias-state-error-primary);\n    color: var(--dsw-alias-label-error);\n}\n\n.rolling-skill-data-stack,\n.rolling-skill-form-stack,\n.rolling-skill-list {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row,\n.rolling-skill-form-row,\n.rolling-skill-actions {\n    align-items: center;\n    display: flex;\n    gap: 10px;\n}\n\n.rolling-skill-action-button {\n    flex: 0 0 auto;\n    max-width: 100%;\n    overflow: hidden;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.rolling-skill-action-button[data-rolling-skill-tone="secondary"] {\n    background: var(--dsw-alias-bg-layer-1);\n}\n\n.rolling-skill-action-button[data-rolling-skill-tone="secondary"]:hover:not(:disabled) {\n    background: var(--dsw-alias-interactive-bg-hover);\n}\n\n.rolling-skill-action-button[data-rolling-skill-tone="secondary"]:active:not(:disabled) {\n    background: var(--dsw-alias-interactive-bg-active);\n}\n\n.rolling-skill-actions {\n    flex-wrap: wrap;\n    min-width: 0;\n}\n\n.rolling-skill-panel-header {\n    min-width: 0;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    justify-content: space-between;\n}\n\n.rolling-skill-form-row,\n.rolling-skill-list {\n    margin-top: 14px;\n}\n\n.rolling-skill-form-row > :first-child {\n    flex: 1 1 0;\n    min-width: 0;\n}\n\n.rolling-skill-skill-import {\n    align-items: end;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto;\n    margin-top: 14px;\n}\n\n.rolling-skill-skill-source-picker {\n    align-items: end;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: auto minmax(0, 1fr);\n    min-width: 0;\n}\n\n.rolling-skill-selected-source {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 7px;\n    display: grid;\n    gap: 3px;\n    min-width: 0;\n    padding: 7px 10px;\n}\n\n.rolling-skill-selected-source span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-selected-source code {\n    overflow: hidden;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-list-row > div:first-child,\n.rolling-skill-case-copy {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-list-row span,\n.rolling-skill-case-copy p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-managed-skill-row .rolling-skill-skill-row {\n    flex: 1;\n    min-width: 0;\n}\n\n.rolling-skill-version-card {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-version-card header,\n.rolling-skill-version-card header > div {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    justify-content: space-between;\n}\n\n.rolling-skill-version-card code {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-manifest-details {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    margin-top: 14px;\n    padding: 10px 12px;\n}\n\n.rolling-skill-manifest-details > summary {\n    cursor: pointer;\n    font-size: 13px;\n    font-weight: 600;\n}\n\n.rolling-skill-manifest-details .rolling-skill-manifest {\n    border: 0;\n    border-radius: 0;\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    margin: 10px 0 0;\n    padding: 10px 0 0;\n}\n\n.rolling-skill-version-heading {\n    margin: 18px 0 0;\n}\n\n.rolling-skill-managed-path {\n    align-items: center;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 8px;\n    grid-template-columns: auto minmax(0, 1fr) auto;\n    margin-top: 14px;\n    min-width: 0;\n    padding: 9px 10px;\n}\n\n.rolling-skill-managed-path > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-managed-path code {\n    min-width: 0;\n    overflow: hidden;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.rolling-skill-skill-edit-modal {\n    box-sizing: border-box;\n    max-height: min(72vh, 860px);\n    max-width: 1120px;\n    min-width: 0;\n    overflow: auto;\n    width: min(80vw, 1120px);\n}\n\n.rolling-skill-textarea {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    box-sizing: border-box;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    line-height: 1.5;\n    min-height: 92px;\n    padding: 9px 10px;\n    resize: vertical;\n    width: 100%;\n}\n\n.rolling-skill-skill-edit-status {\n    align-items: center;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: flex;\n    gap: 12px;\n    justify-content: space-between;\n    min-width: 0;\n    padding: 10px 12px;\n}\n\n.rolling-skill-skill-edit-status > div {\n    display: grid;\n    gap: 3px;\n    min-width: 0;\n}\n\n.rolling-skill-skill-edit-status span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-skill-edit-layout {\n    display: grid;\n    gap: 12px;\n    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);\n    min-width: 0;\n}\n\n.rolling-skill-skill-edit-conversation,\n.rolling-skill-skill-edit-diff {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-skill-edit-messages,\n.rolling-skill-skill-edit-files {\n    display: grid;\n    gap: 8px;\n    max-height: 430px;\n    min-width: 0;\n    overflow: auto;\n}\n\n.rolling-skill-skill-edit-messages article,\n.rolling-skill-skill-edit-files article {\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 6px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-skill-edit-messages article[data-role="assistant"] {\n    background: var(--dsw-alias-bg-layer-2);\n}\n\n.rolling-skill-skill-edit-messages p {\n    color: var(--dsw-alias-label-primary);\n    margin: 0;\n    overflow-wrap: anywhere;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-skill-edit-follow-up {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: minmax(0, 1fr) auto;\n    margin-top: 10px;\n    min-width: 0;\n}\n\n.rolling-skill-skill-edit-follow-up .rolling-skill-textarea {\n    min-height: 72px;\n}\n\n.rolling-skill-skill-edit-files article header {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    justify-content: space-between;\n    min-width: 0;\n}\n\n.rolling-skill-skill-edit-files article header strong,\n.rolling-skill-skill-edit-files article header span {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-skill-edit-files article header span,\n.rolling-skill-skill-edit-files article small {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-skill-edit-files pre {\n    font-size: 12px;\n    margin: 0;\n    max-height: 320px;\n    overflow: auto;\n    white-space: pre;\n}\n\n.rolling-skill-version-workflow {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    display: grid;\n    gap: 12px;\n    margin-top: 18px;\n    padding: 14px;\n}\n\n.rolling-skill-version-workflow h4,\n.rolling-skill-version-workflow p {\n    margin: 0;\n}\n\n.rolling-skill-version-workflow p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 13px;\n}\n\n.rolling-skill-version-workflow .rolling-skill-form-row {\n    margin-top: 0;\n}\n\n.rolling-skill-pagination {\n    align-items: center;\n    color: var(--dsw-alias-label-secondary);\n    display: flex;\n    gap: 10px;\n    justify-content: center;\n    margin-top: 14px;\n}\n\n.rolling-skill-group-list,\n.rolling-skill-raw-group,\n.rolling-skill-detail-stack {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-group-list {\n    margin-top: 14px;\n}\n\n.rolling-skill-raw-filter-toolbar {\n    align-items: end;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: minmax(0, 1fr) minmax(190px, 280px);\n}\n\n.rolling-skill-raw-skill-select {\n    color: var(--dsw-alias-label-secondary);\n    display: grid;\n    font-size: 12px;\n    gap: 5px;\n}\n\n.rolling-skill-raw-skill-select .rolling-skill-select {\n    margin-top: 0;\n    max-width: none;\n}\n\n.rolling-skill-raw-group-filter {\n    align-items: center;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 7px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: flex;\n    font: inherit;\n    gap: 8px;\n    justify-content: space-between;\n    max-width: 100%;\n    min-width: 0;\n    padding: 7px 10px;\n    text-align: left;\n    width: fit-content;\n}\n\n.rolling-skill-raw-group-filter[aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-raw-group-filter strong {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-raw-group-filter span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-verbatim {\n    overflow-wrap: anywhere;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-detail-stack h4,\n.rolling-skill-detail-stack p {\n    margin: 0;\n}\n\n.rolling-skill-detail-stack pre {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    max-height: 320px;\n    overflow: auto;\n    padding: 10px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-muted,\n.rolling-skill-range-hint {\n    color: var(--dsw-alias-label-secondary);\n}\n\n.rolling-skill-evidence-summary {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));\n    margin: 0;\n}\n\n.rolling-skill-evidence-summary > div {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 4px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-evidence-summary dt {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-evidence-summary dd {\n    margin: 0;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-capture-range-card {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 10px;\n    display: grid;\n    gap: 10px;\n    padding: 12px;\n}\n\n.rolling-skill-capture-evidence-timeline {\n    display: grid;\n    gap: 8px;\n    list-style: none;\n    margin: 0;\n    padding: 0;\n}\n\n.rolling-skill-capture-evidence-timeline > li {\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-inline-start: 3px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    min-width: 0;\n    overflow: hidden;\n}\n\n.rolling-skill-capture-evidence-timeline > li[data-kind="user"] {\n    background: var(--dsw-alias-bg-layer-2);\n}\n\n.rolling-skill-capture-evidence-timeline > li[data-kind="assistant"] {\n    background: var(--dsw-alias-bg-layer-1);\n}\n\n.rolling-skill-capture-evidence-timeline > li[data-boundary="start"],\n.rolling-skill-capture-evidence-timeline > li[data-boundary="end"] {\n    border-inline-start-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-capture-evidence-timeline article {\n    display: grid;\n    gap: 8px;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-evidence-timeline article header,\n.rolling-skill-capture-tool summary {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    justify-content: space-between;\n}\n\n.rolling-skill-capture-context summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-context p {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    margin: 0;\n    max-height: 240px;\n    overflow: auto;\n    padding: 10px 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-capture-evidence-timeline article header span,\n.rolling-skill-capture-tool summary span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-capture-evidence-timeline article p {\n    margin: 0;\n    overflow-wrap: anywhere;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-capture-tool summary {\n    cursor: pointer;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-tool-details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    display: grid;\n    gap: 10px;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-tool-details > div {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-capture-tool-details pre {\n    background: var(--dsw-alias-bg-layer-2);\n    border-radius: 6px;\n    margin: 0;\n    max-height: 240px;\n    overflow: auto;\n    padding: 8px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-capture-evidence-error {\n    align-items: flex-start;\n    border: 1px solid var(--dsw-alias-state-error-primary);\n    border-radius: 8px;\n    display: grid;\n    gap: 6px;\n    padding: 10px;\n}\n\n.rolling-skill-capture-evidence-error p,\n.rolling-skill-capture-evidence-error small {\n    margin: 0;\n}\n\n.rolling-skill-capture-boundaries {\n    display: grid;\n    gap: 8px;\n}\n\n.rolling-skill-capture-boundaries article {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: 26px minmax(0, 1fr);\n    padding: 10px;\n}\n\n.rolling-skill-capture-boundaries article > div {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-capture-boundaries p,\n.rolling-skill-capture-boundaries code,\n.rolling-skill-range-hint {\n    margin: 0;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-capture-boundaries code {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 11px;\n}\n\n.rolling-skill-range-index {\n    align-items: center;\n    border: 1px solid var(--dsw-alias-state-business-primary);\n    border-radius: 50%;\n    color: var(--dsw-alias-state-business-primary);\n    display: inline-flex;\n    font-size: 12px;\n    height: 24px;\n    justify-content: center;\n    width: 24px;\n}\n\n.rolling-skill-advanced-evidence {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 10px;\n}\n\n.rolling-skill-advanced-evidence > summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-capture-evidence) {\n    max-height: calc(100vh - 32px);\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-capture-evidence) > div:first-child {\n    min-height: 0;\n    overflow: hidden;\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-capture-evidence) > div:first-child > div:last-child {\n    min-height: 0;\n    overflow-y: auto;\n}\n\n.rolling-skill-case-copy p {\n    margin: 0;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-markdown {\n    line-height: 1.55;\n    min-width: 0;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-markdown > :first-child {\n    margin-top: 0;\n}\n\n.rolling-skill-markdown > :last-child {\n    margin-bottom: 0;\n}\n\n.rolling-skill-case-copy .rolling-skill-markdown p,\n.rolling-skill-detail-stack .rolling-skill-markdown p {\n    margin: 0 0 8px;\n    white-space: normal;\n}\n\n.rolling-skill-markdown h1,\n.rolling-skill-markdown h2,\n.rolling-skill-markdown h3,\n.rolling-skill-markdown h4,\n.rolling-skill-markdown h5,\n.rolling-skill-markdown h6 {\n    line-height: 1.3;\n    margin: 12px 0 7px;\n}\n\n.rolling-skill-markdown ul,\n.rolling-skill-markdown ol {\n    margin: 7px 0;\n    padding-inline-start: 22px;\n}\n\n.rolling-skill-markdown li + li {\n    margin-top: 3px;\n}\n\n.rolling-skill-markdown blockquote {\n    border-inline-start: 3px solid var(--dsw-alias-border-l2);\n    color: var(--dsw-alias-label-secondary);\n    margin: 8px 0;\n    padding-inline-start: 10px;\n}\n\n.rolling-skill-markdown code {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 4px;\n    font-family: ui-monospace, monospace;\n    font-size: 0.92em;\n    padding: 1px 4px;\n}\n\n.rolling-skill-markdown pre {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    max-width: 100%;\n    overflow: auto;\n    padding: 10px;\n    white-space: pre;\n}\n\n.rolling-skill-markdown pre code {\n    background: transparent;\n    border: 0;\n    padding: 0;\n}\n\n.rolling-skill-markdown a {\n    color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-markdown-image-placeholder {\n    color: var(--dsw-alias-label-secondary);\n    font-style: italic;\n}\n\n.rolling-skill-markdown-compact {\n    max-height: 9.5em;\n    overflow: hidden;\n}\n\n.rolling-skill-case-question .rolling-skill-markdown {\n    color: var(--dsw-alias-label-primary);\n    font-weight: 600;\n}\n\n.rolling-skill-select,\n.rolling-skill-form-stack input,\n.rolling-skill-field input,\n.rolling-skill-form-stack textarea {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 7px;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    padding: 8px 10px;\n}\n\n.rolling-skill-review-layout {\n    display: grid;\n    gap: 14px;\n    grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);\n    min-height: 560px;\n}\n\n.rolling-skill-review-list,\n.rolling-skill-review-detail,\n.rolling-skill-session-view {\n    min-width: 0;\n}\n\n.rolling-skill-review-list-button {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: grid;\n    font: inherit;\n    gap: 5px;\n    padding: 10px;\n    text-align: left;\n    width: 100%;\n}\n\n.rolling-skill-review-list-button[data-selected="true"] {\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-review-list-button span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-review-scope {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 9px;\n    display: grid;\n    gap: 3px;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n    margin-top: 12px;\n    padding: 3px;\n}\n\n.rolling-skill-review-scope button {\n    background: transparent;\n    border: 1px solid transparent;\n    border-radius: 7px;\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n    font: inherit;\n    min-width: 0;\n    padding: 7px 9px;\n}\n\n.rolling-skill-review-scope button[aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    border-color: var(--dsw-alias-border-l2);\n    color: var(--dsw-alias-label-primary);\n    font-weight: 600;\n}\n\n.rolling-skill-review-scope span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 11px;\n}\n\n.rolling-skill-session-view,\n.rolling-skill-evidence-card,\n.rolling-skill-conversation-log,\n.rolling-skill-rubric-draft {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-curation-draft-card {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 12px;\n    padding: 12px;\n}\n\n.rolling-skill-curation-draft-card > header {\n    align-items: flex-start;\n    display: flex;\n    gap: 10px;\n    justify-content: space-between;\n}\n\n.rolling-skill-curation-draft-card h4,\n.rolling-skill-curation-draft-card p {\n    margin: 0;\n}\n\n.rolling-skill-curation-draft-details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 9px;\n}\n\n.rolling-skill-curation-draft-details > summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n}\n\n.rolling-skill-curation-draft-details > div {\n    display: grid;\n    gap: 12px;\n    margin-top: 10px;\n}\n\n.rolling-skill-curation-primary,\n.rolling-skill-curation-composer,\n.rolling-skill-curation-runtime-details > .rolling-skill-evidence-card {\n    display: grid;\n    gap: 10px;\n}\n\n.rolling-skill-curation-composer {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-state-business-primary);\n    border-radius: 10px;\n    padding: 12px;\n}\n\n.rolling-skill-curation-composer h4,\n.rolling-skill-curation-composer p {\n    margin: 0;\n}\n\n.rolling-skill-curation-composer > div:first-child p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    margin-top: 4px;\n}\n\n.rolling-skill-curation-composer textarea {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    min-height: 104px;\n    padding: 10px;\n    resize: vertical;\n}\n\n.rolling-skill-curation-runtime-details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 10px;\n}\n\n.rolling-skill-curation-runtime-details > summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n}\n\n.rolling-skill-curation-runtime-details > .rolling-skill-evidence-card {\n    margin-top: 10px;\n}\n\n.rolling-skill-curation-model-controls {\n    display: grid;\n    gap: 10px;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n}\n\n.rolling-skill-session-view h4,\n.rolling-skill-review-list h4 {\n    margin: 8px 0 0;\n}\n\n.rolling-skill-session-view pre,\n.rolling-skill-evidence-card pre {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    max-height: 340px;\n    overflow: auto;\n    padding: 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-conversation-log > div,\n.rolling-skill-rubric-draft article {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    padding: 10px;\n}\n\n.rolling-skill-conversation-log p,\n.rolling-skill-rubric-draft p {\n    margin: 6px 0 0;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-create-rubric {\n    border-bottom: 1px solid var(--dsw-alias-border-l2);\n    padding-bottom: 14px;\n}\n\n.rolling-skill-select {\n    margin-top: 14px;\n    max-width: 360px;\n    width: 100%;\n}\n\n.rolling-skill-form-stack label {\n    display: grid;\n    gap: 6px;\n}\n\n.rolling-skill-form-stack textarea {\n    min-height: 120px;\n    resize: vertical;\n}\n\n.rolling-skill-check {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    margin-top: 12px;\n}\n\n.rolling-skill-badge {\n    color: var(--dsw-alias-state-business-primary);\n    font-size: 11px;\n    font-weight: 600;\n}\n\n.rolling-skill-audit-grid,\n.rolling-skill-rubric-criteria,\n.rolling-skill-evaluation-results,\n.rolling-skill-score-list {\n    display: grid;\n    gap: 10px;\n}\n\n.rolling-skill-audit-grid {\n    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));\n    margin-top: 12px;\n}\n\n.rolling-skill-audit-card,\n.rolling-skill-rubric-version,\n.rolling-skill-evaluation-result,\n.rolling-skill-score-item {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-audit-card header,\n.rolling-skill-rubric-version > summary,\n.rolling-skill-rubric-criteria article header,\n.rolling-skill-evaluation-result > header,\n.rolling-skill-score-item > header {\n    align-items: flex-start;\n    display: flex;\n    gap: 10px;\n    justify-content: space-between;\n}\n\n.rolling-skill-audit-card > button {\n    margin-top: 10px;\n}\n\n.rolling-skill-audit-card code,\n.rolling-skill-rubric-version code,\n.rolling-skill-evidence-card code {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-rubric-version > summary {\n    cursor: pointer;\n}\n\n.rolling-skill-rubric-version > summary > span:first-child,\n.rolling-skill-evaluation-result > header > div,\n.rolling-skill-score-item > header + small {\n    display: grid;\n    gap: 4px;\n}\n\n.rolling-skill-rubric-version-body {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    display: grid;\n    gap: 12px;\n    margin-top: 12px;\n    padding-top: 12px;\n}\n\n.rolling-skill-rubric-version-body h4 {\n    margin: 4px 0 0;\n}\n\n.rolling-skill-rubric-criteria article {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    padding: 10px;\n}\n\n.rolling-skill-evaluation-result {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-score-total {\n    color: var(--dsw-alias-state-business-primary);\n    font-size: 24px;\n    font-weight: 700;\n    white-space: nowrap;\n}\n\n.rolling-skill-score-total small {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-score-breakdown,\n.rolling-skill-trace,\n.rolling-skill-evaluation-result > details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 10px;\n}\n\n.rolling-skill-score-breakdown > summary,\n.rolling-skill-trace > summary,\n.rolling-skill-evaluation-result > details > summary {\n    cursor: pointer;\n    font-weight: 600;\n}\n\n.rolling-skill-score-list,\n.rolling-skill-trace-list {\n    margin-top: 10px;\n}\n\n.rolling-skill-score-item p {\n    margin: 6px 0 0;\n}\n\n.rolling-skill-score-critical {\n    border-color: var(--dsw-alias-state-error-primary);\n}\n\n.rolling-skill-judge-meta,\n.rolling-skill-trace-summary {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-trace-summary {\n    align-items: center;\n    display: flex;\n    flex-wrap: wrap;\n    gap: 8px;\n    margin-top: 10px;\n}\n\n.rolling-skill-trace-list {\n    display: grid;\n    gap: 6px;\n    max-height: 360px;\n    overflow: auto;\n    padding-left: 0;\n}\n\n.rolling-skill-trace-list li {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 7px;\n    display: grid;\n    gap: 8px;\n    grid-template-columns: minmax(48px, auto) 1fr;\n    list-style: none;\n    padding: 8px;\n}\n\n.rolling-skill-trace-list li > span {\n    display: grid;\n    gap: 4px;\n    min-width: 0;\n}\n\n.rolling-skill-inline-error {\n    color: var(--dsw-alias-label-error) !important;\n}\n\n.rolling-skill-dialog-backdrop {\n    align-items: center;\n    background: var(--dsw-alias-bg-mask-1);\n    display: flex;\n    inset: 0;\n    justify-content: center;\n    padding: 20px;\n    position: fixed;\n    z-index: 1000;\n}\n\n.rolling-skill-dialog {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 12px;\n    color: var(--dsw-alias-label-primary);\n    display: grid;\n    gap: 18px;\n    max-height: min(760px, calc(100vh - 40px));\n    max-width: 620px;\n    min-width: 0;\n    overflow: auto;\n    padding: 20px;\n    width: 100%;\n}\n\n.rolling-skill-dialog-header {\n    align-items: flex-start;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n}\n\n.rolling-skill-dialog-header h2,\n.rolling-skill-dialog-header p {\n    margin: 0;\n}\n\n.rolling-skill-dialog-header p {\n    color: var(--dsw-alias-label-secondary);\n    margin-top: 6px;\n}\n\n.rolling-skill-dialog .rolling-skill-select {\n    margin-top: 0;\n    max-width: none;\n}\n\n.rolling-skill-label-fieldset {\n    border: 0;\n    display: flex;\n    gap: 16px;\n    margin: 0;\n    padding: 0;\n}\n\n.rolling-skill-label-fieldset legend {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    font-weight: 600;\n    margin-bottom: 8px;\n}\n\n.rolling-skill-label-fieldset label {\n    align-items: center;\n    display: flex;\n    gap: 6px;\n}\n\n.rolling-skill-blockers {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-state-warning-primary);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    padding: 12px;\n}\n\n.rolling-skill-blockers ul {\n    margin: 8px 0 0;\n    padding-left: 20px;\n}\n\n.rolling-skill-dialog-actions {\n    justify-content: flex-end;\n}\n\n@media (max-width: 640px) {\n    .rolling-skill-workbench-backdrop {\n        padding: 0;\n    }\n\n    .rolling-skill-workbench-overlay {\n        border-radius: 0;\n        max-height: 100vh;\n        min-height: 100vh;\n        padding: 16px;\n    }\n\n    .rolling-skill-review-layout {\n        grid-template-columns: 1fr;\n    }\n\n    .rolling-skill-raw-filter-toolbar,\n    .rolling-skill-curation-model-controls {\n        grid-template-columns: 1fr;\n    }\n\n    .rolling-skill-dialog-backdrop {\n        align-items: flex-end;\n        padding: 0;\n    }\n\n    .rolling-skill-dialog {\n        border-radius: 12px 12px 0 0;\n        max-height: 90vh;\n    }\n}\n\n[data-chat-flow-key].rolling-skill-curation-draft {\n    background: var(--dsw-alias-state-warn-tertiary);\n    border-inline-start: 3px solid var(--dsw-alias-state-warn-primary);\n    box-shadow: inset 3px 0 var(--dsw-alias-state-warn-primary);\n}\n\n[data-chat-flow-key].rolling-skill-curation-saved {\n    background: var(--dsw-alias-state-success-tertiary);\n    border-inline-start: 3px solid var(--dsw-alias-state-success-primary);\n    box-shadow: inset 3px 0 var(--dsw-alias-state-success-primary);\n}\n\n[data-chat-flow-key].rolling-skill-capture-range {\n    background: var(--dsw-alias-interactive-bg-active);\n    border-inline-start: 3px solid var(--dsw-alias-state-business-primary);\n    box-shadow: inset 3px 0 var(--dsw-alias-state-business-primary);\n    scroll-margin-block: 96px;\n}\n\n[data-rolling-skill-curation-status="draft"] {\n    background: var(--dsw-alias-state-warn-tertiary);\n    border-color: var(--dsw-alias-state-warn-primary);\n    color: var(--dsw-alias-state-warn-primary);\n}\n\n[data-rolling-skill-curation-status="saved"] {\n    background: var(--dsw-alias-state-success-tertiary);\n    border-color: var(--dsw-alias-state-success-primary);\n    color: var(--dsw-alias-state-success-primary);\n}\n\n.rolling-skill-marker-legend {\n    align-items: center;\n    display: flex;\n    flex-wrap: wrap;\n    gap: 6px;\n}\n\n.rolling-skill-marker-chip,\n.rolling-skill-marker-compatibility {\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 999px;\n    color: var(--dsw-alias-label-secondary);\n    font-size: 11px;\n    padding: 3px 7px;\n}\n\n.rolling-skill-marker-chip-draft {\n    border-color: var(--dsw-alias-state-warn-primary);\n}\n\n.rolling-skill-marker-chip-saved {\n    border-color: var(--dsw-alias-state-success-primary);\n}\n\n.rolling-skill-runtime-select {\n    border: 0;\n    display: grid;\n    gap: 8px;\n    margin: 16px 0;\n    min-width: 0;\n    padding: 0;\n}\n\n.rolling-skill-runtime-select legend,\n.rolling-skill-field > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    font-weight: 600;\n}\n\n.rolling-skill-runtime-list {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-runtime-option {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    display: flex;\n    gap: 9px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-runtime-option:has(input:checked) {\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-runtime-option > span,\n.rolling-skill-field {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-runtime-option code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 11px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-link-button {\n    background: transparent;\n    border: 0;\n    color: var(--dsw-alias-state-business-primary);\n    cursor: pointer;\n    padding: 0;\n    text-align: left;\n}\n\n.rolling-skill-field .rolling-skill-select {\n    margin-top: 0;\n}\n\n.rolling-skill-skill-row {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: grid;\n    gap: 4px;\n    padding: 11px;\n    text-align: left;\n}\n\n.rolling-skill-skill-row span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-manifest {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-secondary);\n    max-height: 240px;\n    overflow: auto;\n    padding: 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-subpanel {\n    display: grid;\n    gap: 9px;\n}\n\n.rolling-skill-subpanel h4 {\n    margin: 0;\n}\n\n.rolling-skill-section-gap {\n    margin-top: 14px;\n}\n\n.rolling-skill-list-row small {\n    color: var(--dsw-alias-label-secondary);\n    overflow-wrap: anywhere;\n}\n\n@media (max-width: 760px) {\n    .rolling-skill-panel-header,\n    .rolling-skill-list-row,\n    .rolling-skill-case-row,\n    .rolling-skill-form-row {\n        align-items: flex-start;\n        flex-direction: column;\n    }\n\n    .rolling-skill-panel-header > :first-child,\n    .rolling-skill-list-row > :first-child,\n    .rolling-skill-case-row > :first-child,\n    .rolling-skill-form-row > :first-child:not(.rolling-skill-action-button),\n    .rolling-skill-list-row > .rolling-skill-actions,\n    .rolling-skill-case-row > .rolling-skill-actions {\n        box-sizing: border-box;\n        max-width: 100%;\n        width: 100%;\n    }\n\n    .rolling-skill-review-layout {\n        grid-template-columns: 1fr;\n    }\n\n    .rolling-skill-candidate-target {\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-skill-import {\n        align-items: stretch;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-skill-source-picker {\n        grid-template-columns: auto minmax(0, 1fr);\n    }\n\n    .rolling-skill-current-skill {\n        align-items: stretch;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-candidate-target .rolling-skill-select {\n        grid-column: 1;\n    }\n}\n\n@media (max-width: 960px) {\n    .rolling-skill-skill-edit-layout {\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-skill-edit-modal {\n        width: min(88vw, 760px);\n    }\n}\n\n@media (max-width: 640px) {\n    .rolling-skill-header {\n        align-items: flex-start;\n        flex-direction: column;\n    }\n\n    .rolling-skill-header > :first-child {\n        width: 100%;\n    }\n\n    .rolling-skill-managed-path,\n    .rolling-skill-skill-edit-follow-up {\n        align-items: stretch;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-skill-edit-modal {\n        width: 100%;\n    }\n}\n';
 
 // src/client/locale.ts
 var LOCALE_NAMESPACE = "rolling-skill";
@@ -956,6 +956,42 @@ var zh = {
   noSkillSourceSelected: "\u5C1A\u672A\u9009\u62E9",
   importSkill: "\u5BFC\u5165",
   revealRepository: "\u6253\u5F00\u53D7\u7BA1 Skill \u6587\u4EF6\u5939",
+  managedSkillPath: "\u53D7\u7BA1 Skill \u8DEF\u5F84",
+  copyPath: "\u590D\u5236\u8DEF\u5F84",
+  pathCopied: "\u5DF2\u590D\u5236",
+  editSkillWithAgent: "\u8BA9 Agent \u7F16\u8F91",
+  continueSkillEdit: "\u7EE7\u7EED Agent \u7F16\u8F91",
+  skillEditTitle: "Agent \u7F16\u8F91 Skill",
+  skillEditDescription: "Agent \u53EA\u4F1A\u4FEE\u6539\u5F53\u524D\u53D7\u7BA1 Skill \u7684\u9694\u79BB\u8349\u7A3F\u3002\u786E\u8BA4 Diff \u540E\uFF0C\u5E94\u7528\u4FEE\u6539\u4F1A\u81EA\u52A8\u53D1\u5E03\u4E0B\u4E00\u4E2A\u7248\u672C\u3002",
+  skillEditRuntime: "\u7F16\u8F91 Runtime",
+  selectSkillEditEffort: "\u8BF7\u9009\u62E9\u63A8\u7406\u5F3A\u5EA6",
+  skillEditObjective: "\u5E0C\u671B\u600E\u4E48\u4FEE\u6539",
+  skillEditObjectivePlaceholder: "\u4F8B\u5982\uFF1A\u8865\u5145\u89E6\u53D1\u6761\u4EF6\u3001\u6F84\u6E05\u8FB9\u754C\uFF0C\u5E76\u52A0\u5165\u4E00\u4E2A\u5B8C\u6574\u793A\u4F8B",
+  startSkillEdit: "\u5F00\u59CB\u7F16\u8F91",
+  applySkillEdit: "\u5E94\u7528\u4FEE\u6539\u5E76\u53D1\u5E03\u65B0\u7248\u672C",
+  discardSkillEdit: "\u653E\u5F03\u8349\u7A3F",
+  skillEditStateDraft: "\u6B63\u5728\u51C6\u5907\u8349\u7A3F",
+  skillEditStateRunning: "Agent \u6B63\u5728\u7F16\u8F91",
+  skillEditStateIdle: "\u7B49\u5F85\u786E\u8BA4",
+  skillEditStateApplying: "\u6B63\u5728\u5E94\u7528\u5E76\u53D1\u5E03",
+  skillEditStateRecovery: "\u9700\u8981\u6062\u590D",
+  skillEditStatePublished: "\u5DF2\u5E94\u7528\u5E76\u53D1\u5E03",
+  skillEditStateDiscarded: "\u8349\u7A3F\u5DF2\u653E\u5F03",
+  skillEditStateFailed: "\u7F16\u8F91\u5931\u8D25",
+  publishedVersionLabel: "\u65B0\u7248\u672C",
+  skillEditConversation: "\u7F16\u8F91\u5BF9\u8BDD",
+  emptySkillEditConversation: "Agent \u8FD8\u6CA1\u6709\u8FD4\u56DE\u6D88\u606F\u3002",
+  skillEditFollowUp: "\u7EE7\u7EED\u544A\u8BC9 Agent \u8981\u8C03\u6574\u4EC0\u4E48",
+  skillEditChanges: "\u6587\u4EF6\u53D8\u66F4",
+  skillEditAdded: "\u65B0\u589E",
+  skillEditDeleted: "\u5220\u9664",
+  skillEditModified: "\u4FEE\u6539",
+  skillEditBinaryFile: "\u4E8C\u8FDB\u5236\u6587\u4EF6\u5DF2\u53D8\u66F4\uFF0C\u65E0\u6CD5\u5C55\u793A\u6587\u672C Diff\u3002",
+  skillEditDiffTruncated: "Diff \u5185\u5BB9\u8F83\u957F\uFF0C\u5DF2\u622A\u65AD\u5C55\u793A\u3002",
+  skillEditWaitingForChanges: "Agent \u6B63\u5728\u5DE5\u4F5C\uFF0C\u5B8C\u6210\u540E\u4F1A\u5728\u8FD9\u91CC\u5C55\u793A\u53D8\u66F4\u3002",
+  skillEditNoChanges: "\u5F53\u524D\u8349\u7A3F\u6CA1\u6709\u6587\u4EF6\u53D8\u66F4\u3002",
+  agent: "Agent",
+  you: "\u4F60",
   emptySkills: "\u6682\u65E0 Managed Skill",
   publishedVersions: "\u5DF2\u53D1\u5E03\u7248\u672C",
   emptyPublishedVersions: "\u8FD8\u6CA1\u6709\u5DF2\u53D1\u5E03\u7248\u672C",
@@ -1386,6 +1422,42 @@ var en = {
   noSkillSourceSelected: "Nothing selected",
   importSkill: "Import",
   revealRepository: "Open Managed Skill Folder",
+  managedSkillPath: "Managed Skill path",
+  copyPath: "Copy Path",
+  pathCopied: "Copied",
+  editSkillWithAgent: "Edit with Agent",
+  continueSkillEdit: "Continue Agent Edit",
+  skillEditTitle: "Agent Skill Editor",
+  skillEditDescription: "The Agent edits an isolated draft of this managed Skill only. Applying a reviewed Diff automatically publishes the next version.",
+  skillEditRuntime: "Editing Runtime",
+  selectSkillEditEffort: "Select reasoning effort",
+  skillEditObjective: "Requested changes",
+  skillEditObjectivePlaceholder: "For example: clarify triggers and boundaries, then add one complete example",
+  startSkillEdit: "Start Editing",
+  applySkillEdit: "Apply Changes and Publish Version",
+  discardSkillEdit: "Discard Draft",
+  skillEditStateDraft: "Preparing Draft",
+  skillEditStateRunning: "Agent Is Editing",
+  skillEditStateIdle: "Awaiting Review",
+  skillEditStateApplying: "Applying and Publishing",
+  skillEditStateRecovery: "Recovery Required",
+  skillEditStatePublished: "Applied and Published",
+  skillEditStateDiscarded: "Draft Discarded",
+  skillEditStateFailed: "Edit Failed",
+  publishedVersionLabel: "New version",
+  skillEditConversation: "Editing Conversation",
+  emptySkillEditConversation: "The Agent has not returned a message yet.",
+  skillEditFollowUp: "Tell the Agent what else to adjust",
+  skillEditChanges: "File Changes",
+  skillEditAdded: "Added",
+  skillEditDeleted: "Deleted",
+  skillEditModified: "Modified",
+  skillEditBinaryFile: "This binary file changed, so a text Diff is unavailable.",
+  skillEditDiffTruncated: "The Diff is long and has been truncated for display.",
+  skillEditWaitingForChanges: "The Agent is working. Changes will appear here when ready.",
+  skillEditNoChanges: "The current draft has no file changes.",
+  agent: "Agent",
+  you: "You",
   emptySkills: "No Managed Skills",
   publishedVersions: "Published Versions",
   emptyPublishedVersions: "No published versions yet",
@@ -1935,16 +2007,16 @@ function ConversationCurationMarkers({ sessionId, useSession, t }) {
 }
 
 // src/client/workbench/WorkbenchLauncher.tsx
+var import_dsh_client_ui_primitives16 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react23 = require("react");
+
+// src/client/workbench/WorkbenchOverlay.tsx
 var import_dsh_client_ui_primitives15 = require("@deepseek-ai/dsh-client-ui-primitives");
 var import_react22 = require("react");
 
-// src/client/workbench/WorkbenchOverlay.tsx
+// src/client/workbench/Workbench.tsx
 var import_dsh_client_ui_primitives14 = require("@deepseek-ai/dsh-client-ui-primitives");
 var import_react21 = require("react");
-
-// src/client/workbench/Workbench.tsx
-var import_dsh_client_ui_primitives13 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react20 = require("react");
 
 // src/client/workbench/ActionButton.tsx
 var import_dsh_client_ui_primitives3 = require("@deepseek-ai/dsh-client-ui-primitives");
@@ -3967,11 +4039,11 @@ function addChildren(props, children) {
     }
   }
 }
-function productionCreate(_, jsx28, jsxs25) {
+function productionCreate(_, jsx29, jsxs26) {
   return create2;
   function create2(_2, type, props, key) {
     const isStaticChildren = Array.isArray(props.children);
-    const fn = isStaticChildren ? jsxs25 : jsx28;
+    const fn = isStaticChildren ? jsxs26 : jsx29;
     return key ? fn(type, props, key) : fn(type, props);
   }
 }
@@ -13949,8 +14021,8 @@ function RawCasesPanel({ t, revision, onChanged, initialRawCaseId, onNavigate })
 }
 
 // src/client/workbench/SkillsPanel.tsx
-var import_dsh_client_ui_primitives12 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react15 = require("react");
+var import_dsh_client_ui_primitives13 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react16 = require("react");
 
 // src/client/workbench/InstallationsPanel.tsx
 var import_dsh_client_ui_primitives11 = require("@deepseek-ai/dsh-client-ui-primitives");
@@ -14153,26 +14225,266 @@ function InstallationsPanel({ t, initialJobId, refreshRevision = 0 }) {
   ] });
 }
 
-// src/client/workbench/SkillsPanel.tsx
+// src/client/workbench/SkillEditModal.tsx
+var import_dsh_client_ui_primitives12 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react15 = require("react");
 var import_jsx_runtime18 = require("react/jsx-runtime");
+var SETTINGS_KEY = "rolling-skill:skill-edit-runtime-settings/v1";
+var ACTIVE_STATES = /* @__PURE__ */ new Set(["draft", "running", "idle", "applying", "needs_recovery"]);
+var RUNNING_STATES = /* @__PURE__ */ new Set(["draft", "running", "applying"]);
+function rememberedSettings() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function modelIdentifier(model) {
+  return model.id ?? model.model ?? "";
+}
+function stateLabel(t, state) {
+  const labels = {
+    draft: t("skillEditStateDraft"),
+    running: t("skillEditStateRunning"),
+    idle: t("skillEditStateIdle"),
+    applying: t("skillEditStateApplying"),
+    needs_recovery: t("skillEditStateRecovery"),
+    published: t("skillEditStatePublished"),
+    discarded: t("skillEditStateDiscarded"),
+    failed: t("skillEditStateFailed")
+  };
+  return labels[state] ?? state;
+}
+function SkillEditModal({
+  t,
+  open,
+  skillId,
+  skillName,
+  onClose,
+  onPublished
+}) {
+  const [runtimes, setRuntimes] = (0, import_react15.useState)([]);
+  const [runtimeId, setRuntimeId] = (0, import_react15.useState)("");
+  const [models, setModels] = (0, import_react15.useState)([]);
+  const [modelId, setModelId] = (0, import_react15.useState)("");
+  const [effort, setEffort] = (0, import_react15.useState)("");
+  const [objective, setObjective] = (0, import_react15.useState)("");
+  const [message, setMessage] = (0, import_react15.useState)("");
+  const [session, setSession] = (0, import_react15.useState)(null);
+  const [busy, setBusy] = (0, import_react15.useState)(false);
+  const [loading, setLoading] = (0, import_react15.useState)(false);
+  const [error, setError] = (0, import_react15.useState)(null);
+  const refreshSession = async (sessionId, signal) => {
+    const next = await requestRollingSkill("skillEdits.get", { sessionId }, signal);
+    setSession(next);
+    return next;
+  };
+  (0, import_react15.useEffect)(() => {
+    if (!open || !skillId) return;
+    const controller = new AbortController();
+    const remembered = rememberedSettings();
+    setLoading(true);
+    setError(null);
+    Promise.all([
+      requestRollingSkill("runtimes.list", {}, controller.signal),
+      requestRollingSkill("skillEdits.list", { skillId }, controller.signal)
+    ]).then(async ([runtimeItems, result]) => {
+      setRuntimes(runtimeItems);
+      const selectedRuntime = runtimeItems.some((runtime) => runtime.runtimeId === remembered.runtimeId) ? remembered.runtimeId ?? "" : runtimeItems[0]?.runtimeId ?? "";
+      setRuntimeId(selectedRuntime);
+      const active = result.sessions.find((candidate) => ACTIVE_STATES.has(candidate.state));
+      if (active) await refreshSession(active.id, controller.signal);
+      else setSession(null);
+    }).catch((reason) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoading(false);
+    });
+    return () => controller.abort();
+  }, [open, skillId]);
+  (0, import_react15.useEffect)(() => {
+    if (!open || session || !runtimeId) return;
+    const controller = new AbortController();
+    const remembered = rememberedSettings();
+    requestRollingSkill("runtimes.models", { runtimeId }, controller.signal).then((items) => {
+      setModels(items);
+      const rememberedModel = remembered.runtimeId === runtimeId ? remembered.modelId : "";
+      const selectedModel = items.some((model) => modelIdentifier(model) === rememberedModel) ? rememberedModel ?? "" : modelIdentifier(items[0] ?? {});
+      setModelId(selectedModel);
+      setEffort(remembered.runtimeId === runtimeId && selectedModel === remembered.modelId ? remembered.effort ?? "" : "");
+    }).catch((reason) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
+    });
+    return () => controller.abort();
+  }, [open, runtimeId, session?.id]);
+  (0, import_react15.useEffect)(() => {
+    if (!open || !session || !ACTIVE_STATES.has(session.state)) return;
+    const timer = window.setInterval(() => void refreshSession(session.id).catch((reason) => {
+      setError(reason instanceof Error ? reason.message : t("loadError"));
+    }), 1500);
+    return () => window.clearInterval(timer);
+  }, [open, session?.id, session?.state]);
+  const perform = async (operation) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setSession(await operation());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("loadError"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const start2 = () => perform(async () => {
+    const next = await requestRollingSkill("skillEdits.start", {
+      skillId,
+      runtimeId,
+      modelId,
+      effort,
+      objective
+    });
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ runtimeId, modelId, effort }));
+    return next;
+  });
+  const send = () => perform(async () => {
+    const next = await requestRollingSkill("skillEdits.send", { sessionId: session?.id, text: message });
+    setMessage("");
+    return next;
+  });
+  const apply2 = () => perform(async () => {
+    const next = await requestRollingSkill("skillEdits.applyAndRelease", {
+      sessionId: session?.id,
+      expectedRevision: session?.revision
+    });
+    onPublished();
+    return next;
+  });
+  const discard = () => perform(() => requestRollingSkill("skillEdits.discard", {
+    sessionId: session?.id,
+    expectedRevision: session?.revision
+  }));
+  const canSend = Boolean(session?.operatorSessionId && ACTIVE_STATES.has(session.state) && session.state !== "applying");
+  const canApply = Boolean(session?.state === "idle" && session.diff?.changed && session.diff.valid);
+  const canStart = Boolean(runtimeId && modelId && effort && objective.trim());
+  const footer2 = session ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)(import_jsx_runtime18.Fragment, { children: [
+    ACTIVE_STATES.has(session.state) ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { disabled: busy || session.state === "applying", onClick: () => void discard(), children: t("discardSkillEdit") }) : null,
+    ACTIVE_STATES.has(session.state) ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { tone: "primary", disabled: busy || !canApply, onClick: () => void apply2(), children: t("applySkillEdit") }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { onClick: onClose, children: t("close") })
+  ] }) : /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)(import_jsx_runtime18.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { onClick: onClose, children: t("cancel") }),
+    /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { tone: "primary", disabled: busy || loading || !canStart, onClick: () => void start2(), children: t("startSkillEdit") })
+  ] });
+  const changedFiles = (0, import_react15.useMemo)(() => session?.diff?.files ?? [], [session?.diff]);
+  return /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(import_dsh_client_ui_primitives12.Modal, { open, onClose, title: `${t("skillEditTitle")} \xB7 ${skillName}`, closeLabel: t("close"), footer: footer2, children: /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-skill-edit-modal", children: [
+    loading ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: t("loading") }) : null,
+    error ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+    !session && !loading ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-detail-stack", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { className: "rolling-skill-help", children: t("skillEditDescription") }),
+      /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(RuntimeSelect, { t, runtimes, value: runtimeId, onChange: setRuntimeId, label: t("skillEditRuntime") }),
+      /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-grid", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("span", { children: t("model") }),
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("select", { className: "rolling-skill-select", value: modelId, onChange: (event) => {
+            setModelId(event.target.value);
+            setEffort("");
+          }, children: models.map((model) => {
+            const id = modelIdentifier(model);
+            return /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("option", { value: id, children: model.displayName ?? id }, id);
+          }) })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ModelEffortSelect, { label: t("effort"), runtimeDefaultLabel: t("selectSkillEditEffort"), models, modelId, value: effort, onChange: setEffort })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("span", { children: t("skillEditObjective") }),
+        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("textarea", { className: "rolling-skill-textarea", value: objective, placeholder: t("skillEditObjectivePlaceholder"), onChange: (event) => setObjective(event.target.value) })
+      ] })
+    ] }) : null,
+    session ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-detail-stack", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-skill-edit-status", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("strong", { children: stateLabel(t, session.state) }),
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("span", { children: [
+            session.runtime.runtimeId,
+            " \xB7 ",
+            session.runtime.modelId,
+            " \xB7 ",
+            session.runtime.effort
+          ] })
+        ] }),
+        session.publishedVersionLabel ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("span", { children: [
+          t("publishedVersionLabel"),
+          " ",
+          session.publishedVersionLabel
+        ] }) : null
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { className: "rolling-skill-help", children: session.objective }),
+      session.error?.message ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: session.error.message }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-skill-edit-layout", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("section", { className: "rolling-skill-subpanel rolling-skill-skill-edit-conversation", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("h4", { children: t("skillEditConversation") }),
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-skill-edit-messages", children: [
+            session.messages.map((entry, index2) => /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("article", { "data-role": entry.role, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("strong", { children: entry.role === "assistant" ? t("agent") : t("you") }),
+              /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: entry.content })
+            ] }, `${entry.recordedAt ?? "message"}-${index2}`)),
+            session.messages.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: t("emptySkillEditConversation") }) : null
+          ] }),
+          canSend ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-skill-edit-follow-up", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("textarea", { className: "rolling-skill-textarea", value: message, placeholder: t("skillEditFollowUp"), onChange: (event) => setMessage(event.target.value) }),
+            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { disabled: busy || !message.trim(), onClick: () => void send(), children: t("send") })
+          ] }) : null
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("section", { className: "rolling-skill-subpanel rolling-skill-skill-edit-diff", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("h4", { children: t("skillEditChanges") }),
+          session.diff?.validationError?.message ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { className: "rolling-skill-inline-error", children: session.diff.validationError.message }) : null,
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-skill-edit-files", children: [
+            changedFiles.map((file) => /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("article", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("header", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("strong", { children: file.path }),
+                /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("span", { children: [
+                  t(file.status === "added" ? "skillEditAdded" : file.status === "deleted" ? "skillEditDeleted" : "skillEditModified"),
+                  " \xB7 +",
+                  file.additions ?? "\u2013",
+                  " / -",
+                  file.deletions ?? "\u2013"
+                ] })
+              ] }),
+              file.binary ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: t("skillEditBinaryFile") }) : /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("pre", { children: file.patch }),
+              file.truncated ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("small", { children: t("skillEditDiffTruncated") }) : null
+            ] }, file.path)),
+            !changedFiles.length ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: RUNNING_STATES.has(session.state) ? t("skillEditWaitingForChanges") : t("skillEditNoChanges") }) : null
+          ] }),
+          session.diff?.truncated ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { className: "rolling-skill-help", children: t("skillEditDiffTruncated") }) : null
+        ] })
+      ] }),
+      session.operatorSessionId ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(RuntimeInteractions, { t, ownerKind: "operator", ownerId: session.operatorSessionId }) : null
+    ] }) : null
+  ] }) });
+}
+
+// src/client/workbench/SkillsPanel.tsx
+var import_jsx_runtime19 = require("react/jsx-runtime");
 function dateTime3(value, fallback) {
   if (!value) return fallback;
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : fallback;
 }
 function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onOpenVersions }) {
-  const [catalog, setCatalog] = (0, import_react15.useState)({ repositories: [], skills: [] });
-  const [detail, setDetail] = (0, import_react15.useState)(null);
-  const [runtimes, setRuntimes] = (0, import_react15.useState)([]);
-  const [runtimeIds, setRuntimeIds] = (0, import_react15.useState)([]);
-  const [sourceKind, setSourceKind] = (0, import_react15.useState)("folder");
-  const [sourceLocation, setSourceLocation] = (0, import_react15.useState)("");
-  const [candidateBase, setCandidateBase] = (0, import_react15.useState)(null);
-  const [releaseLabel, setReleaseLabel] = (0, import_react15.useState)("");
-  const [busy, setBusy] = (0, import_react15.useState)(false);
-  const [error, setError] = (0, import_react15.useState)(null);
-  const [revision, setRevision] = (0, import_react15.useState)(0);
-  (0, import_react15.useEffect)(() => {
+  const [catalog, setCatalog] = (0, import_react16.useState)({ repositories: [], skills: [] });
+  const [detail, setDetail] = (0, import_react16.useState)(null);
+  const [runtimes, setRuntimes] = (0, import_react16.useState)([]);
+  const [runtimeIds, setRuntimeIds] = (0, import_react16.useState)([]);
+  const [sourceKind, setSourceKind] = (0, import_react16.useState)("folder");
+  const [sourceLocation, setSourceLocation] = (0, import_react16.useState)("");
+  const [managedSkillPath, setManagedSkillPath] = (0, import_react16.useState)("");
+  const [hasActiveEdit, setHasActiveEdit] = (0, import_react16.useState)(false);
+  const [editOpen, setEditOpen] = (0, import_react16.useState)(false);
+  const [pathCopied, setPathCopied] = (0, import_react16.useState)(false);
+  const [busy, setBusy] = (0, import_react16.useState)(false);
+  const [error, setError] = (0, import_react16.useState)(null);
+  const [revision, setRevision] = (0, import_react16.useState)(0);
+  (0, import_react16.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
       requestRollingSkill("skills.catalog", {}, controller.signal),
@@ -14186,7 +14498,8 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
       if (requestedSkill) void loadSkill(requestedSkill.id, controller.signal);
       else {
         setDetail(null);
-        setCandidateBase(null);
+        setManagedSkillPath("");
+        setHasActiveEdit(false);
       }
     }).catch((reason) => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"));
@@ -14194,14 +14507,17 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
     return () => controller.abort();
   }, [revision, initialSkillId, initialJobId, mode]);
   const loadSkill = async (skillId, signal) => {
-    setCandidateBase(null);
+    setManagedSkillPath("");
+    setHasActiveEdit(false);
     if (mode === "versions") {
-      const [next2, nextCandidateBase] = await Promise.all([
+      const [next2, pathResult, editResult] = await Promise.all([
         requestRollingSkill("skills.get", { skillId }, signal),
-        requestRollingSkill("skills.candidateBase", { skillId }, signal)
+        requestRollingSkill("skills.path", { skillId }, signal),
+        requestRollingSkill("skillEdits.list", { skillId }, signal)
       ]);
       setDetail(next2);
-      setCandidateBase(nextCandidateBase);
+      setManagedSkillPath(pathResult.path);
+      setHasActiveEdit(editResult.sessions.some((session) => ["draft", "running", "idle", "applying", "needs_recovery"].includes(session.state)));
       return;
     }
     const next = await requestRollingSkill("skills.get", { skillId }, signal);
@@ -14219,28 +14535,9 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
       setBusy(false);
     }
   };
-  const candidate = detail?.versions.find((version) => version.state === "candidate") ?? null;
-  const publishedVersions = (0, import_react15.useMemo)(() => detail?.versions.filter((version) => version.state === "released") ?? [], [detail]);
-  const releasedVersions = (0, import_react15.useMemo)(() => detail?.versions.filter((version) => version.state === "released" && !version.deprecatedAt) ?? [], [detail]);
+  const publishedVersions = (0, import_react16.useMemo)(() => detail?.versions.filter((version) => version.state === "released") ?? [], [detail]);
+  const releasedVersions = (0, import_react16.useMemo)(() => detail?.versions.filter((version) => version.state === "released" && !version.deprecatedAt) ?? [], [detail]);
   const released = releasedVersions[0] ?? null;
-  const contentAlreadyRecorded = Boolean(candidateBase && detail?.versions.some((version) => version.contentDigest === candidateBase.contentDigest));
-  const createCandidate = () => mutate(async () => {
-    if (!detail) return;
-    const expectedBase = await requestRollingSkill("skills.candidateBase", { skillId: detail.skill.id });
-    setCandidateBase(expectedBase);
-    if (detail.versions.some((version) => version.contentDigest === expectedBase.contentDigest)) return;
-    await requestRollingSkill("skills.createCandidate", { skillId: detail.skill.id, message: "Update managed Skill content", expectedBase });
-  });
-  const release = () => mutate(() => requestRollingSkill("skills.release", {
-    versionId: candidate?.id,
-    versionLabel: releaseLabel,
-    expectedCandidate: candidate ? {
-      commit: candidate.commit,
-      contentDigest: candidate.contentDigest,
-      state: candidate.state,
-      versionLabel: releaseLabel
-    } : null
-  }));
   const install = () => mutate(() => requestRollingSkill("installations.start", {
     skillId: detail?.skill.id,
     versionId: released?.id,
@@ -14248,6 +14545,18 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
   }));
   const deprecate = (version) => mutate(() => requestRollingSkill("skills.deprecate", { versionId: version.id }));
   const revealRepository = (repositoryId) => mutate(() => requestRollingSkill("skills.reveal", { repositoryId }));
+  const revealManagedSkill = () => mutate(() => requestRollingSkill("skills.revealSkill", { skillId: detail?.skill.id }));
+  const copyManagedSkillPath = async () => {
+    if (!managedSkillPath) return;
+    setError(null);
+    try {
+      await window.navigator.clipboard.writeText(managedSkillPath);
+      setPathCopied(true);
+      window.setTimeout(() => setPathCopied(false), 1500);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("loadError"));
+    }
+  };
   const chooseSource = async () => {
     if (sourceKind === "git-url") return;
     setBusy(true);
@@ -14261,141 +14570,146 @@ function SkillsPanel({ t, mode, initialSkillId, initialJobId, onSkillChange, onO
       setBusy(false);
     }
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-data-stack", children: [
-    mode !== "import" ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("label", { className: "rolling-skill-current-skill", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("span", { children: t("currentManagedSkill") }),
-      /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("select", { "aria-label": t("currentManagedSkill"), className: "rolling-skill-select", value: detail?.skill.id ?? "", disabled: busy || catalog.skills.length === 0, onChange: (event) => {
+  return /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-data-stack", children: [
+    mode !== "import" ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("label", { className: "rolling-skill-current-skill", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { children: t("currentManagedSkill") }),
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("select", { "aria-label": t("currentManagedSkill"), className: "rolling-skill-select", value: detail?.skill.id ?? "", disabled: busy || catalog.skills.length === 0, onChange: (event) => {
         onSkillChange?.(event.target.value);
         void loadSkill(event.target.value);
-      }, children: catalog.skills.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("option", { value: "", children: t("emptySkills") }) : catalog.skills.map((skill) => /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("option", { value: skill.id, children: skill.name }, skill.id)) })
+      }, children: catalog.skills.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("option", { value: "", children: t("emptySkills") }) : catalog.skills.map((skill) => /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("option", { value: skill.id, children: skill.name }, skill.id)) })
     ] }) : null,
-    error ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
-    mode === "import" ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("section", { className: "rolling-skill-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-panel-header", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("h3", { children: t("skillRepositories") }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: t("skillRepositoriesDescription") })
+    error ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+    mode === "import" ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h3", { children: t("skillRepositories") }),
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: t("skillRepositoriesDescription") })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("skills.rescan", {})), children: t("rescan") })
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void mutate(() => requestRollingSkill("skills.rescan", {})), children: t("rescan") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-skill-import", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("select", { "aria-label": t("skillSourceKind"), className: "rolling-skill-select", value: sourceKind, onChange: (event) => {
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-skill-import", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("select", { "aria-label": t("skillSourceKind"), className: "rolling-skill-select", value: sourceKind, onChange: (event) => {
           setSourceKind(event.target.value);
           setSourceLocation("");
         }, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("option", { value: "folder", children: t("skillSourceFolder") }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("option", { value: "local-git", children: t("skillSourceLocalGit") }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("option", { value: "git-url", children: t("skillSourceGitUrl") }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("option", { value: "zip", children: t("skillSourceZip") })
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("option", { value: "folder", children: t("skillSourceFolder") }),
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("option", { value: "local-git", children: t("skillSourceLocalGit") }),
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("option", { value: "git-url", children: t("skillSourceGitUrl") }),
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("option", { value: "zip", children: t("skillSourceZip") })
         ] }),
-        sourceKind === "git-url" ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(import_dsh_client_ui_primitives12.Input, { value: sourceLocation, placeholder: t("skillGitUrlPlaceholder"), onChange: (event) => setSourceLocation(event.target.value) }) : /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-skill-source-picker", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void chooseSource(), children: t(sourceKind === "zip" ? "chooseSkillZip" : "chooseSkillFolder") }),
-          sourceLocation ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-selected-source", title: sourceLocation, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("span", { children: t("selectedSkillSource") }),
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("code", { children: sourceLocation })
+        sourceKind === "git-url" ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(import_dsh_client_ui_primitives13.Input, { value: sourceLocation, placeholder: t("skillGitUrlPlaceholder"), onChange: (event) => setSourceLocation(event.target.value) }) : /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-skill-source-picker", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void chooseSource(), children: t(sourceKind === "zip" ? "chooseSkillZip" : "chooseSkillFolder") }),
+          sourceLocation ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-selected-source", title: sourceLocation, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { children: t("selectedSkillSource") }),
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("code", { children: sourceLocation })
           ] }) : null
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { tone: "primary", size: "sm", disabled: busy || !sourceLocation.trim(), onClick: () => void mutate(() => requestRollingSkill("skills.import", { kind: sourceKind, location: sourceLocation })), children: t("importSkill") })
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { tone: "primary", size: "sm", disabled: busy || !sourceLocation.trim(), onClick: () => void mutate(() => requestRollingSkill("skills.import", { kind: sourceKind, location: sourceLocation })), children: t("importSkill") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-list", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-list", children: [
         catalog.skills.map((skill) => {
           const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId);
           const repositoryLabel = repository?.displayName && repository.displayName !== skill.name ? `${repository.displayName} \xB7 ` : "";
-          return /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("article", { className: "rolling-skill-list-row rolling-skill-managed-skill-row", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("button", { type: "button", className: "rolling-skill-skill-row", "aria-current": detail?.skill.id === skill.id ? "true" : void 0, onClick: () => onOpenVersions?.(skill.id), children: [
-              /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("strong", { children: skill.name }),
-              /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("span", { children: [
+          return /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("article", { className: "rolling-skill-list-row rolling-skill-managed-skill-row", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("button", { type: "button", className: "rolling-skill-skill-row", "aria-current": detail?.skill.id === skill.id ? "true" : void 0, onClick: () => onOpenVersions?.(skill.id), children: [
+              /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("strong", { children: skill.name }),
+              /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("span", { children: [
                 repositoryLabel,
                 skill.description || skill.status
               ] })
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void revealRepository(skill.repositoryId), children: t("revealRepository") })
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void revealRepository(skill.repositoryId), children: t("revealRepository") })
           ] }, skill.id);
         }),
-        catalog.skills.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: t("emptySkills") }) : null
+        catalog.skills.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: t("emptySkills") }) : null
       ] })
     ] }) : null,
-    mode === "versions" ? detail ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("section", { className: "rolling-skill-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("h3", { children: detail.skill.name }),
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: detail.skill.description || detail.skill.status })
-      ] }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("details", { className: "rolling-skill-manifest-details", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("summary", { children: t("viewSkillContent") }),
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("pre", { className: "rolling-skill-manifest", children: detail.manifest })
+    mode === "versions" ? detail ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h3", { children: detail.skill.name }),
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: detail.skill.description || detail.skill.status })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { tone: "primary", size: "sm", disabled: busy, onClick: () => setEditOpen(true), children: t(hasActiveEdit ? "continueSkillEdit" : "editSkillWithAgent") }),
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void revealManagedSkill(), children: t("revealRepository") })
+        ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("h4", { className: "rolling-skill-version-heading", children: t("publishedVersions") }),
-      /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-list", children: [
-        publishedVersions.map((version) => /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("article", { className: "rolling-skill-version-card", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("header", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("strong", { children: version.versionLabel ?? t("notAvailable") }),
-            !version.deprecatedAt ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void deprecate(version), children: t("deprecateVersion") }) : /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("span", { children: t("deprecatedVersion") })
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-managed-path", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { children: t("managedSkillPath") }),
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("code", { title: managedSkillPath, children: managedSkillPath }),
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { size: "sm", disabled: !managedSkillPath, onClick: () => void copyManagedSkillPath(), children: t(pathCopied ? "pathCopied" : "copyPath") })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("details", { className: "rolling-skill-manifest-details", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("summary", { children: t("viewSkillContent") }),
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("pre", { className: "rolling-skill-manifest", children: detail.manifest })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h4", { className: "rolling-skill-version-heading", children: t("publishedVersions") }),
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-list", children: [
+        publishedVersions.map((version) => /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("article", { className: "rolling-skill-version-card", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("header", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("strong", { children: version.versionLabel ?? t("notAvailable") }),
+            !version.deprecatedAt ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void deprecate(version), children: t("deprecateVersion") }) : /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { children: t("deprecatedVersion") })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("dl", { children: /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("dt", { children: t("createdAt") }),
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("dd", { children: dateTime3(version.releasedAt ?? version.createdAt, t("notAvailable")) })
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dl", { children: /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dt", { children: t("createdAt") }),
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dd", { children: dateTime3(version.releasedAt ?? version.createdAt, t("notAvailable")) })
           ] }) })
         ] }, version.id)),
-        publishedVersions.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: t("emptyPublishedVersions") }) : null
+        publishedVersions.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: t("emptyPublishedVersions") }) : null
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("section", { className: "rolling-skill-version-workflow", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("h4", { children: candidate ? t("releaseVersion") : t("prepareVersion") }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: candidate ? t("versionReady") : contentAlreadyRecorded ? t("versionUnchanged") : t("prepareVersionDescription") })
-        ] }),
-        candidate ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-form-row", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("label", { className: "rolling-skill-field", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("span", { children: t("versionNumber") }),
-            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(import_dsh_client_ui_primitives12.Input, { value: releaseLabel, placeholder: "1.0.0", onChange: (event) => setReleaseLabel(event.target.value) })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { tone: "primary", size: "sm", disabled: busy || !releaseLabel.trim(), onClick: () => void release(), children: t("release") })
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("div", { className: "rolling-skill-form-row", children: /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { size: "sm", disabled: busy || !candidateBase || contentAlreadyRecorded, onClick: () => void createCandidate(), children: t("saveVersionContent") }) })
-      ] })
-    ] }) : /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("section", { className: "rolling-skill-panel", children: /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: t("emptySkills") }) }) : null,
-    mode === "install" ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)(import_jsx_runtime18.Fragment, { children: [
-      detail ? /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("section", { className: "rolling-skill-panel", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("h3", { children: t("skillInstallTab") }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("p", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(SkillEditModal, { t, open: editOpen, skillId: detail.skill.id, skillName: detail.skill.name, onClose: () => {
+        setEditOpen(false);
+        setRevision((value) => value + 1);
+      }, onPublished: () => {
+        setHasActiveEdit(false);
+        setRevision((value) => value + 1);
+      } })
+    ] }) : /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("section", { className: "rolling-skill-panel", children: /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: t("emptySkills") }) }) : null,
+    mode === "install" ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)(import_jsx_runtime19.Fragment, { children: [
+      detail ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { className: "rolling-skill-panel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h3", { children: t("skillInstallTab") }),
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("p", { children: [
             detail.skill.name,
             " \xB7 ",
             released?.versionLabel ?? t("notAvailable")
           ] })
         ] }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(RuntimeSelectionGrid, { t, runtimes, values: runtimeIds, onChange: setRuntimeIds }),
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ActionButton, { tone: "primary", disabled: busy || !released || runtimeIds.length === 0, onClick: () => void install(), children: t("installReleased") })
-      ] }) : /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("section", { className: "rolling-skill-panel", children: /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: t("emptySkills") }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(InstallationsPanel, { t, initialJobId, refreshRevision: revision })
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(RuntimeSelectionGrid, { t, runtimes, values: runtimeIds, onChange: setRuntimeIds }),
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { tone: "primary", disabled: busy || !released || runtimeIds.length === 0, onClick: () => void install(), children: t("installReleased") })
+      ] }) : /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("section", { className: "rolling-skill-panel", children: /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: t("emptySkills") }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(InstallationsPanel, { t, initialJobId, refreshRevision: revision })
     ] }) : null
   ] });
 }
 function RuntimeSelectionGrid({ t, runtimes, values, onChange }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("fieldset", { className: "rolling-skill-runtime-select", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("legend", { children: t("installationRuntime") }),
-    /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "rolling-skill-runtime-list", children: [
-      runtimes.map((runtime) => /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("label", { className: "rolling-skill-runtime-option", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("input", { type: "checkbox", checked: values.includes(runtime.runtimeId), onChange: (event) => onChange(event.target.checked ? [...values, runtime.runtimeId] : values.filter((value) => value !== runtime.runtimeId)) }),
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("span", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("strong", { children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("fieldset", { className: "rolling-skill-runtime-select", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("legend", { children: t("installationRuntime") }),
+    /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-runtime-list", children: [
+      runtimes.map((runtime) => /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("label", { className: "rolling-skill-runtime-option", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("input", { type: "checkbox", checked: values.includes(runtime.runtimeId), onChange: (event) => onChange(event.target.checked ? [...values, runtime.runtimeId] : values.filter((value) => value !== runtime.runtimeId)) }),
+        /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("span", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("strong", { children: [
             runtime.displayName,
             " ",
             runtime.version
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("code", { children: runtime.executablePath })
+          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("code", { children: runtime.executablePath })
         ] })
       ] }, runtime.runtimeId)),
-      runtimes.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("p", { children: t("noRuntimes") }) : null
+      runtimes.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: t("noRuntimes") }) : null
     ] })
   ] });
 }
 
 // src/client/workbench/CurationPanel.tsx
-var import_react17 = require("react");
+var import_react18 = require("react");
 var import_curation_selection = __toESM(require_curation_selection(), 1);
 
 // src/client/workbench/CurationSessionView.tsx
-var import_react16 = require("react");
-var import_jsx_runtime19 = require("react/jsx-runtime");
+var import_react17 = require("react");
+var import_jsx_runtime20 = require("react/jsx-runtime");
 function newKey(prefix) {
   return `${prefix}:${globalThis.crypto.randomUUID()}`;
 }
@@ -14405,13 +14719,13 @@ function CurationSessionView({
   onChanged,
   onNavigate
 }) {
-  const [revision, setRevision] = (0, import_react16.useState)(0);
-  const [session, setSession] = (0, import_react16.useState)(null);
-  const [error, setError] = (0, import_react16.useState)(null);
-  const [message, setMessage] = (0, import_react16.useState)("");
-  const [busy, setBusy] = (0, import_react16.useState)(false);
-  const keys2 = (0, import_react16.useRef)(/* @__PURE__ */ new Map());
-  (0, import_react16.useEffect)(() => {
+  const [revision, setRevision] = (0, import_react17.useState)(0);
+  const [session, setSession] = (0, import_react17.useState)(null);
+  const [error, setError] = (0, import_react17.useState)(null);
+  const [message, setMessage] = (0, import_react17.useState)("");
+  const [busy, setBusy] = (0, import_react17.useState)(false);
+  const keys2 = (0, import_react17.useRef)(/* @__PURE__ */ new Map());
+  (0, import_react17.useEffect)(() => {
     const controller = new AbortController();
     requestRollingSkill("curation.get", { sessionId }, controller.signal).then((value) => {
       setSession(value);
@@ -14421,7 +14735,7 @@ function CurationSessionView({
     });
     return () => controller.abort();
   }, [sessionId, revision]);
-  (0, import_react16.useEffect)(() => {
+  (0, import_react17.useEffect)(() => {
     if (!session || !["queued", "running"].includes(session.status)) return;
     const timer = window.setTimeout(() => setRevision((value) => value + 1), 1500);
     return () => window.clearTimeout(timer);
@@ -14468,33 +14782,33 @@ function CurationSessionView({
     if (!text5) return;
     if (await mutate("curation.send", { text: text5 })) setMessage("");
   };
-  if (!session && !error) return /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") });
-  if (!session) return /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: error });
+  if (!session && !error) return /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") });
+  if (!session) return /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: error });
   const editable = !["archived", "cancelled"].includes(session.status);
   const working = Boolean(session.curator?.working || ["queued", "running"].includes(session.status));
-  return /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { className: "rolling-skill-panel rolling-skill-session-view", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-panel-header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h3", { children: session.episode?.originalQuestion ?? session.id }),
-        /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("p", { children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("section", { className: "rolling-skill-panel rolling-skill-session-view", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("h3", { children: session.episode?.originalQuestion ?? session.id }),
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("p", { children: [
           session.caseType,
           " \xB7 ",
           session.status
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(ActionButton, { size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
     ] }),
-    session.error || error ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error ?? session.error }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { className: "rolling-skill-curation-primary", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h4", { children: t("latestDraft") }),
-      session.draft ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(CurationDraftCard, { draft: session.draft, t }) : /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: t("noValidDraft") })
+    session.error || error ? /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error ?? session.error }) : null,
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("section", { className: "rolling-skill-curation-primary", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("h4", { children: t("latestDraft") }),
+      session.draft ? /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(CurationDraftCard, { draft: session.draft, t }) : /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("p", { children: t("noValidDraft") })
     ] }),
-    editable ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { className: "rolling-skill-curation-composer", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h4", { children: t("revisionComposerTitle") }),
-        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: t("revisionComposerDescription") })
+    editable ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("section", { className: "rolling-skill-curation-composer", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("h4", { children: t("revisionComposerTitle") }),
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("p", { children: t("revisionComposerDescription") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(
         "textarea",
         {
           "aria-label": t("reviewMessage"),
@@ -14504,35 +14818,35 @@ function CurationSessionView({
           onChange: (event) => setMessage(event.target.value)
         }
       ),
-      working ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { className: "rolling-skill-muted", role: "status", children: t("curationWorking") }) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-actions", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { tone: "primary", disabled: working || busy || !message.trim(), onClick: () => void sendRevision(), children: t("generateRevision") }),
-        session.status === "failed" ? /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { disabled: busy, onClick: () => mutate("curation.retry"), children: t("retry") }) : null,
-        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { disabled: busy || session.status !== "needs_review" || !session.draft, onClick: () => mutate("curation.save"), children: t("saveCase") }),
-        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(ActionButton, { disabled: busy, onClick: () => {
+      working ? /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("p", { className: "rolling-skill-muted", role: "status", children: t("curationWorking") }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "rolling-skill-actions", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(ActionButton, { tone: "primary", disabled: working || busy || !message.trim(), onClick: () => void sendRevision(), children: t("generateRevision") }),
+        session.status === "failed" ? /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(ActionButton, { disabled: busy, onClick: () => mutate("curation.retry"), children: t("retry") }) : null,
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(ActionButton, { disabled: busy || session.status !== "needs_review" || !session.draft, onClick: () => mutate("curation.save"), children: t("saveCase") }),
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(ActionButton, { disabled: busy, onClick: () => {
           if (window.confirm(t("discardDraftConfirm"))) mutate("curation.discard");
         }, children: t("discardDraft") })
       ] })
     ] }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("details", { className: "rolling-skill-curation-runtime-details", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("summary", { children: t("runtimeInformation") }),
-      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { className: "rolling-skill-evidence-card", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h4", { children: t("frozenEvidence") }),
-        /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("dl", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dt", { children: t("sourceRange") }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("dd", { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("details", { className: "rolling-skill-curation-runtime-details", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("summary", { children: t("runtimeInformation") }),
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("section", { className: "rolling-skill-evidence-card", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("h4", { children: t("frozenEvidence") }),
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("dl", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: t("sourceRange") }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("dd", { children: [
               session.episode?.source.startSeq,
               "\u2013",
               session.episode?.source.endSeq
             ] })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dt", { children: "Digest" }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("code", { children: session.episode?.source.digest }) })
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Digest" }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("code", { children: session.episode?.source.digest }) })
           ] })
         ] }),
-        session.episode?.source.observedSkills.map((skill) => /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("p", { children: [
+        session.episode?.source.observedSkills.map((skill) => /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("p", { children: [
           skill.name,
           " \xB7 ",
           skill.provider,
@@ -14541,58 +14855,58 @@ function CurationSessionView({
           "\u2013",
           skill.resultSeq
         ] }, `${skill.name}:${skill.callSeq}`)),
-        session.operationEvidence ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("dl", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dt", { children: t("skillRepositories") }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("dd", { children: [
+        session.operationEvidence ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("dl", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: t("skillRepositories") }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("dd", { children: [
               session.operationEvidence.skillName ?? t("notAvailable"),
               " \xB7 ",
               session.operationEvidence.versionLabel ?? t("notAvailable")
             ] })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dt", { children: t("installationCommit") }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("code", { children: session.operationEvidence.commit?.slice(0, 12) ?? t("notAvailable") }) })
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: t("installationCommit") }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("code", { children: session.operationEvidence.commit?.slice(0, 12) ?? t("notAvailable") }) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dt", { children: t("installationDigest") }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dd", { title: session.operationEvidence.contentDigest ?? void 0, children: /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("code", { children: session.operationEvidence.contentDigest ?? t("notAvailable") }) })
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: t("installationDigest") }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { title: session.operationEvidence.contentDigest ?? void 0, children: /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("code", { children: session.operationEvidence.contentDigest ?? t("notAvailable") }) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dt", { children: t("frozenRubric") }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dd", { children: session.operationEvidence.rubricVersionId ?? t("notAvailable") })
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: t("frozenRubric") }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { children: session.operationEvidence.rubricVersionId ?? t("notAvailable") })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dt", { children: t("installationRuntime") }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("dd", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: t("installationRuntime") }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("dd", { children: [
               session.operationEvidence.runtime?.displayName ?? t("notAvailable"),
               " ",
               session.operationEvidence.runtime?.version ?? ""
             ] })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("dt", { children: t("installationJob") }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("dd", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: t("installationJob") }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("dd", { children: [
               session.operationEvidence.installation?.jobId ?? t("notAvailable"),
               " \xB7 ",
               session.operationEvidence.installation?.verification ?? t("notAvailable")
             ] })
           ] })
         ] }) : null,
-        editable ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-curation-model-controls", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("label", { className: "rolling-skill-field", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { children: t("model") }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("input", { value: session.curator?.modelId ?? "", placeholder: t("configuredDefault"), onChange: (event) => setSession({ ...session, curator: { ...session.curator, modelId: event.target.value } }), onBlur: () => mutate("curation.model", { modelId: session.curator?.modelId || null }) })
+        editable ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "rolling-skill-curation-model-controls", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("label", { className: "rolling-skill-field", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: t("model") }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("input", { value: session.curator?.modelId ?? "", placeholder: t("configuredDefault"), onChange: (event) => setSession({ ...session, curator: { ...session.curator, modelId: event.target.value } }), onBlur: () => mutate("curation.model", { modelId: session.curator?.modelId || null }) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("label", { className: "rolling-skill-field", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { children: t("effort") }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("select", { className: "rolling-skill-select", value: session.curator?.effort ?? "", onChange: (event) => mutate("curation.effort", { effort: event.target.value || null }), children: [
-              /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("option", { value: "", children: t("configuredDefault") }),
-              /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("option", { value: "low", children: "low" }),
-              /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("option", { value: "medium", children: "medium" }),
-              /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("option", { value: "high", children: "high" }),
-              /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("option", { value: "xhigh", children: "xhigh" }),
-              /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("option", { value: "max", children: "max" })
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("label", { className: "rolling-skill-field", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: t("effort") }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("select", { className: "rolling-skill-select", value: session.curator?.effort ?? "", onChange: (event) => mutate("curation.effort", { effort: event.target.value || null }), children: [
+              /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("option", { value: "", children: t("configuredDefault") }),
+              /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("option", { value: "low", children: "low" }),
+              /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("option", { value: "medium", children: "medium" }),
+              /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("option", { value: "high", children: "high" }),
+              /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("option", { value: "xhigh", children: "xhigh" }),
+              /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("option", { value: "max", children: "max" })
             ] })
           ] })
         ] }) : null
@@ -14602,9 +14916,9 @@ function CurationSessionView({
 }
 function StringList({ title, values }) {
   if (!values?.length) return null;
-  return /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h4", { children: title }),
-    /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("ul", { children: values.map((value, index2) => /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("li", { children: value }, `${index2}:${value}`)) })
+  return /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("section", { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("h4", { children: title }),
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("ul", { children: values.map((value, index2) => /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("li", { children: value }, `${index2}:${value}`)) })
   ] });
 }
 function CurationDraftCard({ draft, t }) {
@@ -14612,61 +14926,61 @@ function CurationDraftCard({ draft, t }) {
   const hasDetails = Boolean(
     answer?.evidence?.length || draft.rubricCoverage?.length || draft.caseSpecificCriteria?.length || draft.caseAutomaticFailures?.length || draft.badCaseAnalysis
   );
-  return /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "rolling-skill-curation-draft-card", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("header", { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("strong", { children: answer?.summary ?? draft.schemaVersion ?? t("notAvailable") }),
-      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { className: "rolling-skill-badge", children: draft.schemaVersion })
+  return /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "rolling-skill-curation-draft-card", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("header", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("strong", { children: answer?.summary ?? draft.schemaVersion ?? t("notAvailable") }),
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "rolling-skill-badge", children: draft.schemaVersion })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(StringList, { title: t("requiredFacts"), values: answer?.requiredFacts }),
-    /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(StringList, { title: t("requiredSteps"), values: answer?.requiredSteps }),
-    /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(StringList, { title: t("requiredOutputFormat"), values: answer?.requiredOutputFormat }),
-    hasDetails ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("details", { className: "rolling-skill-curation-draft-details", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("summary", { children: t("draftDetails") }),
-      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { children: [
-        answer?.evidence?.length ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h4", { children: t("evidenceReferences") }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("div", { className: "rolling-skill-rubric-criteria", children: answer.evidence.map((entry, index2) => /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("article", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("strong", { children: entry.claim }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: entry.sourceItemIds?.join(" \xB7 ") })
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(StringList, { title: t("requiredFacts"), values: answer?.requiredFacts }),
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(StringList, { title: t("requiredSteps"), values: answer?.requiredSteps }),
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(StringList, { title: t("requiredOutputFormat"), values: answer?.requiredOutputFormat }),
+    hasDetails ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("details", { className: "rolling-skill-curation-draft-details", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("summary", { children: t("draftDetails") }),
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
+        answer?.evidence?.length ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("section", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("h4", { children: t("evidenceReferences") }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rolling-skill-rubric-criteria", children: answer.evidence.map((entry, index2) => /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("article", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("strong", { children: entry.claim }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("p", { children: entry.sourceItemIds?.join(" \xB7 ") })
           ] }, `${index2}:${entry.claim}`)) })
         ] }) : null,
-        draft.rubricCoverage?.length ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h4", { children: t("rubricCoverage") }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("div", { className: "rolling-skill-rubric-criteria", children: draft.rubricCoverage.map((entry, index2) => /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("article", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("strong", { children: [
+        draft.rubricCoverage?.length ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("section", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("h4", { children: t("rubricCoverage") }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rolling-skill-rubric-criteria", children: draft.rubricCoverage.map((entry, index2) => /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("article", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("strong", { children: [
               entry.criterionId,
               " \xB7 ",
               entry.applicability
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: entry.expectation }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("small", { children: entry.evidenceBasis })
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("p", { children: entry.expectation }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("small", { children: entry.evidenceBasis })
           ] }, `${entry.criterionId}:${index2}`)) })
         ] }) : null,
-        draft.caseSpecificCriteria?.length ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h4", { children: t("caseSpecificCriteria") }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("div", { className: "rolling-skill-rubric-criteria", children: draft.caseSpecificCriteria.map((entry, index2) => /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("article", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("strong", { children: [
+        draft.caseSpecificCriteria?.length ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("section", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("h4", { children: t("caseSpecificCriteria") }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rolling-skill-rubric-criteria", children: draft.caseSpecificCriteria.map((entry, index2) => /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("article", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("strong", { children: [
               entry.id,
               " \xB7 ",
               entry.criterion
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("span", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("span", { children: [
               t("weight"),
               " ",
               entry.weight
             ] })
           ] }, `${entry.id}:${index2}`)) })
         ] }) : null,
-        draft.caseAutomaticFailures?.length ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h4", { children: t("automaticFailures") }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("ul", { children: draft.caseAutomaticFailures.map((entry, index2) => /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("li", { children: typeof entry === "string" ? entry : `${entry.id ?? ""} ${entry.condition ?? ""} ${entry.rationale ?? ""}` }, index2)) })
+        draft.caseAutomaticFailures?.length ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("section", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("h4", { children: t("automaticFailures") }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("ul", { children: draft.caseAutomaticFailures.map((entry, index2) => /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("li", { children: typeof entry === "string" ? entry : `${entry.id ?? ""} ${entry.condition ?? ""} ${entry.rationale ?? ""}` }, index2)) })
         ] }) : null,
-        draft.badCaseAnalysis ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("section", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h4", { children: t("badCaseAnalysis") }),
-          /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("p", { children: typeof draft.badCaseAnalysis === "string" ? draft.badCaseAnalysis : draft.badCaseAnalysis.summary }),
-          typeof draft.badCaseAnalysis === "object" ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)(import_jsx_runtime19.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(StringList, { title: t("rootCauses"), values: draft.badCaseAnalysis.rootCauses }),
-            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(StringList, { title: t("improvements"), values: draft.badCaseAnalysis.improvements })
+        draft.badCaseAnalysis ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("section", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("h4", { children: t("badCaseAnalysis") }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("p", { children: typeof draft.badCaseAnalysis === "string" ? draft.badCaseAnalysis : draft.badCaseAnalysis.summary }),
+          typeof draft.badCaseAnalysis === "object" ? /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)(import_jsx_runtime20.Fragment, { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(StringList, { title: t("rootCauses"), values: draft.badCaseAnalysis.rootCauses }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(StringList, { title: t("improvements"), values: draft.badCaseAnalysis.improvements })
           ] }) : null
         ] }) : null
       ] })
@@ -14675,17 +14989,17 @@ function CurationDraftCard({ draft, t }) {
 }
 
 // src/client/workbench/CurationPanel.tsx
-var import_jsx_runtime20 = require("react/jsx-runtime");
+var import_jsx_runtime21 = require("react/jsx-runtime");
 var visibleCurationSelection = import_curation_selection.default.visibleCurationSelection;
 function CurationPanel({ t, initialSessionId, onNavigate }) {
-  const [selectedId, setSelectedId] = (0, import_react17.useState)(initialSessionId ?? "");
-  const [revision, setRevision] = (0, import_react17.useState)(0);
-  const [showArchived, setShowArchived] = (0, import_react17.useState)(false);
-  const [state, setState] = (0, import_react17.useState)({ status: "loading" });
-  (0, import_react17.useEffect)(() => {
+  const [selectedId, setSelectedId] = (0, import_react18.useState)(initialSessionId ?? "");
+  const [revision, setRevision] = (0, import_react18.useState)(0);
+  const [showArchived, setShowArchived] = (0, import_react18.useState)(false);
+  const [state, setState] = (0, import_react18.useState)({ status: "loading" });
+  (0, import_react18.useEffect)(() => {
     if (initialSessionId) setSelectedId(initialSessionId);
   }, [initialSessionId]);
-  (0, import_react17.useEffect)(() => {
+  (0, import_react18.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
       requestRollingSkill("curation.list", {}, controller.signal),
@@ -14701,42 +15015,42 @@ function CurationPanel({ t, initialSessionId, onNavigate }) {
   }, [revision]);
   const items = state.status === "ready" ? showArchived ? state.archived : state.active : [];
   const visibleSelectedId = state.status === "ready" ? visibleCurationSelection(selectedId, items) : selectedId;
-  (0, import_react17.useEffect)(() => {
+  (0, import_react18.useEffect)(() => {
     if (state.status !== "ready") return;
     setSelectedId((current) => visibleCurationSelection(current, items));
   }, [state, showArchived]);
-  (0, import_react17.useEffect)(() => {
+  (0, import_react18.useEffect)(() => {
     if (!initialSessionId || state.status !== "ready" || selectedId !== initialSessionId) return;
     if (state.archived.some((session) => session.id === initialSessionId)) setShowArchived(true);
     if (state.active.some((session) => session.id === initialSessionId)) setShowArchived(false);
   }, [initialSessionId, selectedId, state]);
-  if (state.status === "loading") return /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") });
-  if (state.status === "error") return /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: state.message }),
-    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(ActionButton, { size: "sm", onClick: () => setRevision((value) => value + 1), children: t("retry") })
+  if (state.status === "loading") return /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") });
+  if (state.status === "error") return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: state.message }),
+    /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ActionButton, { size: "sm", onClick: () => setRevision((value) => value + 1), children: t("retry") })
   ] });
-  return /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "rolling-skill-review-layout", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("aside", { className: "rolling-skill-panel rolling-skill-review-list", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "rolling-skill-panel-header", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("h3", { children: t("curation") }),
-          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("p", { children: t("curationDescription") })
+  return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rolling-skill-review-layout", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("aside", { className: "rolling-skill-panel rolling-skill-review-list", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("h3", { children: t("curation") }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { children: t("curationDescription") })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(ActionButton, { size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ActionButton, { size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "rolling-skill-review-scope", role: "group", "aria-label": t("draftStatusFilter"), children: [
-        /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("button", { type: "button", "aria-pressed": !showArchived, onClick: () => setShowArchived(false), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rolling-skill-review-scope", role: "group", "aria-label": t("draftStatusFilter"), children: [
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("button", { type: "button", "aria-pressed": !showArchived, onClick: () => setShowArchived(false), children: [
           t("activeDrafts"),
           " ",
-          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: state.active.length })
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: state.active.length })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("button", { type: "button", "aria-pressed": showArchived, onClick: () => setShowArchived(true), children: [
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("button", { type: "button", "aria-pressed": showArchived, onClick: () => setShowArchived(true), children: [
           t("archivedDrafts"),
           " ",
-          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: state.archived.length })
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: state.archived.length })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rolling-skill-list", children: items.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("p", { children: t("emptyDrafts") }) : items.map((session) => /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)(
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rolling-skill-list", children: items.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { children: t("emptyDrafts") }) : items.map((session) => /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)(
         "button",
         {
           type: "button",
@@ -14747,8 +15061,8 @@ function CurationPanel({ t, initialSessionId, onNavigate }) {
             onNavigate({ page: "curation", sessionId: session.id });
           },
           children: [
-            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("strong", { children: session.episode?.originalQuestion || session.id }),
-            /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("span", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("strong", { children: session.episode?.originalQuestion || session.id }),
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("span", { children: [
               session.caseType,
               " \xB7 ",
               session.status
@@ -14758,7 +15072,7 @@ function CurationPanel({ t, initialSessionId, onNavigate }) {
         session.id
       )) })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("main", { className: "rolling-skill-review-detail", children: visibleSelectedId ? /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("main", { className: "rolling-skill-review-detail", children: visibleSelectedId ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(
       CurationSessionView,
       {
         sessionId: visibleSelectedId,
@@ -14767,24 +15081,24 @@ function CurationPanel({ t, initialSessionId, onNavigate }) {
         onNavigate
       },
       visibleSelectedId
-    ) : /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rolling-skill-state", children: t("selectDraft") }) })
+    ) : /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rolling-skill-state", children: t("selectDraft") }) })
   ] });
 }
 
 // src/client/workbench/RubricPanel.tsx
-var import_react19 = require("react");
+var import_react20 = require("react");
 
 // src/client/workbench/RubricSessionView.tsx
-var import_react18 = require("react");
-var import_jsx_runtime21 = require("react/jsx-runtime");
+var import_react19 = require("react");
+var import_jsx_runtime22 = require("react/jsx-runtime");
 function RubricSessionView({ sessionId, t, onChanged }) {
-  const [revision, setRevision] = (0, import_react18.useState)(0);
-  const [session, setSession] = (0, import_react18.useState)(null);
-  const [message, setMessage] = (0, import_react18.useState)("");
-  const [error, setError] = (0, import_react18.useState)(null);
-  const [busy, setBusy] = (0, import_react18.useState)(false);
-  const keys2 = (0, import_react18.useRef)(/* @__PURE__ */ new Map());
-  (0, import_react18.useEffect)(() => {
+  const [revision, setRevision] = (0, import_react19.useState)(0);
+  const [session, setSession] = (0, import_react19.useState)(null);
+  const [message, setMessage] = (0, import_react19.useState)("");
+  const [error, setError] = (0, import_react19.useState)(null);
+  const [busy, setBusy] = (0, import_react19.useState)(false);
+  const keys2 = (0, import_react19.useRef)(/* @__PURE__ */ new Map());
+  (0, import_react19.useEffect)(() => {
     const controller = new AbortController();
     requestRollingSkill("rubrics.get", { sessionId }, controller.signal).then((value) => {
       setSession(value);
@@ -14794,7 +15108,7 @@ function RubricSessionView({ sessionId, t, onChanged }) {
     });
     return () => controller.abort();
   }, [sessionId, revision]);
-  (0, import_react18.useEffect)(() => {
+  (0, import_react19.useEffect)(() => {
     if (!session || !["queued", "running"].includes(session.status)) return;
     const timer = window.setTimeout(() => setRevision((value) => value + 1), 1500);
     return () => window.clearTimeout(timer);
@@ -14821,48 +15135,48 @@ function RubricSessionView({ sessionId, t, onChanged }) {
       setBusy(false);
     }
   };
-  if (!session && !error) return /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") });
-  if (!session) return /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: error });
+  if (!session && !error) return /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") });
+  if (!session) return /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: error });
   const editable = !["archived", "cancelled"].includes(session.status);
-  return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("section", { className: "rolling-skill-panel rolling-skill-session-view", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rolling-skill-panel-header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("h3", { children: t("rubricReview") }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { children: session.status })
+  return /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { className: "rolling-skill-panel rolling-skill-session-view", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "rolling-skill-panel-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h3", { children: t("rubricReview") }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: session.status })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ActionButton, { size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(ActionButton, { size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
     ] }),
-    session.error || error ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error ?? session.error }) : null,
-    session.operationEvidence ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("section", { className: "rolling-skill-evidence-card", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("h4", { children: t("frozenEvidence") }),
-      /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("dl", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dt", { children: t("skillRepositories") }),
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("dd", { children: [
+    session.error || error ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error ?? session.error }) : null,
+    session.operationEvidence ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { className: "rolling-skill-evidence-card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h4", { children: t("frozenEvidence") }),
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("dl", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: t("skillRepositories") }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("dd", { children: [
             session.operationEvidence.skillName ?? t("notAvailable"),
             " \xB7 ",
             session.operationEvidence.versionLabel ?? t("notAvailable")
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dt", { children: t("installationCommit") }),
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("code", { children: session.operationEvidence.commit?.slice(0, 12) ?? t("notAvailable") }) })
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: t("installationCommit") }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("code", { children: session.operationEvidence.commit?.slice(0, 12) ?? t("notAvailable") }) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dt", { children: t("installationDigest") }),
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dd", { title: session.operationEvidence.contentDigest ?? void 0, children: /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("code", { children: session.operationEvidence.contentDigest ?? t("notAvailable") }) })
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: t("installationDigest") }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dd", { title: session.operationEvidence.contentDigest ?? void 0, children: /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("code", { children: session.operationEvidence.contentDigest ?? t("notAvailable") }) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dt", { children: t("installationRuntime") }),
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("dd", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: t("installationRuntime") }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("dd", { children: [
             session.operationEvidence.runtime?.displayName ?? t("notAvailable"),
             " ",
             session.operationEvidence.runtime?.version ?? ""
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dt", { children: t("installationJob") }),
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("dd", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: t("installationJob") }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("dd", { children: [
             session.operationEvidence.installation?.jobId ?? t("notAvailable"),
             " \xB7 ",
             session.operationEvidence.installation?.verification ?? t("notAvailable")
@@ -14870,21 +15184,21 @@ function RubricSessionView({ sessionId, t, onChanged }) {
         ] })
       ] })
     ] }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("section", { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("h4", { children: t("rubricAgentConversation") }),
-      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rolling-skill-conversation-log", children: session.conversation.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { "data-role": entry.role, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("strong", { children: entry.role }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { children: entry.text })
+    /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h4", { children: t("rubricAgentConversation") }),
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "rolling-skill-conversation-log", children: session.conversation.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { "data-role": entry.role, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("strong", { children: entry.role }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: entry.text })
       ] }, entry.id)) })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("section", { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("h4", { children: t("latestRubricDraft") }),
-      session.draft ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rolling-skill-rubric-draft", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("h3", { children: session.draft.title }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { children: session.draft.summary }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { children: session.draft.scoringModel }),
-        session.draft.criteria?.map((criterion) => /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("article", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("strong", { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h4", { children: t("latestRubricDraft") }),
+      session.draft ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "rolling-skill-rubric-draft", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h3", { children: session.draft.title }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: session.draft.summary }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: session.draft.scoringModel }),
+        session.draft.criteria?.map((criterion) => /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("article", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("strong", { children: [
             criterion.id,
             " \xB7 ",
             criterion.title,
@@ -14893,61 +15207,61 @@ function RubricSessionView({ sessionId, t, onChanged }) {
             " ",
             criterion.weight
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { children: criterion.criterion }),
-          criterion.evidenceRequirements?.length ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("p", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("b", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: criterion.criterion }),
+          criterion.evidenceRequirements?.length ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("p", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("b", { children: [
               t("rubricEvidenceRequirements"),
               ": "
             ] }),
             criterion.evidenceRequirements.join(" \xB7 ")
           ] }) : null,
-          criterion.scoringAnchors ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("details", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("summary", { children: t("scoringAnchors") }),
-            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dl", { children: Object.entries(criterion.scoringAnchors).map(([score, anchor]) => /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dt", { children: score }),
-              /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dd", { children: anchor })
+          criterion.scoringAnchors ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("details", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("summary", { children: t("scoringAnchors") }),
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dl", { children: Object.entries(criterion.scoringAnchors).map(([score, anchor]) => /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: score }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dd", { children: anchor })
             ] }, score)) })
           ] }) : null,
-          criterion.criticalFailure ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "rolling-skill-inline-error", children: t("criticalFailure") }) : null
+          criterion.criticalFailure ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "rolling-skill-inline-error", children: t("criticalFailure") }) : null
         ] }, criterion.id)),
-        session.draft.automaticFailures?.length ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("section", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("h4", { children: t("automaticFailures") }),
-          session.draft.automaticFailures.map((failure) => /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("article", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("strong", { children: [
+        session.draft.automaticFailures?.length ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h4", { children: t("automaticFailures") }),
+          session.draft.automaticFailures.map((failure) => /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("article", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("strong", { children: [
               failure.id,
               " \xB7 ",
               failure.condition
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { children: failure.rationale })
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: failure.rationale })
           ] }, failure.id))
         ] }) : null
-      ] }) : /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { children: t("noValidDraft") })
+      ] }) : /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: t("noValidDraft") })
     ] }),
-    editable ? /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rolling-skill-form-stack", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("label", { className: "rolling-skill-field", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: t("model") }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("input", { value: session.rubricAgent?.modelId ?? "", placeholder: t("configuredDefault"), onChange: (event) => setSession({ ...session, rubricAgent: { ...session.rubricAgent, modelId: event.target.value } }), onBlur: () => mutate("rubrics.model", { modelId: session.rubricAgent?.modelId || null }) })
+    editable ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "rolling-skill-form-stack", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: t("model") }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("input", { value: session.rubricAgent?.modelId ?? "", placeholder: t("configuredDefault"), onChange: (event) => setSession({ ...session, rubricAgent: { ...session.rubricAgent, modelId: event.target.value } }), onBlur: () => mutate("rubrics.model", { modelId: session.rubricAgent?.modelId || null }) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("label", { className: "rolling-skill-field", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: t("effort") }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("select", { className: "rolling-skill-select", value: session.rubricAgent?.effort ?? "", onChange: (event) => mutate("rubrics.effort", { effort: event.target.value || null }), children: [
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("option", { value: "", children: t("configuredDefault") }),
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("option", { value: "low", children: "low" }),
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("option", { value: "medium", children: "medium" }),
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("option", { value: "high", children: "high" }),
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("option", { value: "xhigh", children: "xhigh" }),
-          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("option", { value: "max", children: "max" })
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: t("effort") }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("select", { className: "rolling-skill-select", value: session.rubricAgent?.effort ?? "", onChange: (event) => mutate("rubrics.effort", { effort: event.target.value || null }), children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: "", children: t("configuredDefault") }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: "low", children: "low" }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: "medium", children: "medium" }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: "high", children: "high" }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: "xhigh", children: "xhigh" }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: "max", children: "max" })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("label", { className: "rolling-skill-field", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: t("reviewMessage") }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("textarea", { value: message, onChange: (event) => setMessage(event.target.value) })
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: t("reviewMessage") }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("textarea", { value: message, onChange: (event) => setMessage(event.target.value) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rolling-skill-actions", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ActionButton, { tone: "primary", disabled: busy || !message.trim(), onClick: () => mutate("rubrics.send", { text: message.trim() }).then(() => setMessage("")), children: t("sendRevision") }),
-        session.status === "failed" ? /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ActionButton, { disabled: busy, onClick: () => mutate("rubrics.retry"), children: t("retry") }) : null,
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ActionButton, { disabled: busy || session.status !== "needs_review" || !session.draft, onClick: () => mutate("rubrics.publish"), children: t("publishRubric") }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ActionButton, { disabled: busy, onClick: () => {
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "rolling-skill-actions", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(ActionButton, { tone: "primary", disabled: busy || !message.trim(), onClick: () => mutate("rubrics.send", { text: message.trim() }).then(() => setMessage("")), children: t("sendRevision") }),
+        session.status === "failed" ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(ActionButton, { disabled: busy, onClick: () => mutate("rubrics.retry"), children: t("retry") }) : null,
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(ActionButton, { disabled: busy || session.status !== "needs_review" || !session.draft, onClick: () => mutate("rubrics.publish"), children: t("publishRubric") }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(ActionButton, { disabled: busy, onClick: () => {
           if (window.confirm(t("discardRubricConfirm"))) mutate("rubrics.discard");
         }, children: t("discardDraft") })
       ] })
@@ -14956,25 +15270,25 @@ function RubricSessionView({ sessionId, t, onChanged }) {
 }
 
 // src/client/workbench/RubricPanel.tsx
-var import_jsx_runtime22 = require("react/jsx-runtime");
+var import_jsx_runtime23 = require("react/jsx-runtime");
 function RubricPanel({
   t,
   initialDatasetId,
   initialSessionId,
   onNavigate
 }) {
-  const [datasets, setDatasets] = (0, import_react19.useState)([]);
-  const [datasetId, setDatasetId] = (0, import_react19.useState)(initialDatasetId ?? "");
-  const [selectedSessionId, setSelectedSessionId] = (0, import_react19.useState)(initialSessionId ?? "");
-  const [sessions, setSessions] = (0, import_react19.useState)([]);
-  const [versions, setVersions] = (0, import_react19.useState)([]);
-  const [active, setActive] = (0, import_react19.useState)(null);
-  const [modelId, setModelId] = (0, import_react19.useState)("");
-  const [effort, setEffort] = (0, import_react19.useState)("");
-  const [revision, setRevision] = (0, import_react19.useState)(0);
-  const [busy, setBusy] = (0, import_react19.useState)(false);
-  const [error, setError] = (0, import_react19.useState)(null);
-  (0, import_react19.useEffect)(() => {
+  const [datasets, setDatasets] = (0, import_react20.useState)([]);
+  const [datasetId, setDatasetId] = (0, import_react20.useState)(initialDatasetId ?? "");
+  const [selectedSessionId, setSelectedSessionId] = (0, import_react20.useState)(initialSessionId ?? "");
+  const [sessions, setSessions] = (0, import_react20.useState)([]);
+  const [versions, setVersions] = (0, import_react20.useState)([]);
+  const [active, setActive] = (0, import_react20.useState)(null);
+  const [modelId, setModelId] = (0, import_react20.useState)("");
+  const [effort, setEffort] = (0, import_react20.useState)("");
+  const [revision, setRevision] = (0, import_react20.useState)(0);
+  const [busy, setBusy] = (0, import_react20.useState)(false);
+  const [error, setError] = (0, import_react20.useState)(null);
+  (0, import_react20.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
       requestRollingSkill("datasets.list", {}, controller.signal),
@@ -14989,7 +15303,7 @@ function RubricPanel({
     });
     return () => controller.abort();
   }, []);
-  (0, import_react19.useEffect)(() => {
+  (0, import_react20.useEffect)(() => {
     if (!datasetId) return;
     const controller = new AbortController();
     requestRollingSkill(
@@ -15043,111 +15357,111 @@ function RubricPanel({
       setBusy(false);
     }
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "rolling-skill-review-layout", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("aside", { className: "rolling-skill-panel rolling-skill-review-list", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h3", { children: t("rubrics") }),
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: t("rubricDescription") })
+  return /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-review-layout", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("aside", { className: "rolling-skill-panel rolling-skill-review-list", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h3", { children: t("rubrics") }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: t("rubricDescription") })
       ] }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "rolling-skill-field", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: t("selectDataset") }),
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("select", { className: "rolling-skill-select", value: datasetId, onChange: (event) => {
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: t("selectDataset") }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("select", { className: "rolling-skill-select", value: datasetId, onChange: (event) => {
           setDatasetId(event.target.value);
           setSelectedSessionId("");
-        }, children: datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: dataset.id, children: dataset.name }, dataset.id)) })
+        }, children: datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: dataset.id, children: dataset.name }, dataset.id)) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "rolling-skill-form-stack rolling-skill-create-rubric", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "rolling-skill-field", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: t("model") }),
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("input", { value: modelId, placeholder: t("configuredDefault"), onChange: (event) => setModelId(event.target.value) })
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-form-stack rolling-skill-create-rubric", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: t("model") }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("input", { value: modelId, placeholder: t("configuredDefault"), onChange: (event) => setModelId(event.target.value) })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("label", { className: "rolling-skill-field", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: t("effort") }),
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("select", { className: "rolling-skill-select", value: effort, onChange: (event) => setEffort(event.target.value), children: [
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: "", children: t("configuredDefault") }),
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: "low", children: "low" }),
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: "medium", children: "medium" }),
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: "high", children: "high" }),
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: "xhigh", children: "xhigh" }),
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("option", { value: "max", children: "max" })
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: t("effort") }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("select", { className: "rolling-skill-select", value: effort, onChange: (event) => setEffort(event.target.value), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "", children: t("configuredDefault") }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "low", children: "low" }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "medium", children: "medium" }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "high", children: "high" }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "xhigh", children: "xhigh" }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "max", children: "max" })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(ActionButton, { tone: "primary", disabled: !datasetId || busy, onClick: create2, children: t("createRubric") })
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { tone: "primary", disabled: !datasetId || busy, onClick: create2, children: t("createRubric") })
       ] }),
-      error ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h4", { children: t("rubricSessions") }),
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "rolling-skill-list", children: sessions.map((session) => /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("button", { type: "button", className: "rolling-skill-review-list-button", "data-selected": selectedSessionId === session.id, onClick: () => {
+      error ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h4", { children: t("rubricSessions") }),
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-list", children: sessions.map((session) => /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("button", { type: "button", className: "rolling-skill-review-list-button", "data-selected": selectedSessionId === session.id, onClick: () => {
         setSelectedSessionId(session.id);
         onNavigate({ page: "rubrics", datasetId, sessionId: session.id });
       }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("strong", { children: session.status }),
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { children: session.updatedAt })
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("strong", { children: session.status }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: session.updatedAt })
       ] }, session.id)) }),
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h4", { children: t("rubricHistory") }),
-      active ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("p", { className: "rolling-skill-badge", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h4", { children: t("rubricHistory") }),
+      active ? /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("p", { className: "rolling-skill-badge", children: [
         t("activeRubric"),
         " \xB7 v",
         active.version
-      ] }) : /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: t("noActiveRubric") }),
-      active && active.rubric.scoringModel !== "unified-100/v1" ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { className: "rolling-skill-subpanel", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: t("legacyRubricNotice") }),
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void migrateLegacy(), children: t("migrateLegacyRubric") })
+      ] }) : /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: t("noActiveRubric") }),
+      active && active.rubric.scoringModel !== "unified-100/v1" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("section", { className: "rolling-skill-subpanel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: t("legacyRubricNotice") }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void migrateLegacy(), children: t("migrateLegacyRubric") })
       ] }) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "rolling-skill-list", children: versions.map((version) => /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(RubricVersionCard, { version, active: version.id === active?.id, t }, version.id)) })
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-list", children: versions.map((version) => /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricVersionCard, { version, active: version.id === active?.id, t }, version.id)) })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("main", { className: "rolling-skill-review-detail", children: selectedSessionId ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(RubricSessionView, { sessionId: selectedSessionId, t, onChanged: () => setRevision((value) => value + 1) }) : active ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(RubricVersionCard, { version: active, active: true, t }) : /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "rolling-skill-state", children: t("selectRubricSession") }) })
+    /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("main", { className: "rolling-skill-review-detail", children: selectedSessionId ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricSessionView, { sessionId: selectedSessionId, t, onChanged: () => setRevision((value) => value + 1) }) : active ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricVersionCard, { version: active, active: true, t }) : /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-state", children: t("selectRubricSession") }) })
   ] });
 }
 function RubricVersionCard({ version, active, t }) {
   const evidence = version.operationEvidence;
-  return /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("details", { className: "rolling-skill-rubric-version", open: active, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("summary", { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("strong", { children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("details", { className: "rolling-skill-rubric-version", open: active, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("summary", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("span", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("strong", { children: [
           "v",
           version.version,
           " \xB7 ",
           version.rubric.title ?? t("notAvailable")
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("small", { children: new Date(version.createdAt).toLocaleString() })
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("small", { children: new Date(version.createdAt).toLocaleString() })
       ] }),
-      active ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "rolling-skill-badge", children: t("activeRubric") }) : null
+      active ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "rolling-skill-badge", children: t("activeRubric") }) : null
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "rolling-skill-rubric-version-body", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: version.rubric.summary }),
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("dl", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: t("scoringModel") }),
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dd", { children: version.rubric.scoringModel ?? t("notAvailable") })
+    /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-rubric-version-body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: version.rubric.summary }),
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("dl", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dt", { children: t("scoringModel") }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dd", { children: version.rubric.scoringModel ?? t("notAvailable") })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: t("rubricDigest") }),
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dd", { title: version.rubricDigest ?? void 0, children: /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("code", { children: version.rubricDigest ?? t("notAvailable") }) })
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dt", { children: t("rubricDigest") }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dd", { title: version.rubricDigest ?? void 0, children: /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("code", { children: version.rubricDigest ?? t("notAvailable") }) })
         ] }),
-        evidence ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)(import_jsx_runtime22.Fragment, { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: t("skillRepositories") }),
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("dd", { children: [
+        evidence ? /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)(import_jsx_runtime23.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dt", { children: t("skillRepositories") }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("dd", { children: [
               evidence.skillName ?? t("notAvailable"),
               " \xB7 ",
               evidence.versionLabel ?? t("notAvailable")
             ] })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: t("installationCommit") }),
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("code", { children: evidence.commit?.slice(0, 12) ?? t("notAvailable") }) })
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dt", { children: t("installationCommit") }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("code", { children: evidence.commit?.slice(0, 12) ?? t("notAvailable") }) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: t("installationRuntime") }),
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("dd", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dt", { children: t("installationRuntime") }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("dd", { children: [
               evidence.runtime?.displayName ?? t("notAvailable"),
               " ",
               evidence.runtime?.version ?? ""
             ] })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: t("installationJob") }),
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("dd", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dt", { children: t("installationJob") }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("dd", { children: [
               evidence.installation?.jobId ?? t("notAvailable"),
               " \xB7 ",
               evidence.installation?.verification ?? t("notAvailable")
@@ -15155,46 +15469,46 @@ function RubricVersionCard({ version, active, t }) {
           ] })
         ] }) : null
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h4", { children: t("rubricCriteria") }),
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "rolling-skill-rubric-criteria", children: version.rubric.criteria?.map((criterion) => /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("article", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("header", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("strong", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h4", { children: t("rubricCriteria") }),
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-rubric-criteria", children: version.rubric.criteria?.map((criterion) => /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("article", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("header", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("strong", { children: [
             criterion.id,
             " \xB7 ",
             criterion.title
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("span", { children: [
             t("weight"),
             " ",
             criterion.weight
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: criterion.criterion }),
-        criterion.evidenceRequirements?.length ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("p", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("b", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: criterion.criterion }),
+        criterion.evidenceRequirements?.length ? /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("p", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("b", { children: [
             t("rubricEvidenceRequirements"),
             ": "
           ] }),
           criterion.evidenceRequirements.join(" \xB7 ")
         ] }) : null,
-        criterion.scoringAnchors ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("details", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("summary", { children: t("scoringAnchors") }),
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dl", { children: Object.entries(criterion.scoringAnchors).map(([score, anchor]) => /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dt", { children: score }),
-            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("dd", { children: anchor })
+        criterion.scoringAnchors ? /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("details", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("summary", { children: t("scoringAnchors") }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dl", { children: Object.entries(criterion.scoringAnchors).map(([score, anchor]) => /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dt", { children: score }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dd", { children: anchor })
           ] }, score)) })
         ] }) : null,
-        criterion.criticalFailure ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "rolling-skill-inline-error", children: t("criticalFailure") }) : null
+        criterion.criticalFailure ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "rolling-skill-inline-error", children: t("criticalFailure") }) : null
       ] }, criterion.id)) }),
-      version.rubric.automaticFailures?.length ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h4", { children: t("automaticFailures") }),
-        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "rolling-skill-rubric-criteria", children: version.rubric.automaticFailures.map((failure) => /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("article", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("strong", { children: [
+      version.rubric.automaticFailures?.length ? /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("section", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h4", { children: t("automaticFailures") }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-rubric-criteria", children: version.rubric.automaticFailures.map((failure) => /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("article", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("strong", { children: [
             failure.id,
             " \xB7 ",
             failure.condition
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { children: failure.rationale })
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: failure.rationale })
         ] }, failure.id)) })
       ] }) : null
     ] })
@@ -15202,7 +15516,7 @@ function RubricVersionCard({ version, active, t }) {
 }
 
 // src/client/workbench/Workbench.tsx
-var import_jsx_runtime23 = require("react/jsx-runtime");
+var import_jsx_runtime24 = require("react/jsx-runtime");
 var NAVIGATION_GROUPS = [
   {
     id: "overview",
@@ -15272,16 +15586,16 @@ function dateTime4(value, fallback) {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : fallback;
 }
 function Workbench({ locale, t, initialRoute = { page: "overview" }, onRouteChange }) {
-  (0, import_react20.useSyncExternalStore)(
+  (0, import_react21.useSyncExternalStore)(
     (listener) => locale.subscribe(listener),
     () => locale.getSnapshot().revision,
     () => 0
   );
-  const [route, setRoute] = (0, import_react20.useState)(() => normalizeWorkbenchRoute(initialRoute));
-  const [reloadRevision, setReloadRevision] = (0, import_react20.useState)(0);
-  const [dataRevision, setDataRevision] = (0, import_react20.useState)(0);
-  const [state, setState] = (0, import_react20.useState)({ status: "loading" });
-  (0, import_react20.useEffect)(() => {
+  const [route, setRoute] = (0, import_react21.useState)(() => normalizeWorkbenchRoute(initialRoute));
+  const [reloadRevision, setReloadRevision] = (0, import_react21.useState)(0);
+  const [dataRevision, setDataRevision] = (0, import_react21.useState)(0);
+  const [state, setState] = (0, import_react21.useState)({ status: "loading" });
+  (0, import_react21.useEffect)(() => {
     const controller = new AbortController();
     setState({ status: "loading" });
     requestRollingSkill("dashboard.get", {}, controller.signal).then((dashboard) => setState({ status: "ready", dashboard })).catch((error) => {
@@ -15298,7 +15612,7 @@ function Workbench({ locale, t, initialRoute = { page: "overview" }, onRouteChan
     setRoute(next);
     onRouteChange?.(next);
   };
-  (0, import_react20.useEffect)(() => {
+  (0, import_react21.useEffect)(() => {
     const next = normalizeWorkbenchRoute(initialRoute);
     setRoute(next);
     if (next.page !== initialRoute.page) onRouteChange?.(next);
@@ -15306,16 +15620,16 @@ function Workbench({ locale, t, initialRoute = { page: "overview" }, onRouteChan
   const activeGroup = NAVIGATION_GROUPS.find(
     (group) => group.pages.some((page) => page.id === route.page)
   ) ?? NAVIGATION_GROUPS[0];
-  return /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("section", { className: "rolling-skill-workbench", "aria-labelledby": "rolling-skill-title", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("header", { className: "rolling-skill-header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h2", { id: "rolling-skill-title", children: t("title") }),
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: t("subtitle") })
+  return /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("section", { className: "rolling-skill-workbench", "aria-labelledby": "rolling-skill-title", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("header", { className: "rolling-skill-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("h2", { id: "rolling-skill-title", children: t("title") }),
+        /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("p", { children: t("subtitle") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { size: "sm", onClick: reload, disabled: state.status === "loading", children: t("refresh") })
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(ActionButton, { size: "sm", onClick: reload, disabled: state.status === "loading", children: t("refresh") })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("nav", { className: "rolling-skill-tabs rolling-skill-primary-tabs", "aria-label": t("workbenchSections"), children: NAVIGATION_GROUPS.map((group) => /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(
-      import_dsh_client_ui_primitives13.Button,
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("nav", { className: "rolling-skill-tabs rolling-skill-primary-tabs", "aria-label": t("workbenchSections"), children: NAVIGATION_GROUPS.map((group) => /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
+      import_dsh_client_ui_primitives14.Button,
       {
         variant: activeGroup.id === group.id ? "outline" : "ghost",
         size: "sm",
@@ -15325,8 +15639,8 @@ function Workbench({ locale, t, initialRoute = { page: "overview" }, onRouteChan
       },
       group.id
     )) }),
-    activeGroup.id !== "overview" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("nav", { className: "rolling-skill-tabs rolling-skill-secondary-tabs", "aria-label": t("workbenchPages"), children: activeGroup.pages.map((page) => /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(
-      import_dsh_client_ui_primitives13.Button,
+    activeGroup.id !== "overview" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("nav", { className: "rolling-skill-tabs rolling-skill-secondary-tabs", "aria-label": t("workbenchPages"), children: activeGroup.pages.map((page) => /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
+      import_dsh_client_ui_primitives14.Button,
       {
         variant: route.page === page.id ? "outline" : "ghost",
         size: "sm",
@@ -15336,11 +15650,11 @@ function Workbench({ locale, t, initialRoute = { page: "overview" }, onRouteChan
       },
       page.id
     )) }) : null,
-    state.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") }) : state.status === "error" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("strong", { children: t("loadError") }),
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: state.message }),
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { size: "sm", onClick: reload, children: t("retry") })
-    ] }) : route.page === "curation" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(CurationPanel, { t, initialSessionId: route.sessionId, onNavigate: navigate }) : route.page === "datasets" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(DatasetsPanel, { t, onChanged: () => setDataRevision((value) => value + 1) }) : route.page === "cases" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(CasesPanel, { t, revision: dataRevision, initialDatasetId: route.datasetId, initialCaseId: route.caseId, onNavigate: navigate, onChanged: () => setDataRevision((value) => value + 1) }) : route.page === "raw-cases" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RawCasesPanel, { t, revision: dataRevision, initialRawCaseId: route.rawCaseId, onNavigate: navigate, onChanged: () => setDataRevision((value) => value + 1) }) : route.page === "rubrics" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(
+    state.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") }) : state.status === "error" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("strong", { children: t("loadError") }),
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("span", { children: state.message }),
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(ActionButton, { size: "sm", onClick: reload, children: t("retry") })
+    ] }) : route.page === "curation" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(CurationPanel, { t, initialSessionId: route.sessionId, onNavigate: navigate }) : route.page === "datasets" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(DatasetsPanel, { t, onChanged: () => setDataRevision((value) => value + 1) }) : route.page === "cases" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(CasesPanel, { t, revision: dataRevision, initialDatasetId: route.datasetId, initialCaseId: route.caseId, onNavigate: navigate, onChanged: () => setDataRevision((value) => value + 1) }) : route.page === "raw-cases" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(RawCasesPanel, { t, revision: dataRevision, initialRawCaseId: route.rawCaseId, onNavigate: navigate, onChanged: () => setDataRevision((value) => value + 1) }) : route.page === "rubrics" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
       RubricPanel,
       {
         t,
@@ -15348,7 +15662,7 @@ function Workbench({ locale, t, initialRoute = { page: "overview" }, onRouteChan
         initialSessionId: route.sessionId,
         onNavigate: navigate
       }
-    ) : route.page === "evaluations" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(EvaluationsPanel, { t, initialRunId: route.runId }) : route.page === "skill-import" || route.page === "skill-versions" || route.page === "skill-install" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(
+    ) : route.page === "evaluations" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(EvaluationsPanel, { t, initialRunId: route.runId }) : route.page === "skill-import" || route.page === "skill-versions" || route.page === "skill-install" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
       SkillsPanel,
       {
         t,
@@ -15358,7 +15672,7 @@ function Workbench({ locale, t, initialRoute = { page: "overview" }, onRouteChan
         onSkillChange: (skillId) => navigate({ ...route, skillId }),
         onOpenVersions: (skillId) => navigate({ page: "skill-versions", skillId })
       }
-    ) : route.page === "automatic" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(AutomaticCapturePanel, { t }) : route.page === "operator" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(OperatorPanel, { t, initialSessionId: route.sessionId }) : route.page === "optimization" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(OptimizationPanel, { t, initialRunId: route.runId }) : /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(Overview, { dashboard: state.dashboard, t })
+    ) : route.page === "automatic" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(AutomaticCapturePanel, { t }) : route.page === "operator" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(OperatorPanel, { t, initialSessionId: route.sessionId }) : route.page === "optimization" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(OptimizationPanel, { t, initialRunId: route.runId }) : /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(Overview, { dashboard: state.dashboard, t })
   ] });
 }
 function Overview({ dashboard, t }) {
@@ -15372,49 +15686,49 @@ function Overview({ dashboard, t }) {
     { key: "optimizations", label: "optimizationsCount" }
   ];
   const runtime = dashboard.settings.plugin.runtime;
-  return /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-overview", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-counts", children: counts2.map((count) => /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-count", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("strong", { children: dashboard.counts[count.key] }),
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: t(count.label) })
+  return /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { className: "rolling-skill-overview", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("div", { className: "rolling-skill-counts", children: counts2.map((count) => /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { className: "rolling-skill-count", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("strong", { children: dashboard.counts[count.key] }),
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("span", { children: t(count.label) })
     ] }, count.key)) }),
-    /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-grid", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("section", { className: "rolling-skill-panel", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h3", { children: t("automaticStatus") }),
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("dl", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dt", { children: t("nextRun") }),
-            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dd", { children: dateTime4(dashboard.automaticCapture.nextRunAt, t("notAvailable")) })
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { className: "rolling-skill-grid", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("section", { className: "rolling-skill-panel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("h3", { children: t("automaticStatus") }),
+        /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("dl", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("dt", { children: t("nextRun") }),
+            /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("dd", { children: dateTime4(dashboard.automaticCapture.nextRunAt, t("notAvailable")) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dt", { children: t("lastSuccess") }),
-            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dd", { children: dateTime4(dashboard.automaticCapture.lastSuccessAt, t("notAvailable")) })
+          /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("dt", { children: t("lastSuccess") }),
+            /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("dd", { children: dateTime4(dashboard.automaticCapture.lastSuccessAt, t("notAvailable")) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dt", { children: t("lastError") }),
-            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dd", { children: dashboard.automaticCapture.error ?? t("noError") })
+          /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("dt", { children: t("lastError") }),
+            /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("dd", { children: dashboard.automaticCapture.error ?? t("noError") })
           ] })
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("section", { className: "rolling-skill-panel", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h3", { children: t("runtime") }),
-        runtime ? /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-runtime", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("strong", { children: [runtime.displayName ?? runtime.runtimeId, runtime.version].filter(Boolean).join(" ") }),
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("code", { children: runtime.executablePath })
-        ] }) : /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: t("noRuntime") })
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("section", { className: "rolling-skill-panel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("h3", { children: t("runtime") }),
+        runtime ? /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { className: "rolling-skill-runtime", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("strong", { children: [runtime.displayName ?? runtime.runtimeId, runtime.version].filter(Boolean).join(" ") }),
+          /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("code", { children: runtime.executablePath })
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("p", { children: t("noRuntime") })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("section", { className: "rolling-skill-panel rolling-skill-path", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h3", { children: t("dataDirectory") }),
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("code", { children: dashboard.dataRoot })
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("section", { className: "rolling-skill-panel rolling-skill-path", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("h3", { children: t("dataDirectory") }),
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("code", { children: dashboard.dataRoot })
     ] })
   ] });
 }
 
 // src/client/workbench/WorkbenchOverlay.tsx
-var import_jsx_runtime24 = require("react/jsx-runtime");
+var import_jsx_runtime25 = require("react/jsx-runtime");
 function WorkbenchOverlay({ locale, route, t, onClose, onRouteChange }) {
-  const overlayRef = (0, import_react21.useRef)(null);
-  (0, import_react21.useEffect)(() => {
+  const overlayRef = (0, import_react22.useRef)(null);
+  (0, import_react22.useEffect)(() => {
     const overlay = overlayRef.current;
     overlay?.querySelector("button:not([disabled])")?.focus();
     const onKeyDown = (event) => {
@@ -15436,9 +15750,9 @@ function WorkbenchOverlay({ locale, route, t, onClose, onRouteChange }) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
-  return /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("div", { className: "rolling-skill-workbench-backdrop", onMouseDown: (event) => {
+  return /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("div", { className: "rolling-skill-workbench-backdrop", onMouseDown: (event) => {
     if (event.currentTarget === event.target) onClose();
-  }, children: /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)(
+  }, children: /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)(
     "div",
     {
       ref: overlayRef,
@@ -15447,8 +15761,8 @@ function WorkbenchOverlay({ locale, route, t, onClose, onRouteChange }) {
       "aria-modal": "true",
       "aria-label": t("title"),
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
-          import_dsh_client_ui_primitives14.Button,
+        /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(
+          import_dsh_client_ui_primitives15.Button,
           {
             className: "rolling-skill-workbench-close",
             variant: "ghost",
@@ -15458,14 +15772,14 @@ function WorkbenchOverlay({ locale, route, t, onClose, onRouteChange }) {
             children: "\xD7"
           }
         ),
-        /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(Workbench, { locale, t, initialRoute: route, onRouteChange })
+        /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(Workbench, { locale, t, initialRoute: route, onRouteChange })
       ]
     }
   ) });
 }
 
 // src/client/workbench/WorkbenchLauncher.tsx
-var import_jsx_runtime25 = require("react/jsx-runtime");
+var import_jsx_runtime26 = require("react/jsx-runtime");
 var ROUTE_KEY = "rolling-skill:last-workbench-route";
 function savedRoute() {
   try {
@@ -15482,13 +15796,13 @@ function persistRoute(route) {
   }
 }
 function WorkbenchLauncher({ wide, locale, t }) {
-  const [open, setOpen] = (0, import_react22.useState)(false);
-  const [route, setRoute] = (0, import_react22.useState)(savedRoute);
-  const changeRoute = (0, import_react22.useCallback)((next) => {
+  const [open, setOpen] = (0, import_react23.useState)(false);
+  const [route, setRoute] = (0, import_react23.useState)(savedRoute);
+  const changeRoute = (0, import_react23.useCallback)((next) => {
     setRoute(next);
     persistRoute(next);
   }, []);
-  (0, import_react22.useEffect)(() => {
+  (0, import_react23.useEffect)(() => {
     const openWorkbench2 = (event) => {
       const next = event.detail?.route;
       if (next?.page) changeRoute(next);
@@ -15497,14 +15811,14 @@ function WorkbenchLauncher({ wide, locale, t }) {
     window.addEventListener("rolling-skill:open-workbench", openWorkbench2);
     return () => window.removeEventListener("rolling-skill:open-workbench", openWorkbench2);
   }, [changeRoute]);
-  (0, import_react22.useEffect)(() => {
+  (0, import_react23.useEffect)(() => {
     const closeWorkbench = () => setOpen(false);
     window.addEventListener("rolling-skill:close-workbench", closeWorkbench);
     return () => window.removeEventListener("rolling-skill:close-workbench", closeWorkbench);
   }, []);
-  return /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)(import_jsx_runtime25.Fragment, { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(
-      import_dsh_client_ui_primitives15.Button,
+  return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(import_jsx_runtime26.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
+      import_dsh_client_ui_primitives16.Button,
       {
         variant: "ghost",
         size: "sm",
@@ -15514,7 +15828,7 @@ function WorkbenchLauncher({ wide, locale, t }) {
         children: wide ? t("nav") : "RS"
       }
     ),
-    open ? /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(
+    open ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
       WorkbenchOverlay,
       {
         locale,
@@ -15528,23 +15842,23 @@ function WorkbenchLauncher({ wide, locale, t }) {
 }
 
 // src/client/settings/RollingSkillSettings.tsx
-var import_dsh_client_ui_primitives16 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react23 = require("react");
-var import_jsx_runtime26 = require("react/jsx-runtime");
+var import_dsh_client_ui_primitives17 = require("@deepseek-ai/dsh-client-ui-primitives");
+var import_react24 = require("react");
+var import_jsx_runtime27 = require("react/jsx-runtime");
 function RollingSkillSettings({ t }) {
-  const [revision, setRevision] = (0, import_react23.useState)(0);
-  const [runtimes, setRuntimes] = (0, import_react23.useState)([]);
-  const [models, setModels] = (0, import_react23.useState)([]);
-  const [runtimeId, setRuntimeId] = (0, import_react23.useState)("");
-  const [profiles, setProfiles] = (0, import_react23.useState)({
+  const [revision, setRevision] = (0, import_react24.useState)(0);
+  const [runtimes, setRuntimes] = (0, import_react24.useState)([]);
+  const [models, setModels] = (0, import_react24.useState)([]);
+  const [runtimeId, setRuntimeId] = (0, import_react24.useState)("");
+  const [profiles, setProfiles] = (0, import_react24.useState)({
     curator: { modelId: null, effort: null },
     rubric: { modelId: null, effort: null },
     judge: { modelId: null, effort: null }
   });
-  const [busy, setBusy] = (0, import_react23.useState)(false);
-  const [saveError, setSaveError] = (0, import_react23.useState)(null);
-  const [state, setState] = (0, import_react23.useState)({ status: "loading" });
-  (0, import_react23.useEffect)(() => {
+  const [busy, setBusy] = (0, import_react24.useState)(false);
+  const [saveError, setSaveError] = (0, import_react24.useState)(null);
+  const [state, setState] = (0, import_react24.useState)({ status: "loading" });
+  (0, import_react24.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
       requestRollingSkill("settings.get", {}, controller.signal),
@@ -15564,7 +15878,7 @@ function RollingSkillSettings({ t }) {
     });
     return () => controller.abort();
   }, [revision]);
-  (0, import_react23.useEffect)(() => {
+  (0, import_react24.useEffect)(() => {
     if (!runtimeId) {
       setModels([]);
       return;
@@ -15599,52 +15913,52 @@ function RollingSkillSettings({ t }) {
       setBusy(false);
     }
   };
-  return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("section", { className: "rolling-skill-settings", "aria-labelledby": "rolling-skill-settings-title", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("header", { className: "rolling-skill-header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("h2", { id: "rolling-skill-settings-title", children: t("settings") }),
-        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("p", { children: t("settingsDescription") })
+  return /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("section", { className: "rolling-skill-settings", "aria-labelledby": "rolling-skill-settings-title", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("header", { className: "rolling-skill-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("h2", { id: "rolling-skill-settings-title", children: t("settings") }),
+        /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("p", { children: t("settingsDescription") })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(import_dsh_client_ui_primitives16.Button, { variant: "outline", size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(import_dsh_client_ui_primitives17.Button, { variant: "outline", size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
     ] }),
-    state.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") }) : state.status === "error" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: state.message }) : /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "rolling-skill-data-stack", children: /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("section", { className: "rolling-skill-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("h3", { children: t("agentDefaults") }),
-      /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("label", { className: "rolling-skill-field", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: t("defaultRuntime") }),
-        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("select", { className: "rolling-skill-select", value: runtimeId, onChange: (event) => setRuntimeId(event.target.value), children: runtimes.map((item) => /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("option", { value: item.runtimeId, children: [
+    state.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") }) : state.status === "error" ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: state.message }) : /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "rolling-skill-data-stack", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("section", { className: "rolling-skill-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("h3", { children: t("agentDefaults") }),
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { className: "rolling-skill-field", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: t("defaultRuntime") }),
+        /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("select", { className: "rolling-skill-select", value: runtimeId, onChange: (event) => setRuntimeId(event.target.value), children: runtimes.map((item) => /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("option", { value: item.runtimeId, children: [
           item.displayName,
           " ",
           item.version ?? ""
         ] }, item.runtimeId)) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "rolling-skill-grid", children: ["curator", "rubric", "judge"].map((kind) => /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("section", { className: "rolling-skill-subpanel", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("h4", { children: t(kind === "curator" ? "curatorDefault" : kind === "rubric" ? "rubricDefault" : "judgeDefault") }),
-        /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("label", { className: "rolling-skill-field", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: t("model") }),
-          /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("select", { className: "rolling-skill-select", value: profiles[kind].modelId ?? "", onChange: (event) => updateProfile(kind, { modelId: event.target.value || null }), children: [
-            /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("option", { value: "", children: t("runtimeDefault") }),
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "rolling-skill-grid", children: ["curator", "rubric", "judge"].map((kind) => /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("section", { className: "rolling-skill-subpanel", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("h4", { children: t(kind === "curator" ? "curatorDefault" : kind === "rubric" ? "rubricDefault" : "judgeDefault") }),
+        /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: t("model") }),
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("select", { className: "rolling-skill-select", value: profiles[kind].modelId ?? "", onChange: (event) => updateProfile(kind, { modelId: event.target.value || null }), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("option", { value: "", children: t("runtimeDefault") }),
             models.map((model) => {
               const id = model.id ?? model.model ?? "";
-              return /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("option", { value: id, children: model.displayName ?? id }, id);
+              return /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("option", { value: id, children: model.displayName ?? id }, id);
             })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("label", { className: "rolling-skill-field", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: t("effort") }),
-          /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("select", { className: "rolling-skill-select", value: profiles[kind].effort ?? "", onChange: (event) => updateProfile(kind, { effort: event.target.value || null }), children: [
-            /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("option", { value: "", children: t("runtimeDefault") }),
-            ["low", "medium", "high", "xhigh", "max"].map((value) => /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("option", { value, children: value }, value))
+        /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: t("effort") }),
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("select", { className: "rolling-skill-select", value: profiles[kind].effort ?? "", onChange: (event) => updateProfile(kind, { effort: event.target.value || null }), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("option", { value: "", children: t("runtimeDefault") }),
+            ["low", "medium", "high", "xhigh", "max"].map((value) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("option", { value, children: value }, value))
           ] })
         ] })
       ] }, kind)) }),
-      saveError ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: saveError }) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(import_dsh_client_ui_primitives16.Button, { variant: "outline", disabled: busy || !runtimeId, onClick: () => void save(), children: t("saveDefaults") })
+      saveError ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: saveError }) : null,
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(import_dsh_client_ui_primitives17.Button, { variant: "outline", disabled: busy || !runtimeId, onClick: () => void save(), children: t("saveDefaults") })
     ] }) })
   ] });
 }
 
 // src/client/index.tsx
-var import_jsx_runtime27 = require("react/jsx-runtime");
+var import_jsx_runtime28 = require("react/jsx-runtime");
 var inject = ["slots", "locale"];
 function apply(ctx) {
   ctx.effect(
@@ -15659,7 +15973,7 @@ function apply(ctx) {
     document.head.appendChild(style);
     return () => style.remove();
   }, "rolling-skill: workbench styles");
-  const RollingSkillSection = () => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(RollingSkillSettings, { t });
+  const RollingSkillSection = () => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(RollingSkillSettings, { t });
   ctx.slots.inject("settings.section", () => ctx.slots.register({
     name: "settings.section",
     id: "rolling-skill",
@@ -15667,7 +15981,7 @@ function apply(ctx) {
     label: () => t("nav"),
     locale: LOCALE_NAMESPACE
   }, RollingSkillSection));
-  const RollingSkillWorkbenchLauncher = (props) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(WorkbenchLauncher, { wide: Boolean(props.wide), locale: ctx.locale, t });
+  const RollingSkillWorkbenchLauncher = (props) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(WorkbenchLauncher, { wide: Boolean(props.wide), locale: ctx.locale, t });
   ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
     name: "sidebar.footer.action",
     id: "rolling-skill-workbench",
@@ -15675,7 +15989,7 @@ function apply(ctx) {
     label: () => t("nav"),
     locale: LOCALE_NAMESPACE
   }, RollingSkillWorkbenchLauncher));
-  const RollingSkillCaseCaptureAction = (props) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+  const RollingSkillCaseCaptureAction = (props) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
     CaseCaptureAction,
     {
       ...props,
@@ -15690,7 +16004,7 @@ function apply(ctx) {
     order: 20,
     locale: LOCALE_NAMESPACE
   }, RollingSkillCaseCaptureAction));
-  const RollingSkillConversationMarkers = (props) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+  const RollingSkillConversationMarkers = (props) => /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
     ConversationCurationMarkers,
     {
       sessionId: String(props.sessionId ?? ""),

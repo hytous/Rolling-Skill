@@ -7,6 +7,7 @@ import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
 import {InstallationsPanel} from "./InstallationsPanel"
 import type {RuntimeDescriptor} from "./RuntimeSelect"
+import {SkillEditModal} from "./SkillEditModal"
 
 interface SkillEntry {id: string; repositoryId: string; name: string; description?: string; status: string}
 interface Repository {id: string; displayName: string}
@@ -23,7 +24,6 @@ interface Version {
 }
 interface Catalog {repositories: Repository[]; skills: SkillEntry[]}
 interface SkillDetail {skill: SkillEntry; manifest: string; versions: Version[]}
-interface CandidateBase {commit: string | null; contentDigest: string; dirty: boolean}
 type SkillSourceKind = "folder" | "local-git" | "git-url" | "zip"
 
 function dateTime(value: string | null | undefined, fallback: string): string {
@@ -48,8 +48,10 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
     const [runtimeIds, setRuntimeIds] = useState<string[]>([])
     const [sourceKind, setSourceKind] = useState<SkillSourceKind>("folder")
     const [sourceLocation, setSourceLocation] = useState("")
-    const [candidateBase, setCandidateBase] = useState<CandidateBase | null>(null)
-    const [releaseLabel, setReleaseLabel] = useState("")
+    const [managedSkillPath, setManagedSkillPath] = useState("")
+    const [hasActiveEdit, setHasActiveEdit] = useState(false)
+    const [editOpen, setEditOpen] = useState(false)
+    const [pathCopied, setPathCopied] = useState(false)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [revision, setRevision] = useState(0)
@@ -68,7 +70,8 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
             if (requestedSkill) void loadSkill(requestedSkill.id, controller.signal)
             else {
                 setDetail(null)
-                setCandidateBase(null)
+                setManagedSkillPath("")
+                setHasActiveEdit(false)
             }
         }).catch((reason: unknown) => {
             if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"))
@@ -77,14 +80,17 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
     }, [revision, initialSkillId, initialJobId, mode])
 
     const loadSkill = async (skillId: string, signal?: AbortSignal) => {
-        setCandidateBase(null)
+        setManagedSkillPath("")
+        setHasActiveEdit(false)
         if (mode === "versions") {
-            const [next, nextCandidateBase] = await Promise.all([
+            const [next, pathResult, editResult] = await Promise.all([
                 requestRollingSkill<SkillDetail>("skills.get", {skillId}, signal),
-                requestRollingSkill<CandidateBase>("skills.candidateBase", {skillId}, signal),
+                requestRollingSkill<{skillId: string; path: string}>("skills.path", {skillId}, signal),
+                requestRollingSkill<{sessions: Array<{state: string}>}>("skillEdits.list", {skillId}, signal),
             ])
             setDetail(next)
-            setCandidateBase(nextCandidateBase)
+            setManagedSkillPath(pathResult.path)
+            setHasActiveEdit(editResult.sessions.some((session) => ["draft", "running", "idle", "applying", "needs_recovery"].includes(session.state)))
             return
         }
         const next = await requestRollingSkill<SkillDetail>("skills.get", {skillId}, signal)
@@ -102,35 +108,27 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
             setBusy(false)
         }
     }
-    const candidate = detail?.versions.find((version) => version.state === "candidate") ?? null
     const publishedVersions = useMemo(() => detail?.versions.filter((version) => version.state === "released") ?? [], [detail])
     const releasedVersions = useMemo(() => detail?.versions.filter((version) => version.state === "released" && !version.deprecatedAt) ?? [], [detail])
     const released = releasedVersions[0] ?? null
-    const contentAlreadyRecorded = Boolean(candidateBase && detail?.versions.some((version) => version.contentDigest === candidateBase.contentDigest))
-    const createCandidate = () => mutate(async () => {
-        if (!detail) return
-        const expectedBase = await requestRollingSkill<CandidateBase>("skills.candidateBase", {skillId: detail.skill.id})
-        setCandidateBase(expectedBase)
-        if (detail.versions.some((version) => version.contentDigest === expectedBase.contentDigest)) return
-        await requestRollingSkill("skills.createCandidate", {skillId: detail.skill.id, message: "Update managed Skill content", expectedBase})
-    })
-    const release = () => mutate(() => requestRollingSkill("skills.release", {
-        versionId: candidate?.id,
-        versionLabel: releaseLabel,
-        expectedCandidate: candidate ? {
-            commit: candidate.commit,
-            contentDigest: candidate.contentDigest,
-            state: candidate.state,
-            versionLabel: releaseLabel,
-        } : null,
-    }))
     const install = () => mutate(() => requestRollingSkill("installations.start", {
         skillId: detail?.skill.id,
         versionId: released?.id,
         targets: runtimeIds.map((selectedRuntimeId) => ({runtimeId: selectedRuntimeId, modelId: null, effort: null, permissionMode: null})),
     }))
     const deprecate = (version: Version) => mutate(() => requestRollingSkill("skills.deprecate", {versionId: version.id}))
-    const revealRepository = (repositoryId: string) => mutate(() => requestRollingSkill("skills.reveal", {repositoryId}))
+    const revealManagedSkill = (skillId: string | undefined) => mutate(() => requestRollingSkill("skills.revealSkill", {skillId}))
+    const copyManagedSkillPath = async () => {
+        if (!managedSkillPath) return
+        setError(null)
+        try {
+            await window.navigator.clipboard.writeText(managedSkillPath)
+            setPathCopied(true)
+            window.setTimeout(() => setPathCopied(false), 1_500)
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : t("loadError"))
+        }
+    }
     const chooseSource = async () => {
         if (sourceKind === "git-url") return
         setBusy(true)
@@ -159,22 +157,20 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
                 <div className="rolling-skill-list">{catalog.skills.map((skill) => {
                     const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId)
                     const repositoryLabel = repository?.displayName && repository.displayName !== skill.name ? `${repository.displayName} · ` : ""
-                    return <article className="rolling-skill-list-row rolling-skill-managed-skill-row" key={skill.id}><button type="button" className="rolling-skill-skill-row" aria-current={detail?.skill.id === skill.id ? "true" : undefined} onClick={() => onOpenVersions?.(skill.id)}><strong>{skill.name}</strong><span>{repositoryLabel}{skill.description || skill.status}</span></button><Button size="sm" disabled={busy} onClick={() => void revealRepository(skill.repositoryId)}>{t("revealRepository")}</Button></article>
+                    return <article className="rolling-skill-list-row rolling-skill-managed-skill-row" key={skill.id}><button type="button" className="rolling-skill-skill-row" aria-current={detail?.skill.id === skill.id ? "true" : undefined} onClick={() => onOpenVersions?.(skill.id)}><strong>{skill.name}</strong><span>{repositoryLabel}{skill.description || skill.status}</span></button><Button size="sm" disabled={busy} onClick={() => void revealManagedSkill(skill.id)}>{t("revealRepository")}</Button></article>
                 })}{catalog.skills.length === 0 ? <p>{t("emptySkills")}</p> : null}</div>
             </section> : null}
 
             {mode === "versions" ? detail ? <section className="rolling-skill-panel">
-                <div className="rolling-skill-panel-header"><div><h3>{detail.skill.name}</h3><p>{detail.skill.description || detail.skill.status}</p></div></div>
+                <div className="rolling-skill-panel-header"><div><h3>{detail.skill.name}</h3><p>{detail.skill.description || detail.skill.status}</p></div><div className="rolling-skill-actions"><Button tone="primary" size="sm" disabled={busy} onClick={() => setEditOpen(true)}>{t(hasActiveEdit ? "continueSkillEdit" : "editSkillWithAgent")}</Button><Button size="sm" disabled={busy} onClick={() => void revealManagedSkill(detail.skill.id)}>{t("revealRepository")}</Button></div></div>
+                <div className="rolling-skill-managed-path"><span>{t("managedSkillPath")}</span><code title={managedSkillPath}>{managedSkillPath}</code><Button size="sm" disabled={!managedSkillPath} onClick={() => void copyManagedSkillPath()}>{t(pathCopied ? "pathCopied" : "copyPath")}</Button></div>
                 <details className="rolling-skill-manifest-details"><summary>{t("viewSkillContent")}</summary><pre className="rolling-skill-manifest">{detail.manifest}</pre></details>
                 <h4 className="rolling-skill-version-heading">{t("publishedVersions")}</h4>
                 <div className="rolling-skill-list">
                     {publishedVersions.map((version) => <article className="rolling-skill-version-card" key={version.id}><header><strong>{version.versionLabel ?? t("notAvailable")}</strong>{!version.deprecatedAt ? <Button size="sm" disabled={busy} onClick={() => void deprecate(version)}>{t("deprecateVersion")}</Button> : <span>{t("deprecatedVersion")}</span>}</header><dl><div><dt>{t("createdAt")}</dt><dd>{dateTime(version.releasedAt ?? version.createdAt, t("notAvailable"))}</dd></div></dl></article>)}
                     {publishedVersions.length === 0 ? <p>{t("emptyPublishedVersions")}</p> : null}
                 </div>
-                <section className="rolling-skill-version-workflow">
-                    <div><h4>{candidate ? t("releaseVersion") : t("prepareVersion")}</h4><p>{candidate ? t("versionReady") : contentAlreadyRecorded ? t("versionUnchanged") : t("prepareVersionDescription")}</p></div>
-                    {candidate ? <div className="rolling-skill-form-row"><label className="rolling-skill-field"><span>{t("versionNumber")}</span><Input value={releaseLabel} placeholder="1.0.0" onChange={(event: {target: {value: string}}) => setReleaseLabel(event.target.value)}/></label><Button tone="primary" size="sm" disabled={busy || !releaseLabel.trim()} onClick={() => void release()}>{t("release")}</Button></div> : <div className="rolling-skill-form-row"><Button size="sm" disabled={busy || !candidateBase || contentAlreadyRecorded} onClick={() => void createCandidate()}>{t("saveVersionContent")}</Button></div>}
-                </section>
+                <SkillEditModal t={t} open={editOpen} skillId={detail.skill.id} skillName={detail.skill.name} onClose={() => {setEditOpen(false); setRevision((value) => value + 1)}} onPublished={() => {setHasActiveEdit(false); setRevision((value) => value + 1)}}/>
             </section> : <section className="rolling-skill-panel"><p>{t("emptySkills")}</p></section> : null}
 
             {mode === "install" ? <>
