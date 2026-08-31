@@ -387,6 +387,16 @@
     min-width: 0;
 }
 
+.rolling-skill-case-filters {
+    align-items: end;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.rolling-skill-case-filters .rolling-skill-select {
+    max-width: none;
+}
+
 .rolling-skill-skill-import {
     align-items: end;
     display: grid;
@@ -1804,6 +1814,11 @@
 
     .rolling-skill-review-layout {
         grid-template-columns: 1fr;
+    }
+
+    .rolling-skill-case-filters {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .rolling-skill-candidate-target {

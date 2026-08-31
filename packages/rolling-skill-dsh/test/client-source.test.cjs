@@ -255,7 +255,7 @@ describe("Rolling Skill native DSH Client", () => {
         assert.doesNotMatch(datasets, /datasets\.bindSkill[\s\S]{0,360}(?:path|runtimeId|providerId)\s*:/u)
     })
 
-    it("reuses a full-identity Runtime row for Case refresh and evaluations", () => {
+    it("keeps evaluation Runtime identity details but makes Case refresh a compact single-select", () => {
         const runtime = source("workbench/RuntimeSelect.tsx")
         const evaluations = source("workbench/EvaluationsPanel.tsx")
         const cases = source("workbench/CasesPanel.tsx")
@@ -276,7 +276,10 @@ describe("Rolling Skill native DSH Client", () => {
         assert.doesNotMatch(evaluations, /useState\("high"\)/u)
         assert.match(evaluations, /effort:\s*effort\s*\|\|\s*null/u)
         assert.match(evaluations, /effort:\s*judgeEffort\s*\|\|\s*null/u)
-        assert.match(cases, /<RuntimeSelect/u)
+        assert.match(cases, /rolling-skill-case-filters/u)
+        assert.match(cases, /<select[^>]+aria-label=\{t\("refreshRuntime"\)\}/u)
+        assert.match(cases, /runtime\.displayName[\s\S]+runtime\.version/u)
+        assert.doesNotMatch(cases, /<RuntimeSelect/u)
         assert.match(workbench, /<EvaluationsPanel/u)
     })
 

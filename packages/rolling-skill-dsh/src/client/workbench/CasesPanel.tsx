@@ -6,7 +6,6 @@ import {MarkdownContent} from "./MarkdownContent"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
-import {RuntimeSelect} from "./RuntimeSelect"
 import type {RuntimeDescriptor} from "./RuntimeSelect"
 import type {WorkbenchRoute} from "./Workbench"
 
@@ -225,16 +224,18 @@ export function CasesPanel({t, revision, onChanged, initialDatasetId, initialCas
                     {calibrationBatch?.status === "running" ? <Button size="sm" onClick={() => {stopCalibration.current = true}}>{t("stopCalibrationBatch")}</Button> : <Button size="sm" disabled={!datasetId || busy} onClick={() => void startCalibrationBatch()}>{t("calibrateAllCases")}</Button>}
                 </div>
             </div>
-            <div className="rolling-skill-form-row">
-                <select className="rolling-skill-select" aria-label={t("selectDataset")} value={datasetId} onChange={(event) => { setDatasetId(event.target.value); setPage(1) }}>
+            <div className="rolling-skill-form-row rolling-skill-case-filters">
+                <label className="rolling-skill-field"><span>{t("selectDataset")}</span><select className="rolling-skill-select" aria-label={t("selectDataset")} value={datasetId} onChange={(event) => { setDatasetId(event.target.value); setPage(1) }}>
                     {datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
-                </select>
-                <select className="rolling-skill-select" aria-label={t("caseFilter")} value={caseScope} onChange={(event) => { setCaseScope(event.target.value as typeof caseScope); setPage(1) }}>
+                </select></label>
+                <label className="rolling-skill-field"><span>{t("caseFilter")}</span><select className="rolling-skill-select" aria-label={t("caseFilter")} value={caseScope} onChange={(event) => { setCaseScope(event.target.value as typeof caseScope); setPage(1) }}>
                     <option value="all">{t("allCases")}</option>
                     <option value="goodcase">{t("goodcase")}</option>
                     <option value="badcase">{t("badcase")}</option>
-                </select>
-                <RuntimeSelect t={t} runtimes={runtimes} value={runtimeId} onChange={setRuntimeId} label={t("refreshRuntime")}/>
+                </select></label>
+                <label className="rolling-skill-field"><span>{t("refreshRuntime")}</span><select className="rolling-skill-select" aria-label={t("refreshRuntime")} disabled={runtimes.length === 0} value={runtimeId} onChange={(event) => setRuntimeId(event.target.value)}>
+                    {runtimes.length === 0 ? <option value="">{t("noRuntimes")}</option> : runtimes.map((runtime) => <option key={runtime.runtimeId} value={runtime.runtimeId}>{runtime.displayName} {runtime.version}</option>)}
+                </select></label>
             </div>
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
             {calibrationBatch ? <section className="rolling-skill-subpanel"><p>{t("calibrationBatchProgress").replace("{completed}", String(calibrationBatch.completed)).replace("{total}", String(calibrationBatch.total))} · {calibrationBatch.status}</p>{calibrationBatch.error ? <p className="rolling-skill-inline-error">{calibrationBatch.error}</p> : null}{calibrationBatch.currentSessionId ? <Button size="sm" onClick={() => onNavigate({page: "curation", sessionId: calibrationBatch.currentSessionId!})}>{t("reviewCalibration")}</Button> : null}</section> : null}
