@@ -30,6 +30,37 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
+// src/client/connection-store.cjs
+var require_connection_store = __commonJS({
+  "src/client/connection-store.cjs"(exports, module2) {
+    function createConnectionStore() {
+      let snapshot = Object.freeze({ status: "connected", error: null, revision: 0 });
+      const listeners2 = /* @__PURE__ */ new Set();
+      const publish = (status, error = null) => {
+        if (snapshot.status === status && snapshot.error === error) return snapshot;
+        snapshot = Object.freeze({
+          status,
+          error,
+          revision: snapshot.revision + 1
+        });
+        for (const listener of listeners2) listener();
+        return snapshot;
+      };
+      return {
+        getSnapshot: () => snapshot,
+        subscribe(listener) {
+          listeners2.add(listener);
+          return () => listeners2.delete(listener);
+        },
+        markConnected: () => publish("connected"),
+        markDisconnected: (error = null) => publish("disconnected", error)
+      };
+    }
+    var rollingSkillConnection2 = createConnectionStore();
+    module2.exports = { createConnectionStore, rollingSkillConnection: rollingSkillConnection2 };
+  }
+});
+
 // src/client/conversation/curation-markers.cjs
 var require_curation_markers = __commonJS({
   "src/client/conversation/curation-markers.cjs"(exports, module2) {
@@ -619,6 +650,69 @@ var require_curation_selection = __commonJS({
   }
 });
 
+// src/client/workbench/polling-scheduler.cjs
+var require_polling_scheduler = __commonJS({
+  "src/client/workbench/polling-scheduler.cjs"(exports, module2) {
+    function createPollingScheduler2({
+      intervalMs = 1500,
+      schedule = setTimeout,
+      cancel = clearTimeout
+    } = {}) {
+      let generation = 0;
+      let timer = null;
+      let settle = null;
+      let reject = null;
+      let idlePromise = Promise.resolve();
+      const finish = (error = null) => {
+        if (timer !== null) cancel(timer);
+        timer = null;
+        const resolveIdle = settle;
+        const rejectIdle = reject;
+        settle = null;
+        reject = null;
+        if (error) rejectIdle?.(error);
+        else resolveIdle?.();
+      };
+      const stop = () => {
+        generation += 1;
+        finish();
+      };
+      const start2 = (poll) => {
+        if (typeof poll !== "function") throw new TypeError("Polling callback must be a function");
+        stop();
+        const currentGeneration = generation;
+        idlePromise = new Promise((resolve, rejectPromise) => {
+          settle = resolve;
+          reject = rejectPromise;
+        });
+        const tick = async () => {
+          timer = null;
+          if (currentGeneration !== generation) return;
+          try {
+            const active = await poll();
+            if (currentGeneration !== generation) return;
+            if (!active) {
+              finish();
+              return;
+            }
+            timer = schedule(tick, intervalMs);
+          } catch (error) {
+            finish(error);
+          }
+        };
+        timer = schedule(tick, intervalMs);
+        return stop;
+      };
+      return {
+        start: start2,
+        stop,
+        idle: () => idlePromise
+      };
+    }
+    module2.exports = { createPollingScheduler: createPollingScheduler2 };
+  }
+});
+
 // src/client/index.tsx
 var index_exports = {};
 __export(index_exports, {
@@ -628,7 +722,7 @@ __export(index_exports, {
 module.exports = __toCommonJS(index_exports);
 
 // src/client/workbench/workbench.css
-var workbench_default = '.rolling-skill-workbench {\n    box-sizing: border-box;\n    color: var(--dsw-alias-label-primary);\n    display: grid;\n    gap: 20px;\n    min-width: 0;\n    padding: 4px 0 24px;\n}\n\n.rolling-skill-workbench-backdrop {\n    background: var(--dsw-alias-bg-mask-1);\n    display: flex;\n    inset: 0;\n    padding: 20px;\n    position: fixed;\n    z-index: 900;\n}\n\n.rolling-skill-workbench-overlay {\n    background: var(--dsw-alias-bg-base);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 14px;\n    color: var(--dsw-alias-label-primary);\n    margin: auto;\n    max-height: calc(100vh - 40px);\n    max-width: 1440px;\n    min-height: min(780px, calc(100vh - 40px));\n    overflow: auto;\n    padding: 24px;\n    position: relative;\n    width: 100%;\n}\n\n.rolling-skill-workbench-close {\n    position: absolute;\n    right: 12px;\n    top: 12px;\n    z-index: 1;\n}\n\n.rolling-skill-settings {\n    display: grid;\n    gap: 16px;\n    padding-bottom: 24px;\n}\n\n.rolling-skill-header {\n    align-items: flex-start;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n}\n\n.rolling-skill-header h2,\n.rolling-skill-panel h3 {\n    margin: 0;\n}\n\n.rolling-skill-header p,\n.rolling-skill-panel p {\n    color: var(--dsw-alias-label-secondary);\n    margin: 6px 0 0;\n}\n\n.rolling-skill-tabs {\n    align-items: center;\n    border-bottom: 1px solid var(--dsw-alias-border-l2);\n    display: flex;\n    flex-wrap: wrap;\n    gap: 4px;\n    padding-bottom: 10px;\n}\n\n.rolling-skill-primary-tabs {\n    gap: 8px;\n    padding-bottom: 12px;\n}\n\n.rolling-skill-primary-tabs [aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    font-weight: 600;\n}\n\n.rolling-skill-secondary-tabs {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 10px;\n    gap: 4px;\n    margin-top: -12px;\n    padding: 6px 8px;\n}\n\n.rolling-skill-secondary-tabs [aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    font-weight: 600;\n}\n\n.rolling-skill-current-skill {\n    align-items: center;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: auto minmax(180px, 360px);\n}\n\n.rolling-skill-current-skill > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 13px;\n}\n\n.rolling-skill-counts {\n    display: grid;\n    gap: 10px;\n    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));\n}\n\n.rolling-skill-count,\n.rolling-skill-panel,\n.rolling-skill-state {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 10px;\n}\n\n.rolling-skill-count {\n    display: grid;\n    gap: 4px;\n    padding: 14px;\n}\n\n.rolling-skill-count strong {\n    font-size: 22px;\n    line-height: 28px;\n}\n\n.rolling-skill-count span,\n.rolling-skill-panel dt {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-overview {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-grid {\n    display: grid;\n    gap: 12px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-time-selects {\n    align-items: center;\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n}\n\n.rolling-skill-time-selects label {\n    align-items: center;\n    display: grid;\n    gap: 6px;\n    grid-template-columns: minmax(0, 1fr) auto;\n    min-width: 0;\n}\n\n.rolling-skill-time-selects label > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-automatic-flow-summary {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    line-height: 1.5;\n    margin: 10px 0;\n}\n\n.rolling-skill-automatic-flow-summary strong {\n    color: var(--dsw-alias-label-primary);\n    font-weight: 600;\n}\n\n.rolling-skill-scheduler-explanation {\n    margin-top: 8px;\n}\n\n.rolling-skill-candidate-targets {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 10px;\n    margin: 14px 0 0;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-candidate-targets legend {\n    font-size: 13px;\n    font-weight: 600;\n    padding: 0 4px;\n}\n\n.rolling-skill-candidate-targets > p {\n    margin: 0;\n}\n\n.rolling-skill-candidate-target-list {\n    display: grid;\n    gap: 8px;\n    max-height: min(420px, 52vh);\n    overflow-y: auto;\n    padding-right: 4px;\n    scrollbar-gutter: stable;\n}\n\n.rolling-skill-candidate-target {\n    align-items: center;\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    display: grid;\n    gap: 10px;\n    grid-template-columns: minmax(180px, 1fr) minmax(180px, 360px);\n    min-width: 0;\n    padding-top: 10px;\n}\n\n.rolling-skill-candidate-skill {\n    align-items: flex-start;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: auto minmax(0, 1fr);\n    min-width: 0;\n}\n\n.rolling-skill-candidate-skill > span {\n    display: grid;\n    gap: 3px;\n    min-width: 0;\n}\n\n.rolling-skill-candidate-skill strong {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-candidate-target small {\n    color: var(--dsw-alias-label-secondary);\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-candidate-dataset {\n    display: grid;\n    gap: 4px;\n    min-width: 0;\n}\n\n.rolling-skill-candidate-target .rolling-skill-select {\n    margin-top: 0;\n    max-width: none;\n    min-width: 0;\n    width: 100%;\n}\n\n.rolling-skill-form-actions {\n    align-items: center;\n    display: flex;\n    flex-wrap: wrap;\n    gap: 10px;\n    justify-content: space-between;\n    margin-top: 14px;\n    min-width: 0;\n}\n\n.rolling-skill-panel,\n.rolling-skill-state {\n    min-width: 0;\n    padding: 16px;\n}\n\n.rolling-skill-panel dl {\n    display: grid;\n    gap: 10px;\n    margin: 14px 0 0;\n}\n\n.rolling-skill-panel dl > div {\n    align-items: baseline;\n    display: flex;\n    gap: 12px;\n    justify-content: space-between;\n}\n\n.rolling-skill-panel dd {\n    margin: 0;\n    max-width: 68%;\n    overflow-wrap: anywhere;\n    text-align: right;\n}\n\n.rolling-skill-runtime,\n.rolling-skill-state {\n    display: grid;\n    gap: 8px;\n}\n\n.rolling-skill-runtime {\n    margin-top: 14px;\n}\n\n.rolling-skill-runtime code,\n.rolling-skill-path code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-path code {\n    display: block;\n    margin-top: 10px;\n}\n\n.rolling-skill-error {\n    border-color: var(--dsw-alias-state-error-primary);\n    color: var(--dsw-alias-label-error);\n}\n\n.rolling-skill-data-stack,\n.rolling-skill-form-stack,\n.rolling-skill-list {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row,\n.rolling-skill-form-row,\n.rolling-skill-actions {\n    align-items: center;\n    display: flex;\n    gap: 10px;\n}\n\n.rolling-skill-action-button {\n    flex: 0 0 auto;\n    max-width: 100%;\n    overflow: hidden;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.rolling-skill-action-button[data-rolling-skill-tone="secondary"] {\n    background: var(--dsw-alias-bg-layer-1);\n}\n\n.rolling-skill-action-button[data-rolling-skill-tone="secondary"]:hover:not(:disabled) {\n    background: var(--dsw-alias-interactive-bg-hover);\n}\n\n.rolling-skill-action-button[data-rolling-skill-tone="secondary"]:active:not(:disabled) {\n    background: var(--dsw-alias-interactive-bg-active);\n}\n\n.rolling-skill-actions {\n    flex-wrap: wrap;\n    min-width: 0;\n}\n\n.rolling-skill-panel-header {\n    min-width: 0;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    justify-content: space-between;\n}\n\n.rolling-skill-form-row,\n.rolling-skill-list {\n    margin-top: 14px;\n}\n\n.rolling-skill-form-row > :first-child {\n    flex: 1 1 0;\n    min-width: 0;\n}\n\n.rolling-skill-case-filters {\n    align-items: end;\n    display: grid;\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n}\n\n.rolling-skill-case-filters .rolling-skill-select {\n    max-width: none;\n}\n\n.rolling-skill-skill-import {\n    align-items: end;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto;\n    margin-top: 14px;\n}\n\n.rolling-skill-skill-source-picker {\n    align-items: end;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: auto minmax(0, 1fr);\n    min-width: 0;\n}\n\n.rolling-skill-selected-source {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 7px;\n    display: grid;\n    gap: 3px;\n    min-width: 0;\n    padding: 7px 10px;\n}\n\n.rolling-skill-selected-source span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-selected-source code {\n    overflow: hidden;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-list-row > div:first-child,\n.rolling-skill-case-copy {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-list-row span,\n.rolling-skill-case-copy p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-managed-skill-row .rolling-skill-skill-row {\n    flex: 1;\n    min-width: 0;\n}\n\n.rolling-skill-version-card {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-version-card header,\n.rolling-skill-version-card header > div {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    justify-content: space-between;\n}\n\n.rolling-skill-version-card code {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-manifest-details {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    margin-top: 14px;\n    padding: 10px 12px;\n}\n\n.rolling-skill-manifest-details > summary {\n    cursor: pointer;\n    font-size: 13px;\n    font-weight: 600;\n}\n\n.rolling-skill-manifest-details .rolling-skill-manifest {\n    border: 0;\n    border-radius: 0;\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    margin: 10px 0 0;\n    padding: 10px 0 0;\n}\n\n.rolling-skill-version-heading {\n    margin: 18px 0 0;\n}\n\n.rolling-skill-managed-path {\n    align-items: center;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 8px;\n    grid-template-columns: auto minmax(0, 1fr) auto;\n    margin-top: 14px;\n    min-width: 0;\n    padding: 9px 10px;\n}\n\n.rolling-skill-managed-path > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-managed-path code {\n    min-width: 0;\n    overflow: hidden;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.rolling-skill-skill-edit-modal {\n    box-sizing: border-box;\n    min-width: 0;\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) {\n    max-height: calc(100vh - 32px);\n    max-width: 1120px;\n    width: min(92vw, 1120px);\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) > div:first-child {\n    min-height: 0;\n    overflow: hidden;\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) > div:first-child > div:last-child {\n    min-height: 0;\n    overflow-y: auto;\n}\n\n.rolling-skill-textarea {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    box-sizing: border-box;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    line-height: 1.5;\n    min-height: 92px;\n    padding: 9px 10px;\n    resize: vertical;\n    width: 100%;\n}\n\n.rolling-skill-skill-edit-status {\n    align-items: center;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: flex;\n    gap: 12px;\n    justify-content: space-between;\n    min-width: 0;\n    padding: 10px 12px;\n}\n\n.rolling-skill-skill-edit-status > div {\n    display: grid;\n    gap: 3px;\n    min-width: 0;\n}\n\n.rolling-skill-skill-edit-status span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-skill-edit-layout {\n    display: grid;\n    gap: 12px;\n    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);\n    min-width: 0;\n}\n\n.rolling-skill-skill-edit-conversation,\n.rolling-skill-skill-edit-diff {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-skill-edit-messages,\n.rolling-skill-skill-edit-files {\n    display: grid;\n    gap: 8px;\n    max-height: 430px;\n    min-width: 0;\n    overflow: auto;\n}\n\n.rolling-skill-skill-edit-messages article,\n.rolling-skill-skill-edit-files article {\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 6px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-skill-edit-messages article[data-role="assistant"] {\n    background: var(--dsw-alias-bg-layer-2);\n}\n\n.rolling-skill-skill-edit-messages p {\n    color: var(--dsw-alias-label-primary);\n    margin: 0;\n    overflow-wrap: anywhere;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-skill-edit-follow-up {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: minmax(0, 1fr) auto;\n    margin-top: 10px;\n    min-width: 0;\n}\n\n.rolling-skill-skill-edit-follow-up .rolling-skill-textarea {\n    min-height: 72px;\n}\n\n.rolling-skill-skill-edit-files article header {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    justify-content: space-between;\n    min-width: 0;\n}\n\n.rolling-skill-skill-edit-files article header strong,\n.rolling-skill-skill-edit-files article header span {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-skill-edit-files article header span,\n.rolling-skill-skill-edit-files article small {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-skill-edit-files pre {\n    font-size: 12px;\n    margin: 0;\n    max-height: 320px;\n    overflow: auto;\n    white-space: pre;\n}\n\n.rolling-skill-version-workflow {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    display: grid;\n    gap: 12px;\n    margin-top: 18px;\n    padding: 14px;\n}\n\n.rolling-skill-version-workflow h4,\n.rolling-skill-version-workflow p {\n    margin: 0;\n}\n\n.rolling-skill-version-workflow p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 13px;\n}\n\n.rolling-skill-version-workflow .rolling-skill-form-row {\n    margin-top: 0;\n}\n\n.rolling-skill-pagination {\n    align-items: center;\n    color: var(--dsw-alias-label-secondary);\n    display: flex;\n    gap: 10px;\n    justify-content: center;\n    margin-top: 14px;\n}\n\n.rolling-skill-group-list,\n.rolling-skill-raw-group,\n.rolling-skill-detail-stack {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-group-list {\n    margin-top: 14px;\n}\n\n.rolling-skill-raw-filter-toolbar {\n    align-items: end;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: minmax(0, 1fr) minmax(190px, 280px);\n}\n\n.rolling-skill-raw-skill-select {\n    color: var(--dsw-alias-label-secondary);\n    display: grid;\n    font-size: 12px;\n    gap: 5px;\n}\n\n.rolling-skill-raw-skill-select .rolling-skill-select {\n    margin-top: 0;\n    max-width: none;\n}\n\n.rolling-skill-raw-group-filter {\n    align-items: center;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 7px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: flex;\n    font: inherit;\n    gap: 8px;\n    justify-content: space-between;\n    max-width: 100%;\n    min-width: 0;\n    padding: 7px 10px;\n    text-align: left;\n    width: fit-content;\n}\n\n.rolling-skill-raw-group-filter[aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-raw-group-filter strong {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-raw-group-filter span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-verbatim {\n    overflow-wrap: anywhere;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-detail-stack h4,\n.rolling-skill-detail-stack p {\n    margin: 0;\n}\n\n.rolling-skill-detail-stack pre {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    max-height: 320px;\n    overflow: auto;\n    padding: 10px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-muted,\n.rolling-skill-range-hint {\n    color: var(--dsw-alias-label-secondary);\n}\n\n.rolling-skill-evidence-summary {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));\n    margin: 0;\n}\n\n.rolling-skill-evidence-summary > div {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 4px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-evidence-summary dt {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-evidence-summary dd {\n    margin: 0;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-capture-range-card {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 10px;\n    display: grid;\n    gap: 10px;\n    padding: 12px;\n}\n\n.rolling-skill-capture-evidence-timeline {\n    display: grid;\n    gap: 8px;\n    list-style: none;\n    margin: 0;\n    padding: 0;\n}\n\n.rolling-skill-capture-evidence-timeline > li {\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-inline-start: 3px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    min-width: 0;\n    overflow: hidden;\n}\n\n.rolling-skill-capture-evidence-timeline > li[data-kind="user"] {\n    background: var(--dsw-alias-bg-layer-2);\n}\n\n.rolling-skill-capture-evidence-timeline > li[data-kind="assistant"] {\n    background: var(--dsw-alias-bg-layer-1);\n}\n\n.rolling-skill-capture-evidence-timeline > li[data-boundary="start"],\n.rolling-skill-capture-evidence-timeline > li[data-boundary="end"] {\n    border-inline-start-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-capture-evidence-timeline article {\n    display: grid;\n    gap: 8px;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-evidence-timeline article header,\n.rolling-skill-capture-tool summary {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    justify-content: space-between;\n}\n\n.rolling-skill-capture-context summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-context p {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    margin: 0;\n    max-height: 240px;\n    overflow: auto;\n    padding: 10px 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-capture-evidence-timeline article header span,\n.rolling-skill-capture-tool summary span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-capture-evidence-timeline article p {\n    margin: 0;\n    overflow-wrap: anywhere;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-capture-tool summary {\n    cursor: pointer;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-tool-details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    display: grid;\n    gap: 10px;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-tool-details > div {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-capture-tool-details pre {\n    background: var(--dsw-alias-bg-layer-2);\n    border-radius: 6px;\n    margin: 0;\n    max-height: 240px;\n    overflow: auto;\n    padding: 8px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-capture-evidence-error {\n    align-items: flex-start;\n    border: 1px solid var(--dsw-alias-state-error-primary);\n    border-radius: 8px;\n    display: grid;\n    gap: 6px;\n    padding: 10px;\n}\n\n.rolling-skill-capture-evidence-error p,\n.rolling-skill-capture-evidence-error small {\n    margin: 0;\n}\n\n.rolling-skill-capture-boundaries {\n    display: grid;\n    gap: 8px;\n}\n\n.rolling-skill-capture-boundaries article {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: 26px minmax(0, 1fr);\n    padding: 10px;\n}\n\n.rolling-skill-capture-boundaries article > div {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-capture-boundaries p,\n.rolling-skill-capture-boundaries code,\n.rolling-skill-range-hint {\n    margin: 0;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-capture-boundaries code {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 11px;\n}\n\n.rolling-skill-range-index {\n    align-items: center;\n    border: 1px solid var(--dsw-alias-state-business-primary);\n    border-radius: 50%;\n    color: var(--dsw-alias-state-business-primary);\n    display: inline-flex;\n    font-size: 12px;\n    height: 24px;\n    justify-content: center;\n    width: 24px;\n}\n\n.rolling-skill-advanced-evidence {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 10px;\n}\n\n.rolling-skill-advanced-evidence > summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-capture-evidence) {\n    max-height: calc(100vh - 32px);\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-capture-evidence) > div:first-child {\n    min-height: 0;\n    overflow: hidden;\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-capture-evidence) > div:first-child > div:last-child {\n    min-height: 0;\n    overflow-y: auto;\n}\n\n.rolling-skill-case-copy p {\n    margin: 0;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-markdown {\n    line-height: 1.55;\n    min-width: 0;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-markdown > :first-child {\n    margin-top: 0;\n}\n\n.rolling-skill-markdown > :last-child {\n    margin-bottom: 0;\n}\n\n.rolling-skill-case-copy .rolling-skill-markdown p,\n.rolling-skill-detail-stack .rolling-skill-markdown p {\n    margin: 0 0 8px;\n    white-space: normal;\n}\n\n.rolling-skill-markdown h1,\n.rolling-skill-markdown h2,\n.rolling-skill-markdown h3,\n.rolling-skill-markdown h4,\n.rolling-skill-markdown h5,\n.rolling-skill-markdown h6 {\n    line-height: 1.3;\n    margin: 12px 0 7px;\n}\n\n.rolling-skill-markdown ul,\n.rolling-skill-markdown ol {\n    margin: 7px 0;\n    padding-inline-start: 22px;\n}\n\n.rolling-skill-markdown li + li {\n    margin-top: 3px;\n}\n\n.rolling-skill-markdown blockquote {\n    border-inline-start: 3px solid var(--dsw-alias-border-l2);\n    color: var(--dsw-alias-label-secondary);\n    margin: 8px 0;\n    padding-inline-start: 10px;\n}\n\n.rolling-skill-markdown code {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 4px;\n    font-family: ui-monospace, monospace;\n    font-size: 0.92em;\n    padding: 1px 4px;\n}\n\n.rolling-skill-markdown pre {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    max-width: 100%;\n    overflow: auto;\n    padding: 10px;\n    white-space: pre;\n}\n\n.rolling-skill-markdown pre code {\n    background: transparent;\n    border: 0;\n    padding: 0;\n}\n\n.rolling-skill-markdown a {\n    color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-markdown-image-placeholder {\n    color: var(--dsw-alias-label-secondary);\n    font-style: italic;\n}\n\n.rolling-skill-markdown-compact {\n    max-height: 9.5em;\n    overflow: hidden;\n}\n\n.rolling-skill-case-question .rolling-skill-markdown {\n    color: var(--dsw-alias-label-primary);\n    font-weight: 600;\n}\n\n.rolling-skill-select,\n.rolling-skill-form-stack input,\n.rolling-skill-field input,\n.rolling-skill-form-stack textarea {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 7px;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    padding: 8px 10px;\n}\n\n.rolling-skill-review-layout {\n    display: grid;\n    gap: 14px;\n    grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);\n    min-height: 560px;\n}\n\n.rolling-skill-review-list,\n.rolling-skill-review-detail,\n.rolling-skill-session-view {\n    min-width: 0;\n}\n\n.rolling-skill-review-list-button {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: grid;\n    font: inherit;\n    gap: 5px;\n    padding: 10px;\n    text-align: left;\n    width: 100%;\n}\n\n.rolling-skill-review-list-button[data-selected="true"] {\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-review-list-button span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-review-scope {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 9px;\n    display: grid;\n    gap: 3px;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n    margin-top: 12px;\n    padding: 3px;\n}\n\n.rolling-skill-review-scope button {\n    background: transparent;\n    border: 1px solid transparent;\n    border-radius: 7px;\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n    font: inherit;\n    min-width: 0;\n    padding: 7px 9px;\n}\n\n.rolling-skill-review-scope button[aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    border-color: var(--dsw-alias-border-l2);\n    color: var(--dsw-alias-label-primary);\n    font-weight: 600;\n}\n\n.rolling-skill-review-scope span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 11px;\n}\n\n.rolling-skill-session-view,\n.rolling-skill-evidence-card,\n.rolling-skill-conversation-log,\n.rolling-skill-rubric-draft {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-curation-draft-card {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 12px;\n    padding: 12px;\n}\n\n.rolling-skill-curation-draft-card > header {\n    align-items: flex-start;\n    display: flex;\n    gap: 10px;\n    justify-content: space-between;\n}\n\n.rolling-skill-curation-draft-card h4,\n.rolling-skill-curation-draft-card p {\n    margin: 0;\n}\n\n.rolling-skill-curation-draft-details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 9px;\n}\n\n.rolling-skill-curation-draft-details > summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n}\n\n.rolling-skill-curation-draft-details > div {\n    display: grid;\n    gap: 12px;\n    margin-top: 10px;\n}\n\n.rolling-skill-curation-primary,\n.rolling-skill-curation-composer,\n.rolling-skill-curation-runtime-details > .rolling-skill-evidence-card {\n    display: grid;\n    gap: 10px;\n}\n\n.rolling-skill-curation-composer {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-state-business-primary);\n    border-radius: 10px;\n    padding: 12px;\n}\n\n.rolling-skill-curation-composer h4,\n.rolling-skill-curation-composer p {\n    margin: 0;\n}\n\n.rolling-skill-curation-composer > div:first-child p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    margin-top: 4px;\n}\n\n.rolling-skill-curation-composer textarea {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    min-height: 104px;\n    padding: 10px;\n    resize: vertical;\n}\n\n.rolling-skill-curation-runtime-details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 10px;\n}\n\n.rolling-skill-curation-runtime-details > summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n}\n\n.rolling-skill-curation-runtime-details > .rolling-skill-evidence-card {\n    margin-top: 10px;\n}\n\n.rolling-skill-curation-model-controls {\n    display: grid;\n    gap: 10px;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n}\n\n.rolling-skill-session-view h4,\n.rolling-skill-review-list h4 {\n    margin: 8px 0 0;\n}\n\n.rolling-skill-session-view pre,\n.rolling-skill-evidence-card pre {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    max-height: 340px;\n    overflow: auto;\n    padding: 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-conversation-log > div,\n.rolling-skill-rubric-draft article {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    padding: 10px;\n}\n\n.rolling-skill-conversation-log p,\n.rolling-skill-rubric-draft p {\n    margin: 6px 0 0;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-create-rubric {\n    border-bottom: 1px solid var(--dsw-alias-border-l2);\n    padding-bottom: 14px;\n}\n\n.rolling-skill-operation-status {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    line-height: 1.5;\n    margin: 0;\n}\n\n.rolling-skill-select {\n    margin-top: 14px;\n    max-width: 360px;\n    width: 100%;\n}\n\n.rolling-skill-form-stack label {\n    display: grid;\n    gap: 6px;\n}\n\n.rolling-skill-form-stack textarea {\n    min-height: 120px;\n    resize: vertical;\n}\n\n.rolling-skill-check {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    margin-top: 12px;\n}\n\n.rolling-skill-badge {\n    color: var(--dsw-alias-state-business-primary);\n    font-size: 11px;\n    font-weight: 600;\n}\n\n.rolling-skill-audit-grid,\n.rolling-skill-rubric-criteria,\n.rolling-skill-evaluation-results,\n.rolling-skill-score-list {\n    display: grid;\n    gap: 10px;\n}\n\n.rolling-skill-audit-grid {\n    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));\n    margin-top: 12px;\n}\n\n.rolling-skill-audit-card,\n.rolling-skill-rubric-version,\n.rolling-skill-evaluation-result,\n.rolling-skill-score-item {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-audit-card header,\n.rolling-skill-rubric-version > summary,\n.rolling-skill-rubric-criteria article header,\n.rolling-skill-evaluation-result > header,\n.rolling-skill-score-item > header {\n    align-items: flex-start;\n    display: flex;\n    gap: 10px;\n    justify-content: space-between;\n}\n\n.rolling-skill-audit-card > button {\n    margin-top: 10px;\n}\n\n.rolling-skill-audit-card code,\n.rolling-skill-rubric-version code,\n.rolling-skill-evidence-card code {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-rubric-version > summary {\n    cursor: pointer;\n}\n\n.rolling-skill-rubric-version > summary > span:first-child,\n.rolling-skill-evaluation-result > header > div,\n.rolling-skill-score-item > header + small {\n    display: grid;\n    gap: 4px;\n}\n\n.rolling-skill-rubric-version-body {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    display: grid;\n    gap: 12px;\n    margin-top: 12px;\n    padding-top: 12px;\n}\n\n.rolling-skill-rubric-version-body h4 {\n    margin: 4px 0 0;\n}\n\n.rolling-skill-rubric-criteria article {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    padding: 10px;\n}\n\n.rolling-skill-evaluation-result {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-score-total {\n    color: var(--dsw-alias-state-business-primary);\n    font-size: 24px;\n    font-weight: 700;\n    white-space: nowrap;\n}\n\n.rolling-skill-score-total small {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-score-breakdown,\n.rolling-skill-trace,\n.rolling-skill-evaluation-result > details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 10px;\n}\n\n.rolling-skill-score-breakdown > summary,\n.rolling-skill-trace > summary,\n.rolling-skill-evaluation-result > details > summary {\n    cursor: pointer;\n    font-weight: 600;\n}\n\n.rolling-skill-score-list,\n.rolling-skill-trace-list {\n    margin-top: 10px;\n}\n\n.rolling-skill-score-item p {\n    margin: 6px 0 0;\n}\n\n.rolling-skill-score-critical {\n    border-color: var(--dsw-alias-state-error-primary);\n}\n\n.rolling-skill-judge-meta,\n.rolling-skill-trace-summary {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-trace-summary {\n    align-items: center;\n    display: flex;\n    flex-wrap: wrap;\n    gap: 8px;\n    margin-top: 10px;\n}\n\n.rolling-skill-trace-list {\n    display: grid;\n    gap: 6px;\n    max-height: 360px;\n    overflow: auto;\n    padding-left: 0;\n}\n\n.rolling-skill-trace-list li {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 7px;\n    display: grid;\n    gap: 8px;\n    grid-template-columns: minmax(48px, auto) 1fr;\n    list-style: none;\n    padding: 8px;\n}\n\n.rolling-skill-trace-list li > span {\n    display: grid;\n    gap: 4px;\n    min-width: 0;\n}\n\n.rolling-skill-inline-error {\n    color: var(--dsw-alias-label-error) !important;\n}\n\n.rolling-skill-dialog-backdrop {\n    align-items: center;\n    background: var(--dsw-alias-bg-mask-1);\n    display: flex;\n    inset: 0;\n    justify-content: center;\n    padding: 20px;\n    position: fixed;\n    z-index: 1000;\n}\n\n.rolling-skill-dialog {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 12px;\n    color: var(--dsw-alias-label-primary);\n    display: grid;\n    gap: 18px;\n    max-height: min(760px, calc(100vh - 40px));\n    max-width: 620px;\n    min-width: 0;\n    overflow: auto;\n    padding: 20px;\n    width: 100%;\n}\n\n.rolling-skill-dialog-header {\n    align-items: flex-start;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n}\n\n.rolling-skill-dialog-header h2,\n.rolling-skill-dialog-header p {\n    margin: 0;\n}\n\n.rolling-skill-dialog-header p {\n    color: var(--dsw-alias-label-secondary);\n    margin-top: 6px;\n}\n\n.rolling-skill-dialog .rolling-skill-select {\n    margin-top: 0;\n    max-width: none;\n}\n\n.rolling-skill-label-fieldset {\n    border: 0;\n    display: flex;\n    gap: 16px;\n    margin: 0;\n    padding: 0;\n}\n\n.rolling-skill-label-fieldset legend {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    font-weight: 600;\n    margin-bottom: 8px;\n}\n\n.rolling-skill-label-fieldset label {\n    align-items: center;\n    display: flex;\n    gap: 6px;\n}\n\n.rolling-skill-blockers {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-state-warning-primary);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    padding: 12px;\n}\n\n.rolling-skill-blockers ul {\n    margin: 8px 0 0;\n    padding-left: 20px;\n}\n\n.rolling-skill-dialog-actions {\n    justify-content: flex-end;\n}\n\n@media (max-width: 640px) {\n    .rolling-skill-workbench-backdrop {\n        padding: 0;\n    }\n\n    .rolling-skill-workbench-overlay {\n        border-radius: 0;\n        max-height: 100vh;\n        min-height: 100vh;\n        padding: 16px;\n    }\n\n    .rolling-skill-review-layout {\n        grid-template-columns: 1fr;\n    }\n\n    .rolling-skill-raw-filter-toolbar,\n    .rolling-skill-curation-model-controls {\n        grid-template-columns: 1fr;\n    }\n\n    .rolling-skill-dialog-backdrop {\n        align-items: flex-end;\n        padding: 0;\n    }\n\n    .rolling-skill-dialog {\n        border-radius: 12px 12px 0 0;\n        max-height: 90vh;\n    }\n}\n\n[data-chat-flow-key].rolling-skill-curation-draft {\n    background: var(--dsw-alias-state-warn-tertiary);\n    border-inline-start: 3px solid var(--dsw-alias-state-warn-primary);\n    box-shadow: inset 3px 0 var(--dsw-alias-state-warn-primary);\n}\n\n[data-chat-flow-key].rolling-skill-curation-saved {\n    background: var(--dsw-alias-state-success-tertiary);\n    border-inline-start: 3px solid var(--dsw-alias-state-success-primary);\n    box-shadow: inset 3px 0 var(--dsw-alias-state-success-primary);\n}\n\n[data-chat-flow-key].rolling-skill-capture-range {\n    background: var(--dsw-alias-interactive-bg-active);\n    border-inline-start: 3px solid var(--dsw-alias-state-business-primary);\n    box-shadow: inset 3px 0 var(--dsw-alias-state-business-primary);\n    scroll-margin-block: 96px;\n}\n\n[data-rolling-skill-curation-status="draft"] {\n    background: var(--dsw-alias-state-warn-tertiary);\n    border-color: var(--dsw-alias-state-warn-primary);\n    color: var(--dsw-alias-state-warn-primary);\n}\n\n[data-rolling-skill-curation-status="saved"] {\n    background: var(--dsw-alias-state-success-tertiary);\n    border-color: var(--dsw-alias-state-success-primary);\n    color: var(--dsw-alias-state-success-primary);\n}\n\n.rolling-skill-marker-legend {\n    align-items: center;\n    display: flex;\n    flex-wrap: wrap;\n    gap: 6px;\n}\n\n.rolling-skill-marker-chip,\n.rolling-skill-marker-compatibility {\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 999px;\n    color: var(--dsw-alias-label-secondary);\n    font-size: 11px;\n    padding: 3px 7px;\n}\n\n.rolling-skill-marker-chip-draft {\n    border-color: var(--dsw-alias-state-warn-primary);\n}\n\n.rolling-skill-marker-chip-saved {\n    border-color: var(--dsw-alias-state-success-primary);\n}\n\n.rolling-skill-runtime-select {\n    border: 0;\n    display: grid;\n    gap: 8px;\n    margin: 16px 0;\n    min-width: 0;\n    padding: 0;\n}\n\n.rolling-skill-runtime-select legend,\n.rolling-skill-field > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    font-weight: 600;\n}\n\n.rolling-skill-runtime-list {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-runtime-option {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    display: flex;\n    gap: 9px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-runtime-option:has(input:checked) {\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-runtime-option > span,\n.rolling-skill-field {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-runtime-option code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 11px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-link-button {\n    background: transparent;\n    border: 0;\n    color: var(--dsw-alias-state-business-primary);\n    cursor: pointer;\n    padding: 0;\n    text-align: left;\n}\n\n.rolling-skill-field .rolling-skill-select {\n    margin-top: 0;\n}\n\n.rolling-skill-skill-row {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: grid;\n    gap: 4px;\n    padding: 11px;\n    text-align: left;\n}\n\n.rolling-skill-skill-row span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-manifest {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-secondary);\n    max-height: 240px;\n    overflow: auto;\n    padding: 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-subpanel {\n    display: grid;\n    gap: 9px;\n}\n\n.rolling-skill-subpanel h4 {\n    margin: 0;\n}\n\n.rolling-skill-section-gap {\n    margin-top: 14px;\n}\n\n.rolling-skill-list-row small {\n    color: var(--dsw-alias-label-secondary);\n    overflow-wrap: anywhere;\n}\n\n@media (max-width: 760px) {\n    .rolling-skill-panel-header,\n    .rolling-skill-list-row,\n    .rolling-skill-case-row,\n    .rolling-skill-form-row {\n        align-items: flex-start;\n        flex-direction: column;\n    }\n\n    .rolling-skill-panel-header > :first-child,\n    .rolling-skill-list-row > :first-child,\n    .rolling-skill-case-row > :first-child,\n    .rolling-skill-form-row > :first-child:not(.rolling-skill-action-button),\n    .rolling-skill-list-row > .rolling-skill-actions,\n    .rolling-skill-case-row > .rolling-skill-actions {\n        box-sizing: border-box;\n        max-width: 100%;\n        width: 100%;\n    }\n\n    .rolling-skill-review-layout {\n        grid-template-columns: 1fr;\n    }\n\n    .rolling-skill-case-filters {\n        display: grid;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-candidate-target {\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-skill-import {\n        align-items: stretch;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-skill-source-picker {\n        grid-template-columns: auto minmax(0, 1fr);\n    }\n\n    .rolling-skill-current-skill {\n        align-items: stretch;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-candidate-target .rolling-skill-select {\n        grid-column: 1;\n    }\n}\n\n@media (max-width: 960px) {\n    .rolling-skill-skill-edit-layout {\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    [role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) {\n        width: min(88vw, 760px);\n    }\n}\n\n@media (max-width: 640px) {\n    .rolling-skill-header {\n        align-items: flex-start;\n        flex-direction: column;\n    }\n\n    .rolling-skill-header > :first-child {\n        width: 100%;\n    }\n\n    .rolling-skill-managed-path,\n    .rolling-skill-skill-edit-follow-up {\n        align-items: stretch;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    [role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) {\n        max-height: calc(100vh - 16px);\n        max-width: calc(100vw - 16px);\n        width: calc(100vw - 16px);\n    }\n}\n';
+var workbench_default = '.rolling-skill-workbench {\n    box-sizing: border-box;\n    color: var(--dsw-alias-label-primary);\n    display: grid;\n    gap: 20px;\n    min-width: 0;\n    padding: 4px 0 24px;\n}\n\n.rolling-skill-workbench-backdrop {\n    background: var(--dsw-alias-bg-mask-1);\n    display: flex;\n    inset: 0;\n    padding: 20px;\n    position: fixed;\n    z-index: 900;\n}\n\n.rolling-skill-workbench-overlay {\n    background: var(--dsw-alias-bg-base);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 14px;\n    color: var(--dsw-alias-label-primary);\n    margin: auto;\n    max-height: calc(100vh - 40px);\n    max-width: 1440px;\n    min-height: min(780px, calc(100vh - 40px));\n    overflow: auto;\n    padding: 24px;\n    position: relative;\n    width: 100%;\n}\n\n.rolling-skill-workbench-close {\n    position: absolute;\n    right: 12px;\n    top: 12px;\n    z-index: 1;\n}\n\n.rolling-skill-settings {\n    display: grid;\n    gap: 16px;\n    padding-bottom: 24px;\n}\n\n.rolling-skill-header {\n    align-items: flex-start;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n}\n\n.rolling-skill-header h2,\n.rolling-skill-panel h3 {\n    margin: 0;\n}\n\n.rolling-skill-header p,\n.rolling-skill-panel p {\n    color: var(--dsw-alias-label-secondary);\n    margin: 6px 0 0;\n}\n\n.rolling-skill-connection-banner {\n    align-items: center;\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-state-warning-primary);\n    border-radius: 10px;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n    padding: 12px 14px;\n}\n\n.rolling-skill-connection-banner > div {\n    display: grid;\n    gap: 3px;\n    min-width: 0;\n}\n\n.rolling-skill-connection-banner span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-tabs {\n    align-items: center;\n    border-bottom: 1px solid var(--dsw-alias-border-l2);\n    display: flex;\n    flex-wrap: wrap;\n    gap: 4px;\n    padding-bottom: 10px;\n}\n\n.rolling-skill-primary-tabs {\n    gap: 8px;\n    padding-bottom: 12px;\n}\n\n.rolling-skill-primary-tabs [aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    font-weight: 600;\n}\n\n.rolling-skill-secondary-tabs {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 10px;\n    gap: 4px;\n    margin-top: -12px;\n    padding: 6px 8px;\n}\n\n.rolling-skill-secondary-tabs [aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    font-weight: 600;\n}\n\n.rolling-skill-current-skill {\n    align-items: center;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: auto minmax(180px, 360px);\n}\n\n.rolling-skill-current-skill > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 13px;\n}\n\n.rolling-skill-counts {\n    display: grid;\n    gap: 10px;\n    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));\n}\n\n.rolling-skill-count,\n.rolling-skill-panel,\n.rolling-skill-state {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 10px;\n}\n\n.rolling-skill-count {\n    display: grid;\n    gap: 4px;\n    padding: 14px;\n}\n\n.rolling-skill-count strong {\n    font-size: 22px;\n    line-height: 28px;\n}\n\n.rolling-skill-count span,\n.rolling-skill-panel dt {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-overview {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-grid {\n    display: grid;\n    gap: 12px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-time-selects {\n    align-items: center;\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n}\n\n.rolling-skill-time-selects label {\n    align-items: center;\n    display: grid;\n    gap: 6px;\n    grid-template-columns: minmax(0, 1fr) auto;\n    min-width: 0;\n}\n\n.rolling-skill-time-selects label > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-automatic-flow-summary {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    line-height: 1.5;\n    margin: 10px 0;\n}\n\n.rolling-skill-automatic-flow-summary strong {\n    color: var(--dsw-alias-label-primary);\n    font-weight: 600;\n}\n\n.rolling-skill-scheduler-explanation {\n    margin-top: 8px;\n}\n\n.rolling-skill-candidate-targets {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 10px;\n    margin: 14px 0 0;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-candidate-targets legend {\n    font-size: 13px;\n    font-weight: 600;\n    padding: 0 4px;\n}\n\n.rolling-skill-candidate-targets > p {\n    margin: 0;\n}\n\n.rolling-skill-candidate-target-list {\n    display: grid;\n    gap: 8px;\n    max-height: min(420px, 52vh);\n    overflow-y: auto;\n    padding-right: 4px;\n    scrollbar-gutter: stable;\n}\n\n.rolling-skill-candidate-target {\n    align-items: center;\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    display: grid;\n    gap: 10px;\n    grid-template-columns: minmax(180px, 1fr) minmax(180px, 360px);\n    min-width: 0;\n    padding-top: 10px;\n}\n\n.rolling-skill-candidate-skill {\n    align-items: flex-start;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: auto minmax(0, 1fr);\n    min-width: 0;\n}\n\n.rolling-skill-candidate-skill > span {\n    display: grid;\n    gap: 3px;\n    min-width: 0;\n}\n\n.rolling-skill-candidate-skill strong {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-candidate-target small {\n    color: var(--dsw-alias-label-secondary);\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-candidate-dataset {\n    display: grid;\n    gap: 4px;\n    min-width: 0;\n}\n\n.rolling-skill-candidate-target .rolling-skill-select {\n    margin-top: 0;\n    max-width: none;\n    min-width: 0;\n    width: 100%;\n}\n\n.rolling-skill-form-actions {\n    align-items: center;\n    display: flex;\n    flex-wrap: wrap;\n    gap: 10px;\n    justify-content: space-between;\n    margin-top: 14px;\n    min-width: 0;\n}\n\n.rolling-skill-panel,\n.rolling-skill-state {\n    min-width: 0;\n    padding: 16px;\n}\n\n.rolling-skill-panel dl {\n    display: grid;\n    gap: 10px;\n    margin: 14px 0 0;\n}\n\n.rolling-skill-panel dl > div {\n    align-items: baseline;\n    display: flex;\n    gap: 12px;\n    justify-content: space-between;\n}\n\n.rolling-skill-panel dd {\n    margin: 0;\n    max-width: 68%;\n    overflow-wrap: anywhere;\n    text-align: right;\n}\n\n.rolling-skill-runtime,\n.rolling-skill-state {\n    display: grid;\n    gap: 8px;\n}\n\n.rolling-skill-runtime {\n    margin-top: 14px;\n}\n\n.rolling-skill-runtime code,\n.rolling-skill-path code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-path code {\n    display: block;\n    margin-top: 10px;\n}\n\n.rolling-skill-error {\n    border-color: var(--dsw-alias-state-error-primary);\n    color: var(--dsw-alias-label-error);\n}\n\n.rolling-skill-data-stack,\n.rolling-skill-form-stack,\n.rolling-skill-list {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row,\n.rolling-skill-form-row,\n.rolling-skill-actions {\n    align-items: center;\n    display: flex;\n    gap: 10px;\n}\n\n.rolling-skill-action-button {\n    flex: 0 0 auto;\n    max-width: 100%;\n    overflow: hidden;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.rolling-skill-action-button[data-rolling-skill-tone="secondary"] {\n    background: var(--dsw-alias-bg-layer-1);\n}\n\n.rolling-skill-action-button[data-rolling-skill-tone="secondary"]:hover:not(:disabled) {\n    background: var(--dsw-alias-interactive-bg-hover);\n}\n\n.rolling-skill-action-button[data-rolling-skill-tone="secondary"]:active:not(:disabled) {\n    background: var(--dsw-alias-interactive-bg-active);\n}\n\n.rolling-skill-actions {\n    flex-wrap: wrap;\n    min-width: 0;\n}\n\n.rolling-skill-panel-header {\n    min-width: 0;\n}\n\n.rolling-skill-panel-header,\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    justify-content: space-between;\n}\n\n.rolling-skill-form-row,\n.rolling-skill-list {\n    margin-top: 14px;\n}\n\n.rolling-skill-form-row > :first-child {\n    flex: 1 1 0;\n    min-width: 0;\n}\n\n.rolling-skill-case-filters {\n    align-items: end;\n    display: grid;\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n}\n\n.rolling-skill-case-filters .rolling-skill-select {\n    max-width: none;\n}\n\n.rolling-skill-skill-import {\n    align-items: end;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto;\n    margin-top: 14px;\n}\n\n.rolling-skill-skill-source-picker {\n    align-items: end;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: auto minmax(0, 1fr);\n    min-width: 0;\n}\n\n.rolling-skill-selected-source {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 7px;\n    display: grid;\n    gap: 3px;\n    min-width: 0;\n    padding: 7px 10px;\n}\n\n.rolling-skill-selected-source span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-selected-source code {\n    overflow: hidden;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.rolling-skill-list-row,\n.rolling-skill-case-row {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-list-row > div:first-child,\n.rolling-skill-case-copy {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-list-row span,\n.rolling-skill-case-copy p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-managed-skill-row .rolling-skill-skill-row {\n    flex: 1;\n    min-width: 0;\n}\n\n.rolling-skill-version-card {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-version-card header,\n.rolling-skill-version-card header > div {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    justify-content: space-between;\n}\n\n.rolling-skill-version-card code {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-manifest-details {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    margin-top: 14px;\n    padding: 10px 12px;\n}\n\n.rolling-skill-manifest-details > summary {\n    cursor: pointer;\n    font-size: 13px;\n    font-weight: 600;\n}\n\n.rolling-skill-manifest-details .rolling-skill-manifest {\n    border: 0;\n    border-radius: 0;\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    margin: 10px 0 0;\n    padding: 10px 0 0;\n}\n\n.rolling-skill-version-heading {\n    margin: 18px 0 0;\n}\n\n.rolling-skill-managed-path {\n    align-items: center;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 8px;\n    grid-template-columns: auto minmax(0, 1fr) auto;\n    margin-top: 14px;\n    min-width: 0;\n    padding: 9px 10px;\n}\n\n.rolling-skill-managed-path > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-managed-path code {\n    min-width: 0;\n    overflow: hidden;\n    text-overflow: ellipsis;\n    white-space: nowrap;\n}\n\n.rolling-skill-skill-edit-modal {\n    box-sizing: border-box;\n    min-width: 0;\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) {\n    max-height: calc(100vh - 32px);\n    max-width: 1120px;\n    width: min(92vw, 1120px);\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) > div:first-child {\n    min-height: 0;\n    overflow: hidden;\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) > div:first-child > div:last-child {\n    min-height: 0;\n    overflow-y: auto;\n}\n\n.rolling-skill-textarea {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    box-sizing: border-box;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    line-height: 1.5;\n    min-height: 92px;\n    padding: 9px 10px;\n    resize: vertical;\n    width: 100%;\n}\n\n.rolling-skill-skill-edit-status {\n    align-items: center;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: flex;\n    gap: 12px;\n    justify-content: space-between;\n    min-width: 0;\n    padding: 10px 12px;\n}\n\n.rolling-skill-skill-edit-status > div {\n    display: grid;\n    gap: 3px;\n    min-width: 0;\n}\n\n.rolling-skill-skill-edit-status span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-skill-edit-layout {\n    display: grid;\n    gap: 12px;\n    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);\n    min-width: 0;\n}\n\n.rolling-skill-skill-edit-conversation,\n.rolling-skill-skill-edit-diff {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-skill-edit-messages,\n.rolling-skill-skill-edit-files {\n    display: grid;\n    gap: 8px;\n    max-height: 430px;\n    min-width: 0;\n    overflow: auto;\n}\n\n.rolling-skill-skill-edit-messages article,\n.rolling-skill-skill-edit-files article {\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 6px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-skill-edit-messages article[data-role="assistant"] {\n    background: var(--dsw-alias-bg-layer-2);\n}\n\n.rolling-skill-skill-edit-messages p {\n    color: var(--dsw-alias-label-primary);\n    margin: 0;\n    overflow-wrap: anywhere;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-skill-edit-follow-up {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: minmax(0, 1fr) auto;\n    margin-top: 10px;\n    min-width: 0;\n}\n\n.rolling-skill-skill-edit-follow-up .rolling-skill-textarea {\n    min-height: 72px;\n}\n\n.rolling-skill-skill-edit-files article header {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    justify-content: space-between;\n    min-width: 0;\n}\n\n.rolling-skill-skill-edit-files article header strong,\n.rolling-skill-skill-edit-files article header span {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-skill-edit-files article header span,\n.rolling-skill-skill-edit-files article small {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-skill-edit-files pre {\n    font-size: 12px;\n    margin: 0;\n    max-height: 320px;\n    overflow: auto;\n    white-space: pre;\n}\n\n.rolling-skill-version-workflow {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    display: grid;\n    gap: 12px;\n    margin-top: 18px;\n    padding: 14px;\n}\n\n.rolling-skill-version-workflow h4,\n.rolling-skill-version-workflow p {\n    margin: 0;\n}\n\n.rolling-skill-version-workflow p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 13px;\n}\n\n.rolling-skill-version-workflow .rolling-skill-form-row {\n    margin-top: 0;\n}\n\n.rolling-skill-pagination {\n    align-items: center;\n    color: var(--dsw-alias-label-secondary);\n    display: flex;\n    gap: 10px;\n    justify-content: center;\n    margin-top: 14px;\n}\n\n.rolling-skill-group-list,\n.rolling-skill-raw-group,\n.rolling-skill-detail-stack {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-group-list {\n    margin-top: 14px;\n}\n\n.rolling-skill-raw-filter-toolbar {\n    align-items: end;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: minmax(0, 1fr) minmax(190px, 280px);\n}\n\n.rolling-skill-raw-skill-select {\n    color: var(--dsw-alias-label-secondary);\n    display: grid;\n    font-size: 12px;\n    gap: 5px;\n}\n\n.rolling-skill-raw-skill-select .rolling-skill-select {\n    margin-top: 0;\n    max-width: none;\n}\n\n.rolling-skill-raw-group-filter {\n    align-items: center;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 7px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: flex;\n    font: inherit;\n    gap: 8px;\n    justify-content: space-between;\n    max-width: 100%;\n    min-width: 0;\n    padding: 7px 10px;\n    text-align: left;\n    width: fit-content;\n}\n\n.rolling-skill-raw-group-filter[aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-raw-group-filter strong {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-raw-group-filter span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-verbatim {\n    overflow-wrap: anywhere;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-detail-stack h4,\n.rolling-skill-detail-stack p {\n    margin: 0;\n}\n\n.rolling-skill-detail-stack pre {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    max-height: 320px;\n    overflow: auto;\n    padding: 10px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-muted,\n.rolling-skill-range-hint {\n    color: var(--dsw-alias-label-secondary);\n}\n\n.rolling-skill-evidence-summary {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));\n    margin: 0;\n}\n\n.rolling-skill-evidence-summary > div {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 4px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-evidence-summary dt {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-evidence-summary dd {\n    margin: 0;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-capture-range-card {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 10px;\n    display: grid;\n    gap: 10px;\n    padding: 12px;\n}\n\n.rolling-skill-capture-evidence-timeline {\n    display: grid;\n    gap: 8px;\n    list-style: none;\n    margin: 0;\n    padding: 0;\n}\n\n.rolling-skill-capture-evidence-timeline > li {\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-inline-start: 3px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    min-width: 0;\n    overflow: hidden;\n}\n\n.rolling-skill-capture-evidence-timeline > li[data-kind="user"] {\n    background: var(--dsw-alias-bg-layer-2);\n}\n\n.rolling-skill-capture-evidence-timeline > li[data-kind="assistant"] {\n    background: var(--dsw-alias-bg-layer-1);\n}\n\n.rolling-skill-capture-evidence-timeline > li[data-boundary="start"],\n.rolling-skill-capture-evidence-timeline > li[data-boundary="end"] {\n    border-inline-start-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-capture-evidence-timeline article {\n    display: grid;\n    gap: 8px;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-evidence-timeline article header,\n.rolling-skill-capture-tool summary {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    justify-content: space-between;\n}\n\n.rolling-skill-capture-context summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-context p {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    margin: 0;\n    max-height: 240px;\n    overflow: auto;\n    padding: 10px 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-capture-evidence-timeline article header span,\n.rolling-skill-capture-tool summary span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-capture-evidence-timeline article p {\n    margin: 0;\n    overflow-wrap: anywhere;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-capture-tool summary {\n    cursor: pointer;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-tool-details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    display: grid;\n    gap: 10px;\n    padding: 10px 12px;\n}\n\n.rolling-skill-capture-tool-details > div {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-capture-tool-details pre {\n    background: var(--dsw-alias-bg-layer-2);\n    border-radius: 6px;\n    margin: 0;\n    max-height: 240px;\n    overflow: auto;\n    padding: 8px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-capture-evidence-error {\n    align-items: flex-start;\n    border: 1px solid var(--dsw-alias-state-error-primary);\n    border-radius: 8px;\n    display: grid;\n    gap: 6px;\n    padding: 10px;\n}\n\n.rolling-skill-capture-evidence-error p,\n.rolling-skill-capture-evidence-error small {\n    margin: 0;\n}\n\n.rolling-skill-capture-boundaries {\n    display: grid;\n    gap: 8px;\n}\n\n.rolling-skill-capture-boundaries article {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 10px;\n    grid-template-columns: 26px minmax(0, 1fr);\n    padding: 10px;\n}\n\n.rolling-skill-capture-boundaries article > div {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-capture-boundaries p,\n.rolling-skill-capture-boundaries code,\n.rolling-skill-range-hint {\n    margin: 0;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-capture-boundaries code {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 11px;\n}\n\n.rolling-skill-range-index {\n    align-items: center;\n    border: 1px solid var(--dsw-alias-state-business-primary);\n    border-radius: 50%;\n    color: var(--dsw-alias-state-business-primary);\n    display: inline-flex;\n    font-size: 12px;\n    height: 24px;\n    justify-content: center;\n    width: 24px;\n}\n\n.rolling-skill-advanced-evidence {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 10px;\n}\n\n.rolling-skill-advanced-evidence > summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-capture-evidence) {\n    max-height: calc(100vh - 32px);\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-capture-evidence) > div:first-child {\n    min-height: 0;\n    overflow: hidden;\n}\n\n[role="dialog"]:has(> div > div > .rolling-skill-capture-evidence) > div:first-child > div:last-child {\n    min-height: 0;\n    overflow-y: auto;\n}\n\n.rolling-skill-case-copy p {\n    margin: 0;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-markdown {\n    line-height: 1.55;\n    min-width: 0;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-markdown > :first-child {\n    margin-top: 0;\n}\n\n.rolling-skill-markdown > :last-child {\n    margin-bottom: 0;\n}\n\n.rolling-skill-case-copy .rolling-skill-markdown p,\n.rolling-skill-detail-stack .rolling-skill-markdown p {\n    margin: 0 0 8px;\n    white-space: normal;\n}\n\n.rolling-skill-markdown h1,\n.rolling-skill-markdown h2,\n.rolling-skill-markdown h3,\n.rolling-skill-markdown h4,\n.rolling-skill-markdown h5,\n.rolling-skill-markdown h6 {\n    line-height: 1.3;\n    margin: 12px 0 7px;\n}\n\n.rolling-skill-markdown ul,\n.rolling-skill-markdown ol {\n    margin: 7px 0;\n    padding-inline-start: 22px;\n}\n\n.rolling-skill-markdown li + li {\n    margin-top: 3px;\n}\n\n.rolling-skill-markdown blockquote {\n    border-inline-start: 3px solid var(--dsw-alias-border-l2);\n    color: var(--dsw-alias-label-secondary);\n    margin: 8px 0;\n    padding-inline-start: 10px;\n}\n\n.rolling-skill-markdown code {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 4px;\n    font-family: ui-monospace, monospace;\n    font-size: 0.92em;\n    padding: 1px 4px;\n}\n\n.rolling-skill-markdown pre {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    max-width: 100%;\n    overflow: auto;\n    padding: 10px;\n    white-space: pre;\n}\n\n.rolling-skill-markdown pre code {\n    background: transparent;\n    border: 0;\n    padding: 0;\n}\n\n.rolling-skill-markdown a {\n    color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-markdown-image-placeholder {\n    color: var(--dsw-alias-label-secondary);\n    font-style: italic;\n}\n\n.rolling-skill-markdown-compact {\n    max-height: 9.5em;\n    overflow: hidden;\n}\n\n.rolling-skill-case-question .rolling-skill-markdown {\n    color: var(--dsw-alias-label-primary);\n    font-weight: 600;\n}\n\n.rolling-skill-select,\n.rolling-skill-form-stack input,\n.rolling-skill-field input,\n.rolling-skill-form-stack textarea {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 7px;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    padding: 8px 10px;\n}\n\n.rolling-skill-review-layout {\n    display: grid;\n    gap: 14px;\n    grid-template-columns: minmax(260px, 360px) minmax(0, 1fr);\n    min-height: 560px;\n}\n\n.rolling-skill-review-list,\n.rolling-skill-review-detail,\n.rolling-skill-session-view {\n    min-width: 0;\n}\n\n.rolling-skill-review-list-button {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: grid;\n    font: inherit;\n    gap: 5px;\n    padding: 10px;\n    text-align: left;\n    width: 100%;\n}\n\n.rolling-skill-review-list-button[data-selected="true"] {\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-review-list-button span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-review-scope {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 9px;\n    display: grid;\n    gap: 3px;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n    margin-top: 12px;\n    padding: 3px;\n}\n\n.rolling-skill-review-scope button {\n    background: transparent;\n    border: 1px solid transparent;\n    border-radius: 7px;\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n    font: inherit;\n    min-width: 0;\n    padding: 7px 9px;\n}\n\n.rolling-skill-review-scope button[aria-pressed="true"] {\n    background: var(--dsw-alias-bg-layer-2);\n    border-color: var(--dsw-alias-border-l2);\n    color: var(--dsw-alias-label-primary);\n    font-weight: 600;\n}\n\n.rolling-skill-review-scope span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 11px;\n}\n\n.rolling-skill-session-view,\n.rolling-skill-evidence-card,\n.rolling-skill-conversation-log,\n.rolling-skill-rubric-draft {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-curation-draft-card {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: grid;\n    gap: 12px;\n    padding: 12px;\n}\n\n.rolling-skill-curation-draft-card > header {\n    align-items: flex-start;\n    display: flex;\n    gap: 10px;\n    justify-content: space-between;\n}\n\n.rolling-skill-curation-draft-card h4,\n.rolling-skill-curation-draft-card p {\n    margin: 0;\n}\n\n.rolling-skill-curation-draft-details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 9px;\n}\n\n.rolling-skill-curation-draft-details > summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n}\n\n.rolling-skill-curation-draft-details > div {\n    display: grid;\n    gap: 12px;\n    margin-top: 10px;\n}\n\n.rolling-skill-curation-primary,\n.rolling-skill-curation-composer,\n.rolling-skill-curation-runtime-details > .rolling-skill-evidence-card {\n    display: grid;\n    gap: 10px;\n}\n\n.rolling-skill-curation-composer {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-state-business-primary);\n    border-radius: 10px;\n    padding: 12px;\n}\n\n.rolling-skill-curation-composer h4,\n.rolling-skill-curation-composer p {\n    margin: 0;\n}\n\n.rolling-skill-curation-composer > div:first-child p {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    margin-top: 4px;\n}\n\n.rolling-skill-curation-composer textarea {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    font: inherit;\n    min-height: 104px;\n    padding: 10px;\n    resize: vertical;\n}\n\n.rolling-skill-curation-runtime-details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 10px;\n}\n\n.rolling-skill-curation-runtime-details > summary {\n    color: var(--dsw-alias-label-secondary);\n    cursor: pointer;\n}\n\n.rolling-skill-curation-runtime-details > .rolling-skill-evidence-card {\n    margin-top: 10px;\n}\n\n.rolling-skill-curation-model-controls {\n    display: grid;\n    gap: 10px;\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n}\n\n.rolling-skill-session-view h4,\n.rolling-skill-review-list h4 {\n    margin: 8px 0 0;\n}\n\n.rolling-skill-session-view pre,\n.rolling-skill-evidence-card pre {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    max-height: 340px;\n    overflow: auto;\n    padding: 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-conversation-log > div,\n.rolling-skill-rubric-draft article {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    padding: 10px;\n}\n\n.rolling-skill-conversation-log p,\n.rolling-skill-rubric-draft p {\n    margin: 6px 0 0;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-create-rubric {\n    border-bottom: 1px solid var(--dsw-alias-border-l2);\n    padding-bottom: 14px;\n}\n\n.rolling-skill-operation-status {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    line-height: 1.5;\n    margin: 0;\n}\n\n.rolling-skill-operation-feedback {\n    align-items: center;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    display: flex;\n    gap: 8px;\n    min-width: 0;\n    padding: 9px 11px;\n}\n\n.rolling-skill-operation-feedback[data-state="failed"] {\n    border-color: var(--dsw-alias-state-error-primary);\n    color: var(--dsw-alias-label-error);\n}\n\n.rolling-skill-operation-feedback[data-state="succeeded"] {\n    color: var(--dsw-alias-label-success);\n}\n\n.rolling-skill-operation-indicator {\n    background: currentColor;\n    border-radius: 50%;\n    flex: 0 0 7px;\n    height: 7px;\n    width: 7px;\n}\n\n.rolling-skill-operation-feedback[data-state="starting"] .rolling-skill-operation-indicator,\n.rolling-skill-operation-feedback[data-state="running"] .rolling-skill-operation-indicator {\n    animation: rolling-skill-pulse 1.2s ease-in-out infinite;\n}\n\n@keyframes rolling-skill-pulse {\n    50% { opacity: .32; transform: scale(.8); }\n}\n\n.rolling-skill-confirm-dialog {\n    max-width: 480px;\n}\n\n.rolling-skill-destructive-action {\n    --rolling-skill-destructive: 1;\n}\n\n.rolling-skill-select {\n    margin-top: 14px;\n    max-width: 360px;\n    width: 100%;\n}\n\n.rolling-skill-form-stack label {\n    display: grid;\n    gap: 6px;\n}\n\n.rolling-skill-form-stack textarea {\n    min-height: 120px;\n    resize: vertical;\n}\n\n.rolling-skill-check {\n    align-items: center;\n    display: flex;\n    gap: 8px;\n    margin-top: 12px;\n}\n\n.rolling-skill-badge {\n    color: var(--dsw-alias-state-business-primary);\n    font-size: 11px;\n    font-weight: 600;\n}\n\n.rolling-skill-audit-grid,\n.rolling-skill-rubric-criteria,\n.rolling-skill-evaluation-results,\n.rolling-skill-score-list {\n    display: grid;\n    gap: 10px;\n}\n\n.rolling-skill-audit-grid {\n    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));\n    margin-top: 12px;\n}\n\n.rolling-skill-audit-card,\n.rolling-skill-rubric-version,\n.rolling-skill-evaluation-result,\n.rolling-skill-score-item {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    min-width: 0;\n    padding: 12px;\n}\n\n.rolling-skill-audit-card header,\n.rolling-skill-rubric-version > summary,\n.rolling-skill-rubric-criteria article header,\n.rolling-skill-evaluation-result > header,\n.rolling-skill-score-item > header {\n    align-items: flex-start;\n    display: flex;\n    gap: 10px;\n    justify-content: space-between;\n}\n\n.rolling-skill-audit-card > button {\n    margin-top: 10px;\n}\n\n.rolling-skill-audit-card code,\n.rolling-skill-rubric-version code,\n.rolling-skill-evidence-card code {\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-rubric-version > summary {\n    cursor: pointer;\n}\n\n.rolling-skill-rubric-version > summary > span:first-child,\n.rolling-skill-evaluation-result > header > div,\n.rolling-skill-score-item > header + small {\n    display: grid;\n    gap: 4px;\n}\n\n.rolling-skill-rubric-version-body {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    display: grid;\n    gap: 12px;\n    margin-top: 12px;\n    padding-top: 12px;\n}\n\n.rolling-skill-rubric-version-body h4 {\n    margin: 4px 0 0;\n}\n\n.rolling-skill-rubric-criteria article {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    padding: 10px;\n}\n\n.rolling-skill-evaluation-result {\n    display: grid;\n    gap: 12px;\n}\n\n.rolling-skill-score-total {\n    color: var(--dsw-alias-state-business-primary);\n    font-size: 24px;\n    font-weight: 700;\n    white-space: nowrap;\n}\n\n.rolling-skill-score-total small {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-score-breakdown,\n.rolling-skill-trace,\n.rolling-skill-evaluation-result > details {\n    border-top: 1px solid var(--dsw-alias-border-l3);\n    padding-top: 10px;\n}\n\n.rolling-skill-score-breakdown > summary,\n.rolling-skill-trace > summary,\n.rolling-skill-evaluation-result > details > summary {\n    cursor: pointer;\n    font-weight: 600;\n}\n\n.rolling-skill-score-list,\n.rolling-skill-trace-list {\n    margin-top: 10px;\n}\n\n.rolling-skill-score-item p {\n    margin: 6px 0 0;\n}\n\n.rolling-skill-score-critical {\n    border-color: var(--dsw-alias-state-error-primary);\n}\n\n.rolling-skill-judge-meta,\n.rolling-skill-trace-summary {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-trace-summary {\n    align-items: center;\n    display: flex;\n    flex-wrap: wrap;\n    gap: 8px;\n    margin-top: 10px;\n}\n\n.rolling-skill-trace-list {\n    display: grid;\n    gap: 6px;\n    max-height: 360px;\n    overflow: auto;\n    padding-left: 0;\n}\n\n.rolling-skill-trace-list li {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 7px;\n    display: grid;\n    gap: 8px;\n    grid-template-columns: minmax(48px, auto) 1fr;\n    list-style: none;\n    padding: 8px;\n}\n\n.rolling-skill-trace-list li > span {\n    display: grid;\n    gap: 4px;\n    min-width: 0;\n}\n\n.rolling-skill-inline-error {\n    color: var(--dsw-alias-label-error) !important;\n}\n\n.rolling-skill-dialog-backdrop {\n    align-items: center;\n    background: var(--dsw-alias-bg-mask-1);\n    display: flex;\n    inset: 0;\n    justify-content: center;\n    padding: 20px;\n    position: fixed;\n    z-index: 1000;\n}\n\n.rolling-skill-dialog {\n    background: var(--dsw-alias-bg-layer-2);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 12px;\n    color: var(--dsw-alias-label-primary);\n    display: grid;\n    gap: 18px;\n    max-height: min(760px, calc(100vh - 40px));\n    max-width: 620px;\n    min-width: 0;\n    overflow: auto;\n    padding: 20px;\n    width: 100%;\n}\n\n.rolling-skill-dialog-header {\n    align-items: flex-start;\n    display: flex;\n    gap: 16px;\n    justify-content: space-between;\n}\n\n.rolling-skill-dialog-header h2,\n.rolling-skill-dialog-header p {\n    margin: 0;\n}\n\n.rolling-skill-dialog-header p {\n    color: var(--dsw-alias-label-secondary);\n    margin-top: 6px;\n}\n\n.rolling-skill-dialog .rolling-skill-select {\n    margin-top: 0;\n    max-width: none;\n}\n\n.rolling-skill-label-fieldset {\n    border: 0;\n    display: flex;\n    gap: 16px;\n    margin: 0;\n    padding: 0;\n}\n\n.rolling-skill-label-fieldset legend {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    font-weight: 600;\n    margin-bottom: 8px;\n}\n\n.rolling-skill-label-fieldset label {\n    align-items: center;\n    display: flex;\n    gap: 6px;\n}\n\n.rolling-skill-blockers {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-state-warning-primary);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    padding: 12px;\n}\n\n.rolling-skill-blockers ul {\n    margin: 8px 0 0;\n    padding-left: 20px;\n}\n\n.rolling-skill-dialog-actions {\n    justify-content: flex-end;\n}\n\n@media (max-width: 640px) {\n    .rolling-skill-workbench-backdrop {\n        padding: 0;\n    }\n\n    .rolling-skill-workbench-overlay {\n        border-radius: 0;\n        max-height: 100vh;\n        min-height: 100vh;\n        padding: 16px;\n    }\n\n    .rolling-skill-review-layout {\n        grid-template-columns: 1fr;\n    }\n\n    .rolling-skill-raw-filter-toolbar,\n    .rolling-skill-curation-model-controls {\n        grid-template-columns: 1fr;\n    }\n\n    .rolling-skill-dialog-backdrop {\n        align-items: flex-end;\n        padding: 0;\n    }\n\n    .rolling-skill-dialog {\n        border-radius: 12px 12px 0 0;\n        max-height: 90vh;\n    }\n}\n\n[data-chat-flow-key].rolling-skill-curation-draft {\n    background: var(--dsw-alias-state-warn-tertiary);\n    border-inline-start: 3px solid var(--dsw-alias-state-warn-primary);\n    box-shadow: inset 3px 0 var(--dsw-alias-state-warn-primary);\n}\n\n[data-chat-flow-key].rolling-skill-curation-saved {\n    background: var(--dsw-alias-state-success-tertiary);\n    border-inline-start: 3px solid var(--dsw-alias-state-success-primary);\n    box-shadow: inset 3px 0 var(--dsw-alias-state-success-primary);\n}\n\n[data-chat-flow-key].rolling-skill-capture-range {\n    background: var(--dsw-alias-interactive-bg-active);\n    border-inline-start: 3px solid var(--dsw-alias-state-business-primary);\n    box-shadow: inset 3px 0 var(--dsw-alias-state-business-primary);\n    scroll-margin-block: 96px;\n}\n\n[data-rolling-skill-curation-status="draft"] {\n    background: var(--dsw-alias-state-warn-tertiary);\n    border-color: var(--dsw-alias-state-warn-primary);\n    color: var(--dsw-alias-state-warn-primary);\n}\n\n[data-rolling-skill-curation-status="saved"] {\n    background: var(--dsw-alias-state-success-tertiary);\n    border-color: var(--dsw-alias-state-success-primary);\n    color: var(--dsw-alias-state-success-primary);\n}\n\n.rolling-skill-marker-legend {\n    align-items: center;\n    display: flex;\n    flex-wrap: wrap;\n    gap: 6px;\n}\n\n.rolling-skill-marker-chip,\n.rolling-skill-marker-compatibility {\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 999px;\n    color: var(--dsw-alias-label-secondary);\n    font-size: 11px;\n    padding: 3px 7px;\n}\n\n.rolling-skill-marker-chip-draft {\n    border-color: var(--dsw-alias-state-warn-primary);\n}\n\n.rolling-skill-marker-chip-saved {\n    border-color: var(--dsw-alias-state-success-primary);\n}\n\n.rolling-skill-runtime-select {\n    border: 0;\n    display: grid;\n    gap: 8px;\n    margin: 16px 0;\n    min-width: 0;\n    padding: 0;\n}\n\n.rolling-skill-runtime-select legend,\n.rolling-skill-field > span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n    font-weight: 600;\n}\n\n.rolling-skill-runtime-list {\n    display: grid;\n    gap: 8px;\n    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n}\n\n.rolling-skill-runtime-option {\n    align-items: flex-start;\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l2);\n    border-radius: 8px;\n    display: flex;\n    gap: 9px;\n    min-width: 0;\n    padding: 10px;\n}\n\n.rolling-skill-runtime-option:has(input:checked) {\n    border-color: var(--dsw-alias-state-business-primary);\n}\n\n.rolling-skill-runtime-option > span,\n.rolling-skill-field {\n    display: grid;\n    gap: 5px;\n    min-width: 0;\n}\n\n.rolling-skill-runtime-option code {\n    color: var(--dsw-alias-label-secondary);\n    font-family: ui-monospace, monospace;\n    font-size: 11px;\n    overflow-wrap: anywhere;\n}\n\n.rolling-skill-link-button {\n    background: transparent;\n    border: 0;\n    color: var(--dsw-alias-state-business-primary);\n    cursor: pointer;\n    padding: 0;\n    text-align: left;\n}\n\n.rolling-skill-field .rolling-skill-select {\n    margin-top: 0;\n}\n\n.rolling-skill-skill-row {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-primary);\n    cursor: pointer;\n    display: grid;\n    gap: 4px;\n    padding: 11px;\n    text-align: left;\n}\n\n.rolling-skill-skill-row span {\n    color: var(--dsw-alias-label-secondary);\n    font-size: 12px;\n}\n\n.rolling-skill-manifest {\n    background: var(--dsw-alias-bg-layer-1);\n    border: 1px solid var(--dsw-alias-border-l3);\n    border-radius: 8px;\n    color: var(--dsw-alias-label-secondary);\n    max-height: 240px;\n    overflow: auto;\n    padding: 12px;\n    white-space: pre-wrap;\n}\n\n.rolling-skill-subpanel {\n    display: grid;\n    gap: 9px;\n}\n\n.rolling-skill-subpanel h4 {\n    margin: 0;\n}\n\n.rolling-skill-section-gap {\n    margin-top: 14px;\n}\n\n.rolling-skill-list-row small {\n    color: var(--dsw-alias-label-secondary);\n    overflow-wrap: anywhere;\n}\n\n@media (max-width: 760px) {\n    .rolling-skill-panel-header,\n    .rolling-skill-list-row,\n    .rolling-skill-case-row,\n    .rolling-skill-form-row {\n        align-items: flex-start;\n        flex-direction: column;\n    }\n\n    .rolling-skill-panel-header > :first-child,\n    .rolling-skill-list-row > :first-child,\n    .rolling-skill-case-row > :first-child,\n    .rolling-skill-form-row > :first-child:not(.rolling-skill-action-button),\n    .rolling-skill-list-row > .rolling-skill-actions,\n    .rolling-skill-case-row > .rolling-skill-actions {\n        box-sizing: border-box;\n        max-width: 100%;\n        width: 100%;\n    }\n\n    .rolling-skill-review-layout {\n        grid-template-columns: 1fr;\n    }\n\n    .rolling-skill-case-filters {\n        display: grid;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-candidate-target {\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-skill-import {\n        align-items: stretch;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-skill-source-picker {\n        grid-template-columns: auto minmax(0, 1fr);\n    }\n\n    .rolling-skill-current-skill {\n        align-items: stretch;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    .rolling-skill-candidate-target .rolling-skill-select {\n        grid-column: 1;\n    }\n}\n\n@media (max-width: 960px) {\n    .rolling-skill-skill-edit-layout {\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    [role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) {\n        width: min(88vw, 760px);\n    }\n}\n\n@media (max-width: 640px) {\n    .rolling-skill-header {\n        align-items: flex-start;\n        flex-direction: column;\n    }\n\n    .rolling-skill-header > :first-child {\n        width: 100%;\n    }\n\n    .rolling-skill-managed-path,\n    .rolling-skill-skill-edit-follow-up {\n        align-items: stretch;\n        grid-template-columns: minmax(0, 1fr);\n    }\n\n    [role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) {\n        max-height: calc(100vh - 16px);\n        max-width: calc(100vw - 16px);\n        width: calc(100vw - 16px);\n    }\n}\n';
 
 // src/client/locale.ts
 var LOCALE_NAMESPACE = "rolling-skill";
@@ -641,6 +735,22 @@ var zh = {
   loading: "\u6B63\u5728\u8BFB\u53D6 Rolling Skill \u6570\u636E\u2026",
   loadError: "\u65E0\u6CD5\u8BFB\u53D6 Rolling Skill \u6570\u636E",
   retry: "\u91CD\u8BD5",
+  connectionUnavailable: "DSH \u670D\u52A1\u8FDE\u63A5\u5DF2\u65AD\u5F00",
+  connectionUnavailableDescription: "\u5F53\u524D\u9875\u9762\u4FDD\u7559\u4E0A\u6B21\u6210\u529F\u7684\u6570\u636E\uFF1B\u91CD\u65B0\u8FDE\u63A5\u540E\u4F1A\u5237\u65B0\u5F53\u524D\u529F\u80FD\u3002",
+  reconnect: "\u91CD\u65B0\u8FDE\u63A5",
+  statusQueued: "\u7B49\u5F85\u5F00\u59CB",
+  statusRunning: "\u8FDB\u884C\u4E2D",
+  statusNeedsReview: "\u7B49\u5F85\u5BA1\u6838",
+  statusFailed: "\u5931\u8D25",
+  statusArchived: "\u5DF2\u5F52\u6863",
+  statusCompleted: "\u5DF2\u5B8C\u6210",
+  statusSucceeded: "\u5DF2\u6210\u529F",
+  statusCancelled: "\u5DF2\u53D6\u6D88",
+  statusPaused: "\u5DF2\u6682\u505C",
+  statusVerifying: "\u6B63\u5728\u9A8C\u8BC1",
+  statusAwaitingPermission: "\u7B49\u5F85\u6388\u6743",
+  statusAwaitingConfirmation: "\u7B49\u5F85\u786E\u8BA4",
+  statusNeedsRecovery: "\u9700\u8981\u5904\u7406",
   captureAction: "\u6C89\u6DC0 Case",
   captureChecking: "\u68C0\u67E5\u4E2D\u2026",
   captureDraft: "Case \u8349\u7A3F",
@@ -1120,6 +1230,22 @@ var en = {
   loading: "Loading Rolling Skill data\u2026",
   loadError: "Could not load Rolling Skill data",
   retry: "Retry",
+  connectionUnavailable: "DSH service connection lost",
+  connectionUnavailableDescription: "The last successful data remains visible. Reconnect to refresh the current task.",
+  reconnect: "Reconnect",
+  statusQueued: "Queued",
+  statusRunning: "Running",
+  statusNeedsReview: "Needs review",
+  statusFailed: "Failed",
+  statusArchived: "Archived",
+  statusCompleted: "Completed",
+  statusSucceeded: "Succeeded",
+  statusCancelled: "Cancelled",
+  statusPaused: "Paused",
+  statusVerifying: "Verifying",
+  statusAwaitingPermission: "Awaiting permission",
+  statusAwaitingConfirmation: "Awaiting confirmation",
+  statusNeedsRecovery: "Needs attention",
   captureAction: "Curate Case",
   captureChecking: "Checking\u2026",
   captureDraft: "Case Draft",
@@ -1592,7 +1718,11 @@ var import_dsh_client_ui_primitives2 = require("@deepseek-ai/dsh-client-ui-primi
 var import_react2 = require("react");
 
 // src/client/api.ts
+var import_connection_store = __toESM(require_connection_store(), 1);
 var ROLLING_SKILL_API_PATH = "/rolling-skill/api";
+var { rollingSkillConnection } = import_connection_store.default;
+var getRollingSkillConnectionSnapshot = () => rollingSkillConnection.getSnapshot();
+var subscribeRollingSkillConnection = (listener) => rollingSkillConnection.subscribe(listener);
 var RollingSkillApiError = class extends Error {
   code;
   status;
@@ -1604,13 +1734,25 @@ var RollingSkillApiError = class extends Error {
   }
 };
 async function requestRollingSkill(method, input = {}, signal) {
-  const response = await fetch(ROLLING_SKILL_API_PATH, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ method, input }),
-    signal
-  });
+  let response;
+  try {
+    response = await fetch(ROLLING_SKILL_API_PATH, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ method, input }),
+      signal
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    rollingSkillConnection.markDisconnected(error instanceof Error ? error.message : null);
+    throw new RollingSkillApiError(
+      "CONNECTION_UNAVAILABLE",
+      "DSH service connection is unavailable",
+      0
+    );
+  }
+  rollingSkillConnection.markConnected();
   let envelope;
   try {
     envelope = await response.json();
@@ -2051,15 +2193,15 @@ function ConversationCurationMarkers({ sessionId, useSession, t }) {
 
 // src/client/workbench/WorkbenchLauncher.tsx
 var import_dsh_client_ui_primitives16 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react23 = require("react");
+var import_react24 = require("react");
 
 // src/client/workbench/WorkbenchOverlay.tsx
 var import_dsh_client_ui_primitives15 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react22 = require("react");
+var import_react23 = require("react");
 
 // src/client/workbench/Workbench.tsx
 var import_dsh_client_ui_primitives14 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react21 = require("react");
+var import_react22 = require("react");
 
 // src/client/workbench/ActionButton.tsx
 var import_dsh_client_ui_primitives3 = require("@deepseek-ai/dsh-client-ui-primitives");
@@ -14786,11 +14928,35 @@ function RuntimeSelectionGrid({ t, runtimes, values, onChange }) {
 }
 
 // src/client/workbench/CurationPanel.tsx
-var import_react18 = require("react");
+var import_react19 = require("react");
 var import_curation_selection = __toESM(require_curation_selection(), 1);
 
 // src/client/workbench/CurationSessionView.tsx
+var import_react18 = require("react");
+
+// src/client/workbench/usePollingRevision.ts
 var import_react17 = require("react");
+var import_polling_scheduler = __toESM(require_polling_scheduler(), 1);
+var { createPollingScheduler } = import_polling_scheduler.default;
+function usePollingRevision(active, intervalMs = 1500) {
+  const [revision, setRevision] = (0, import_react17.useState)(0);
+  (0, import_react17.useEffect)(() => {
+    if (!active) return;
+    const scheduler = createPollingScheduler({
+      intervalMs,
+      schedule: (callback, delay) => window.setTimeout(callback, delay),
+      cancel: (timer) => window.clearTimeout(timer)
+    });
+    scheduler.start(() => {
+      setRevision((value) => value + 1);
+      return true;
+    });
+    return () => scheduler.stop();
+  }, [active, intervalMs]);
+  return [revision, () => setRevision((value) => value + 1)];
+}
+
+// src/client/workbench/CurationSessionView.tsx
 var import_jsx_runtime20 = require("react/jsx-runtime");
 function newKey(prefix) {
   return `${prefix}:${globalThis.crypto.randomUUID()}`;
@@ -14801,13 +14967,14 @@ function CurationSessionView({
   onChanged,
   onNavigate
 }) {
-  const [revision, setRevision] = (0, import_react17.useState)(0);
-  const [session, setSession] = (0, import_react17.useState)(null);
-  const [error, setError] = (0, import_react17.useState)(null);
-  const [message, setMessage] = (0, import_react17.useState)("");
-  const [busy, setBusy] = (0, import_react17.useState)(false);
-  const keys2 = (0, import_react17.useRef)(/* @__PURE__ */ new Map());
-  (0, import_react17.useEffect)(() => {
+  const [session, setSession] = (0, import_react18.useState)(null);
+  const [error, setError] = (0, import_react18.useState)(null);
+  const [message, setMessage] = (0, import_react18.useState)("");
+  const [busy, setBusy] = (0, import_react18.useState)(false);
+  const keys2 = (0, import_react18.useRef)(/* @__PURE__ */ new Map());
+  const working = Boolean(session?.curator?.working || session && ["queued", "running"].includes(session.status));
+  const [revision, refresh] = usePollingRevision(working);
+  (0, import_react18.useEffect)(() => {
     const controller = new AbortController();
     requestRollingSkill("curation.get", { sessionId }, controller.signal).then((value) => {
       setSession(value);
@@ -14817,11 +14984,6 @@ function CurationSessionView({
     });
     return () => controller.abort();
   }, [sessionId, revision]);
-  (0, import_react17.useEffect)(() => {
-    if (!session || !["queued", "running"].includes(session.status)) return;
-    const timer = window.setTimeout(() => setRevision((value) => value + 1), 1500);
-    return () => window.clearTimeout(timer);
-  }, [session?.status, session?.revision]);
   const mutate = async (method, extra = {}) => {
     if (!session || busy) return false;
     const signature = `${method}:${session.revision}:${JSON.stringify(extra)}`;
@@ -14867,7 +15029,6 @@ function CurationSessionView({
   if (!session && !error) return /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") });
   if (!session) return /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: error });
   const editable = !["archived", "cancelled"].includes(session.status);
-  const working = Boolean(session.curator?.working || ["queued", "running"].includes(session.status));
   return /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("section", { className: "rolling-skill-panel rolling-skill-session-view", children: [
     /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "rolling-skill-panel-header", children: [
       /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { children: [
@@ -14878,7 +15039,7 @@ function CurationSessionView({
           session.status
         ] })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(ActionButton, { size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(ActionButton, { size: "sm", onClick: refresh, children: t("refresh") })
     ] }),
     session.error || error ? /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error ?? session.error }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("section", { className: "rolling-skill-curation-primary", children: [
@@ -15074,14 +15235,15 @@ function CurationDraftCard({ draft, t }) {
 var import_jsx_runtime21 = require("react/jsx-runtime");
 var visibleCurationSelection = import_curation_selection.default.visibleCurationSelection;
 function CurationPanel({ t, initialSessionId, onNavigate }) {
-  const [selectedId, setSelectedId] = (0, import_react18.useState)(initialSessionId ?? "");
-  const [revision, setRevision] = (0, import_react18.useState)(0);
-  const [showArchived, setShowArchived] = (0, import_react18.useState)(false);
-  const [state, setState] = (0, import_react18.useState)({ status: "loading" });
-  (0, import_react18.useEffect)(() => {
+  const [selectedId, setSelectedId] = (0, import_react19.useState)(initialSessionId ?? "");
+  const [showArchived, setShowArchived] = (0, import_react19.useState)(false);
+  const [state, setState] = (0, import_react19.useState)({ status: "loading" });
+  const pollingActive = state.status === "ready" && state.active.some((session) => ["queued", "running"].includes(session.status));
+  const [revision, refresh] = usePollingRevision(pollingActive);
+  (0, import_react19.useEffect)(() => {
     if (initialSessionId) setSelectedId(initialSessionId);
   }, [initialSessionId]);
-  (0, import_react18.useEffect)(() => {
+  (0, import_react19.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
       requestRollingSkill("curation.list", {}, controller.signal),
@@ -15097,11 +15259,11 @@ function CurationPanel({ t, initialSessionId, onNavigate }) {
   }, [revision]);
   const items = state.status === "ready" ? showArchived ? state.archived : state.active : [];
   const visibleSelectedId = state.status === "ready" ? visibleCurationSelection(selectedId, items) : selectedId;
-  (0, import_react18.useEffect)(() => {
+  (0, import_react19.useEffect)(() => {
     if (state.status !== "ready") return;
     setSelectedId((current) => visibleCurationSelection(current, items));
   }, [state, showArchived]);
-  (0, import_react18.useEffect)(() => {
+  (0, import_react19.useEffect)(() => {
     if (!initialSessionId || state.status !== "ready" || selectedId !== initialSessionId) return;
     if (state.archived.some((session) => session.id === initialSessionId)) setShowArchived(true);
     if (state.active.some((session) => session.id === initialSessionId)) setShowArchived(false);
@@ -15109,7 +15271,7 @@ function CurationPanel({ t, initialSessionId, onNavigate }) {
   if (state.status === "loading") return /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") });
   if (state.status === "error") return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: [
     /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: state.message }),
-    /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ActionButton, { size: "sm", onClick: () => setRevision((value) => value + 1), children: t("retry") })
+    /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ActionButton, { size: "sm", onClick: refresh, children: t("retry") })
   ] });
   return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rolling-skill-review-layout", children: [
     /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("aside", { className: "rolling-skill-panel rolling-skill-review-list", children: [
@@ -15118,7 +15280,7 @@ function CurationPanel({ t, initialSessionId, onNavigate }) {
           /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("h3", { children: t("curation") }),
           /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("p", { children: t("curationDescription") })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ActionButton, { size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(ActionButton, { size: "sm", onClick: refresh, children: t("refresh") })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rolling-skill-review-scope", role: "group", "aria-label": t("draftStatusFilter"), children: [
         /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("button", { type: "button", "aria-pressed": !showArchived, onClick: () => setShowArchived(false), children: [
@@ -15159,7 +15321,7 @@ function CurationPanel({ t, initialSessionId, onNavigate }) {
       {
         sessionId: visibleSelectedId,
         t,
-        onChanged: () => setRevision((value) => value + 1),
+        onChanged: refresh,
         onNavigate
       },
       visibleSelectedId
@@ -15168,19 +15330,20 @@ function CurationPanel({ t, initialSessionId, onNavigate }) {
 }
 
 // src/client/workbench/RubricPanel.tsx
-var import_react20 = require("react");
+var import_react21 = require("react");
 
 // src/client/workbench/RubricSessionView.tsx
-var import_react19 = require("react");
+var import_react20 = require("react");
 var import_jsx_runtime22 = require("react/jsx-runtime");
 function RubricSessionView({ sessionId, t, onChanged }) {
-  const [revision, setRevision] = (0, import_react19.useState)(0);
-  const [session, setSession] = (0, import_react19.useState)(null);
-  const [message, setMessage] = (0, import_react19.useState)("");
-  const [error, setError] = (0, import_react19.useState)(null);
-  const [busy, setBusy] = (0, import_react19.useState)(false);
-  const keys2 = (0, import_react19.useRef)(/* @__PURE__ */ new Map());
-  (0, import_react19.useEffect)(() => {
+  const [session, setSession] = (0, import_react20.useState)(null);
+  const [message, setMessage] = (0, import_react20.useState)("");
+  const [error, setError] = (0, import_react20.useState)(null);
+  const [busy, setBusy] = (0, import_react20.useState)(false);
+  const keys2 = (0, import_react20.useRef)(/* @__PURE__ */ new Map());
+  const working = Boolean(session?.rubricAgent?.working || session && ["queued", "running"].includes(session.status));
+  const [revision, refresh] = usePollingRevision(working);
+  (0, import_react20.useEffect)(() => {
     const controller = new AbortController();
     requestRollingSkill("rubrics.get", { sessionId }, controller.signal).then((value) => {
       setSession(value);
@@ -15190,11 +15353,6 @@ function RubricSessionView({ sessionId, t, onChanged }) {
     });
     return () => controller.abort();
   }, [sessionId, revision]);
-  (0, import_react19.useEffect)(() => {
-    if (!session || !["queued", "running"].includes(session.status)) return;
-    const timer = window.setTimeout(() => setRevision((value) => value + 1), 1500);
-    return () => window.clearTimeout(timer);
-  }, [session?.status, session?.revision]);
   const mutate = async (method, extra = {}) => {
     if (!session || busy) return;
     const signature = `${method}:${session.revision}:${JSON.stringify(extra)}`;
@@ -15220,14 +15378,13 @@ function RubricSessionView({ sessionId, t, onChanged }) {
   if (!session && !error) return /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") });
   if (!session) return /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: error });
   const editable = !["archived", "cancelled"].includes(session.status);
-  const working = Boolean(session.rubricAgent?.working || ["queued", "running"].includes(session.status));
   return /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { className: "rolling-skill-panel rolling-skill-session-view", children: [
     /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "rolling-skill-panel-header", children: [
       /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { children: [
         /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h3", { children: t("rubricReview") }),
         /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { role: working ? "status" : void 0, "aria-live": working ? "polite" : void 0, children: working ? t("rubricWorking") : session.status })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(ActionButton, { size: "sm", onClick: () => setRevision((value) => value + 1), children: t("refresh") })
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)(ActionButton, { size: "sm", onClick: refresh, children: t("refresh") })
     ] }),
     session.error || error ? /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error ?? session.error }) : null,
     session.operationEvidence ? /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("section", { className: "rolling-skill-evidence-card", children: [
@@ -15361,24 +15518,24 @@ function RubricPanel({
   initialSessionId,
   onNavigate
 }) {
-  const [datasets, setDatasets] = (0, import_react20.useState)([]);
-  const [datasetId, setDatasetId] = (0, import_react20.useState)(initialDatasetId ?? "");
-  const [selectedSessionId, setSelectedSessionId] = (0, import_react20.useState)(initialSessionId ?? "");
-  const [selectedVersionId, setSelectedVersionId] = (0, import_react20.useState)("");
-  const [sessions, setSessions] = (0, import_react20.useState)([]);
-  const [versions, setVersions] = (0, import_react20.useState)([]);
-  const [active, setActive] = (0, import_react20.useState)(null);
-  const [modelId, setModelId] = (0, import_react20.useState)("");
-  const [effort, setEffort] = (0, import_react20.useState)("");
-  const [revision, setRevision] = (0, import_react20.useState)(0);
-  const [busy, setBusy] = (0, import_react20.useState)(false);
-  const [creating, setCreating] = (0, import_react20.useState)(false);
-  const [promptOpen, setPromptOpen] = (0, import_react20.useState)(false);
-  const [initialInstruction, setInitialInstruction] = (0, import_react20.useState)("");
-  const [error, setError] = (0, import_react20.useState)(null);
+  const [datasets, setDatasets] = (0, import_react21.useState)([]);
+  const [datasetId, setDatasetId] = (0, import_react21.useState)(initialDatasetId ?? "");
+  const [selectedSessionId, setSelectedSessionId] = (0, import_react21.useState)(initialSessionId ?? "");
+  const [selectedVersionId, setSelectedVersionId] = (0, import_react21.useState)("");
+  const [sessions, setSessions] = (0, import_react21.useState)([]);
+  const [versions, setVersions] = (0, import_react21.useState)([]);
+  const [active, setActive] = (0, import_react21.useState)(null);
+  const [modelId, setModelId] = (0, import_react21.useState)("");
+  const [effort, setEffort] = (0, import_react21.useState)("");
+  const [busy, setBusy] = (0, import_react21.useState)(false);
+  const [creating, setCreating] = (0, import_react21.useState)(false);
+  const [promptOpen, setPromptOpen] = (0, import_react21.useState)(false);
+  const [initialInstruction, setInitialInstruction] = (0, import_react21.useState)("");
+  const [error, setError] = (0, import_react21.useState)(null);
   const generatingSession = sessions.find((session) => WORKING_RUBRIC_STATUSES.has(session.status));
   const generationPending = creating || Boolean(generatingSession);
-  (0, import_react20.useEffect)(() => {
+  const [revision, refresh] = usePollingRevision(Boolean(generatingSession));
+  (0, import_react21.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
       requestRollingSkill("datasets.list", {}, controller.signal),
@@ -15393,7 +15550,7 @@ function RubricPanel({
     });
     return () => controller.abort();
   }, []);
-  (0, import_react20.useEffect)(() => {
+  (0, import_react21.useEffect)(() => {
     if (!datasetId) return;
     const controller = new AbortController();
     requestRollingSkill(
@@ -15412,11 +15569,6 @@ function RubricPanel({
     });
     return () => controller.abort();
   }, [datasetId, revision]);
-  (0, import_react20.useEffect)(() => {
-    if (!generatingSession) return;
-    const timer = window.setTimeout(() => setRevision((value) => value + 1), 1500);
-    return () => window.clearTimeout(timer);
-  }, [generatingSession?.id, generatingSession?.status, generatingSession?.updatedAt]);
   const create2 = async (instruction) => {
     if (!datasetId || busy) return;
     setBusy(true);
@@ -15433,7 +15585,7 @@ function RubricPanel({
       setSessions((current) => [session, ...current.filter((entry) => entry.id !== session.id)]);
       setSelectedSessionId(session.id);
       onNavigate({ page: "rubrics", datasetId, sessionId: session.id });
-      setRevision((value) => value + 1);
+      refresh();
       setPromptOpen(false);
       setInitialInstruction("");
     } catch (reason) {
@@ -15457,7 +15609,7 @@ function RubricPanel({
         datasetId,
         idempotencyKey: crypto.randomUUID()
       });
-      setRevision((value) => value + 1);
+      refresh();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("loadError"));
     } finally {
@@ -15520,7 +15672,7 @@ function RubricPanel({
           onNavigate({ page: "rubrics", datasetId });
         } }, version.id)) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("main", { className: "rolling-skill-review-detail", children: selectedSessionId ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricSessionView, { sessionId: selectedSessionId, t, onChanged: () => setRevision((value) => value + 1) }) : selectedVersion ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricVersionCard, { version: selectedVersion, active: selectedVersion.id === active?.id, t }) : /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-state", children: t("selectRubricSession") }) })
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("main", { className: "rolling-skill-review-detail", children: selectedSessionId ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricSessionView, { sessionId: selectedSessionId, t, onChanged: refresh }) : selectedVersion ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricVersionCard, { version: selectedVersion, active: selectedVersion.id === active?.id, t }) : /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-state", children: t("selectRubricSession") }) })
     ] }),
     promptOpen ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-dialog-backdrop", onMouseDown: (event) => {
       if (event.currentTarget === event.target) closePrompt();
@@ -15755,21 +15907,26 @@ function dateTime4(value, fallback) {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : fallback;
 }
 function Workbench({ locale, t, initialRoute = { page: "overview" }, onRouteChange }) {
-  (0, import_react21.useSyncExternalStore)(
+  (0, import_react22.useSyncExternalStore)(
     (listener) => locale.subscribe(listener),
     () => locale.getSnapshot().revision,
     () => 0
   );
-  const [route, setRoute] = (0, import_react21.useState)(() => normalizeWorkbenchRoute(initialRoute));
-  const [reloadRevision, setReloadRevision] = (0, import_react21.useState)(0);
-  const [dataRevision, setDataRevision] = (0, import_react21.useState)(0);
-  const [state, setState] = (0, import_react21.useState)({ status: "loading" });
-  (0, import_react21.useEffect)(() => {
+  const connection = (0, import_react22.useSyncExternalStore)(
+    subscribeRollingSkillConnection,
+    getRollingSkillConnectionSnapshot,
+    getRollingSkillConnectionSnapshot
+  );
+  const [route, setRoute] = (0, import_react22.useState)(() => normalizeWorkbenchRoute(initialRoute));
+  const [reloadRevision, setReloadRevision] = (0, import_react22.useState)(0);
+  const [dataRevision, setDataRevision] = (0, import_react22.useState)(0);
+  const [state, setState] = (0, import_react22.useState)({ status: "loading" });
+  (0, import_react22.useEffect)(() => {
     const controller = new AbortController();
-    setState({ status: "loading" });
+    setState((current) => current.status === "ready" ? current : { status: "loading" });
     requestRollingSkill("dashboard.get", {}, controller.signal).then((dashboard) => setState({ status: "ready", dashboard })).catch((error) => {
       if (controller.signal.aborted) return;
-      setState({
+      setState((current) => current.status === "ready" ? current : {
         status: "error",
         message: error instanceof Error ? error.message : t("loadError")
       });
@@ -15781,7 +15938,7 @@ function Workbench({ locale, t, initialRoute = { page: "overview" }, onRouteChan
     setRoute(next);
     onRouteChange?.(next);
   };
-  (0, import_react21.useEffect)(() => {
+  (0, import_react22.useEffect)(() => {
     const next = normalizeWorkbenchRoute(initialRoute);
     setRoute(next);
     if (next.page !== initialRoute.page) onRouteChange?.(next);
@@ -15797,6 +15954,13 @@ function Workbench({ locale, t, initialRoute = { page: "overview" }, onRouteChan
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(ActionButton, { size: "sm", onClick: reload, disabled: state.status === "loading", children: t("refresh") })
     ] }),
+    connection.status === "disconnected" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { className: "rolling-skill-connection-banner", role: "alert", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("strong", { children: t("connectionUnavailable") }),
+        /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("span", { children: t("connectionUnavailableDescription") })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(ActionButton, { size: "sm", onClick: reload, children: t("reconnect") })
+    ] }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("nav", { className: "rolling-skill-tabs rolling-skill-primary-tabs", "aria-label": t("workbenchSections"), children: NAVIGATION_GROUPS.map((group) => /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
       import_dsh_client_ui_primitives14.Button,
       {
@@ -15821,17 +15985,18 @@ function Workbench({ locale, t, initialRoute = { page: "overview" }, onRouteChan
     )) }) : null,
     state.status === "loading" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("div", { className: "rolling-skill-state", role: "status", children: t("loading") }) : state.status === "error" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { className: "rolling-skill-state rolling-skill-error", role: "alert", children: [
       /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("strong", { children: t("loadError") }),
-      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("span", { children: state.message }),
+      connection.status === "connected" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("span", { children: state.message }) : null,
       /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(ActionButton, { size: "sm", onClick: reload, children: t("retry") })
-    ] }) : route.page === "curation" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(CurationPanel, { t, initialSessionId: route.sessionId, onNavigate: navigate }) : route.page === "datasets" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(DatasetsPanel, { t, onChanged: () => setDataRevision((value) => value + 1) }) : route.page === "cases" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(CasesPanel, { t, revision: dataRevision, initialDatasetId: route.datasetId, initialCaseId: route.caseId, onNavigate: navigate, onChanged: () => setDataRevision((value) => value + 1) }) : route.page === "raw-cases" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(RawCasesPanel, { t, revision: dataRevision, initialRawCaseId: route.rawCaseId, onNavigate: navigate, onChanged: () => setDataRevision((value) => value + 1) }) : route.page === "rubrics" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
+    ] }) : route.page === "curation" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(CurationPanel, { t, initialSessionId: route.sessionId, onNavigate: navigate }, `curation:${reloadRevision}`) : route.page === "datasets" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(DatasetsPanel, { t, onChanged: () => setDataRevision((value) => value + 1) }, `datasets:${reloadRevision}`) : route.page === "cases" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(CasesPanel, { t, revision: dataRevision, initialDatasetId: route.datasetId, initialCaseId: route.caseId, onNavigate: navigate, onChanged: () => setDataRevision((value) => value + 1) }, `cases:${reloadRevision}`) : route.page === "raw-cases" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(RawCasesPanel, { t, revision: dataRevision, initialRawCaseId: route.rawCaseId, onNavigate: navigate, onChanged: () => setDataRevision((value) => value + 1) }, `raw-cases:${reloadRevision}`) : route.page === "rubrics" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
       RubricPanel,
       {
         t,
         initialDatasetId: route.datasetId,
         initialSessionId: route.sessionId,
         onNavigate: navigate
-      }
-    ) : route.page === "evaluations" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(EvaluationsPanel, { t, initialRunId: route.runId }) : route.page === "skill-import" || route.page === "skill-versions" || route.page === "skill-install" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
+      },
+      `rubrics:${reloadRevision}`
+    ) : route.page === "evaluations" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(EvaluationsPanel, { t, initialRunId: route.runId }, `evaluations:${reloadRevision}`) : route.page === "skill-import" || route.page === "skill-versions" || route.page === "skill-install" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
       SkillsPanel,
       {
         t,
@@ -15840,8 +16005,9 @@ function Workbench({ locale, t, initialRoute = { page: "overview" }, onRouteChan
         initialJobId: route.page === "skill-install" ? route.jobId : void 0,
         onSkillChange: (skillId) => navigate({ ...route, skillId }),
         onOpenVersions: (skillId) => navigate({ page: "skill-versions", skillId })
-      }
-    ) : route.page === "automatic" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(AutomaticCapturePanel, { t }) : route.page === "operator" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(OperatorPanel, { t, initialSessionId: route.sessionId }) : route.page === "optimization" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(OptimizationPanel, { t, initialRunId: route.runId }) : /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(Overview, { dashboard: state.dashboard, t })
+      },
+      `${route.page}:${reloadRevision}`
+    ) : route.page === "automatic" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(AutomaticCapturePanel, { t }, `automatic:${reloadRevision}`) : route.page === "operator" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(OperatorPanel, { t, initialSessionId: route.sessionId }, `operator:${reloadRevision}`) : route.page === "optimization" ? /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(OptimizationPanel, { t, initialRunId: route.runId }, `optimization:${reloadRevision}`) : /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(Overview, { dashboard: state.dashboard, t })
   ] });
 }
 function Overview({ dashboard, t }) {
@@ -15896,8 +16062,8 @@ function Overview({ dashboard, t }) {
 // src/client/workbench/WorkbenchOverlay.tsx
 var import_jsx_runtime25 = require("react/jsx-runtime");
 function WorkbenchOverlay({ locale, route, t, onClose, onRouteChange }) {
-  const overlayRef = (0, import_react22.useRef)(null);
-  (0, import_react22.useEffect)(() => {
+  const overlayRef = (0, import_react23.useRef)(null);
+  (0, import_react23.useEffect)(() => {
     const overlay = overlayRef.current;
     overlay?.querySelector("button:not([disabled])")?.focus();
     const onKeyDown = (event) => {
@@ -15965,13 +16131,13 @@ function persistRoute(route) {
   }
 }
 function WorkbenchLauncher({ wide, locale, t }) {
-  const [open, setOpen] = (0, import_react23.useState)(false);
-  const [route, setRoute] = (0, import_react23.useState)(savedRoute);
-  const changeRoute = (0, import_react23.useCallback)((next) => {
+  const [open, setOpen] = (0, import_react24.useState)(false);
+  const [route, setRoute] = (0, import_react24.useState)(savedRoute);
+  const changeRoute = (0, import_react24.useCallback)((next) => {
     setRoute(next);
     persistRoute(next);
   }, []);
-  (0, import_react23.useEffect)(() => {
+  (0, import_react24.useEffect)(() => {
     const openWorkbench2 = (event) => {
       const next = event.detail?.route;
       if (next?.page) changeRoute(next);
@@ -15980,7 +16146,7 @@ function WorkbenchLauncher({ wide, locale, t }) {
     window.addEventListener("rolling-skill:open-workbench", openWorkbench2);
     return () => window.removeEventListener("rolling-skill:open-workbench", openWorkbench2);
   }, [changeRoute]);
-  (0, import_react23.useEffect)(() => {
+  (0, import_react24.useEffect)(() => {
     const closeWorkbench = () => setOpen(false);
     window.addEventListener("rolling-skill:close-workbench", closeWorkbench);
     return () => window.removeEventListener("rolling-skill:close-workbench", closeWorkbench);
@@ -16012,22 +16178,22 @@ function WorkbenchLauncher({ wide, locale, t }) {
 
 // src/client/settings/RollingSkillSettings.tsx
 var import_dsh_client_ui_primitives17 = require("@deepseek-ai/dsh-client-ui-primitives");
-var import_react24 = require("react");
+var import_react25 = require("react");
 var import_jsx_runtime27 = require("react/jsx-runtime");
 function RollingSkillSettings({ t }) {
-  const [revision, setRevision] = (0, import_react24.useState)(0);
-  const [runtimes, setRuntimes] = (0, import_react24.useState)([]);
-  const [models, setModels] = (0, import_react24.useState)([]);
-  const [runtimeId, setRuntimeId] = (0, import_react24.useState)("");
-  const [profiles, setProfiles] = (0, import_react24.useState)({
+  const [revision, setRevision] = (0, import_react25.useState)(0);
+  const [runtimes, setRuntimes] = (0, import_react25.useState)([]);
+  const [models, setModels] = (0, import_react25.useState)([]);
+  const [runtimeId, setRuntimeId] = (0, import_react25.useState)("");
+  const [profiles, setProfiles] = (0, import_react25.useState)({
     curator: { modelId: null, effort: null },
     rubric: { modelId: null, effort: null },
     judge: { modelId: null, effort: null }
   });
-  const [busy, setBusy] = (0, import_react24.useState)(false);
-  const [saveError, setSaveError] = (0, import_react24.useState)(null);
-  const [state, setState] = (0, import_react24.useState)({ status: "loading" });
-  (0, import_react24.useEffect)(() => {
+  const [busy, setBusy] = (0, import_react25.useState)(false);
+  const [saveError, setSaveError] = (0, import_react25.useState)(null);
+  const [state, setState] = (0, import_react25.useState)({ status: "loading" });
+  (0, import_react25.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
       requestRollingSkill("settings.get", {}, controller.signal),
@@ -16047,7 +16213,7 @@ function RollingSkillSettings({ t }) {
     });
     return () => controller.abort();
   }, [revision]);
-  (0, import_react24.useEffect)(() => {
+  (0, import_react25.useEffect)(() => {
     if (!runtimeId) {
       setModels([]);
       return;

@@ -6,6 +6,7 @@ import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
 import type {WorkbenchRoute} from "./Workbench"
 import {RubricSessionView} from "./RubricSessionView"
+import {usePollingRevision} from "./usePollingRevision"
 
 interface Dataset {id: string; name: string; activeRubricVersionId: string | null}
 interface RubricSessionSummary {id: string; status: string; updatedAt: string; baseVersionId: string | null}
@@ -63,7 +64,6 @@ export function RubricPanel({
     const [active, setActive] = useState<RubricVersion | null>(null)
     const [modelId, setModelId] = useState("")
     const [effort, setEffort] = useState("")
-    const [revision, setRevision] = useState(0)
     const [busy, setBusy] = useState(false)
     const [creating, setCreating] = useState(false)
     const [promptOpen, setPromptOpen] = useState(false)
@@ -71,6 +71,7 @@ export function RubricPanel({
     const [error, setError] = useState<string | null>(null)
     const generatingSession = sessions.find((session) => WORKING_RUBRIC_STATUSES.has(session.status))
     const generationPending = creating || Boolean(generatingSession)
+    const [revision, refresh] = usePollingRevision(Boolean(generatingSession))
 
     useEffect(() => {
         const controller = new AbortController()
@@ -111,12 +112,6 @@ export function RubricPanel({
         return () => controller.abort()
     }, [datasetId, revision])
 
-    useEffect(() => {
-        if (!generatingSession) return
-        const timer = window.setTimeout(() => setRevision((value) => value + 1), 1_500)
-        return () => window.clearTimeout(timer)
-    }, [generatingSession?.id, generatingSession?.status, generatingSession?.updatedAt])
-
     const create = async (instruction: string) => {
         if (!datasetId || busy) return
         setBusy(true)
@@ -133,7 +128,7 @@ export function RubricPanel({
             setSessions((current) => [session, ...current.filter((entry) => entry.id !== session.id)])
             setSelectedSessionId(session.id)
             onNavigate({page: "rubrics", datasetId, sessionId: session.id})
-            setRevision((value) => value + 1)
+            refresh()
             setPromptOpen(false)
             setInitialInstruction("")
         } catch (reason) {
@@ -157,7 +152,7 @@ export function RubricPanel({
                 datasetId,
                 idempotencyKey: crypto.randomUUID(),
             })
-            setRevision((value) => value + 1)
+            refresh()
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : t("loadError"))
         } finally {
@@ -190,7 +185,7 @@ export function RubricPanel({
                 <div className="rolling-skill-list">{versions.map((version) => <RubricVersionListButton key={version.id} version={version} active={version.id === active?.id} selected={!selectedSessionId && selectedVersion?.id === version.id} t={t} onSelect={() => { setSelectedSessionId(""); setSelectedVersionId(version.id); onNavigate({page: "rubrics", datasetId}) }}/>)}</div>
                 </aside>
                 <main className="rolling-skill-review-detail">
-                    {selectedSessionId ? <RubricSessionView sessionId={selectedSessionId} t={t} onChanged={() => setRevision((value) => value + 1)}/> : selectedVersion ? <RubricVersionCard version={selectedVersion} active={selectedVersion.id === active?.id} t={t}/> : <div className="rolling-skill-state">{t("selectRubricSession")}</div>}
+                    {selectedSessionId ? <RubricSessionView sessionId={selectedSessionId} t={t} onChanged={refresh}/> : selectedVersion ? <RubricVersionCard version={selectedVersion} active={selectedVersion.id === active?.id} t={t}/> : <div className="rolling-skill-state">{t("selectRubricSession")}</div>}
                 </main>
             </div>
             {promptOpen ? (

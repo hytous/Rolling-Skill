@@ -4,6 +4,7 @@ import {ActionButton as Button} from "./ActionButton"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
+import {usePollingRevision} from "./usePollingRevision"
 
 interface RubricDraft {
     title?: string
@@ -36,12 +37,13 @@ interface RubricSession {
 }
 
 export function RubricSessionView({sessionId, t, onChanged}: {sessionId: string; t: Translate; onChanged: () => void}) {
-    const [revision, setRevision] = useState(0)
     const [session, setSession] = useState<RubricSession | null>(null)
     const [message, setMessage] = useState("")
     const [error, setError] = useState<string | null>(null)
     const [busy, setBusy] = useState(false)
     const keys = useRef(new Map<string, string>())
+    const working = Boolean(session?.rubricAgent?.working || (session && ["queued", "running"].includes(session.status)))
+    const [revision, refresh] = usePollingRevision(working)
 
     useEffect(() => {
         const controller = new AbortController()
@@ -50,12 +52,6 @@ export function RubricSessionView({sessionId, t, onChanged}: {sessionId: string;
             .catch((reason: unknown) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError")) })
         return () => controller.abort()
     }, [sessionId, revision])
-
-    useEffect(() => {
-        if (!session || !["queued", "running"].includes(session.status)) return
-        const timer = window.setTimeout(() => setRevision((value) => value + 1), 1_500)
-        return () => window.clearTimeout(timer)
-    }, [session?.status, session?.revision])
 
     const mutate = async (method: string, extra: Record<string, unknown> = {}) => {
         if (!session || busy) return
@@ -83,10 +79,9 @@ export function RubricSessionView({sessionId, t, onChanged}: {sessionId: string;
     if (!session && !error) return <div className="rolling-skill-state" role="status">{t("loading")}</div>
     if (!session) return <div className="rolling-skill-state rolling-skill-error" role="alert">{error}</div>
     const editable = !["archived", "cancelled"].includes(session.status)
-    const working = Boolean(session.rubricAgent?.working || ["queued", "running"].includes(session.status))
     return (
         <section className="rolling-skill-panel rolling-skill-session-view">
-            <div className="rolling-skill-panel-header"><div><h3>{t("rubricReview")}</h3><p role={working ? "status" : undefined} aria-live={working ? "polite" : undefined}>{working ? t("rubricWorking") : session.status}</p></div><Button size="sm" onClick={() => setRevision((value) => value + 1)}>{t("refresh")}</Button></div>
+            <div className="rolling-skill-panel-header"><div><h3>{t("rubricReview")}</h3><p role={working ? "status" : undefined} aria-live={working ? "polite" : undefined}>{working ? t("rubricWorking") : session.status}</p></div><Button size="sm" onClick={refresh}>{t("refresh")}</Button></div>
             {session.error || error ? <p className="rolling-skill-inline-error" role="alert">{error ?? session.error}</p> : null}
             {session.operationEvidence ? <section className="rolling-skill-evidence-card"><h4>{t("frozenEvidence")}</h4><dl><div><dt>{t("skillRepositories")}</dt><dd>{session.operationEvidence.skillName ?? t("notAvailable")} · {session.operationEvidence.versionLabel ?? t("notAvailable")}</dd></div><div><dt>{t("installationCommit")}</dt><dd><code>{session.operationEvidence.commit?.slice(0, 12) ?? t("notAvailable")}</code></dd></div><div><dt>{t("installationDigest")}</dt><dd title={session.operationEvidence.contentDigest ?? undefined}><code>{session.operationEvidence.contentDigest ?? t("notAvailable")}</code></dd></div><div><dt>{t("installationRuntime")}</dt><dd>{session.operationEvidence.runtime?.displayName ?? t("notAvailable")} {session.operationEvidence.runtime?.version ?? ""}</dd></div><div><dt>{t("installationJob")}</dt><dd>{session.operationEvidence.installation?.jobId ?? t("notAvailable")} · {session.operationEvidence.installation?.verification ?? t("notAvailable")}</dd></div></dl></section> : null}
             <section><h4>{t("rubricAgentConversation")}</h4><div className="rolling-skill-conversation-log">{session.conversation.map((entry) => <div key={entry.id} data-role={entry.role}><strong>{entry.role}</strong><p>{entry.text}</p></div>)}</div></section>

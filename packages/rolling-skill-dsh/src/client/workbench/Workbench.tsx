@@ -1,7 +1,11 @@
 import {Button} from "@deepseek-ai/dsh-client-ui-primitives"
 import {useEffect, useState, useSyncExternalStore} from "react"
 
-import {requestRollingSkill} from "../api"
+import {
+    getRollingSkillConnectionSnapshot,
+    requestRollingSkill,
+    subscribeRollingSkillConnection,
+} from "../api"
 import type {Translate, TranslationKey} from "../locale"
 import {ActionButton} from "./ActionButton"
 import {AutomaticCapturePanel} from "./AutomaticCapturePanel"
@@ -165,6 +169,11 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
         () => locale.getSnapshot().revision,
         () => 0,
     )
+    const connection = useSyncExternalStore(
+        subscribeRollingSkillConnection,
+        getRollingSkillConnectionSnapshot,
+        getRollingSkillConnectionSnapshot,
+    )
     const [route, setRoute] = useState<WorkbenchRoute>(() => normalizeWorkbenchRoute(initialRoute))
     const [reloadRevision, setReloadRevision] = useState(0)
     const [dataRevision, setDataRevision] = useState(0)
@@ -176,12 +185,12 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
 
     useEffect(() => {
         const controller = new AbortController()
-        setState({status: "loading"})
+        setState((current) => current.status === "ready" ? current : {status: "loading"})
         requestRollingSkill<DashboardSnapshot>("dashboard.get", {}, controller.signal)
             .then((dashboard) => setState({status: "ready", dashboard}))
             .catch((error: unknown) => {
                 if (controller.signal.aborted) return
-                setState({
+                setState((current) => current.status === "ready" ? current : {
                     status: "error",
                     message: error instanceof Error ? error.message : t("loadError"),
                 })
@@ -217,6 +226,16 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
                 </ActionButton>
             </header>
 
+            {connection.status === "disconnected" ? (
+                <div className="rolling-skill-connection-banner" role="alert">
+                    <div>
+                        <strong>{t("connectionUnavailable")}</strong>
+                        <span>{t("connectionUnavailableDescription")}</span>
+                    </div>
+                    <ActionButton size="sm" onClick={reload}>{t("reconnect")}</ActionButton>
+                </div>
+            ) : null}
+
             <nav className="rolling-skill-tabs rolling-skill-primary-tabs" aria-label={t("workbenchSections")}>
                 {NAVIGATION_GROUPS.map((group) => (
                     <Button
@@ -251,28 +270,30 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
             ) : state.status === "error" ? (
                 <div className="rolling-skill-state rolling-skill-error" role="alert">
                     <strong>{t("loadError")}</strong>
-                    <span>{state.message}</span>
+                    {connection.status === "connected" ? <span>{state.message}</span> : null}
                     <ActionButton size="sm" onClick={reload}>{t("retry")}</ActionButton>
                 </div>
             ) : route.page === "curation" ? (
-                <CurationPanel t={t} initialSessionId={route.sessionId} onNavigate={navigate}/>
+                <CurationPanel key={`curation:${reloadRevision}`} t={t} initialSessionId={route.sessionId} onNavigate={navigate}/>
             ) : route.page === "datasets" ? (
-                <DatasetsPanel t={t} onChanged={() => setDataRevision((value) => value + 1)}/>
+                <DatasetsPanel key={`datasets:${reloadRevision}`} t={t} onChanged={() => setDataRevision((value) => value + 1)}/>
             ) : route.page === "cases" ? (
-                <CasesPanel t={t} revision={dataRevision} initialDatasetId={route.datasetId} initialCaseId={route.caseId} onNavigate={navigate} onChanged={() => setDataRevision((value) => value + 1)}/>
+                <CasesPanel key={`cases:${reloadRevision}`} t={t} revision={dataRevision} initialDatasetId={route.datasetId} initialCaseId={route.caseId} onNavigate={navigate} onChanged={() => setDataRevision((value) => value + 1)}/>
             ) : route.page === "raw-cases" ? (
-                <RawCasesPanel t={t} revision={dataRevision} initialRawCaseId={route.rawCaseId} onNavigate={navigate} onChanged={() => setDataRevision((value) => value + 1)}/>
+                <RawCasesPanel key={`raw-cases:${reloadRevision}`} t={t} revision={dataRevision} initialRawCaseId={route.rawCaseId} onNavigate={navigate} onChanged={() => setDataRevision((value) => value + 1)}/>
             ) : route.page === "rubrics" ? (
                 <RubricPanel
+                    key={`rubrics:${reloadRevision}`}
                     t={t}
                     initialDatasetId={route.datasetId}
                     initialSessionId={route.sessionId}
                     onNavigate={navigate}
                 />
             ) : route.page === "evaluations" ? (
-                <EvaluationsPanel t={t} initialRunId={route.runId}/>
+                <EvaluationsPanel key={`evaluations:${reloadRevision}`} t={t} initialRunId={route.runId}/>
             ) : route.page === "skill-import" || route.page === "skill-versions" || route.page === "skill-install" ? (
                 <SkillsPanel
+                    key={`${route.page}:${reloadRevision}`}
                     t={t}
                     mode={route.page === "skill-import" ? "import" : route.page === "skill-versions" ? "versions" : "install"}
                     initialSkillId={route.skillId}
@@ -281,11 +302,11 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
                     onOpenVersions={(skillId) => navigate({page: "skill-versions", skillId})}
                 />
             ) : route.page === "automatic" ? (
-                <AutomaticCapturePanel t={t}/>
+                <AutomaticCapturePanel key={`automatic:${reloadRevision}`} t={t}/>
             ) : route.page === "operator" ? (
-                <OperatorPanel t={t} initialSessionId={route.sessionId}/>
+                <OperatorPanel key={`operator:${reloadRevision}`} t={t} initialSessionId={route.sessionId}/>
             ) : route.page === "optimization" ? (
-                <OptimizationPanel t={t} initialRunId={route.runId}/>
+                <OptimizationPanel key={`optimization:${reloadRevision}`} t={t} initialRunId={route.runId}/>
             ) : (
                 <Overview dashboard={state.dashboard} t={t}/>
             )}

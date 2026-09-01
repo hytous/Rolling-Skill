@@ -1,4 +1,19 @@
+import connectionStore from "./connection-store.cjs"
+
 export const ROLLING_SKILL_API_PATH = "/rolling-skill/api"
+
+const {rollingSkillConnection} = connectionStore as {
+    rollingSkillConnection: {
+        getSnapshot(): {status: "connected" | "disconnected"; error: string | null; revision: number}
+        subscribe(listener: () => void): () => void
+        markConnected(): void
+        markDisconnected(error?: string | null): void
+    }
+}
+
+export const getRollingSkillConnectionSnapshot = () => rollingSkillConnection.getSnapshot()
+export const subscribeRollingSkillConnection = (listener: () => void) =>
+    rollingSkillConnection.subscribe(listener)
 
 interface SuccessEnvelope<T> {
     ok: true
@@ -30,13 +45,25 @@ export async function requestRollingSkill<T>(
     input: Record<string, unknown> = {},
     signal?: AbortSignal,
 ): Promise<T> {
-    const response = await fetch(ROLLING_SKILL_API_PATH, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: {accept: "application/json", "content-type": "application/json"},
-        body: JSON.stringify({method, input}),
-        signal,
-    })
+    let response: Response
+    try {
+        response = await fetch(ROLLING_SKILL_API_PATH, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {accept: "application/json", "content-type": "application/json"},
+            body: JSON.stringify({method, input}),
+            signal,
+        })
+    } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") throw error
+        rollingSkillConnection.markDisconnected(error instanceof Error ? error.message : null)
+        throw new RollingSkillApiError(
+            "CONNECTION_UNAVAILABLE",
+            "DSH service connection is unavailable",
+            0,
+        )
+    }
+    rollingSkillConnection.markConnected()
     let envelope: SuccessEnvelope<T> | FailureEnvelope
     try {
         envelope = await response.json() as SuccessEnvelope<T> | FailureEnvelope

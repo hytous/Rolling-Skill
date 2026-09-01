@@ -7,6 +7,7 @@ import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
 import type {WorkbenchRoute} from "./Workbench"
 import {CurationSessionView} from "./CurationSessionView"
+import {usePollingRevision} from "./usePollingRevision"
 
 interface CurationSummary {
     id: string
@@ -30,13 +31,15 @@ const visibleCurationSelection = selectionModel.visibleCurationSelection as (
 
 export function CurationPanel({t, initialSessionId, onNavigate}: CurationPanelProps) {
     const [selectedId, setSelectedId] = useState(initialSessionId ?? "")
-    const [revision, setRevision] = useState(0)
     const [showArchived, setShowArchived] = useState(false)
     const [state, setState] = useState<
         {status: "loading"} |
         {status: "error"; message: string} |
         {status: "ready"; active: CurationSummary[]; archived: CurationSummary[]}
     >({status: "loading"})
+    const pollingActive = state.status === "ready" && state.active.some((session) =>
+        ["queued", "running"].includes(session.status))
+    const [revision, refresh] = usePollingRevision(pollingActive)
 
     useEffect(() => {
         if (initialSessionId) setSelectedId(initialSessionId)
@@ -79,7 +82,7 @@ export function CurationPanel({t, initialSessionId, onNavigate}: CurationPanelPr
     if (state.status === "error") return (
         <div className="rolling-skill-state rolling-skill-error" role="alert">
             <span>{state.message}</span>
-            <Button size="sm" onClick={() => setRevision((value) => value + 1)}>{t("retry")}</Button>
+            <Button size="sm" onClick={refresh}>{t("retry")}</Button>
         </div>
     )
     return (
@@ -90,7 +93,7 @@ export function CurationPanel({t, initialSessionId, onNavigate}: CurationPanelPr
                         <h3>{t("curation")}</h3>
                         <p>{t("curationDescription")}</p>
                     </div>
-                    <Button size="sm" onClick={() => setRevision((value) => value + 1)}>{t("refresh")}</Button>
+                    <Button size="sm" onClick={refresh}>{t("refresh")}</Button>
                 </div>
                 <div className="rolling-skill-review-scope" role="group" aria-label={t("draftStatusFilter")}>
                     <button type="button" aria-pressed={!showArchived} onClick={() => setShowArchived(false)}>{t("activeDrafts")} <span>{state.active.length}</span></button>
@@ -120,7 +123,7 @@ export function CurationPanel({t, initialSessionId, onNavigate}: CurationPanelPr
                         key={visibleSelectedId}
                         sessionId={visibleSelectedId}
                         t={t}
-                        onChanged={() => setRevision((value) => value + 1)}
+                        onChanged={refresh}
                         onNavigate={onNavigate}
                     />
                 ) : <div className="rolling-skill-state">{t("selectDraft")}</div>}

@@ -5,6 +5,7 @@ import {ActionButton as Button} from "./ActionButton"
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
 import type {WorkbenchRoute} from "./Workbench"
+import {usePollingRevision} from "./usePollingRevision"
 
 interface CurationSession {
     id: string
@@ -70,12 +71,13 @@ export function CurationSessionView({
     onChanged: () => void
     onNavigate: (route: WorkbenchRoute) => void
 }) {
-    const [revision, setRevision] = useState(0)
     const [session, setSession] = useState<CurationSession | null>(null)
     const [error, setError] = useState<string | null>(null)
     const [message, setMessage] = useState("")
     const [busy, setBusy] = useState(false)
     const keys = useRef(new Map<string, string>())
+    const working = Boolean(session?.curator?.working || (session && ["queued", "running"].includes(session.status)))
+    const [revision, refresh] = usePollingRevision(working)
 
     useEffect(() => {
         const controller = new AbortController()
@@ -86,12 +88,6 @@ export function CurationSessionView({
             })
         return () => controller.abort()
     }, [sessionId, revision])
-
-    useEffect(() => {
-        if (!session || !["queued", "running"].includes(session.status)) return
-        const timer = window.setTimeout(() => setRevision((value) => value + 1), 1_500)
-        return () => window.clearTimeout(timer)
-    }, [session?.status, session?.revision])
 
     const mutate = async (method: string, extra: Record<string, unknown> = {}) => {
         if (!session || busy) return false
@@ -140,7 +136,6 @@ export function CurationSessionView({
     if (!session && !error) return <div className="rolling-skill-state" role="status">{t("loading")}</div>
     if (!session) return <div className="rolling-skill-state rolling-skill-error" role="alert">{error}</div>
     const editable = !["archived", "cancelled"].includes(session.status)
-    const working = Boolean(session.curator?.working || ["queued", "running"].includes(session.status))
     return (
         <section className="rolling-skill-panel rolling-skill-session-view">
             <div className="rolling-skill-panel-header">
@@ -148,7 +143,7 @@ export function CurationSessionView({
                     <h3>{session.episode?.originalQuestion ?? session.id}</h3>
                     <p>{session.caseType} · {session.status}</p>
                 </div>
-                <Button size="sm" onClick={() => setRevision((value) => value + 1)}>{t("refresh")}</Button>
+                <Button size="sm" onClick={refresh}>{t("refresh")}</Button>
             </div>
             {session.error || error ? <p className="rolling-skill-inline-error" role="alert">{error ?? session.error}</p> : null}
             <section className="rolling-skill-curation-primary">
