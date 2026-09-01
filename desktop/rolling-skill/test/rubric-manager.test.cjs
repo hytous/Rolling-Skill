@@ -291,6 +291,27 @@ describe("Rubric Agent manager", () => {
         assert.equal(sessionCopies, 0)
     })
 
+    it("turns an interrupted Runtime turn into a visible retryable failure", async () => {
+        let session = await start()
+
+        const handled = await manager.handleNotification({
+            method: "turn/interrupted",
+            params: {
+                threadId: session.rubricAgent.threadId,
+                turn: {
+                    id: session.rubricAgent.currentTurnId,
+                    status: "interrupted",
+                },
+            },
+        })
+        session = store.getRubricSession(session.id)
+
+        assert.equal(handled, true)
+        assert.equal(session.status, "failed")
+        assert.equal(session.rubricAgent.currentTurnId, null)
+        assert.match(session.error, /interrupted/i)
+    })
+
     it("coalesces repeated Rubric Agent reasoning activity before it crosses IPC", async () => {
         const activity = []
         const scheduledActivity = []

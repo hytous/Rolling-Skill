@@ -7,11 +7,19 @@ const {
 } = require("./dataset-rubric.cjs")
 const {LiveActivityCoalescer} = require("./live-activity-coalescer.cjs")
 
+const RUBRIC_TERMINAL_TURN_METHODS = new Set([
+    "turn/canceled",
+    "turn/cancelled",
+    "turn/completed",
+    "turn/failed",
+    "turn/interrupted",
+])
+
 const RUBRIC_NOTIFICATION_METHODS = new Set([
     "thread/settings/updated",
     "turn/started",
     "item/started",
-    "turn/completed",
+    ...RUBRIC_TERMINAL_TURN_METHODS,
     "error",
 ])
 
@@ -263,11 +271,14 @@ class RubricManager {
             })
             return true
         }
-        if (method === "turn/completed") {
+        if (RUBRIC_TERMINAL_TURN_METHODS.has(method)) {
             const turn = params.turn
             if (!turn?.id || turn.id !== session.rubricAgent.currentTurnId) return false
-            if (turn.status && turn.status !== "completed") {
-                const error = turn.error?.message ?? `Rubric Agent turn ended with ${turn.status}`
+            const terminalStatus = method === "turn/completed"
+                ? turn.status ?? "completed"
+                : method.slice("turn/".length)
+            if (terminalStatus !== "completed") {
+                const error = turn.error?.message ?? `Rubric Agent turn ended with ${terminalStatus}`
                 const failed = this.store.updateRubricSession(session.id, {
                     status: failureState(session),
                     error,

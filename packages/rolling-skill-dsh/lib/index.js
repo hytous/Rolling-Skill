@@ -17405,11 +17405,18 @@ var require_rubric_manager = __commonJS({
       parseDatasetRubric
     } = require_dataset_rubric();
     var { LiveActivityCoalescer } = require_live_activity_coalescer();
+    var RUBRIC_TERMINAL_TURN_METHODS = /* @__PURE__ */ new Set([
+      "turn/canceled",
+      "turn/cancelled",
+      "turn/completed",
+      "turn/failed",
+      "turn/interrupted"
+    ]);
     var RUBRIC_NOTIFICATION_METHODS = /* @__PURE__ */ new Set([
       "thread/settings/updated",
       "turn/started",
       "item/started",
-      "turn/completed",
+      ...RUBRIC_TERMINAL_TURN_METHODS,
       "error"
     ]);
     function assistantTextFromTurn(turn) {
@@ -17628,11 +17635,12 @@ ${initialInstruction}` : kickoff
           });
           return true;
         }
-        if (method === "turn/completed") {
+        if (RUBRIC_TERMINAL_TURN_METHODS.has(method)) {
           const turn = params.turn;
           if (!turn?.id || turn.id !== session.rubricAgent.currentTurnId) return false;
-          if (turn.status && turn.status !== "completed") {
-            const error = turn.error?.message ?? `Rubric Agent turn ended with ${turn.status}`;
+          const terminalStatus = method === "turn/completed" ? turn.status ?? "completed" : method.slice("turn/".length);
+          if (terminalStatus !== "completed") {
+            const error = turn.error?.message ?? `Rubric Agent turn ended with ${terminalStatus}`;
             const failed = this.store.updateRubricSession(session.id, {
               status: failureState(session),
               error,
