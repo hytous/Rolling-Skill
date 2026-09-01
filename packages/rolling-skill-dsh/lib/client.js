@@ -779,6 +779,8 @@ var zh = {
   createRubric: "\u751F\u6210\u8BC4\u5206\u6807\u51C6",
   creatingRubric: "\u6B63\u5728\u542F\u52A8\u751F\u6210\u2026",
   creatingRubricStatus: "\u751F\u6210\u8BF7\u6C42\u5DF2\u63D0\u4EA4\uFF0CRubric Agent \u542F\u52A8\u540E\u4F1A\u5728\u53F3\u4FA7\u663E\u793A\u8FDB\u5EA6\u3002",
+  generatingRubric: "\u8BC4\u5206\u6807\u51C6\u751F\u6210\u4E2D\u2026",
+  generatingRubricStatus: "Rubric Agent \u6B63\u5728\u751F\u6210\u8BC4\u5206\u6807\u51C6\uFF0C\u5B8C\u6210\u540E\u53EF\u5728\u53F3\u4FA7\u5BA1\u6838\u3002",
   rubricWorking: "Rubric Agent \u6B63\u5728\u751F\u6210\u8BC4\u5206\u6807\u51C6\u2026",
   rubricSessions: "\u751F\u6210\u4E0E\u4FEE\u8BA2\u4EFB\u52A1",
   rubricHistory: "\u5DF2\u53D1\u5E03\u7248\u672C",
@@ -1251,6 +1253,8 @@ var en = {
   createRubric: "Generate Rubric",
   creatingRubric: "Starting generation\u2026",
   creatingRubricStatus: "The generation request was submitted. Progress will appear on the right after the Rubric Agent starts.",
+  generatingRubric: "Generating rubric\u2026",
+  generatingRubricStatus: "The Rubric Agent is generating the rubric. Review it on the right when complete.",
   rubricWorking: "The Rubric Agent is generating the rubric\u2026",
   rubricSessions: "Generation and Review Sessions",
   rubricHistory: "Published Versions",
@@ -15345,6 +15349,7 @@ function RubricSessionView({ sessionId, t, onChanged }) {
 
 // src/client/workbench/RubricPanel.tsx
 var import_jsx_runtime23 = require("react/jsx-runtime");
+var WORKING_RUBRIC_STATUSES = /* @__PURE__ */ new Set(["queued", "running"]);
 function RubricPanel({
   t,
   initialDatasetId,
@@ -15364,6 +15369,8 @@ function RubricPanel({
   const [busy, setBusy] = (0, import_react20.useState)(false);
   const [creating, setCreating] = (0, import_react20.useState)(false);
   const [error, setError] = (0, import_react20.useState)(null);
+  const generatingSession = sessions.find((session) => WORKING_RUBRIC_STATUSES.has(session.status));
+  const generationPending = creating || Boolean(generatingSession);
   (0, import_react20.useEffect)(() => {
     const controller = new AbortController();
     Promise.all([
@@ -15390,7 +15397,7 @@ function RubricPanel({
       setSessions(result.sessions);
       setVersions(result.versions);
       setActive(result.active);
-      setSelectedSessionId((current) => current || result.sessions[0]?.id || "");
+      setSelectedSessionId((current) => result.sessions.some((session) => session.id === current) ? current : result.sessions.find((session) => WORKING_RUBRIC_STATUSES.has(session.status))?.id ?? result.sessions[0]?.id ?? "");
       setSelectedVersionId((current) => result.versions.some((version) => version.id === current) ? current : result.active?.id ?? result.versions[0]?.id ?? "");
       setError(null);
     }).catch((reason) => {
@@ -15398,6 +15405,11 @@ function RubricPanel({
     });
     return () => controller.abort();
   }, [datasetId, revision]);
+  (0, import_react20.useEffect)(() => {
+    if (!generatingSession) return;
+    const timer = window.setTimeout(() => setRevision((value) => value + 1), 1500);
+    return () => window.clearTimeout(timer);
+  }, [generatingSession?.id, generatingSession?.status, generatingSession?.updatedAt]);
   const create2 = async () => {
     if (!datasetId || busy) return;
     setBusy(true);
@@ -15410,6 +15422,7 @@ function RubricPanel({
         effort: effort || null,
         idempotencyKey: `rubric-create:${datasetId}:${globalThis.crypto.randomUUID()}`
       });
+      setSessions((current) => [session, ...current.filter((entry) => entry.id !== session.id)]);
       setSelectedSessionId(session.id);
       onNavigate({ page: "rubrics", datasetId, sessionId: session.id });
       setRevision((value) => value + 1);
@@ -15467,8 +15480,8 @@ function RubricPanel({
             /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "max", children: "max" })
           ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { tone: "primary", disabled: !datasetId || busy, "aria-busy": creating, onClick: create2, children: creating ? t("creatingRubric") : t("createRubric") }),
-        creating ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { className: "rolling-skill-operation-status", role: "status", "aria-live": "polite", children: t("creatingRubricStatus") }) : null
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { tone: "primary", disabled: !datasetId || busy || Boolean(generatingSession), "aria-busy": generationPending, onClick: create2, children: creating ? t("creatingRubric") : generatingSession ? t("generatingRubric") : t("createRubric") }),
+        generationPending ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { className: "rolling-skill-operation-status", role: "status", "aria-live": "polite", children: t(creating ? "creatingRubricStatus" : "generatingRubricStatus") }) : null
       ] }),
       error ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
       /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h4", { children: t("rubricSessions") }),

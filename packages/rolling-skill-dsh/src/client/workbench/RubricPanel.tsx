@@ -20,6 +20,7 @@ interface RubricCriterion {
     criticalFailure?: boolean
 }
 interface RubricAutomaticFailure {id?: string; condition?: string; rationale?: string}
+const WORKING_RUBRIC_STATUSES = new Set(["queued", "running"])
 interface RubricVersion {
     id: string
     version: number
@@ -66,6 +67,8 @@ export function RubricPanel({
     const [busy, setBusy] = useState(false)
     const [creating, setCreating] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const generatingSession = sessions.find((session) => WORKING_RUBRIC_STATUSES.has(session.status))
+    const generationPending = creating || Boolean(generatingSession)
 
     useEffect(() => {
         const controller = new AbortController()
@@ -95,7 +98,9 @@ export function RubricPanel({
             setSessions(result.sessions)
             setVersions(result.versions)
             setActive(result.active)
-            setSelectedSessionId((current) => current || result.sessions[0]?.id || "")
+            setSelectedSessionId((current) => result.sessions.some((session) => session.id === current)
+                ? current
+                : result.sessions.find((session) => WORKING_RUBRIC_STATUSES.has(session.status))?.id ?? result.sessions[0]?.id ?? "")
             setSelectedVersionId((current) => result.versions.some((version) => version.id === current) ? current : result.active?.id ?? result.versions[0]?.id ?? "")
             setError(null)
         }).catch((reason: unknown) => {
@@ -103,6 +108,12 @@ export function RubricPanel({
         })
         return () => controller.abort()
     }, [datasetId, revision])
+
+    useEffect(() => {
+        if (!generatingSession) return
+        const timer = window.setTimeout(() => setRevision((value) => value + 1), 1_500)
+        return () => window.clearTimeout(timer)
+    }, [generatingSession?.id, generatingSession?.status, generatingSession?.updatedAt])
 
     const create = async () => {
         if (!datasetId || busy) return
@@ -116,6 +127,7 @@ export function RubricPanel({
                 effort: effort || null,
                 idempotencyKey: `rubric-create:${datasetId}:${globalThis.crypto.randomUUID()}`,
             })
+            setSessions((current) => [session, ...current.filter((entry) => entry.id !== session.id)])
             setSelectedSessionId(session.id)
             onNavigate({page: "rubrics", datasetId, sessionId: session.id})
             setRevision((value) => value + 1)
@@ -153,8 +165,8 @@ export function RubricPanel({
                 <div className="rolling-skill-form-stack rolling-skill-create-rubric">
                     <label className="rolling-skill-field"><span>{t("model")}</span><input value={modelId} placeholder={t("configuredDefault")} onChange={(event) => setModelId(event.target.value)}/></label>
                     <label className="rolling-skill-field"><span>{t("effort")}</span><select className="rolling-skill-select" value={effort} onChange={(event) => setEffort(event.target.value)}><option value="">{t("configuredDefault")}</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></select></label>
-                    <Button tone="primary" disabled={!datasetId || busy} aria-busy={creating} onClick={create}>{creating ? t("creatingRubric") : t("createRubric")}</Button>
-                    {creating ? <p className="rolling-skill-operation-status" role="status" aria-live="polite">{t("creatingRubricStatus")}</p> : null}
+                    <Button tone="primary" disabled={!datasetId || busy || Boolean(generatingSession)} aria-busy={generationPending} onClick={create}>{creating ? t("creatingRubric") : generatingSession ? t("generatingRubric") : t("createRubric")}</Button>
+                    {generationPending ? <p className="rolling-skill-operation-status" role="status" aria-live="polite">{t(creating ? "creatingRubricStatus" : "generatingRubricStatus")}</p> : null}
                 </div>
                 {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
                 <h4>{t("rubricSessions")}</h4>
