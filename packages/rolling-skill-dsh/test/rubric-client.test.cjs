@@ -10,6 +10,7 @@ describe("DSH Rubric workbench", () => {
     it("covers create, review, model, effort, retry, publish, discard, and history", () => {
         const panel = source("RubricPanel.tsx")
         const view = source("RubricSessionView.tsx")
+        const locale = readFileSync(join(root, "../locale.ts"), "utf8")
         const combined = `${panel}\n${view}`
 
         for (const method of [
@@ -24,6 +25,18 @@ describe("DSH Rubric workbench", () => {
         assert.match(panel, /automaticFailures/u)
         assert.match(panel, /scoringAnchors/u)
         assert.match(panel, /operationEvidence/u)
+        assert.match(panel, /const \[selectedVersionId, setSelectedVersionId\] = useState/u)
+        assert.match(panel, /function RubricVersionListButton/u)
+        assert.match(panel, /<RubricVersionListButton/u)
+        assert.doesNotMatch(panel, /versions\.map\(\(version\) => <RubricVersionCard/u)
+        assert.doesNotMatch(panel, /\{active \? <p className="rolling-skill-badge">/u)
+        assert.match(panel, /creating \? t\("creatingRubric"\) : t\("createRubric"\)/u)
+        assert.match(panel, /role="status" aria-live="polite"/u)
+        assert.match(locale, /creatingRubric:\s*"正在启动生成…"/u)
+        assert.match(locale, /creatingRubricStatus:\s*"生成请求已提交，Rubric Agent 启动后会在右侧显示进度。"/u)
+        assert.match(locale, /rubricWorking:\s*"Rubric Agent 正在生成评分标准…"/u)
+        assert.match(view, /const working = Boolean\(session\.rubricAgent\?\.working \|\| \["queued", "running"\]\.includes\(session\.status\)\)/u)
+        assert.match(view, /working \? t\("rubricWorking"\) : session\.status/u)
         assert.match(view, /expectedRevision/u)
         assert.match(view, /idempotencyKey/u)
         assert.match(view, /scoringModel/u)

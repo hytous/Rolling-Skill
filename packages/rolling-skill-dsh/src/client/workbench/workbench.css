@@ -1329,6 +1329,13 @@
     padding-bottom: 14px;
 }
 
+.rolling-skill-operation-status {
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+    margin: 0;
+}
+
 .rolling-skill-select {
     margin-top: 14px;
     max-width: 360px;
