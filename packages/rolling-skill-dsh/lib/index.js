@@ -375,7 +375,7 @@ var require_dataset_rubric = __commonJS({
     function parseDatasetRubric(text2) {
       return validateDatasetRubric(extractJson(text2));
     }
-    function buildDatasetRubricPrompt({ datasetName, skillReference, skillEvidence, baseVersion = null } = {}) {
+    function buildDatasetRubricPrompt({ datasetName, skillReference, skillEvidence, baseVersion = null, userRequest = "" } = {}) {
       const baseRubric = baseVersion?.rubric ? validateDatasetRubric(baseVersion.rubric) : null;
       return `You are the Rubric Agent for one Skill evaluation dataset. Design or revise the single
 dataset-level unified rubric that every future Case Curator and Judge will inherit.
@@ -428,6 +428,8 @@ points, pass/fail decision, or verdict. The JSON must use this exact shape:
 
 Dataset: ${String(datasetName ?? "")}
 Selected Skill: ${String(skillReference?.name ?? "")}
+Initial user request for this generation or revision:
+<user-rubric-request>${String(userRequest ?? "").trim()}</user-rubric-request>
 Frozen Skill evidence (authoritative source for this rubric):
 <skill-evidence>${JSON.stringify(skillEvidence ?? null)}</skill-evidence>
 ${baseRubric ? `Published base rubric to revise while preserving compatible ids:
@@ -17499,7 +17501,7 @@ var require_rubric_manager = __commonJS({
         const dataset = this.store.getDataset(input.datasetId);
         const baseVersionId = input.baseVersionId ?? dataset.activeRubricVersionId ?? null;
         const descriptor = this.getRuntimeDescriptor();
-        const session = this.store.createRubricSession({
+        let session = this.store.createRubricSession({
           datasetId: dataset.id,
           baseVersionId,
           skillEvidence: input.skillEvidence,
@@ -17512,6 +17514,14 @@ var require_rubric_manager = __commonJS({
             effort: input.effort ?? null,
             promptVersion: RUBRIC_PROMPT_VERSION
           }
+        });
+        const kickoff = baseVersionId ? `Revise dataset rubric v${this.store.getDatasetRubricVersion(baseVersionId).version} for ${dataset.name}.` : `Create the first dataset rubric for ${dataset.name}.`;
+        const initialInstruction = String(input.initialInstruction ?? "").trim();
+        session = this.store.appendRubricMessage(session.id, {
+          role: "user",
+          text: initialInstruction ? `${kickoff}
+
+${initialInstruction}` : kickoff
         });
         this.emitChanged(session);
         this.queue(session.id, () => this.startInitialTurn(session.id));
@@ -17545,14 +17555,12 @@ var require_rubric_manager = __commonJS({
           });
           const dataset = this.store.getDataset(session.datasetId);
           const baseVersion = session.baseVersionId ? this.store.getDatasetRubricVersion(session.baseVersionId) : null;
-          const kickoff = baseVersion ? `Revise dataset rubric v${baseVersion.version} for ${dataset.name}.` : `Create the first dataset rubric for ${dataset.name}.`;
-          session = this.store.appendRubricMessage(sessionId, { role: "user", text: kickoff });
-          this.emitChanged(session);
           const prompt = buildDatasetRubricPrompt({
             datasetName: dataset.name,
             skillReference: session.skillReference,
             skillEvidence: session.skillEvidence,
-            baseVersion
+            baseVersion,
+            userRequest: session.conversation.find((message) => message.role === "user")?.text ?? ""
           });
           const turnInput = [
             {
@@ -63520,6 +63528,12 @@ var require_application = __commonJS({
       if (value.length > maxLength) throw new Error(`${label} is too large`);
       return value;
     }
+    function optionalBodyText(value, label, maxLength = 12e4) {
+      if (value === null || value === void 0) return "";
+      if (typeof value !== "string") throw new Error(`${label} must be text`);
+      if (value.length > maxLength) throw new Error(`${label} is too large`);
+      return value.trim();
+    }
     function exactFields(input, allowed, label) {
       const unsupported = Object.keys(input).find((field) => !allowed.has(field));
       if (unsupported) throw new Error(`Unsupported ${label} field: ${unsupported}`);
@@ -64713,9 +64727,10 @@ var require_application = __commonJS({
           ));
         },
         "rubrics.create": (input) => {
-          exactFields(input, /* @__PURE__ */ new Set(["datasetId", "modelId", "effort", "idempotencyKey"]), "rubric");
+          exactFields(input, /* @__PURE__ */ new Set(["datasetId", "modelId", "effort", "initialInstruction", "idempotencyKey"]), "rubric");
           return idempotentReviewMutation("rubrics.create", input, async () => {
             const datasetId = requiredIdentifier(input.datasetId, "Dataset id");
+            const initialInstruction = optionalBodyText(input.initialInstruction, "Rubric generation request");
             const operation = conversationCurationOperationResolver.resolveRubric(datasetId);
             const skillEvidence = snapshotSkillEvidence(operation.executionSkillReference);
             return publicRubricSession(await rubricManager.createSession({
@@ -64724,7 +64739,8 @@ var require_application = __commonJS({
               effort: input.effort ?? null,
               skillEvidence,
               executionSkillReference: operation.executionSkillReference,
-              operationEvidence: operation.operationEvidence
+              operationEvidence: operation.operationEvidence,
+              initialInstruction
             }));
           });
         },

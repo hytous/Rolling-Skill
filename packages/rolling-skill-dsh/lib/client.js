@@ -782,6 +782,11 @@ var zh = {
   generatingRubric: "\u8BC4\u5206\u6807\u51C6\u751F\u6210\u4E2D\u2026",
   generatingRubricStatus: "Rubric Agent \u6B63\u5728\u751F\u6210\u8BC4\u5206\u6807\u51C6\uFF0C\u5B8C\u6210\u540E\u53EF\u5728\u53F3\u4FA7\u5BA1\u6838\u3002",
   rubricWorking: "Rubric Agent \u6B63\u5728\u751F\u6210\u8BC4\u5206\u6807\u51C6\u2026",
+  rubricPromptTitle: "\u544A\u8BC9 Agent \u600E\u6837\u751F\u6210\u8BC4\u5206\u6807\u51C6",
+  rubricPromptHelp: "\u7528\u81EA\u7136\u8BED\u8A00\u63CF\u8FF0\u5E0C\u671B\u91CD\u70B9\u8986\u76D6\u3001\u4FDD\u7559\u6216\u907F\u514D\u7684\u5185\u5BB9\uFF1B\u7559\u7A7A\u5219\u7531 Agent \u6839\u636E Skill \u5B8C\u6574\u751F\u6210\u3002",
+  rubricPromptLabel: "\u751F\u6210\u8981\u6C42\uFF08\u53EF\u9009\uFF09",
+  rubricPromptPlaceholder: "\u4F8B\u5982\uFF1A\u91CD\u70B9\u68C0\u67E5\u5206\u9875\u5B8C\u6574\u6027\u3001\u5DE5\u5177\u8C03\u7528\u987A\u5E8F\uFF0C\u4EE5\u53CA\u6210\u672C\u7ED3\u8BBA\u662F\u5426\u6709\u5145\u5206\u8BC1\u636E\u3002",
+  startRubricGeneration: "\u5F00\u59CB\u751F\u6210",
   rubricSessions: "\u751F\u6210\u4E0E\u4FEE\u8BA2\u4EFB\u52A1",
   rubricHistory: "\u5DF2\u53D1\u5E03\u7248\u672C",
   activeRubric: "\u5F53\u524D\u8BC4\u5206\u6807\u51C6",
@@ -15368,6 +15373,8 @@ function RubricPanel({
   const [revision, setRevision] = (0, import_react20.useState)(0);
   const [busy, setBusy] = (0, import_react20.useState)(false);
   const [creating, setCreating] = (0, import_react20.useState)(false);
+  const [promptOpen, setPromptOpen] = (0, import_react20.useState)(false);
+  const [initialInstruction, setInitialInstruction] = (0, import_react20.useState)("");
   const [error, setError] = (0, import_react20.useState)(null);
   const generatingSession = sessions.find((session) => WORKING_RUBRIC_STATUSES.has(session.status));
   const generationPending = creating || Boolean(generatingSession);
@@ -15410,7 +15417,7 @@ function RubricPanel({
     const timer = window.setTimeout(() => setRevision((value) => value + 1), 1500);
     return () => window.clearTimeout(timer);
   }, [generatingSession?.id, generatingSession?.status, generatingSession?.updatedAt]);
-  const create2 = async () => {
+  const create2 = async (instruction) => {
     if (!datasetId || busy) return;
     setBusy(true);
     setCreating(true);
@@ -15420,18 +15427,26 @@ function RubricPanel({
         datasetId,
         modelId: modelId || null,
         effort: effort || null,
+        initialInstruction: instruction,
         idempotencyKey: `rubric-create:${datasetId}:${globalThis.crypto.randomUUID()}`
       });
       setSessions((current) => [session, ...current.filter((entry) => entry.id !== session.id)]);
       setSelectedSessionId(session.id);
       onNavigate({ page: "rubrics", datasetId, sessionId: session.id });
       setRevision((value) => value + 1);
+      setPromptOpen(false);
+      setInitialInstruction("");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("loadError"));
     } finally {
       setCreating(false);
       setBusy(false);
     }
+  };
+  const closePrompt = () => {
+    if (creating) return;
+    setPromptOpen(false);
+    setError(null);
   };
   const migrateLegacy = async () => {
     if (!datasetId || busy) return;
@@ -15450,61 +15465,106 @@ function RubricPanel({
     }
   };
   const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? active;
-  return /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-review-layout", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("aside", { className: "rolling-skill-panel rolling-skill-review-list", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h3", { children: t("rubrics") }),
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: t("rubricDescription") })
-      ] }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("label", { className: "rolling-skill-field", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: t("selectDataset") }),
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("select", { className: "rolling-skill-select", value: datasetId, onChange: (event) => {
-          setDatasetId(event.target.value);
+  return /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)(import_jsx_runtime23.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-review-layout", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("aside", { className: "rolling-skill-panel rolling-skill-review-list", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-panel-header", children: /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h3", { children: t("rubrics") }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: t("rubricDescription") })
+        ] }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("label", { className: "rolling-skill-field", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: t("selectDataset") }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("select", { className: "rolling-skill-select", value: datasetId, onChange: (event) => {
+            setDatasetId(event.target.value);
+            setSelectedSessionId("");
+            setSelectedVersionId("");
+          }, children: datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: dataset.id, children: dataset.name }, dataset.id)) })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-form-stack rolling-skill-create-rubric", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("label", { className: "rolling-skill-field", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: t("model") }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("input", { value: modelId, placeholder: t("configuredDefault"), onChange: (event) => setModelId(event.target.value) })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("label", { className: "rolling-skill-field", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: t("effort") }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("select", { className: "rolling-skill-select", value: effort, onChange: (event) => setEffort(event.target.value), children: [
+              /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "", children: t("configuredDefault") }),
+              /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "low", children: "low" }),
+              /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "medium", children: "medium" }),
+              /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "high", children: "high" }),
+              /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "xhigh", children: "xhigh" }),
+              /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "max", children: "max" })
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { tone: "primary", disabled: !datasetId || busy || Boolean(generatingSession), "aria-busy": generationPending, onClick: () => setPromptOpen(true), children: creating ? t("creatingRubric") : generatingSession ? t("generatingRubric") : t("createRubric") }),
+          generationPending ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { className: "rolling-skill-operation-status", role: "status", "aria-live": "polite", children: t(creating ? "creatingRubricStatus" : "generatingRubricStatus") }) : null
+        ] }),
+        error ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h4", { children: t("rubricSessions") }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-list", children: sessions.map((session) => /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("button", { type: "button", className: "rolling-skill-review-list-button", "data-selected": selectedSessionId === session.id, onClick: () => {
+          setSelectedSessionId(session.id);
+          onNavigate({ page: "rubrics", datasetId, sessionId: session.id });
+        }, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("strong", { children: session.status }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: session.updatedAt })
+        ] }, session.id)) }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h4", { children: t("rubricHistory") }),
+        !active ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: t("noActiveRubric") }) : null,
+        active && active.rubric.scoringModel !== "unified-100/v1" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("section", { className: "rolling-skill-subpanel", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: t("legacyRubricNotice") }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void migrateLegacy(), children: t("migrateLegacyRubric") })
+        ] }) : null,
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-list", children: versions.map((version) => /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricVersionListButton, { version, active: version.id === active?.id, selected: !selectedSessionId && selectedVersion?.id === version.id, t, onSelect: () => {
           setSelectedSessionId("");
-          setSelectedVersionId("");
-        }, children: datasets.map((dataset) => /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: dataset.id, children: dataset.name }, dataset.id)) })
+          setSelectedVersionId(version.id);
+          onNavigate({ page: "rubrics", datasetId });
+        } }, version.id)) })
       ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-form-stack rolling-skill-create-rubric", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("label", { className: "rolling-skill-field", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: t("model") }),
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("input", { value: modelId, placeholder: t("configuredDefault"), onChange: (event) => setModelId(event.target.value) })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("label", { className: "rolling-skill-field", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: t("effort") }),
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("select", { className: "rolling-skill-select", value: effort, onChange: (event) => setEffort(event.target.value), children: [
-            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "", children: t("configuredDefault") }),
-            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "low", children: "low" }),
-            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "medium", children: "medium" }),
-            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "high", children: "high" }),
-            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "xhigh", children: "xhigh" }),
-            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("option", { value: "max", children: "max" })
-          ] })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { tone: "primary", disabled: !datasetId || busy || Boolean(generatingSession), "aria-busy": generationPending, onClick: create2, children: creating ? t("creatingRubric") : generatingSession ? t("generatingRubric") : t("createRubric") }),
-        generationPending ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { className: "rolling-skill-operation-status", role: "status", "aria-live": "polite", children: t(creating ? "creatingRubricStatus" : "generatingRubricStatus") }) : null
-      ] }),
-      error ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h4", { children: t("rubricSessions") }),
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-list", children: sessions.map((session) => /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("button", { type: "button", className: "rolling-skill-review-list-button", "data-selected": selectedSessionId === session.id, onClick: () => {
-        setSelectedSessionId(session.id);
-        onNavigate({ page: "rubrics", datasetId, sessionId: session.id });
-      }, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("strong", { children: session.status }),
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: session.updatedAt })
-      ] }, session.id)) }),
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h4", { children: t("rubricHistory") }),
-      !active ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: t("noActiveRubric") }) : null,
-      active && active.rubric.scoringModel !== "unified-100/v1" ? /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("section", { className: "rolling-skill-subpanel", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: t("legacyRubricNotice") }),
-        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { size: "sm", disabled: busy, onClick: () => void migrateLegacy(), children: t("migrateLegacyRubric") })
-      ] }) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-list", children: versions.map((version) => /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricVersionListButton, { version, active: version.id === active?.id, selected: !selectedSessionId && selectedVersion?.id === version.id, t, onSelect: () => {
-        setSelectedSessionId("");
-        setSelectedVersionId(version.id);
-        onNavigate({ page: "rubrics", datasetId });
-      } }, version.id)) })
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("main", { className: "rolling-skill-review-detail", children: selectedSessionId ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricSessionView, { sessionId: selectedSessionId, t, onChanged: () => setRevision((value) => value + 1) }) : selectedVersion ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricVersionCard, { version: selectedVersion, active: selectedVersion.id === active?.id, t }) : /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-state", children: t("selectRubricSession") }) })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("main", { className: "rolling-skill-review-detail", children: selectedSessionId ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricSessionView, { sessionId: selectedSessionId, t, onChanged: () => setRevision((value) => value + 1) }) : selectedVersion ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(RubricVersionCard, { version: selectedVersion, active: selectedVersion.id === active?.id, t }) : /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-state", children: t("selectRubricSession") }) })
+    promptOpen ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "rolling-skill-dialog-backdrop", onMouseDown: (event) => {
+      if (event.currentTarget === event.target) closePrompt();
+    }, children: /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)(
+      "form",
+      {
+        className: "rolling-skill-dialog rolling-skill-rubric-prompt-dialog",
+        role: "dialog",
+        "aria-modal": "true",
+        "aria-labelledby": "rolling-skill-rubric-prompt-title",
+        onSubmit: (event) => {
+          event.preventDefault();
+          void create2(initialInstruction.trim());
+        },
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("header", { className: "rolling-skill-dialog-header", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h2", { id: "rolling-skill-rubric-prompt-title", children: t("rubricPromptTitle") }),
+              /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { children: t("rubricPromptHelp") })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { tone: "quiet", size: "sm", type: "button", disabled: creating, onClick: closePrompt, "aria-label": t("close"), children: "\xD7" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("label", { className: "rolling-skill-field", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { children: t("rubricPromptLabel") }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(
+              "textarea",
+              {
+                className: "rolling-skill-textarea",
+                value: initialInstruction,
+                maxLength: 12e4,
+                autoFocus: true,
+                placeholder: t("rubricPromptPlaceholder"),
+                onChange: (event) => setInitialInstruction(event.target.value)
+              }
+            )
+          ] }),
+          error ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("p", { className: "rolling-skill-inline-error", role: "alert", children: error }) : null,
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rolling-skill-actions rolling-skill-dialog-actions", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { type: "button", disabled: creating, onClick: closePrompt, children: t("cancel") }),
+            /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(ActionButton, { tone: "primary", type: "submit", disabled: creating, "aria-busy": creating, children: creating ? t("creatingRubric") : t("startRubricGeneration") })
+          ] })
+        ]
+      }
+    ) }) : null
   ] });
 }
 function RubricVersionListButton({ version, active, selected, t, onSelect }) {

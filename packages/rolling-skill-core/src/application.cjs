@@ -147,6 +147,13 @@ function requiredBodyText(value, label, maxLength = 120_000) {
     return value
 }
 
+function optionalBodyText(value, label, maxLength = 120_000) {
+    if (value === null || value === undefined) return ""
+    if (typeof value !== "string") throw new Error(`${label} must be text`)
+    if (value.length > maxLength) throw new Error(`${label} is too large`)
+    return value.trim()
+}
+
 function exactFields(input, allowed, label) {
     const unsupported = Object.keys(input).find((field) => !allowed.has(field))
     if (unsupported) throw new Error(`Unsupported ${label} field: ${unsupported}`)
@@ -1458,9 +1465,10 @@ function createRollingSkillApplication(options = {}) {
             ))
         },
         "rubrics.create": (input) => {
-            exactFields(input, new Set(["datasetId", "modelId", "effort", "idempotencyKey"]), "rubric")
+            exactFields(input, new Set(["datasetId", "modelId", "effort", "initialInstruction", "idempotencyKey"]), "rubric")
             return idempotentReviewMutation("rubrics.create", input, async () => {
                 const datasetId = requiredIdentifier(input.datasetId, "Dataset id")
+                const initialInstruction = optionalBodyText(input.initialInstruction, "Rubric generation request")
                 const operation = conversationCurationOperationResolver.resolveRubric(datasetId)
                 const skillEvidence = snapshotSkillEvidence(operation.executionSkillReference)
                 return publicRubricSession(await rubricManager.createSession({
@@ -1470,6 +1478,7 @@ function createRollingSkillApplication(options = {}) {
                     skillEvidence,
                     executionSkillReference: operation.executionSkillReference,
                     operationEvidence: operation.operationEvidence,
+                    initialInstruction,
                 }))
             })
         },

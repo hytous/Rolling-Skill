@@ -206,6 +206,22 @@ describe("Rubric Agent manager", () => {
         assert.equal(manager.hiddenThreadIds().has(session.rubricAgent.threadId), true)
     })
 
+    it("carries the user's initial natural-language request into the first Rubric Agent turn", async () => {
+        const created = await manager.createSession({
+            datasetId: dataset.id,
+            skillEvidence: evidence,
+            initialInstruction: "重点检查分页完整性和成本结论的证据。",
+        })
+        await manager.waitForIdle(created.id)
+
+        const session = store.getRubricSession(created.id)
+        assert.match(session.conversation[0].text, /重点检查分页完整性和成本结论的证据。/u)
+        assert.match(
+            runtime.startedTurns[0].input[1].text,
+            /<user-rubric-request>[\s\S]*重点检查分页完整性和成本结论的证据。[\s\S]*<\/user-rubric-request>/u,
+        )
+    })
+
     it("drops high-frequency response deltas before copying the frozen Rubric session", async () => {
         const session = await start()
         const getRubricSession = store.getRubricSession.bind(store)

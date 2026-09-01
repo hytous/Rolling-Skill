@@ -205,7 +205,7 @@ function parseDatasetRubric(text) {
     return validateDatasetRubric(extractJson(text))
 }
 
-function buildDatasetRubricPrompt({datasetName, skillReference, skillEvidence, baseVersion = null} = {}) {
+function buildDatasetRubricPrompt({datasetName, skillReference, skillEvidence, baseVersion = null, userRequest = ""} = {}) {
     const baseRubric = baseVersion?.rubric ? validateDatasetRubric(baseVersion.rubric) : null
     return `You are the Rubric Agent for one Skill evaluation dataset. Design or revise the single
 dataset-level unified rubric that every future Case Curator and Judge will inherit.
@@ -258,6 +258,8 @@ points, pass/fail decision, or verdict. The JSON must use this exact shape:
 
 Dataset: ${String(datasetName ?? "")}
 Selected Skill: ${String(skillReference?.name ?? "")}
+Initial user request for this generation or revision:
+<user-rubric-request>${String(userRequest ?? "").trim()}</user-rubric-request>
 Frozen Skill evidence (authoritative source for this rubric):
 <skill-evidence>${JSON.stringify(skillEvidence ?? null)}</skill-evidence>
 ${baseRubric ? `Published base rubric to revise while preserving compatible ids:\n<base-rubric>${JSON.stringify(baseRubric)}</base-rubric>` : "This dataset has no published rubric yet."}`

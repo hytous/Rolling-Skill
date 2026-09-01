@@ -658,10 +658,14 @@ describe("shared Rolling Skill application", () => {
             datasetId,
             modelId: null,
             effort: null,
+            initialInstruction: "重点检查故障分级依据和立即响应步骤。",
             idempotencyKey: "rubric-runtime-notification-1",
         })
         await new Promise((resolve) => setImmediate(resolve))
         await new Promise((resolve) => setImmediate(resolve))
+
+        const started = await application.dispatch("rubrics.get", {sessionId: session.id})
+        assert.match(started.conversation[0].text, /重点检查故障分级依据和立即响应步骤。/u)
 
         client.emit("notification", {
             method: "turn/completed",

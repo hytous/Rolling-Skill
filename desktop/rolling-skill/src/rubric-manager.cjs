@@ -117,7 +117,7 @@ class RubricManager {
         const dataset = this.store.getDataset(input.datasetId)
         const baseVersionId = input.baseVersionId ?? dataset.activeRubricVersionId ?? null
         const descriptor = this.getRuntimeDescriptor()
-        const session = this.store.createRubricSession({
+        let session = this.store.createRubricSession({
             datasetId: dataset.id,
             baseVersionId,
             skillEvidence: input.skillEvidence,
@@ -130,6 +130,14 @@ class RubricManager {
                 effort: input.effort ?? null,
                 promptVersion: RUBRIC_PROMPT_VERSION,
             },
+        })
+        const kickoff = baseVersionId
+            ? `Revise dataset rubric v${this.store.getDatasetRubricVersion(baseVersionId).version} for ${dataset.name}.`
+            : `Create the first dataset rubric for ${dataset.name}.`
+        const initialInstruction = String(input.initialInstruction ?? "").trim()
+        session = this.store.appendRubricMessage(session.id, {
+            role: "user",
+            text: initialInstruction ? `${kickoff}\n\n${initialInstruction}` : kickoff,
         })
         this.emitChanged(session)
         this.queue(session.id, () => this.startInitialTurn(session.id))
@@ -173,16 +181,12 @@ class RubricManager {
             const baseVersion = session.baseVersionId
                 ? this.store.getDatasetRubricVersion(session.baseVersionId)
                 : null
-            const kickoff = baseVersion
-                ? `Revise dataset rubric v${baseVersion.version} for ${dataset.name}.`
-                : `Create the first dataset rubric for ${dataset.name}.`
-            session = this.store.appendRubricMessage(sessionId, {role: "user", text: kickoff})
-            this.emitChanged(session)
             const prompt = buildDatasetRubricPrompt({
                 datasetName: dataset.name,
                 skillReference: session.skillReference,
                 skillEvidence: session.skillEvidence,
                 baseVersion,
+                userRequest: session.conversation.find((message) => message.role === "user")?.text ?? "",
             })
             const turnInput = [
                 {

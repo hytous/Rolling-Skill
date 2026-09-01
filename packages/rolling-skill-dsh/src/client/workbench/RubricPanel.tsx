@@ -66,6 +66,8 @@ export function RubricPanel({
     const [revision, setRevision] = useState(0)
     const [busy, setBusy] = useState(false)
     const [creating, setCreating] = useState(false)
+    const [promptOpen, setPromptOpen] = useState(false)
+    const [initialInstruction, setInitialInstruction] = useState("")
     const [error, setError] = useState<string | null>(null)
     const generatingSession = sessions.find((session) => WORKING_RUBRIC_STATUSES.has(session.status))
     const generationPending = creating || Boolean(generatingSession)
@@ -115,7 +117,7 @@ export function RubricPanel({
         return () => window.clearTimeout(timer)
     }, [generatingSession?.id, generatingSession?.status, generatingSession?.updatedAt])
 
-    const create = async () => {
+    const create = async (instruction: string) => {
         if (!datasetId || busy) return
         setBusy(true)
         setCreating(true)
@@ -125,18 +127,26 @@ export function RubricPanel({
                 datasetId,
                 modelId: modelId || null,
                 effort: effort || null,
+                initialInstruction: instruction,
                 idempotencyKey: `rubric-create:${datasetId}:${globalThis.crypto.randomUUID()}`,
             })
             setSessions((current) => [session, ...current.filter((entry) => entry.id !== session.id)])
             setSelectedSessionId(session.id)
             onNavigate({page: "rubrics", datasetId, sessionId: session.id})
             setRevision((value) => value + 1)
+            setPromptOpen(false)
+            setInitialInstruction("")
         } catch (reason) {
             setError(reason instanceof Error ? reason.message : t("loadError"))
         } finally {
             setCreating(false)
             setBusy(false)
         }
+    }
+    const closePrompt = () => {
+        if (creating) return
+        setPromptOpen(false)
+        setError(null)
     }
     const migrateLegacy = async () => {
         if (!datasetId || busy) return
@@ -158,14 +168,15 @@ export function RubricPanel({
     const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? active
 
     return (
-        <div className="rolling-skill-review-layout">
-            <aside className="rolling-skill-panel rolling-skill-review-list">
+        <>
+            <div className="rolling-skill-review-layout">
+                <aside className="rolling-skill-panel rolling-skill-review-list">
                 <div className="rolling-skill-panel-header"><div><h3>{t("rubrics")}</h3><p>{t("rubricDescription")}</p></div></div>
                 <label className="rolling-skill-field"><span>{t("selectDataset")}</span><select className="rolling-skill-select" value={datasetId} onChange={(event) => { setDatasetId(event.target.value); setSelectedSessionId(""); setSelectedVersionId("") }}>{datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}</select></label>
                 <div className="rolling-skill-form-stack rolling-skill-create-rubric">
                     <label className="rolling-skill-field"><span>{t("model")}</span><input value={modelId} placeholder={t("configuredDefault")} onChange={(event) => setModelId(event.target.value)}/></label>
                     <label className="rolling-skill-field"><span>{t("effort")}</span><select className="rolling-skill-select" value={effort} onChange={(event) => setEffort(event.target.value)}><option value="">{t("configuredDefault")}</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></select></label>
-                    <Button tone="primary" disabled={!datasetId || busy || Boolean(generatingSession)} aria-busy={generationPending} onClick={create}>{creating ? t("creatingRubric") : generatingSession ? t("generatingRubric") : t("createRubric")}</Button>
+                    <Button tone="primary" disabled={!datasetId || busy || Boolean(generatingSession)} aria-busy={generationPending} onClick={() => setPromptOpen(true)}>{creating ? t("creatingRubric") : generatingSession ? t("generatingRubric") : t("createRubric")}</Button>
                     {generationPending ? <p className="rolling-skill-operation-status" role="status" aria-live="polite">{t(creating ? "creatingRubricStatus" : "generatingRubricStatus")}</p> : null}
                 </div>
                 {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
@@ -177,11 +188,54 @@ export function RubricPanel({
                 {!active ? <p>{t("noActiveRubric")}</p> : null}
                 {active && active.rubric.scoringModel !== "unified-100/v1" ? <section className="rolling-skill-subpanel"><p>{t("legacyRubricNotice")}</p><Button size="sm" disabled={busy} onClick={() => void migrateLegacy()}>{t("migrateLegacyRubric")}</Button></section> : null}
                 <div className="rolling-skill-list">{versions.map((version) => <RubricVersionListButton key={version.id} version={version} active={version.id === active?.id} selected={!selectedSessionId && selectedVersion?.id === version.id} t={t} onSelect={() => { setSelectedSessionId(""); setSelectedVersionId(version.id); onNavigate({page: "rubrics", datasetId}) }}/>)}</div>
-            </aside>
-            <main className="rolling-skill-review-detail">
-                {selectedSessionId ? <RubricSessionView sessionId={selectedSessionId} t={t} onChanged={() => setRevision((value) => value + 1)}/> : selectedVersion ? <RubricVersionCard version={selectedVersion} active={selectedVersion.id === active?.id} t={t}/> : <div className="rolling-skill-state">{t("selectRubricSession")}</div>}
-            </main>
-        </div>
+                </aside>
+                <main className="rolling-skill-review-detail">
+                    {selectedSessionId ? <RubricSessionView sessionId={selectedSessionId} t={t} onChanged={() => setRevision((value) => value + 1)}/> : selectedVersion ? <RubricVersionCard version={selectedVersion} active={selectedVersion.id === active?.id} t={t}/> : <div className="rolling-skill-state">{t("selectRubricSession")}</div>}
+                </main>
+            </div>
+            {promptOpen ? (
+                <div className="rolling-skill-dialog-backdrop" onMouseDown={(event) => {
+                    if (event.currentTarget === event.target) closePrompt()
+                }}>
+                    <form
+                        className="rolling-skill-dialog rolling-skill-rubric-prompt-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="rolling-skill-rubric-prompt-title"
+                        onSubmit={(event) => {
+                            event.preventDefault()
+                            void create(initialInstruction.trim())
+                        }}
+                    >
+                        <header className="rolling-skill-dialog-header">
+                            <div>
+                                <h2 id="rolling-skill-rubric-prompt-title">{t("rubricPromptTitle")}</h2>
+                                <p>{t("rubricPromptHelp")}</p>
+                            </div>
+                            <Button tone="quiet" size="sm" type="button" disabled={creating} onClick={closePrompt} aria-label={t("close")}>×</Button>
+                        </header>
+                        <label className="rolling-skill-field">
+                            <span>{t("rubricPromptLabel")}</span>
+                            <textarea
+                                className="rolling-skill-textarea"
+                                value={initialInstruction}
+                                maxLength={120000}
+                                autoFocus
+                                placeholder={t("rubricPromptPlaceholder")}
+                                onChange={(event) => setInitialInstruction(event.target.value)}
+                            />
+                        </label>
+                        {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
+                        <div className="rolling-skill-actions rolling-skill-dialog-actions">
+                            <Button type="button" disabled={creating} onClick={closePrompt}>{t("cancel")}</Button>
+                            <Button tone="primary" type="submit" disabled={creating} aria-busy={creating}>
+                                {creating ? t("creatingRubric") : t("startRubricGeneration")}
+                            </Button>
+                        </div>
+                    </form>
+                </div>
+            ) : null}
+        </>
     )
 }
 
