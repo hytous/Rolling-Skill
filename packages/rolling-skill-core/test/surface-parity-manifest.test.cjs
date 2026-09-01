@@ -9,6 +9,25 @@ const {
 } = require("../src/surface-parity-manifest.cjs")
 
 describe("Rolling Skill surface parity manifest", () => {
+    it("describes real user journeys instead of synthetic completion claims", () => {
+        for (const entry of SURFACE_PARITY_MANIFEST) {
+            assert.match(entry.journeyId, /^J(?:[1-9]|1[01])$/)
+            assert.ok(entry.capability.length >= 8)
+            assert.ok(entry.acceptance.length >= 6)
+            assert.ok(!entry.electronOwner.includes("baseline capability"))
+            assert.ok([
+                "native",
+                "complete",
+                "partial",
+                "broken",
+                "intentional",
+            ].includes(entry.status))
+            if (entry.status === "complete") {
+                assert.notEqual(entry.uiEvidence, "Pending installed DSH browser verification")
+            }
+        }
+    })
+
     it("tracks exactly every ID in the 136-capability ledger with explicit evidence state", () => {
         const ledger = readFileSync(join(
             __dirname,
@@ -24,7 +43,13 @@ describe("Rolling Skill surface parity manifest", () => {
             assert.ok(entry.family)
             assert.ok(entry.electronOwner)
             assert.ok(entry.dshOwner)
-            assert.ok(["baseline", "red", "green", "ui-verified"].includes(entry.status))
+            assert.ok([
+                "native",
+                "complete",
+                "partial",
+                "broken",
+                "intentional",
+            ].includes(entry.status))
             assert.equal(typeof entry.implementation, "string")
             assert.equal(typeof entry.automatedEvidence, "string")
             assert.equal(typeof entry.uiEvidence, "string")
@@ -32,16 +57,18 @@ describe("Rolling Skill surface parity manifest", () => {
         }
         const report = surfaceParityReport()
         assert.equal(report.total, 136)
-        assert.equal(report.byStatus.green + report.byStatus["ui-verified"] + report.byStatus.red + report.byStatus.baseline, 136)
+        assert.equal(Object.values(report.byStatus).reduce((sum, count) => sum + count, 0), 136)
         assert.deepEqual(
-            SURFACE_PARITY_MANIFEST.filter((entry) => entry.status === "ui-verified").map((entry) => entry.id),
+            SURFACE_PARITY_MANIFEST.filter((entry) => entry.status === "native").map((entry) => entry.id),
             [
                 "SH-01", "SH-02", "SH-03", "SH-04", "SH-05", "SH-06",
-                "SH-07", "SH-08", "SH-09", "SH-10", "SH-11", "SH-12",
-                "ST-03", "QL-09",
+                "SH-07", "SH-08", "SH-09", "SH-10", "SH-11", "ST-03",
             ],
         )
-        assert.deepEqual(report.gaps, ["ST-10"])
-        assert.deepEqual(report.gaps, SURFACE_PARITY_MANIFEST.filter((entry) => entry.status === "red" || entry.status === "baseline").map((entry) => entry.id))
+        assert.deepEqual(
+            SURFACE_PARITY_MANIFEST.filter((entry) => entry.status === "broken").map((entry) => entry.id),
+            ["CU-09", "RB-03", "RB-05", "RB-06", "QL-06"],
+        )
+        assert.deepEqual(report.gaps, SURFACE_PARITY_MANIFEST.filter((entry) => entry.status === "partial" || entry.status === "broken").map((entry) => entry.id))
     })
 })
