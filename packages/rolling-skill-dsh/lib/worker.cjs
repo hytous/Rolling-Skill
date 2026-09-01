@@ -18228,12 +18228,16 @@ ${initialInstruction}` : kickoff
             baseVersion,
             userRequest: session.conversation.find((message) => message.role === "user")?.text ?? ""
           });
+          const turnSkillReference = session.executionSkillReference ?? session.skillReference;
+          const canInjectRuntimeSkill = Boolean(
+            turnSkillReference?.path && (!turnSkillReference.runtimeId || turnSkillReference.runtimeId === session.rubricAgent.runtimeId)
+          );
           const turnInput = [
-            {
+            ...canInjectRuntimeSkill ? [{
               type: "skill",
-              name: (session.executionSkillReference ?? session.skillReference).name,
-              path: (session.executionSkillReference ?? session.skillReference).path
-            },
+              name: turnSkillReference.name,
+              path: turnSkillReference.path
+            }] : [],
             { type: "text", text: prompt, text_elements: [] }
           ];
           const turnResponse = await runtime.startTurn(response.thread.id, turnInput, {
@@ -23572,12 +23576,18 @@ var require_curation_operation_evidence = __commonJS({
           throw new Error("A Released managed Skill version is required before curation");
         }
         const versionsById = new Map(released.map((version2) => [version2.id, version2]));
-        const installations = installationStore.listVerifiedInstallations({
+        let installations = installationStore.listVerifiedInstallations({
           repositoryId: repository.id,
           skillId: skill.id,
           runtimeId: runtime.runtimeId,
           providerId: runtime.providerId
         });
+        if (!installations.length && kind === "rubric") {
+          installations = installationStore.listVerifiedInstallations({
+            repositoryId: repository.id,
+            skillId: skill.id
+          });
+        }
         if (!installations.length) {
           throw new Error("A verified Skill installation is required before curation");
         }
@@ -23605,12 +23615,18 @@ var require_curation_operation_evidence = __commonJS({
           throw new Error("Verified Skill installation destination is invalid");
         }
         const version = versionsById.get(installation.versionId);
+        const installationRuntime = installation.runtime ?? runtimeServices.descriptor(
+          installation.runtimeId
+        );
+        if (installationRuntime.runtimeId !== installation.runtimeId || installationRuntime.providerId !== installation.providerId) {
+          throw new Error("Verified Skill installation Runtime evidence is invalid");
+        }
         const runtimeSnapshot = {
-          runtimeId: runtime.runtimeId,
-          providerId: runtime.providerId,
-          displayName: runtime.displayName,
-          version: runtime.version ?? null,
-          executablePath: runtime.executablePath
+          runtimeId: installationRuntime.runtimeId,
+          providerId: installationRuntime.providerId,
+          displayName: installationRuntime.displayName,
+          version: installationRuntime.version ?? null,
+          executablePath: installationRuntime.executablePath
         };
         const marker = {
           schema: "rolling-skill-install/v1",
@@ -23659,8 +23675,8 @@ var require_curation_operation_evidence = __commonJS({
             path: installedSkillPath(installation.destination),
             scope: "runtime",
             description: skill.description ?? null,
-            runtimeId: runtime.runtimeId,
-            providerId: runtime.providerId,
+            runtimeId: installationRuntime.runtimeId,
+            providerId: installationRuntime.providerId,
             confirmedAt: installation.installedAt
           },
           operationEvidence: {

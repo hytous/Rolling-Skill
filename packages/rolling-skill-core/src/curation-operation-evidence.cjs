@@ -74,12 +74,18 @@ function createCurationOperationEvidenceResolver({
             throw new Error("A Released managed Skill version is required before curation")
         }
         const versionsById = new Map(released.map((version) => [version.id, version]))
-        const installations = installationStore.listVerifiedInstallations({
+        let installations = installationStore.listVerifiedInstallations({
             repositoryId: repository.id,
             skillId: skill.id,
             runtimeId: runtime.runtimeId,
             providerId: runtime.providerId,
         })
+        if (!installations.length && kind === "rubric") {
+            installations = installationStore.listVerifiedInstallations({
+                repositoryId: repository.id,
+                skillId: skill.id,
+            })
+        }
         if (!installations.length) {
             throw new Error("A verified Skill installation is required before curation")
         }
@@ -109,12 +115,21 @@ function createCurationOperationEvidenceResolver({
             throw new Error("Verified Skill installation destination is invalid")
         }
         const version = versionsById.get(installation.versionId)
+        const installationRuntime = installation.runtime ?? runtimeServices.descriptor(
+            installation.runtimeId,
+        )
+        if (
+            installationRuntime.runtimeId !== installation.runtimeId ||
+            installationRuntime.providerId !== installation.providerId
+        ) {
+            throw new Error("Verified Skill installation Runtime evidence is invalid")
+        }
         const runtimeSnapshot = {
-            runtimeId: runtime.runtimeId,
-            providerId: runtime.providerId,
-            displayName: runtime.displayName,
-            version: runtime.version ?? null,
-            executablePath: runtime.executablePath,
+            runtimeId: installationRuntime.runtimeId,
+            providerId: installationRuntime.providerId,
+            displayName: installationRuntime.displayName,
+            version: installationRuntime.version ?? null,
+            executablePath: installationRuntime.executablePath,
         }
         const marker = {
             schema: "rolling-skill-install/v1",
@@ -171,8 +186,8 @@ function createCurationOperationEvidenceResolver({
                 path: installedSkillPath(installation.destination),
                 scope: "runtime",
                 description: skill.description ?? null,
-                runtimeId: runtime.runtimeId,
-                providerId: runtime.providerId,
+                runtimeId: installationRuntime.runtimeId,
+                providerId: installationRuntime.providerId,
                 confirmedAt: installation.installedAt,
             },
             operationEvidence: {

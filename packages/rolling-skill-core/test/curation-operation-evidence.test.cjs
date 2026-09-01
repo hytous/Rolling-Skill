@@ -77,7 +77,9 @@ function fixture(overrides = {}) {
                 : overrides.selectedRuntime}),
         },
         runtimeServices: {
-            descriptor: () => structuredClone(runtime),
+            descriptor: (runtimeId) => structuredClone(
+                overrides.runtimeDescriptors?.[runtimeId] ?? runtime,
+            ),
         },
         managedSkillStore: {
             getRepository: () => ({id: "repository-1", displayName: "Billing repo"}),
@@ -90,8 +92,10 @@ function fixture(overrides = {}) {
             listVersions: () => structuredClone(overrides.versions ?? [version]),
         },
         installationStore: {
-            listVerifiedInstallations: () => structuredClone(
-                overrides.installations ?? [installation],
+            listVerifiedInstallations: (query) => structuredClone(
+                overrides.listVerifiedInstallations
+                    ? overrides.listVerifiedInstallations(query)
+                    : overrides.installations ?? [installation],
             ),
         },
     }
@@ -213,5 +217,33 @@ describe("Curation operation evidence", () => {
         assert.equal(resolved.operationEvidence.kind, "rubric")
         assert.equal(resolved.operationEvidence.rubricVersionId, null)
         assert.equal(resolved.operationEvidence.versionId, "version-1")
+    })
+
+    it("uses an existing verified installation when the Rubric Agent runs in another Runtime", () => {
+        const rubricRuntime = {
+            runtimeId: "codex:/Applications/Codex",
+            providerId: "codex",
+            displayName: "Codex",
+            version: "0.150.0",
+            executablePath: "/Applications/Codex",
+        }
+        const installed = fixture().installation
+        const {resolver} = fixture({
+            rubric: null,
+            selectedRuntime: rubricRuntime,
+            runtimeDescriptors: {
+                [rubricRuntime.runtimeId]: rubricRuntime,
+                [installed.runtimeId]: fixture().runtime,
+            },
+            listVerifiedInstallations(query) {
+                return query.runtimeId === rubricRuntime.runtimeId ? [] : [installed]
+            },
+        })
+
+        const resolved = resolver.resolveRubric("dataset-1")
+
+        assert.equal(resolved.executionSkillReference.runtimeId, installed.runtimeId)
+        assert.equal(resolved.operationEvidence.runtime.runtimeId, installed.runtimeId)
+        assert.equal(resolved.operationEvidence.installation.installationId, installed.id)
     })
 })

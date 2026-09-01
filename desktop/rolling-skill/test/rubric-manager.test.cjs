@@ -179,6 +179,53 @@ describe("Rubric Agent manager", () => {
         assert.equal(runtime.startedTurns[0].input[0].path, skillPath)
     })
 
+    it("uses frozen evidence without injecting a Skill path from another Runtime", async () => {
+        const skillPath = join(directory, "SKILL.md")
+        dataset = store.bindDatasetSkill(dataset.id, {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            evidencePrecision: "managed",
+            id: "skill-1",
+            repositoryId: "repository-1",
+            name: "billing-cost-management",
+            path: null,
+            scope: "managed",
+            description: "Billing queries",
+            runtimeId: null,
+            providerId: null,
+            confirmedAt: "2026-08-27T00:00:00.000Z",
+        })
+        const executionSkillReference = {
+            ...dataset.skillReference,
+            evidencePrecision: null,
+            path: skillPath,
+            scope: "runtime",
+            runtimeId: "deepseek-harness:alpha",
+            providerId: "deepseek-harness",
+        }
+        const operationEvidence = {
+            schemaVersion: "rolling-skill-operation-evidence/v1",
+            kind: "rubric",
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            runtime: {
+                runtimeId: "deepseek-harness:alpha",
+                providerId: "deepseek-harness",
+            },
+            installation: {destination: directory},
+        }
+
+        const created = await manager.createSession({
+            datasetId: dataset.id,
+            skillEvidence: snapshotSkillEvidence(executionSkillReference),
+            executionSkillReference,
+            operationEvidence,
+        })
+        await manager.waitForIdle(created.id)
+
+        assert.deepEqual(runtime.startedTurns[0].input.map((entry) => entry.type), ["text"])
+        assert.match(runtime.startedTurns[0].input[0].text, /paginate all results/u)
+    })
+
     it("starts a read-only subagent with frozen Skill evidence and selected effort", async () => {
         const session = await start()
 

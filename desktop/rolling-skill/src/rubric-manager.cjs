@@ -188,12 +188,20 @@ class RubricManager {
                 baseVersion,
                 userRequest: session.conversation.find((message) => message.role === "user")?.text ?? "",
             })
+            const turnSkillReference = session.executionSkillReference ?? session.skillReference
+            const canInjectRuntimeSkill = Boolean(
+                turnSkillReference?.path &&
+                (
+                    !turnSkillReference.runtimeId ||
+                    turnSkillReference.runtimeId === session.rubricAgent.runtimeId
+                ),
+            )
             const turnInput = [
-                {
+                ...(canInjectRuntimeSkill ? [{
                     type: "skill",
-                    name: (session.executionSkillReference ?? session.skillReference).name,
-                    path: (session.executionSkillReference ?? session.skillReference).path,
-                },
+                    name: turnSkillReference.name,
+                    path: turnSkillReference.path,
+                }] : []),
                 {type: "text", text: prompt, text_elements: []},
             ]
             const turnResponse = await runtime.startTurn(response.thread.id, turnInput, {
