@@ -4,7 +4,11 @@ const {isAbsolute, resolve} = require("node:path")
 const intrinsicPromiseResolve = Promise.resolve.bind(Promise)
 const intrinsicPromiseThen = Promise.prototype.then
 
-const {CapabilityError, capabilityScopeLimit} = require("./capability-store.cjs")
+const {
+    CapabilityError,
+    capabilityScopeLimit,
+    isTrustedHumanCapability,
+} = require("./capability-store.cjs")
 const {
     CONTROL_METHODS,
     PUBLIC_CONTROL_ERROR_CODES,
@@ -861,7 +865,13 @@ class ControlPlane {
             if (idempotency.kind === "error") throw idempotency.error
             if (idempotency.kind === "owner") idempotencyOwner = idempotency.entry
 
-            const source = await trustedResolution(state.services, method, input, grant)
+            let source
+            try {
+                source = await trustedResolution(state.services, method, input, grant)
+            } catch (error) {
+                if (isTrustedHumanCapability(grant)) serviceFailure = error
+                throw error
+            }
             if (source !== null && source !== undefined) {
                 if (Object.hasOwn(source, "scope") && Object.hasOwn(source, "executionContext")) {
                     resolution = source.scope

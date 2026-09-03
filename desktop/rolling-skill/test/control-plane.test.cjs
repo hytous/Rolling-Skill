@@ -6,6 +6,7 @@ const {
     CapabilityError,
     CapabilityStore,
     createTrustedCapabilityIssuer,
+    createTrustedHumanCapabilityIssuer,
 } = require("../src/control-plane/capability-store.cjs")
 const {
     createPublicControlError,
@@ -34,6 +35,7 @@ function createFixture({
     serviceErrorDiagnostics = null,
     runtimeScopeIds = ["runtime-1", "judge-1"],
     startEvaluation = null,
+    trustedHuman = false,
     updateIfCurrent = null,
 } = {}) {
     const skills = [
@@ -127,7 +129,10 @@ function createFixture({
         })
     }
     const capabilities = new CapabilityStore()
-    const issued = capabilities.issue({
+    const issuer = trustedHuman
+        ? createTrustedHumanCapabilityIssuer(capabilities)
+        : capabilities
+    const issued = issuer.issue({
         sessionId: "operator-1",
         actions: [
             "context.read",
@@ -1029,6 +1034,50 @@ describe("ControlPlane", () => {
             sessionId: "operator-1",
         }).catch((error) => error)
         assert.equal(diagnostics.consume(scopeError), null)
+    })
+
+    it("offers scope-resolution diagnostics only for a trusted human capability", async () => {
+        const diagnostics = createServiceErrorDiagnosticChannel()
+        const resolveScope = () => {
+            throw new Error("Optimization Dataset requires a published Rubric")
+        }
+        const trusted = createFixture({
+            resolveScope,
+            serviceErrorDiagnostics: diagnostics,
+            trustedHuman: true,
+        })
+        const ordinary = createFixture({
+            resolveScope,
+            serviceErrorDiagnostics: diagnostics,
+        })
+        const request = (fixture) => ({
+            token: fixture.issued.token,
+            method: "datasets.get",
+            params: {datasetId: "dataset-1", includeCases: false},
+            sessionId: "operator-1",
+        })
+
+        const trustedError = await trusted.control.invoke(request(trusted))
+            .catch((error) => error)
+        assert.deepEqual(publicControlError(trustedError), {
+            code: "CONTROL_ERROR",
+            message: "Control operation failed",
+            retryable: false,
+            details: null,
+        })
+        assert.deepEqual(diagnostics.consume(trustedError), {
+            message: "Optimization Dataset requires a published Rubric",
+        })
+
+        const ordinaryError = await ordinary.control.invoke(request(ordinary))
+            .catch((error) => error)
+        assert.deepEqual(publicControlError(ordinaryError), {
+            code: "CONTROL_ERROR",
+            message: "Control operation failed",
+            retryable: false,
+            details: null,
+        })
+        assert.equal(diagnostics.consume(ordinaryError), null)
     })
 
     it("authorizes a 257-id resolved filter only for a branded private grant", async () => {
