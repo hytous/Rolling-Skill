@@ -3,9 +3,11 @@ const {isAbsolute} = require("node:path")
 
 const {validateSkillEvidence} = require("../evaluation-skill-evidence.cjs")
 
-const OPTIMIZATION_CONFIG_SCHEMA = "rolling-skill-optimization-config/v1"
+const LEGACY_OPTIMIZATION_CONFIG_SCHEMA = "rolling-skill-optimization-config/v1"
+const OPTIMIZATION_CONFIG_SCHEMA = "rolling-skill-optimization-config/v2"
 const OPTIMIZATION_DECISION_SCHEMA = "rolling-skill-optimization-decision/v1"
-const FROZEN_OPTIMIZATION_RUN_SCHEMA = "rolling-skill-frozen-optimization-run/v1"
+const LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA = "rolling-skill-frozen-optimization-run/v1"
+const FROZEN_OPTIMIZATION_RUN_SCHEMA = "rolling-skill-frozen-optimization-run/v2"
 const MAX_DURATION_MS = 30 * 24 * 60 * 60 * 1_000
 const MAX_DECISION_BYTES = 64 * 1024
 const EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
@@ -155,7 +157,7 @@ function runtimeSelection(value, label) {
     }
 }
 
-function limits(value) {
+function legacyLimits(value) {
     exactKeys(
         value,
         ["maxEpochs", "maxDurationMs", "patience", "minimumImprovement"],
@@ -193,6 +195,18 @@ function limits(value) {
     }
 }
 
+function compactLimits(value) {
+    exactKeys(value, ["maxEpochs"], [], "Optimization limits")
+    return {
+        maxEpochs: boundedInteger(
+            value.maxEpochs,
+            "Optimization max epochs",
+            1,
+            Number.MAX_SAFE_INTEGER,
+        ),
+    }
+}
+
 function target(value) {
     exactKeys(
         value,
@@ -220,9 +234,10 @@ function telemetry(value) {
 
 function parseOptimizationConfig(value) {
     const source = cloneJson(value, "Optimization config")
+    const legacy = ["mode", "target", "telemetry"].some((field) => Object.hasOwn(source, field))
     exactKeys(
         source,
-        [
+        legacy ? [
             "skillId",
             "baselineVersionId",
             "datasetId",
@@ -234,12 +249,19 @@ function parseOptimizationConfig(value) {
             "limits",
             "target",
             "telemetry",
+        ] : [
+            "skillId",
+            "baselineVersionId",
+            "datasetId",
+            "operator",
+            "targets",
+            "judge",
+            "activationMode",
+            "limits",
         ],
         [],
         "Optimization config",
     )
-    const mode = requiredText(source.mode, "Optimization mode", 20)
-    if (!MODES.has(mode)) throw new Error("Optimization mode must be fixed or adaptive")
     const activationMode = requiredText(source.activationMode, "Optimization activation mode", 20)
     if (!ACTIVATION_MODES.has(activationMode)) {
         throw new Error("Optimization activation mode must be automatic or explicit")
@@ -255,7 +277,7 @@ function parseOptimizationConfig(value) {
         throw new Error("Optimization target runtime ids must be unique")
     }
     const parsed = {
-        schemaVersion: OPTIMIZATION_CONFIG_SCHEMA,
+        schemaVersion: legacy ? LEGACY_OPTIMIZATION_CONFIG_SCHEMA : OPTIMIZATION_CONFIG_SCHEMA,
         skillId: requiredText(source.skillId, "Optimization Skill id", 200),
         baselineVersionId: requiredText(
             source.baselineVersionId,
@@ -267,15 +289,18 @@ function parseOptimizationConfig(value) {
         targets,
         judge: runtimeSelection(source.judge, "Optimization Judge"),
         activationMode,
-        mode,
-        limits: limits(source.limits),
-        target: target(source.target),
-        telemetry: telemetry(source.telemetry),
+        limits: legacy ? legacyLimits(source.limits) : compactLimits(source.limits),
+        ...(legacy ? {
+            mode: requiredText(source.mode, "Optimization mode", 20),
+            target: target(source.target),
+            telemetry: telemetry(source.telemetry),
+        } : {}),
     }
-    if (parsed.limits.maxTokens > 0 && !parsed.telemetry.tokens) {
+    if (legacy && !MODES.has(parsed.mode)) throw new Error("Optimization mode must be fixed or adaptive")
+    if (legacy && parsed.limits.maxTokens > 0 && !parsed.telemetry.tokens) {
         throw new Error("A hard token budget requires token telemetry capability")
     }
-    if (parsed.limits.maxCostMicros > 0 && !parsed.telemetry.cost) {
+    if (legacy && parsed.limits.maxCostMicros > 0 && !parsed.telemetry.cost) {
         throw new Error("A hard cost budget requires cost telemetry capability")
     }
     return deepFreeze(parsed)
@@ -494,14 +519,17 @@ function frozenRunBody(value, {trustedFacts = true} = {}) {
     if (dataset.caseRevisions.some((entry) => entry.rubricVersionId !== rubric.id)) {
         throw new Error("One or more Dataset Cases have stale Rubric calibration")
     }
-    if (config.limits.maxTokens > 0 && !config.telemetry.tokens) {
+    const legacy = config.schemaVersion === LEGACY_OPTIMIZATION_CONFIG_SCHEMA
+    if (legacy && config.limits.maxTokens > 0 && !config.telemetry.tokens) {
         throw new Error("A hard token budget requires token telemetry capability")
     }
-    if (config.limits.maxCostMicros > 0 && !config.telemetry.cost) {
+    if (legacy && config.limits.maxCostMicros > 0 && !config.telemetry.cost) {
         throw new Error("A hard cost budget requires cost telemetry capability")
     }
     return {
-        schemaVersion: FROZEN_OPTIMIZATION_RUN_SCHEMA,
+        schemaVersion: legacy
+            ? LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA
+            : FROZEN_OPTIMIZATION_RUN_SCHEMA,
         baseline,
         dataset,
         rubric,
@@ -510,10 +538,12 @@ function frozenRunBody(value, {trustedFacts = true} = {}) {
         targets: cloneJson(config.targets),
         judge: cloneJson(config.judge),
         activationMode: config.activationMode,
-        mode: config.mode,
         limits: cloneJson(config.limits),
-        target: cloneJson(config.target),
-        telemetry: cloneJson(config.telemetry),
+        ...(legacy ? {
+            mode: config.mode,
+            target: cloneJson(config.target),
+            telemetry: cloneJson(config.telemetry),
+        } : {}),
         createdAt: timestamp(value.createdAt, "Optimization creation time"),
     }
 }
@@ -538,9 +568,13 @@ function freezeOptimizationRun(value) {
 
 function validateFrozenOptimizationRun(value) {
     const source = cloneJson(value, "Frozen optimization run")
+    const legacy = source.schemaVersion === LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA
+    if (!legacy && source.schemaVersion !== FROZEN_OPTIMIZATION_RUN_SCHEMA) {
+        throw new Error(`Frozen optimization run must use ${FROZEN_OPTIMIZATION_RUN_SCHEMA}`)
+    }
     exactKeys(
         source,
-        [
+        legacy ? [
             "schemaVersion",
             "baseline",
             "dataset",
@@ -556,13 +590,23 @@ function validateFrozenOptimizationRun(value) {
             "telemetry",
             "createdAt",
             "digest",
+        ] : [
+            "schemaVersion",
+            "baseline",
+            "dataset",
+            "rubric",
+            "skillEvidenceDigest",
+            "operator",
+            "targets",
+            "judge",
+            "activationMode",
+            "limits",
+            "createdAt",
+            "digest",
         ],
         [],
         "Frozen optimization run",
     )
-    if (source.schemaVersion !== FROZEN_OPTIMIZATION_RUN_SCHEMA) {
-        throw new Error(`Frozen optimization run must use ${FROZEN_OPTIMIZATION_RUN_SCHEMA}`)
-    }
     const body = frozenRunBody({
         baseline: source.baseline,
         dataset: source.dataset,
@@ -576,10 +620,12 @@ function validateFrozenOptimizationRun(value) {
             targets: source.targets,
             judge: source.judge,
             activationMode: source.activationMode,
-            mode: source.mode,
             limits: source.limits,
-            target: source.target,
-            telemetry: source.telemetry,
+            ...(legacy ? {
+                mode: source.mode,
+                target: source.target,
+                telemetry: source.telemetry,
+            } : {}),
         },
         createdAt: source.createdAt,
     }, {trustedFacts: false})

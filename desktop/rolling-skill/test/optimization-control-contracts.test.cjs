@@ -33,6 +33,20 @@ function config() {
     }
 }
 
+function compactConfig() {
+    const legacy = config()
+    return {
+        skillId: legacy.skillId,
+        baselineVersionId: legacy.baselineVersionId,
+        datasetId: legacy.datasetId,
+        operator: legacy.operator,
+        targets: legacy.targets,
+        judge: legacy.judge,
+        activationMode: legacy.activationMode,
+        limits: {maxEpochs: 101},
+    }
+}
+
 function runOutput(state = "editing") {
     return {
         run: {
@@ -95,7 +109,34 @@ function runOutput(state = "editing") {
     }
 }
 
+function compactRunOutput(state = "editing") {
+    const output = runOutput(state)
+    delete output.run.mode
+    delete output.run.target
+    delete output.run.telemetry
+    output.run.limits = {maxEpochs: 101}
+    return output
+}
+
 describe("optimization control contracts", () => {
+    it("accepts compact Epoch-only start and preflight inputs above the old 100-Epoch cap", () => {
+        const preflight = parseControlInput("optimization.preflight", {
+            ...compactConfig(),
+            idempotencyKey: "compact-preflight",
+        })
+        const start = parseControlInput("optimization.start", {
+            ...compactConfig(),
+            idempotencyKey: "compact-start",
+        })
+
+        assert.deepEqual(preflight.limits, {maxEpochs: 101})
+        assert.deepEqual(start.limits, {maxEpochs: 101})
+        assert.equal(Object.hasOwn(start, "mode"), false)
+        assert.equal(Object.hasOwn(start, "target"), false)
+        assert.equal(Object.hasOwn(start, "telemetry"), false)
+        assert.doesNotThrow(() => parseControlOutput("optimization.start", compactRunOutput()))
+    })
+
     it("accepts a read-only report preview without claiming a stored Artifact", () => {
         assert.doesNotThrow(() => parseControlOutput("optimization.report", {report: {
             artifactId: null,

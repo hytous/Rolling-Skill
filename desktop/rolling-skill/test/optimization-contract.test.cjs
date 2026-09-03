@@ -10,6 +10,7 @@ const {
     freezeOptimizationRun,
     parseOptimizationConfig,
     parseOptimizationDecision,
+    validateFrozenOptimizationRun,
 } = require("../src/optimization/optimization-contract.cjs")
 const {snapshotSkillEvidence} = require("../src/evaluation-skill-evidence.cjs")
 
@@ -65,6 +66,23 @@ function config(overrides = {}) {
     }
 }
 
+function compactConfig(overrides = {}) {
+    return {
+        skillId: "skill-1",
+        baselineVersionId: "version-1",
+        datasetId: "dataset-1",
+        operator: {runtimeId: "codex:operator", modelId: "gpt-5.6-sol", effort: "high"},
+        targets: [
+            {runtimeId: "codex:target", modelId: "gpt-5.6-sol", effort: "medium"},
+            {runtimeId: "codebuddy:target", modelId: "claude-sonnet"},
+        ],
+        judge: {runtimeId: "codex:judge", modelId: "gpt-5.6-sol", effort: "xhigh"},
+        activationMode: "automatic",
+        limits: {maxEpochs: 5},
+        ...overrides,
+    }
+}
+
 function freezeInput(overrides = {}) {
     return {
         baseline: {
@@ -105,6 +123,49 @@ function freezeInput(overrides = {}) {
 }
 
 describe("optimization contract", () => {
+    it("accepts a compact Epoch-only configuration without an Agent-operation ceiling", () => {
+        const parsed = parseOptimizationConfig(compactConfig())
+
+        assert.equal(parsed.schemaVersion, "rolling-skill-optimization-config/v2")
+        assert.deepEqual(parsed.limits, {maxEpochs: 5})
+        assert.equal(Object.hasOwn(parsed, "mode"), false)
+        assert.equal(Object.hasOwn(parsed, "target"), false)
+        assert.equal(Object.hasOwn(parsed, "telemetry"), false)
+        assert.equal(Object.isFrozen(parsed.limits), true)
+        assert.equal(parseOptimizationConfig(compactConfig({
+            limits: {maxEpochs: 101},
+        })).limits.maxEpochs, 101)
+    })
+
+    it("rejects invalid or mixed compact Epoch-only configurations", () => {
+        for (const limits of [
+            {maxEpochs: 0},
+            {maxEpochs: 1.5},
+            {maxEpochs: Number.MAX_SAFE_INTEGER + 1},
+            {maxEpochs: 5, maxDurationMs: 60_000},
+            {maxEpochs: 5, patience: 2},
+        ]) assert.throws(() => parseOptimizationConfig(compactConfig({limits})), /limit|epoch|unsupported/i)
+
+        for (const field of ["mode", "target", "telemetry"]) {
+            assert.throws(() => parseOptimizationConfig(compactConfig({
+                [field]: field === "mode" ? "adaptive" : {},
+            })), /unsupported|unknown|config/i)
+        }
+    })
+
+    it("freezes compact runs as v2 while continuing to validate frozen v1 runs", () => {
+        const compact = freezeOptimizationRun(freezeInput({config: compactConfig()}))
+        assert.equal(compact.schemaVersion, "rolling-skill-frozen-optimization-run/v2")
+        assert.deepEqual(compact.limits, {maxEpochs: 5})
+        assert.equal(Object.hasOwn(compact, "mode"), false)
+        assert.equal(Object.hasOwn(compact, "target"), false)
+        assert.deepEqual(validateFrozenOptimizationRun(compact), compact)
+
+        const legacy = freezeOptimizationRun(freezeInput())
+        assert.equal(legacy.schemaVersion, "rolling-skill-frozen-optimization-run/v1")
+        assert.equal(validateFrozenOptimizationRun(legacy).mode, "adaptive")
+    })
+
     it("parses fixed and adaptive configurations into deeply immutable local selections", () => {
         const adaptive = parseOptimizationConfig(config())
         const fixed = parseOptimizationConfig(config({mode: "fixed"}))

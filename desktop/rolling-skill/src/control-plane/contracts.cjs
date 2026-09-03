@@ -460,7 +460,7 @@ const optimizationRuntime = z.object({
     effort: reasoningEffort.nullable().default(null),
 }).strict()
 
-const optimizationLimits = z.object({
+const legacyOptimizationLimits = z.object({
     maxEpochs: z.number().int().min(1).max(100),
     maxDurationMs: z.number().int().min(1).max(30 * 24 * 60 * 60 * 1_000),
     patience: z.number().int().min(1).max(100),
@@ -478,7 +478,11 @@ const optimizationLimits = z.object({
     }
 })
 
-const optimizationConfigInput = z.object({
+const compactOptimizationLimits = z.object({
+    maxEpochs: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+}).strict()
+
+const legacyOptimizationConfigInput = z.object({
     skillId: id,
     baselineVersionId: id,
     datasetId: id,
@@ -487,7 +491,7 @@ const optimizationConfigInput = z.object({
     judge: optimizationRuntime,
     activationMode: z.enum(["automatic", "explicit"]),
     mode: z.enum(["fixed", "adaptive"]),
-    limits: optimizationLimits,
+    limits: legacyOptimizationLimits,
     target: z.object({
         minimumScore: z.number().finite().min(0).max(100),
         minimumPassRate: z.number().finite().min(0).max(1),
@@ -506,6 +510,27 @@ const optimizationConfigInput = z.object({
         context.addIssue({code: "custom", path: ["limits", "maxCostMicros"], message: "Cost telemetry is required"})
     }
 })
+
+const compactOptimizationConfigInput = z.object({
+    skillId: id,
+    baselineVersionId: id,
+    datasetId: id,
+    operator: optimizationRuntime,
+    targets: z.array(optimizationRuntime).min(1).max(64),
+    judge: optimizationRuntime,
+    activationMode: z.enum(["automatic", "explicit"]),
+    limits: compactOptimizationLimits,
+}).strict().superRefine((input, context) => {
+    const runtimeIds = input.targets.map((target) => target.runtimeId)
+    if (new Set(runtimeIds).size !== runtimeIds.length) {
+        context.addIssue({code: "custom", path: ["targets"], message: "Runtime ids must be unique"})
+    }
+})
+
+const optimizationConfigWithIdempotencyInput = z.union([
+    compactOptimizationConfigInput.extend({idempotencyKey: id}).strict(),
+    legacyOptimizationConfigInput.extend({idempotencyKey: id}).strict(),
+])
 
 const optimizationDecisionInput = z.object({
     schemaVersion: z.literal("rolling-skill-optimization-decision/v1"),
@@ -624,7 +649,7 @@ const publicOptimizationCheckpoint = z.object({
     recoveryTargets: z.array(publicOptimizationInstallation).max(64).optional(),
 }).strict()
 
-const publicOptimizationRun = z.object({
+const publicOptimizationRunBase = z.object({
     id,
     state: z.enum([
         "preflight", "baseline", "editing", "installing", "evaluating", "deciding",
@@ -640,10 +665,6 @@ const publicOptimizationRun = z.object({
     targets: z.array(optimizationRuntime).min(1).max(64),
     judge: optimizationRuntime,
     activationMode: z.enum(["automatic", "explicit"]),
-    mode: z.enum(["fixed", "adaptive"]),
-    limits: optimizationLimits,
-    target: optimizationConfigInput.shape.target,
-    telemetry: optimizationConfigInput.shape.telemetry,
     epochs: z.array(publicOptimizationEpoch).max(100),
     checkpoint: publicOptimizationCheckpoint,
     error: z.object({
@@ -651,6 +672,18 @@ const publicOptimizationRun = z.object({
         message: z.string().max(4_096),
     }).strict().nullable(),
 }).strict()
+
+const publicOptimizationRun = z.union([
+    publicOptimizationRunBase.extend({
+        limits: compactOptimizationLimits,
+    }).strict(),
+    publicOptimizationRunBase.extend({
+        mode: z.enum(["fixed", "adaptive"]),
+        limits: legacyOptimizationLimits,
+        target: legacyOptimizationConfigInput.shape.target,
+        telemetry: legacyOptimizationConfigInput.shape.telemetry,
+    }).strict(),
+])
 
 const publicOptimizationPreflight = z.object({
     snapshotDigest: boundedText(80, "Optimization snapshot digest"),
@@ -976,12 +1009,12 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
     },
     "optimization.preflight": {
         action: "optimizations.read",
-        input: optimizationConfigInput.extend({idempotencyKey: id}).strict(),
+        input: optimizationConfigWithIdempotencyInput,
         output: publicOptimizationPreflight,
     },
     "optimization.start": {
         action: "optimizations.execute",
-        input: optimizationConfigInput.extend({idempotencyKey: id}).strict(),
+        input: optimizationConfigWithIdempotencyInput,
         output: z.object({run: publicOptimizationRun}).strict(),
     },
     "optimization.get": {
