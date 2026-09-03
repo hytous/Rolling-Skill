@@ -597,6 +597,7 @@ function decideControlPolicy({
     input,
     budgetSnapshot,
     resolvedScope,
+    operatorPreauthorized = false,
 } = {}) {
     const definition = policyMethodDefinition(method)
     if (definition === null) {
@@ -609,13 +610,17 @@ function decideControlPolicy({
     const scopeState = checkObjectScope(grant, method, input, resolvedScope)
     if (scopeState.denial !== null) return scopeState.denial
 
-    if (definition.reason !== null) return approvalDecision(definition.reason, input)
-
     if (!Array.isArray(grant?.actions) || !grant.actions.includes(canonicalAction)) {
         return deny(
             "ACTION_NOT_GRANTED",
             "Action is not granted for this Operator session",
         )
+    }
+
+    if (definition.reason !== null) {
+        return operatorPreauthorized === true
+            ? allowWithoutReservation(scopeState.scopeFilter)
+            : approvalDecision(definition.reason, input)
     }
 
     if (!PHASE_ONE_ACTIONS.has(canonicalAction)) {

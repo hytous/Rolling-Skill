@@ -910,6 +910,7 @@ class ControlPlane {
                     input,
                     resolvedScope,
                     budgetSnapshot,
+                    operatorPreauthorized: operatorRoute !== null,
                 })
                 if (!decision || typeof decision.then === "function") {
                     throw new Error("Control policy must return a synchronous decision")

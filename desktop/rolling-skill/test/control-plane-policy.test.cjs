@@ -1016,7 +1016,7 @@ describe("control-plane policy", () => {
         }
     })
 
-    it("always requires approval for delete, release, install, and Rubric publish", () => {
+    it("requires approval for delete, release, install, and Rubric publish outside Operator routes", () => {
         const policy = createControlPolicy()
         const cases = [
             ["datasets.delete", "datasets.delete", "destructive_action", {datasetId: "dataset-1"}],
@@ -1063,7 +1063,7 @@ describe("control-plane policy", () => {
                     })
                     : undefined
             const decision = policy.decide({
-                grant: grant({actions: Object.freeze([])}),
+                grant: grant(),
                 method,
                 action,
                 input: {...input, path: "/untrusted/path", commit: "untrusted-commit"},
@@ -1077,11 +1077,70 @@ describe("control-plane policy", () => {
         }
     })
 
+    it("preauthorizes granted Operator release, Rubric, installation, and deletion actions", () => {
+        const policy = createControlPolicy()
+        const cases = [
+            ["datasets.delete", "datasets.delete", {datasetId: "dataset-1"}, undefined],
+            ["skills.release", "skills.release", {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+            }, resolvedScope("skills.release", {
+                subject: {kind: "skill", id: "skill-1"},
+                skillIds: ["skill-1"],
+                repositoryIds: ["repository-1"],
+            })],
+            ["rubrics.publish", "rubrics.publish", {
+                datasetId: "dataset-1",
+                sessionId: "rubric-1",
+            }, resolvedScope("rubrics.publish", {
+                subject: {kind: "rubric_session", id: "rubric-1"},
+                datasetIds: ["dataset-1"],
+            })],
+            ["installations.start", "installations.execute", {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                runtimeId: "runtime-1",
+            }, resolvedScope("installations.start", {
+                subject: {kind: "skill", id: "skill-1"},
+                skillIds: ["skill-1"],
+                repositoryIds: ["repository-1"],
+            })],
+        ]
+
+        for (const [method, action, input, scopes] of cases) {
+            assert.deepEqual(policy.decide({
+                grant: grant(),
+                method,
+                action,
+                input,
+                resolvedScope: scopes,
+                operatorPreauthorized: true,
+            }), {decision: "allow", reservation: null})
+        }
+
+        assert.deepEqual(policy.decide({
+            grant: grant({actions: Object.freeze([])}),
+            method: "skills.release",
+            action: "skills.release",
+            input: {repositoryId: "repository-1", skillId: "skill-1"},
+            resolvedScope: resolvedScope("skills.release", {
+                subject: {kind: "skill", id: "skill-1"},
+                skillIds: ["skill-1"],
+                repositoryIds: ["repository-1"],
+            }),
+            operatorPreauthorized: true,
+        }), {
+            decision: "deny",
+            code: "ACTION_NOT_GRANTED",
+            message: "Action is not granted for this Operator session",
+        })
+    })
+
     it("always represents direct budget expansion as approval-required canonical scope", () => {
         const policy = createControlPolicy()
 
         assert.deepEqual(policy.decide({
-            grant: grant({actions: Object.freeze([])}),
+            grant: grant({actions: Object.freeze(["budget.expand"])}),
             method: "budget.expand",
             action: "budget.expand",
             input: {

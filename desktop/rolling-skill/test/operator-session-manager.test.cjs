@@ -353,7 +353,7 @@ function makeWaitingApproval(store, parentJobId) {
 }
 
 describe("OperatorSessionManager", () => {
-    it("routes a real ControlPlane mutation through the Manager and durable Engine with frozen facts", async () => {
+    it("runs a preauthorized ControlPlane mutation through the Manager without approval", async () => {
         const directory = mkdtempSync(join(tmpdir(), "rolling-skill-operator-integration-"))
         directories.push(directory)
         const store = new OperatorJobStore(join(directory, "jobs.json"))
@@ -407,28 +407,20 @@ describe("OperatorSessionManager", () => {
         const created = await manager.create(createInput({
             actions: ["datasets.delete"],
         }))
-        const toolError = await clients[0].options.requestTool({
+        const result = await clients[0].options.requestTool({
             callId: "delete-approved-dataset",
             method: "datasets.delete",
             params: {datasetId: "dataset-1", idempotencyKey: "delete-approved-dataset"},
-        }).catch((error) => error)
-        assert.equal(toolError.code, "APPROVAL_REQUIRED")
+        })
+        assert.equal(result.dataset.id, "dataset-1")
         const step = store.listSteps({jobId: created.parentJob.id})[0]
         const creation = store.listEvents(created.parentJob.id).find((event) => (
             event.kind === "operator_step_created" && event.stepId === step.id
         ))
         assert.equal(creation.trustedFacts.methodFacts.datasetRevision, 1)
         assert.doesNotMatch(JSON.stringify(creation.trustedFacts), /private|path|trace|token/iu)
-
-        revision = 2
-        const result = await engine.resolveApproval(toolError.details.approvalId, {
-            decision: "approve",
-            scope: "action",
-            decidedBy: "user",
-        })
-        assert.equal(result.status, "failed")
-        assert.equal(result.error.code, "RESOURCE_CHANGED")
-        assert.equal(deleteCalls, 0)
+        assert.equal(store.listApprovals(created.parentJob.id).length, 0)
+        assert.equal(deleteCalls, 1)
     })
 
     it("binds a managed Skill workspace without persisting or accepting its path", async () => {

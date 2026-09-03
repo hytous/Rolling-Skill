@@ -2161,10 +2161,7 @@ function initializeOperatorRuntime() {
             dynamicToolsReady: runtime?.providerId === "codex",
             mcpServersReady: runtime?.providerId === "codebuddy",
         }),
-        requestPermission: (request) => showRuntimePermissionDialog({
-            ...request,
-            workspaceRoot: request.workspaceRoot ?? workspaceRoot,
-        }),
+        requestPermission: () => "decline",
         requestQuestion: () => ({answers: []}),
         workspaceRoot,
         resolveManagedSkillWorkspace,

@@ -10,6 +10,7 @@ const {
     preflightOperatorBudget,
 } = require("../src/operator/job-engine.cjs")
 const {OperatorJobStore} = require("../src/operator/job-store.cjs")
+const {operatorApprovalRequirement} = require("../src/control-plane/policy.cjs")
 
 const temporaryDirectories = []
 
@@ -61,6 +62,13 @@ function createJob(store, sessionId, overrides = {}) {
         budget: budget(),
         ...overrides,
     })
+}
+
+function withControlPolicyApproval(request) {
+    return {
+        ...request,
+        policyApproval: operatorApprovalRequirement(request.method, request.params),
+    }
 }
 
 function createUncertainStep(store, job, request) {
@@ -480,6 +488,41 @@ describe("Operator Job engine", () => {
         assert.equal(store.getApproval(results[1].approvalId).action, "budget.expand")
     })
 
+    it("runs preauthorized self-operation mutations without creating approvals", async () => {
+        const {store, session} = fixture()
+        const job = createJob(store, session.id, {budget: {maxIterations: 50}})
+        const called = []
+        const engine = new OperatorJobEngine({
+            store,
+            handlers: Object.fromEntries([
+                "skills.release",
+                "rubrics.publish",
+                "installations.start",
+                "datasets.delete",
+            ].map((method) => [method, async () => {
+                called.push(method)
+                return {ok: true}
+            }])),
+        })
+        const requests = [
+            ["skills.release", {skillId: "skill-1", versionId: "candidate-1", versionLabel: "v1.1.0"}],
+            ["rubrics.publish", {datasetId: "dataset-1", sessionId: "rubric-1"}],
+            ["installations.start", {skillId: "skill-1", runtimeId: "runtime-1"}],
+            ["datasets.delete", {datasetId: "dataset-1"}],
+        ]
+
+        for (const [method, params] of requests) {
+            const result = await engine.execute(job.id, {
+                method,
+                params,
+                idempotencyKey: `preauthorized:${method}`,
+            })
+            assert.equal(result.status, "succeeded")
+        }
+        assert.deepEqual(called, requests.map(([method]) => method))
+        assert.deepEqual(store.listApprovals(job.id), [])
+    })
+
     it("persists a frozen approval request and executes approve, reject, and expiry decisions", async () => {
         const {store, session} = fixture()
         const releaseJob = createJob(store, session.id)
@@ -498,11 +541,11 @@ describe("Operator Job engine", () => {
             },
         })
         const params = {skillId: "skill-1", versionId: "candidate-1", versionLabel: "v1.1.0"}
-        const waiting = await engine.execute(releaseJob.id, {
+        const waiting = await engine.execute(releaseJob.id, withControlPolicyApproval({
             method: "skills.release",
             params,
             idempotencyKey: "release-candidate-1",
-        })
+        }))
         params.versionId = "tampered"
         assert.equal(waiting.status, "waiting_approval")
         assert.equal(store.getJob(releaseJob.id).status, "waiting_approval")
@@ -512,11 +555,11 @@ describe("Operator Job engine", () => {
             idempotencyKey: "release-candidate-1",
             reservation: {},
         })
-        assert.equal((await engine.execute(releaseJob.id, {
+        assert.equal((await engine.execute(releaseJob.id, withControlPolicyApproval({
             method: "skills.release",
             params: {skillId: "skill-1", versionId: "candidate-1", versionLabel: "v1.1.0"},
             idempotencyKey: "release-candidate-1",
-        })).approvalId, waiting.approvalId)
+        }))).approvalId, waiting.approvalId)
 
         const approved = await engine.resolveApproval(waiting.approvalId, {
             decision: "approve",
@@ -531,11 +574,11 @@ describe("Operator Job engine", () => {
         }])
 
         const rejectedJob = createJob(store, session.id)
-        const rejectedWaiting = await engine.execute(rejectedJob.id, {
+        const rejectedWaiting = await engine.execute(rejectedJob.id, withControlPolicyApproval({
             method: "installations.start",
             params: {skillId: "skill-1", runtimeId: "runtime-1"},
             idempotencyKey: "install-1",
-        })
+        }))
         const rejected = await engine.resolveApproval(rejectedWaiting.approvalId, {
             decision: "reject",
             scope: "action",
@@ -545,11 +588,11 @@ describe("Operator Job engine", () => {
         assert.equal(store.getJob(rejectedJob.id).status, "running")
 
         const expiredJob = createJob(store, session.id)
-        const expiredWaiting = await engine.execute(expiredJob.id, {
+        const expiredWaiting = await engine.execute(expiredJob.id, withControlPolicyApproval({
             method: "skills.release",
             params: {skillId: "skill-1", versionId: "candidate-2", versionLabel: "v1.2.0"},
             idempotencyKey: "release-candidate-2",
-        })
+        }))
         clock += 1_001
         const expired = await engine.expireApprovals(expiredJob.id)
         assert.deepEqual(expired.map((entry) => entry.approvalId), [expiredWaiting.approvalId])
@@ -557,7 +600,7 @@ describe("Operator Job engine", () => {
         assert.equal(store.getStep(expiredWaiting.stepId).error.code, "APPROVAL_EXPIRED")
     })
 
-    it("never lets a custom approval decider downgrade mandatory policy or hide its deny", async () => {
+    it("never lets a custom approval decider downgrade a ControlPlane gate or hide its deny", async () => {
         const allowedFixture = fixture()
         const releaseJob = createJob(allowedFixture.store, allowedFixture.session.id)
         let releases = 0
@@ -566,11 +609,11 @@ describe("Operator Job engine", () => {
             approvalDecider: () => ({decision: "allow"}),
             handlers: {"skills.release": async () => { releases += 1; return {released: true} }},
         })
-        const mandatory = await permissive.execute(releaseJob.id, {
+        const mandatory = await permissive.execute(releaseJob.id, withControlPolicyApproval({
             method: "skills.release",
             params: {skillId: "skill-1", versionId: "candidate-1", versionLabel: "v1.1.0"},
             idempotencyKey: "mandatory-release",
-        })
+        }))
         assert.equal(mandatory.status, "waiting_approval")
         assert.equal(allowedFixture.store.getApproval(mandatory.approvalId).action, "skills.release")
         assert.equal(releases, 0)
@@ -612,11 +655,11 @@ describe("Operator Job engine", () => {
             }),
             handlers: {"skills.release": async () => { additiveCalls += 1; return {released: true} }},
         })
-        const firstGate = await additive.execute(additiveJob.id, {
+        const firstGate = await additive.execute(additiveJob.id, withControlPolicyApproval({
             method: "skills.release",
             params: {skillId: "skill-1", versionId: "candidate-2", versionLabel: "v1.2.0"},
             idempotencyKey: "additive-release",
-        })
+        }))
         assert.equal(additiveFixture.store.getApproval(firstGate.approvalId).action, "skills.release")
         const secondGate = await additive.resolveApproval(firstGate.approvalId, {
             decision: "approve",
@@ -639,12 +682,12 @@ describe("Operator Job engine", () => {
             store,
             handlers: {"skills.release": async () => { calls += 1; return {released: true} }},
         })
-        const request = {
+        const request = withControlPolicyApproval({
             method: "skills.release",
             params: {skillId: "skill-1", versionId: "candidate-1", versionLabel: "v1.1.0"},
             idempotencyKey: "release-with-budget-expansion",
             reservation: {runtimeTurns: 1},
-        }
+        })
         const mutationApproval = await engine.execute(job.id, request)
         assert.equal(store.getApproval(mutationApproval.approvalId).action, "skills.release")
         const budgetApproval = await engine.resolveApproval(mutationApproval.approvalId, {
@@ -666,11 +709,11 @@ describe("Operator Job engine", () => {
         const {path, store, session} = fixture()
         const job = createJob(store, session.id)
         let requestedScope = {organizationId: "organization-1", revision: 1}
-        const request = {
+        const request = withControlPolicyApproval({
             method: "skills.release",
             params: {skillId: "skill-1", versionId: "candidate-1", versionLabel: "v1.1.0"},
             idempotencyKey: "stable-gate-release",
-        }
+        })
         const decider = () => ({
             decision: "approval_required",
             action: "organization.release",
@@ -708,11 +751,11 @@ describe("Operator Job engine", () => {
         const {path, store, session} = fixture()
         const job = createJob(store, session.id)
         let releaseCalls = 0
-        const request = {
+        const request = withControlPolicyApproval({
             method: "skills.release",
             params: {skillId: "skill-1", versionId: "candidate-1", versionLabel: "v1.1.0"},
             idempotencyKey: "release-after-restart",
-        }
+        })
         const firstEngine = new OperatorJobEngine({
             store,
             handlers: {"skills.release": async () => { releaseCalls += 1; return {released: true} }},
@@ -761,11 +804,11 @@ describe("Operator Job engine", () => {
                 },
             },
         })
-        const waiting = await engine.execute(job.id, {
+        const waiting = await engine.execute(job.id, withControlPolicyApproval({
             method: "datasets.delete",
             params: {datasetId: "dataset-1"},
             idempotencyKey: "delete-frozen-facts",
-        })
+        }))
         assert.equal(waiting.status, "waiting_approval")
         assert.equal(resolverCalls, 1)
         const created = store.listEvents(job.id).find((event) => (
@@ -791,11 +834,11 @@ describe("Operator Job engine", () => {
     it("resumes an approval decision persisted immediately before a process interruption", async () => {
         const approvedFixture = fixture()
         const approvedJob = createJob(approvedFixture.store, approvedFixture.session.id)
-        const request = {
+        const request = withControlPolicyApproval({
             method: "skills.release",
             params: {skillId: "skill-1", versionId: "candidate-1", versionLabel: "v1.1.0"},
             idempotencyKey: "approval-crash-approved",
-        }
+        })
         const beforeCrash = new OperatorJobEngine({store: approvedFixture.store})
         const waiting = await beforeCrash.execute(approvedJob.id, request)
         approvedFixture.store.resolveApproval(waiting.approvalId, {
@@ -817,11 +860,11 @@ describe("Operator Job engine", () => {
 
         const rejectedFixture = fixture()
         const rejectedJob = createJob(rejectedFixture.store, rejectedFixture.session.id)
-        const rejectedRequest = {
+        const rejectedRequest = withControlPolicyApproval({
             method: "skills.release",
             params: {skillId: "skill-1", versionId: "candidate-2", versionLabel: "v1.2.0"},
             idempotencyKey: "approval-crash-rejected",
-        }
+        })
         const rejectedBeforeCrash = new OperatorJobEngine({store: rejectedFixture.store})
         const rejectedWaiting = await rejectedBeforeCrash.execute(rejectedJob.id, rejectedRequest)
         rejectedFixture.store.resolveApproval(rejectedWaiting.approvalId, {
@@ -918,11 +961,17 @@ describe("Operator Job engine", () => {
             const {path, store, session} = fixture()
             const job = createJob(store, session.id, {objective: phase})
             store.transitionJob(job.id, "running")
-            let step = store.createStep(job.id, {
+            const request = withControlPolicyApproval({
                 method: "skills.release",
                 params: {skillId: "skill-1", versionId: "candidate-1", versionLabel: "v1.1.0"},
-                reservation: {},
                 idempotencyKey: `release-${phase}`,
+            })
+            let step = store.createStep(job.id, {
+                method: request.method,
+                params: request.params,
+                reservation: {},
+                trustedFacts: {controlPolicyApproval: request.policyApproval},
+                idempotencyKey: request.idempotencyKey,
             })
             if (phase !== "pending") step = store.transitionStep(step.id, "waiting_approval")
             if (phase === "job_waiting") store.transitionJob(job.id, "waiting_approval")
@@ -930,11 +979,7 @@ describe("Operator Job engine", () => {
             store.close()
             const restartedStore = new OperatorJobStore(path)
             const restartedEngine = new OperatorJobEngine({store: restartedStore})
-            const result = await restartedEngine.execute(job.id, {
-                method: "skills.release",
-                params: {skillId: "skill-1", versionId: "candidate-1", versionLabel: "v1.1.0"},
-                idempotencyKey: `release-${phase}`,
-            })
+            const result = await restartedEngine.execute(job.id, request)
             assert.equal(result.status, "waiting_approval")
             assert.equal(result.stepId, step.id)
             assert.equal(restartedStore.getJob(job.id).status, "waiting_approval")

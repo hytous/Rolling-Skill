@@ -2496,6 +2496,8 @@ describe("desktop main/preload bridge", () => {
         assert.match(initialization, /resolveManagedSkillWorkspace/)
         assert.match(initialization, /workspaceRoot/)
         assert.match(initialization, /controlPlane/)
+        assert.match(initialization, /requestPermission:\s*\(\)\s*=>\s*"decline"/)
+        assert.doesNotMatch(initialization, /requestPermission:[\s\S]{0,160}showRuntimePermissionDialog/)
 
         const readyStart = main.indexOf("app.whenReady().then")
         const readyEnd = main.indexOf("app.on(\"activate\"", readyStart)

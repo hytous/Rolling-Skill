@@ -585,7 +585,7 @@ describe("ControlPlane", () => {
         ])
     })
 
-    it("routes mandatory destructive approval through the Operator executor without touching the domain", async () => {
+    it("routes a preauthorized destructive action through the Operator executor without touching the domain", async () => {
         const {control, capabilities, issued, evaluationStore} = createFixture()
         evaluationStore.deleteDataset = mock.fn(() => ({id: "dataset-1", name: "Billing"}))
         const destructive = capabilities.issue({
@@ -614,11 +614,7 @@ describe("ControlPlane", () => {
             params: {datasetId: "dataset-1", idempotencyKey: "delete-1"},
         }), {dataset: {id: "dataset-1", name: "Billing"}})
         assert.equal(routed.length, 1)
-        assert.deepEqual(routed[0].policyDecision, {
-            decision: "approval_required",
-            reason: "destructive_action",
-            requestedScope: {datasetIds: ["dataset-1"]},
-        })
+        assert.deepEqual(routed[0].policyDecision, {decision: "allow", reservation: null})
         assert.equal(routed[0].trustedFacts.method, "datasets.delete")
         assert.equal(routed[0].trustedFacts.datasetId, "dataset-1")
         assert.deepEqual(routed[0].trustedFacts.caseIds, ["case-1"])

@@ -1,7 +1,4 @@
-const {
-    operatorApprovalRequirement,
-    operatorMethodBudgetMinimum,
-} = require("../control-plane/policy.cjs")
+const {operatorMethodBudgetMinimum} = require("../control-plane/policy.cjs")
 const {isIterationBudget} = require("./operator-budget.cjs")
 
 const TERMINAL_JOB_STATUSES = new Set(["succeeded", "failed", "cancelled"])
@@ -1056,8 +1053,6 @@ class OperatorJobEngine {
             "Operator approval decision",
         )
         if (custom.decision === "deny") return custom
-        const mandatory = operatorApprovalRequirement(request.method, request.params)
-        if (mandatory && !this.#hasApprovedGate(step, mandatory)) return mandatory
         const controlGate = request.trustedFacts?.controlPolicyApproval ?? null
         if (controlGate && !this.#hasApprovedGate(step, controlGate)) return controlGate
         if (custom.decision === "approval_required" && !this.#hasApprovedGate(step, custom)) return custom
