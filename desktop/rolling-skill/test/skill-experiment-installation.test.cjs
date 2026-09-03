@@ -187,6 +187,29 @@ describe("Optimization Candidate experiment installation", () => {
         assert.equal(managed.experiment.restoration.source.expectedDigest, digest("b"))
     })
 
+    it("accepts and persists a positive safe Epoch above the former product cap", () => {
+        const facts = managedFacts()
+        const request = experimentRequest({
+            epoch: 101,
+            candidate: {...facts.candidate, optimizationEpoch: 101},
+            previousCandidate: {...facts.previousCandidate, optimizationEpoch: 100},
+        })
+        const root = mkdtempSync(join(tmpdir(), "rolling-skill-late-epoch-store-"))
+        temporaryDirectories.push(root)
+        const store = new SkillInstallationStore(join(root, "installations.json"))
+        const job = store.createJob({
+            operation: request.operation,
+            runtime: {runtimeId: "codex:one", providerId: "codex", displayName: "Codex"},
+            request,
+            modelId: "model-1",
+            effort: "high",
+            permissionMode: "workspace-write",
+        })
+
+        assert.equal(request.experiment.epoch, 101)
+        assert.equal(store.getJob(job.id).request.experiment.epoch, 101)
+    })
+
     it("rejects Candidate provenance, baseline identity, operation, and rotation mismatches", () => {
         const facts = managedFacts()
         assert.throws(() => experimentRequest({

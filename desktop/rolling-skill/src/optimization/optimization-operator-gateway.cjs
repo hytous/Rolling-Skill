@@ -15,7 +15,7 @@ function requestIdentity(request, kind) {
         300,
     )
     const epoch = request?.epoch
-    if (!Number.isSafeInteger(epoch) || epoch < 1 || epoch > 100) {
+    if (!Number.isSafeInteger(epoch) || epoch < 1) {
         throw new Error("Optimization pending Epoch is invalid")
     }
     return {runId, kind, epoch, operatorSessionId}

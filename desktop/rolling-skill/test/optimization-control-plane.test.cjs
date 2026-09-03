@@ -20,18 +20,7 @@ function config() {
         targets: [{runtimeId: "target-1", modelId: "gpt", effort: "high"}],
         judge: {runtimeId: "judge-1", modelId: "gpt", effort: "high"},
         activationMode: "automatic",
-        mode: "adaptive",
-        limits: {
-            maxEpochs: 3,
-            maxDurationMs: 3_600_000,
-            patience: 2,
-            minimumImprovement: 1,
-            maxTurns: 50,
-            maxTokens: null,
-            maxCostMicros: null,
-        },
-        target: {minimumScore: 90, minimumPassRate: 1, requireCriticalCases: true},
-        telemetry: {tokens: false, cost: false},
+        limits: {maxEpochs: 101},
     }
 }
 
@@ -49,10 +38,7 @@ function publicRun() {
         targets: config().targets,
         judge: config().judge,
         activationMode: config().activationMode,
-        mode: config().mode,
         limits: config().limits,
-        target: config().target,
-        telemetry: config().telemetry,
         epochs: [{number: 1, status: "editing", candidateArtifactId: null}],
         checkpoint: {},
         error: null,
@@ -148,6 +134,21 @@ describe("optimization control-plane integration", () => {
         }, context())
         assert.equal(candidate.accepted.kind, "candidate")
         assert.equal(calls.find((call) => call.method === "submitCandidate").sessionId, "operator-session-1")
+        const decision = await services["optimization.submit_decision"]({
+            runId: "run-1",
+            decision: {
+                schemaVersion: "rolling-skill-optimization-decision/v1",
+                action: "continue",
+                rationale: "Continue within the configured Epoch boundary",
+                observations: [],
+            },
+            idempotencyKey: "decision-1",
+        }, context())
+        assert.equal(decision.accepted.kind, "decision")
+        assert.equal(Object.hasOwn(
+            calls.find((call) => call.method === "submitDecision").input,
+            "limitRequest",
+        ), false)
         const report = await services["optimization.report"]({runId: "run-1", idempotencyKey: "report-1"}, context())
         assert.doesNotThrow(() => parseControlOutput("optimization.report", report))
     })

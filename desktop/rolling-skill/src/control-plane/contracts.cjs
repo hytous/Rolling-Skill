@@ -543,12 +543,6 @@ const optimizationDecisionInput = z.object({
     }).strict()).max(64).default([]),
 }).strict()
 
-const optimizationLimitRequest = z.object({
-    field: z.enum(["maxEpochs", "maxDurationMs", "maxTurns", "maxTokens", "maxCostMicros"]),
-    value: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
-    rationale: boundedText(8_192, "Optimization limit request rationale"),
-}).strict()
-
 const publicOptimizationBaseline = z.object({
     repositoryId: id,
     skillId: id,
@@ -575,9 +569,11 @@ const publicOptimizationCandidate = z.object({
     contentDigest: boundedText(80, "Optimization Candidate digest"),
 }).strict()
 
+const positiveOptimizationEpoch = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)
+
 const publicOptimizationMarker = z.object({
     runId: id,
-    epoch: z.number().int().min(1).max(100),
+    epoch: positiveOptimizationEpoch,
     versionId: id,
     contentDigest: boundedText(80, "Optimization marker digest"),
 }).strict()
@@ -605,7 +601,7 @@ const publicOptimizationDecision = z.object({
 }).strict()
 
 const publicOptimizationEpoch = z.object({
-    number: z.number().int().min(1).max(100),
+    number: positiveOptimizationEpoch,
     status: boundedText(40, "Optimization Epoch status"),
     candidateArtifactId: id.nullable(),
     installArtifactIds: z.array(id).max(512).optional(),
@@ -640,13 +636,16 @@ const publicOptimizationCheckpoint = z.object({
     releasedInstallArtifactId: id.nullable().optional(),
     finalEvaluationArtifactId: id.nullable().optional(),
     finalRegressionPassed: z.boolean().optional(),
+    recoveryTargets: z.array(publicOptimizationInstallation).max(64).optional(),
+}).strict()
+
+const legacyPublicOptimizationCheckpoint = publicOptimizationCheckpoint.extend({
     telemetry: z.object({
         elapsedMs: z.number().finite().min(0),
         turnsUsed: z.number().int().min(0),
         tokens: z.number().int().min(0).nullable(),
         costMicros: z.number().int().min(0).nullable(),
     }).strict().optional(),
-    recoveryTargets: z.array(publicOptimizationInstallation).max(64).optional(),
 }).strict()
 
 const publicOptimizationRunBase = z.object({
@@ -656,7 +655,7 @@ const publicOptimizationRunBase = z.object({
         "waiting_approval", "restoring", "succeeded", "failed", "cancelled", "needs_recovery",
     ]),
     revision: z.number().int().min(0),
-    currentEpoch: z.number().int().min(0).max(100),
+    currentEpoch: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     snapshotDigest: boundedText(80, "Optimization snapshot digest"),
     baseline: publicOptimizationBaseline,
     dataset: publicOptimizationDataset,
@@ -665,7 +664,7 @@ const publicOptimizationRunBase = z.object({
     targets: z.array(optimizationRuntime).min(1).max(64),
     judge: optimizationRuntime,
     activationMode: z.enum(["automatic", "explicit"]),
-    epochs: z.array(publicOptimizationEpoch).max(100),
+    epochs: z.array(publicOptimizationEpoch),
     checkpoint: publicOptimizationCheckpoint,
     error: z.object({
         code: boundedText(MAX_IDENTIFIER_LENGTH, "Optimization error code"),
@@ -682,6 +681,7 @@ const publicOptimizationRun = z.union([
         limits: legacyOptimizationLimits,
         target: legacyOptimizationConfigInput.shape.target,
         telemetry: legacyOptimizationConfigInput.shape.telemetry,
+        checkpoint: legacyPublicOptimizationCheckpoint,
     }).strict(),
 ])
 
@@ -1051,7 +1051,6 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
         input: z.object({
             runId: id,
             decision: optimizationDecisionInput,
-            limitRequest: optimizationLimitRequest.nullable().default(null),
             idempotencyKey: id,
         }).strict(),
         output: z.object({accepted: z.object({runId: id, kind: z.literal("decision")}).strict()}).strict(),

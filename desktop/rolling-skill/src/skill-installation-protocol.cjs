@@ -166,8 +166,8 @@ function freezeSkillExperimentRequest(input = {}) {
         throw new Error("Optimization Run snapshot digest must be SHA-256")
     }
     const epoch = Number(input.epoch)
-    if (!Number.isSafeInteger(epoch) || epoch < 1 || epoch > 100) {
-        throw new Error("Optimization Epoch must be between 1 and 100")
+    if (!Number.isSafeInteger(epoch) || epoch < 1) {
+        throw new Error("Optimization Epoch must be a positive safe integer")
     }
     const repositoryId = requiredText(input.repository?.id, "Repository id", 200)
     const repositoryPath = requiredText(input.repository?.managedPath, "Managed repository path")

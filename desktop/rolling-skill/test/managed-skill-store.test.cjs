@@ -255,12 +255,12 @@ describe("managed Skill registry", () => {
             state: "candidate",
             createdBy: "optimization",
             optimizationRunId: "optimization-run-1",
-            optimizationEpoch: 2,
+            optimizationEpoch: 101,
         })
 
         assert.equal(candidate.optimizationRunId, "optimization-run-1")
-        assert.equal(candidate.optimizationEpoch, 2)
-        assert.equal(new ManagedSkillStore(path).getVersion(candidate.id).optimizationEpoch, 2)
+        assert.equal(candidate.optimizationEpoch, 101)
+        assert.equal(new ManagedSkillStore(path).getVersion(candidate.id).optimizationEpoch, 101)
         assert.throws(() => store.addVersion({
             repositoryId: repository.id,
             skillId: skill.id,
@@ -269,7 +269,7 @@ describe("managed Skill registry", () => {
             state: "candidate",
             createdBy: "optimization",
             optimizationRunId: "optimization-run-1",
-            optimizationEpoch: 2,
+            optimizationEpoch: 101,
         }), /Run.*Epoch|provenance|already/i)
         assert.throws(() => store.addVersion({
             repositoryId: repository.id,

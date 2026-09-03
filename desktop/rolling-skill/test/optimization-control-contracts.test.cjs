@@ -114,7 +114,14 @@ function compactRunOutput(state = "editing") {
     delete output.run.mode
     delete output.run.target
     delete output.run.telemetry
+    delete output.run.checkpoint.telemetry
     output.run.limits = {maxEpochs: 101}
+    output.run.currentEpoch = 101
+    output.run.epochs = Array.from({length: 101}, (_, index) => ({
+        number: index + 1,
+        status: "completed",
+        candidateArtifactId: null,
+    }))
     return output
 }
 
@@ -168,7 +175,7 @@ describe("optimization control contracts", () => {
             message: "补充下钻指导",
             idempotencyKey: "candidate-1",
         }))
-        assert.doesNotThrow(() => parseControlInput("optimization.submit_decision", {
+        const decisionSubmission = parseControlInput("optimization.submit_decision", {
             runId: "optimization-run-1",
             decision: {
                 schemaVersion: "rolling-skill-optimization-decision/v1",
@@ -176,9 +183,13 @@ describe("optimization control contracts", () => {
                 rationale: "仍有回归项",
                 observations: [],
             },
-            limitRequest: null,
             idempotencyKey: "decision-1",
-        }))
+        })
+        assert.equal(Object.hasOwn(decisionSubmission, "limitRequest"), false)
+        assert.throws(() => parseControlInput("optimization.submit_decision", {
+            ...decisionSubmission,
+            limitRequest: null,
+        }), (error) => error.code === "INVALID_ARGUMENT")
 
         for (const method of ["optimization.start", "optimization.get", "optimization.pause", "optimization.resume", "optimization.stop"]) {
             assert.doesNotThrow(() => parseControlOutput(method, runOutput()))
@@ -236,7 +247,6 @@ describe("optimization control contracts", () => {
         assert.throws(() => parseControlInput("optimization.submit_decision", {
             runId: "optimization-run-1",
             decision: {action: "continue", rationale: "missing schema"},
-            limitRequest: null,
             idempotencyKey: "decision-bad",
         }), (error) => error.code === "INVALID_ARGUMENT")
     })

@@ -112,11 +112,19 @@ describe("OptimizationWorkspaceManager", () => {
         registered.workspacePath = "/forged"
         assert.equal(workspaces.get(run.id).workspacePath, workspace.workspacePath)
 
-        write(join(workspace.workspacePath, "SKILL.md"), manifest("Optimized Epoch 1"))
+        for (const epoch of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+            await assert.rejects(() => workspaces.createCandidate({
+                runId: run.id,
+                epoch,
+                message: "Invalid Epoch",
+            }), /epoch|integer/i)
+        }
+
+        write(join(workspace.workspacePath, "SKILL.md"), manifest("Optimized Epoch 101"))
         assert.equal((await git.status(repository.managedPath)).dirty, false)
         const candidate = await workspaces.createCandidate({
             runId: run.id,
-            epoch: 1,
+            epoch: 101,
             message: "Improve billing workflow",
         })
 
@@ -124,7 +132,7 @@ describe("OptimizationWorkspaceManager", () => {
         assert.equal(candidate.skillId, run.snapshot.baseline.skillId)
         assert.equal(candidate.createdBy, "optimization")
         assert.equal(candidate.optimizationRunId, run.id)
-        assert.equal(candidate.optimizationEpoch, 1)
+        assert.equal(candidate.optimizationEpoch, 101)
         assert.notEqual(candidate.contentDigest, run.snapshot.baseline.contentDigest)
         assert.equal(await git.worktreeHead(workspace.workspacePath), candidate.commit)
         assert.equal(await git.isAncestor(
@@ -138,7 +146,7 @@ describe("OptimizationWorkspaceManager", () => {
             cwd: workspace.workspacePath,
         })
         assert.match(message.stdout, /Rolling-Skill-Optimization-Run: optimization-run-1/u)
-        assert.match(message.stdout, /Rolling-Skill-Optimization-Epoch: 1/u)
+        assert.match(message.stdout, /Rolling-Skill-Optimization-Epoch: 101/u)
     })
 
     it("rejects path escape, symlink substitution, foreign workspace input, and imprecise cleanup", async () => {

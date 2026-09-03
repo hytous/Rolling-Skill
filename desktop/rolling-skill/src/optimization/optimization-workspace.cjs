@@ -30,8 +30,8 @@ function requiredId(value, label) {
 }
 
 function requiredEpoch(value) {
-    if (!Number.isSafeInteger(value) || value < 1 || value > 100) {
-        throw new Error("Optimization epoch must be an integer between 1 and 100")
+    if (!Number.isSafeInteger(value) || value < 1) {
+        throw new Error("Optimization epoch must be a positive safe integer")
     }
     return value
 }

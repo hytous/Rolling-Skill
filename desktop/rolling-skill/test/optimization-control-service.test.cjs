@@ -24,6 +24,13 @@ function config() {
         targets: [{runtimeId: "codex:target", modelId: "gpt-5.6-sol", effort: "medium"}],
         judge: {runtimeId: "codex:judge", modelId: "gpt-5.6-sol", effort: "high"},
         activationMode: "automatic",
+        limits: {maxEpochs: 3},
+    }
+}
+
+function legacyConfig() {
+    return {
+        ...config(),
         mode: "adaptive",
         limits: {
             maxEpochs: 3,
@@ -39,8 +46,12 @@ function config() {
     }
 }
 
-function snapshot(revision) {
+function snapshot(revision, {legacy = false} = {}) {
+    const currentConfig = legacy ? legacyConfig() : config()
     return {
+        schemaVersion: legacy
+            ? "rolling-skill-frozen-optimization-run/v1"
+            : "rolling-skill-frozen-optimization-run/v2",
         digest: digest(String(revision)),
         baseline: {
             repositoryId: "repository-1",
@@ -51,12 +62,16 @@ function snapshot(revision) {
         },
         dataset: {id: "dataset-1", revision, digest: digest("d")},
         rubric: {id: "rubric-1", version: 4, digest: digest("r")},
-        operator: config().operator,
-        targets: config().targets,
-        judge: config().judge,
-        limits: config().limits,
-        target: config().target,
-        telemetry: config().telemetry,
+        operator: currentConfig.operator,
+        targets: currentConfig.targets,
+        judge: currentConfig.judge,
+        activationMode: currentConfig.activationMode,
+        limits: currentConfig.limits,
+        ...(legacy ? {
+            mode: currentConfig.mode,
+            target: currentConfig.target,
+            telemetry: currentConfig.telemetry,
+        } : {}),
     }
 }
 
@@ -177,7 +192,11 @@ function fixture(options = {}) {
         },
         freezeRun(input) {
             freezeCalls.push(structuredClone(input))
-            return snapshot(input.trusted.trustedRevision)
+            const frozen = snapshot(input.trusted.trustedRevision, {
+                legacy: Object.hasOwn(input.config, "mode"),
+            })
+            frozen.limits = structuredClone(input.config.limits)
+            return frozen
         },
         clock: () => "2026-08-25T08:00:00.000Z",
         ...options,
@@ -239,6 +258,8 @@ describe("Optimization control service", () => {
             "optimizations.read",
             "optimizations.execute",
         ])
+        assert.deepEqual(context.operatorCalls[0].budget, {})
+        assert.equal(Object.hasOwn(context.operatorCalls[0], "expiresInMs"), false)
         assert.deepEqual(context.runnerCalls, [{
             runId: "optimization-run-1",
             context: {
@@ -269,12 +290,12 @@ describe("Optimization control service", () => {
         const decision = context.service.submitDecision({
             runId: "optimization-run-1",
             decision: {schemaVersion: "rolling-skill-optimization-decision/v1", action: "finish", rationale: "Done", observations: []},
-            limitRequest: null,
         }, {sessionId: "operator-session-1"})
         assert.deepEqual(candidate, {accepted: {runId: "optimization-run-1", kind: "candidate"}})
         assert.deepEqual(decision, {accepted: {runId: "optimization-run-1", kind: "decision"}})
         assert.equal(context.gatewayCalls[0].input.operatorSessionId, "operator-session-1")
         assert.equal(context.gatewayCalls[1].input.operatorSessionId, "operator-session-1")
+        assert.equal(Object.hasOwn(context.gatewayCalls[1].input, "limitRequest"), false)
 
         await context.service.pause("optimization-run-1")
         await assert.rejects(
@@ -290,11 +311,14 @@ describe("Optimization control service", () => {
         assert.equal(context.runner.stopped, "optimization-run-1")
     })
 
-    it("restarts a paused Operator with the same profiles and remaining budget without awaiting the entire optimization", async () => {
+    it("restarts a paused v2 Operator without calculating any remaining usage budget", async () => {
         let now = "2026-08-25T08:00:00.000Z"
-        const context = fixture({clock: () => now, operatorTurnsUsed: () => 2})
+        const context = fixture({
+            clock: () => now,
+            operatorTurnsUsed: () => {throw new Error("v2 must not read Agent Turn usage")},
+        })
         await context.service.start({...config(), idempotencyKey: "restart-budget"})
-        now = "2026-08-25T08:10:00.000Z"
+        now = "2036-08-25T08:10:00.000Z"
         context.setRunState("needs_recovery", {paused: true, operatorTurnsUsedBefore: 3, baselineEvaluationRunId: "baseline-1"})
         await context.service.recoverStartup()
         context.runner.resume = () => new Promise(() => {})
@@ -303,7 +327,30 @@ describe("Optimization control service", () => {
         const request = context.operatorCalls.at(-1)
         assert.equal(request.modelId, config().operator.modelId)
         assert.equal(request.effort, config().operator.effort)
-        assert.equal(request.budget.maxDurationMs, 3000000)
+        assert.deepEqual(request.budget, {})
+        assert.equal(Object.hasOwn(request, "expiresInMs"), false)
+        assert.equal(Object.hasOwn(
+            context.store.getRun("optimization-run-1").checkpoint,
+            "operatorTurnsUsedBefore",
+        ), true, "legacy checkpoint data remains readable but is not recalculated")
+    })
+
+    it("keeps the remaining-budget branch only for a paused legacy v1 run", async () => {
+        let now = "2026-08-25T08:00:00.000Z"
+        const context = fixture({clock: () => now, operatorTurnsUsed: () => 2})
+        await context.service.start({...legacyConfig(), idempotencyKey: "restart-legacy-budget"})
+        now = "2026-08-25T08:10:00.000Z"
+        context.setRunState("needs_recovery", {
+            paused: true,
+            operatorTurnsUsedBefore: 3,
+            baselineEvaluationRunId: "baseline-1",
+        })
+        await context.service.recoverStartup()
+        context.runner.resume = () => new Promise(() => {})
+        await context.service.resume("optimization-run-1")
+
+        const request = context.operatorCalls.at(-1)
+        assert.equal(request.budget.maxDurationMs, 3_000_000)
         assert.equal(request.budget.maxRuntimeTurns, 45)
         assert.equal(request.budget.maxEvaluations, 4)
     })
@@ -412,15 +459,34 @@ describe("Optimization control service", () => {
             installationJobId: "restore-job-1",
             lastVerifiedDigest: digest("c"),
         }])
-        assert.deepEqual(output.run.checkpoint.telemetry, {
-            elapsedMs: 1_000,
-            turnsUsed: 2,
-            tokens: null,
-            costMicros: null,
-        })
+        assert.equal(output.run.checkpoint.telemetry, undefined)
         assert.ok(context.artifactReadLimits.length >= 4)
         assert.ok(context.artifactReadLimits.every(({maximumBytes}) => maximumBytes === 1024 * 1024))
         assert.doesNotMatch(JSON.stringify(output), /workspacePath|rawResult|observations/u)
+    })
+
+    it("exposes every persisted Epoch above the former 100-Epoch display cap", async () => {
+        const context = fixture()
+        await context.service.start({
+            ...config(),
+            limits: {maxEpochs: 101},
+            idempotencyKey: "start-101-epochs",
+        })
+        context.setRunEpochs(Array.from({length: 101}, (_, index) => ({
+            id: `epoch-${index + 1}`,
+            number: index + 1,
+            status: "completed",
+            candidateArtifactId: null,
+            installArtifactIds: [],
+            evaluationArtifactIds: [],
+            analysisArtifactId: null,
+            decisionArtifactId: null,
+        })))
+
+        const output = context.service.get("optimization-run-1")
+        assert.equal(output.run.currentEpoch, 101)
+        assert.equal(output.run.epochs.length, 101)
+        assert.equal(output.run.epochs.at(-1).number, 101)
     })
 
     it("adopts persisted workspaces before enabling resume", async () => {

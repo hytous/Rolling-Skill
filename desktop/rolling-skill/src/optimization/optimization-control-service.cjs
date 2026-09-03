@@ -8,6 +8,7 @@ const {generateOptimizationReport, persistOptimizationReport} = require("./optim
 
 const MAX_PUBLIC_ARTIFACT_BYTES = 1024 * 1024
 const MAX_PUBLIC_REPORT_PREVIEW_BYTES = 32 * 1024
+const LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA = "rolling-skill-frozen-optimization-run/v1"
 
 function boundedReportPreview(value) {
     const body = Buffer.from(String(value ?? ""), "utf8")
@@ -97,7 +98,7 @@ function publicInstallation(value) {
     }
 }
 
-function publicCheckpoint(value = {}) {
+function publicCheckpoint(value = {}, {legacy = false} = {}) {
     const fields = [
         "operatorSessionId",
         "operatorCleanupError",
@@ -125,7 +126,7 @@ function publicCheckpoint(value = {}) {
         .filter((field) => value[field] !== undefined)
         .map((field) => [field, structuredClone(value[field])]))
     if (checkpoint.paused === false) delete checkpoint.pauseReason
-    if (value.telemetry && typeof value.telemetry === "object") {
+    if (legacy && value.telemetry && typeof value.telemetry === "object") {
         const elapsedMs = Number(value.telemetry.elapsedMs)
         const turnsUsed = Number(value.telemetry.turnsUsed)
         const tokens = value.telemetry.tokens
@@ -225,6 +226,7 @@ function publicEpoch(epoch, readArtifact) {
 
 function publicRun(run, readArtifact = () => null) {
     const snapshot = run.snapshot ?? {}
+    const legacy = snapshot.schemaVersion === LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA
     return {
         id: run.id,
         state: run.state,
@@ -254,12 +256,14 @@ function publicRun(run, readArtifact = () => null) {
         targets: structuredClone(snapshot.targets ?? []),
         judge: structuredClone(snapshot.judge),
         activationMode: snapshot.activationMode,
-        mode: snapshot.mode,
         limits: structuredClone(snapshot.limits),
-        target: structuredClone(snapshot.target),
-        telemetry: structuredClone(snapshot.telemetry),
-        epochs: (run.epochs ?? []).slice(0, 100).map((epoch) => publicEpoch(epoch, readArtifact)),
-        checkpoint: publicCheckpoint(run.checkpoint),
+        ...(legacy ? {
+            mode: snapshot.mode,
+            target: structuredClone(snapshot.target),
+            telemetry: structuredClone(snapshot.telemetry),
+        } : {}),
+        epochs: (run.epochs ?? []).map((epoch) => publicEpoch(epoch, readArtifact)),
+        checkpoint: publicCheckpoint(run.checkpoint, {legacy}),
         error: run.error === null || run.error === undefined
             ? null
             : {
@@ -351,26 +355,16 @@ class OptimizationControlService {
 
     async #createOperator(run, resuming = false) {
         const snapshot = run.snapshot
-        const elapsedMs = resuming ? Math.max(0, Date.parse(this.clock()) - Date.parse(run.createdAt ?? this.clock())) : 0
-        const turnsUsed = (run.checkpoint.operatorTurnsUsedBefore ?? 0) + (resuming ? this.operatorTurnsUsed(run) : 0)
-        const maxDurationMs = Math.floor(snapshot.limits.maxDurationMs - elapsedMs)
-        const maxRuntimeTurns = (snapshot.limits.maxTurns ?? 1_000_000) - turnsUsed
-        if (maxDurationMs <= 0 || maxRuntimeTurns <= 0) throw new Error("Optimization time or turn budget has been exhausted")
-        if (resuming && (snapshot.limits.maxTokens !== null || snapshot.limits.maxCostMicros !== null)) {
-            throw new Error("Optimization with usage caps cannot restart until reliable remaining usage is available")
-        }
+        const legacy = snapshot.schemaVersion === LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA
         if (resuming && run.checkpoint.operatorSessionId && this.operatorSessionManager.stop) {
             await this.operatorSessionManager.stop(run.checkpoint.operatorSessionId)
         }
-        const maxEvaluations = Math.max(0, snapshot.limits.maxEpochs + 2 - (resuming ?
-            Number(Boolean(run.checkpoint.baselineEvaluationRunId)) + run.epochs.reduce((count, epoch) => count + (epoch.evaluationArtifactIds?.length ?? 0), 0) : 0))
-        const caseCount = snapshot.dataset.caseRevisions?.length ?? 1
         const runtimeIds = [...new Set([
             snapshot.operator.runtimeId,
             snapshot.judge.runtimeId,
             ...snapshot.targets.map((target) => target.runtimeId),
         ])]
-        const operator = await this.operatorSessionManager.create({
+        const request = {
             runtimeId: snapshot.operator.runtimeId,
             modelId: snapshot.operator.modelId,
             effort: snapshot.operator.effort,
@@ -386,7 +380,38 @@ class OptimizationControlService {
                 runtimeIds,
                 repositoryIds: [snapshot.baseline.repositoryId],
             },
-            budget: {
+            budget: {},
+            managedSkillBinding: {
+                repositoryId: snapshot.baseline.repositoryId,
+                skillId: snapshot.baseline.skillId,
+                optimizationRunId: run.id,
+            },
+        }
+        let turnsUsed = 0
+        if (legacy) {
+            const elapsedMs = resuming
+                ? Math.max(0, Date.parse(this.clock()) - Date.parse(run.createdAt ?? this.clock()))
+                : 0
+            turnsUsed = (run.checkpoint.operatorTurnsUsedBefore ?? 0) +
+                (resuming ? this.operatorTurnsUsed(run) : 0)
+            const maxDurationMs = Math.floor(snapshot.limits.maxDurationMs - elapsedMs)
+            const maxRuntimeTurns = (snapshot.limits.maxTurns ?? 1_000_000) - turnsUsed
+            if (maxDurationMs <= 0 || maxRuntimeTurns <= 0) {
+                throw new Error("Optimization time or turn budget has been exhausted")
+            }
+            if (resuming && (
+                snapshot.limits.maxTokens !== null || snapshot.limits.maxCostMicros !== null
+            )) {
+                throw new Error("Optimization with usage caps cannot restart until reliable remaining usage is available")
+            }
+            const maxEvaluations = Math.max(0, snapshot.limits.maxEpochs + 2 - (resuming
+                ? Number(Boolean(run.checkpoint.baselineEvaluationRunId)) + run.epochs.reduce(
+                    (count, epoch) => count + (epoch.evaluationArtifactIds?.length ?? 0),
+                    0,
+                )
+                : 0))
+            const caseCount = snapshot.dataset.caseRevisions?.length ?? 1
+            request.budget = {
                 maxDurationMs,
                 maxRuntimeTurns,
                 maxEvaluations,
@@ -396,14 +421,10 @@ class OptimizationControlService {
                 maxReportedCost: snapshot.limits.maxCostMicros === null
                     ? null
                     : snapshot.limits.maxCostMicros / 1_000_000,
-            },
-            expiresInMs: maxDurationMs,
-            managedSkillBinding: {
-                repositoryId: snapshot.baseline.repositoryId,
-                skillId: snapshot.baseline.skillId,
-                optimizationRunId: run.id,
-            },
-        })
+            }
+            request.expiresInMs = maxDurationMs
+        }
+        const operator = await this.operatorSessionManager.create(request)
         const operatorSessionId = requiredText(
             operator?.session?.id,
             "Optimization Operator session id",
@@ -414,7 +435,11 @@ class OptimizationControlService {
             "Optimization Operator parent Job id",
             300,
         )
-        this.store.updateCheckpoint(run.id, {operatorSessionId, operatorParentJobId: parentJobId, operatorTurnsUsedBefore: turnsUsed})
+        this.store.updateCheckpoint(run.id, {
+            operatorSessionId,
+            operatorParentJobId: parentJobId,
+            ...(legacy ? {operatorTurnsUsedBefore: turnsUsed} : {}),
+        })
         return {operatorSessionId, parentJobId}
     }
 
@@ -535,7 +560,6 @@ class OptimizationControlService {
         const accepted = this.operatorGateway.submitDecision({
             runId: input.runId,
             decision: structuredClone(input.decision),
-            limitRequest: input.limitRequest === undefined ? null : structuredClone(input.limitRequest),
             operatorSessionId: requiredText(context.operatorSessionId ?? context.sessionId, "Current Operator session id", 300),
         })
         return {accepted}

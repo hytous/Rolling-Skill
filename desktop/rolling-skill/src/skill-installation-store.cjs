@@ -146,7 +146,7 @@ function normalizeRequest(request = {}) {
     }
     normalized.experiment = copy(experiment)
     requiredText(experiment.runId, "Optimization Run id", 200)
-    if (!Number.isSafeInteger(experiment.epoch) || experiment.epoch < 1 || experiment.epoch > 100) {
+    if (!Number.isSafeInteger(experiment.epoch) || experiment.epoch < 1) {
         throw new Error("Optimization Epoch is invalid")
     }
     requiredText(experiment.snapshotDigest, "Optimization snapshot digest", 80)

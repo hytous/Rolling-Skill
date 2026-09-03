@@ -36,7 +36,7 @@ function digest(value) {
     return `sha256:${createHash("sha256").update(value).digest("hex")}`
 }
 
-function frozenRun(configOverrides = {}) {
+function frozenRun(configOverrides = {}, {legacy = true} = {}) {
     const evidenceDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-optimization-store-evidence-"))
     temporaryDirectories.push(evidenceDirectory)
     const evidencePath = join(evidenceDirectory, "SKILL.md")
@@ -82,18 +82,20 @@ function frozenRun(configOverrides = {}) {
             targets: [{runtimeId: "codex:target", modelId: "gpt-5.6-sol", effort: "high"}],
             judge: {runtimeId: "codex:judge", modelId: "gpt-5.6-sol", effort: "xhigh"},
             activationMode: "automatic",
-            mode: "adaptive",
-            limits: {
-                maxEpochs: 3,
-                maxDurationMs: 3_600_000,
-                patience: 2,
-                minimumImprovement: 0.5,
-                maxTurns: 50,
-                maxTokens: null,
-                maxCostMicros: null,
-            },
-            target: {minimumScore: 90, minimumPassRate: 1, requireCriticalCases: true},
-            telemetry: {tokens: false, cost: false},
+            ...(legacy ? {
+                mode: "adaptive",
+                limits: {
+                    maxEpochs: 3,
+                    maxDurationMs: 3_600_000,
+                    patience: 2,
+                    minimumImprovement: 0.5,
+                    maxTurns: 50,
+                    maxTokens: null,
+                    maxCostMicros: null,
+                },
+                target: {minimumScore: 90, minimumPassRate: 1, requireCriticalCases: true},
+                telemetry: {tokens: false, cost: false},
+            } : {limits: {maxEpochs: 3}}),
             ...configOverrides,
         },
         createdAt: "2026-08-25T02:03:04.000Z",
@@ -137,6 +139,50 @@ function waitForChildText(child, pattern, label) {
 }
 
 describe("OptimizationStore", () => {
+    it("persists and creates positive safe Epoch numbers above the old product cap", () => {
+        const {path, store} = fixture()
+        const created = store.createRun(frozenRun({limits: {maxEpochs: 101}}, {legacy: false}))
+        store.transitionRun(created.runId, "baseline")
+        store.transitionRun(created.runId, "editing")
+        store.close()
+
+        const persisted = JSON.parse(readFileSync(path, "utf8"))
+        const timestamp = "2026-08-25T02:03:04.000Z"
+        persisted.runs[0].epochs = Array.from({length: 100}, (_, index) => ({
+            id: `epoch-${index + 1}`,
+            number: index + 1,
+            status: "completed",
+            candidateArtifactId: `candidate-${index + 1}`,
+            installArtifactIds: [`install-${index + 1}`],
+            evaluationArtifactIds: [`evaluation-${index + 1}`],
+            analysisArtifactId: `analysis-${index + 1}`,
+            decisionArtifactId: `decision-${index + 1}`,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            completedAt: timestamp,
+        }))
+        persisted.runs[0].currentEpoch = 100
+        writeFileSync(path, JSON.stringify(persisted), {mode: 0o600})
+
+        const restarted = new OptimizationStore(path)
+        restarted.transitionRun(created.runId, "editing", {checkpoint: {paused: false}})
+        const epoch = restarted.createEpoch(created.runId, {candidateArtifactId: "candidate-101"})
+        assert.equal(epoch.index, 101)
+        assert.equal(restarted.getRun(created.runId).currentEpoch, 101)
+        restarted.transitionRun(created.runId, "installing")
+        restarted.updateEpoch(created.runId, epoch.epochId, {installArtifactIds: ["install-101"]})
+        restarted.transitionRun(created.runId, "evaluating")
+        restarted.updateEpoch(created.runId, epoch.epochId, {evaluationArtifactIds: ["evaluation-101"]})
+        restarted.transitionRun(created.runId, "deciding")
+        restarted.updateEpoch(created.runId, epoch.epochId, {
+            analysisArtifactId: "analysis-101",
+            decisionArtifactId: "decision-101",
+        })
+        restarted.updateEpoch(created.runId, epoch.epochId, {status: "completed"})
+        restarted.transitionRun(created.runId, "editing")
+        assert.throws(() => restarted.createEpoch(created.runId), /frozen epoch limit/i)
+    })
+
     it("resumes the same unsubmitted editing Epoch without allowing phase backtracking", () => {
         const {store} = fixture()
         const {runId} = store.createRun(frozenRun())

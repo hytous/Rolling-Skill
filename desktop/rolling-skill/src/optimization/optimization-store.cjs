@@ -23,6 +23,7 @@ const {
 } = require("./optimization-contract.cjs")
 
 const OPTIMIZATION_STORE_SCHEMA = "rolling-skill-optimization-runs/v1"
+const LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA = "rolling-skill-frozen-optimization-run/v1"
 const MAX_STORE_BYTES = 16 * 1024 * 1024
 const MAX_RUNS = 10_000
 const MAX_OPERATIONS = 10_000
@@ -204,6 +205,18 @@ function integer(value, label, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) {
         throw new Error(`${label} is invalid`)
     }
     return value
+}
+
+function effectiveMaxEpochs(snapshot, checkpoint = {}) {
+    if (snapshot.schemaVersion !== LEGACY_FROZEN_OPTIMIZATION_RUN_SCHEMA) {
+        return snapshot.limits.maxEpochs
+    }
+    const approved = checkpoint?.approvedLimits?.maxEpochs
+    const maximum = Number.isSafeInteger(approved) ? approved : snapshot.limits.maxEpochs
+    if (maximum < snapshot.limits.maxEpochs || maximum > 100) {
+        throw new Error("Optimization approved epoch limit is invalid")
+    }
+    return maximum
 }
 
 function timestamp(value, label) {
@@ -764,7 +777,7 @@ function canonicalEpoch(value) {
     if (!EPOCH_STATES.has(status)) throw new Error("Optimization epoch status is invalid")
     const epoch = {
         id: publicId(value.id, "Optimization epoch id"),
-        number: integer(value.number, "Optimization epoch number", 1, 100),
+        number: integer(value.number, "Optimization epoch number", 1),
         status,
         candidateArtifactId: nullableArtifactId(value.candidateArtifactId, "Candidate artifact id"),
         installArtifactIds: artifactIds(value.installArtifactIds, "Install artifact ids"),
@@ -819,7 +832,7 @@ function canonicalEpochMutationResult(value) {
     return {
         runId: publicId(value.runId, "Optimization Epoch mutation result run id"),
         epochId: publicId(value.epochId, "Optimization Epoch mutation result Epoch id"),
-        index: integer(value.index, "Optimization Epoch mutation result index", 1, 100),
+        index: integer(value.index, "Optimization Epoch mutation result index", 1),
         status,
         revision: integer(value.revision, "Optimization Epoch mutation result revision"),
         updatedAt: timestamp(value.updatedAt, "Optimization Epoch mutation result updatedAt"),
@@ -883,9 +896,7 @@ function canonicalRun(value) {
     ], [], "Optimization run")
     const state = requiredText(value.state, "Optimization run state", 40)
     if (!RUN_STATES.has(state)) throw new Error("Optimization run state is invalid")
-    if (!Array.isArray(value.epochs) || value.epochs.length > 100) {
-        throw new Error("Optimization run epochs exceed their limit")
-    }
+    if (!Array.isArray(value.epochs)) throw new Error("Optimization run epochs must be an array")
     if (!Array.isArray(value.operations) || value.operations.length > MAX_OPERATIONS) {
         throw new Error("Optimization run operations exceed their limit")
     }
@@ -902,13 +913,7 @@ function canonicalRun(value) {
     epochs.forEach((epoch, index) => {
         if (epoch.number !== index + 1) throw new Error("Optimization epoch sequence is invalid")
     })
-    const effectiveMaxEpochs = Number.isSafeInteger(checkpoint?.approvedLimits?.maxEpochs)
-        ? checkpoint.approvedLimits.maxEpochs
-        : snapshot.limits.maxEpochs
-    if (effectiveMaxEpochs < snapshot.limits.maxEpochs || effectiveMaxEpochs > 100) {
-        throw new Error("Optimization approved epoch limit is invalid")
-    }
-    if (epochs.length > effectiveMaxEpochs) {
+    if (epochs.length > effectiveMaxEpochs(snapshot, checkpoint)) {
         throw new Error("Optimization run exceeds its frozen epoch limit")
     }
     if (new Set(operations.map((entry) => entry.key)).size !== operations.length) {
@@ -1591,16 +1596,7 @@ class OptimizationStore {
         if (current.epochs.some((entry) => !TERMINAL_EPOCH_STATES.has(entry.status))) {
             throw new Error("An Optimization Epoch is already in progress")
         }
-        const effectiveMaxEpochs = Number.isSafeInteger(current.checkpoint?.approvedLimits?.maxEpochs)
-            ? current.checkpoint.approvedLimits.maxEpochs
-            : current.snapshot.limits.maxEpochs
-        if (
-            effectiveMaxEpochs < current.snapshot.limits.maxEpochs ||
-            effectiveMaxEpochs > 100
-        ) {
-            throw new Error("Optimization approved epoch limit is invalid")
-        }
-        if (current.epochs.length >= effectiveMaxEpochs) {
+        if (current.epochs.length >= effectiveMaxEpochs(current.snapshot, current.checkpoint)) {
             throw new Error("Optimization run reached its frozen epoch limit")
         }
         return this.#mutate((state) => {
