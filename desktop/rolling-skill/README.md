@@ -275,9 +275,8 @@ Use **Self-operation → Multi-Epoch Optimization** to improve one managed Skill
 evaluation contract. Before Start is enabled, preflight resolves and freezes the selected Released
 baseline, managed Skill/repository identity, Dataset and published Rubric revision, calibrated Case
 revisions, Operator Runtime, target Runtime matrix, Judge, activation mode, model/effort choices,
-stop targets, and Optimization-specific stopping limits. A later Dataset, Rubric, Case, catalog, or
-Working-tree change does not mutate an existing Run. Start a new Run when the comparison inputs must
-change.
+and the maximum closed-loop Epoch count. A later Dataset, Rubric, Case, catalog, or Working-tree
+change does not mutate an existing Run. Start a new Run when the comparison inputs must change.
 
 The engine, rather than the Operator Agent, owns the phase order:
 
@@ -288,15 +287,21 @@ preflight → baseline evaluation
           → approved release + Released install → succeeded
 ```
 
-The baseline evaluation is not an Epoch. Each Epoch edits a linked worktree under Application
-Support, commits an immutable Candidate, installs and verifies it on every selected target Runtime,
-evaluates the same frozen Dataset/Rubric, and records deterministic score/pass deltas and
-regressions. Candidate installations advance directly between Epochs; the initial Runtime state is
-restored only when the whole Run stops, fails, is rejected, or otherwise finishes without a
-successful Released installation. Fixed mode follows the configured Epoch bound. Adaptive mode lets
-the Agent submit a typed `continue`, `finish`, or `pause` recommendation, but deterministic target,
-patience, regression, duration, turn, Epoch, token, and cost gates remain authoritative. Token or
-cost can be a hard gate only when every selected Runtime advertises that telemetry.
+The baseline evaluation is not an Epoch. One Epoch is a complete loop: improve the Skill in its
+linked worktree, commit an immutable Candidate, install and verify it on every selected experiment
+Runtime, execute the complete frozen Dataset/Rubric evaluation, and review the comparison evidence.
+Candidate installations advance directly between Epochs; the initial Runtime state is restored only
+when the whole Run stops, fails, is rejected, or otherwise finishes without a successful Released
+installation.
+
+The maximum Epoch count is the only user-configured automation limit. Agent turns, Tool calls,
+evaluation fan-out, elapsed time, tokens, cost, patience, and minimum-improvement thresholds do not
+consume or stop an Epoch. After each complete evaluation the Agent may submit `continue`, `finish`,
+or `pause`; the runner also stops before creating another Candidate once the maximum completed Epoch
+count is reached. Incomplete evidence, a detected regression, installation uncertainty, and recovery
+failure remain program safety gates rather than user budgets. Long-running work can be stopped by the
+user at any time. Process, IPC, and network watchdogs only detect technical faults; they do not decide
+that optimization is complete or exhaust a runtime budget.
 
 Experiment installation is separate from ordinary Released installation. It accepts only the
 Candidate and worktree registered to the current Run, writes a Run/Epoch experiment marker, and does
@@ -319,18 +324,17 @@ recovery. A successful formal installation ends the Run without another final-re
 Pause prevents new phase scheduling without pretending an in-flight side effect was undone. Stop
 cancels queued work, interrupts active children, and then restores enrolled Runtime targets. During
 App shutdown the runner checkpoints the current phase, active installation/evaluation references,
-restoration evidence, and the latest available elapsed-time, turn, token, and cost telemetry before
-Runtime sessions are stopped.
+restoration evidence, and the current Epoch before Runtime sessions are stopped.
 Startup reconciles unfinished Runs before the window opens: read-only inspection and saved IDs are
 used instead of blindly replaying installation or evaluation writes. Recovery failure remains
 durable and blocks a new Epoch or release action.
 
 The right-hand Run panel shows the frozen inputs, Epoch/Candidate timeline, per-Runtime installation
-state, score/pass trend, regressions, remaining Optimization limits, stop reason, the final approval,
-release/final installation result, and recovery targets. Large Diff, evaluation, Trace, and report
-bodies stay in lazy Artifacts rather than the Renderer snapshot. The generated Chinese Markdown
-report is derived from persisted evidence; unavailable Runtime telemetry is labeled as unavailable,
-never reported as zero.
+state, score/pass trend, regressions, stop reason, the final approval, release/final installation
+result, and recovery targets. Large Diff, evaluation, Trace, and report bodies stay in lazy Artifacts
+rather than the Renderer snapshot. The generated Chinese Markdown report records the configured
+maximum Epoch count and the evidence from every completed loop without presenting Agent usage as a
+user budget.
 
 ## Managed Skill repositories
 

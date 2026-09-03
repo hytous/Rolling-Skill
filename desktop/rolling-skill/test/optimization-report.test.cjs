@@ -58,6 +58,7 @@ function reportFixture() {
         id: "optimization-run-1",
         state: "succeeded",
         snapshot: {
+            schemaVersion: "rolling-skill-frozen-optimization-run/v2",
             baseline: {
                 repositoryId: "repository-1",
                 skillId: "skill-1",
@@ -72,8 +73,7 @@ function reportFixture() {
                 {runtimeId: "codex:target", modelId: "gpt-5.6-sol", effort: "high"},
                 {runtimeId: "codebuddy:target", modelId: "claude-sonnet", effort: "high"},
             ],
-            limits: {maxEpochs: 3, maxDurationMs: 3_600_000, maxTokens: null, maxCostMicros: null},
-            target: {minimumScore: 90, minimumPassRate: 1, requireCriticalCases: true},
+            limits: {maxEpochs: 5},
         },
         epochs: [
             {
@@ -96,7 +96,7 @@ function reportFixture() {
             },
         ],
         checkpoint: {
-            stopReason: "target_achieved",
+            stopReason: "max_epochs_reached",
             finalApprovalId: "approval-final",
             releasedVersionId: "released-v2",
             releasedInstallArtifactId: "released-install",
@@ -113,7 +113,7 @@ describe("Optimization Markdown report", () => {
         run.state = "cancelled"
         run.error = {code: "OPTIMIZATION_FINAL_APPROVAL_REJECTED", message: "Optimization release and installation were rejected"}
         run.checkpoint = {
-            stopReason: "target_achieved",
+            stopReason: "agent_finish",
             installationOperation: "experiment_restore",
             installationJobIds: ["restore-job-1"],
             installationPending: false,
@@ -121,7 +121,6 @@ describe("Optimization Markdown report", () => {
         const {markdown} = generateOptimizationReport({run, readArtifact: (id) => artifacts[id] ?? null})
         assert.match(markdown, /最终审批：已拒绝/)
         assert.match(markdown, /结束原因：用户选择回退原版本/)
-        assert.match(markdown, /优化停止条件：已达到目标/)
         assert.match(markdown, /恢复基线/)
         assert.match(markdown, /restore-job-1/)
         assert.doesNotMatch(markdown, /最终审批：未申请|\| Runtime \| Model \| Effort \|/)
@@ -138,7 +137,7 @@ describe("Optimization Markdown report", () => {
         assert.doesNotMatch(markdown, /未申请/)
     })
 
-    it("renders frozen identities, every Epoch delta, final approval, installation, and telemetry gaps", () => {
+    it("renders frozen identities, every Epoch delta, and the Epoch-only boundary without usage budgets", () => {
         const {run, artifacts} = reportFixture()
         const first = generateOptimizationReport({
             run,
@@ -165,15 +164,46 @@ describe("Optimization Markdown report", () => {
             "case-2",
             "改进项",
             "回归项",
-            "target_achieved",
+            "最大闭环次数：5",
+            "结束原因：达到最大闭环次数（max_epochs_reached）",
             "released-v2",
             "最终审批与安装",
             "恢复状态",
             "Agent 判断理由",
-            "运行时未提供",
         ]) assert.match(first.markdown, new RegExp(text, "u"))
         assert.doesNotMatch(first.markdown, /最终回归/u)
         assert.doesNotMatch(first.markdown, /Agent 结论|Agent 分数/u)
+        assert.doesNotMatch(
+            first.markdown,
+            /预算与遥测|Token|成本|最长时间|时长|耐心|最小有效提升|minimum improvement|patience|duration|cost/iu,
+        )
+    })
+
+    it("keeps legacy v1 budget telemetry readable without adding it to v2 reports", () => {
+        const {run, artifacts} = reportFixture()
+        run.snapshot = {
+            ...run.snapshot,
+            schemaVersion: "rolling-skill-frozen-optimization-run/v1",
+            mode: "adaptive",
+            limits: {
+                maxEpochs: 3,
+                maxDurationMs: 3_600_000,
+                patience: 2,
+                minimumImprovement: 1,
+                maxTurns: 50,
+                maxTokens: 100_000,
+                maxCostMicros: 5_000_000,
+            },
+            target: {minimumScore: 90, minimumPassRate: 1, requireCriticalCases: true},
+            telemetry: {tokens: true, cost: true},
+        }
+        run.checkpoint.telemetry = {tokens: 40_000, costMicros: 123_000}
+
+        const {markdown} = generateOptimizationReport({run, readArtifact: (id) => artifacts[id] ?? null})
+
+        assert.match(markdown, /预算与遥测/u)
+        assert.match(markdown, /Token：40000/u)
+        assert.match(markdown, /成本（micros）：123000/u)
     })
 
     it("keeps old final-regression evidence readable as a legacy note", () => {

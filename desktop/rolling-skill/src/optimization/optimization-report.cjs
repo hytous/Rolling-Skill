@@ -1,6 +1,7 @@
 "use strict"
 
 const {createHash} = require("node:crypto")
+const {FROZEN_OPTIMIZATION_RUN_SCHEMA} = require("./optimization-contract.cjs")
 
 function sha256(value) {
     return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`
@@ -27,13 +28,24 @@ function finalApprovalText(run) {
 }
 
 function endingReason(run) {
-    const reasons = {
+    const errorReasons = {
         OPTIMIZATION_FINAL_APPROVAL_REJECTED: "用户选择回退原版本",
         OPTIMIZATION_RELEASE_REJECTED: "发布审批被拒绝，未发布候选版本",
         OPTIMIZATION_INSTALL_REJECTED: "正式版本安装审批被拒绝",
         OPTIMIZATION_CANCELLED: "用户取消运行",
     }
-    return reasons[run.error?.code] ?? display(run.error?.message, "无额外错误")
+    if (errorReasons[run.error?.code]) return errorReasons[run.error.code]
+    if (run.error?.message) return display(run.error.message)
+    const stopReasons = {
+        agent_finish: "Agent 判断优化完成（agent_finish）",
+        max_epochs_reached: "达到最大闭环次数（max_epochs_reached）",
+        target_achieved: "已达到目标（target_achieved）",
+        critical_regression: "检测到关键回归（critical_regression）",
+        broad_regression: "检测到明显回归（broad_regression）",
+        cancel_requested: "用户请求停止（cancel_requested）",
+    }
+    const stopReason = run.checkpoint?.stopReason
+    return stopReasons[stopReason] ?? display(stopReason, "无额外错误")
 }
 
 function artifactValue(value) {
@@ -116,6 +128,7 @@ function generateOptimizationReport({run, readArtifact: read}) {
     }
     if (typeof read !== "function") throw new Error("Optimization artifact reader is required")
     const snapshot = run.snapshot ?? {}
+    const compact = snapshot.schemaVersion === FROZEN_OPTIMIZATION_RUN_SCHEMA
     const baseline = snapshot.baseline ?? {}
     const checkpoint = run.checkpoint ?? {}
     const tokens = checkpoint.telemetry?.tokens
@@ -125,8 +138,9 @@ function generateOptimizationReport({run, readArtifact: read}) {
         "",
         `- Run：${display(run.id)}`,
         `- 状态：${display(run.state)}`,
+        ...(compact ? [`- 最大闭环次数：${display(snapshot.limits?.maxEpochs)}`] : []),
         `- 结束原因：${endingReason(run)}`,
-        `- 优化停止条件：${checkpoint.stopReason === "target_achieved" ? "已达到目标（target_achieved）" : display(checkpoint.stopReason, "未提供")}`,
+        ...(!compact ? [`- 优化停止条件：${display(checkpoint.stopReason, "未提供")}`] : []),
         "",
         "## 冻结输入",
         "",
@@ -148,12 +162,16 @@ function generateOptimizationReport({run, readArtifact: read}) {
     lines.push("", "## Epoch 结果", "")
     for (const epoch of run.epochs ?? []) renderEpoch(lines, epoch, read)
 
+    if (!compact) {
+        lines.push(
+            "## 预算与遥测",
+            "",
+            `- Token：${Number.isFinite(tokens) ? tokens : "运行时未提供"}`,
+            `- 成本（micros）：${Number.isFinite(costMicros) ? costMicros : "运行时未提供"}`,
+            "",
+        )
+    }
     lines.push(
-        "## 预算与遥测",
-        "",
-        `- Token：${Number.isFinite(tokens) ? tokens : "运行时未提供"}`,
-        `- 成本（micros）：${Number.isFinite(costMicros) ? costMicros : "运行时未提供"}`,
-        "",
         "## 最终审批与安装",
         "",
         `- 最终审批：${finalApprovalText(run)}`,

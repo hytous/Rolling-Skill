@@ -43,6 +43,11 @@ const optimizationConfig = {
     targets: [{runtimeId: "codex:local", modelId: "gpt-5.6-sol", effort: "high"}],
     judge: {runtimeId: "codex:judge", modelId: "gpt-5.6-sol", effort: "high"},
     activationMode: "automatic",
+    limits: {maxEpochs: 3},
+}
+
+const legacyOptimizationConfig = {
+    ...optimizationConfig,
     mode: "adaptive",
     limits: {
         maxEpochs: 3,
@@ -70,10 +75,7 @@ const optimizationRun = {
     targets: optimizationConfig.targets,
     judge: optimizationConfig.judge,
     activationMode: optimizationConfig.activationMode,
-    mode: optimizationConfig.mode,
     limits: optimizationConfig.limits,
-    target: optimizationConfig.target,
-    telemetry: optimizationConfig.telemetry,
     epochs: [{number: 1, status: "editing", candidateArtifactId: null}],
     checkpoint: {paused: false},
     error: null,
@@ -212,7 +214,6 @@ const validInputs = {
             rationale: "Continue after the first Epoch",
             observations: [],
         },
-        limitRequest: null,
         idempotencyKey: "optimization-decision-1",
     },
     "optimization.report": {runId: "optimization-run-1", idempotencyKey: "optimization-report-1"},
@@ -532,6 +533,32 @@ describe("control-plane contracts", () => {
                 `${method} should accept its representative input`,
             )
         }
+    })
+
+    it("uses Epoch-only Optimization inputs while retaining legacy config and run compatibility", () => {
+        const compact = parseControlInput("optimization.start", validInputs["optimization.start"])
+        assert.deepEqual(compact.limits, {maxEpochs: 3})
+        for (const field of ["mode", "target", "telemetry"]) {
+            assert.equal(Object.hasOwn(compact, field), false)
+            assert.equal(Object.hasOwn(optimizationRun, field), false)
+        }
+        assert.doesNotThrow(() => parseControlInput("optimization.preflight", {
+            ...legacyOptimizationConfig,
+            idempotencyKey: "legacy-optimization-preflight",
+        }))
+        assert.doesNotThrow(() => parseControlOutput("optimization.get", {
+            run: {
+                ...optimizationRun,
+                mode: legacyOptimizationConfig.mode,
+                limits: legacyOptimizationConfig.limits,
+                target: legacyOptimizationConfig.target,
+                telemetry: legacyOptimizationConfig.telemetry,
+            },
+        }))
+        assert.throws(() => parseControlInput("optimization.submit_decision", {
+            ...validInputs["optimization.submit_decision"],
+            limitRequest: {maxTurns: 100},
+        }), /limitRequest|unrecognized/iu)
     })
 
     it("requires an idempotency key on every expanded mutation", () => {

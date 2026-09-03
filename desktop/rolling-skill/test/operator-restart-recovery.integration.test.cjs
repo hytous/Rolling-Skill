@@ -73,6 +73,7 @@ function managerFixture(store, engine, {
     createClient = () => new RecoveryRuntimeClient(),
     capabilities: suppliedCapabilities = null,
     controlPlane: suppliedControlPlane = null,
+    resolveManagedSkillWorkspace = null,
 } = {}) {
     let capabilitySequence = 0
     const capabilities = suppliedCapabilities ?? {
@@ -119,6 +120,7 @@ function managerFixture(store, engine, {
         },
         transportSupport: () => ({dynamicToolsReady: true, mcpServersReady: false}),
         supportsNativeResume: () => true,
+        resolveManagedSkillWorkspace,
     })
 }
 
@@ -374,6 +376,71 @@ function appendPendingReleaseGate(registryPath, created, suffix) {
 }
 
 describe("Operator restart recovery integration", () => {
+    it("resumes an unbounded Optimization Operator for more turns without creating an iteration limit", async () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-unbounded-restart-"))
+        directories.push(directory)
+        const registryPath = join(directory, "operator-jobs.json")
+        const workspaceRoot = join(directory, "optimization-worktree")
+        const resolveManagedSkillWorkspace = async (binding) => ({...binding, workspaceRoot})
+        const initialStore = new OperatorJobStore(registryPath)
+        const initialEngine = new OperatorJobEngine({store: initialStore})
+        const initialManager = managerFixture(initialStore, initialEngine, {
+            resolveManagedSkillWorkspace,
+        })
+        const created = await initialManager.create({
+            runtimeId: runtime.runtimeId,
+            modelId: "gpt-5.6-sol",
+            effort: "high",
+            objective: "Continue Optimization Epoch 2 after restart",
+            actions: ["optimizations.read", "optimizations.execute"],
+            scopes: {
+                skillIds: ["skill-1"],
+                datasetIds: ["dataset-1"],
+                runtimeIds: [runtime.runtimeId],
+                repositoryIds: ["repository-1"],
+            },
+            budget: {},
+            managedSkillBinding: {
+                repositoryId: "repository-1",
+                skillId: "skill-1",
+                optimizationRunId: "optimization-run-epoch-2",
+            },
+        })
+        assert.equal(created.parentJob.checkpoint.optimizationRunId, "optimization-run-epoch-2")
+
+        const recoveredStore = new OperatorJobStore(registryPath)
+        const recoveredEngine = new OperatorJobEngine({store: recoveredStore})
+        let runtimeTurns = 0
+        const turnWaiters = []
+        const recoveredManager = managerFixture(recoveredStore, recoveredEngine, {
+            resolveManagedSkillWorkspace,
+            createClient: () => new RecoveryRuntimeClient({
+                autoCompleteTurns: true,
+                onStartTurn: () => {
+                    runtimeTurns += 1
+                    turnWaiters.shift()?.()
+                },
+            }),
+        })
+
+        const resumed = await recoveredManager.restart(created.session.id)
+        assert.equal(resumed.parentJob.checkpoint.optimizationRunId, "optimization-run-epoch-2")
+        for (const message of ["Continue candidate editing", "Review evaluation evidence", "Submit the Epoch decision"]) {
+            const completed = new Promise((resolve) => turnWaiters.push(resolve))
+            await recoveredManager.followUp(created.session.id, message)
+            await completed
+            await new Promise((resolve) => setImmediate(resolve))
+        }
+
+        const transcript = recoveredStore.getSession(created.session.id).transcript
+        assert.equal(runtimeTurns, 3)
+        assert.equal(transcript.some((entry) => entry.kind === "operator_iteration_started"), false)
+        assert.equal(transcript.some((entry) => entry.kind === "operator_iteration_limit_reached"), false)
+        assert.equal(recoveredManager.get(created.session.id).state, "idle")
+        recoveredStore.close()
+        initialStore.close()
+    })
+
     it("reconciles a running Evaluation by run ID and restores the untouched release gate", async () => {
         const {registryPath, created, evaluationJob, evaluation, release, approval} =
             await persistRecoveryTree()
