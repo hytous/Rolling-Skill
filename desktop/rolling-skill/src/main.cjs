@@ -1326,7 +1326,7 @@ async function listModelsForRuntimeFromControl(runtimeId) {
     try {
         await temporaryClient.start()
         return typeof temporaryClient.listModels === "function"
-            ? temporaryClient.listModels()
+            ? await temporaryClient.listModels()
             : {data: [], nextCursor: null}
     } finally {
         await temporaryClient.stop().catch(() => {})

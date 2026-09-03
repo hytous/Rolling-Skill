@@ -101,6 +101,42 @@ function rendererFunctionContext(startName, endName, globals = {}) {
 }
 
 describe("desktop main/preload bridge", () => {
+    it("keeps a temporary Runtime alive until its model catalog request settles", async () => {
+        let resolveModels
+        const calls = []
+        const models = new Promise((resolve) => { resolveModels = resolve })
+        const temporaryClient = {
+            async start() { calls.push("start") },
+            listModels() {
+                calls.push("listModels")
+                return models
+            },
+            async stop() { calls.push("stop") },
+        }
+        const context = mainFunctionContext(
+            "listModelsForRuntimeFromControl",
+            "controlScopeIds",
+            {
+                app: {getPath: () => "/tmp/rolling-skill-test"},
+                availableRuntimes: [{runtimeId: "runtime-secondary"}],
+                currentExecutionPolicy: () => ({}),
+                join,
+                requireIdentifier: (value) => String(value),
+                runtimeDescriptor: {runtimeId: "runtime-active"},
+                runtimeRegistry: {createClient: () => temporaryClient},
+                workspaceRoot: "/workspace/project",
+            },
+        )
+
+        const pending = context.listModelsForRuntimeFromControl("runtime-secondary")
+        await new Promise((resolve) => setImmediate(resolve))
+
+        assert.deepEqual(calls, ["start", "listModels"])
+        resolveModels({data: [{id: "model-1"}]})
+        assert.deepEqual(plain(await pending), {data: [{id: "model-1"}]})
+        assert.deepEqual(calls, ["start", "listModels", "stop"])
+    })
+
     it("registers the locally discovered DeepSeek Harness provider", () => {
         const main = source("src/main.cjs")
 
