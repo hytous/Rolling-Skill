@@ -179,18 +179,6 @@ function normalizedRegressionThresholds(value = {}) {
     }
 }
 
-function insufficientImprovementCount(history, scoreDelta, minimumImprovement) {
-    if (!Array.isArray(history)) throw new Error("Optimization history must be an array")
-    const deltas = history.map((entry) => entry?.scoreDelta).concat(scoreDelta)
-    let count = 0
-    for (let index = deltas.length - 1; index >= 0; index -= 1) {
-        const delta = deltas[index]
-        if (Number.isFinite(delta) && delta + SCORE_EPSILON >= minimumImprovement) break
-        count += 1
-    }
-    return count
-}
-
 function compareEvaluationRuns(input = {}) {
     const baselineIndex = indexEvaluation(input.baseline, "Baseline evaluation")
     if (!baselineIndex.size) throw new Error("Baseline evaluation must contain results")
@@ -222,29 +210,9 @@ function compareEvaluationRuns(input = {}) {
             ),
         }))
         .filter((entry) => entry.criticalFailures.length)
-    const target = requireObject(input.target, "Optimization target")
     const limits = requireObject(input.limits, "Optimization limits")
-    const minimumScore = finiteNumber(target.minimumScore, "Optimization minimum score", {maximum: 100})
-    const minimumPassRate = finiteNumber(
-        target.minimumPassRate,
-        "Optimization minimum pass rate",
-        {maximum: 1},
-    )
-    if (typeof target.requireCriticalCases !== "boolean") {
-        throw new Error("Optimization critical Case requirement must be boolean")
-    }
     const maxEpochs = optionalLimit(limits.maxEpochs, "Optimization max epochs", {integer: true})
-    const patience = optionalLimit(limits.patience, "Optimization patience", {integer: true})
-    const minimumImprovement = finiteNumber(
-        limits.minimumImprovement,
-        "Optimization minimum improvement",
-        {maximum: 100},
-    )
-    if (!maxEpochs || !patience) throw new Error("Optimization Epoch and patience limits are required")
-    const mode = String(input.mode ?? "")
-    if (mode !== "fixed" && mode !== "adaptive") {
-        throw new Error("Optimization mode must be fixed or adaptive")
-    }
+    if (!maxEpochs) throw new Error("Optimization max Epochs is required")
     if (!Number.isSafeInteger(input.epoch) || input.epoch < 1) {
         throw new Error("Optimization Epoch must be a positive integer")
     }
@@ -265,41 +233,15 @@ function compareEvaluationRuns(input = {}) {
         regressionThresholds.maximumRegressedResults !== null &&
         regressed.length > regressionThresholds.maximumRegressedResults
     ) broadRegressionReasons.push("regressed_results")
-    const consecutiveInsufficientImprovement = insufficientImprovementCount(
-        input.history ?? [],
-        scoreDelta,
-        minimumImprovement,
-    )
-    const progress = {
-        cancelRequested: input.progress?.cancelRequested === true,
-        recoveryFailed: input.progress?.recoveryFailed === true,
-        elapsedMs: optionalLimit(input.progress?.elapsedMs ?? 0, "Optimization elapsed time"),
-        turnsUsed: optionalLimit(input.progress?.turnsUsed ?? 0, "Optimization turns used", {integer: true}),
-        tokensUsed: optionalLimit(input.progress?.tokensUsed, "Optimization tokens used", {integer: true}),
-        costMicros: optionalLimit(input.progress?.costMicros, "Optimization cost used", {integer: true}),
-    }
     const analysis = {
         schemaVersion: OPTIMIZATION_ANALYSIS_SCHEMA,
         baselineEvaluationRunId: String(input.baseline.id ?? ""),
         previousEvaluationRunId: String(previousRun.id ?? ""),
         currentEvaluationRunId: String(input.current.id ?? ""),
-        mode,
         epoch: input.epoch,
-        target: {
-            minimumScore,
-            minimumPassRate,
-            requireCriticalCases: target.requireCriticalCases,
-        },
-        limits: {
-            maxEpochs,
-            maxDurationMs: optionalLimit(limits.maxDurationMs, "Optimization max duration"),
-            maxTurns: optionalLimit(limits.maxTurns, "Optimization max turns", {integer: true}),
-            maxTokens: optionalLimit(limits.maxTokens, "Optimization max tokens", {integer: true}),
-            maxCostMicros: optionalLimit(limits.maxCostMicros, "Optimization max cost", {integer: true}),
-            patience,
-            minimumImprovement,
-        },
-        progress,
+        limits: {maxEpochs},
+        cancelRequested: input.cancelRequested === true,
+        recoveryFailed: input.recoveryFailed === true,
         agentDecision: input.agentDecision ? {action: String(input.agentDecision.action ?? "")} : null,
         regressionThresholds,
         broadRegressionReasons,
@@ -323,14 +265,6 @@ function compareEvaluationRuns(input = {}) {
         newlyFailed,
         criticalFailures: currentSummary.criticalFailures,
         newCriticalFailures,
-        targetReached:
-            currentSummary.score !== null &&
-            currentSummary.score + SCORE_EPSILON >= minimumScore &&
-            currentSummary.passRate + SCORE_EPSILON >= minimumPassRate &&
-            (!target.requireCriticalCases || currentSummary.criticalFailures.length === 0),
-        consecutiveInsufficientImprovement,
-        patienceExhausted: mode === "adaptive" &&
-            consecutiveInsufficientImprovement >= patience,
     }
     return deepFreeze(analysis)
 }
@@ -341,27 +275,12 @@ function stop(action, reason, hardStop) {
 
 function evaluateStopRules(analysis) {
     requireObject(analysis, "Optimization analysis")
-    const progress = requireObject(analysis.progress, "Optimization progress")
     const limits = requireObject(analysis.limits, "Optimization limits")
-    if (progress.cancelRequested) return stop("restore", "cancel_requested", true)
-    if (progress.recoveryFailed) return stop("recover", "recovery_failed", true)
-    for (const [used, limit, reason] of [
-        [progress.elapsedMs, limits.maxDurationMs, "duration_budget_exhausted"],
-        [progress.turnsUsed, limits.maxTurns, "turn_budget_exhausted"],
-        [progress.tokensUsed, limits.maxTokens, "token_budget_exhausted"],
-        [progress.costMicros, limits.maxCostMicros, "cost_budget_exhausted"],
-    ]) {
-        if (limit !== null && limit !== undefined && used !== null && used >= limit) {
-            return stop("restore", reason, true)
-        }
-    }
+    if (analysis.cancelRequested) return stop("restore", "cancel_requested", true)
+    if (analysis.recoveryFailed) return stop("recover", "recovery_failed", true)
     if (analysis.newCriticalFailures?.length) return stop("restore", "critical_regression", true)
     if (analysis.broadRegression) return stop("restore", "broad_regression", true)
-    if (analysis.targetReached) return stop("finish", "target_achieved", true)
     if (analysis.epoch >= limits.maxEpochs) return stop("finish", "max_epochs_reached", true)
-    if (analysis.mode === "adaptive" && analysis.patienceExhausted) {
-        return stop("finish", "patience_exhausted", true)
-    }
     const action = analysis.agentDecision?.action ?? "continue"
     if (action === "finish") return stop("finish", "agent_finish", false)
     if (action === "pause") return stop("pause", "agent_pause", false)

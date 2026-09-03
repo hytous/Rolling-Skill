@@ -56,27 +56,8 @@ function comparison(overrides = {}) {
         baseline,
         previous,
         current,
-        mode: "adaptive",
         epoch: 1,
-        target: {minimumScore: 90, minimumPassRate: 1, requireCriticalCases: true},
-        limits: {
-            maxEpochs: 5,
-            maxDurationMs: 3_600_000,
-            maxTurns: 50,
-            maxTokens: null,
-            maxCostMicros: null,
-            patience: 2,
-            minimumImprovement: 1,
-        },
-        progress: {
-            cancelRequested: false,
-            recoveryFailed: false,
-            elapsedMs: 1_000,
-            turnsUsed: 2,
-            tokensUsed: null,
-            costMicros: null,
-        },
-        history: [],
+        limits: {maxEpochs: 5},
         agentDecision: {action: "continue"},
         ...overrides,
     })
@@ -156,10 +137,8 @@ describe("deterministic Optimization analysis", () => {
             current: evaluation("current", [result("case-1", "runtime-a", 85, {
                 criticalFailures: ["must-use-skill"],
             })]),
-            target: {minimumScore: 80, minimumPassRate: 1, requireCriticalCases: true},
         })
         assert.deepEqual(critical.newCriticalFailures[0].criticalFailures, ["must-use-skill"])
-        assert.equal(critical.targetReached, false)
         assert.equal(evaluateStopRules(critical).reason, "critical_regression")
 
         const broadPrevious = evaluation("previous", [result("case-1", "runtime-a", 90)])
@@ -172,71 +151,48 @@ describe("deterministic Optimization analysis", () => {
         assert.equal(evaluateStopRules(broad).reason, "broad_regression")
     })
 
-    it("applies cancellation, recovery, and hard budget precedence", () => {
-        const base = comparison({
-            target: {minimumScore: 0, minimumPassRate: 0, requireCriticalCases: false},
-        })
-        assert.equal(evaluateStopRules({...base, progress: {
-            ...base.progress,
+    it("applies cancellation and recovery precedence", () => {
+        const base = comparison()
+        assert.equal(evaluateStopRules({...base,
             cancelRequested: true,
             recoveryFailed: true,
-            elapsedMs: 9_000_000,
-        }}).reason, "cancel_requested")
-        assert.equal(evaluateStopRules({...base, progress: {
-            ...base.progress,
+        }).reason, "cancel_requested")
+        assert.equal(evaluateStopRules({...base,
             recoveryFailed: true,
-        }}).reason, "recovery_failed")
-
-        for (const [field, used, limitField, limit, reason] of [
-            ["elapsedMs", 100, "maxDurationMs", 100, "duration_budget_exhausted"],
-            ["turnsUsed", 5, "maxTurns", 5, "turn_budget_exhausted"],
-            ["tokensUsed", 500, "maxTokens", 500, "token_budget_exhausted"],
-            ["costMicros", 700, "maxCostMicros", 700, "cost_budget_exhausted"],
-        ]) {
-            const analysis = comparison({
-                target: {minimumScore: 100, minimumPassRate: 1, requireCriticalCases: true},
-                limits: {...base.limits, [limitField]: limit},
-                progress: {...base.progress, [field]: used},
-            })
-            assert.equal(evaluateStopRules(analysis).reason, reason)
-        }
+        }).reason, "recovery_failed")
     })
 
-    it("stops on target, maximum Epoch, adaptive patience, or an Agent finish/pause decision", () => {
-        const target = comparison({
-            target: {minimumScore: 80, minimumPassRate: 0.75, requireCriticalCases: true},
-        })
-        assert.equal(target.targetReached, true)
-        assert.equal(evaluateStopRules(target).reason, "target_achieved")
-
-        for (const mode of ["fixed", "adaptive"]) {
-            const maximum = comparison({mode, epoch: 5})
-            assert.equal(evaluateStopRules(maximum).reason, "max_epochs_reached")
-        }
-
-        const lowGainPrevious = evaluation("previous", [result("case-1", "runtime-a", 70)])
-        const lowGainCurrent = evaluation("current", [result("case-1", "runtime-a", 70.2)])
-        const patient = comparison({
-            baseline: lowGainPrevious,
-            previous: lowGainPrevious,
-            current: lowGainCurrent,
-            history: [{scoreDelta: 0.2}],
-        })
-        assert.equal(patient.consecutiveInsufficientImprovement, 2)
-        assert.equal(evaluateStopRules(patient).reason, "patience_exhausted")
-        assert.equal(evaluateStopRules(comparison({
-            mode: "fixed",
-            baseline: lowGainPrevious,
-            previous: lowGainPrevious,
-            current: lowGainCurrent,
-            history: [{scoreDelta: 0.2}],
-        })).reason, "continue")
+    it("stops only at the Epoch boundary or when the Agent chooses finish or pause", () => {
+        assert.equal(evaluateStopRules(comparison({epoch: 5})).reason, "max_epochs_reached")
         assert.equal(evaluateStopRules(comparison({
             agentDecision: {action: "finish"},
         })).reason, "agent_finish")
         assert.equal(evaluateStopRules(comparison({
             agentDecision: {action: "pause"},
         })).reason, "agent_pause")
+    })
+
+    it("ignores duration, Agent-turn usage, low gains, and target-like inputs", () => {
+        const lowGainPrevious = evaluation("previous", [result("case-1", "runtime-a", 70)])
+        const lowGainCurrent = evaluation("current", [result("case-1", "runtime-a", 70.2)])
+        const analysis = comparison({
+            baseline: lowGainPrevious,
+            previous: lowGainPrevious,
+            current: lowGainCurrent,
+            target: {minimumScore: 100, minimumPassRate: 1, requireCriticalCases: true},
+            history: [{scoreDelta: 0.2}, {scoreDelta: 0.1}],
+            progress: {elapsedMs: 9_000_000, turnsUsed: 500, tokensUsed: 1_000_000},
+        })
+
+        assert.equal(evaluateStopRules(analysis).reason, "continue")
+        for (const field of [
+            "mode",
+            "target",
+            "progress",
+            "targetReached",
+            "consecutiveInsufficientImprovement",
+            "patienceExhausted",
+        ]) assert.equal(Object.hasOwn(analysis, field), false, field)
     })
 
     it("rejects duplicate or foreign Case × Runtime keys instead of comparing unlike snapshots", () => {
