@@ -163,6 +163,7 @@ describe("Codex runtime provider", () => {
             "sandbox-policy",
             "turns",
             "models",
+            "reasoning-effort",
             "skills",
             "plugins",
             "streaming",

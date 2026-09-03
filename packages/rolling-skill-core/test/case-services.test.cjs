@@ -118,6 +118,7 @@ function fixture() {
             dispatchRawCase: async () => ({sessionId: "thread-1", status: "queued"}),
         }),
         refreshes,
+        refreshManager,
         recycled,
         rawDispatches,
         rawDeletes,
@@ -204,6 +205,18 @@ describe("Rolling Skill Case services", () => {
             skipped: [{caseId: "case-1", reason: "refresh-in-progress"}],
             sessions: [{id: "refresh-case-3", operation: "refresh", targetCaseId: "case-3"}],
         })
+    })
+
+    it("retains already created batch Drafts when a later Case replay fails", async () => {
+        const test = fixture()
+        const create = test.refreshManager.createSession
+        test.refreshManager.createSession = async (input) => {
+            if (input.caseId === "case-2") throw new Error("Runtime unavailable")
+            return create(input)
+        }
+        const result = await test.services.dispatch("cases.refreshBatch", {datasetId: "dataset-1", scope: "all", idempotencyKey: "partial"})
+        assert.deepEqual(result.sessions.map((session) => session.id), ["refresh-case-3"])
+        assert.deepEqual(result.failures, [{caseId: "case-2", error: "Runtime unavailable"}])
     })
 
     it("exports CSV and dispatches or recycles Raw Cases", async () => {

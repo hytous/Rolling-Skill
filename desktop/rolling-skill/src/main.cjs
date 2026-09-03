@@ -2357,7 +2357,7 @@ function optimizationVersionLabel(runId, epoch) {
     return `opt-${safeRun}-e${epoch}`.slice(0, 64)
 }
 
-async function requestOptimizationApproval(input) {
+async function requestOptimizationApproval(input, onPending = null) {
     const kind = requireIdentifier(input.kind, "Optimization approval kind")
     const parentJobId = requireIdentifier(input.parentJobId, "Optimization parent Job")
     const versionId = input.candidate?.id ?? input.versionId ?? null
@@ -2370,6 +2370,7 @@ async function requestOptimizationApproval(input) {
     }
     const risks = {
         limit: "Expand a frozen Optimization hard limit",
+        "release-install": "Release the selected immutable Optimization Candidate and install it on every frozen target Runtime",
         release: "Release the selected immutable Optimization Candidate",
         install: "Install the approved Released Skill on every selected Runtime",
     }
@@ -2381,10 +2382,10 @@ async function requestOptimizationApproval(input) {
         idempotencyKey: [input.runId, kind, input.epoch, versionId ?? input.request?.field]
             .filter((value) => value !== null && value !== undefined)
             .join(":"),
-    })
+    }, {onPending})
     return {
         ...approval,
-        ...(kind === "release" ? {
+        ...(kind === "release" || kind === "release-install" ? {
             versionLabel: optimizationVersionLabel(input.runId, input.epoch),
         } : {}),
     }
@@ -2451,7 +2452,15 @@ function initializeOptimizationRuntime() {
         installationManager: skillInstallationManager,
         evaluationManager: {run: runOptimizationEvaluation},
         operatorGateway: optimizationOperatorGateway,
-        approvals: {request: requestOptimizationApproval},
+        approvals: {
+            request: requestOptimizationApproval,
+            reject: (approvalId) => operatorJobEngine.resolveApproval(approvalId, {
+                decision: "reject",
+                scope: "optimization_cancel",
+                decidedBy: "optimization-runner",
+            }),
+            suspend: (approvalId) => operatorJobEngine.suspendApprovalWaiter(approvalId),
+        },
         releaseManager: {release: releaseOptimizationCandidate},
         telemetry: optimizationTelemetry,
         onChanged: (update) => send("optimization:changed", update),
@@ -3588,7 +3597,7 @@ async function shutdownApplication() {
     await stage("Automatic capture", () => automaticCaptureManager?.stop())
     await stage("Optimization Runner", () => optimizationRunner?.checkpointAndStop?.())
     await stage("Optimization gateway", () => optimizationOperatorGateway?.cancelAll?.())
-    await stage("Operator", () => operatorSessionManager?.stopAll?.())
+    await stage("Operator", () => operatorSessionManager?.stopAll?.({preserveWaitingApprovals: true}))
     await stage("Optimization Runner idle", () => optimizationRunner?.waitForIdle?.())
     await stage("Evaluation", () => evaluationRunner?.stopAll?.())
     await stage("Skill installation", () => skillInstallationManager?.stopAll?.())

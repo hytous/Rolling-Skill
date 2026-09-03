@@ -157,7 +157,7 @@ class RubricManager {
             let session = this.store.getRubricSession(sessionId)
             if (session.status === "cancelled") return session
             this.emitActivity(session, {stage: "starting", summary: "Reading frozen Skill evidence"})
-            const runtime = await this.getRuntime()
+            const runtime = await this.getRuntime(session.rubricAgent.runtimeId)
             const response = await runtime.startThread({
                 sandbox: "read-only",
                 approvalPolicy: "never",
@@ -357,7 +357,7 @@ class RubricManager {
         this.emitChanged(session)
         this.emitActivity(session, {stage: "starting", summary: "Applying review message"})
         try {
-            const runtime = await this.getRuntime()
+            const runtime = await this.getRuntime(session.rubricAgent.runtimeId)
             await runtime.resumeThread(session.rubricAgent.threadId, {
                 approvalPolicy: "never",
                 sandbox: "read-only",
@@ -418,7 +418,7 @@ class RubricManager {
         this.emitActivity(discarded, {stage: "cancelled", terminal: true})
         if (current.rubricAgent.threadId) {
             try {
-                const runtime = await this.getRuntime()
+                const runtime = await this.getRuntime(current.rubricAgent.runtimeId)
                 if (current.rubricAgent.currentTurnId) {
                     await runtime.interruptTurn(
                         current.rubricAgent.threadId,
@@ -439,7 +439,7 @@ class RubricManager {
         this.emitChanged(session)
         if (session.rubricAgent.threadId) {
             try {
-                const runtime = await this.getRuntime()
+                const runtime = await this.getRuntime(session.rubricAgent.runtimeId)
                 await runtime.archiveThread(session.rubricAgent.threadId)
             } catch {
                 // Publishing is a local atomic commit and must not be rolled back by runtime cleanup.

@@ -98,10 +98,23 @@ function fixture({mode = "off", executionLocation = "while-harness-running"} = {
         manager,
         now: () => new Date("2026-08-26T09:05:00.000Z"),
     })
-    return {calls, configStore, runtime, service, settingUpdates, settings}
+    return {calls, configStore, runtime, service, settingUpdates, settings, manager}
 }
 
 describe("Rolling Skill automatic capture composition", () => {
+    it("acknowledges a browser scan immediately, exposes running state, and rejects duplicate starts", async () => {
+        const {runtime, service, manager} = fixture()
+        service.update({mode: "scheduled", executionLocation: "while-harness-running", runtimeId: runtime.runtimeId,
+            cadence: "daily", time: "09:00", weekday: 1, modelId: "saved", effort: "high"})
+        let finish
+        manager.runSlot = () => new Promise((resolve) => {finish = resolve})
+        assert.equal((await service.runOnce({wait: false})).status, "running")
+        assert.equal(service.status().running, true)
+        assert.equal((await service.runOnce({wait: false})).status, "busy")
+        finish()
+        await new Promise((resolve) => setImmediate(resolve))
+        assert.equal(service.status().running, false)
+    })
     it("updates scheduled daily and weekly profiles with a Host-owned full Runtime identity", () => {
         const {configStore, runtime, service, settingUpdates} = fixture()
         const daily = service.update({
@@ -117,7 +130,7 @@ describe("Rolling Skill automatic capture composition", () => {
         })
         assert.equal(daily.mode, "scheduled")
         assert.equal(daily.schedule.time, "08:30")
-        assert.deepEqual(configStore.read().runtime, runtime)
+        assert.deepEqual(configStore.read().detectionRuntime, runtime)
 
         const weekly = service.update({
             mode: daily.mode,
@@ -195,14 +208,14 @@ describe("Rolling Skill automatic capture composition", () => {
         assert.deepEqual(calls.filter(([kind]) => ["recover", "runSlot", "curation"].includes(kind)).map(([kind]) => kind), ["recover", "runSlot", "curation"])
     })
 
-    it("starts Host timers only while Harness owns execution", () => {
+    it("lets the single owning Host schedule both foreground and always-on capture", () => {
         const host = fixture({mode: "scheduled"})
         host.service.startHostSchedule()
         assert.equal(host.calls.some(([kind]) => kind === "start"), true)
 
         const worker = fixture({mode: "scheduled", executionLocation: "always"})
         worker.service.startHostSchedule()
-        assert.deepEqual(worker.calls, [["stop"], ["recover"]])
+        assert.deepEqual(worker.calls, [["start"], ["recover"]])
     })
 
     it("fails closed before changing settings when the selected Runtime is unavailable", () => {
@@ -238,12 +251,28 @@ describe("Rolling Skill automatic capture composition", () => {
             datasetId: null,
         })
 
-        assert.deepEqual(configStore.read().runtime, {
+        assert.deepEqual(configStore.read().detectionRuntime, {
             providerId: runtime.providerId,
             runtimeId: runtime.runtimeId,
             displayName: runtime.displayName,
             version: runtime.version,
             executablePath: runtime.executablePath,
         })
+    })
+
+    it("keeps Case detection and source selection independent from the saved Curator Runtime", () => {
+        const {configStore, runtime, service, settings} = fixture()
+        const curatorRuntime = {providerId: "codex", runtimeId: "codex:/opt/codex", executablePath: "/opt/codex"}
+        configStore.update({runtime: curatorRuntime})
+        settings.curatorProfile = {modelId: "saved-curator-model", effort: "high"}
+        const result = service.update({mode: "scheduled", executionLocation: "while-harness-running",
+            cadence: "daily", time: "09:00", weekday: 1,
+            runtimeId: runtime.runtimeId, sourceRuntimeId: runtime.runtimeId,
+            modelId: "saved-detection-model", effort: "max", datasetId: null})
+        assert.deepEqual(configStore.read().runtime, curatorRuntime)
+        assert.deepEqual(result.sourceRuntime, runtime)
+        assert.deepEqual(result.runtime, runtime)
+        assert.deepEqual(result.curatorRuntime, curatorRuntime)
+        assert.deepEqual(settings.curatorProfile, {modelId: "saved-curator-model", effort: "high"})
     })
 })

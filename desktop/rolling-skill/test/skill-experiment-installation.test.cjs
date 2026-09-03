@@ -370,6 +370,10 @@ describe("Optimization Candidate experiment installation", () => {
         assert.match(install, /previous Candidate digest/u)
         assert.match(install, /rolling-skill-experiment\/v1/u)
         assert.match(install, /exclude.*\.rolling-skill-experiment\.json/iu)
+        assert.match(install, /Do not search controller stores, historical conversations, traces, or application source code/u)
+        assert.match(install, /do not retype or guess UUIDs or paths/u)
+        assert.match(install, /Preserve the existing ordinary management marker unchanged/u)
+        assert.match(install, /If the frozen repository path does not exist, stop/u)
 
         const remove = buildSkillInstallationPrompt(experimentRequest({
             operation: "experiment_remove",
@@ -392,6 +396,11 @@ describe("Optimization Candidate experiment installation", () => {
         assert.match(preflight, /"mutationPerformed": false/u)
         assert.match(preflight, /"markerBefore": null/u)
         assert.match(preflight, /"markerAfter": null/u)
+        const example = JSON.parse(preflight.split(INSTALL_RESULT_SENTINEL.open)[1].split(INSTALL_RESULT_SENTINEL.close)[0])
+        assert.equal(example.result.actualDigest, facts.baseline.contentDigest, "preflight reports installed baseline, not the uninstalled candidate")
+        assert.equal(example.result.markerWritten, true, "the example must match the parser's existing-marker semantics")
+        assert.equal(example.result.beforeDigest, facts.baseline.contentDigest)
+        assert.ok(example.destination?.startsWith("/"))
     })
 
     it("derives a read-only recovery inspection instead of replaying a cancelled mutation", () => {

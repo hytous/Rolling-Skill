@@ -154,14 +154,19 @@ function createCaseServices({store, rawCaseStore, recycleService, refreshManager
                 }
             }
             const sessions = []
+            const failures = []
             for (const entry of eligible) {
-                sessions.push(await requireRefreshManager().createSession({
-                    datasetId,
-                    caseId: entry.id,
-                    runtimeId: optionalRuntimeId(input.runtimeId),
-                }))
+                try {
+                    sessions.push(await requireRefreshManager().createSession({
+                        datasetId,
+                        caseId: entry.id,
+                        runtimeId: optionalRuntimeId(input.runtimeId),
+                    }))
+                } catch (error) {
+                    failures.push({caseId: entry.id, error: error?.message ?? String(error)})
+                }
             }
-            return {scope, eligibleCount: eligible.length, skipped, sessions}
+            return {scope, eligibleCount: eligible.length, skipped, sessions, ...(failures.length ? {failures} : {})}
         }),
         "datasets.delete": (input) => once("datasets.delete", input, () => {
             const datasetId = requiredText(input.datasetId, "Dataset id", 200)

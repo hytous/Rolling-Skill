@@ -6,13 +6,12 @@ import {requestRollingSkill} from "../api"
 import type {Translate, TranslationKey} from "../locale"
 import {ModelEffortSelect} from "./ModelEffortSelect"
 import type {RuntimeModel} from "./ModelEffortSelect"
-import {resolveModelId, resolveReasoningEffort} from "./model-catalog.cjs"
 import {
     candidateDatasetOptions,
     candidateSkillRows,
 } from "./automatic-capture-view-model.cjs"
-import {RuntimeSelect} from "./RuntimeSelect"
 import type {RuntimeDescriptor} from "./RuntimeSelect"
+import {usePollingRevision} from "./usePollingRevision"
 
 interface SkillReference {id?: string; name?: string}
 interface Dataset {
@@ -31,6 +30,8 @@ interface AutomaticStatus {
     executionLocation: "while-harness-running" | "always"
     schedule: {cadence: "daily" | "weekly"; time: string; weekday: number}
     runtime: RuntimeDescriptor | null
+    sourceRuntime: RuntimeDescriptor | null
+    curatorRuntime: RuntimeDescriptor | null
     modelId: string | null
     effort: string | null
     datasetId: string | null
@@ -39,7 +40,9 @@ interface AutomaticStatus {
     lastSuccessAt: string | null
     error: string | null
     pendingCount: number
+    curationPendingCount?: number
     running: boolean
+    progress?: {stage: string; startedAt: string; totalThreads: number; completedThreads: number; analysisCount: number} | null
     worker: {enabled: boolean; installed: boolean; platform: string | null; lastRegistrationError: string | null}
     scheduler: {supported: boolean; installed: boolean; platform: string; error?: string | null}
 }
@@ -76,18 +79,31 @@ export function AutomaticCapturePanel({t}: {t: Translate}) {
     const [time, setTime] = useState("09:00")
     const [weekday, setWeekday] = useState(1)
     const [runtimeId, setRuntimeId] = useState("")
+    const [sourceRuntimeId, setSourceRuntimeId] = useState("")
     const [modelId, setModelId] = useState("")
     const [effort, setEffort] = useState("")
-    const [configuredModelId, setConfiguredModelId] = useState("")
-    const [configuredEffort, setConfiguredEffort] = useState("")
     const [modelCatalogRevision, setModelCatalogRevision] = useState(0)
     const [candidateTargets, setCandidateTargets] = useState<CaptureTarget[]>([])
     const [busy, setBusy] = useState(false)
+    const [initialized, setInitialized] = useState(false)
+    const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
+    const [statusError, setStatusError] = useState<string | null>(null)
     const [revision, setRevision] = useState(0)
+    const [pollRevision] = usePollingRevision(true, 3_000)
+
+    useEffect(() => {
+        if (!pollRevision) return
+        const controller = new AbortController()
+        requestRollingSkill<AutomaticStatus>("automatic.status", {}, controller.signal)
+            .then((next) => {if (!controller.signal.aborted) {setStatus(next); setStatusError(null)}})
+            .catch((reason) => {if (!controller.signal.aborted) setStatusError(reason instanceof Error ? reason.message : t("loadError"))})
+        return () => controller.abort()
+    }, [pollRevision])
 
     useEffect(() => {
         const controller = new AbortController()
+        setLoading(true)
         Promise.all([
             requestRollingSkill<AutomaticStatus>("automatic.status", {}, controller.signal),
             requestRollingSkill<RuntimeDescriptor[]>("runtimes.list", {}, controller.signal),
@@ -95,6 +111,7 @@ export function AutomaticCapturePanel({t}: {t: Translate}) {
             requestRollingSkill<Catalog>("skills.catalog", {}, controller.signal),
             requestRollingSkill<RollingSettings>("settings.get", {}, controller.signal),
         ]).then(([nextStatus, runtimeItems, datasetItems, nextCatalog, settings]) => {
+            if (controller.signal.aborted) return
             setStatus(nextStatus)
             setRuntimes(runtimeItems)
             setDatasets(datasetItems)
@@ -105,9 +122,10 @@ export function AutomaticCapturePanel({t}: {t: Translate}) {
             setCadence(nextStatus.schedule.cadence)
             setTime(nextStatus.schedule.time)
             setWeekday(nextStatus.schedule.weekday)
-            setRuntimeId(nextStatus.runtime?.runtimeId || runtimeItems[0]?.runtimeId || "")
-            setConfiguredModelId(nextStatus.modelId || "")
-            setConfiguredEffort(nextStatus.effort || "")
+            setRuntimeId(nextStatus.runtime?.runtimeId || "")
+            setSourceRuntimeId((nextStatus.sourceRuntime ?? nextStatus.runtime)?.runtimeId || "")
+            setModelId(nextStatus.modelId || "")
+            setEffort(nextStatus.effort || "")
             setModelCatalogRevision((value) => value + 1)
             const migratedTarget = nextStatus.datasetId
                 ? datasetItems.find((dataset) => dataset.id === nextStatus.datasetId && dataset.skillReference?.id)
@@ -117,24 +135,23 @@ export function AutomaticCapturePanel({t}: {t: Translate}) {
                 : migratedTarget?.skillReference?.id
                     ? [{skillId: migratedTarget.skillReference.id, datasetId: migratedTarget.id}]
                     : [])
+            setInitialized(true)
+            setError(null)
         }).catch((reason: unknown) => {
             if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"))
+        }).finally(() => {
+            if (!controller.signal.aborted) setLoading(false)
         })
         return () => controller.abort()
     }, [revision])
 
     useEffect(() => {
         setModels([])
-        setModelId("")
-        setEffort("")
         if (!runtimeId) return
         const controller = new AbortController()
         requestRollingSkill<RuntimeModel[]>("runtimes.models", {runtimeId}, controller.signal)
             .then((items) => {
-                const selectedModelId = resolveModelId(items, configuredModelId)
-                setModels(items)
-                setModelId(selectedModelId)
-                setEffort(resolveReasoningEffort(items, selectedModelId, configuredEffort))
+                if (!controller.signal.aborted) setModels(items)
             })
             .catch((reason: unknown) => {
                 if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t("loadError"))
@@ -161,6 +178,7 @@ export function AutomaticCapturePanel({t}: {t: Translate}) {
             time,
             weekday,
             runtimeId: runtimeId || null,
+            sourceRuntimeId: sourceRuntimeId || null,
             modelId: modelId || null,
             effort: effort || null,
             datasetId: null,
@@ -177,7 +195,7 @@ export function AutomaticCapturePanel({t}: {t: Translate}) {
     })
     const runOnce = () => mutate(async () => {
         await updateAutomaticSettings()
-        await requestRollingSkill("automatic.runOnce", {slot: "manual"})
+        await requestRollingSkill("automatic.runOnce", {slot: "manual", wait: false})
     })
     const enableScheduler = () => mutate(async () => {
         await updateAutomaticSettings()
@@ -188,6 +206,7 @@ export function AutomaticCapturePanel({t}: {t: Translate}) {
     const schedulerInstalled = status?.scheduler.installed ?? status?.worker.installed ?? false
     const [hour = "09", minute = "00"] = time.split(":")
     const curatorProfileSummary = [
+        status?.curatorRuntime?.displayName,
         curatorProfile.modelId || t("runtimeDefault"),
         curatorProfile.effort ? `${t("effort")}: ${curatorProfile.effort}` : null,
     ].filter(Boolean).join(" · ")
@@ -215,6 +234,16 @@ export function AutomaticCapturePanel({t}: {t: Translate}) {
         !target.datasetId || !availableDatasets(target.skillId).some((dataset) => dataset.id === target.datasetId)
     ))
     const visibleCandidateSkills = candidateSkillRows(catalog.skills, candidateTargets) as SkillEntry[]
+    const runtimeOptions = (selected: string) => <>
+        <option value="">{t("selectRuntime")}</option>
+        {selected && !runtimes.some((runtime) => runtime.runtimeId === selected) ? <option value={selected}>{selected}</option> : null}
+        {runtimes.map((runtime) => <option key={runtime.runtimeId} value={runtime.runtimeId}>{runtime.displayName} {runtime.version}</option>)}
+    </>
+    const missingRuntime = !runtimeId || !sourceRuntimeId
+
+    if (!initialized) return <section className="rolling-skill-panel"><h3>{t("automaticTitle")}</h3>{error
+        ? <><p role="alert">{error}</p><Button disabled={loading} onClick={() => setRevision((value) => value + 1)}>{t("retry")}</Button></>
+        : <p role="status">{t("loading")}</p>}</section>
 
     return (
         <div className="rolling-skill-data-stack">
@@ -230,10 +259,14 @@ export function AutomaticCapturePanel({t}: {t: Translate}) {
                     {cadence === "weekly" ? <label className="rolling-skill-field"><span>{t("weekday")}</span><select className="rolling-skill-select" value={weekday} onChange={(event) => setWeekday(Number(event.target.value))}>{WEEKDAY_KEYS.map((key, day) => <option key={key} value={day}>{t(key)}</option>)}</select></label> : null}
                 </div>
                 {executionLocation === "always" ? <p className="rolling-skill-help rolling-skill-scheduler-explanation">{t("schedulerExplanation")}</p> : null}
-                <RuntimeSelect t={t} runtimes={runtimes} value={runtimeId} onChange={setRuntimeId} label={t("automaticRuntime")}/>
+                <div className="rolling-skill-grid">
+                    <label className="rolling-skill-field"><span>{t("automaticSourceRuntime")}</span><select className="rolling-skill-select" value={sourceRuntimeId} onChange={(event) => setSourceRuntimeId(event.target.value)}>{runtimeOptions(sourceRuntimeId)}</select></label>
+                    <label className="rolling-skill-field"><span>{t("automaticRuntime")}</span><select className="rolling-skill-select" value={runtimeId} onChange={(event) => setRuntimeId(event.target.value)}>{runtimeOptions(runtimeId)}</select></label>
+                </div>
+                <p className="rolling-skill-help">{t("automaticRuntimeRoles")}</p>
                 <p className="rolling-skill-automatic-flow-summary">{t("automaticFlowSummaryPrefix")}<strong>{curatorProfileSummary}</strong>{t("automaticFlowSummarySuffix")}</p>
                 <div className="rolling-skill-grid">
-                    <label className="rolling-skill-field"><span>{t("automaticDetectionModel")}</span><select className="rolling-skill-select" value={modelId} onChange={(event) => setModelId(event.target.value)}>{models.map((model) => {const id = model.id ?? model.model ?? ""; return <option key={id} value={id}>{model.displayName ?? id}</option>})}</select></label>
+                    <label className="rolling-skill-field"><span>{t("automaticDetectionModel")}</span><select className="rolling-skill-select" value={modelId} onChange={(event) => setModelId(event.target.value)}><option value="">{t("runtimeDefault")}</option>{modelId && !models.some((model) => (model.id ?? model.model) === modelId) ? <option value={modelId}>{modelId}</option> : null}{models.map((model) => {const id = model.id ?? model.model ?? ""; return <option key={id} value={id}>{model.displayName ?? id}</option>})}</select></label>
                     <ModelEffortSelect label={t("automaticDetectionEffort")} runtimeDefaultLabel={t("runtimeDefault")} models={models} modelId={modelId} value={effort} onChange={setEffort}/>
                 </div>
                 <fieldset className="rolling-skill-candidate-targets">
@@ -253,8 +286,18 @@ export function AutomaticCapturePanel({t}: {t: Translate}) {
                     </div>
                 </fieldset>
                 <p className="rolling-skill-help">{mode === "scheduled" ? t("scheduledBehavior") : mode === "automatic" ? t("automaticBehavior") : t("offBehavior")}</p>
-                {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
-                <div className="rolling-skill-form-actions"><div className="rolling-skill-actions"><Button disabled={busy || mode === "off" || !runtimeId || invalidCandidateTargets} onClick={() => void runOnce()}>{t("runOnce")}</Button>{executionLocation === "always" ? schedulerInstalled ? <Button disabled={busy} onClick={() => void disableScheduler()}>{t("disableScheduler")}</Button> : <Button disabled={busy || mode === "off" || !runtimeId || invalidCandidateTargets || !status?.scheduler.supported} onClick={() => void enableScheduler()}>{t("enableScheduler")}</Button> : null}</div><Button tone="primary" disabled={busy || (requiresRuntime && !runtimeId) || invalidCandidateTargets} onClick={() => void save()}>{t("saveAutomatic")}</Button></div>
+                {status?.running ? <div role="status"><p>{t("automaticScanning")}</p>{status.progress ? <p className="rolling-skill-help">{t(status.progress.stage === "boundary" ? "automaticBoundaryStage" : status.progress.stage === "outcome" ? "automaticOutcomeStage" : "automaticReadingStage")} · {t("automaticCheckedThreads")} {status.progress.completedThreads}/{status.progress.totalThreads} · {t("automaticAnalysisCount")} {status.progress.analysisCount} · {t("automaticStartedAt")} {displayTime(status.progress.startedAt, t("notAvailable"))}</p> : null}</div> : null}
+                {Boolean(status?.curationPendingCount) ? <p role="status">{t("automaticCurating")} {status?.curationPendingCount}</p> : null}
+                {error || statusError ? <p className="rolling-skill-inline-error" role="alert">{error || statusError}</p> : null}
+                <div className="rolling-skill-form-actions">
+                    <div className="rolling-skill-actions">
+                        <Button disabled={loading || busy || status?.running || mode === "off" || missingRuntime || invalidCandidateTargets} onClick={() => void runOnce()}>{t("runOnce")}</Button>
+                        {executionLocation === "always" ? schedulerInstalled
+                            ? <Button disabled={loading || busy} onClick={() => void disableScheduler()}>{t("disableScheduler")}</Button>
+                            : <Button disabled={loading || busy || status?.running || mode === "off" || missingRuntime || invalidCandidateTargets || !status?.scheduler.supported} onClick={() => void enableScheduler()}>{t("enableScheduler")}</Button> : null}
+                    </div>
+                    <Button tone="primary" disabled={loading || busy || status?.running || (requiresRuntime && missingRuntime) || invalidCandidateTargets} onClick={() => void save()}>{t("saveAutomatic")}</Button>
+                </div>
             </section>
             <section className="rolling-skill-panel"><h3>{t("automaticStatus")}</h3><dl><div><dt>{t("nextRun")}</dt><dd>{displayTime(status?.nextRunAt ?? null, t("notAvailable"))}</dd></div><div><dt>{t("lastSuccess")}</dt><dd>{displayTime(status?.lastSuccessAt ?? null, t("notAvailable"))}</dd></div><div><dt>{t("pendingRawCases")}</dt><dd>{status?.pendingCount ?? 0}</dd></div><div><dt>{t("schedulerStatus")}</dt><dd>{executionLocation === "always" ? schedulerInstalled ? t("installed") : t("notInstalled") : t("harnessTimer")}</dd></div><div><dt>{t("lastError")}</dt><dd>{status?.error || status?.scheduler.error || status?.worker.lastRegistrationError || t("noError")}</dd></div></dl></section>
         </div>

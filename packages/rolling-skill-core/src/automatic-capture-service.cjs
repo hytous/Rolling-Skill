@@ -64,21 +64,23 @@ function createAutomaticCaptureService({
     clearTimer,
     onChanged = () => {},
     onError = () => {},
+    signal = null,
 } = {}) {
     if (!store || !configStore || !runtimeServices) {
         throw new Error("Automatic capture service dependencies are required")
     }
 
-    function runtimeDescriptor() {
-        const selected = configStore.read().runtime
+    function runtimeDescriptor(role = "captureRuntime") {
+        const plugin = configStore.read()
+        const selected = plugin[role] ?? plugin.runtime
         if (!selected?.runtimeId) {
             throw new Error("Select a Runtime before running automatic capture")
         }
         return runtimeServices.descriptor(selected.runtimeId)
     }
 
-    async function runtimeClient() {
-        const descriptor = runtimeDescriptor()
+    async function runtimeClient(role = "captureRuntime") {
+        const descriptor = runtimeDescriptor(role)
         return runtimeServices.getClient(descriptor.runtimeId, {nonInteractive: true})
     }
 
@@ -87,8 +89,8 @@ function createAutomaticCaptureService({
         stateStore,
         rawCaseStore,
         curationManager,
-        getRuntime: runtimeClient,
-        getRuntimeDescriptor: runtimeDescriptor,
+        getRuntime: () => runtimeClient(),
+        getRuntimeDescriptor: () => runtimeDescriptor(),
         listDatasets,
         captureEpisode,
         saveEvidence,
@@ -99,18 +101,22 @@ function createAutomaticCaptureService({
                 .filter((skill) => skill.enabled !== false)
         }),
         runAnalysis: async (input) => {
-            const runtime = await runtimeClient()
+            const runtime = await runtimeClient("detectionRuntime")
             if (typeof runtime.runEvaluationJudge !== "function") {
                 throw new Error("Selected Runtime cannot run automatic capture analysis")
             }
             return runtime.runEvaluationJudge(input)
         },
         getHiddenThreadIds,
+        waitForCurationOnScan: true,
         now,
         ...(setTimer ? {setTimer} : {}),
         ...(clearTimer ? {clearTimer} : {}),
         onStatus: onChanged,
-        onError,
+        onError: (error) => {
+            stateStore?.failSlot?.(error, now())
+            onError(error)
+        },
     })
     let hostStarted = false
     let running = null
@@ -120,6 +126,7 @@ function createAutomaticCaptureService({
         const plugin = configStore.read()
         return {
             ...captureManager.status(),
+            running: Boolean(running) || captureManager.status().running,
             mode: profile.mode,
             schedule: structuredClone(profile.schedule),
             modelId: profile.modelId,
@@ -127,12 +134,17 @@ function createAutomaticCaptureService({
             datasetId: profile.datasetId,
             targets: structuredClone(profile.targets ?? []),
             executionLocation: plugin.executionLocation,
-            runtime: plugin.runtime,
+            runtime: plugin.detectionRuntime ?? plugin.runtime,
+            sourceRuntime: plugin.captureRuntime ?? plugin.runtime,
+            curatorRuntime: plugin.runtime,
             worker: plugin.worker,
         }
     }
 
     function update(input = {}) {
+        if (running || captureManager.status().running) {
+            throw Object.assign(new Error("Automatic scan is running"), {code: "AUTOMATIC_BUSY"})
+        }
         const mode = requiredText(input.mode, "Automatic capture mode", 40)
         if (!MODES.has(mode)) throw new Error("Automatic capture mode is invalid")
         const executionLocation = requiredText(
@@ -154,14 +166,18 @@ function createAutomaticCaptureService({
             throw new Error("Automatic capture weekday is invalid")
         }
         const runtimeId = optionalText(input.runtimeId, "Automatic capture Runtime id", 500)
+        const sourceRuntimeId = optionalText(input.sourceRuntimeId, "Automatic capture source Runtime id", 500)
         const current = configStore.read()
         const targetSettings = input.targets === undefined
             ? {}
             : {autoCaptureTargets: automaticTargets(input.targets, listDatasets())}
         const runtime = runtimeId
             ? stableRuntimeIdentity(runtimeServices.descriptor(runtimeId))
-            : current.runtime
-        if (mode !== "off" && !runtime) {
+            : current.detectionRuntime ?? current.runtime
+        const sourceRuntime = sourceRuntimeId
+            ? stableRuntimeIdentity(runtimeServices.descriptor(sourceRuntimeId))
+            : current.captureRuntime ?? current.runtime ?? runtime
+        if (mode !== "off" && (!runtime || !sourceRuntime)) {
             throw new Error("Select a Runtime before enabling automatic capture")
         }
         if (executionLocation === "always" && !runtime) {
@@ -171,7 +187,8 @@ function createAutomaticCaptureService({
             ...current.worker,
             enabled: mode !== "off" && executionLocation === "always",
         }
-        normalizeConfig({...current, executionLocation, runtime, worker})
+        const configuration = {executionLocation, captureRuntime: sourceRuntime, detectionRuntime: runtime, worker}
+        normalizeConfig({...current, ...configuration})
         const settings = store.updateSettings({
             autoCaptureMode: mode,
             autoCaptureCadence: cadence,
@@ -182,10 +199,9 @@ function createAutomaticCaptureService({
             autoCaptureDatasetId: optionalText(input.datasetId, "Automatic capture Dataset id", 200),
             ...targetSettings,
         })
-        configStore.update({executionLocation, runtime, worker})
+        configStore.update(configuration)
         if (hostStarted) {
-            if (executionLocation === "always") captureManager.stop()
-            else captureManager.reschedule()
+            captureManager.reschedule()
         }
         onChanged(status())
         return {
@@ -195,36 +211,48 @@ function createAutomaticCaptureService({
         }
     }
 
-    async function runOnce({slot = "manual"} = {}) {
+    async function runOnce({slot = "manual", wait = true, waitForCuration = true} = {}) {
         const profile = store.read().settings.autoCaptureProfile
         if (profile.mode === "off") return {status: "disabled", slot: null}
         runtimeDescriptor()
-        if (running) return {status: "busy", slot: null}
-        await captureManager.recoverAutomaticSessions?.()
+        runtimeDescriptor("detectionRuntime")
+        if (running || captureManager.status().running) return {status: "busy", slot: null}
         const selectedSlot = slot === "manual" ? now() : new Date(slot)
         if (!Number.isFinite(selectedSlot.getTime())) {
             throw new Error("Automatic capture slot is invalid")
         }
-        const operation = captureManager.runSlot(selectedSlot, profile)
+        const operation = Promise.resolve().then(async () => {
+            await captureManager.recoverAutomaticSessions?.()
+            await captureManager.runSlot(selectedSlot, profile, {complete: !waitForCuration})
+            if (waitForCuration) {
+                if (captureManager.progress) captureManager.progress.stage = "curating"
+                await captureManager.waitForAutomaticSessions?.({signal})
+                stateStore?.completeSlot?.(selectedSlot, now())
+                if (captureManager.progress) captureManager.progress.stage = "completed"
+            }
+        })
         running = operation
+        captureManager.runningPromise = operation
         onChanged(status())
-        try {
-            await operation
-            return {status: "completed", slot: selectedSlot.toISOString()}
-        } catch (error) {
+        const completion = operation.then(() => ({status: "completed", slot: selectedSlot.toISOString()})).catch((error) => {
             stateStore?.failSlot?.(error, now())
             onError(error)
             throw error
-        } finally {
+        }).finally(() => {
             if (running === operation) running = null
+            if (captureManager.runningPromise === operation) captureManager.runningPromise = null
             onChanged(status())
+        })
+        if (wait === false) {
+            void completion.catch(() => {})
+            return {status: "running", slot: selectedSlot.toISOString()}
         }
+        return completion
     }
 
     function startHostSchedule() {
         hostStarted = true
-        if (configStore.read().executionLocation === "always") captureManager.stop()
-        else captureManager.start()
+        captureManager.start({catchUp: false})
         void Promise.resolve(captureManager.recoverAutomaticSessions?.()).catch(onError)
         return status()
     }

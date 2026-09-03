@@ -1,4 +1,4 @@
-import {useEffect, useState} from "react"
+import {useEffect, useRef, useState} from "react"
 
 import {ActionButton as Button} from "./ActionButton"
 
@@ -7,10 +7,12 @@ import type {Translate} from "../locale"
 import type {WorkbenchRoute} from "./Workbench"
 import {RubricSessionView} from "./RubricSessionView"
 import {usePollingRevision} from "./usePollingRevision"
+import {AgentProfileControls} from "./AgentProfileControls"
+import {displayDateTime, displayStatus} from "./display-state"
 
 interface Dataset {id: string; name: string; activeRubricVersionId: string | null}
 interface RubricSessionSummary {id: string; status: string; updatedAt: string; baseVersionId: string | null}
-interface RollingSettings {rollingSkill: {rubricProfile: {modelId: string | null; effort: string | null}}}
+interface RollingSettings {rollingSkill: {rubricProfile: {modelId: string | null; effort: string | null}}; plugin: {runtime: {runtimeId: string} | null}}
 interface RubricCriterion {
     id?: string
     title?: string
@@ -64,6 +66,8 @@ export function RubricPanel({
     const [active, setActive] = useState<RubricVersion | null>(null)
     const [modelId, setModelId] = useState("")
     const [effort, setEffort] = useState("")
+    const [runtimeId, setRuntimeId] = useState("")
+    const loadedDatasetId = useRef("")
     const [busy, setBusy] = useState(false)
     const [creating, setCreating] = useState(false)
     const [promptOpen, setPromptOpen] = useState(false)
@@ -81,6 +85,7 @@ export function RubricPanel({
         ])
             .then(([rows, settings]) => {
                 setDatasets(rows)
+                setRuntimeId(settings.plugin?.runtime?.runtimeId ?? "")
                 setDatasetId((current) => current || rows[0]?.id || "")
                 setModelId((current) => current || settings.rollingSkill.rubricProfile.modelId || "")
                 setEffort((current) => current || settings.rollingSkill.rubricProfile.effort || "")
@@ -98,12 +103,14 @@ export function RubricPanel({
             {datasetId},
             controller.signal,
         ).then((result) => {
+            const firstLoad = loadedDatasetId.current !== datasetId
+            loadedDatasetId.current = datasetId
             setSessions(result.sessions)
             setVersions(result.versions)
             setActive(result.active)
             setSelectedSessionId((current) => result.sessions.some((session) => session.id === current)
                 ? current
-                : result.sessions.find((session) => WORKING_RUBRIC_STATUSES.has(session.status))?.id ?? result.sessions[0]?.id ?? "")
+                : firstLoad ? result.sessions.find((session) => WORKING_RUBRIC_STATUSES.has(session.status))?.id ?? result.sessions[0]?.id ?? "" : "")
             setSelectedVersionId((current) => result.versions.some((version) => version.id === current) ? current : result.active?.id ?? result.versions[0]?.id ?? "")
             setError(null)
         }).catch((reason: unknown) => {
@@ -169,15 +176,14 @@ export function RubricPanel({
                 <div className="rolling-skill-panel-header"><div><h3>{t("rubrics")}</h3><p>{t("rubricDescription")}</p></div></div>
                 <label className="rolling-skill-field"><span>{t("selectDataset")}</span><select className="rolling-skill-select" value={datasetId} onChange={(event) => { setDatasetId(event.target.value); setSelectedSessionId(""); setSelectedVersionId("") }}>{datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}</select></label>
                 <div className="rolling-skill-form-stack rolling-skill-create-rubric">
-                    <label className="rolling-skill-field"><span>{t("model")}</span><input value={modelId} placeholder={t("configuredDefault")} onChange={(event) => setModelId(event.target.value)}/></label>
-                    <label className="rolling-skill-field"><span>{t("effort")}</span><select className="rolling-skill-select" value={effort} onChange={(event) => setEffort(event.target.value)}><option value="">{t("configuredDefault")}</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></select></label>
+                    <AgentProfileControls t={t} runtimeId={runtimeId} modelId={modelId} effort={effort} disabled={busy} onModelChange={setModelId} onEffortChange={setEffort}/>
                     <Button tone="primary" disabled={!datasetId || busy || Boolean(generatingSession)} aria-busy={generationPending} onClick={() => setPromptOpen(true)}>{creating ? t("creatingRubric") : generatingSession ? t("generatingRubric") : t("createRubric")}</Button>
                     {generationPending ? <p className="rolling-skill-operation-status" role="status" aria-live="polite">{t(creating ? "creatingRubricStatus" : "generatingRubricStatus")}</p> : null}
                 </div>
                 {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
                 <h4>{t("rubricSessions")}</h4>
                 <div className="rolling-skill-list">
-                    {sessions.map((session) => <button type="button" className="rolling-skill-review-list-button" data-selected={selectedSessionId === session.id} key={session.id} onClick={() => { setSelectedSessionId(session.id); onNavigate({page: "rubrics", datasetId, sessionId: session.id}) }}><strong>{session.status}</strong><span>{session.updatedAt}</span></button>)}
+                    {sessions.map((session) => <button type="button" className="rolling-skill-review-list-button" data-selected={selectedSessionId === session.id} key={session.id} onClick={() => { setSelectedSessionId(session.id); onNavigate({page: "rubrics", datasetId, sessionId: session.id}) }}><strong>{displayStatus(session.status, t)}</strong><span>{displayDateTime(session.updatedAt, t("notAvailable"))}</span></button>)}
                 </div>
                 <h4>{t("rubricHistory")}</h4>
                 {!active ? <p>{t("noActiveRubric")}</p> : null}
@@ -185,7 +191,7 @@ export function RubricPanel({
                 <div className="rolling-skill-list">{versions.map((version) => <RubricVersionListButton key={version.id} version={version} active={version.id === active?.id} selected={!selectedSessionId && selectedVersion?.id === version.id} t={t} onSelect={() => { setSelectedSessionId(""); setSelectedVersionId(version.id); onNavigate({page: "rubrics", datasetId}) }}/>)}</div>
                 </aside>
                 <main className="rolling-skill-review-detail">
-                    {selectedSessionId ? <RubricSessionView sessionId={selectedSessionId} t={t} onChanged={refresh}/> : selectedVersion ? <RubricVersionCard version={selectedVersion} active={selectedVersion.id === active?.id} t={t}/> : <div className="rolling-skill-state">{t("selectRubricSession")}</div>}
+                    {selectedSessionId ? <RubricSessionView key={selectedSessionId} sessionId={selectedSessionId} t={t} onChanged={refresh}/> : selectedVersion ? <RubricVersionCard version={selectedVersion} active={selectedVersion.id === active?.id} t={t}/> : <div className="rolling-skill-state">{t("selectRubricSession")}</div>}
                 </main>
             </div>
             {promptOpen ? (

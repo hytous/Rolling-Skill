@@ -112,6 +112,37 @@ function fixture() {
 }
 
 describe("Rolling Skill Agent edit services", () => {
+    it("keeps the draft busy while a follow-up Runtime turn is starting", async () => {
+        const test = fixture()
+        const started = await test.services.start({skillId: "skill-1", runtimeId: "codex:one", modelId: "gpt-5.6-sol", effort: "high", objective: "Improve the summary"})
+        test.operatorServices.operatorSend = async () => { test.setOperatorState("starting"); return {queued: false} }
+        const pending = await test.services.send({sessionId: started.id, text: "Change the heading"})
+        assert.equal(pending.state, "running", "starting is not a completed revision")
+        assert.equal((await test.services.get({sessionId: started.id})).state, "running")
+        await assert.rejects(() => test.services.applyAndRelease({sessionId: started.id, expectedRevision: pending.revision}), /still running/u)
+        test.setOperatorState("idle")
+        assert.equal((await test.services.get({sessionId: started.id})).state, "idle")
+    })
+
+    it("shows the user's edit request without attributing the controller wrapper to them", async () => {
+        const test = fixture()
+        const objective = "只改当前 Skill，补充一个例子。"
+        let transcript
+        test.operatorServices.operatorGet = ({sessionId}) => {
+            const wrapped = test.calls.find(([kind]) => kind === "operator.start")[1].objective
+            transcript ??= [
+                {kind: "message", role: "user", content: wrapped},
+                {kind: "message", role: "assistant", content: "已补充例子。"},
+                {kind: "message", role: "user", content: wrapped},
+            ]
+            return {session: {id: sessionId, transcript}, state: "idle", parentJob: {status: "running"}}
+        }
+        const started = await test.services.start({skillId: "skill-1", runtimeId: "codex:one", modelId: "gpt-5.6-sol", effort: "high", objective})
+        assert.equal(started.messages[0].content, objective)
+        assert.match(started.messages[2].content, /^Edit the isolated managed Skill draft/u, "later user messages remain verbatim")
+        assert.match(transcript[0].content, /^Edit the isolated managed Skill draft/u, "raw audit stays unchanged")
+    })
+
     it("starts, continues, diffs, applies and publishes a bounded edit session", async () => {
         const test = fixture()
         const started = await test.services.start({
@@ -151,6 +182,21 @@ describe("Rolling Skill Agent edit services", () => {
         assert.deepEqual(operatorStart.actions, ["skills.read"])
         assert.equal(test.calls.some(([kind]) => kind === "apply"), true)
         assert.equal(test.calls.some(([kind]) => kind === "workspace.cleanup"), true)
+        const shutdownIndex = test.calls.findIndex(([kind]) => kind === "operator.cancel")
+        assert.ok(shutdownIndex > test.calls.findIndex(([kind]) => kind === "apply"))
+        assert.ok(shutdownIndex < test.calls.findIndex(([kind]) => kind === "workspace.cleanup"))
+    })
+
+    it("retains the published version and workspace when editor shutdown fails", async () => {
+        const test = fixture()
+        const started = await test.services.start({skillId: "skill-1", runtimeId: "codex:one", modelId: "gpt-5.6-sol", effort: "high", objective: "Improve the summary"})
+        test.operatorServices.operatorCancel = async () => { throw new Error("Runtime shutdown failed") }
+        const published = await test.services.applyAndRelease({sessionId: started.id, expectedRevision: started.revision})
+        assert.equal(published.state, "published")
+        assert.equal(published.publishedVersionLabel, "1.0.1")
+        assert.equal(published.error.code, "EDITOR_SHUTDOWN_FAILED")
+        assert.equal(test.calls.some(([kind]) => kind === "workspace.cleanup"), false)
+        assert.equal((await test.services.get({sessionId: started.id})).error.code, "EDITOR_SHUTDOWN_FAILED")
     })
 
     it("discards an idle session after stopping its Operator", async () => {

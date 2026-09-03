@@ -824,6 +824,7 @@ function newCurationSession({dataset, input, episode, operation = "capture", tar
     return {
         id: randomUUID(),
         idempotencyKey: modelId(input.idempotencyKey, "Curation idempotency key"),
+        automaticCaptureRawCaseId: modelId(input.automaticCaptureRawCaseId, "Automatic capture Raw Case id"),
         datasetId: dataset.id,
         operation,
         targetCaseId,
@@ -2096,6 +2097,8 @@ class LocalEvaluationStore {
             baselineCaseSnapshot: caseRefreshBaseline(target),
             episode: input.episode,
             input: {
+                executionSkillReference: input.executionSkillReference,
+                operationEvidence: input.operationEvidence,
                 caseType: target.caseType,
                 issueDescription: target.issueDescription ?? "",
                 curator: input.curator ?? {},

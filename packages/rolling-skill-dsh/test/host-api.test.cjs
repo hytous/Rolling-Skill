@@ -118,6 +118,15 @@ describe("Rolling Skill Host JSON API", () => {
         assert.doesNotMatch(failed.text, /secret|private|config\.json/u)
     })
 
+    it("returns an actionable capture prerequisite instead of masking it as an internal failure", async () => {
+        const {createRollingSkillApiHandler} = require("../src/host/api.cjs")
+        const handler = createRollingSkillApiHandler({dispatch: async () => {throw new Error("Trusted DSH source Skill evidence is required before curation")}})
+        const result = await request(handler, {headers: {"content-type": "application/json"}, body: JSON.stringify({method: "conversation.curation.create", input: {}})})
+        assert.equal(result.status, 409)
+        assert.equal(JSON.parse(result.text).error.code, "CAPTURE_SKILL_CONTEXT_MISSING")
+        assert.match(JSON.parse(result.text).error.message, /Skill/)
+    })
+
     it("classifies hostile conversation fields as invalid without exposing details", async () => {
         const {createRollingSkillApiHandler} = require("../src/host/api.cjs")
         const handler = createRollingSkillApiHandler({

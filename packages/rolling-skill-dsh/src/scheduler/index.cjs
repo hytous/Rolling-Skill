@@ -7,10 +7,9 @@ const {createLaunchdAdapter} = require("./launchd.cjs")
 const {createSystemdAdapter} = require("./systemd.cjs")
 const {createTaskSchedulerAdapter} = require("./task-scheduler.cjs")
 
-function resolveWorkerExecutable(moduleUrl, platform = process.platform) {
+function resolveWorkerExecutable(moduleUrl) {
     const filename = fileURLToPath(moduleUrl)
-    const name = platform === "win32" ? "rolling-skill-worker.cmd" : "rolling-skill-worker"
-    return resolve(dirname(filename), "..", "..", "..", ".bin", name)
+    return resolve(dirname(filename), "worker.cjs")
 }
 
 function unsupportedAdapter(platform) {
@@ -25,10 +24,12 @@ function createSchedulerAdapter({
     platform = process.platform,
     homeDirectory = homedir(),
     workerExecutable,
+    nodeExecutable = process.execPath,
+    workspaceRoot = process.cwd(),
     dataRoot,
     run,
 } = {}) {
-    const options = {homeDirectory, workerExecutable, dataRoot, ...(run ? {run} : {})}
+    const options = {homeDirectory, workerExecutable, nodeExecutable, workspaceRoot, dataRoot, ...(run ? {run} : {})}
     if (platform === "darwin") return createLaunchdAdapter(options)
     if (platform === "linux") return createSystemdAdapter(options)
     if (platform === "win32") return createTaskSchedulerAdapter(options)

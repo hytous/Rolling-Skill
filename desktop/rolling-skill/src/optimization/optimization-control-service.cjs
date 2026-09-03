@@ -4,7 +4,7 @@ const {
     freezeOptimizationRun,
     parseOptimizationConfig,
 } = require("./optimization-contract.cjs")
-const {persistOptimizationReport} = require("./optimization-report.cjs")
+const {generateOptimizationReport, persistOptimizationReport} = require("./optimization-report.cjs")
 
 const MAX_PUBLIC_ARTIFACT_BYTES = 1024 * 1024
 const MAX_PUBLIC_REPORT_PREVIEW_BYTES = 32 * 1024
@@ -99,20 +99,32 @@ function publicInstallation(value) {
 
 function publicCheckpoint(value = {}) {
     const fields = [
+        "operatorSessionId",
+        "operatorCleanupError",
+        "stopRequested",
+        "activeEvaluationRunId",
+        "activeEvaluationKind",
+        "installationOperation",
+        "installationPending",
+        "installationJobIds",
+        "baselineEvaluationRunId",
         "paused",
         "pauseReason",
         "stopReason",
         "reportArtifactId",
         "reportDigest",
+        "finalApprovalId",
         "releaseApprovalId",
         "installApprovalId",
         "releasedVersionId",
+        "releasedInstallArtifactId",
         "finalEvaluationArtifactId",
         "finalRegressionPassed",
     ]
     const checkpoint = Object.fromEntries(fields
         .filter((field) => value[field] !== undefined)
         .map((field) => [field, structuredClone(value[field])]))
+    if (checkpoint.paused === false) delete checkpoint.pauseReason
     if (value.telemetry && typeof value.telemetry === "object") {
         const elapsedMs = Number(value.telemetry.elapsedMs)
         const turnsUsed = Number(value.telemetry.turnsUsed)
@@ -298,6 +310,7 @@ class OptimizationControlService {
         this.runner = dependency(options.runner, "run", "Optimization Runner")
         dependency(this.runner, "pause", "Optimization Runner")
         dependency(this.runner, "resume", "Optimization Runner")
+        dependency(this.runner, "resumeFinalApproval", "Optimization Runner")
         dependency(this.runner, "stop", "Optimization Runner")
         this.operatorGateway = dependency(
             options.operatorGateway,
@@ -317,6 +330,7 @@ class OptimizationControlService {
         this.readArtifact = options.readArtifact
         if (typeof this.readArtifact !== "function") throw new Error("Optimization artifact reader is required")
         this.clock = options.clock ?? (() => new Date().toISOString())
+        this.operatorTurnsUsed = options.operatorTurnsUsed ?? (() => 0)
         if (typeof this.clock !== "function") throw new Error("Optimization clock is invalid")
         this.startupRecoveryComplete = false
     }
@@ -335,12 +349,22 @@ class OptimizationControlService {
         return publicPreflight(await this.#snapshot(config))
     }
 
-    async start(input) {
-        const {idempotencyKey, ...config} = structuredClone(input)
-        const snapshot = await this.#snapshot(config)
-        const created = this.store.createRun(snapshot, {idempotencyKey})
-        const run = this.store.getRun(created.runId)
-        const workspace = await this.workspaceManager.create(run)
+    async #createOperator(run, resuming = false) {
+        const snapshot = run.snapshot
+        const elapsedMs = resuming ? Math.max(0, Date.parse(this.clock()) - Date.parse(run.createdAt ?? this.clock())) : 0
+        const turnsUsed = (run.checkpoint.operatorTurnsUsedBefore ?? 0) + (resuming ? this.operatorTurnsUsed(run) : 0)
+        const maxDurationMs = Math.floor(snapshot.limits.maxDurationMs - elapsedMs)
+        const maxRuntimeTurns = (snapshot.limits.maxTurns ?? 1_000_000) - turnsUsed
+        if (maxDurationMs <= 0 || maxRuntimeTurns <= 0) throw new Error("Optimization time or turn budget has been exhausted")
+        if (resuming && (snapshot.limits.maxTokens !== null || snapshot.limits.maxCostMicros !== null)) {
+            throw new Error("Optimization with usage caps cannot restart until reliable remaining usage is available")
+        }
+        if (resuming && run.checkpoint.operatorSessionId && this.operatorSessionManager.stop) {
+            await this.operatorSessionManager.stop(run.checkpoint.operatorSessionId)
+        }
+        const maxEvaluations = Math.max(0, snapshot.limits.maxEpochs + 2 - (resuming ?
+            Number(Boolean(run.checkpoint.baselineEvaluationRunId)) + run.epochs.reduce((count, epoch) => count + (epoch.evaluationArtifactIds?.length ?? 0), 0) : 0))
+        const caseCount = snapshot.dataset.caseRevisions?.length ?? 1
         const runtimeIds = [...new Set([
             snapshot.operator.runtimeId,
             snapshot.judge.runtimeId,
@@ -363,17 +387,17 @@ class OptimizationControlService {
                 repositoryIds: [snapshot.baseline.repositoryId],
             },
             budget: {
-                maxDurationMs: snapshot.limits.maxDurationMs,
-                maxRuntimeTurns: snapshot.limits.maxTurns ?? 1_000_000,
-                maxEvaluations: snapshot.limits.maxEpochs + 2,
-                maxTargetExecutions: snapshot.targets.length * (snapshot.limits.maxEpochs + 2),
-                maxJudgeExecutions: snapshot.limits.maxEpochs + 2,
+                maxDurationMs,
+                maxRuntimeTurns,
+                maxEvaluations,
+                maxTargetExecutions: caseCount * snapshot.targets.length * maxEvaluations,
+                maxJudgeExecutions: caseCount * snapshot.targets.length * maxEvaluations,
                 maxTokens: snapshot.limits.maxTokens,
                 maxReportedCost: snapshot.limits.maxCostMicros === null
                     ? null
                     : snapshot.limits.maxCostMicros / 1_000_000,
             },
-            expiresInMs: snapshot.limits.maxDurationMs,
+            expiresInMs: maxDurationMs,
             managedSkillBinding: {
                 repositoryId: snapshot.baseline.repositoryId,
                 skillId: snapshot.baseline.skillId,
@@ -390,7 +414,17 @@ class OptimizationControlService {
             "Optimization Operator parent Job id",
             300,
         )
-        this.store.updateCheckpoint(run.id, {operatorSessionId, operatorParentJobId: parentJobId})
+        this.store.updateCheckpoint(run.id, {operatorSessionId, operatorParentJobId: parentJobId, operatorTurnsUsedBefore: turnsUsed})
+        return {operatorSessionId, parentJobId}
+    }
+
+    async start(input) {
+        const {idempotencyKey, ...config} = structuredClone(input)
+        const snapshot = await this.#snapshot(config)
+        const created = this.store.createRun(snapshot, {idempotencyKey})
+        const run = this.store.getRun(created.runId)
+        const workspace = await this.workspaceManager.create(run)
+        const {operatorSessionId, parentJobId} = await this.#createOperator(run)
         const operation = this.runner.run(run.id, {
             operatorSessionId,
             parentJobId,
@@ -432,7 +466,20 @@ class OptimizationControlService {
         for (const run of this.store.listRuns()) {
             if (run.state !== "needs_recovery" || !run.checkpoint?.workspace) continue
             await this.workspaceManager.recover(run, run.checkpoint.workspace)
-            recovered.push({runId: run.id, status: "ready"})
+            if (
+                run.recovery?.previousState === "waiting_approval" ||
+                run.checkpoint?.resumePhase === "final_approval"
+            ) {
+                const operation = this.runner.resumeFinalApproval(run.id, {
+                    operatorSessionId: run.checkpoint.operatorSessionId,
+                    parentJobId: run.checkpoint.operatorParentJobId,
+                    workspace: run.checkpoint.workspace,
+                })
+                Promise.resolve(operation).catch(() => {})
+                recovered.push({runId: run.id, status: "waiting_approval"})
+            } else {
+                recovered.push({runId: run.id, status: "ready"})
+            }
         }
         this.startupRecoveryComplete = true
         return recovered
@@ -444,11 +491,28 @@ class OptimizationControlService {
             throw new Error("Optimization startup recovery is not complete")
         }
         const run = this.store.getRun(runId)
-        await this.runner.resume(runId, {
-            operatorSessionId: run.checkpoint?.operatorSessionId,
-            parentJobId: run.checkpoint?.operatorParentJobId,
-            workspace: run.checkpoint?.workspace,
-        })
+        if (run.state !== "needs_recovery" || run.checkpoint.paused !== true) throw new Error("Optimization is not paused and resumable")
+        if (run.checkpoint?.resumePhase === "final_approval") {
+            const operation = this.runner.resumeFinalApproval(runId, {
+                operatorSessionId: run.checkpoint.operatorSessionId,
+                parentJobId: run.checkpoint.operatorParentJobId,
+                workspace: run.checkpoint.workspace,
+            })
+            Promise.resolve(operation).catch(() => {})
+            return this.get(runId)
+        }
+        const operator = await this.#createOperator(run, true)
+        let operation
+        try {
+            operation = this.runner.resume(runId, {
+                ...operator,
+                workspace: run.checkpoint?.workspace,
+            })
+        } catch (error) {
+            await this.operatorSessionManager.stop?.(operator.operatorSessionId)
+            throw error
+        }
+        Promise.resolve(operation).catch(() => {})
         return this.get(runId)
     }
 
@@ -462,7 +526,7 @@ class OptimizationControlService {
         const accepted = this.operatorGateway.submitCandidate({
             runId: input.runId,
             message: input.message,
-            operatorSessionId: requiredText(context.sessionId, "Current Operator session id", 300),
+            operatorSessionId: requiredText(context.operatorSessionId ?? context.sessionId, "Current Operator session id", 300),
         })
         return {accepted}
     }
@@ -472,7 +536,7 @@ class OptimizationControlService {
             runId: input.runId,
             decision: structuredClone(input.decision),
             limitRequest: input.limitRequest === undefined ? null : structuredClone(input.limitRequest),
-            operatorSessionId: requiredText(context.sessionId, "Current Operator session id", 300),
+            operatorSessionId: requiredText(context.operatorSessionId ?? context.sessionId, "Current Operator session id", 300),
         })
         return {accepted}
     }
@@ -480,6 +544,17 @@ class OptimizationControlService {
     report(runId) {
         runId = requiredText(runId, "Optimization Run id", 200)
         const run = this.store.getRun(runId)
+        if (["succeeded", "failed", "cancelled"].includes(run.state)) {
+            // Reports are derived from frozen evidence. A finished Operator Job
+            // cannot accept new artifacts; do not reopen or rewrite its audit.
+            const generated = generateOptimizationReport({run, readArtifact: this.readArtifact})
+            return {report: {
+                artifactId: null,
+                digest: generated.digest,
+                mediaType: "text/markdown; charset=utf-8",
+                preview: boundedReportPreview(generated.markdown),
+            }}
+        }
         const parentJobId = requiredText(
             run.checkpoint?.operatorParentJobId,
             "Optimization Operator parent Job id",

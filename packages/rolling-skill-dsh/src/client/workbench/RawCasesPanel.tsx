@@ -6,6 +6,7 @@ import evidenceModel from "./raw-case-evidence.cjs"
 import skillFilterModel from "./raw-case-skill-filter.cjs"
 
 import {requestRollingSkill} from "../api"
+import {openNativeSession} from "./native-session-navigation"
 import type {Translate} from "../locale"
 import {activeConversationSessionSnapshot, subscribeActiveConversationSession} from "../conversation/active-session"
 
@@ -172,6 +173,7 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId, onNavig
             requestRollingSkill<SkillCatalog>("skills.catalog", {}, controller.signal),
             requestRollingSkill<Dataset[]>("datasets.list", {}, controller.signal),
         ]).then(([rawCases, nextCatalog, datasetItems]) => {
+            if (controller.signal.aborted) return
             setEntries(rawCases)
             setCatalog(nextCatalog)
             setDatasets(datasetItems)
@@ -227,12 +229,16 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId, onNavig
     }
     const selectedSkill = () => catalog.skills.find((skill) => skill.id === skillId)
     const beginAdd = () => {
+        setError(null)
+        const scopedSkill = catalog.skills.find((skill) => skill.id === skillScope && skill.status === "valid")
+        if (scopedSkill) setSkillId(scopedSkill.id)
         setAdding(true)
         setEditing(null)
         setQuestion("")
         setNote("")
     }
     const beginEdit = (entry: RawCase) => {
+        setError(null)
         setAdding(false)
         setEditing(entry)
         setQuestion(entry.question)
@@ -252,6 +258,8 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId, onNavig
                 skillId: skill.id,
             })
             setAdding(false)
+            setSkillScope(skill.id)
+            setSearch("")
         })
     }
     const save = () => {
@@ -270,6 +278,8 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId, onNavig
                 idempotencyKey: crypto.randomUUID(),
             })
             setEditing(null)
+            setSkillScope(skill.id)
+            setSearch("")
         })
     }
     const recycle = () => {
@@ -308,6 +318,14 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId, onNavig
         const observation = entry.source?.observations?.at(-1)
         return Boolean(observation && observation.outcome !== "uncertain")
     }
+    const openDispatchedSession = async (sessionId: string) => {
+        try {
+            await openNativeSession(sessionId)
+            window.dispatchEvent(new CustomEvent("rolling-skill:close-workbench"))
+        } catch (reason) {
+            setError(`${t("nativeSessionOpenError")} ${reason instanceof Error ? reason.message : ""}`)
+        }
+    }
     const dispatchToSession = (entry: RawCase, target: "current" | "new") => void mutate(async () => {
         const result = await requestRollingSkill<{sessionId: string}>("rawCases.dispatch", {
             id: entry.id,
@@ -316,6 +334,7 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId, onNavig
             idempotencyKey: crypto.randomUUID(),
         })
         setDispatchedSessionId(result.sessionId)
+        void openDispatchedSession(result.sessionId)
     })
     const viewCaptureRange = () => {
         const observation = evidence.observation
@@ -335,14 +354,16 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId, onNavig
     }
 
     const form = <div className="rolling-skill-form-stack">
+        {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
         <label><span>{t("question")}</span><textarea value={question} onChange={(event) => setQuestion(event.target.value)}/></label>
         <label><span>{t("datasetSkill")}</span><select className="rolling-skill-select" value={skillId} onChange={(event) => setSkillId(event.target.value)}>
             {catalog.skills.filter((skill) => skill.status === "valid").map((skill) => {
                 const repository = catalog.repositories.find((entry) => entry.id === skill.repositoryId)
-                return <option key={skill.id} value={skill.id}>{skill.name} · {repository?.displayName ?? skill.repositoryId}</option>
+                const repositoryName = repository?.displayName
+                return <option key={skill.id} value={skill.id}>{skill.name}{repositoryName && repositoryName !== skill.name ? ` · ${repositoryName}` : ""}</option>
             })}
         </select></label>
-        <label><span>{t("note")}</span><input value={note} onChange={(event) => setNote(event.target.value)}/></label>
+        <label><span>{t("note")}</span><textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)}/></label>
     </div>
 
     return (
@@ -362,7 +383,7 @@ export function RawCasesPanel({t, revision, onChanged, initialRawCaseId, onNavig
                 </label>
             </div>
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
-            {dispatchedSessionId ? <p className="rolling-skill-inline-success">{t("rawCaseDispatched")} <code>{dispatchedSessionId}</code></p> : null}
+            {dispatchedSessionId ? <div className="rolling-skill-inline-success">{t("rawCaseDispatched")} <Button size="sm" onClick={() => void openDispatchedSession(dispatchedSessionId)}>{t("openNativeSession")}</Button></div> : null}
             <div className="rolling-skill-group-list">
                 {filteredGroups.map((group) => <section className="rolling-skill-raw-group" key={group.key}>
                     <button

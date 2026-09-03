@@ -17,13 +17,16 @@ function systemdArgument(value) {
     return `"${text.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`
 }
 
-function renderSystemdService({workerExecutable, dataRoot}) {
+function renderSystemdService({workerExecutable, dataRoot, nodeExecutable = process.execPath, workspaceRoot = process.cwd()}) {
     const command = [
+        requiredAbsolutePath(nodeExecutable, "Node executable"),
         requiredAbsolutePath(workerExecutable, "Worker executable"),
         "--data-root",
         requiredAbsolutePath(dataRoot, "Rolling Skill data root"),
         "--slot",
         "scheduled",
+        "--workspace-root",
+        requiredAbsolutePath(workspaceRoot, "Source workspace"),
     ].map(systemdArgument).join(" ")
     return `[Unit]
 Description=Rolling Skill automatic capture
@@ -55,6 +58,8 @@ WantedBy=timers.target
 function createSystemdAdapter({
     homeDirectory,
     workerExecutable,
+    nodeExecutable = process.execPath,
+    workspaceRoot = process.cwd(),
     dataRoot,
     run = defaultRun,
     fs = fsPromises,
@@ -71,7 +76,7 @@ function createSystemdAdapter({
         capabilities: () => ({platform: "linux", supported: true, identifier: IDENTIFIER}),
         async install(schedule) {
             await fs.mkdir(directory, {recursive: true, mode: 0o700})
-            await fs.writeFile(servicePath, renderSystemdService({workerExecutable: worker, dataRoot: root}), {encoding: "utf8", mode: 0o600})
+            await fs.writeFile(servicePath, renderSystemdService({workerExecutable: worker, dataRoot: root, nodeExecutable, workspaceRoot}), {encoding: "utf8", mode: 0o600})
             await fs.writeFile(timerPath, renderSystemdTimer(schedule), {encoding: "utf8", mode: 0o600})
             assertCommand(await run("systemctl", ["--user", "daemon-reload"]), "systemd user reload")
             assertCommand(await run("systemctl", ["--user", "enable", "--now", timerUnit]), "systemd timer registration")

@@ -190,6 +190,7 @@ function successfulBehavior(options = {}) {
                         operation: turn.prompt.includes('"operation": "inspect"')
                             ? "inspect"
                             : "install",
+                        ...options.resultOverrides,
                     }),
                 },
             ]
@@ -316,6 +317,42 @@ describe("Runtime Skill installation manager", () => {
         assert.equal(timeline[1].command, "git archive")
     })
 
+    it("preserves a readable DSH tool title instead of exposing only dynamicToolCall", async () => {
+        const behavior = {
+            threadSequence: 1,
+            turnSequence: 1,
+            async run(client, turn) {
+                const request = client.options.installationRequest
+                const items = [
+                    {
+                        id: "todo-1",
+                        type: "dynamicToolCall",
+                        tool: "todo_write",
+                        title: "Update installation checklist",
+                        status: "completed",
+                    },
+                    {id: "message-1", type: "agentMessage", text: resultText(request)},
+                ]
+                for (const item of items) {
+                    client.emit("notification", {
+                        method: "item/completed",
+                        params: {threadId: turn.threadId, turnId: turn.turnId, item},
+                    })
+                }
+                client.emit("notification", {
+                    method: "turn/completed",
+                    params: {threadId: turn.threadId, turn: {id: turn.turnId, status: "completed", items}},
+                })
+            },
+        }
+        const {manager, store, start} = fixture({behaviors: new Map([["codex:one", behavior]])})
+        const [job] = await start()
+        await manager.wait(job.id)
+
+        const [activity] = store.getJob(job.id).activities
+        assert.equal(activity.name, "Update installation checklist")
+    })
+
     it("serializes the same Runtime and Skill while running different Runtimes concurrently", async () => {
         const gate = deferred()
         const starts = []
@@ -402,6 +439,54 @@ describe("Runtime Skill installation manager", () => {
         assert.equal(stored.status, "unverified")
         assert.match(stored.error.message, /structured result/u)
         assert.equal(clients[0].stopped, true)
+    })
+
+    it("keeps the Runtime's bounded failure explanation when its result evidence is invalid", async () => {
+        const behavior = successfulBehavior({
+            runtimeId: "codex:one",
+            requestForPrompt: () => null,
+            resultOverrides: {
+                status: "failed",
+                result: {actualDigest: "sha256:truncated", markerWritten: false},
+                error: {code: "MARKER_INVALID", message: "The existing management marker is truncated; nothing was changed."},
+            },
+        })
+        const {manager, store, start} = fixture({behaviors: new Map([["codex:one", behavior]])})
+        const [job] = await start()
+        await manager.wait(job.id)
+        const stored = store.getJob(job.id)
+        assert.equal(stored.status, "unverified")
+        assert.equal(stored.parsedResult, null)
+        assert.equal(stored.error.code, "INSTALLATION_RESULT_INVALID")
+        assert.match(stored.error.message, /management marker is truncated/u)
+        assert.match(stored.error.message, /digest is invalid/u)
+    })
+
+    for (const repairSucceeds of [true, false]) it(`repairs an invalid read-only result at most once (success=${repairSucceeds})`, async () => {
+        let inspectionTurns = 0
+        const behavior = {
+            threadSequence: 1, turnSequence: 1,
+            async run(client, turn) {
+                const inspection = turn.options.permissionMode === "read-only"
+                if (inspection) inspectionTurns++
+                const text = resultText(client.options.installationRequest, {
+                    operation: inspection ? "inspect" : "install",
+                    ...(inspection && (inspectionTurns === 1 || !repairSucceeds) ? {destination: null} : {}),
+                })
+                client.emit("notification", {method: "item/completed", params: {threadId: turn.threadId, turnId: turn.turnId, item: {id: `result-${turn.turnId}`, type: "agentMessage", text}}})
+                client.emit("notification", {method: "turn/completed", params: {threadId: turn.threadId, turn: {id: turn.turnId, status: "completed"}}})
+            },
+        }
+        const {manager, store, clients, start} = fixture({behaviors: new Map([["codex:one", behavior]])})
+        const [installed] = await start()
+        await manager.wait(installed.id)
+        const inspection = await manager.inspect(installed.id)
+        await manager.wait(inspection.id)
+        assert.equal(inspectionTurns, 2)
+        assert.equal(store.getJob(inspection.id).status, repairSucceeds ? "succeeded" : "unverified")
+        assert.ok(clients[1].startedTurns.every((turn) => turn.options.permissionMode === "read-only"))
+        assert.match(clients[1].startedTurns[1].prompt, /absolute destination/u)
+        assert.ok(store.getJob(inspection.id).messages.some((message) => message.role === "user" && message.content.includes("format")))
     })
 
     it("interrupts an active turn, performs a read-only inspection, and keeps the job cancelled", async () => {

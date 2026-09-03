@@ -15,6 +15,13 @@ async function remainsPending(promise) {
 }
 
 describe("Optimization Operator submit gateway", () => {
+    it("expires an unanswered Agent request instead of leaving the run editing forever", async () => {
+        const gateway = new OptimizationOperatorGateway()
+        const pending = gateway.requestCandidate({run: {runId: "timed-run"}, epoch: 1, operatorSessionId: "session-1", timeoutMs: 10})
+        await assert.rejects(pending, /time budget/)
+        assert.equal(gateway.pending("timed-run"), null)
+    })
+
     it("accepts a Candidate only from the current Runner Operator session", async () => {
         const gateway = new OptimizationOperatorGateway()
         const requested = gateway.requestCandidate({

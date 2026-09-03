@@ -214,6 +214,10 @@ Skill internal orchestration, automatic detection, Curator, Rubric, Judge, Case 
 optimization, Skill installation/audit/maintenance, generated agent-to-agent prompts, and test
 fixtures. Embedded source questions, Skill names, rubrics, or successful outputs do not make an
 internal task eligible. For an ineligible episode set skillName and caseType to null. Otherwise
+judge the purpose and provenance of the request, not just the product names it mentions. A
+human requesting incident triage or a postmortem for a malfunctioning internal tool is a human
+task, even when the affected tool is Rolling Skill; it is not a generated Rubric/Curator/Judge
+instruction. Keep generated orchestration and synthetic test fixtures excluded.
 identify the principal enabled Skill, outcome, recommended Case type, and final Assistant Item.
 Return JSON only with this exact schema:
 {"eligibleForCase":true,"sourceKind":"human_task|rolling_skill_internal|skill_installation|evaluation_or_optimization|other_internal","skillName":"name-or-null","outcome":"resolved|unresolved|uncertain","caseType":"goodcase|badcase|null","finalAssistantItemId":"id-or-null","confidence":0.8,"reason":"short text"}

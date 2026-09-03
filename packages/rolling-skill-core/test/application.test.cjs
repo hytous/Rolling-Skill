@@ -316,10 +316,12 @@ describe("shared Rolling Skill application", () => {
             curationManager,
             conversationEpisodeSource,
             conversationCurationOperationResolver: {
-                inspectDataset(datasetId) {
+                inspectDataset(datasetId, options) {
+                    assert.equal(options.sourceProviderId, "deepseek-harness")
                     return {datasetId, name: "Default", ready: true, blockers: []}
                 },
-                resolve() {
+                resolve(_datasetId, options) {
+                    assert.equal(options.sourceProviderId, "deepseek-harness")
                     return {
                         executionSkillReference: {
                             schemaVersion: "rolling-skill-skill-reference/v1",
@@ -340,6 +342,7 @@ describe("shared Rolling Skill application", () => {
         })
         const datasetId = (await application.dispatch("datasets.list", {}))[0].id
 
+        await application.dispatch("settings.update", {rollingSkill: {curatorModelId: "configured-curator", curatorEffort: "high"}})
         assert.deepEqual(
             await application.dispatch("conversationCuration.inspect", {
                 sessionId: "session-1",
@@ -375,6 +378,7 @@ describe("shared Rolling Skill application", () => {
             startSeq: 4,
         })
         const createInput = calls.find((entry) => entry.type === "create").input
+        assert.deepEqual(createInput.curator, {modelId: "configured-curator", effort: "high"})
         assert.equal(createInput.caseType, "goodcase")
         assert.equal(createInput.issueDescription, "保留证据")
         assert.deepEqual(createInput.episode, frozen.episode)
@@ -838,7 +842,7 @@ describe("shared Rolling Skill application", () => {
             hiddenThreadIds: () => new Set(),
             listSessions: () => [],
             getSession: () => null,
-            async createSession(input) {
+            async createEpisodeSession(input) {
                 calls.push(structuredClone(input))
                 return {id: "curation-from-raw", datasetId: input.datasetId, caseType: input.caseType, status: "queued", episode: {source: {}}, conversation: [], revisions: [], updatedAt: "now"}
             },
@@ -852,7 +856,10 @@ describe("shared Rolling Skill application", () => {
             curationManager,
             conversationCurationOperationResolver: {
                 inspectDataset: () => ({ready: true}),
-                resolve: () => structuredClone(operation),
+                resolve: (_datasetId, options) => {
+                    assert.equal(options.runtimeId, "runtime-1")
+                    return structuredClone(operation)
+                },
                 resolveRubric: () => structuredClone(operation),
             },
         })
@@ -863,11 +870,15 @@ describe("shared Rolling Skill application", () => {
             skillId: managed.skill.id,
         })
         const rawStore = new RawCaseStore(join(dataRoot, "raw-cases", "events.jsonl"))
+        const {AutomaticCaptureEvidenceStore} = require("../../../desktop/rolling-skill/src/automatic-capture-evidence-store.cjs")
+        const evidenceStore = new AutomaticCaptureEvidenceStore(join(dataRoot, "raw-cases", "evidence"))
+        const evidence = evidenceStore.save({schemaVersion: "rolling-skill-episode/v1", originalQuestion: "Preserve automatic question verbatim", source: {runtimeId: "runtime-1", threadId: "thread-1", startItemId: "user-1", endItemId: "assistant-1"}, items: [{id: "user-1", type: "userMessage", text: "Preserve automatic question verbatim"}, {id: "assistant-1", type: "agentMessage", text: "Answer"}]})
         const saved = rawStore.addAutomaticCandidate({
             question: "Preserve automatic question verbatim",
             skill: {id: managed.skill.id, name: managed.skill.name},
             note: "complete",
             source: {
+                evidence,
                 kind: "automatic_capture",
                 runtimeId: "runtime-1",
                 threadId: "thread-1",
@@ -888,7 +899,7 @@ describe("shared Rolling Skill application", () => {
             idempotencyKey: "raw-case-draft-1",
         })
         assert.equal(result.id, "curation-from-raw")
-        assert.equal(calls[0].sourceThreadId, "thread-1")
+        assert.equal(calls[0].episode.source.threadId, "thread-1")
         assert.equal(calls[0].executionSkillReference.path, "/runtime/billing/SKILL.md")
         assert.equal((await application.dispatch("rawCases.list", {})).length, 0)
         await application.close()

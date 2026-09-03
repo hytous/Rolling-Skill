@@ -4,8 +4,10 @@ import {CaseCaptureAction} from "./conversation/CaseCaptureAction"
 import {ConversationCurationMarkers} from "./conversation/ConversationCurationMarkers"
 import {WorkbenchLauncher} from "./workbench/WorkbenchLauncher"
 import {RollingSkillSettings} from "./settings/RollingSkillSettings"
+import {registerNativeSessionNavigation, type NativeSessions} from "./workbench/native-session-navigation"
 
 interface ClientContext {
+    sessions: NativeSessions
     effect(factory: () => (() => void), label: string): unknown
     locale: {
         bind(namespace: string): (key: string) => string
@@ -19,9 +21,10 @@ interface ClientContext {
     }
 }
 
-export const inject = ["slots", "locale"]
+export const inject = ["slots", "locale", "sessions"]
 
 export function apply(ctx: ClientContext): void {
+    ctx.effect(() => registerNativeSessionNavigation(ctx.sessions), "rolling-skill: native session navigation")
     ctx.effect(
         () => ctx.locale.register(LOCALE_NAMESPACE, DICTIONARIES),
         "rolling-skill: dictionaries",

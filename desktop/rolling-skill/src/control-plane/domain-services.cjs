@@ -2021,13 +2021,15 @@ function createDomainServices(dependencies = {}) {
                     ...(step.error === null ? {} : {error: step.error}),
                 }
             }
-            if (typeof operatorSessionManager?.resumeAfterApproval !== "function") {
-                throw new Error("Operator approval recovery unavailable")
-            }
-            try {
-                await operatorSessionManager.resumeAfterApproval(currentApproval.sessionId)
-            } catch (cause) {
-                throw createPublicControlError("CONTROL_BUSY", {cause})
+            if (currentApproval.action !== "optimization.release-install") {
+                if (typeof operatorSessionManager?.resumeAfterApproval !== "function") {
+                    throw new Error("Operator approval recovery unavailable")
+                }
+                try {
+                    await operatorSessionManager.resumeAfterApproval(currentApproval.sessionId)
+                } catch (cause) {
+                    throw createPublicControlError("CONTROL_BUSY", {cause})
+                }
             }
             return {
                 approval: publicApproval(currentApproval),

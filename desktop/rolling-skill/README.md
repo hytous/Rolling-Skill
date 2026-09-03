@@ -259,8 +259,8 @@ The engine, rather than the Operator Agent, owns the phase order:
 ```text
 preflight → baseline evaluation
           → edit → Candidate → experiment install → evaluation → decision
-          → next Epoch, release approval, or stop-and-restore
-          → Released install → final regression → succeeded
+          → next Epoch, one final release-and-install approval, or stop-and-restore
+          → approved release + Released install → succeeded
 ```
 
 The baseline evaluation is not an Epoch. Each Epoch edits a linked worktree under Application
@@ -282,12 +282,14 @@ installs**. Restoration rechecks the experiment marker before changing a target 
 restored content and inventory afterward; any uncertain target leaves the parent Job in
 `needs_recovery` with its last verified digest, marker, and installer Job link.
 
-Release, formal Released installation, and any requested budget increase are distinct approval
-boundaries. The Agent cannot approve them or raise its own limits. A successful release followed by
-a failed install remains recorded as “released but not installed”; the Released version is not
-rolled back, while enrolled Runtime targets are restored or surfaced for recovery. Only a successful
-Released install followed by final regression keeps the new installation instead of restoring the
-baseline.
+The first Candidate experiment installation, the one final release-and-install decision, and any
+requested budget increase are distinct approval boundaries. The Agent cannot approve them or raise
+its own limits. At the final decision the user chooses either **Install improved version**, which
+publishes the immutable Candidate and formally installs it on every frozen target, or **Restore
+original version**, which skips release and restores the experiment targets. A successful release
+followed by a failed install remains recorded as “released but not installed”; the Released version
+is not rolled back, while enrolled Runtime targets are restored or surfaced for recovery. A
+successful formal installation ends the Run without another final-regression evaluation.
 
 Pause prevents new phase scheduling without pretending an in-flight side effect was undone. Stop
 cancels queued work, interrupts active children, and then restores enrolled Runtime targets. During
@@ -300,7 +302,7 @@ durable and blocks a new Epoch or release action.
 
 The right-hand Run panel shows the frozen inputs, Epoch/Candidate timeline, per-Runtime installation
 state, score/pass trend, regressions, remaining budgets, stop reason, approvals, release/final
-regression result, and recovery targets. Large Diff, evaluation, Trace, and report bodies stay in
+installation result, and recovery targets. Large Diff, evaluation, Trace, and report bodies stay in
 lazy Artifacts rather than the Renderer snapshot. The generated Chinese Markdown report is derived
 from persisted evidence; unavailable Runtime telemetry is labeled as unavailable, never reported as
 zero.

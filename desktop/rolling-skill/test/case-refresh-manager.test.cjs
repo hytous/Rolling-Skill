@@ -123,6 +123,7 @@ function fixture(overrides = {}) {
             providerId: "openai",
             workspaceRoot: "/workspace",
         }),
+        getCuratorRuntimeDescriptor: () => ({runtimeId: "codex:curator", providerId: "openai"}),
     })
     return {
         manager,
@@ -156,6 +157,7 @@ describe("Case refresh manager", () => {
         assert.equal(test.curationInputs[0].episode.source.threadId, "refresh-thread")
         assert.equal(test.curationInputs[0].episode.items[0].text, test.runtimeInputs[0].question)
         assert.equal(test.curationInputs[0].modelId, "gpt-curator")
+        assert.equal(test.curationInputs[0].runtimeId, "codex:curator")
         assert.equal(test.curationInputs[0].effort, "xhigh")
         assert.deepEqual([...test.manager.hiddenThreadIds()], ["refresh-thread"])
         assert.deepEqual(test.archivedThreads, ["refresh-thread"])

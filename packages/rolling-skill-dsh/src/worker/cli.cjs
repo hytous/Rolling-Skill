@@ -1,9 +1,17 @@
 #!/usr/bin/env node
 
 const {parseWorkerArguments, runWorker} = require("./run.cjs")
+const {dirname, delimiter} = require("node:path")
+
+function workerEnvironment(environment = process.env, nodeExecutable = process.execPath) {
+    // launchd/systemd do not inherit the interactive shell's Node installation.
+    // Child runtimes also use /usr/bin/env node; retain the existing PATH.
+    return {...environment, PATH: [dirname(nodeExecutable), environment.PATH].filter(Boolean).join(delimiter)}
+}
 
 async function main(argv = process.argv.slice(2)) {
     const options = parseWorkerArguments(argv)
+    process.env.PATH = workerEnvironment().PATH
     const controller = new AbortController()
     const abort = () => controller.abort()
     process.once("SIGINT", abort)
@@ -26,4 +34,4 @@ if (require.main === module) {
     })
 }
 
-module.exports = {main}
+module.exports = {main, workerEnvironment}

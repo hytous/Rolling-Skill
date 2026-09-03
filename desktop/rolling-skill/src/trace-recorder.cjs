@@ -45,6 +45,14 @@ function codeBuddyUpdate(entry) {
     return object(entry?.message?.params?.update)
 }
 
+function dshEvent(entry) {
+    const message = object(entry?.message)
+    if (!["events.mux", "session/event"].includes(message.method)) return null
+    const params = object(message.params)
+    if (message.method === "events.mux" && params.type !== "session/event") return null
+    return params.event && typeof params.event === "object" ? params.event : null
+}
+
 function codeBuddyToolInput(update) {
     const rawInput = object(update.rawInput)
     return Object.keys(rawInput).length ? rawInput : null
@@ -55,6 +63,12 @@ function isSemanticTraceEntry(entry) {
     const method = String(message.method ?? "")
     if (hasFailure(message)) return true
     if (!method) return Boolean(message.result)
+
+    if (method === "events.mux") {
+        const event = dshEvent(entry)
+        if (!event) return !["session/projection", "session/queue", "session/subscribed"].includes(message.params?.type)
+        return !["assistant/chunk", "request/header", "request/context", "session/title", "session/title-llm-request"].includes(event.type)
+    }
 
     if (method === "session/update") {
         const update = codeBuddyUpdate(entry)
@@ -151,6 +165,7 @@ function semanticMessageProjection(entry, maxCharacters, stats) {
     const params = object(message.params)
     const update = object(params.update)
     const item = object(params.item)
+    const event = dshEvent(entry)
     const projected = {
         schemaVersion: entry.schemaVersion,
         sequence: entry.sequence,
@@ -160,6 +175,7 @@ function semanticMessageProjection(entry, maxCharacters, stats) {
         message: {
             ...(message.id === undefined ? {} : {id: message.id}),
             ...(message.method ? {method: message.method} : {}),
+            ...(event ? {params: {type: params.type, sessionId: params.sessionId, event: {type: event.type, seq: event.seq, time: event.time, data: event.data}}} : {}),
             ...(Object.keys(update).length ? {params: {update: {
                 sessionUpdate: update.sessionUpdate,
                 toolCallId: update.toolCallId,
@@ -276,6 +292,10 @@ function isCodeBuddyTerminalUpdate(update) {
 
 function entryPriority(entry) {
     if (hasFailure(entry.message)) return 100
+    const event = dshEvent(entry)
+    if (event?.type === "user/message" && event.data?.source?.kind === "skill-invocation") return 95
+    if (["tool/call", "tool/result"].includes(event?.type)) return event.data?.name === "skill" || event.data?.call?.name === "skill" ? 95 : 80
+    if (["assistant/message", "turn/end"].includes(event?.type)) return 60
     const update = codeBuddyUpdate(entry)
     if (update.rawInput?.skill || update.kind === "read") return 95
     const method = String(entry.message?.method ?? "")
@@ -374,11 +394,16 @@ class TraceRecorder {
         const rangeEntries = []
         const codeBuddyStarts = new Map()
         const codeBuddyTerminalSequences = new Map()
+        const dshCalls = new Map()
         let compactedEntries = 0
         let collapsedToolCallEntries = 0
         for (let lineNumber = start; lineNumber <= end; lineNumber += 1) {
             const entry = JSON.parse(lines[lineNumber - 1])
             rangeEntries.push(entry)
+            const event = dshEvent(entry)
+            if (event?.type === "tool/call" && event.data?.callId) {
+                dshCalls.set(`${entry.message.params.sessionId}:${event.data.callId}`, {name: event.data.name, arguments: event.data.arguments, startedSequence: entry.sequence})
+            }
             const update = codeBuddyUpdate(entry)
             if (update.sessionUpdate === "tool_call" && update.toolCallId && codeBuddyToolInput(update)) {
                 codeBuddyStarts.set(update.toolCallId, entry)
@@ -411,6 +436,11 @@ class TraceRecorder {
                 continue
             }
             entry = augmentCodeBuddyTerminalEntry(entry, codeBuddyStarts)
+            const event = dshEvent(entry)
+            if (event?.type === "tool/result") {
+                const call = dshCalls.get(`${entry.message.params.sessionId}:${event.data?.message?.source?.callId}`)
+                if (call) entry = {...entry, message: {...entry.message, params: {...entry.message.params, event: {...event, data: {...event.data, call}}}}}
+            }
             entry = attachCodeBuddyOutputDigests(entry)
             semanticEntries.push(compactJsonEntry(entry, Math.min(maxEntryCharacters, maxTotalCharacters)))
         }

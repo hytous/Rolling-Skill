@@ -40,6 +40,7 @@ const ACTIVE_RESTART_STATES = new Set([
     "installing",
     "evaluating",
     "deciding",
+    "waiting_approval",
     "restoring",
 ])
 const RUN_STATES = new Set([
@@ -60,7 +61,7 @@ const RUN_TRANSITIONS = new Map([
     ["preflight", new Set(["baseline", "failed", "cancelled", "needs_recovery"])],
     ["baseline", new Set(["editing", "failed", "cancelled", "needs_recovery"])],
     ["editing", new Set(["installing", "restoring", "failed", "cancelled", "needs_recovery"])],
-    ["installing", new Set(["evaluating", "restoring", "failed", "cancelled", "needs_recovery"])],
+    ["installing", new Set(["evaluating", "restoring", "succeeded", "failed", "cancelled", "needs_recovery"])],
     ["evaluating", new Set(["deciding", "restoring", "failed", "cancelled", "needs_recovery"])],
     ["deciding", new Set([
         "editing",
@@ -1099,6 +1100,8 @@ function publicRunSummary(run) {
         updatedAt: run.updatedAt,
         completedAt: run.completedAt,
         currentEpoch: run.currentEpoch,
+        skillId: run.snapshot.baseline.skillId,
+        datasetId: run.snapshot.dataset.id,
         counts: {
             epochs: run.epochs.length,
             terminalEpochs: run.epochs.filter((entry) => TERMINAL_EPOCH_STATES.has(entry.status)).length,
@@ -1514,7 +1517,10 @@ class OptimizationStore {
         )) {
             throw new Error("Optimization approval requires analysis and decision artifacts")
         }
-        if (nextState === "editing" && currentEpoch !== null && !TERMINAL_EPOCH_STATES.has(currentEpoch.status)) {
+        const resumingUnsubmittedEdit = current.state === "needs_recovery" &&
+            current.checkpoint?.paused === true && currentEpoch?.status === "editing" &&
+            currentEpoch.candidateArtifactId === null
+        if (nextState === "editing" && currentEpoch !== null && !TERMINAL_EPOCH_STATES.has(currentEpoch.status) && !resumingUnsubmittedEdit) {
             throw new Error("Optimization must terminalize the current Epoch before returning to editing")
         }
         if (TERMINAL_STATES.has(nextState) && current.epochs.some(

@@ -103,6 +103,51 @@ function fixture(overrides = {}) {
 }
 
 describe("Curation operation evidence", () => {
+    it("uses the captured DSH installation independently of the selected Curator Runtime", () => {
+        const curatorRuntime = {runtimeId: "codex:/app/codex", providerId: "codex", displayName: "Codex", executablePath: "/app/codex"}
+        const {installation, runtime} = fixture()
+        const queries = []
+        const {resolver} = fixture({
+            selectedRuntime: curatorRuntime,
+            runtimeDescriptors: {[curatorRuntime.runtimeId]: curatorRuntime, [runtime.runtimeId]: runtime},
+            listVerifiedInstallations(query) {
+                queries.push(query)
+                return query.providerId === runtime.providerId && (!query.runtimeId || query.runtimeId === runtime.runtimeId)
+                    ? [installation] : []
+            },
+        })
+        const options = {sourceProviderId: "deepseek-harness"}
+        assert.equal(resolver.inspectDataset("dataset-1", options).ready, true)
+        const resolved = resolver.resolve("dataset-1", {...options, observedSkills: [{
+            name: "billing", provider: "local", resourceBase: {kind: "directory", path: installation.destination}, callSeq: 6, resultSeq: 7,
+        }]})
+        assert.equal(resolved.operationEvidence.runtime.runtimeId, runtime.runtimeId)
+        assert.equal(resolved.executionSkillReference.path, "/opt/dsh/skills/billing/SKILL.md")
+        assert.ok(queries.every((query) => query.providerId === "deepseek-harness"))
+        assert.throws(() => resolver.resolve("dataset-1", {...options, observedSkills: [{
+            name: "billing", resourceBase: {kind: "directory", path: "/uninstalled/billing"}, callSeq: 6, resultSeq: 7,
+        }]}), /source.*Skill.*installation/i)
+    })
+
+    it("identifies the Skill and selected Runtime when installation blocks capture", () => {
+        const {resolver, dataset, runtime} = fixture({installations: []})
+        const result = resolver.inspectDataset(dataset.id)
+        assert.equal(result.ready, false)
+        assert.equal(result.skillId, "skill-1")
+        assert.equal(result.runtime.runtimeId, runtime.runtimeId)
+        assert.equal(result.blockers[0].code, "INSTALLATION_REQUIRED")
+    })
+    it("selects the installation observed in the captured source, not a newer unrelated DSH path", () => {
+        const installed = fixture().installation
+        const {resolver} = fixture({installations: [
+            {...installed, id: "new", destination: "/another-dsh/skills/billing", installedAt: "2026-08-28T00:00:00.000Z"},
+            installed,
+        ]})
+        const resolved = resolver.resolve("dataset-1", {sourceProviderId: "deepseek-harness", observedSkills: [{
+            name: "billing", provider: "local", resourceBase: {kind: "directory", path: installed.destination}, callSeq: 2, resultSeq: 3,
+        }]})
+        assert.equal(resolved.operationEvidence.installation.destination, installed.destination)
+    })
     it("freezes one Released version and verified Runtime installation without changing Dataset identity", () => {
         const {dataset, resolver} = fixture()
 
@@ -149,6 +194,7 @@ describe("Curation operation evidence", () => {
         })
         assert.deepEqual(resolver.inspectDataset(dataset.id), {
             datasetId: "dataset-1",
+            skillId: "skill-1",
             name: "Billing cases",
             ready: true,
             blockers: [],

@@ -4,6 +4,23 @@ const {describe, it} = require("node:test")
 const {RuntimeInteractionBroker} = require("../src/runtime-interaction-broker.cjs")
 
 describe("Runtime interaction broker", () => {
+    it("shows the actual requested operation for Codex, CodeBuddy and DSH before approval", async () => {
+        const broker = new RuntimeInteractionBroker()
+        for (const params of [
+            {command: "cp SKILL.md /skills/example/SKILL.md", reason: "Install the selected release", cwd: "/workspace", permissions: {fileSystem: {write: ["/skills/example"]}}},
+            {toolCall: {name: "write_file", rawInput: {path: "/skills/example/SKILL.md", content: "Skill content", apiKey: "hidden-value"}}},
+            {toolName: "shell", reason: "Install release", toolCall: {rawInput: {command: "API_TOKEN=hidden-value install-skill"}}},
+        ]) {
+            const result = broker.requestPermission({jobId: "install", params, options: [{optionId: "allow_once"}]})
+            const [pending] = broker.list()
+            assert.ok(pending.details)
+            assert.match(JSON.stringify(pending.details), /Install|write_file|shell/)
+            assert.doesNotMatch(JSON.stringify(pending.details), /hidden-value/)
+            broker.resolve({interactionId: pending.id, decision: "decline"})
+            assert.equal(await result, "decline")
+        }
+        broker.close()
+    })
     it("publishes bounded owner-scoped permission requests and resolves an allowed decision", async () => {
         const broker = new RuntimeInteractionBroker({timeoutMs: 60_000})
         const response = broker.requestPermission({

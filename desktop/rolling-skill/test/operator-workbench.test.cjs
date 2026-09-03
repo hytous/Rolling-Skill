@@ -15,6 +15,8 @@ const {
     createOperatorSurfaceGate,
     createOperatorWorkbenchState,
     optimizationPanelView,
+    optimizationFinalApproval,
+    optimizationFinalApprovalView,
     optimizationPreflightSummary,
     optimizationRunActions,
     operatorStatusText,
@@ -1596,6 +1598,7 @@ describe("multi-Epoch Optimization workbench", () => {
         })
 
         assert.deepEqual(optimizationRunActions({state: "restoring", checkpoint: {}}), ["report"])
+        assert.deepEqual(optimizationRunActions({state: "waiting_approval", checkpoint: {}}), ["report"])
         assert.deepEqual(optimizationRunActions(recovering), ["report"])
         assert.deepEqual(optimizationRunActions({
             state: "needs_recovery",
@@ -1634,9 +1637,51 @@ describe("multi-Epoch Optimization workbench", () => {
         assert.deepEqual(summary.telemetry, {tokens: true, cost: true})
         assert.deepEqual(summary.approvals, [
             "candidate-experiment-install",
-            "release",
-            "released-install",
+            "release-install",
         ])
+    })
+
+    it("selects the one persisted release-install approval for the optimization detail", () => {
+        const pending = {
+            id: "approval-final-1",
+            jobId: "job-1",
+            status: "pending",
+            action: "optimization.release-install",
+        }
+        assert.equal(optimizationFinalApproval({job: {id: "job-1"}, approvals: [pending]}).id, pending.id)
+        assert.equal(optimizationFinalApproval({
+            job: {id: "job-1"},
+            approvals: [{...pending, status: "approved"}],
+        }), null)
+    })
+
+    it("presents the Candidate, evaluation, target Runtimes, and risk beside the final decision", () => {
+        const view = optimizationFinalApprovalView({
+            currentEpoch: 2,
+            targets: [
+                {runtimeId: "codex:target"},
+                {runtimeId: "dsh:target"},
+            ],
+            epochs: [{
+                number: 2,
+                candidate: {versionId: "candidate-v2"},
+                analysis: {score: 93, passRate: 1, regressionCount: 0},
+            }],
+            checkpoint: {},
+        }, {
+            id: "approval-final-1",
+            risk: "Release and install this Candidate on every frozen target Runtime",
+        })
+
+        assert.deepEqual(view, {
+            approvalId: "approval-final-1",
+            candidateVersionId: "candidate-v2",
+            score: 93,
+            passRate: 1,
+            regressionCount: 0,
+            runtimeIds: ["codex:target", "dsh:target"],
+            risk: "Release and install this Candidate on every frozen target Runtime",
+        })
     })
 
     it("derives live Epoch, regression, remaining-budget, stop, and recovery panel state", () => {
@@ -1660,9 +1705,8 @@ describe("multi-Epoch Optimization workbench", () => {
                 stopReason: "broad_regression",
                 telemetry: {elapsedMs: 4_000, turnsUsed: 8, tokens: 600, costMicros: 2_000},
                 reportArtifactId: "report-1",
-                releaseApprovalId: "release-approval-1",
-                finalEvaluationArtifactId: "final-regression-1",
-                finalRegressionPassed: false,
+                finalApprovalId: "final-approval-1",
+                releasedInstallArtifactId: "released-install-1",
                 recoveryTargets: [{
                     runtimeId: "codebuddy:target",
                     status: "needs_recovery",
@@ -1683,10 +1727,9 @@ describe("multi-Epoch Optimization workbench", () => {
         assert.equal(panel.stopReason, "broad_regression")
         assert.equal(panel.reportArtifactId, "report-1")
         assert.deepEqual(panel.release, {
-            approvalId: "release-approval-1",
+            approvalId: "final-approval-1",
             releasedVersionId: null,
-            finalEvaluationArtifactId: "final-regression-1",
-            finalRegressionPassed: false,
+            installArtifactId: "released-install-1",
         })
         assert.deepEqual(panel.actions, ["report"])
         assert.equal(panel.recoveryTargets[0].installationJobId, "install-restore-2")

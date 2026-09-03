@@ -150,4 +150,34 @@ describe("Rolling Skill one-shot Worker", () => {
         assert.equal(statSync(paths.workerLog).size <= MAX_WORKER_LOG_BYTES, true)
         assert.match(readFileSync(paths.workerLog, "utf8"), /"status":"test"/u)
     })
+
+    it("keeps source workspace and newly inspected conversation cursors on both success and failure", async () => {
+        for (const fail of [false, true]) {
+            const root = dataRoot()
+            const paths = enable(root)
+            const task = runWorker({dataRoot: root, workspaceRoot: "/source/project", slot: "2026-09-01T09:00:00.000Z", createApplication: (options) => ({
+                dispatch: async () => {
+                    assert.equal(options.workspaceRoot, "/source/project")
+                    const appState = options.automaticCaptureStateStore ?? new AutomaticCaptureStateStore(paths.automaticCaptureState)
+                    appState.commitThread("dsh", "conversation", {lastInspectedUserItemId: "new-item", inspectionSignature: "new-signature"})
+                    if (fail) throw new Error("Curator failed after scanning")
+                    return {}
+                },
+                close: async () => {},
+            })})
+            if (fail) await assert.rejects(task, /Curator failed/u)
+            else await task
+            const state = new AutomaticCaptureStateStore(paths.automaticCaptureState)
+            assert.equal(state.thread("dsh", "conversation").inspectionSignature, "new-signature")
+            assert.equal(state.thread("dsh", "conversation").lastInspectedUserItemId, "new-item")
+        }
+    })
+
+    it("accepts an explicit source workspace and makes Node available to child runtimes with a minimal scheduler PATH", () => {
+        const {workerEnvironment} = require("../src/worker/cli.cjs")
+        assert.equal(parseWorkerArguments(["--data-root", "/data", "--slot", "scheduled", "--workspace-root", "/source/project"]).workspaceRoot, "/source/project")
+        assert.throws(() => parseWorkerArguments(["--data-root", "/data", "--slot", "scheduled", "--workspace-root", "relative"]), /absolute/u)
+        assert.equal(workerEnvironment({PATH: "/usr/bin:/bin", EXISTING: "keep"}, "/opt/node/bin/node").PATH, "/opt/node/bin:/usr/bin:/bin")
+        assert.equal(workerEnvironment({PATH: "/usr/bin", EXISTING: "keep"}, "/opt/node/bin/node").EXISTING, "keep")
+    })
 })

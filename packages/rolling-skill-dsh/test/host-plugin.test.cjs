@@ -216,17 +216,21 @@ async function callRoute(handler, method, input) {
     return {status: response.statusCode, headers, body: JSON.parse(body)}
 }
 
-it("does not mount a second Rolling Skill Host inside a managed DSH Runtime", async () => {
+it("mounts only trusted evidence reading, never a second data writer or scheduler, in a managed DSH Runtime", async () => {
     const source = pathToFileURL(join(__dirname, "../src/host/index.js"))
     const plugin = await import(`${source.href}?nested-host=${Date.now()}`)
     const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-nested-host-"))
     let effects = 0
+    let route
     let cleanup = null
     const context = {
         agents: {},
-        sessionQuery: {},
-        tools: {register: () => () => {}},
-        webServer: {register: () => () => {}},
+        sessionQuery: {
+            readSession: async () => sessionLog(),
+            traceEvent: async ({sessionId, seq}) => ({session: {id: sessionId}, target: {sessionId, seq, surface: "current"}, sourceEventSeqs: [seq]}),
+        },
+        tools: {register: () => assert.fail("nested Runtime must not mount app tools")},
+        webServer: {register: (entry) => {route = entry; return () => {}}},
         effect(factory) {
             effects += 1
             cleanup = factory()
@@ -237,7 +241,12 @@ it("does not mount a second Rolling Skill Host inside a managed DSH Runtime", as
         plugin.apply(context, {dataRoot}, {
             environment: {ROLLING_SKILL_OPERATOR_HOST: "1"},
         })
-        assert.equal(effects, 0)
+        assert.equal(effects, 1)
+        assert.equal(route.path, "/rolling-skill/evidence")
+        const captured = await callRoute(route.handler, "capture", {sessionId: "session-1", startSeq: 1, endMessageId: "assistant-1"})
+        assert.equal(captured.status, 200)
+        assert.equal(captured.body.value.episode.originalQuestion, "查七月账单")
+        assert.equal((await callRoute(route.handler, "datasets.delete", {datasetId: "any"})).status, 400)
     } finally {
         await cleanup?.()
     }
@@ -255,6 +264,7 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
     let sessionReads = 0
     const pickedSourceKinds = []
     const context = {
+        apiProxy: {sessions: {create: async () => ({result: {ok: true, value: {}}}), prompt: async () => ({result: {ok: true, value: {accepted: true}}})}},
         agents: {
             get: () => null,
             async create() {
@@ -324,7 +334,7 @@ it("registers and disposes the Rolling Skill Cordis Host route", async () => {
         },
     }
 
-    assert.deepEqual(plugin.inject, ["webServer", "tools", "sessionQuery", "agents"])
+    assert.deepEqual(plugin.inject, ["webServer", "tools", "sessionQuery", "agents", "apiProxy"])
     const dataRoot = mkdtempSync(join(tmpdir(), "rolling-skill-host-"))
     const dataset = seedCurationPrerequisites(dataRoot)
     plugin.apply(context, {dataRoot}, {

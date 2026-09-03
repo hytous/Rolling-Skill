@@ -21,6 +21,8 @@ describe("Rolling Skill plugin configuration", () => {
             locale: "follow-harness",
             executionLocation: "while-harness-running",
             runtime: null,
+            captureRuntime: null,
+            detectionRuntime: null,
             worker: {
                 enabled: false,
                 installed: false,

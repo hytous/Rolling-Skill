@@ -134,6 +134,24 @@ describe("DSH trusted session evidence", () => {
         assert.equal(reads, 2)
     })
 
+    it("carries earlier successful Skill identity as context without pulling prior Case messages into the captured range", async () => {
+        const traceRoot = mkdtempSync(join(tmpdir(), "rolling-skill-dsh-evidence-"))
+        directories.push(traceRoot)
+        const source = createSessionEvidenceSource({traceRoot, sessionQuery: {
+            async readSession() {return sessionLog()},
+            async traceEvent(request) {return {session: sessionLog().session, target: {sessionId: request.sessionId, seq: request.seq, type: "assistant/message", time: 114, surface: "current"}, replacementChain: [], replacedEventSeqs: [], sourceEventSeqs: [], derivedEventSeqs: []}},
+        }})
+        const captured = await source.capture({sessionId: "session-1", startSeq: 12, endMessageId: "assistant-2"})
+        assert.equal(captured.source.observedSkills[0]?.name, "billing")
+        assert.equal(captured.source.observedSkills[0]?.inherited, true)
+        assert.equal(captured.source.observedSkills[0]?.callSeq, 6)
+        assert.doesNotMatch(JSON.stringify(captured.episode.items), /查七月账单|初步结果|七月成本 100/)
+        assert.equal(captured.source.startSeq, 12)
+        const frozen = JSON.parse(readFileSync(captured.source.snapshotPath, "utf8"))
+        assert.ok(frozen.events.every((event) => event.seq >= 12 && event.seq <= 16))
+        assert.equal(frozen.skillContext[0].name, "billing")
+    })
+
     it("freezes one content-addressed raw slice and derives a deterministic Episode", async () => {
         const traceRoot = mkdtempSync(join(tmpdir(), "rolling-skill-dsh-evidence-"))
         directories.push(traceRoot)

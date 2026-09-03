@@ -6,6 +6,10 @@ import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
 import type {WorkbenchRoute} from "./Workbench"
 import {usePollingRevision} from "./usePollingRevision"
+import {AgentProfileControls} from "./AgentProfileControls"
+import {ConfirmDialog} from "./ConfirmDialog"
+import {OperationStatus} from "./OperationStatus"
+import {displayStatus} from "./display-state"
 
 interface CurationSession {
     id: string
@@ -35,13 +39,13 @@ interface CurationSession {
         runtime?: {displayName?: string | null; version?: string | null} | null
         installation?: {jobId?: string | null; verification?: string | null; installedAt?: string | null} | null
     } | null
-    curator: {modelId: string | null; effort: string | null; effectiveModelId: string | null; effectiveEffort: string | null; working: boolean} | null
+    curator: {runtimeId?: string | null; modelId: string | null; effort: string | null; effectiveModelId: string | null; effectiveEffort: string | null; working: boolean} | null
     conversation: Array<{id: string; role: string; text: string}>
     revisions: Array<{id: string; draft: CurationDraft; createdAt: string}>
     draft: CurationDraft | null
 }
 
-interface CurationDraft {
+export interface CurationDraft {
     schemaVersion?: string
     referenceAnswer?: {
         summary?: string
@@ -75,6 +79,8 @@ export function CurationSessionView({
     const [error, setError] = useState<string | null>(null)
     const [message, setMessage] = useState("")
     const [busy, setBusy] = useState(false)
+    const [pendingMethod, setPendingMethod] = useState("")
+    const [confirmDiscard, setConfirmDiscard] = useState(false)
     const keys = useRef(new Map<string, string>())
     const working = Boolean(session?.curator?.working || (session && ["queued", "running"].includes(session.status)))
     const [revision, refresh] = usePollingRevision(working)
@@ -98,6 +104,7 @@ export function CurationSessionView({
             keys.current.set(signature, idempotencyKey)
         }
         setBusy(true)
+        setPendingMethod(method)
         setError(null)
         try {
             const result = await requestRollingSkill<any>(method, {
@@ -124,6 +131,7 @@ export function CurationSessionView({
             return false
         } finally {
             setBusy(false)
+            setPendingMethod("")
         }
     }
 
@@ -141,11 +149,12 @@ export function CurationSessionView({
             <div className="rolling-skill-panel-header">
                 <div>
                     <h3>{session.episode?.originalQuestion ?? session.id}</h3>
-                    <p>{session.caseType} · {session.status}</p>
+                    <p>{session.caseType} · {displayStatus(session.status, t)}</p>
                 </div>
                 <Button size="sm" onClick={refresh}>{t("refresh")}</Button>
             </div>
             {session.error || error ? <p className="rolling-skill-inline-error" role="alert">{error ?? session.error}</p> : null}
+            {working || busy ? <OperationStatus state={busy ? "starting" : "running"}>{t(busy && pendingMethod !== "curation.send" && pendingMethod !== "curation.retry" ? "savingReviewChanges" : "curationWorking")}</OperationStatus> : null}
             <section className="rolling-skill-curation-primary">
                 <h4>{t("latestDraft")}</h4>
                 {session.draft ? <CurationDraftCard draft={session.draft} t={t}/> : <p>{t("noValidDraft")}</p>}
@@ -160,12 +169,11 @@ export function CurationSessionView({
                         disabled={working || busy}
                         onChange={(event) => setMessage(event.target.value)}
                     />
-                    {working ? <p className="rolling-skill-muted" role="status">{t("curationWorking")}</p> : null}
                     <div className="rolling-skill-actions">
                         <Button tone="primary" disabled={working || busy || !message.trim()} onClick={() => void sendRevision()}>{t("generateRevision")}</Button>
                         {session.status === "failed" ? <Button disabled={busy} onClick={() => mutate("curation.retry")}>{t("retry")}</Button> : null}
                         <Button disabled={busy || session.status !== "needs_review" || !session.draft} onClick={() => mutate("curation.save")}>{t("saveCase")}</Button>
-                        <Button disabled={busy} onClick={() => { if (window.confirm(t("discardDraftConfirm"))) mutate("curation.discard") }}>{t("discardDraft")}</Button>
+                        <Button disabled={busy} onClick={() => setConfirmDiscard(true)}>{t("discardDraft")}</Button>
                     </div>
                 </section>
             ) : null}
@@ -181,12 +189,10 @@ export function CurationSessionView({
                         <p key={`${skill.name}:${skill.callSeq}`}>{skill.name} · {skill.provider} · #{skill.callSeq}–{skill.resultSeq}</p>
                     ))}
                     {session.operationEvidence ? <dl><div><dt>{t("skillRepositories")}</dt><dd>{session.operationEvidence.skillName ?? t("notAvailable")} · {session.operationEvidence.versionLabel ?? t("notAvailable")}</dd></div><div><dt>{t("installationCommit")}</dt><dd><code>{session.operationEvidence.commit?.slice(0, 12) ?? t("notAvailable")}</code></dd></div><div><dt>{t("installationDigest")}</dt><dd title={session.operationEvidence.contentDigest ?? undefined}><code>{session.operationEvidence.contentDigest ?? t("notAvailable")}</code></dd></div><div><dt>{t("frozenRubric")}</dt><dd>{session.operationEvidence.rubricVersionId ?? t("notAvailable")}</dd></div><div><dt>{t("installationRuntime")}</dt><dd>{session.operationEvidence.runtime?.displayName ?? t("notAvailable")} {session.operationEvidence.runtime?.version ?? ""}</dd></div><div><dt>{t("installationJob")}</dt><dd>{session.operationEvidence.installation?.jobId ?? t("notAvailable")} · {session.operationEvidence.installation?.verification ?? t("notAvailable")}</dd></div></dl> : null}
-                    {editable ? <div className="rolling-skill-curation-model-controls">
-                        <label className="rolling-skill-field"><span>{t("model")}</span><input value={session.curator?.modelId ?? ""} placeholder={t("configuredDefault")} onChange={(event) => setSession({...session, curator: {...session.curator!, modelId: event.target.value}})} onBlur={() => mutate("curation.model", {modelId: session.curator?.modelId || null})}/></label>
-                        <label className="rolling-skill-field"><span>{t("effort")}</span><select className="rolling-skill-select" value={session.curator?.effort ?? ""} onChange={(event) => mutate("curation.effort", {effort: event.target.value || null})}><option value="">{t("configuredDefault")}</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></select></label>
-                    </div> : null}
+                    {editable ? <AgentProfileControls t={t} runtimeId={session.curator?.runtimeId} modelId={session.curator?.modelId ?? ""} effort={session.curator?.effort ?? ""} disabled={working || busy} onModelChange={(modelId) => void mutate("curation.model", {modelId: modelId || null})} onEffortChange={(effort) => void mutate("curation.effort", {effort: effort || null})}/> : null}
                 </section>
             </details>
+            <ConfirmDialog open={confirmDiscard} title={t("discardDraft")} description={t("discardDraftConfirm")} confirmLabel={t("discardDraft")} cancelLabel={t("cancel")} busy={busy} destructive onCancel={() => setConfirmDiscard(false)} onConfirm={async () => {if (await mutate("curation.discard")) setConfirmDiscard(false)}}/>
         </section>
     )
 }
@@ -196,7 +202,7 @@ function StringList({title, values}: {title: string; values?: string[]}) {
     return <section><h4>{title}</h4><ul>{values.map((value, index) => <li key={`${index}:${value}`}>{value}</li>)}</ul></section>
 }
 
-function CurationDraftCard({draft, t}: {draft: CurationDraft; t: Translate}) {
+export function CurationDraftCard({draft, t}: {draft: CurationDraft; t: Translate}) {
     const answer = draft.referenceAnswer
     const hasDetails = Boolean(
         answer?.evidence?.length ||
@@ -206,7 +212,7 @@ function CurationDraftCard({draft, t}: {draft: CurationDraft; t: Translate}) {
         draft.badCaseAnalysis,
     )
     return <div className="rolling-skill-curation-draft-card">
-        <header><strong>{answer?.summary ?? draft.schemaVersion ?? t("notAvailable")}</strong><span className="rolling-skill-badge">{draft.schemaVersion}</span></header>
+        <header><strong>{answer?.summary ?? t("caseAnswer")}</strong></header>
         <StringList title={t("requiredFacts")} values={answer?.requiredFacts}/>
         <StringList title={t("requiredSteps")} values={answer?.requiredSteps}/>
         <StringList title={t("requiredOutputFormat")} values={answer?.requiredOutputFormat}/>

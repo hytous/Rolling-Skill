@@ -267,6 +267,7 @@ function emitRuntimeNotification(message) {
 const runtimeQuestionListeners = new Set()
 const runtimeQuestionResolvedListeners = new Set()
 const rawCasesChangedListeners = new Set()
+const automaticCaptureStatusListeners = new Set()
 const managedSkillsChangedListeners = new Set()
 const curationChangedListeners = new Set()
 const curationActivityListeners = new Set()
@@ -425,7 +426,7 @@ function advanceSmokeOptimization() {
     smokeOptimizationStage += 1
     smokeOptimizationRun.revision += 1
     if (smokeOptimizationStage === 1) {
-        smokeOptimizationRun.state = "editing"
+        smokeOptimizationRun.state = "waiting_approval"
         smokeOptimizationRun.currentEpoch = 2
         smokeOptimizationRun.epochs = [{
             number: 1,
@@ -437,15 +438,14 @@ function advanceSmokeOptimization() {
             decision: {action: "continue", rationale: "继续第二轮"},
         }, {
             number: 2,
-            status: "installing",
+            status: "completed",
             candidateArtifactId: "candidate-artifact-2",
             candidate: {versionId: "candidate-smoke-2", commit: "d".repeat(40), contentDigest: `sha256:${"d".repeat(64)}`},
-            installations: [{runtimeId: "codebuddy:renderer-smoke", status: "running", installationJobId: "install-smoke-2", lastVerifiedDigest: `sha256:${"c".repeat(64)}`}],
+            installations: [{runtimeId: "codebuddy:renderer-smoke", status: "succeeded", installationJobId: "install-smoke-2", lastVerifiedDigest: `sha256:${"d".repeat(64)}`}],
+            analysis: {score: 94, scoreDelta: 12, passRate: 1, regressionCount: 0},
+            decision: {action: "release-install", rationale: "候选版本达到目标，等待一次最终审批。"},
         }]
         smokeOptimizationRun.checkpoint = {
-            releaseApprovalId: "release-approval-smoke",
-            finalEvaluationArtifactId: "final-regression-smoke",
-            finalRegressionPassed: false,
             telemetry: {elapsedMs: 2_000, turnsUsed: 12, tokens: 4_000, costMicros: 2_000},
         }
     }
@@ -1232,8 +1232,36 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         digest: `sha256:${"9".repeat(64)}`,
         mediaType: "text/markdown; charset=utf-8",
     }),
-    resolveOperatorApproval: (approvalId, decision) =>
-        invokeOperator("resolve-approval", {approvalId, decision}),
+    resolveOperatorApproval: async (approvalId, decision) => {
+        const result = await invokeOperator("resolve-approval", {approvalId, decision})
+        if (result.changed) emitOperator(operatorChangedListeners, result.changed)
+        if (approvalId === smokeOptimizationRun?.checkpoint?.finalApprovalId) {
+            smokeOptimizationRun = decision === "approve" ? {
+                ...smokeOptimizationRun,
+                state: "succeeded",
+                revision: smokeOptimizationRun.revision + 1,
+                epochs: smokeOptimizationRun.epochs.map((epoch) => epoch.number === smokeOptimizationRun.currentEpoch ? {
+                    ...epoch,
+                    status: "succeeded",
+                } : epoch),
+                checkpoint: {
+                    ...smokeOptimizationRun.checkpoint,
+                    releasePhase: "released-install",
+                    releasedVersionId: "managed-version-improved-smoke",
+                    releasedInstallArtifactId: "released-install-smoke",
+                },
+            } : {
+                ...smokeOptimizationRun,
+                state: "failed",
+                revision: smokeOptimizationRun.revision + 1,
+                error: {
+                    code: "OPTIMIZATION_FINAL_APPROVAL_REJECTED",
+                    message: "Final Optimization approval was rejected",
+                },
+            }
+        }
+        return result
+    },
     listOperatorArtifacts: (jobId, cursor = null, limit = 100) =>
         invokeOperator("list-artifacts", {jobId, cursor, limit}),
     onOperatorChanged: (listener) => {
@@ -1252,10 +1280,20 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         operatorArtifactListeners.add(listener)
         return () => operatorArtifactListeners.delete(listener)
     },
+    onAutomaticCaptureStatus: (listener) => {
+        automaticCaptureStatusListeners.add(listener)
+        return () => automaticCaptureStatusListeners.delete(listener)
+    },
     smokeEmitHiddenOperatorDelta: async () => {
         emitOperator(operatorEventListeners, await invokeOperator("emit-hidden"))
     },
-    smokeAdvanceOptimization: () => advanceSmokeOptimization(),
+    smokeAdvanceOptimization: async () => {
+        advanceSmokeOptimization()
+        const created = await invokeOperator("create-optimization-approval", {runId: smokeOptimizationRun.id})
+        smokeOptimizationRun.checkpoint.finalApprovalId = created.approval.id
+        emitOperator(operatorChangedListeners, created.changed)
+        return structuredClone(smokeOptimizationRun)
+    },
     smokeEmitOperatorGap: async () => {
         emitOperator(operatorChangedListeners, await invokeOperator("emit-gap"))
     },

@@ -14,11 +14,11 @@ function windowsQuoted(value) {
     return `"${text.replace(/(\\+)$/u, "$1$1")}"`
 }
 
-function taskCreateArguments({workerExecutable, dataRoot, schedule}) {
+function taskCreateArguments({workerExecutable, dataRoot, schedule, nodeExecutable = process.execPath, workspaceRoot = process.cwd()}) {
     const worker = requiredAbsolutePath(workerExecutable, "Worker executable")
     const root = requiredAbsolutePath(dataRoot, "Rolling Skill data root")
     const normalized = normalizeSchedule(schedule)
-    const taskCommand = `${windowsQuoted(worker)} --data-root ${windowsQuoted(root)} --slot scheduled`
+    const taskCommand = `${windowsQuoted(requiredAbsolutePath(nodeExecutable, "Node executable"))} ${windowsQuoted(worker)} --data-root ${windowsQuoted(root)} --slot scheduled --workspace-root ${windowsQuoted(requiredAbsolutePath(workspaceRoot, "Source workspace"))}`
     return [
         "/Create", "/F", "/TN", IDENTIFIER, "/TR", taskCommand,
         "/SC", normalized.cadence === "daily" ? "DAILY" : "WEEKLY",
@@ -27,13 +27,13 @@ function taskCreateArguments({workerExecutable, dataRoot, schedule}) {
     ]
 }
 
-function createTaskSchedulerAdapter({workerExecutable, dataRoot, run = defaultRun} = {}) {
+function createTaskSchedulerAdapter({workerExecutable, dataRoot, nodeExecutable = process.execPath, workspaceRoot = process.cwd(), run = defaultRun} = {}) {
     const worker = requiredAbsolutePath(workerExecutable, "Worker executable")
     const root = requiredAbsolutePath(dataRoot, "Rolling Skill data root")
     return Object.freeze({
         capabilities: () => ({platform: "win32", supported: true, identifier: IDENTIFIER}),
         async install(schedule) {
-            assertCommand(await run("schtasks.exe", taskCreateArguments({workerExecutable: worker, dataRoot: root, schedule})), "Windows scheduled task registration")
+            assertCommand(await run("schtasks.exe", taskCreateArguments({workerExecutable: worker, dataRoot: root, nodeExecutable, workspaceRoot, schedule})), "Windows scheduled task registration")
             return {installed: true, platform: "win32", identifier: IDENTIFIER}
         },
         async status() {

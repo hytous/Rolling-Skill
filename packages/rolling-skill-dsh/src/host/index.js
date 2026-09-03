@@ -6,35 +6,50 @@ import schedulerModule from "../scheduler/index.cjs"
 import {createNativeSessionDispatcher} from "./native-session-dispatcher.js"
 import {createPathRevealer} from "./reveal-path.js"
 import skillSourcePickerModule from "./skill-source-picker.cjs"
+import applicationOwnerModule from "../../../rolling-skill-core/src/application-owner.cjs"
 
 const {createRollingSkillApplication, resolveDataPaths} = applicationModule
 const {createRollingSkillApiHandler} = apiModule
 const {createSessionEvidenceSource} = sessionEvidenceModule
 const {createSchedulerAdapter, resolveWorkerExecutable} = schedulerModule
 const {createNativeSkillSourcePicker, createSkillSourceDispatch} = skillSourcePickerModule
+const {createOwnedApplication} = applicationOwnerModule
 
-export const inject = ["webServer", "tools", "sessionQuery", "agents"]
+export const inject = ["webServer", "tools", "sessionQuery", "agents", "apiProxy"]
 
 export function apply(ctx, config = {}, dependencies = {}) {
     const environment = dependencies.environment ?? process.env
-    if (environment.ROLLING_SKILL_OPERATOR_HOST === "1") return
-
     const dataPaths = resolveDataPaths({dataRoot: config.dataRoot})
+    const conversationEpisodeSource = createSessionEvidenceSource({
+        sessionQuery: ctx.sessionQuery,
+        traceRoot: dataPaths.dshConversationTraces,
+    })
+    if (environment.ROLLING_SKILL_OPERATOR_HOST === "1") {
+        // The Worker needs source evidence while the main UI is closed. Do not
+        // create another application/store/scheduler in this managed Runtime.
+        ctx.effect(() => ctx.webServer.register({
+            kind: "exact",
+            path: "/rolling-skill/evidence",
+            handler: createRollingSkillApiHandler({dispatch(method, input) {
+                if (method !== "capture") throw new Error("Unknown Rolling Skill method")
+                return conversationEpisodeSource.capture(input)
+            }}),
+        }), "rolling-skill: trusted evidence reader")
+        return
+    }
     const schedulerAdapter = createSchedulerAdapter({
         dataRoot: config.dataRoot,
         workerExecutable: resolveWorkerExecutable(import.meta.url),
     })
-    const application = createRollingSkillApplication({
+    const application = createOwnedApplication({lockDirectory: dataPaths.locks, createApplication: () => createRollingSkillApplication({
         dataRoot: config.dataRoot,
         schedulerAdapter,
         ...(dependencies.runtimeRegistry ? {runtimeRegistry: dependencies.runtimeRegistry} : {}),
-        conversationEpisodeSource: createSessionEvidenceSource({
-            sessionQuery: ctx.sessionQuery,
-            traceRoot: dataPaths.dshConversationTraces,
-        }),
-        rawCaseDispatcher: createNativeSessionDispatcher({agents: ctx.agents}),
+        conversationEpisodeSource,
+        rawCaseDispatcher: createNativeSessionDispatcher({apiProxy: ctx.apiProxy}),
         revealPath: createPathRevealer(),
-    })
+    })})
+    void application.start().catch(() => { /* API reports a busy owner and retries after it exits. */ })
     const publicApplication = createSkillSourceDispatch(
         application,
         dependencies.skillSourcePicker ?? createNativeSkillSourcePicker(),

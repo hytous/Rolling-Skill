@@ -3,6 +3,7 @@ import {useEffect, useRef, useState} from "react"
 
 import {ActionButton as Button} from "./ActionButton"
 import {MarkdownContent} from "./MarkdownContent"
+import {CurationDraftCard, type CurationDraft} from "./CurationSessionView"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
@@ -15,6 +16,7 @@ interface CaseEntry {
     caseType: "goodcase" | "badcase"
     question: string
     answer: string
+    curated?: CurationDraft | null
     updatedAt: string
     rubricVersionId?: string | null
     rubricCalibration?: {status?: string; calibratedAt?: string | null} | null
@@ -22,13 +24,13 @@ interface CaseEntry {
 interface CaseDetail extends CaseEntry {
     createdAt?: string
     issueDescription?: string
-    rubric?: unknown
-    operationEvidence?: unknown
-    episode?: {source?: unknown}
+    source?: {sessionId?: string; threadId?: string; startSeq?: number; endSeq?: number; originalAssistantMessages?: Array<{content?: string}>}
+    evidence?: {operationEvidence?: {skillName?: string; versionLabel?: string; runtime?: {displayName?: string}; installation?: {jobId?: string}}; toolActivity?: unknown}
 }
 interface CasePage {items: CaseEntry[]; total: number; page: number; pageSize: number; pageCount: number}
 interface CalibrationSession {id: string; status: string; revision: string; draft?: unknown; error?: {message?: string} | null}
 interface CalibrationBatch {status: "running" | "stopped" | "failed" | "completed"; completed: number; total: number; currentSessionId?: string; error?: string}
+interface RefreshBatch {sessions: Array<{id: string; targetCaseId?: string}>; skipped: Array<{caseId: string}>; failures?: Array<{caseId: string; error: string}>}
 
 interface CasesPanelProps {
     t: Translate
@@ -52,6 +54,8 @@ export function CasesPanel({t, revision, onChanged, initialDatasetId, initialCas
     const [deleting, setDeleting] = useState<CaseEntry | null>(null)
     const [recoverQuestions, setRecoverQuestions] = useState(true)
     const [busy, setBusy] = useState(false)
+    const [refreshing, setRefreshing] = useState(false)
+    const [refreshBatchResult, setRefreshBatchResult] = useState<RefreshBatch | null>(null)
     const [error, setError] = useState<string | null>(null)
     const [calibrationBatch, setCalibrationBatch] = useState<CalibrationBatch | null>(null)
     const stopCalibration = useRef(false)
@@ -127,13 +131,25 @@ export function CasesPanel({t, revision, onChanged, initialDatasetId, initialCas
             setError(reason instanceof Error ? reason.message : t("loadError"))
         }
     }
-    const refreshOne = (entry: CaseEntry) => mutate(() => requestRollingSkill("cases.refresh", {
-        datasetId, caseId: entry.id, expectedUpdatedAt: entry.updatedAt,
-        idempotencyKey: crypto.randomUUID(), runtimeId,
-    }))
-    const refreshBatch = (scope: "goodcase" | "all") => mutate(() => requestRollingSkill("cases.refreshBatch", {
-        datasetId, scope, idempotencyKey: crypto.randomUUID(), runtimeId,
-    }))
+    const refreshOne = (entry: CaseEntry) => mutate(async () => {
+        setRefreshing(true)
+        try {
+            const session = await requestRollingSkill<{id: string}>("cases.refresh", {
+                datasetId, caseId: entry.id, expectedUpdatedAt: entry.updatedAt,
+                idempotencyKey: crypto.randomUUID(), runtimeId,
+            })
+            onNavigate({page: "curation", sessionId: session.id})
+        } finally {setRefreshing(false)}
+    })
+    const refreshBatch = (scope: "goodcase" | "all") => mutate(async () => {
+        setRefreshing(true)
+        setRefreshBatchResult(null)
+        try {
+            setRefreshBatchResult(await requestRollingSkill<RefreshBatch>("cases.refreshBatch", {
+                datasetId, scope, idempotencyKey: crypto.randomUUID(), runtimeId,
+            }))
+        } finally {setRefreshing(false)}
+    })
     const calibrate = (entry: CaseEntry) => mutate(async () => {
         const session = await requestRollingSkill<{id: string}>("curation.createCalibration", {
             datasetId,
@@ -238,6 +254,12 @@ export function CasesPanel({t, revision, onChanged, initialDatasetId, initialCas
                 </select></label>
             </div>
             {error ? <p className="rolling-skill-inline-error" role="alert">{error}</p> : null}
+            {refreshing ? <p role="status">{t("caseRefreshRunning")}</p> : null}
+            {refreshBatchResult ? <section className="rolling-skill-subpanel">
+                <p role="status">{t("caseRefreshBatchResult").replace("{created}", String(refreshBatchResult.sessions.length)).replace("{skipped}", String(refreshBatchResult.skipped.length)).replace("{failed}", String(refreshBatchResult.failures?.length ?? 0))}</p>
+                {refreshBatchResult.sessions.map((session, index) => <Button size="sm" key={session.id} onClick={() => onNavigate({page: "curation", sessionId: session.id})}>{t("reviewRefreshDraft")} {index + 1}</Button>)}
+                {refreshBatchResult.failures?.map((failure) => <p key={failure.caseId} role="alert">{failure.error}</p>)}
+            </section> : null}
             {calibrationBatch ? <section className="rolling-skill-subpanel"><p>{t("calibrationBatchProgress").replace("{completed}", String(calibrationBatch.completed)).replace("{total}", String(calibrationBatch.total))} · {calibrationBatch.status}</p>{calibrationBatch.error ? <p className="rolling-skill-inline-error">{calibrationBatch.error}</p> : null}{calibrationBatch.currentSessionId ? <Button size="sm" onClick={() => onNavigate({page: "curation", sessionId: calibrationBatch.currentSessionId!})}>{t("reviewCalibration")}</Button> : null}</section> : null}
             <div className="rolling-skill-list">
                 {entries.map((entry) => (
@@ -246,7 +268,7 @@ export function CasesPanel({t, revision, onChanged, initialDatasetId, initialCas
                             <span className="rolling-skill-badge">{entry.caseType === "goodcase" ? t("goodcase") : t("badcase")}</span>
                             {entry.rubricCalibration?.status !== "current" ? <span className="rolling-skill-badge">{t("caseNeedsCalibration")}</span> : null}
                             <div className="rolling-skill-case-question"><MarkdownContent compact>{entry.question}</MarkdownContent></div>
-                            <MarkdownContent compact>{entry.answer}</MarkdownContent>
+                    <MarkdownContent compact>{(entry.curated?.referenceAnswer?.summary ?? entry.answer).slice(0, 500)}</MarkdownContent>
                         </div>
                         <div className="rolling-skill-actions">
                             <Button size="sm" onClick={() => void inspect(entry)}>{t("details")}</Button>
@@ -267,10 +289,22 @@ export function CasesPanel({t, revision, onChanged, initialDatasetId, initialCas
                 {detail ? <div className="rolling-skill-detail-stack">
                     <span className="rolling-skill-badge">{detail.caseType === "goodcase" ? t("goodcase") : t("badcase")}</span>
                     <h4>{t("question")}</h4><MarkdownContent>{detail.question}</MarkdownContent>
-                    <h4>{t("caseAnswer")}</h4><MarkdownContent>{detail.answer}</MarkdownContent>
+                    <h4>{t("caseAnswer")}</h4>{detail.curated?.referenceAnswer ? <CurationDraftCard draft={detail.curated} t={t}/> : <MarkdownContent>{detail.answer}</MarkdownContent>}
                     {detail.issueDescription ? <><h4>{t("caseIssue")}</h4><MarkdownContent>{detail.issueDescription}</MarkdownContent></> : null}
-                    <h4>{t("caseEvidence")}</h4>
-                    <pre>{JSON.stringify({rubric: detail.rubric ?? null, operationEvidence: detail.operationEvidence ?? null, source: detail.episode?.source ?? null}, null, 2)}</pre>
+                    <details className="rolling-skill-curation-draft-details">
+                        <summary>{t("caseEvidence")}</summary>
+                        <div className="rolling-skill-detail-stack">
+                            <dl>
+                                <div><dt>{t("sourceConversation")}</dt><dd>{detail.source?.sessionId ?? detail.source?.threadId ?? t("notAvailable")}</dd></div>
+                                <div><dt>{t("sourceRange")}</dt><dd>{detail.source?.startSeq != null && detail.source?.endSeq != null ? `${detail.source.startSeq} – ${detail.source.endSeq}` : t("notAvailable")}</dd></div>
+                                <div><dt>{t("versionNumber")}</dt><dd>{detail.evidence?.operationEvidence?.skillName ?? t("notAvailable")} · {detail.evidence?.operationEvidence?.versionLabel ?? t("notAvailable")}</dd></div>
+                                <div><dt>{t("installationJob")}</dt><dd>{detail.evidence?.operationEvidence?.installation?.jobId ?? t("notAvailable")}</dd></div>
+                                <div><dt>{t("frozenRubric")}</dt><dd>{detail.rubricVersionId ?? t("notAvailable")}</dd></div>
+                            </dl>
+                            <p>{t("caseSourceRangeHint")}</p>
+                            {detail.source?.originalAssistantMessages?.length ? <section><h4>{t("caseOriginalAnswer")}</h4>{detail.source.originalAssistantMessages.map((message, index) => <MarkdownContent key={index}>{message.content ?? ""}</MarkdownContent>)}</section> : null}
+                        </div>
+                    </details>
                 </div> : null}
             </Modal>
             <Modal open={deleting !== null} onClose={() => setDeleting(null)} title={t("deleteCaseTitle")} closeLabel={t("cancel")} footer={<>

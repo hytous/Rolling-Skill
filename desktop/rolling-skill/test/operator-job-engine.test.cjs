@@ -308,6 +308,63 @@ describe("Operator Job engine", () => {
         })
     })
 
+    it("settles a pending internal approval waiter when its Operator Job is cancelled", async () => {
+        const {store, session} = fixture()
+        const parent = createJob(store, session.id)
+        const engine = new OperatorJobEngine({store})
+        const observed = []
+        const pending = engine.requestApproval(parent.id, {
+            action: "optimization.release-install",
+            risk: "Release and install the selected Candidate",
+            scope: {runId: "optimization-run-1", epoch: 2},
+            proposedMutation: {kind: "release-install", runId: "optimization-run-1"},
+            idempotencyKey: "optimization-run-1:release-install:2",
+        }, {
+            onPending: (approval) => observed.push(approval),
+        })
+        await new Promise((resolve_) => setImmediate(resolve_))
+        const [approval] = store.listApprovals(parent.id)
+        assert.equal(observed[0].id, approval.id)
+
+        await engine.cancel(parent.id)
+        const decision = await Promise.race([
+            pending,
+            new Promise((_, reject) => setTimeout(() => reject(new Error("approval waiter did not settle")), 100)),
+        ])
+
+        assert.deepEqual(decision, {
+            approved: false,
+            approvalId: approval.id,
+            decisionScope: "job_cancelling",
+        })
+        assert.equal(store.getApproval(approval.id).status, "rejected")
+    })
+
+    it("detaches an in-memory approval waiter for shutdown without resolving its durable approval", async () => {
+        const {store, session} = fixture()
+        const parent = createJob(store, session.id)
+        const engine = new OperatorJobEngine({store})
+        const pending = engine.requestApproval(parent.id, {
+            action: "optimization.release-install",
+            risk: "Release and install the selected Candidate",
+            scope: {runId: "optimization-run-1", epoch: 2},
+            proposedMutation: {kind: "release-install", runId: "optimization-run-1"},
+            idempotencyKey: "optimization-run-1:release-install:shutdown",
+        })
+        await new Promise((resolve_) => setImmediate(resolve_))
+        const [approval] = store.listApprovals(parent.id)
+
+        assert.equal(engine.suspendApprovalWaiter(approval.id), true)
+        assert.deepEqual(await pending, {
+            approved: false,
+            suspended: true,
+            approvalId: approval.id,
+            decisionScope: "app_shutdown",
+        })
+        assert.equal(store.getApproval(approval.id).status, "pending")
+        assert.equal(store.getJob(parent.id).status, "waiting_approval")
+    })
+
     it("runs an internal phase inside a durable child Job and terminalizes success or failure", async () => {
         const {store, session} = fixture()
         const parent = createJob(store, session.id)

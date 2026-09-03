@@ -16,6 +16,7 @@ interface RuntimeInteraction {
     runtime?: {displayName?: string; version?: string; runtimeId?: string} | null
     options?: Array<{optionId?: string; id?: string; value?: string; label?: string; name?: string}>
     questions?: Array<{id?: string; questionId?: string; prompt?: string; question?: string}>
+    details?: {tool?: string | null; reason?: string | null; command?: string | string[] | null; cwd?: string | null; arguments?: unknown; permissions?: unknown; locations?: unknown}
     createdAt: string
     expiresAt: string
 }
@@ -26,7 +27,7 @@ export function RuntimeInteractions({
     ownerId,
 }: {
     t: Translate
-    ownerKind: RuntimeInteraction["ownerKind"]
+    ownerKind?: RuntimeInteraction["ownerKind"]
     ownerId?: string
 }) {
     const [items, setItems] = useState<RuntimeInteraction[]>([])
@@ -72,6 +73,13 @@ export function RuntimeInteractions({
             <div>
                 <strong>{interaction.kind === "permission" ? t("runtimePermissionRequest") : t("runtimeQuestionRequest")}</strong>
                 <span>{interaction.runtime?.displayName ?? interaction.ownerId} {interaction.runtime?.version ?? ""} · {interaction.jobId ?? interaction.ownerId}</span>
+                {interaction.details ? <div className="rolling-skill-detail-stack">
+                    {interaction.details.reason ? <p>{interaction.details.reason}</p> : null}
+                    {interaction.details.tool ? <strong>{interaction.details.tool}</strong> : null}
+                    {interaction.details.cwd ? <code>{interaction.details.cwd}</code> : null}
+                    {interaction.details.command ? <pre className="rolling-skill-verbatim">{Array.isArray(interaction.details.command) ? interaction.details.command.join(" ") : interaction.details.command}</pre> : null}
+                    {interaction.details.arguments || interaction.details.permissions || interaction.details.locations ? <details><summary>{t("details")}</summary><pre className="rolling-skill-verbatim">{JSON.stringify({arguments: interaction.details.arguments, permissions: interaction.details.permissions, locations: interaction.details.locations}, null, 2)}</pre></details> : null}
+                </div> : null}
                 {interaction.kind === "permission" ? <div className="rolling-skill-actions">{(interaction.options ?? []).map((option) => {
                     const decision = option.optionId ?? option.id ?? option.value ?? ""
                     return <Button key={decision} size="sm" disabled={busyId === interaction.id || !decision} onClick={() => void resolve(interaction, {decision})}>{option.label ?? option.name ?? decision}</Button>

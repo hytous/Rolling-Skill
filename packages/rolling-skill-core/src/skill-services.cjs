@@ -62,7 +62,12 @@ function publicInstallationJob(job) {
             message: boundedText(job.conversationError.message, 4_000),
         } : null,
         messages: publicTimeline(job.messages),
-        activities: publicTimeline(job.activities),
+        activities: (Array.isArray(job.activities) ? job.activities.slice(-200) : []).map((activity) => ({
+            ...publicTimeline([activity])[0],
+            command: activity.command ? boundedText(activity.command, 32_768) : null,
+            name: activity.name ? boundedText(activity.name, 1_024) : null,
+            status: activity.status ? boundedText(activity.status, 100) : null,
+        })),
         error: job.error ? {
             code: job.error.code ?? null,
             message: boundedText(job.error.message, 4_000),

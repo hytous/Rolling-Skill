@@ -19,9 +19,11 @@ const CONFIG_FIELDS = new Set([
     "locale",
     "executionLocation",
     "runtime",
+    "captureRuntime",
+    "detectionRuntime",
     "worker",
 ])
-const UPDATE_FIELDS = new Set(["locale", "executionLocation", "runtime", "worker"])
+const UPDATE_FIELDS = new Set(["locale", "executionLocation", "runtime", "captureRuntime", "detectionRuntime", "worker"])
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
@@ -33,6 +35,8 @@ function initialConfig() {
         locale: "follow-harness",
         executionLocation: "while-harness-running",
         runtime: null,
+        captureRuntime: null,
+        detectionRuntime: null,
         worker: {
             enabled: false,
             installed: false,
@@ -112,7 +116,10 @@ function normalizeConfig(value) {
         throw new Error("Plugin execution location is unsupported")
     }
     const runtime = normalizeRuntime(value.runtime)
-    if (executionLocation === "always" && runtime === null) {
+    // Freeze the old shared selection when loading a legacy configuration.
+    const captureRuntime = normalizeRuntime(Object.hasOwn(value, "captureRuntime") ? value.captureRuntime : value.runtime)
+    const detectionRuntime = normalizeRuntime(Object.hasOwn(value, "detectionRuntime") ? value.detectionRuntime : value.runtime)
+    if (executionLocation === "always" && !(captureRuntime ?? runtime)) {
         throw new Error("Always-on execution requires a Runtime")
     }
     return {
@@ -120,6 +127,8 @@ function normalizeConfig(value) {
         locale,
         executionLocation,
         runtime,
+        captureRuntime,
+        detectionRuntime,
         worker: normalizeWorker(value.worker ?? defaults.worker, defaults.worker),
     }
 }

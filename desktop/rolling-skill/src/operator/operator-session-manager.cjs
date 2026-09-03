@@ -1966,7 +1966,66 @@ class OperatorSessionManager {
         return shared
     }
 
-    async stopAll() {
+    async #suspendWaitingApproval(sessionId) {
+        const id = requiredText(sessionId, "Operator session id")
+        const session = this.#store.getSession(id)
+        const parent = this.#store.listJobs({sessionId: session.id, parentJobId: null})[0]
+        if (!parent || parent.status !== "waiting_approval") {
+            throw new Error("Operator session has no waiting approval to preserve")
+        }
+        const control = this.#controls.get(id)
+        if (!control) {
+            this.#blockedSessions.add(id)
+            return this.get(id)
+        }
+        await this.pause(id)
+        this.#blockedSessions.add(id)
+        control.stopped = true
+        control.phase = "stopping"
+        control.controlGeneration += 1
+        control.generation += 1
+        control.executorLease?.disable()
+        control.executorLease?.unregister()
+        this.#abortInteractions(control)
+        this.#detach(control)
+        const capabilityIds = new Set([
+            latestCapabilityId(session),
+            control.authority.grant.id,
+        ])
+        const operations = []
+        for (const capabilityId of capabilityIds) {
+            if (this.#revokedCapabilities.has(capabilityId)) continue
+            operations.push(this.#requiredStopOperation(
+                `revoke ${capabilityId}`,
+                () => this.#capabilities.revoke(capabilityId),
+                () => this.#revokedCapabilities.add(capabilityId),
+            ))
+        }
+        operations.push(this.#requiredStopOperation(
+            "stop Runtime client",
+            () => control.client?.stop?.(),
+            () => { control.clientStopped = true },
+        ))
+        const settled = await Promise.allSettled(operations.map((entry) => entry.promise))
+        const failures = settled.flatMap((entry, index) => (
+            entry.status === "rejected"
+                ? [Object.assign(
+                      new Error(`${operations[index].label}: ${entry.reason?.message ?? "failed"}`),
+                      {cause: entry.reason},
+                  )]
+                : []
+        ))
+        if (failures.length > 0) {
+            throw new AggregateError(failures, "Operator waiting-approval shutdown was incomplete")
+        }
+        this.#append(control, "operator_session_suspended", {reason: "app_shutdown"})
+        const snapshot = this.#snapshot(control)
+        if (this.#controls.get(id) === control) this.#controls.delete(id)
+        return snapshot
+    }
+
+    async stopAll(options = {}) {
+        const preserveWaitingApprovals = options?.preserveWaitingApprovals === true
         const sessionIds = new Set([
             ...this.#controls.keys(),
             ...this.#resumeFlights.keys(),
@@ -1976,7 +2035,13 @@ class OperatorSessionManager {
             const parent = this.#store.listJobs({sessionId: session.id, parentJobId: null})[0]
             if (parent && !TERMINAL_JOB_STATUSES.has(parent.status)) sessionIds.add(session.id)
         }
-        const operations = [...sessionIds].map((sessionId) => this.stop(sessionId))
+        const operations = [...sessionIds].map((sessionId) => {
+            const session = this.#store.getSession(sessionId)
+            const parent = this.#store.listJobs({sessionId: session.id, parentJobId: null})[0]
+            return preserveWaitingApprovals && parent?.status === "waiting_approval"
+                ? this.#suspendWaitingApproval(sessionId)
+                : this.stop(sessionId)
+        })
         const settled = await Promise.allSettled(operations)
         const failures = settled.flatMap((entry) => (
             entry.status === "rejected" ? [entry.reason] : []

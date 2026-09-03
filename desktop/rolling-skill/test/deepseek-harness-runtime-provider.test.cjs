@@ -21,6 +21,18 @@ const {TraceRecorder} = require("../src/trace-recorder.cjs")
 
 const temporaryDirectories = []
 
+it("offers a stable source revision only for an idle DSH session with a real modification timestamp", async () => {
+    const client = {workspaceRoot: "/workspace", listSessionSummaries: async () => ({archived: new Set(), items: [
+        {sessionId: "idle", cwd: "/workspace", updatedAt: 1788254052795, running: false},
+        {sessionId: "running", cwd: "/workspace", updatedAt: 1788254052795, running: true},
+        {sessionId: "missing", cwd: "/workspace", running: false},
+    ]})}
+    const {data} = await DeepSeekHarnessClient.prototype.listThreads.call(client)
+    assert.equal(data.find((item) => item.id === "idle").sourceRevision, "dsh:1788254052795")
+    assert.equal(data.find((item) => item.id === "running").sourceRevision, null)
+    assert.equal(data.find((item) => item.id === "missing").sourceRevision, null)
+})
+
 afterEach(() => {
     for (const directory of temporaryDirectories.splice(0)) {
         rmSync(directory, {recursive: true, force: true})
@@ -315,10 +327,10 @@ describe("DeepSeek Harness session adapter", () => {
         )
 
         assert.ok(completed, "completed DSH tool evidence must survive trace compaction")
-        assert.deepEqual(completed.kinds, ["command"])
+        assert.deepEqual(completed.kinds, ["command", "tool_call"])
         assert.equal(completed.record.message.params.item.aggregatedOutput, "success")
         assert.ok(failed, "failed DSH tool evidence must survive trace compaction")
-        assert.deepEqual(failed.kinds, ["command", "error"])
+        assert.deepEqual(failed.kinds, ["command", "tool_call", "error"])
         assert.match(failed.record.message.params.item.error.message, /status 7/)
     })
 

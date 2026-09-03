@@ -71,7 +71,17 @@ function runOutput(state = "editing") {
                 decision: {action: "continue", rationale: "仍有一个回归项"},
             }],
             checkpoint: {
+                operatorSessionId: "operator-session-1",
+                activeEvaluationRunId: "evaluation-1",
+                activeEvaluationKind: "baseline",
+                installationOperation: "experiment_inspect",
+                installationPending: true,
+                installationJobIds: ["inspection-job-1"],
+                baselineEvaluationRunId: "evaluation-1",
+                stopRequested: false,
+                operatorCleanupError: "Example bounded cleanup failure",
                 paused: false,
+                finalApprovalId: "approval-final-1",
                 telemetry: {elapsedMs: 1_000, turnsUsed: 2, tokens: null, costMicros: null},
                 recoveryTargets: [{
                     runtimeId: "codex:target",
@@ -86,6 +96,15 @@ function runOutput(state = "editing") {
 }
 
 describe("optimization control contracts", () => {
+    it("accepts a read-only report preview without claiming a stored Artifact", () => {
+        assert.doesNotThrow(() => parseControlOutput("optimization.report", {report: {
+            artifactId: null,
+            digest: `sha256:${"a".repeat(64)}`,
+            mediaType: "text/markdown; charset=utf-8",
+            preview: "# Skill 多轮优化报告\n\n已结束任务的只读报告。",
+        }}))
+    })
+
     it("defines strict typed lifecycle inputs and outputs", () => {
         const preflight = parseControlInput("optimization.preflight", {
             ...config(),

@@ -53,7 +53,6 @@ function reportFixture() {
         },
         "decision-1": {action: "continue", rationale: "仍有 case-2 回归"},
         "decision-2": {action: "finish", rationale: "目标已达到"},
-        "final-evaluation": {id: "evaluation-final", status: "completed"},
     }
     const run = {
         id: "optimization-run-1",
@@ -91,19 +90,16 @@ function reportFixture() {
                 status: "succeeded",
                 candidateArtifactId: "candidate-2",
                 installArtifactIds: ["install-2"],
-                evaluationArtifactIds: ["evaluation-2", "final-evaluation"],
+                evaluationArtifactIds: ["evaluation-2"],
                 analysisArtifactId: "analysis-2",
                 decisionArtifactId: "decision-2",
             },
         ],
         checkpoint: {
             stopReason: "target_achieved",
-            releaseApprovalId: "approval-release",
-            installApprovalId: "approval-install",
+            finalApprovalId: "approval-final",
             releasedVersionId: "released-v2",
             releasedInstallArtifactId: "released-install",
-            finalEvaluationArtifactId: "final-evaluation",
-            finalRegressionPassed: true,
         },
         recovery: null,
         error: null,
@@ -112,7 +108,37 @@ function reportFixture() {
 }
 
 describe("Optimization Markdown report", () => {
-    it("renders frozen identities, every Epoch delta, release, final regression, and telemetry gaps", () => {
+    it("distinguishes a rejected final approval from one that was never requested", () => {
+        const {run, artifacts} = reportFixture()
+        run.state = "cancelled"
+        run.error = {code: "OPTIMIZATION_FINAL_APPROVAL_REJECTED", message: "Optimization release and installation were rejected"}
+        run.checkpoint = {
+            stopReason: "target_achieved",
+            installationOperation: "experiment_restore",
+            installationJobIds: ["restore-job-1"],
+            installationPending: false,
+        }
+        const {markdown} = generateOptimizationReport({run, readArtifact: (id) => artifacts[id] ?? null})
+        assert.match(markdown, /最终审批：已拒绝/)
+        assert.match(markdown, /结束原因：用户选择回退原版本/)
+        assert.match(markdown, /优化停止条件：已达到目标/)
+        assert.match(markdown, /恢复基线/)
+        assert.match(markdown, /restore-job-1/)
+        assert.doesNotMatch(markdown, /最终审批：未申请|\| Runtime \| Model \| Effort \|/)
+    })
+
+    it("does not claim approvals were never requested when historical records are incomplete", () => {
+        const {run, artifacts} = reportFixture()
+        run.state = "failed"
+        run.error = {code: "OTHER_FAILURE", message: "Release persistence failed"}
+        run.checkpoint = {}
+        const {markdown} = generateOptimizationReport({run, readArtifact: (id) => artifacts[id] ?? null})
+        assert.match(markdown, /最终审批：未记录审批结果/)
+        assert.match(markdown, /结束原因：Release persistence failed/)
+        assert.doesNotMatch(markdown, /未申请/)
+    })
+
+    it("renders frozen identities, every Epoch delta, final approval, installation, and telemetry gaps", () => {
         const {run, artifacts} = reportFixture()
         const first = generateOptimizationReport({
             run,
@@ -141,12 +167,25 @@ describe("Optimization Markdown report", () => {
             "回归项",
             "target_achieved",
             "released-v2",
-            "最终回归",
+            "最终审批与安装",
             "恢复状态",
             "Agent 判断理由",
             "运行时未提供",
         ]) assert.match(first.markdown, new RegExp(text, "u"))
+        assert.doesNotMatch(first.markdown, /最终回归/u)
         assert.doesNotMatch(first.markdown, /Agent 结论|Agent 分数/u)
+    })
+
+    it("keeps old final-regression evidence readable as a legacy note", () => {
+        const {run, artifacts} = reportFixture()
+        run.checkpoint.finalEvaluationArtifactId = "final-evaluation"
+        run.checkpoint.finalRegressionPassed = true
+        artifacts["final-evaluation"] = {id: "evaluation-final", status: "completed"}
+        run.epochs[1].evaluationArtifactIds.push("final-evaluation")
+
+        const {markdown} = generateOptimizationReport({run, readArtifact: (id) => artifacts[id] ?? null})
+
+        assert.match(markdown, /历史最终回归：通过/u)
     })
 
     it("reports needs_recovery targets without hiding the last verified evidence", () => {

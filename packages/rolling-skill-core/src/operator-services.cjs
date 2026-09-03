@@ -53,7 +53,7 @@ function createOperatorServices({
     optimizationControl,
     ready = null,
 } = {}) {
-    if (!jobStore || typeof jobStore.readSummaryPage !== "function") {
+    if (!jobStore || typeof jobStore.readSummaryPage !== "function" || typeof jobStore.getApproval !== "function") {
         throw new Error("Operator Job store is required")
     }
     if (!jobEngine || typeof jobEngine.resolveApproval !== "function") {
@@ -90,6 +90,22 @@ function createOperatorServices({
             return publicValue(jobStore.listArtifacts(
                 requiredText(input.jobId, "Operator Job id", 200),
             ))
+        },
+        operatorArtifact(input = {}) {
+            exactKeys(input, new Set(["jobId", "artifactId"]), "Operator artifact content request")
+            const jobId = requiredText(input.jobId, "Operator Job id", 200)
+            const artifactId = requiredText(input.artifactId, "Operator artifact id", 200)
+            const artifact = jobStore.listArtifacts(jobId).find((entry) => entry.id === artifactId)
+            if (!artifact) throw new Error("Operator artifact not found in this Job")
+            const body = jobStore.readArtifactBody(artifactId)
+            const text = body.toString("utf8")
+            return {
+                id: artifact.id,
+                name: artifact.name,
+                mediaType: artifact.mediaType,
+                preview: text.slice(0, MAX_TEXT),
+                truncated: text.length > MAX_TEXT,
+            }
         },
         async operatorStart(input = {}) {
             exactKeys(input, new Set([
@@ -136,15 +152,21 @@ function createOperatorServices({
                 ? input.decision
                 : null
             if (!decision) throw new Error("Operator approval decision is invalid")
+            const approvalId = requiredText(input.approvalId, "Operator approval id", 200)
+            const approval = jobStore.getApproval(approvalId)
             const result = await jobEngine.resolveApproval(
-                requiredText(input.approvalId, "Operator approval id", 200),
+                approvalId,
                 {
                     decision,
                     scope: requiredText(input.scope, "Operator approval scope", 300),
                     decidedBy: "dsh-user",
                 },
             )
-            if (decision === "approve" && typeof sessionManager.resumeAfterApproval === "function") {
+            if (
+                decision === "approve" &&
+                approval.action !== "optimization.release-install" &&
+                typeof sessionManager.resumeAfterApproval === "function"
+            ) {
                 await sessionManager.resumeAfterApproval(selectedSessionId)
             }
             return publicValue(result)
@@ -245,6 +267,65 @@ function optimizationRuntimeSkillBinding({
     }
 }
 
+function optimizationVersionIdentity(version) {
+    return {...version, id: version.id ?? version.versionId}
+}
+
+function optimizationApprovalRequest(input) {
+    const versionId = input.candidate?.id ?? input.versionId ?? null
+    const scope = {
+        runId: input.runId,
+        epoch: input.epoch,
+        kind: input.kind,
+        ...(versionId ? {versionId} : {}),
+        ...(input.request ? {requestedLimit: input.request} : {}),
+    }
+    return {
+        action: `optimization.${input.kind}`,
+        risk: input.kind === "release-install"
+            ? "Release the selected immutable Optimization Candidate and install it on every frozen target Runtime"
+            : `Approve Optimization ${input.kind}`,
+        scope,
+        proposedMutation: scope,
+        idempotencyKey: [
+            input.runId,
+            input.kind,
+            input.epoch,
+            versionId ?? input.request?.field,
+        ].filter((value) => value !== null && value !== undefined).join(":"),
+    }
+}
+
+function optimizationReleasedSkillBinding({runtimeConfiguration, repository, skill, candidate, installationStore}) {
+    const installation = installationStore.resolveVerifiedInstallation({
+        repositoryId: repository.id,
+        skillId: skill.id,
+        versionId: candidate.id,
+        runtimeId: runtimeConfiguration.runtimeId,
+        providerId: runtimeConfiguration.providerId,
+    })
+    if (installation.commit !== candidate.commit || installation.contentDigest !== candidate.contentDigest) {
+        throw new Error("Recorded Runtime installation does not match the Optimization release")
+    }
+    return {
+        ...runtimeConfiguration,
+        skillEvidenceBinding: "verified",
+        skillReference: {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            id: skill.id, repositoryId: repository.id, name: skill.name,
+            path: basename(installation.destination).toLowerCase() === "skill.md"
+                ? installation.destination : join(installation.destination, "SKILL.md"),
+            scope: "runtime", description: skill.description ?? null,
+            runtimeId: runtimeConfiguration.runtimeId, providerId: runtimeConfiguration.providerId,
+            confirmedAt: installation.installedAt,
+        },
+        installationId: installation.installationId ?? installation.id,
+        installationJobId: installation.jobId,
+        installationVerification: installation.verification,
+        expectedContentDigest: candidate.contentDigest,
+    }
+}
+
 function createManagedWorkspaceResolver({
     workspaceManager,
     managedSkillStore,
@@ -321,11 +402,31 @@ function createOperatorRuntime({
     const optimizationStore = new OptimizationStore(paths.optimizationRuns)
     let sessionManager = null
     let optimizationControl = null
+    const optimizationCompletionTasks = new Map()
+    const optimizationChanged = (change) => {
+        onChanged(change)
+        if (!["succeeded", "failed", "cancelled"].includes(change.state) || optimizationCompletionTasks.has(change.runId)) return
+        const run = optimizationStore.getRun(change.runId)
+        const {operatorSessionId, operatorParentJobId} = run.checkpoint ?? {}
+        if (!operatorSessionId || !operatorParentJobId) return
+        const operation = Promise.resolve().then(async () => {
+            const parent = jobStore.getJob(operatorParentJobId)
+            if (!["succeeded", "failed", "cancelled"].includes(parent.status)) {
+                await jobEngine.completeJob(parent.id, run.state, run.error ? {error: run.error} : {})
+            }
+            await sessionManager.stop(operatorSessionId)
+        }).catch((error) => {
+            optimizationStore.updateCheckpoint(run.id, {operatorCleanupError: String(error.message).slice(0, 2000)})
+            onChanged({runId: run.id, state: run.state})
+        })
+        optimizationCompletionTasks.set(run.id, operation)
+    }
 
     const optimizationFacade = Object.freeze({
         preflight: (input) => optimizationControl.preflight(input),
         start: (input) => optimizationControl.start(input),
         get: (runId) => optimizationControl.get(runId),
+        scope: (runId) => optimizationControl.scope(runId),
         pause: (runId) => optimizationControl.pause(runId),
         resume: (runId) => optimizationControl.resume(runId),
         stop: (runId) => optimizationControl.stop(runId),
@@ -336,8 +437,13 @@ function createOperatorRuntime({
     let domainServices = null
     const handlers = Object.fromEntries(CONTROL_METHODS
         .filter((method) => controlDefinition(method).operatorExposed === true)
-        .map((method) => [method, ({params, controlContext}) => (
-            domainServices[method](params, controlContext)
+        .map((method) => [method, ({params, controlContext, jobId}) => (
+            domainServices[method](params, {
+                ...controlContext,
+                // Capability sessions rotate independently of the persisted
+                // Operator session; submissions must use the engine-owned Job.
+                operatorSessionId: jobStore.getJob(jobId).sessionId,
+            })
         )]))
     const jobEngine = new OperatorJobEngine({
         store: jobStore,
@@ -487,6 +593,12 @@ function createOperatorRuntime({
             ...config.targets.map((target) => target.runtimeId),
         ])]
         const runtimes = requestedRuntimeIds.map((runtimeId_) => runtimeServices.descriptor(runtimeId_))
+        for (const target of config.targets) {
+            optimizationReleasedSkillBinding({
+                runtimeConfiguration: runtimeConfiguration(target), repository, skill,
+                candidate: version, installationStore,
+            })
+        }
         if (config.telemetry.tokens && runtimes.some((entry) => !entry.capabilities?.includes("token-usage"))) {
             throw new Error("Optimization token telemetry is unavailable on one or more Runtimes")
         }
@@ -546,7 +658,7 @@ function createOperatorRuntime({
                 code: "RESOURCE_CHANGED",
             })
         }
-        const candidate = input.candidate
+        const candidate = optimizationVersionIdentity(input.candidate)
         const skill = managedSkillStore.getSkill(candidate.skillId)
         const repository = managedSkillStore.getRepository(candidate.repositoryId)
         const skillEvidence = await snapshotManagedSkillEvidence({
@@ -562,11 +674,11 @@ function createOperatorRuntime({
         const installationJobsByRuntime = new Map(
             (input.installationJobs ?? []).map((job) => [job.runtime.runtimeId, job]),
         )
-        const installationJobIdsByRuntime = Object.fromEntries(
-            [...installationJobsByRuntime].map(([runtimeId, job]) => [runtimeId, job.id]),
-        )
         const runtimeConfigurations = input.targets.map((target) => {
             const resolved = runtimeConfiguration(target)
+            if (input.kind === "baseline" || input.kind === "final-regression") {
+                return optimizationReleasedSkillBinding({runtimeConfiguration: resolved, repository, skill, candidate, installationStore})
+            }
             return optimizationRuntimeSkillBinding({
                 runtimeConfiguration: resolved,
                 repository,
@@ -575,6 +687,9 @@ function createOperatorRuntime({
                 installationJob: installationJobsByRuntime.get(resolved.runtimeId),
             })
         })
+        const installationJobIdsByRuntime = Object.fromEntries(runtimeConfigurations.map((configuration) => [
+            configuration.runtimeId, configuration.installationJobId,
+        ]))
         const run = store.createEvaluationRun({
             datasetId: snapshot.dataset.id,
             caseIds: snapshot.dataset.caseRevisions.map((entry) => entry.caseId),
@@ -598,43 +713,51 @@ function createOperatorRuntime({
             judgeConfiguration: runtimeConfiguration(snapshot.judge),
             runtimeConfigurations,
         }, {optimizationAuthorized: true})
+        optimizationStore.updateCheckpoint(input.optimizationRun.id, {activeEvaluationRunId: run.id, activeEvaluationKind: input.kind})
         await evaluationRunner.run(run)
         return store.getEvaluationRun(run.id)
     }
 
     const operatorGateway = new OptimizationOperatorGateway({
-        onRequest: ({runId: runId_, kind, epoch, operatorSessionId}) => sessionManager.sendMessage(
-            operatorSessionId,
-            `Optimization Run ${runId_} is waiting for Epoch ${epoch} ${kind} submission.`,
-        ),
+        onRequest: ({runId: runId_, kind, epoch, operatorSessionId}) => {
+            const run = optimizationStore.getRun(runId_)
+            const evaluation = (id) => id ? store.getEvaluationRun(id) : null
+            return sessionManager.sendMessage(operatorSessionId, optimizationRequestMessage({
+                run, kind, epoch,
+                baselineEvaluation: evaluation(run.checkpoint.baselineEvaluationRunId),
+                currentEvaluation: evaluation(run.checkpoint.activeEvaluationRunId),
+            }))
+        },
     })
     const runner = new OptimizationRunner({
         store: optimizationStore,
         artifactStore: jobStore,
-        childJobs: {run: (input, operation) => jobEngine.runChild(input, operation)},
+        childJobs: createOptimizationChildJobs({jobStore, jobEngine}),
         workspaceManager,
         installationManager,
         evaluationManager: {run: runEvaluation},
         operatorGateway,
-        approvals: {request: async (input) => {
-            const approval = await jobEngine.requestApproval(input.parentJobId, {
-                action: `optimization.${input.kind}`,
-                risk: `Approve Optimization ${input.kind}`,
-                scope: {
-                    runId: input.runId,
-                    epoch: input.epoch,
-                    kind: input.kind,
-                },
-                proposedMutation: {kind: input.kind, runId: input.runId},
-                idempotencyKey: `${input.runId}:${input.kind}:${input.epoch}`,
-            })
-            return {
-                ...approval,
-                ...(input.kind === "release"
-                    ? {versionLabel: `opt-${input.runId.slice(-40)}-e${input.epoch}`.slice(0, 64)}
-                    : {}),
-            }
-        }},
+        approvals: {
+            request: async (input, onPending = null) => {
+                const approval = await jobEngine.requestApproval(
+                    input.parentJobId,
+                    optimizationApprovalRequest(input),
+                    {onPending},
+                )
+                return {
+                    ...approval,
+                    ...(input.kind === "release" || input.kind === "release-install"
+                        ? {versionLabel: `opt-${input.runId.slice(-40)}-e${input.epoch}`.slice(0, 64)}
+                        : {}),
+                }
+            },
+            reject: (approvalId) => jobEngine.resolveApproval(approvalId, {
+                decision: "reject",
+                scope: "optimization_cancel",
+                decidedBy: "optimization-runner",
+            }),
+            suspend: (approvalId) => jobEngine.suspendApprovalWaiter(approvalId),
+        },
         releaseManager: {release: (input) => managedSkillManager.releaseVersion({
             versionId: input.candidate.id,
             versionLabel: input.approval.versionLabel,
@@ -654,7 +777,7 @@ function createOperatorRuntime({
                 costMicros: run.snapshot.telemetry.cost ? 0 : null,
             }
         },
-        onChanged,
+        onChanged: optimizationChanged,
     })
     optimizationControl = new OptimizationControlService({
         store: optimizationStore,
@@ -668,6 +791,8 @@ function createOperatorRuntime({
             if (artifact.byteLength > maximumBytes) return null
             return jobStore.readArtifactBody(artifactId)
         },
+        operatorTurnsUsed: (run) => jobStore.getSession(run.checkpoint.operatorSessionId).transcript
+            .filter((entry) => entry.kind === "turn_started").length,
         resolvePreflight,
     })
     const ready = Promise.all([
@@ -685,13 +810,14 @@ function createOperatorRuntime({
 
     async function close() {
         await Promise.allSettled([
-            sessionManager.stopAll(),
+            sessionManager.stopAll({preserveWaitingApprovals: true}),
             runner.checkpointAndStop?.(),
         ])
         await Promise.allSettled([
             runner.waitForIdle?.(),
             controlSocket.close(),
         ])
+        await Promise.allSettled([...optimizationCompletionTasks.values()])
         optimizationStore.close()
         jobStore.close()
     }
@@ -709,14 +835,30 @@ function createOperatorRuntime({
     })
 }
 
+function createOptimizationChildJobs({jobStore, jobEngine}) {
+    return {
+        run(input, operation) {
+            // Internal phases share the frozen authority of their parent. The job
+            // engine requires an explicit budget; it does not inherit one itself.
+            const parent = jobStore.getJob(input.parentJobId)
+            return jobEngine.runChild({...input, budget: parent.budget}, operation)
+        },
+    }
+}
+
 module.exports = {
+    createOptimizationChildJobs,
     createManagedWorkspaceResolver,
+    optimizationApprovalRequest,
     createOperatorRuntime,
     createOperatorServices,
     optimizationRuntimeSkillBinding,
+    optimizationVersionIdentity,
+    optimizationReleasedSkillBinding,
     publicOperatorValue: publicValue,
 }
 const {createHash} = require("node:crypto")
+const {optimizationRequestMessage} = require("./optimization-agent-context.cjs")
 const {basename, join} = require("node:path")
 
 const {

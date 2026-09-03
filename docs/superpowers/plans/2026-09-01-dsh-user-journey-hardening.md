@@ -1,6 +1,6 @@
 # DSH Rolling Skill User Journey Hardening Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution constraint (user, 2026-09-01):** All implementation and review are performed by the primary agent. Do not delegate code to subagents. Use executing-plans task-by-task; installed-browser evidence in the audit is the authoritative completion record, not source-test counts.
 
 **Goal:** Make the installed DSH Rolling Skill plugin complete and reliable from a user's perspective, using the Electron App as the task-completeness baseline and real DSH browser journeys as the release gate.
 

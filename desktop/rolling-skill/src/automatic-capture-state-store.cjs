@@ -156,6 +156,12 @@ class AutomaticCaptureStateStore {
             ...(Object.hasOwn(patch, "lastInspectedUserItemId")
                 ? {lastInspectedUserItemId: itemId(patch.lastInspectedUserItemId, "Inspected user Item id")}
                 : {}),
+            ...(Object.hasOwn(patch, "inspectionSignature")
+                ? {inspectionSignature: itemId(patch.inspectionSignature, "Conversation inspection signature")}
+                : {}),
+            ...(Object.hasOwn(patch, "sourceRevision")
+                ? {sourceRevision: itemId(patch.sourceRevision, "Source revision")}
+                : {}),
             ...(Object.hasOwn(patch, "pendingStartUserItemId")
                 ? {pendingStartUserItemId: itemId(patch.pendingStartUserItemId, "Pending user Item id")}
                 : {}),

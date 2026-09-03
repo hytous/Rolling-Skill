@@ -346,6 +346,66 @@ describe("unified evaluation grading contract", () => {
         assert.doesNotThrow(() => validateJudgeResult(traceBacked, contract))
     })
 
+    it("proves a no-tool policy with a complete Case Trace without requiring an artificial tool call", () => {
+        const rubric = datasetRubric()
+        Object.assign(rubric.criteria[0], {
+            title: "No-tool execution policy",
+            criterion: "Apart from loading the Skill itself, the assistant issues no tool calls.",
+            evidenceRequirements: ["Tool-call record shows at most the Skill load; no operational tool invocations", "Agent response"],
+        })
+        const input = curatedCase()
+        input.curated.rubricCoverage[0].expectation = "No tool calls other than the skill load."
+        input.curated.rubricCoverage[0].evidenceBasis = "Historical toolActivity records the skill load."
+        const catalog = evidenceCatalog()
+        catalog.entries = catalog.entries.filter((entry) => !["skill_read", "tool_call"].includes(entry.kind))
+        const contract = buildScoreContract(input, {rubricVersion: rubricVersion(rubric), evidenceCatalog: catalog})
+        assert.deepEqual(contract.criteria[0].requiredEvidenceGroups, [
+            {id: "agent_response", kinds: ["response"]}, {id: "complete_trace", kinds: ["trace_scope"]},
+        ])
+        const judgment = passingJudge(contract)
+        judgment.assessments[0].evidenceRefs = ["response", "trace:scope"]
+        assert.doesNotThrow(() => validateJudgeResult(judgment, contract))
+        catalog.entries.find((entry) => entry.kind === "trace_scope").semanticCoverageComplete = false
+        const incomplete = buildScoreContract(input, {rubricVersion: rubricVersion(rubric), evidenceCatalog: catalog})
+        judgment.contractDigest = incomplete.digest
+        assert.throws(() => validateJudgeResult(judgment, incomplete), /complete.*Trace/i)
+    })
+
+    it("does not mistake description or prescribed wording for a script execution requirement", () => {
+        const rubric = datasetRubric()
+        rubric.criteria[1].criterion = "Evidence grounded in the supplied description, following the prescribed format."
+        const contract = buildScoreContract(curatedCase(), {rubricVersion: {id: "rubric-v1", rubric}})
+        assert.ok(!contract.criteria.find((entry) => entry.id === "R2").requiredEvidenceGroups.some((group) => group.id === "runtime_execution"))
+    })
+
+    it("requires scoped applicability evidence instead of positive operations for an inapplicable rubric criterion", () => {
+        const input = curatedCase()
+        input.curated.rubricCoverage[0] = {criterionId: "R1", applicability: "not_applicable", expectation: "No evidence field is expected; the only factual output is pwd, produced by the commanded tool call rather than an incident description.", evidenceBasis: "Historical tool result"}
+        const contract = buildScoreContract(input, {rubricVersion: {id: "rubric-v1", rubric: datasetRubric()}})
+        assert.deepEqual(contract.criteria.find((entry) => entry.id === "R1").requiredEvidenceGroups, [
+            {id: "agent_response", kinds: ["response"]},
+            {id: "complete_trace", kinds: ["trace_scope"]},
+        ])
+        assert.equal(contract.criteria.find((entry) => entry.id === "R1").weight, 2, "do not alter published rubric weights")
+    })
+
+    it("does not turn historical evidence descriptions into new execution requirements", () => {
+        const input = curatedCase()
+        input.curated.rubricCoverage[1].evidenceBasis = "Earlier tool calls and deterministic scripts supported the reference answer."
+        const contract = buildScoreContract(input, {rubricVersion: rubricVersion()})
+        assert.deepEqual(contract.criteria.find((entry) => entry.id === "R2").requiredEvidenceGroups, [
+            {id: "agent_response", kinds: ["response"]},
+        ])
+    })
+
+    it("still requires positive script execution evidence beside a prohibition on external tools", () => {
+        const rubric = datasetRubric()
+        rubric.criteria[0].criterion = "Run the calculator script; do not issue external tool calls."
+        const contract = scoreContract({rubricVersion: rubricVersion(rubric), evidenceCatalog: evidenceCatalog()})
+        assert.ok(contract.criteria[0].requiredEvidenceGroups.some((group) => group.id === "runtime_execution"))
+        assert.throws(() => validateJudgeResult(passingJudge(contract), contract), /typed evidence/)
+    })
+
     it("requires a typed reference-read event when the published rubric makes that read mandatory", () => {
         const rubric = datasetRubric()
         rubric.criteria[0].evidenceRequirements.push(

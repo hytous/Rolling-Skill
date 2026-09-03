@@ -1429,6 +1429,24 @@ describe("OperatorSessionManager", () => {
         assert.equal(context.store.getApproval(approval.id).status, "pending")
     })
 
+    it("stops the Runtime for App shutdown while preserving its durable waiting approval", async () => {
+        const context = fixture()
+        const created = await context.manager.create(createInput())
+        const {step, approval} = makeWaitingApproval(context.store, created.parentJob.id)
+
+        await context.manager.stopAll({preserveWaitingApprovals: true})
+
+        assert.equal(context.store.getJob(created.parentJob.id).status, "waiting_approval")
+        assert.equal(context.store.getStep(step.id).status, "waiting_approval")
+        assert.equal(context.store.getApproval(approval.id).status, "pending")
+        assert.equal(context.clients[0].calls.some((call) => call.method === "stop"), true)
+        assert.deepEqual(context.revoked, ["capability-1"])
+        const cold = fixture({store: context.store})
+        const restored = await cold.manager.resume(created.session.id)
+        assert.equal(restored.parentJob.status, "waiting_approval")
+        assert.equal(cold.clients.length, 0, "Waiting for the decision does not restart the Agent Runtime")
+    })
+
     it("rejects an incomplete stop and retries revoke, cancellation, and client teardown", async () => {
         let revokeAttempts = 0
         let cancelAttempts = 0

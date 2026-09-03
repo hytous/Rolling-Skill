@@ -1,11 +1,12 @@
 import {randomUUID} from "node:crypto"
 
-import {createUserMessage} from "@deepseek-ai/dsh-llm"
-
-export function createNativeSessionDispatcher({agents, createMessage = createUserMessage, createId = randomUUID} = {}) {
-    if (!agents || typeof agents.create !== "function") throw new Error("DSH Agent registry is required")
-    if (typeof createMessage !== "function" || typeof createId !== "function") {
-        throw new Error("DSH Session dispatch helpers are invalid")
+export function createNativeSessionDispatcher({apiProxy, createId = randomUUID} = {}) {
+    const sessions = apiProxy?.sessions
+    if (typeof sessions?.create !== "function" || typeof sessions?.prompt !== "function") throw new Error("DSH native Session API is required")
+    const invoke = async (method, payload) => {
+        const response = await sessions[method]({rpcId: createId(), payload})
+        if (response?.result?.ok !== true) throw new Error(response?.result?.error?.message ?? "DSH Session request failed")
+        return response.result.value
     }
     return async ({question, target, sessionId: currentSessionId}) => {
         if (target !== "new" && target !== "current") throw new Error("DSH Session dispatch target is invalid")
@@ -14,21 +15,10 @@ export function createNativeSessionDispatcher({agents, createMessage = createUse
         }
         const sessionId = target === "current" ? currentSessionId : createId()
         if (typeof sessionId !== "string" || !sessionId) throw new Error("Current DSH Session is required")
-        const handle = target === "current" ? null : await agents.create({sessionId})
-        const agent = handle?.agent ?? agents.get?.(sessionId)
-        if (!agent || typeof agent.followup !== "function") {
-            await handle?.dispose?.()
-            throw new Error("The current DSH Session is not active")
-        }
-        try {
-            agent.followup(createMessage({
-                content: [{type: "text", text: question}],
-                source: {kind: "user"},
-            }))
-        } catch (error) {
-            await handle?.dispose?.()
-            throw error
-        }
+        // This is the same entry as the DSH New Session UI. A bare agents.create
+        // skips preset/tool composition and can produce an invisible, unusable Agent.
+        if (target === "new") await invoke("create", {sessionId})
+        await invoke("prompt", {sessionId, mode: "queue", content: [{type: "text", text: question}]})
         return {sessionId, status: "queued"}
     }
 }

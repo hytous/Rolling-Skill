@@ -191,6 +191,8 @@ class OptimizationRunner {
         )
         requiredDependency(this.operatorGateway, "requestDecision", "Optimization Operator gateway")
         this.approvals = requiredDependency(options.approvals, "request", "Optimization approval gateway")
+        requiredDependency(this.approvals, "reject", "Optimization approval gateway")
+        requiredDependency(this.approvals, "suspend", "Optimization approval gateway")
         this.releaseManager = requiredDependency(options.releaseManager, "release", "Skill release manager")
         this.telemetry = options.telemetry ?? (() => ({}))
         if (typeof this.telemetry !== "function") throw new Error("Optimization telemetry reader is invalid")
@@ -269,8 +271,10 @@ class OptimizationRunner {
         if (!control.operatorSessionId || !control.parentJobId || !control.workspace) {
             throw new Error("Optimization resume requires its frozen Operator and workspace identities")
         }
-        const operation = this.#prepareResume(control)
-            .then(() => this.#execute(control))
+        // Preparation only reads durable evidence and transitions the store. Fail
+        // synchronously so the HTTP action can report a rejected recovery.
+        this.#prepareResume(control)
+        const operation = this.#execute(control)
             .finally(() => {
                 if (this.controls.get(runId) === control) this.controls.delete(runId)
             })
@@ -279,10 +283,95 @@ class OptimizationRunner {
         return operation
     }
 
-    stop(runId) {
+    resumeFinalApproval(runId, context = {}) {
+        if (this.schedulingStopped) {
+            throw new Error("Optimization Runner scheduling is stopped for App shutdown")
+        }
+        if (this.controls.has(runId)) throw new Error("Optimization Run is already active")
+        const run = this.store.getRun(runId)
+        if (
+            run.state !== "needs_recovery" ||
+            (
+                run.recovery?.previousState !== "waiting_approval" &&
+                run.checkpoint?.resumePhase !== "final_approval"
+            )
+        ) {
+            throw new Error("Optimization Run has no interrupted final approval to resume")
+        }
+        const epoch = run.epochs.at(-1)
+        if (
+            !epoch || epoch.status !== "deciding" || !epoch.candidateArtifactId ||
+            !epoch.analysisArtifactId || !epoch.decisionArtifactId
+        ) {
+            throw new Error("Interrupted final approval lacks durable Candidate decision evidence")
+        }
+        const candidates = run.epochs.filter((entry) => entry.candidateArtifactId)
+        const control = {
+            runId,
+            operatorSessionId: String(
+                context.operatorSessionId ?? run.checkpoint.operatorSessionId ?? "",
+            ),
+            parentJobId: String(
+                context.parentJobId ?? run.checkpoint.operatorParentJobId ?? "",
+            ),
+            cancelRequested: false,
+            pauseRequested: false,
+            initialTargets: clone(run.checkpoint.initialTargets ?? null),
+            currentCandidate: this.#readArtifact(epoch.candidateArtifactId),
+            previousCandidate: candidates.length > 1
+                ? this.#readArtifact(candidates.at(-2).candidateArtifactId)
+                : null,
+            baselineEvaluation: null,
+            previousEvaluation: null,
+            analyses: [],
+            workspace: clone(context.workspace ?? this.workspaceManager.get?.(runId) ?? null),
+            approvedLimits: clone(run.checkpoint.approvedLimits ?? {}),
+        }
+        if (
+            !control.operatorSessionId || !control.parentJobId || !control.workspace ||
+            !control.initialTargets
+        ) {
+            throw new Error("Final approval recovery requires its frozen Operator, workspace, and target identities")
+        }
+        const operation = this.#releaseAndInstall(control, {
+            epochId: epoch.id,
+            epochNumber: epoch.number,
+            candidate: control.currentCandidate,
+            stopReason: run.checkpoint.stopReason,
+        }).catch((error) => this.#restore(control, "failed", error)).finally(() => {
+            if (this.controls.get(runId) === control) this.controls.delete(runId)
+        })
+        control.operation = operation
+        this.controls.set(runId, control)
+        return operation
+    }
+
+    async stop(runId) {
         const control = this.controls.get(runId)
-        if (!control) throw new Error("Optimization Run is not active")
+        if (!control) {
+            const run = this.store.getRun(runId)
+            if (run.state !== "needs_recovery") throw new Error("Optimization Run is not active")
+            const candidates = run.epochs.filter((epoch) => epoch.candidateArtifactId)
+            const restored = {
+                runId, cancelRequested: true,
+                operatorSessionId: run.checkpoint.operatorSessionId,
+                parentJobId: run.checkpoint.operatorParentJobId,
+                initialTargets: clone(run.checkpoint.initialTargets ?? null),
+                currentCandidate: candidates.length ? this.#readArtifact(candidates.at(-1).candidateArtifactId) : null,
+                previousCandidate: candidates.length > 1 ? this.#readArtifact(candidates.at(-2).candidateArtifactId) : null,
+            }
+            const operation = this.#restore(restored, "cancelled", new Error("Optimization cancelled by user"))
+                .finally(() => this.controls.delete(runId))
+            restored.operation = operation
+            this.controls.set(runId, restored)
+            return {runId, status: "stopping"}
+        }
         control.cancelRequested = true
+        this.store.updateCheckpoint(runId, {stopRequested: true})
+        this.operatorGateway.cancelRun?.(runId, "Optimization cancelled by user")
+        if (control.pendingApprovalId) {
+            await this.approvals.reject(control.pendingApprovalId)
+        }
         return {runId, status: "stopping"}
     }
 
@@ -290,13 +379,22 @@ class OptimizationRunner {
         const control = this.controls.get(runId)
         if (!control) throw new Error("Optimization Run is not active")
         control.pauseRequested = true
+        control.pauseReason = "user_pause"
+        this.operatorGateway.cancelRun?.(runId, "Optimization paused by user")
+        if (control.pendingApprovalId) this.approvals.suspend?.(control.pendingApprovalId)
         return {runId, status: "pausing"}
     }
 
     checkpointAndStop() {
         this.schedulingStopped = true
         const activeRunIds = [...this.controls.keys()].sort()
-        for (const runId of activeRunIds) this.controls.get(runId).pauseRequested = true
+        for (const runId of activeRunIds) {
+            const control = this.controls.get(runId)
+            control.pauseRequested = true
+            control.pauseReason = "app_shutdown"
+            this.operatorGateway.cancelRun?.(runId, "Application shutdown")
+            if (control.pendingApprovalId) this.approvals.suspend?.(control.pendingApprovalId)
+        }
         return {activeRunIds}
     }
 
@@ -314,7 +412,7 @@ class OptimizationRunner {
         return JSON.parse(Buffer.from(body).toString("utf8"))
     }
 
-    async #prepareResume(control) {
+    #prepareResume(control) {
         const run = this.store.getRun(control.runId)
         const epoch = run.epochs.at(-1)
         if (!run.checkpoint?.baselineEvaluationArtifactId) {
@@ -335,7 +433,9 @@ class OptimizationRunner {
         } else {
             control.previousEvaluation = control.baselineEvaluation
         }
-        if (epoch && !["completed", "succeeded", "failed", "cancelled"].includes(epoch.status)) {
+        if (epoch?.status === "editing" && !epoch.candidateArtifactId) {
+            control.resumeEditingEpoch = {epochId: epoch.id, index: epoch.number}
+        } else if (epoch && !["completed", "succeeded", "failed", "cancelled"].includes(epoch.status)) {
             const completeEvidence = epoch.candidateArtifactId &&
                 epoch.installArtifactIds?.length && epoch.evaluationArtifactIds?.length &&
                 epoch.analysisArtifactId && epoch.decisionArtifactId
@@ -408,7 +508,8 @@ class OptimizationRunner {
         }))
         const failed = completed.find((job) => !SUCCESSFUL_INSTALLATION_STATUSES.has(job.status))
         if (failed) {
-            const error = new Error(`Runtime installation Job ${failed.id} ended as ${failed.status}`)
+            const reason = typeof failed.error?.message === "string" ? failed.error.message.slice(0, 4_096) : ""
+            const error = new Error(`Runtime installation Job ${failed.id} ended as ${failed.status}${reason ? `: ${reason}` : ""}`)
             error.code = failed.status === "needs_recovery"
                 ? "OPTIMIZATION_INSTALL_NEEDS_RECOVERY"
                 : "OPTIMIZATION_INSTALL_FAILED"
@@ -448,7 +549,19 @@ class OptimizationRunner {
                 previousCandidateVersionId: previousCandidate?.id ?? null,
                 targets,
             })
-            const completed = await this.#waitInstallationJobs(jobs)
+            this.store.updateCheckpoint(control.runId, {
+                installationOperation: operation,
+                installationJobIds: jobs.map((job) => job.id),
+                installationPending: true,
+            })
+            this.onChanged({runId: control.runId})
+            let completed
+            try {
+                completed = await this.#waitInstallationJobs(jobs)
+            } finally {
+                this.store.updateCheckpoint(control.runId, {installationPending: false})
+                this.onChanged({runId: control.runId})
+            }
             const artifact = this.#artifact(jobId, "optimization-installation", `${operation}-${epoch}.json`, {
                 operation,
                 jobs: completed,
@@ -457,10 +570,17 @@ class OptimizationRunner {
         })
     }
 
+    async #operatorTimeRemaining(control) {
+        const run = this.store.getRun(control.runId)
+        const progress = await this.telemetry({runId: control.runId, epoch: run.currentEpoch})
+        return Math.max(1, (control.approvedLimits.maxDurationMs ?? run.snapshot.limits.maxDurationMs) - (progress.elapsedMs ?? 0))
+    }
+
     async #requestDecision(control, context) {
         let validationError = null
         for (let attempt = 1; attempt <= 2; attempt += 1) {
             const raw = await this.operatorGateway.requestDecision({
+                timeoutMs: await this.#operatorTimeRemaining(control),
                 ...context,
                 attempt,
                 validationError,
@@ -507,10 +627,19 @@ class OptimizationRunner {
                 )
                 control.baselineEvaluation = baseline.evaluation
                 control.previousEvaluation = baseline.evaluation
-                this.#transition(control, "editing", {
+                this.store.updateCheckpoint(control.runId, {
                     baselineEvaluationArtifactId: baseline.artifact.id,
                     baselineEvaluationRunId: baseline.evaluation.id,
                 })
+                const results = baseline.evaluation.results ?? []
+                const incomplete = results.find((result) => result.status !== "completed" ||
+                    result.gradingStatus !== "completed" || !Number.isFinite(result.computedScore?.totalScore))
+                if (incomplete || results.length !== run.snapshot.dataset.caseRevisions.length * run.snapshot.targets.length) {
+                    throw Object.assign(new Error(`Baseline evaluation is incomplete; Skill optimization has not started. ${incomplete?.gradingError ?? incomplete?.error ?? "Some Case results are missing"}`), {
+                        code: "OPTIMIZATION_BASELINE_INCOMPLETE",
+                    })
+                }
+                this.#transition(control, "editing")
             } else if (!(control.resumePrepared === true && run.state === "editing")) {
                 throw new Error("Optimization Run must start in preflight or a prepared resume")
             }
@@ -520,9 +649,11 @@ class OptimizationRunner {
                     terminalIntent = "cancelled"
                     return this.#restore(control, terminalIntent, new Error("Optimization cancelled by user"))
                 }
-                const created = this.store.createEpoch(control.runId)
+                const created = control.resumeEditingEpoch ?? this.store.createEpoch(control.runId)
+                control.resumeEditingEpoch = null
                 const epochNumber = created.index
                 const submission = await this.operatorGateway.requestCandidate({
+                    timeoutMs: await this.#operatorTimeRemaining(control),
                     run: boundedRunSummary(this.store.getRun(control.runId)),
                     epoch: epochNumber,
                     workspace: clone(control.workspace),
@@ -648,7 +779,10 @@ class OptimizationRunner {
                         runId: control.runId,
                         epoch: epochNumber,
                         request: limitRequest,
+                    }, (approval) => {
+                        control.pendingApprovalId = approval?.approvalId ?? approval?.id ?? null
                     })
+                    control.pendingApprovalId = null
                     if (limitApproval?.approved === true) {
                         control.approvedLimits[limitRequest.field] = limitRequest.value
                         analysisInput.limits = {
@@ -706,19 +840,23 @@ class OptimizationRunner {
                         Object.assign(new Error(stopDecision.reason), {code: stopDecision.reason}),
                     )
                 }
-                return await this.#releaseAndVerify(control, {
+                return await this.#releaseAndInstall(control, {
                     epochId: created.epochId,
                     epochNumber,
                     candidate: control.currentCandidate,
-                    candidateEvaluation: candidateEvaluation.evaluation,
                     stopReason: stopDecision.reason,
                 })
             }
         } catch (error) {
+            if (control.cancelRequested) return this.#restore(control, "cancelled", error)
             if (control.pauseRequested) {
+                const resumePhase = this.store.getRun(control.runId).state === "waiting_approval"
+                    ? "final_approval"
+                    : undefined
                 this.#transition(control, "needs_recovery", {
                     paused: true,
-                    pauseReason: "app_shutdown",
+                    pauseReason: control.pauseReason ?? "app_shutdown",
+                    ...(resumePhase ? {resumePhase} : {}),
                 })
                 return {runId: control.runId, status: "paused", reason: "app_shutdown"}
             }
@@ -726,21 +864,37 @@ class OptimizationRunner {
         }
     }
 
-    async #releaseAndVerify(control, context) {
+    async #releaseAndInstall(control, context) {
         this.#transition(control, "waiting_approval", {stopReason: context.stopReason})
-        const releaseApproval = await this.approvals.request({
-            kind: "release",
+        const finalApproval = await this.approvals.request({
+            kind: "release-install",
             parentJobId: control.parentJobId,
             runId: control.runId,
             epoch: context.epochNumber,
             candidate: clone(context.candidate),
+        }, (approval) => {
+            const approvalId = approval?.approvalId ?? approval?.id ?? null
+            if (!approvalId) return
+            control.pendingApprovalId = approvalId
+            this.store.updateCheckpoint(control.runId, {finalApprovalId: approvalId})
+            this.onChanged({runId: control.runId, state: "waiting_approval"})
         })
-        if (releaseApproval?.approved !== true) {
+        control.pendingApprovalId = null
+        if (control.pauseRequested) {
+            throw Object.assign(new Error("Optimization paused during final approval"), {
+                code: "OPTIMIZATION_PAUSED",
+            })
+        }
+        this.store.updateCheckpoint(control.runId, {
+            finalApprovalId: finalApproval?.approvalId ?? null,
+        })
+        this.onChanged({runId: control.runId, state: "waiting_approval"})
+        if (finalApproval?.approved !== true) {
             return this.#restore(
                 control,
                 "cancelled",
-                Object.assign(new Error("Optimization release was rejected"), {
-                    code: "OPTIMIZATION_RELEASE_REJECTED",
+                Object.assign(new Error("Optimization release and installation were rejected"), {
+                    code: "OPTIMIZATION_FINAL_APPROVAL_REJECTED",
                 }),
             )
         }
@@ -756,26 +910,10 @@ class OptimizationRunner {
             ({jobId}) => this.releaseManager.release({
                 run: this.store.getRun(control.runId),
                 candidate: context.candidate,
-                approval: releaseApproval,
+                approval: finalApproval,
                 jobId,
             }),
         )
-        const installApproval = await this.approvals.request({
-            kind: "install",
-            parentJobId: control.parentJobId,
-            runId: control.runId,
-            epoch: context.epochNumber,
-            versionId: released.id,
-        })
-        if (installApproval?.approved !== true) {
-            return this.#restore(
-                control,
-                "cancelled",
-                Object.assign(new Error("Optimization Released installation was rejected"), {
-                    code: "OPTIMIZATION_INSTALL_REJECTED",
-                }),
-            )
-        }
         if (control.cancelRequested) {
             throw Object.assign(new Error("Optimization cancelled before Released installation"), {
                 code: "OPTIMIZATION_CANCELLED",
@@ -783,8 +921,7 @@ class OptimizationRunner {
         }
         this.#transition(control, "installing", {
             releasePhase: "released-install",
-            releaseApprovalId: releaseApproval.approvalId ?? null,
-            installApprovalId: installApproval.approvalId ?? null,
+            finalApprovalId: finalApproval.approvalId ?? null,
             releasedVersionId: released.id,
         })
         const formalInstallation = await this.#child(
@@ -805,64 +942,13 @@ class OptimizationRunner {
                 return {jobs: completed, artifact}
             },
         )
-        this.#transition(control, "evaluating", {
-            releasePhase: "final-regression",
+        this.store.updateCheckpoint(control.runId, {
+            releasePhase: "installed",
             releasedInstallArtifactId: formalInstallation.artifact.id,
         })
-        const finalEvaluation = await this.#evaluate(
-            control,
-            "final-regression",
-            released,
-            formalInstallation.jobs,
-            context.epochNumber,
-        )
-        const epoch = this.store.getRun(control.runId).epochs.find(
-            (entry) => entry.id === context.epochId,
-        )
-        this.store.updateEpoch(control.runId, context.epochId, {
-            evaluationArtifactIds: [...epoch.evaluationArtifactIds, finalEvaluation.artifact.id],
-        })
-        this.#transition(control, "deciding", {
-            releasePhase: "verified",
-            finalEvaluationRunId: finalEvaluation.evaluation.id,
-            finalEvaluationArtifactId: finalEvaluation.artifact.id,
-        })
-        const regression = compareEvaluationRuns({
-            baseline: context.candidateEvaluation,
-            previous: context.candidateEvaluation,
-            current: finalEvaluation.evaluation,
-            mode: "fixed",
-            epoch: 1,
-            target: {minimumScore: 0, minimumPassRate: 0, requireCriticalCases: true},
-            limits: {
-                maxEpochs: 2,
-                maxDurationMs: this.store.getRun(control.runId).snapshot.limits.maxDurationMs,
-                maxTurns: null,
-                maxTokens: null,
-                maxCostMicros: null,
-                patience: 1,
-                minimumImprovement: 0,
-            },
-            progress: {elapsedMs: 0, turnsUsed: 0, tokensUsed: null, costMicros: null},
-            history: [],
-            agentDecision: {action: "finish"},
-            regressionThresholds: {maximumScoreDrop: 0, maximumRegressedResults: 0},
-        })
-        if (
-            regression.broadRegression ||
-            regression.newCriticalFailures.length ||
-            regression.missingScoreCount > 0
-        ) {
-            return this.#restore(
-                control,
-                "failed",
-                Object.assign(new Error("Released installation final regression failed"), {
-                    code: "OPTIMIZATION_FINAL_REGRESSION_FAILED",
-                }),
-            )
-        }
+        this.onChanged({runId: control.runId, state: "installing"})
         this.store.updateEpoch(control.runId, context.epochId, {status: "succeeded"})
-        this.#transition(control, "succeeded", {finalRegressionPassed: true}, null)
+        this.#transition(control, "succeeded", null, null)
         await this.workspaceManager.cleanup?.(control.runId)
         return {runId: control.runId, status: "succeeded", releasedVersionId: released.id}
     }

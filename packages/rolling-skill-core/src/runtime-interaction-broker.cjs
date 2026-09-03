@@ -47,6 +47,33 @@ function runtimeSummary(value) {
     })
 }
 
+function consentValue(value, depth = 0) {
+    if (typeof value === "string") return value
+        .replace(/\b(Bearer\s+)\S+/giu, "$1[redacted]")
+        .replace(/((?:[\w-]*(?:token|secret|password|api[_-]?key|authorization|cookie)[\w-]*)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu, "$1[redacted]")
+        .slice(0, 4000)
+    if (value === null || typeof value === "boolean" || typeof value === "number") return value
+    if (!value || typeof value !== "object" || depth >= 4) return null
+    if (Array.isArray(value)) return value.slice(0, 30).map((entry) => consentValue(entry, depth + 1))
+    return Object.fromEntries(Object.entries(value).slice(0, 30)
+        .filter(([key]) => !/token|secret|password|api.?key|authorization|cookie|environment/iu.test(key))
+        .map(([key, entry]) => [key, consentValue(entry, depth + 1)]))
+}
+
+function permissionDetails(request) {
+    const params = request.params ?? {}
+    const tool = params.toolCall ?? {}
+    return consentValue({
+        tool: params.toolName ?? tool.name ?? null,
+        reason: params.reason ?? tool.title ?? null,
+        command: params.command ?? null,
+        cwd: params.cwd ?? null,
+        arguments: tool.rawInput ?? null,
+        permissions: params.permissions ?? null,
+        locations: tool.locations ?? null,
+    })
+}
+
 function owner(request) {
     if (typeof request.operatorSessionId === "string" && request.operatorSessionId.trim()) {
         return {
@@ -102,6 +129,7 @@ class RuntimeInteractionBroker {
             runtime: runtimeSummary(request.runtime),
             options,
             questions,
+            ...(kind === "permission" ? {details: permissionDetails(request)} : {}),
             createdAt,
             expiresAt,
         }

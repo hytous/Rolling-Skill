@@ -594,14 +594,25 @@ const publicOptimizationEpoch = z.object({
 }).strict()
 
 const publicOptimizationCheckpoint = z.object({
+    operatorSessionId: id.optional(),
+    activeEvaluationRunId: id.optional(),
+    activeEvaluationKind: z.enum(["baseline", "candidate", "final-regression"]).optional(),
+    installationOperation: z.enum(["experiment_inspect", "experiment_install", "experiment_restore", "experiment_remove"]).optional(),
+    installationPending: z.boolean().optional(),
+    installationJobIds: z.array(id).max(64).optional(),
+    baselineEvaluationRunId: id.optional(),
+    stopRequested: z.boolean().optional(),
+    operatorCleanupError: z.string().max(2000).optional(),
     paused: z.boolean().optional(),
     pauseReason: z.string().max(300).optional(),
     stopReason: z.string().max(300).optional(),
     reportArtifactId: id.optional(),
     reportDigest: boundedText(80, "Optimization report digest").optional(),
+    finalApprovalId: id.nullable().optional(),
     releaseApprovalId: id.nullable().optional(),
     installApprovalId: id.nullable().optional(),
     releasedVersionId: id.nullable().optional(),
+    releasedInstallArtifactId: id.nullable().optional(),
     finalEvaluationArtifactId: id.nullable().optional(),
     finalRegressionPassed: z.boolean().optional(),
     telemetry: z.object({
@@ -1016,9 +1027,10 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
         action: "optimizations.read",
         input: z.object({runId: id, idempotencyKey: id}).strict(),
         output: z.object({report: z.object({
-            artifactId: id,
+            artifactId: id.nullable(),
             digest: boundedText(80, "Optimization report digest"),
             mediaType: z.literal("text/markdown; charset=utf-8"),
+            preview: boundedText(32768, "Optimization report preview").optional(),
         }).strict()}).strict(),
     },
 })

@@ -300,6 +300,28 @@ function freezeSkillExperimentRecoveryInspectionRequest(request) {
     })
 }
 
+function installationPromptEvidence(value) {
+    if (!value || typeof value !== "object") return null
+    const destination = typeof value.destination === "string" ? value.destination.trim() : ""
+    if (!destination || destination.length > 4_096 || !isAbsolute(destination)) return null
+    const evidence = {destination}
+    for (const field of [
+        "runtimeId",
+        "providerId",
+        "skillId",
+        "repositoryId",
+        "versionId",
+        "commit",
+        "contentDigest",
+        "verification",
+        "installedAt",
+    ]) {
+        const text = typeof value[field] === "string" ? value[field].trim() : ""
+        if (text && text.length <= 4_096) evidence[field] = text
+    }
+    return deepFreeze(evidence)
+}
+
 function buildSkillInstallationPrompt(request, options = {}) {
     const experiment = request?.purpose === "optimization-experiment"
     if (!experiment) {
@@ -325,20 +347,17 @@ function buildSkillInstallationPrompt(request, options = {}) {
         "Requested permission",
         100,
     )
-    const priorInstallation = options.priorInstallation && typeof options.priorInstallation === "object"
-        ? options.priorInstallation
-        : null
+    const priorInstallation = installationPromptEvidence(options.priorInstallation)
     let experimentResult = null
     let destinationExample = "/absolute/path/reported/by/the/runtime"
     if (experiment) {
         const currentMarker = request.experiment.marker
         if (operation === "experiment_inspect" && request.experiment.inspectionMode !== "recovery") {
-            destinationExample = null
             experimentResult = {
-                actualDigest: null,
-                markerWritten: false,
+                actualDigest: request.experiment.baseline.expectedDigest,
+                markerWritten: true,
                 runtimeDiscovered: null,
-                beforeDigest: null,
+                beforeDigest: request.experiment.baseline.expectedDigest,
                 mutationPerformed: false,
                 markerBefore: null,
                 markerAfter: null,
@@ -413,10 +432,12 @@ function buildSkillInstallationPrompt(request, options = {}) {
         warnings: [],
         error: null,
     }
+    const managedReadScope = "Read scope: the specified repository, the exact Skill target and markers, and this Runtime's own Skill inventory or configuration. Start with priorInstallation.destination when it is present, but still verify that it is the exact non-symlink target for skillName before mutation. Do not search controller stores, Job records, historical conversations, or traces; every immutable request value is already in the frozen JSON. Do not search application source for another copy of the request."
     let procedure
     if (experiment) {
         const common = [
-            "1. This is an optimization experiment. Verify the repository, frozen Run, exact commit, Skill identity, digest, and operation before touching any Runtime target.",
+            "1. This is an optimization experiment. Use the supplied frozen request as the authority for Run identity and operation; verify its exact repository, commit, Skill identity, and digest against the filesystem before touching any Runtime target.",
+            "Read scope: only the specified repository, exact Skill target/markers, and this Runtime's own Skill inventory. Do not search controller stores, historical conversations, traces, or application source code for precedents or another copy of the request. Parse/copy exact values from the supplied JSON; do not retype or guess UUIDs or paths. If the frozen repository path does not exist, stop with a concrete failure and no mutation; do not infer a replacement repository.",
             "2. Export only source.skillRoot from the exact frozen commit. Never use the managed Working tree or implicit HEAD, and never run code from the Skill.",
             "3. Discover the exact Runtime target yourself. Refuse symlinks, broad destinations, ambiguous identity boundaries, or any path you cannot prove is the one Skill target.",
             "4. Inspect the current target, deterministic digest, management marker, and rolling-skill-experiment/v1 marker before any mutation.",
@@ -434,7 +455,7 @@ function buildSkillInstallationPrompt(request, options = {}) {
                     ...common,
                     "5. This is strict read-only preflight. Do not create, edit, move, delete, overwrite, or chmod any target or marker, and do not request write permission.",
                     "6. Epoch 1 enrollment succeeds only when the target is absent or is managed-clean at the exact frozen Released baseline digest and identity. managed-drifted, unmanaged, conflict, and uncertain must fail preflight.",
-                    "7. Report mutationPerformed=false and exact before-state evidence. Never claim an experiment marker was written.",
+                    "7. Report mutationPerformed=false and exact before-state evidence. For managed-clean, destination is the discovered absolute target, actualDigest and beforeDigest are the installed baseline digest (NOT the Candidate digest), and markerWritten=true means the existing ordinary management marker is present and verified, not newly written. markerBefore and markerAfter remain null because no experiment marker exists. For absent, destination/actualDigest/beforeDigest are null and markerWritten=false. Never claim an experiment marker was written.",
                     "8. Finish with exactly one result block using the schema below.",
                 ]
         } else if (operation === "experiment_install") {
@@ -443,6 +464,7 @@ function buildSkillInstallationPrompt(request, options = {}) {
                 "5. For Epoch 1, continue only from the frozen initial absent state or the exact managed-clean frozen baseline. For later Epochs, require the exact current Run marker and previous Candidate digest shown in the request.",
                 "6. If the target, previous Candidate digest, or marker differs, do not delete or overwrite anything. Report needs_recovery with mutationPerformed=false.",
                 `7. Install the exact Candidate and write the exact rolling-skill-experiment/v1 marker from experiment.marker to ${EXPERIMENT_MARKER_FILE}. Do not represent it as a formal Released installation.`,
+                "Preserve the existing ordinary management marker unchanged during a trial installation; it records the formal Released baseline. If initially absent, do not create an ordinary management marker. The separate experiment marker identifies the temporary Candidate, and both marker files are excluded from the content digest.",
                 "8. Recompute the installed digest and verify the exact marker. Report the before and after evidence and whether Runtime inventory discovered it.",
                 "9. Finish with exactly one result block using the schema below.",
             ]
@@ -467,6 +489,7 @@ function buildSkillInstallationPrompt(request, options = {}) {
         procedure = [
             "1. Verify the repository and exact commit. Export only source.skillRoot from that commit into a temporary directory. Never read install bytes from the current working tree.",
             "2. Compute the deterministic source Skill SHA-256 digest, excluding .rolling-skill-managed.json, and require it to equal source.expectedDigest.",
+            managedReadScope,
             "3. Discover the Skill root actually used by this Runtime and select only the exact target for skillName. Do not assume a provider-specific path supplied by this prompt.",
             "4. Inspect the target, its digest, symlinks, and .rolling-skill-managed.json. Classify the current state exactly as one of: absent, managed-clean, managed-drifted, unmanaged, conflict, uncertain.",
             "5. This is an inspect-only recovery turn. Do not create, edit, move, delete, overwrite, or chmod any target or marker. Do not request write permission.",
@@ -478,6 +501,7 @@ function buildSkillInstallationPrompt(request, options = {}) {
         procedure = [
             "1. Verify the repository and exact commit. Export only source.skillRoot from that commit into a temporary directory. Never copy the current working tree.",
             "2. Compute the deterministic Skill content SHA-256 digest, excluding .rolling-skill-managed.json, and require it to equal source.expectedDigest before touching a target.",
+            managedReadScope,
             "3. Discover the Skill root actually used by this Runtime and select only the exact target for skillName. Do not assume a provider-specific path supplied by this prompt.",
             "4. Inspect the target, its digest, symlinks, and .rolling-skill-managed.json. Classify the pre-state exactly as one of: absent, managed-clean, managed-drifted, unmanaged, conflict, uncertain.",
             "5. Only absent and managed-clean may continue without an additional overwrite confirmation. For managed-drifted, unmanaged, conflict, or uncertain, pause and ask the user through the Runtime interaction UI. Show the destination, evidence, and exact directory that would be changed. Offer Continue overwrite, I will install manually, and Cancel.",
@@ -515,7 +539,10 @@ function buildSkillInstallationPrompt(request, options = {}) {
         "",
         "Required procedure:",
         ...procedure,
+        "For marker JSON, serialize the exact identity and digest values from the frozen request with a JSON library; do not abbreviate, retype, or infer them. SHA-256 content digests are not Git object IDs.",
+        ...(experiment ? ["result.markerBefore and result.markerAfter refer only to .rolling-skill-experiment.json (rolling-skill-experiment/v1), never the ordinary .rolling-skill-managed.json marker. If no experiment marker exists, use null; explain an invalid ordinary marker in error.message."] : []),
         "In result.runtimeDiscovered, runtimeDiscovered must be the JSON boolean true, the JSON boolean false, or null. Never return the strings \"true\", \"false\", or \"null\".",
+        'For every non-success status, error must be an object with code and message, for example {"code":"OVERWRITE_CONFIRMATION_REQUIRED","message":"Destination unchanged; waiting for the user to approve replacing the existing marker."}. Use error:null only on success. If the Runtime cannot open its interaction UI, end unverified with this concrete explanation; never treat silence as approval.',
         "",
         INSTALL_RESULT_SENTINEL.open,
         JSON.stringify(finalShape, null, 2),
@@ -564,6 +591,11 @@ function validateSource(actual, expected) {
 
 function normalizeError(value, required) {
     if (!required && (value === null || value === undefined)) return null
+    // A failure's explanation is display data, not installation evidence. Preserve
+    // it even when the Runtime omits the object wrapper; success remains strict.
+    if (required && typeof value === "string" && value.trim()) {
+        return {code: "RUNTIME_INSTALLATION_INCOMPLETE", message: requiredText(value, "Installation error message", 8_192)}
+    }
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error("Installation result error is required")
     }
@@ -755,6 +787,22 @@ function experimentVerification({
     return "experiment-removed"
 }
 
+// Diagnostic-only: malformed evidence must never become a trusted installation.
+function reportedSkillInstallationFailure(text, request) {
+    try {
+        const payload = parseJsonBody(oneSentinelBody(text))
+        if (payload.schema !== INSTALL_RESULT_SCHEMA || !["failed", "cancelled", "unverified", "needs_recovery"].includes(payload.status)) return null
+        const experiment = request?.purpose === "optimization-experiment"
+        if ((payload.purpose ?? "managed-installation") !== request?.purpose ||
+            !(experiment ? EXPERIMENT_OPERATIONS : ORDINARY_OPERATIONS).has(payload.operation) ||
+            (experiment && payload.operation !== request.operation)) return null
+        validateSource(payload.source, request.source)
+        return requiredText(payload.error?.message, "Reported installation failure", 4_096)
+    } catch {
+        return null
+    }
+}
+
 function parseSkillInstallationResult(text, request) {
     const payload = parseJsonBody(oneSentinelBody(text))
     if (payload.schema !== INSTALL_RESULT_SCHEMA) {
@@ -905,4 +953,5 @@ module.exports = {
     freezeSkillExperimentRecoveryInspectionRequest,
     freezeSkillInstallationRequest,
     parseSkillInstallationResult,
+    reportedSkillInstallationFailure,
 }

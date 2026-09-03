@@ -1,6 +1,6 @@
 const {randomUUID} = require("node:crypto")
 
-const ACTIVE_OPERATOR_STATES = new Set(["active", "queued", "running"])
+const ACTIVE_OPERATOR_STATES = new Set(["active", "queued", "running", "starting", "restoring"])
 const TERMINAL_EDIT_STATES = new Set(["published", "discarded", "failed"])
 
 function requiredText(value, label, maximum = 4_096) {
@@ -47,19 +47,30 @@ function publicMessageText(value, workspacePath) {
     return text
 }
 
-function messages(operator, workspacePath) {
+function editObjectivePrompt(objective) {
+    return [
+        "Edit the isolated managed Skill draft in this workspace.",
+        "Work only inside the current workspace. Do not publish, install, or modify another Skill.",
+        "Inspect the existing files, make the requested changes directly, and explain the result briefly.",
+        "",
+        `User request: ${objective}`,
+    ].join("\n")
+}
+
+function messages(operator, record) {
     return (operator?.session?.transcript ?? [])
         .filter((entry) => (
             entry?.kind === "message" &&
             (entry.role === "user" || entry.role === "assistant") &&
             typeof entry.content === "string"
         ))
-        .slice(-200)
-        .map((entry) => ({
+        .map((entry, index) => ({
             role: entry.role,
-            content: publicMessageText(entry.content, workspacePath),
+            content: publicMessageText(index === 0 && entry.role === "user" && entry.content === editObjectivePrompt(record.objective)
+                ? record.objective : entry.content, record.workspacePath),
             recordedAt: entry.recordedAt ?? null,
         }))
+        .slice(-200)
 }
 
 function publicRecord(record, {operator = null, diff = null} = {}) {
@@ -76,7 +87,7 @@ function publicRecord(record, {operator = null, diff = null} = {}) {
             state: operator.state ?? null,
             jobStatus: operator.parentJob?.status ?? null,
         } : null,
-        messages: messages(operator, record.workspacePath),
+        messages: messages(operator, record),
         diff,
         publishedVersionId: record.publishedVersion?.id ?? null,
         publishedVersionLabel: record.publishedVersion?.label ?? null,
@@ -235,13 +246,7 @@ function createSkillEditServices({
                     runtimeId,
                     modelId,
                     effort,
-                    objective: [
-                        "Edit the isolated managed Skill draft in this workspace.",
-                        "Work only inside the current workspace. Do not publish, install, or modify another Skill.",
-                        "Inspect the existing files, make the requested changes directly, and explain the result briefly.",
-                        "",
-                        `User request: ${objective}`,
-                    ].join("\n"),
+                    objective: editObjectivePrompt(objective),
                     actions: ["skills.read"],
                     scopes: {
                         repositoryIds: [detail.repository.id],
@@ -343,15 +348,26 @@ function createSkillEditServices({
                     },
                     message: `Apply Agent edit for ${record.skillId}`,
                 })
+                let shutdownError = null
+                try {
+                    await operatorServices.operatorCancel({sessionId: record.operatorSessionId})
+                } catch (error) {
+                    // Publishing already succeeded. Keep its result and preserve the
+                    // workspace if the Runtime may still be using it.
+                    shutdownError = {
+                        code: "EDITOR_SHUTDOWN_FAILED",
+                        message: `Version published, but the editor could not be stopped; its workspace was preserved. ${sanitizedError(error, record.workspacePath).message}`,
+                    }
+                }
                 const closed = store.close(record.id, record.revision, {
                     state: "published",
                     publishedVersion: {
                         id: result.version.id,
                         label: result.version.versionLabel,
                     },
-                    error: null,
+                    error: shutdownError,
                 })
-                await workspaceManager.cleanup(record.id).catch(() => {})
+                if (!shutdownError) await workspaceManager.cleanup(record.id).catch(() => {})
                 return publicRecord(closed)
             } catch (error) {
                 store.update(record.id, record.revision, {

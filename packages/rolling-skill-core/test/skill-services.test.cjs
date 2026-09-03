@@ -38,7 +38,7 @@ function fixture() {
                 },
                 runtime: {runtimeId: "codex:a", displayName: "Codex"},
                 messages: [{role: "assistant", content: "installed"}],
-                activities: [],
+                activities: [{type: "commandExecution", status: "completed", command: "git show frozen:SKILL.md", name: "bash", privatePayload: "do not expose"}],
             }],
             matrix: [{
                 runtimeId: "codex:a",
@@ -117,6 +117,9 @@ describe("Rolling Skill managed Skill services", () => {
         assert.equal(overview.jobs[0].traceAvailable, true)
         assert.equal(overview.jobs[0].request.source.versionId, "version-1")
         assert.equal(overview.jobs[0].request.source.expectedDigest, "sha256:test")
+        assert.equal(overview.jobs[0].activities[0].command, "git show frozen:SKILL.md")
+        assert.equal(overview.jobs[0].activities[0].status, "completed")
+        assert.equal(Object.hasOwn(overview.jobs[0].activities[0], "privatePayload"), false)
         const detail = test.services.installation({jobId: "job-1"})
         assert.equal(detail.status, "running")
         assert.equal(Object.hasOwn(detail, "traceReference"), false)

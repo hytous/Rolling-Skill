@@ -275,15 +275,21 @@ class CurationManager {
             }
             return existing
         }
+        return this.createEpisodeSession({...input, episode})
+    }
+
+    // The caller supplies evidence frozen by a trusted source adapter, never browser input.
+    async createEpisodeSession(input) {
         const releaseDataset = this.store.reserveDataset(input.datasetId)
         try {
-            const runtimeDescriptor = this.getRuntimeDescriptor()
+            const runtimeDescriptor = this.getRuntimeDescriptor(input.curator?.runtimeId)
             const curator = input.curator ?? {}
             const session = this.store.createCurationSession({
+                automaticCaptureRawCaseId: input.automaticCaptureRawCaseId,
                 datasetId: input.datasetId,
                 caseType: input.caseType,
                 issueDescription: input.issueDescription ?? "",
-                episode,
+                episode: input.episode,
                 executionSkillReference: input.executionSkillReference,
                 operationEvidence: input.operationEvidence,
                 idempotencyKey: input.idempotencyKey,
@@ -322,6 +328,7 @@ class CurationManager {
             traceReference: input.traceReference ?? null,
         })
         const session = this.store.createCurationSession({
+            automaticCaptureRawCaseId: input.automaticCaptureRawCaseId,
             datasetId: input.datasetId,
             caseType: input.caseType,
             issueDescription: input.issueDescription ?? "",
@@ -367,11 +374,13 @@ class CurationManager {
     async createRefreshSession(input) {
         const releaseDataset = this.store.reserveDataset(input.datasetId)
         try {
-            const runtimeDescriptor = this.getRuntimeDescriptor()
+            const runtimeDescriptor = this.getRuntimeDescriptor(input.runtimeId)
             const session = this.store.createCaseRefreshSession({
                 datasetId: input.datasetId,
                 caseId: input.caseId,
                 episode: input.episode,
+                executionSkillReference: input.executionSkillReference,
+                operationEvidence: input.operationEvidence,
                 curator: {
                     runtimeId: runtimeDescriptor?.runtimeId ?? null,
                     modelProvider: runtimeDescriptor?.providerId ?? null,
@@ -393,7 +402,7 @@ class CurationManager {
             let session = this.store.getCurationSession(sessionId)
             if (session.status === "cancelled") return session
             this.emitActivity(session, {stage: "starting"})
-            const runtime = await this.getRuntime()
+            const runtime = await this.getRuntime(session.curator.runtimeId)
             session = this.store.getCurationSession(sessionId)
             if (session.status === "cancelled") return session
             const options = {
@@ -645,7 +654,7 @@ class CurationManager {
         this.emitChanged(session)
         this.emitActivity(session, {stage: "starting", summary: ""})
         try {
-            const runtime = await this.getRuntime()
+            const runtime = await this.getRuntime(session.curator.runtimeId)
             session = this.store.getCurationSession(sessionId)
             if (session.status === "cancelled") return session
             await runtime.resumeThread(session.curator.threadId, {
@@ -741,7 +750,7 @@ class CurationManager {
         if (current.curator.threadId) {
             let runtime
             try {
-                runtime = await this.getRuntime()
+                runtime = await this.getRuntime(current.curator.runtimeId)
             } catch {
                 return discarded
             }
@@ -763,7 +772,7 @@ class CurationManager {
         this.emitChanged(session)
         if (session.curator.threadId) {
             try {
-                const runtime = await this.getRuntime()
+                const runtime = await this.getRuntime(session.curator.runtimeId)
                 await this.archiveRuntimeThread(runtime, session.curator.threadId)
             } catch {
                 // The dataset commit is authoritative; an unavailable runtime must not undo Done.

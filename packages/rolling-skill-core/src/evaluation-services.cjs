@@ -328,7 +328,18 @@ function createEvaluationServices({
     }
 
     function get({runId} = {}) {
-        return copy(publicEvaluation(store.getEvaluationRun(requiredText(runId, "Evaluation Run id"))))
+        const result = publicEvaluation(store.getEvaluationRun(requiredText(runId, "Evaluation Run id")))
+        const versionId = result.managedVersionSnapshot?.versionId ?? result.skillEvidence?.managedSource?.versionId
+        if (versionId) {
+            try {
+                const version = managedSkillStore.getVersion(versionId)
+                result.managedVersionLabel = version.versionLabel ?? null
+                result.managedVersionState = version.state
+            } catch {
+                // Historical evaluation evidence remains readable after a catalog entry is removed.
+            }
+        }
+        return copy(result)
     }
 
     async function cancel({runId} = {}) {

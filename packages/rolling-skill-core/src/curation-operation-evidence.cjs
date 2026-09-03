@@ -30,6 +30,8 @@ function createCurationOperationEvidenceResolver({
         observedSkills,
         kind = "curation",
         requireRubric = kind === "curation",
+        runtimeId = configStore.read().runtime?.runtimeId,
+        sourceProviderId = null,
     } = {}) {
         if (kind !== "curation" && kind !== "rubric") {
             throw new Error("Managed Skill operation kind is invalid")
@@ -50,11 +52,10 @@ function createCurationOperationEvidenceResolver({
         if (requireRubric && !rubric) {
             throw new Error("A published dataset Rubric is required before curation")
         }
-        const selectedRuntime = configStore.read().runtime
-        if (!selectedRuntime?.runtimeId) {
+        if (!runtimeId) {
             throw new Error("Select a Runtime before starting curation")
         }
-        const runtime = runtimeServices.descriptor(selectedRuntime.runtimeId)
+        const runtime = runtimeServices.descriptor(runtimeId)
         const repository = managedSkillStore.getRepository(datasetSkill.repositoryId)
         const skill = managedSkillStore.getSkill(datasetSkill.id)
         if (
@@ -77,8 +78,13 @@ function createCurationOperationEvidenceResolver({
         let installations = installationStore.listVerifiedInstallations({
             repositoryId: repository.id,
             skillId: skill.id,
-            runtimeId: runtime.runtimeId,
-            providerId: runtime.providerId,
+            // Source evidence belongs to the captured Runtime, not the Agent
+            // reviewing it. This is a stored installation lookup, not a live
+            // inventory/digest check or a change to the Curator configuration.
+            ...(sourceProviderId ? {providerId: sourceProviderId} : {
+                runtimeId: runtime.runtimeId,
+                providerId: runtime.providerId,
+            }),
         })
         if (!installations.length && kind === "rubric") {
             installations = installationStore.listVerifiedInstallations({
@@ -89,7 +95,7 @@ function createCurationOperationEvidenceResolver({
         if (!installations.length) {
             throw new Error("A verified Skill installation is required before curation")
         }
-        const matching = installations.filter((installation) => {
+        let matching = installations.filter((installation) => {
             const version = versionsById.get(installation.versionId)
             return version &&
                 installation.commit === version.commit &&
@@ -97,6 +103,19 @@ function createCurationOperationEvidenceResolver({
         })
         if (!matching.length) {
             throw new Error("Verified Skill installation does not match a Released version")
+        }
+        if (observedSkills !== undefined) {
+            if (!Array.isArray(observedSkills) || !observedSkills.length) {
+                throw new Error("Trusted DSH source Skill evidence is required before curation")
+            }
+            const named = observedSkills.filter((entry) => entry?.name === skill.name)
+            if (!named.length) throw new Error("Trusted DSH observed Skill does not match the Dataset Skill")
+            matching = matching.filter((installation) => named.some((entry) =>
+                entry.resourceBase?.kind === "directory" &&
+                typeof entry.resourceBase.path === "string" &&
+                resolve(entry.resourceBase.path) === resolve(installation.destination),
+            ))
+            if (!matching.length) throw new Error("Trusted DSH source Skill does not match the verified installation")
         }
         const newestInstalledAt = matching[0].installedAt
         const newest = matching.filter((entry) => entry.installedAt === newestInstalledAt)
@@ -175,6 +194,7 @@ function createCurationOperationEvidenceResolver({
                 resourceBase: {...selected.resourceBase},
                 callSeq: selected.callSeq,
                 resultSeq: selected.resultSeq,
+                ...(selected.inherited ? {inherited: true} : {}),
             }
         }
         return {
@@ -216,12 +236,14 @@ function createCurationOperationEvidenceResolver({
         }
     }
 
-    function inspectDataset(datasetId) {
+    function inspectDataset(datasetId, options = {}) {
         const dataset = store.getDataset(datasetId)
+        const skillId = dataset.skillReference?.id ?? null
         try {
-            const resolved = resolveEvidence(dataset.id)
+            const resolved = resolveEvidence(dataset.id, options)
             return {
                 datasetId: dataset.id,
+                skillId,
                 name: dataset.name,
                 ready: true,
                 blockers: [],
@@ -238,13 +260,22 @@ function createCurationOperationEvidenceResolver({
             }
         } catch (error) {
             const message = String(error?.message ?? "Curation prerequisite failed")
+            let runtime = null
+            try {
+                const id = configStore.read().runtime?.runtimeId
+                if (id) {
+                    const descriptor = runtimeServices.descriptor(id)
+                    runtime = {runtimeId: id, displayName: descriptor.displayName, version: descriptor.version}
+                }
+            } catch { /* Keep the prerequisite actionable when discovery is unavailable. */ }
             return {
                 datasetId: dataset.id,
+                skillId,
                 name: dataset.name,
                 ready: false,
                 blockers: [{code: blockerCode(message), message}],
                 rubricVersionId: dataset.activeRubricVersionId ?? null,
-                runtime: null,
+                runtime,
                 version: null,
             }
         }

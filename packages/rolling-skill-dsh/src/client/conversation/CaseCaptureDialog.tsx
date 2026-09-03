@@ -13,6 +13,7 @@ interface StartCandidate {
 
 interface DatasetReadiness {
     datasetId: string
+    skillId?: string | null
     name: string
     ready: boolean
     blockers: Array<{code: string; message: string}>
@@ -200,7 +201,7 @@ export function CaseCaptureDialog({
                         <strong>{t("captureDraftCreated")}</strong>
                         <p>{t("captureDraftDescription")}</p>
                         <div className="rolling-skill-actions">
-                            <Button onClick={() => openDraft(created.id)}>{t("captureViewDraft")}</Button>
+                            <Button onClick={() => {onClose(); openDraft(created.id)}}>{t("captureViewDraft")}</Button>
                             <Button variant="outline" onClick={onClose}>{t("close")}</Button>
                         </div>
                     </div>
@@ -239,9 +240,14 @@ export function CaseCaptureDialog({
                                 <strong>{t("captureBlocked")}</strong>
                                 <ul>
                                     {selectedDataset.blockers.map((blocker) => (
-                                        <li key={`${blocker.code}:${blocker.message}`}>{blocker.message}</li>
+                                        <li key={`${blocker.code}:${blocker.message}`}>{blocker.code === "INSTALLATION_REQUIRED" ? `${t("captureInstallRequired")} ${selectedDataset.runtime?.displayName ?? "Runtime"} ${selectedDataset.runtime?.version ?? ""}` : blocker.code === "PUBLISHED_RUBRIC_REQUIRED" ? t("captureRubricRequired") : blocker.message}</li>
                                     ))}
                                 </ul>
+                                {selectedDataset.blockers.some((blocker) => ["INSTALLATION_REQUIRED", "PUBLISHED_RUBRIC_REQUIRED"].includes(blocker.code)) ? <Button variant="outline" onClick={() => {
+                                    const needsRubric = selectedDataset.blockers.some((blocker) => blocker.code === "PUBLISHED_RUBRIC_REQUIRED")
+                                    onClose()
+                                    window.dispatchEvent(new CustomEvent("rolling-skill:open-workbench", {detail: {route: needsRubric ? {page: "rubrics", datasetId} : {page: "skill-install", skillId: selectedDataset.skillId}}}))
+                                }}>{selectedDataset.blockers.some((blocker) => blocker.code === "PUBLISHED_RUBRIC_REQUIRED") ? t("createRubric") : t("installReleased")}</Button> : null}
                             </div>
                         ) : null}
                         <fieldset className="rolling-skill-label-fieldset">

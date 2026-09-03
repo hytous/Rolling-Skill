@@ -543,6 +543,7 @@ function workerOperatorRuntime() {
         "operatorCancel",
         "operatorApprove",
         "operatorArtifacts",
+        "operatorArtifact",
         "operatorSend",
         "optimizationGet",
         "optimizationPreflight",
@@ -595,7 +596,7 @@ function createRollingSkillApplication(options = {}) {
     const store = new LocalEvaluationStore(paths.evaluationStore)
     const rawCaseStore = new RawCaseStore(paths.rawCaseEvents)
     const automaticEvidenceStore = new AutomaticCaptureEvidenceStore(paths.rawCaseEvidence)
-    const automaticCaptureStateStore = new AutomaticCaptureStateStore(
+    const automaticCaptureStateStore = options.automaticCaptureStateStore ?? new AutomaticCaptureStateStore(
         paths.automaticCaptureState,
     )
     const managedSkillStore = new ManagedSkillStore(paths.managedSkillRegistry)
@@ -654,12 +655,11 @@ function createRollingSkillApplication(options = {}) {
         revealPath: options.revealPath ?? null,
     })
     const selectedRuntimeId = () => configStore.read().runtime?.runtimeId ?? null
-    const selectedRuntimeDescriptor = () => {
-        const runtimeId = selectedRuntimeId()
+    const selectedRuntimeDescriptor = (runtimeId = selectedRuntimeId()) => {
         return runtimeId ? runtimeServices.descriptor(runtimeId) : null
     }
-    const getSelectedRuntime = () => {
-        const runtimeId = selectedRuntimeId()
+    const getSelectedRuntime = (runtimeId = selectedRuntimeId()) => {
+        runtimeId ??= selectedRuntimeId()
         if (!runtimeId) throw new Error("Select a Runtime before starting an Agent task")
         return runtimeServices.getClient(runtimeId, {nonInteractive: false})
     }
@@ -672,15 +672,15 @@ function createRollingSkillApplication(options = {}) {
             publish()
         },
     })
-    const conversationCurationOperationResolver =
-        options.conversationCurationOperationResolver ??
-        createCurationOperationEvidenceResolver({
+    const managedOperationResolver = createCurationOperationEvidenceResolver({
             store,
             configStore,
             runtimeServices,
             managedSkillStore,
             installationStore,
         })
+    const conversationCurationOperationResolver =
+        options.conversationCurationOperationResolver ?? managedOperationResolver
     const rubricManager = options.rubricManager ?? new RubricManager({
         store,
         getRuntime: getSelectedRuntime,
@@ -700,7 +700,12 @@ function createRollingSkillApplication(options = {}) {
     }
     const automaticCurationManager = Object.freeze({
         async createSession(input) {
-            const operation = conversationCurationOperationResolver.resolve(input.datasetId)
+            const sourceRuntimeId = input.episode?.source?.runtimeId ??
+                configStore.read().captureRuntime?.runtimeId ?? selectedRuntimeId()
+            const operation = conversationCurationOperationResolver.resolve(input.datasetId, {
+                runtimeId: sourceRuntimeId,
+                ...(input.episode?.source?.kind === "dsh-session" ? {sourceProviderId: "deepseek-harness"} : {}),
+            })
             const request = {
                 ...input,
                 executionSkillReference: operation.executionSkillReference,
@@ -722,6 +727,12 @@ function createRollingSkillApplication(options = {}) {
                     },
                 })
             }
+            if (input.episode) {
+                return curationManager.createEpisodeSession({
+                    ...request,
+                    curator: {modelId: input.modelId ?? null, effort: input.effort ?? null},
+                })
+            }
             return curationManager.createSession(request)
         },
         archive: (sessionId) => curationManager.archive(sessionId),
@@ -736,37 +747,36 @@ function createRollingSkillApplication(options = {}) {
         configStore,
         runtimeServices,
         stateStore: automaticCaptureStateStore,
+        signal: options.signal ?? null,
         rawCaseStore,
         curationManager: automaticCurationManager,
-        captureEpisode: typeof options.conversationEpisodeSource?.capture === "function"
-            ? (input) => options.conversationEpisodeSource.capture(input)
-            : null,
+        captureEpisode: async (input) => {
+            if (typeof options.conversationEpisodeSource?.capture === "function") {
+                return options.conversationEpisodeSource.capture(input)
+            }
+            const sourceRuntimeId = configStore.read().captureRuntime?.runtimeId ?? selectedRuntimeId()
+            const runtime = await runtimeServices.getClient(sourceRuntimeId, {nonInteractive: true})
+            if (typeof runtime.captureConversationEpisode !== "function") {
+                throw new Error("Automatic capture trusted DSH episode source is unavailable")
+            }
+            return runtime.captureConversationEpisode(input)
+        },
         saveEvidence: (episode) => automaticEvidenceStore.save(episode),
-        listSkills: async (runtime) => {
-            if (typeof runtime.listSkills !== "function") return []
-            const descriptor = selectedRuntimeDescriptor()
-            if (!descriptor) return []
-            const response = await runtime.listSkills({forceReload: true})
-            const runtimeSkills = (response?.data ?? []).flatMap((entry) => entry.skills ?? [])
-                .filter((skill) => skill.enabled !== false)
+        listSkills: async () => {
+            const sourceRuntimeId = configStore.read().captureRuntime?.runtimeId ?? selectedRuntimeId()
+            if (!sourceRuntimeId) return []
+            const descriptor = runtimeServices.descriptor(sourceRuntimeId)
             const verified = installationStore.listVerifiedInstallations({
                 runtimeId: descriptor.runtimeId,
                 providerId: descriptor.providerId,
             })
-            const allowNameOnly = descriptor.capabilities?.includes("skills-name-only") === true
             const matched = []
+            const seen = new Set()
             for (const installation of verified) {
                 const skill = managedSkillStore.getSkill(installation.skillId)
-                const installedManifest = basename(installation.destination).toLocaleLowerCase("en-US") === "skill.md"
-                    ? installation.destination
-                    : join(installation.destination, "SKILL.md")
-                const observed = runtimeSkills.find((entry) => runtimeSkillMatchesVerifiedInstallation({
-                    runtimeSkill: entry,
-                    managedSkillName: skill.name,
-                    installedManifest,
-                    allowNameOnly,
-                }))
-                if (observed) matched.push({id: skill.id, name: skill.name})
+                if (seen.has(skill.id) || skill.status !== "valid") continue
+                seen.add(skill.id)
+                matched.push({id: skill.id, name: skill.name})
             }
             return matched
         },
@@ -787,17 +797,16 @@ function createRollingSkillApplication(options = {}) {
             const getRuntime = () => runtimeServices.getClient(selectedRuntimeId, {
                 nonInteractive: false,
             })
-            const curationManager = new CurationManager({
-                store,
-                getRuntime,
-                getRuntimeDescriptor: () => descriptor,
-                onChanged: () => publish(),
-            })
             const manager = new CaseRefreshManager({
                 store,
                 curationManager,
                 getRuntime,
                 getRuntimeDescriptor: () => descriptor,
+                getCuratorRuntimeDescriptor: () => selectedRuntimeDescriptor(),
+                resolveOperation: (id, runtimeId) => managedOperationResolver.resolve(id, {
+                    runtimeId,
+                    requireRubric: false,
+                }),
             })
             return manager.createSession({datasetId, caseId})
         },
@@ -907,7 +916,9 @@ function createRollingSkillApplication(options = {}) {
         const capabilities = schedulerAdapter.capabilities()
         if (profile.mode === "off") throw new Error("Enable automatic capture before installing its scheduler")
         if (plugin.executionLocation !== "always") throw new Error("Select always-on execution before installing its scheduler")
-        if (!plugin.runtime) throw new Error("Select a Runtime before installing the automatic capture scheduler")
+        if (!(plugin.captureRuntime ?? plugin.runtime) || !(plugin.detectionRuntime ?? plugin.runtime)) {
+            throw new Error("Select a Runtime before installing the automatic capture scheduler")
+        }
         if (!capabilities.supported) throw new Error("System scheduling is unavailable on this platform")
         try {
             await schedulerAdapter.install(profile.schedule)
@@ -1010,15 +1021,14 @@ function createRollingSkillApplication(options = {}) {
         return Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : null
     }
 
-    async function automaticRawCaseEvidence(rawCase) {
+    async function automaticRawCaseEvidence(rawCase, {forCuration = false} = {}) {
+        const present = (episode) => forCuration ? episode : publicEpisode(episode, {itemLimit: null})
         const observation = automaticRawCaseObservation(rawCase)
         if (!observation) throw new Error("Raw Case has no automatic source evidence")
         if (observation.evidence) {
             return {
                 provenance: "snapshot",
-                episode: publicEpisode(automaticEvidenceStore.read(observation.evidence), {
-                    itemLimit: null,
-                }),
+                episode: present(automaticEvidenceStore.read(observation.evidence)),
             }
         }
         const startSeq = dshSequence(observation.startItemId, observation.threadId)
@@ -1037,7 +1047,7 @@ function createRollingSkillApplication(options = {}) {
                 startSeq,
                 endSeq,
             })
-            return {provenance: "source", episode: publicEpisode(episode, {itemLimit: null})}
+            return {provenance: "source", episode: present(episode)}
         }
         const runtime = await runtimeServices.getClient(observation.runtimeId, {
             nonInteractive: true,
@@ -1054,7 +1064,7 @@ function createRollingSkillApplication(options = {}) {
             endTurnId: observation.endTurnId,
             runtimeId: observation.runtimeId,
         })
-        return {provenance: "source", episode: publicEpisode(episode, {itemLimit: null})}
+        return {provenance: "source", episode: present(episode)}
     }
 
     function curationSession(id) {
@@ -1142,7 +1152,7 @@ function createRollingSkillApplication(options = {}) {
         return {
             ...inspection,
             datasets: store.listDatasets().map((dataset) =>
-                conversationCurationOperationResolver.inspectDataset(dataset.id),
+                conversationCurationOperationResolver.inspectDataset(dataset.id, {sourceProviderId: "deepseek-harness"}),
             ),
         }
     }
@@ -1204,8 +1214,10 @@ function createRollingSkillApplication(options = {}) {
                 startSeq: request.startSeq,
             })
             const operation = conversationCurationOperationResolver.resolve(request.datasetId, {
+                sourceProviderId: "deepseek-harness",
                 observedSkills: frozen.source.observedSkills,
             })
+            const curatorProfile = store.read().settings.curatorProfile ?? {}
             const session = await curationManager.createSessionFromFrozenEpisode({
                 datasetId: request.datasetId,
                 caseType: request.caseType,
@@ -1213,6 +1225,7 @@ function createRollingSkillApplication(options = {}) {
                 idempotencyKey: request.idempotencyKey,
                 episode: frozen.episode,
                 source: frozen.source,
+                curator: {modelId: curatorProfile.modelId ?? null, effort: curatorProfile.effort ?? null},
                 executionSkillReference: operation.executionSkillReference,
                 operationEvidence: operation.operationEvidence,
             })
@@ -1229,6 +1242,7 @@ function createRollingSkillApplication(options = {}) {
     }
 
     const methods = {
+        "health.get": () => ({status: "ready"}),
         "dashboard.get": () => dashboardSnapshot(),
         "datasets.list": () => store.listDatasets().map(publicDataset),
         "datasets.get": ({datasetId}) => ({
@@ -1337,15 +1351,16 @@ function createRollingSkillApplication(options = {}) {
                 ) {
                     throw new Error("Raw Case has no complete automatic Episode evidence")
                 }
-                const operation = conversationCurationOperationResolver.resolve(datasetId)
-                const session = await curationManager.createSession({
+                const operation = conversationCurationOperationResolver.resolve(datasetId, {
+                    runtimeId: source.runtimeId,
+                })
+                const {episode} = await automaticRawCaseEvidence(rawCase, {forCuration: true})
+                const profile = store.read().settings.curatorProfile ?? {}
+                const session = await curationManager.createEpisodeSession({
                     datasetId,
                     caseType: source.caseType,
-                    sourceThreadId: source.threadId,
-                    startItemId: source.startItemId,
-                    startTurnId: source.startTurnId,
-                    endItemId: source.endItemId,
-                    endTurnId: source.endTurnId,
+                    episode,
+                    curator: {modelId: profile.modelId ?? null, effort: profile.effort ?? null},
                     issueDescription: rawCase.note ?? source.reason ?? "",
                     executionSkillReference: operation.executionSkillReference,
                     operationEvidence: operation.operationEvidence,
@@ -1359,7 +1374,7 @@ function createRollingSkillApplication(options = {}) {
         },
         "settings.get": () => settingsSnapshot(),
         "settings.update": ({rollingSkill = {}, plugin = {}}) => {
-            if (Object.hasOwn(plugin, "runtime") || Object.hasOwn(plugin, "worker")) {
+            if (["runtime", "captureRuntime", "detectionRuntime", "worker"].some((field) => Object.hasOwn(plugin, field))) {
                 throw new Error("Runtime and Worker settings require their dedicated Host operations")
             }
             if (Object.keys(rollingSkill).length > 0) store.updateSettings(rollingSkill)
@@ -1579,6 +1594,7 @@ function createRollingSkillApplication(options = {}) {
         "operators.cancel": (input) => operatorServices.operatorCancel(input),
         "operators.approve": (input) => operatorServices.operatorApprove(input),
         "operators.artifacts": (input) => operatorServices.operatorArtifacts(input),
+        "operators.artifact": (input) => operatorServices.operatorArtifact(input),
         "operators.send": (input) => operatorServices.operatorSend(input),
         "optimizations.list": () => operatorServices.optimizationList(),
         "optimizations.get": (input) => operatorServices.optimizationGet(input),

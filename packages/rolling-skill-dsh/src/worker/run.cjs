@@ -30,6 +30,7 @@ const {
 } = require("../../../rolling-skill-core/src/run-lease.cjs")
 
 const MAX_WORKER_LOG_BYTES = 1024 * 1024
+const {acquireDataOwner} = require("../../../rolling-skill-core/src/application-owner.cjs")
 const RETAINED_WORKER_LOG_BYTES = 512 * 1024
 
 function normalizedSlot(value, {allowScheduled = false} = {}) {
@@ -45,18 +46,20 @@ function parseWorkerArguments(argv = []) {
     for (let index = 0; index < argv.length; index += 2) {
         const option = argv[index]
         const value = argv[index + 1]
-        if (option !== "--data-root" && option !== "--slot") {
+        if (option !== "--data-root" && option !== "--slot" && option !== "--workspace-root") {
             throw new Error(`Unknown option: ${String(option)}`)
         }
         if (!value || value.startsWith("--")) throw new Error(`Worker option ${option} requires a value`)
         if (option === "--data-root") result.dataRoot = value
+        else if (option === "--workspace-root") result.workspaceRoot = value
         else result.slot = value
     }
     if (!result.dataRoot || !isAbsolute(result.dataRoot)) {
         throw new Error("Worker data root must be an absolute path")
     }
     if (!result.slot) throw new Error("Worker slot is required")
-    return {dataRoot: result.dataRoot, slot: normalizedSlot(result.slot, {allowScheduled: true})}
+    if (result.workspaceRoot && !isAbsolute(result.workspaceRoot)) throw new Error("Worker source workspace must be an absolute path")
+    return {...result, slot: normalizedSlot(result.slot, {allowScheduled: true})}
 }
 
 function appendWorkerLog(path, record) {
@@ -82,8 +85,22 @@ async function defaultCreateApplication(options) {
     return createRollingSkillApplication(options)
 }
 
-async function runWorker({
+async function runWorker(options = {}) {
+    const paths = resolveDataPaths({dataRoot: options.dataRoot})
+    let owner
+    try {
+        owner = await acquireDataOwner(paths.locks)
+    } catch (error) {
+        if (error?.code !== "LEASE_BUSY") throw error
+        // The live Host owns the same schedule. Do not open another cached store.
+        return {status: "host-running", slot: options.slot}
+    }
+    try {return await runOwnedWorker(options)} finally {await owner.release()}
+}
+
+async function runOwnedWorker({
     dataRoot,
+    workspaceRoot,
     slot,
     signal = null,
     createApplication = defaultCreateApplication,
@@ -99,7 +116,8 @@ async function runWorker({
     if (
         config.executionLocation !== "always" ||
         config.worker.enabled !== true ||
-        config.runtime === null
+        !(config.captureRuntime ?? config.runtime) ||
+        !(config.detectionRuntime ?? config.runtime)
     ) {
         appendWorkerLog(paths.workerLog, {status: "disabled", slot: normalized})
         return {status: "disabled", slot: normalized}
@@ -139,15 +157,19 @@ async function runWorker({
         appendWorkerLog(paths.workerLog, {
             status: "running",
             slot: normalized,
-            runtimeId: config.runtime.runtimeId,
+            runtimeId: (config.captureRuntime ?? config.runtime).runtimeId,
         })
         application = await createApplication({
             dataRoot,
+            workspaceRoot,
             workerMode: true,
+            automaticCaptureStateStore: stateStore,
             configuredRuntime: config.runtime,
+            signal,
         })
         const result = await application.dispatch("automatic.runOnce", {
             slot: normalized,
+            waitForCuration: true,
             idempotencyKey: `worker:${normalized}`,
         })
         assertRunning(signal)

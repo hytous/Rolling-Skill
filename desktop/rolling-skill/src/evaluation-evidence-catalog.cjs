@@ -86,13 +86,34 @@ function hasSkillInvocation(record) {
     })
 }
 
+function hasDshSkillResult(data, call) {
+    if (data.meta?.name && data.meta?.resourceBase) return true
+    // Public DSH events omit private tool meta. The completed, correlated
+    // skill-tool result carries the loaded instructions instead.
+    if (!Number.isSafeInteger(call.startedSequence)) return false
+    let args = call.arguments
+    try {if (typeof args === "string") args = JSON.parse(args)} catch {return false}
+    const name = args?.name
+    const message = object(data.message)
+    if (typeof name !== "string" || !name || !message.source?.callId) return false
+    return (Array.isArray(message.content) ? message.content : []).some((result) =>
+        result?.type === "tool-result" && result.isError === false &&
+        result.toolCallId === message.source.callId &&
+        Array.isArray(result.content) && result.content.some((part) =>
+            part?.type === "text" && typeof part.text === "string" &&
+            part.text.startsWith(`<skill_content name="${name}">`) &&
+            part.text.includes("<skill_instructions>") && part.text.includes("</skill_content>"),
+        ),
+    )
+}
+
 function eventKinds(record) {
     const kinds = new Set()
     const types = structuredTypes(record)
     const commands = structuredStrings(record, ["command", "cmd", "argv"])
     const statuses = structuredStrings(record, ["status", "outcome"]).map((value) => value.toLowerCase())
     const hasErrorObject = nestedObjects(record).some((entry) =>
-        Object.hasOwn(entry, "error") && entry.error !== null && entry.error !== undefined,
+        entry.isError === true || (Object.hasOwn(entry, "error") && entry.error !== null && entry.error !== undefined),
     )
     const failed = hasErrorObject || statuses.some((value) =>
         ["failed", "error", "rejected", "cancelled"].includes(value),
@@ -103,6 +124,19 @@ function eventKinds(record) {
     )
     const codeBuddyInput = object(codeBuddyUpdate.rawInput)
     const codeBuddyCompleted = String(codeBuddyUpdate.status ?? "").toLowerCase() === "completed"
+    const dshEvent = ["events.mux", "session/event"].includes(record?.message?.method)
+        ? object(record?.message?.params?.event) : {}
+    const dshData = object(dshEvent.data)
+    const dshCall = dshEvent.type === "tool/call" ? dshData : object(dshData.call)
+    if (["tool/call", "tool/result"].includes(dshEvent.type)) {
+        kinds.add("tool_call")
+        if (/^(?:bash|shell|terminal)$/iu.test(String(dshCall.name ?? ""))) kinds.add("command")
+        if (/^(?:apply_patch|write_file|edit_file)$/iu.test(String(dshCall.name ?? ""))) kinds.add("file_change")
+        if (dshEvent.type === "tool/result" && dshCall.name === "skill" && !failed && hasDshSkillResult(dshData, dshCall)) {
+            kinds.add("skill_activation")
+            kinds.add("skill_read")
+        }
+    }
 
     if (hasSkillMention(record)) kinds.add("skill_activation")
     if (hasSkillInvocation(record)) {

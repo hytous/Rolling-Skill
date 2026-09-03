@@ -239,6 +239,29 @@ describe("evaluation evidence catalog", () => {
             ["skill_activation", "skill_read"])
     })
 
+    it("recognizes the actual DSH public tool-result payload without private meta and rejects failed or unpaired results", () => {
+        const result = {sequence: 12, message: {method: "events.mux", params: {event: {
+            type: "tool/result", data: {
+                call: {name: "skill", arguments: '{"name":"incident-response-planner"}', startedSequence: 10},
+                message: {source: {kind: "tool", callId: "load"}, content: [{
+                    type: "tool-result", toolCallId: "load", isError: false,
+                    content: [{type: "text", text: '<skill_content name="incident-response-planner">\n<skill_instructions>Read and reason.</skill_instructions>\n</skill_content>'}],
+                }]},
+            },
+        }}}}
+        const kinds = (record) => buildEvidenceCatalog({traceEvidence: {entries: [record]}}).entries.at(-1).kinds
+        assert.deepEqual(kinds(result), ["skill_activation", "skill_read", "tool_call"])
+        const failed = structuredClone(result)
+        failed.message.params.event.data.message.content[0].isError = true
+        assert.deepEqual(kinds(failed), ["tool_call", "error"])
+        const unpaired = structuredClone(result)
+        delete unpaired.message.params.event.data.call
+        assert.deepEqual(kinds(unpaired), ["tool_call"])
+        const different = structuredClone(result)
+        different.message.params.event.data.call.arguments = '{"name":"different"}'
+        assert.deepEqual(kinds(different), ["tool_call"])
+    })
+
     it("is pure, deterministic, and recursively freezes the returned catalog", () => {
         const value = inputs()
         const before = structuredClone(value)

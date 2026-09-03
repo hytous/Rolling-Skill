@@ -57,15 +57,19 @@ class CaseRefreshManager {
         curationManager,
         getRuntime,
         getRuntimeDescriptor = () => null,
+        getCuratorRuntimeDescriptor = getRuntimeDescriptor,
         getTaskProfile = null,
         getCuratorProfile = null,
+        resolveOperation = null,
     }) {
         this.store = store
         this.curationManager = curationManager
         this.getRuntime = getRuntime
         this.getRuntimeDescriptor = getRuntimeDescriptor
+        this.getCuratorRuntimeDescriptor = getCuratorRuntimeDescriptor
         this.getTaskProfile = getTaskProfile ?? (() => this.store.read().settings.taskProfile)
         this.getCuratorProfile = getCuratorProfile ?? (() => this.store.read().settings.curatorProfile)
+        this.resolveOperation = resolveOperation
         this.hidden = new Set()
     }
 
@@ -91,10 +95,10 @@ class CaseRefreshManager {
         try {
             runtime = await this.getRuntime()
             const runtimeDescriptor = this.getRuntimeDescriptor() ?? {}
-            const skills = await runtime.listSkills({forceReload: true})
-            const skillReference = currentSkillReference(
+            const operation = this.resolveOperation?.(dataset.id, runtimeDescriptor.runtimeId)
+            const skillReference = operation?.executionSkillReference ?? currentSkillReference(
                 dataset.skillReference,
-                skills,
+                await runtime.listSkills({forceReload: true}),
                 runtimeDescriptor,
             )
             const taskProfile = this.getTaskProfile() ?? {}
@@ -126,6 +130,9 @@ class CaseRefreshManager {
                 datasetId: dataset.id,
                 caseId: entry.id,
                 episode,
+                runtimeId: this.getCuratorRuntimeDescriptor()?.runtimeId,
+                executionSkillReference: operation?.executionSkillReference,
+                operationEvidence: operation?.operationEvidence,
                 modelId: curatorProfile.modelId ?? null,
                 effort: curatorProfile.effort ?? null,
             })

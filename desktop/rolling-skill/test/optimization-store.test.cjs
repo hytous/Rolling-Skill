@@ -137,6 +137,23 @@ function waitForChildText(child, pattern, label) {
 }
 
 describe("OptimizationStore", () => {
+    it("resumes the same unsubmitted editing Epoch without allowing phase backtracking", () => {
+        const {store} = fixture()
+        const {runId} = store.createRun(frozenRun())
+        store.transitionRun(runId, "baseline")
+        store.transitionRun(runId, "editing")
+        const {epochId} = store.createEpoch(runId)
+        store.transitionRun(runId, "needs_recovery", {checkpoint: {paused: true}})
+        store.transitionRun(runId, "editing", {checkpoint: {paused: false}})
+        assert.equal(store.getRun(runId).epochs[0].id, epochId)
+        assert.equal(store.getRun(runId).epochs.length, 1)
+        store.updateEpoch(runId, epochId, {candidateArtifactId: "candidate-1"})
+        store.transitionRun(runId, "installing")
+        store.transitionRun(runId, "needs_recovery", {checkpoint: {paused: true}})
+        assert.throws(() => store.transitionRun(runId, "editing"), /terminalize/)
+        store.close()
+    })
+
     it("merges a durable checkpoint on terminal Runs with revision CAS", () => {
         const {path, store} = fixture()
         const created = store.createRun(frozenRun())
@@ -163,7 +180,7 @@ describe("OptimizationStore", () => {
         assert.equal(restarted.getRun(created.runId).checkpoint.reportArtifactId, "report-artifact-1")
     })
 
-    it("allows approved Released installation and final regression to finish the deciding Epoch", () => {
+    it("allows one approved Released installation to finish without final regression", () => {
         const {store} = fixture()
         const created = store.createRun(frozenRun())
         store.transitionRun(created.runId, "baseline")
@@ -184,25 +201,13 @@ describe("OptimizationStore", () => {
         store.transitionRun(created.runId, "installing", {
             checkpoint: {releasePhase: "released-install"},
         })
-        store.transitionRun(created.runId, "evaluating", {
-            checkpoint: {releasePhase: "final-regression"},
-        })
-        store.updateEpoch(created.runId, epoch.epochId, {
-            evaluationArtifactIds: ["candidate-evaluation", "final-regression"],
-        })
-        store.transitionRun(created.runId, "deciding", {
-            checkpoint: {releasePhase: "verified"},
-        })
         store.updateEpoch(created.runId, epoch.epochId, {status: "succeeded"})
         store.transitionRun(created.runId, "succeeded")
 
         const completed = store.getRun(created.runId)
         assert.equal(completed.state, "succeeded")
         assert.equal(completed.epochs[0].status, "succeeded")
-        assert.deepEqual(completed.epochs[0].evaluationArtifactIds, [
-            "candidate-evaluation",
-            "final-regression",
-        ])
+        assert.deepEqual(completed.epochs[0].evaluationArtifactIds, ["candidate-evaluation"])
     })
 
     it("rejects a second process while the live owner keeps active state unchanged", () => {
@@ -350,14 +355,13 @@ describe("OptimizationStore", () => {
             fast.stdin.write("PERSIST\n")
             assert.match(await persisted, /PERSIST_OK/u)
         } finally {
-            if (slow.exitCode === null) {
-                slow.stdin.write("EXIT\n")
-                slow.kill()
-            }
-            if (fast?.exitCode === null) {
-                fast.stdin.write("EXIT\n")
-                fast.kill()
-            }
+            await Promise.all([slow, fast].filter(Boolean).map((child) => {
+                if (child.exitCode !== null || child.signalCode !== null) return
+                return new Promise((resolve) => {
+                    child.once("close", resolve)
+                    child.kill()
+                })
+            }))
         }
     })
 
@@ -997,6 +1001,35 @@ describe("OptimizationStore", () => {
         assert.equal(recovered.recovery.previousState, "baseline")
     })
 
+    it("normalizes an interrupted final approval so startup can reattach its persisted decision", () => {
+        const {path, store} = fixture()
+        const run = store.createRun(frozenRun())
+        store.transitionRun(run.runId, "baseline")
+        store.transitionRun(run.runId, "editing")
+        const epoch = store.createEpoch(run.runId, {candidateArtifactId: "candidate:1"})
+        store.transitionRun(run.runId, "installing")
+        store.updateEpoch(run.runId, epoch.epochId, {installArtifactIds: ["install:1"]})
+        store.transitionRun(run.runId, "evaluating")
+        store.updateEpoch(run.runId, epoch.epochId, {evaluationArtifactIds: ["evaluation:1"]})
+        store.transitionRun(run.runId, "deciding")
+        store.updateEpoch(run.runId, epoch.epochId, {
+            analysisArtifactId: "analysis:1",
+            decisionArtifactId: "decision:1",
+        })
+        store.transitionRun(run.runId, "waiting_approval", {checkpoint: {
+            workspace: {runId: run.runId, workspacePath: "/private/optimization/run-1"},
+            operatorSessionId: "operator-session-1",
+            operatorParentJobId: "operator-job-1",
+        }})
+        store.close()
+
+        const restarted = new OptimizationStore(path)
+        const recovered = restarted.getRun(run.runId)
+        assert.equal(recovered.state, "needs_recovery")
+        assert.equal(recovered.recovery.previousState, "waiting_approval")
+        assert.equal(recovered.epochs[0].status, "deciding")
+    })
+
     it("preserves nonempty checkpoints for every interrupted active state", () => {
         for (const targetState of [
             "baseline",
@@ -1004,6 +1037,7 @@ describe("OptimizationStore", () => {
             "installing",
             "evaluating",
             "deciding",
+            "waiting_approval",
             "restoring",
         ]) {
             const directory = mkdtempSync(join(tmpdir(), `rolling-skill-recovery-${targetState}-`))
@@ -1027,14 +1061,14 @@ describe("OptimizationStore", () => {
                     targetState === "editing" ? {checkpoint} : {},
                 )
             }
-            if (["installing", "evaluating", "deciding"].includes(targetState)) {
+            if (["installing", "evaluating", "deciding", "waiting_approval"].includes(targetState)) {
                 const epoch = store.createEpoch(created.runId, {candidateArtifactId: "candidate:1"})
                 store.transitionRun(
                     created.runId,
                     "installing",
                     targetState === "installing" ? {checkpoint} : {},
                 )
-                if (["evaluating", "deciding"].includes(targetState)) {
+                if (["evaluating", "deciding", "waiting_approval"].includes(targetState)) {
                     store.updateEpoch(created.runId, epoch.epochId, {installArtifactIds: ["install:1"]})
                     store.transitionRun(
                         created.runId,
@@ -1042,11 +1076,22 @@ describe("OptimizationStore", () => {
                         targetState === "evaluating" ? {checkpoint} : {},
                     )
                 }
-                if (targetState === "deciding") {
+                if (["deciding", "waiting_approval"].includes(targetState)) {
                     store.updateEpoch(created.runId, epoch.epochId, {
                         evaluationArtifactIds: ["evaluation:1"],
                     })
-                    store.transitionRun(created.runId, "deciding", {checkpoint})
+                    store.transitionRun(
+                        created.runId,
+                        "deciding",
+                        targetState === "deciding" ? {checkpoint} : {},
+                    )
+                    if (targetState === "waiting_approval") {
+                        store.updateEpoch(created.runId, epoch.epochId, {
+                            analysisArtifactId: "analysis:1",
+                            decisionArtifactId: "decision:1",
+                        })
+                        store.transitionRun(created.runId, "waiting_approval", {checkpoint})
+                    }
                 }
             } else if (targetState === "restoring") {
                 store.transitionRun(created.runId, "restoring", {checkpoint})

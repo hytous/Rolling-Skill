@@ -560,6 +560,31 @@
     min-width: 0;
 }
 
+/* Host Modals are portalled outside the workbench. Bound only plugin-owned
+   detail/form bodies, leaving native DSH dialogs unchanged. */
+[role="dialog"]:has(> div > div > :is(.rolling-skill-detail-stack, .rolling-skill-form-stack)) {
+    box-sizing: border-box;
+    max-height: calc(100vh - 32px);
+    max-width: calc(100vw - 32px);
+    width: min(calc(100vw - 32px), 1000px);
+}
+
+[role="dialog"]:has(> div > div > :is(.rolling-skill-detail-stack, .rolling-skill-form-stack)) > div:first-child {
+    min-height: 0;
+    overflow: hidden;
+}
+
+[role="dialog"]:has(> div > div > :is(.rolling-skill-detail-stack, .rolling-skill-form-stack)) > div:first-child > div:last-child {
+    min-height: 0;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+}
+
+[role="dialog"]:has(> div > div > :is(.rolling-skill-detail-stack, .rolling-skill-form-stack)) > div:last-child,
+[role="dialog"]:has(> div > div > :is(.rolling-skill-detail-stack, .rolling-skill-form-stack)) > div:first-child > div:first-child {
+    flex-shrink: 0;
+}
+
 [role="dialog"]:has(> div > div > .rolling-skill-skill-edit-modal) {
     max-height: calc(100vh - 32px);
     max-width: 1120px;
@@ -588,6 +613,28 @@
     padding: 9px 10px;
     resize: vertical;
     width: 100%;
+}
+
+.rolling-skill-option-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
+    gap: 10px 16px;
+    margin-top: 12px;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.rolling-skill-option-grid > label {
+    align-items: flex-start;
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.rolling-skill-option-grid input[type="checkbox"] {
+    flex: 0 0 auto;
+    margin-top: 3px;
 }
 
 .rolling-skill-skill-edit-status {
@@ -1732,6 +1779,41 @@
     scroll-margin-block: 96px;
 }
 
+.rolling-skill-capture-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: auto;
+    min-width: max-content;
+    height: auto;
+    min-height: 28px;
+    padding: 4px 10px;
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: 8px;
+    background: var(--dsw-alias-bg-layer-1);
+    color: var(--dsw-alias-label-primary);
+    font: inherit;
+    font-size: 12px;
+    line-height: 20px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.rolling-skill-capture-action:hover:not(:disabled) {
+    filter: brightness(0.96);
+}
+
+.rolling-skill-capture-action:focus-visible {
+    outline: 2px solid var(--dsw-alias-state-business-primary);
+    outline-offset: 2px;
+}
+
+.rolling-skill-capture-action:disabled {
+    cursor: wait;
+    opacity: 0.65;
+}
+
 [data-rolling-skill-curation-status="draft"] {
     background: var(--dsw-alias-state-warn-tertiary);
     border-color: var(--dsw-alias-state-warn-primary);
@@ -1817,6 +1899,17 @@
     font-family: ui-monospace, monospace;
     font-size: 11px;
     overflow-wrap: anywhere;
+}
+
+.rolling-skill-install-runtime-target {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+}
+
+.rolling-skill-install-runtime-target .rolling-skill-curation-model-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 0;
 }
 
 .rolling-skill-link-button {

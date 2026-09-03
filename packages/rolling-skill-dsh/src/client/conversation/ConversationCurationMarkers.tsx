@@ -1,8 +1,8 @@
 import {useEffect, useRef, useState} from "react"
 
-import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
-import {projectMarkers, projectSequenceRange, type ConversationCurationMarker, type CurationMarkerStatus} from "./curation-markers"
+import {projectMarkers, projectSequenceRange, type CurationMarkerStatus} from "./curation-markers"
+import {useConversationMarkers} from "./useConversationMarkers"
 
 interface ChatSnapshot {
     chat: {
@@ -17,13 +17,6 @@ interface ConversationCurationMarkersProps {
     t: Translate
 }
 
-interface MarkerRecord extends ConversationCurationMarker {
-    sessionId: string
-    endMessageId: string
-    curationSessionId: string | null
-    caseId: string | null
-}
-
 const MARKER_CLASSES = ["rolling-skill-curation-draft", "rolling-skill-curation-saved"]
 const CAPTURE_RANGE_CLASS = "rolling-skill-capture-range"
 
@@ -35,35 +28,11 @@ interface CaptureRangeReveal {
 
 export function ConversationCurationMarkers({sessionId, useSession, t}: ConversationCurationMarkersProps) {
     const snapshot = useSession((value) => value)
-    const [markers, setMarkers] = useState<MarkerRecord[]>([])
-    const [revision, setRevision] = useState(0)
+    const {markers} = useConversationMarkers(sessionId)
     const [compatibilityMissing, setCompatibilityMissing] = useState(false)
     const [captureRange, setCaptureRange] = useState<CaptureRangeReveal | null>(null)
     const applied = useRef(new Set<HTMLElement>())
     const scrollToCaptureRange = useRef(false)
-
-    useEffect(() => {
-        const controller = new AbortController()
-        requestRollingSkill<MarkerRecord[]>(
-            "conversationCuration.markers",
-            {sessionId},
-            controller.signal,
-        ).then(setMarkers).catch(() => {
-            if (!controller.signal.aborted) setMarkers([])
-        })
-        return () => controller.abort()
-    }, [sessionId, revision])
-
-    useEffect(() => {
-        const refresh = (event: Event) => {
-            const detailSessionId = (event as CustomEvent<{sessionId?: string}>).detail?.sessionId
-            if (!detailSessionId || detailSessionId === sessionId) {
-                setRevision((value) => value + 1)
-            }
-        }
-        window.addEventListener("rolling-skill:curation-markers-changed", refresh)
-        return () => window.removeEventListener("rolling-skill:curation-markers-changed", refresh)
-    }, [sessionId])
 
     useEffect(() => {
         const reveal = (event: Event) => {

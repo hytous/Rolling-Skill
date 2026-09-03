@@ -6,6 +6,7 @@ const {
     freezeSkillExperimentRequest,
     freezeSkillInstallationRequest,
     parseSkillInstallationResult,
+    reportedSkillInstallationFailure,
 } = require("./skill-installation-protocol.cjs")
 
 const TERMINAL_STATUSES = new Set([
@@ -67,7 +68,7 @@ function activityFromItem(item = {}) {
     const command = item.command ?? item.rawInput?.command ?? item.input?.command
     if (typeof command === "string" && command.trim()) activity.command = command.slice(0, 32_768)
     else if (Array.isArray(command)) activity.command = command.map(String).join(" ").slice(0, 32_768)
-    const name = item.name ?? item.toolName ?? item.server
+    const name = item.title ?? item.name ?? item.tool ?? item.toolName ?? item.server
     if (typeof name === "string" && name.trim()) activity.name = name.slice(0, 1_024)
     return activity
 }
@@ -424,7 +425,8 @@ class SkillInstallationManager {
                 priorInstallation: this.store.installationMatrix(job.request.source.skillId)
                     .find((entry) => entry.runtimeId === job.runtime.runtimeId) ?? null,
             })
-            const output = await this.runTurn({client, jobId, threadId: control.threadId, prompt, profile, control})
+            const turnDeadline = Date.now() + this.timeoutMs
+            let output = await this.runTurn({client, jobId, threadId: control.threadId, prompt, profile, control})
             if (control.cancelRequested || output.turnStatus === "interrupted" || output.turnStatus === "cancelled") {
                 if (job.operation === "inspect" || job.operation === "experiment_inspect") {
                     return this.finish(jobId, "unverified", {
@@ -448,20 +450,43 @@ class SkillInstallationManager {
             this.store.updateJob(jobId, {status: "verifying", rawResult: output.response})
             this.emit(jobId)
             let parsed
-            try {
-                parsed = parseSkillInstallationResult(output.response, job.request)
-                if (job.operation === "inspect" && parsed.operation !== "inspect") {
-                    throw new Error("Inspection result must report an inspect operation")
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    parsed = parseSkillInstallationResult(output.response, job.request)
+                    if (job.operation === "inspect" && parsed.operation !== "inspect") {
+                        throw new Error("Inspection result must report an inspect operation")
+                    }
+                    if (job.operation === "experiment_inspect" && parsed.operation !== "experiment_inspect") {
+                        throw new Error("Experiment inspection result must report an experiment_inspect operation")
+                    }
+                    break
+                } catch (error) {
+                    const failure = errorRecord(error, "INSTALLATION_RESULT_INVALID")
+                    const readOnly = ["inspect", "experiment_inspect"].includes(job.operation) &&
+                        job.permissionMode === readOnlyPermissionMode(descriptor.providerId)
+                    if (attempt === 0 && readOnly && !control.cancelRequested && Date.now() < turnDeadline) {
+                        const correction = `The previous result failed format validation: ${failure.message}\nThis is the one allowed format correction. Reuse verified evidence; do not invent success or change facts. Report the exact discovered destination and installed-state evidence required by the schema. This remains strictly read-only: do not install, restore, write, delete, or request write permission.`
+                        this.store.appendMessage(jobId, {role: "user", content: correction})
+                        this.emit(jobId)
+                        control.turnId = null
+                        output = await this.runTurn({client, jobId, threadId: control.threadId, prompt: `${prompt}\n\n${correction}`, profile, control, timeoutMs: Math.max(1, turnDeadline - Date.now())})
+                        if (control.cancelRequested || ["interrupted", "cancelled"].includes(output.turnStatus)) {
+                            return this.finish(jobId, "unverified", {
+                                rawResult: output.response, traceReference: traceReferenceFor(client),
+                                error: {code: "INSPECTION_CANCELLED", message: "Read-only result correction was cancelled"},
+                            })
+                        }
+                        this.store.updateJob(jobId, {rawResult: output.response})
+                        continue
+                    }
+                    const reported = reportedSkillInstallationFailure(output.response, job.request)
+                    if (reported) failure.message = `${failure.message}\nRuntime reported: ${reported}`
+                    return this.finish(jobId, "unverified", {
+                        rawResult: output.response,
+                        traceReference: traceReferenceFor(client),
+                        error: failure,
+                    })
                 }
-                if (job.operation === "experiment_inspect" && parsed.operation !== "experiment_inspect") {
-                    throw new Error("Experiment inspection result must report an experiment_inspect operation")
-                }
-            } catch (error) {
-                return this.finish(jobId, "unverified", {
-                    rawResult: output.response,
-                    traceReference: traceReferenceFor(client),
-                    error: errorRecord(error, "INSTALLATION_RESULT_INVALID"),
-                })
             }
             const status = parsed.status
             return this.finish(jobId, status, {
@@ -653,7 +678,7 @@ class SkillInstallationManager {
         return completed
     }
 
-    runTurn({client, jobId, threadId, prompt, profile, control}) {
+    runTurn({client, jobId, threadId, prompt, profile, control, timeoutMs = this.timeoutMs}) {
         return new Promise((resolve, reject) => {
             const assistantTexts = []
             const seenItems = new Set()
@@ -730,7 +755,7 @@ class SkillInstallationManager {
                 finish(reject, Object.assign(new Error("Installation turn timed out"), {
                     code: "INSTALLATION_TURN_TIMEOUT",
                 }))
-            }, this.timeoutMs)
+            }, timeoutMs)
             void client.startTurn(threadId, prompt, profile).then((response) => {
                 const turnId = response?.turn?.id ?? null
                 if (turnId && !control.turnId) {

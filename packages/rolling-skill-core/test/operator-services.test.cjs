@@ -5,9 +5,12 @@ const {
     createManagedWorkspaceResolver,
     createOperatorServices,
     optimizationRuntimeSkillBinding,
+    optimizationVersionIdentity,
+    optimizationReleasedSkillBinding,
+    optimizationApprovalRequest,
 } = require("../src/operator-services.cjs")
 
-function fixture() {
+function fixture(options = {}) {
     const calls = []
     const summary = {
         generation: "generation-1",
@@ -26,13 +29,22 @@ function fixture() {
         }],
         jobs: [{id: "job-1", sessionId: "session-1", status: "running"}],
         steps: [],
-        approvals: [{id: "approval-1", jobId: "job-1", status: "pending"}],
+        approvals: [{
+            id: "approval-1",
+            jobId: "job-1",
+            status: "pending",
+            action: options.approvalAction ?? "skills.release",
+        }],
         totals: {sessions: 1, jobs: 1, steps: 0, approvals: 1},
         truncated: false,
         nextCursor: null,
     }
     const jobStore = {
         readSummaryPage: (input) => (calls.push(["summary", input]), summary),
+        getApproval: (id) => {
+            assert.equal(id, "approval-1")
+            return structuredClone(summary.approvals[0])
+        },
         listArtifacts: () => [{
             id: "artifact-1",
             jobId: "job-1",
@@ -41,6 +53,7 @@ function fixture() {
             body: "secret body",
             byteLength: 20,
         }],
+        readArtifactBody: (id) => (calls.push(["artifact-content", id]), Buffer.from("# Operator result\n\nReview this saved report.")),
     }
     const sessionManager = {
         create: async (input) => (calls.push(["start", input]), {
@@ -96,6 +109,48 @@ function fixture() {
 }
 
 describe("Rolling Skill Operator services", () => {
+    it("binds the final approval audit to the exact immutable Candidate on every host", () => {
+        assert.deepEqual(optimizationApprovalRequest({
+            kind: "release-install",
+            parentJobId: "operator-job-1",
+            runId: "optimization-run-1",
+            epoch: 2,
+            candidate: {id: "candidate-v2"},
+        }), {
+            action: "optimization.release-install",
+            risk: "Release the selected immutable Optimization Candidate and install it on every frozen target Runtime",
+            scope: {
+                runId: "optimization-run-1",
+                epoch: 2,
+                kind: "release-install",
+                versionId: "candidate-v2",
+            },
+            proposedMutation: {
+                runId: "optimization-run-1",
+                epoch: 2,
+                kind: "release-install",
+                versionId: "candidate-v2",
+            },
+            idempotencyKey: "optimization-run-1:release-install:2:candidate-v2",
+        })
+    })
+    it("normalizes frozen baseline identity and binds its already saved release installation", () => {
+        const candidate = optimizationVersionIdentity({versionId: "release-1", skillId: "skill-1", repositoryId: "repo-1", commit: "a".repeat(40), contentDigest: `sha256:${"b".repeat(64)}`})
+        assert.equal(candidate.id, "release-1")
+        const binding = optimizationReleasedSkillBinding({
+            runtimeConfiguration: {runtimeId: "dsh:1", providerId: "deepseek-harness", modelId: "chosen", effort: null},
+            repository: {id: "repo-1"}, skill: {id: "skill-1", name: "incident-response-planner"}, candidate,
+            installationStore: {resolveVerifiedInstallation(input) {
+                assert.deepEqual(input, {repositoryId: "repo-1", skillId: "skill-1", versionId: "release-1", runtimeId: "dsh:1", providerId: "deepseek-harness"})
+                return {id: "installation-1", jobId: "install-1", commit: candidate.commit, contentDigest: candidate.contentDigest, destination: "/recorded/skills/incident-response-planner", installedAt: "2026-09-01T00:00:00.000Z", verification: "filesystem-only"}
+            }},
+        })
+        assert.equal(binding.installationJobId, "install-1")
+        assert.equal(binding.skillReference.path, "/recorded/skills/incident-response-planner/SKILL.md")
+        assert.equal(binding.modelId, "chosen")
+        assert.equal(binding.effort, null)
+        assert.deepEqual(optimizationVersionIdentity({...candidate}), candidate)
+    })
     it("resolves a Skill edit binding before managed and Optimization workspaces", async () => {
         const calls = []
         const resolve = createManagedWorkspaceResolver({
@@ -201,6 +256,16 @@ describe("Rolling Skill Operator services", () => {
         assert.doesNotMatch(JSON.stringify({summary, artifacts}), /capability|executablePath|private|reasoning|body|TOKEN|socket/iu)
     })
 
+    it("opens an artifact by its owning Job and persisted id without accepting a filesystem path", () => {
+        const {services} = fixture()
+        const preview = services.operatorArtifact({jobId: "job-1", artifactId: "artifact-1"})
+        assert.match(preview.preview, /Operator result/)
+        assert.equal(preview.truncated, false)
+        assert.throws(() => services.operatorArtifact({jobId: "job-1", artifactId: "unknown"}), /not found/)
+        assert.throws(() => services.operatorArtifact({jobId: "job-1", artifactId: "artifact-1", path: "/etc/passwd"}), /unsupported field/)
+        assert.doesNotMatch(JSON.stringify(preview), /\/private/)
+    })
+
     it("starts and controls an Operator session without accepting renderer-owned executable paths", async () => {
         const {calls, services} = fixture()
         await assert.rejects(() => services.operatorStart({
@@ -235,6 +300,21 @@ describe("Rolling Skill Operator services", () => {
             scope: "once",
         })
         assert.deepEqual(calls.slice(-2).map(([kind]) => kind), ["approve", "resume-approval"])
+    })
+
+    it("lets the Optimization Runner continue a final approval without restarting the Agent Runtime", async () => {
+        const {calls, services} = fixture({approvalAction: "optimization.release-install"})
+        await services.operatorApprove({
+            sessionId: "session-1",
+            approvalId: "approval-1",
+            decision: "approve",
+            scope: "once",
+        })
+        assert.deepEqual(calls.filter(([kind]) => ["approve", "resume-approval"].includes(kind)), [[
+            "approve",
+            "approval-1",
+            {decision: "approve", scope: "once", decidedBy: "dsh-user"},
+        ]])
     })
 
     it("controls Optimization runs through public DTOs", async () => {

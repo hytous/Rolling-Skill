@@ -132,6 +132,18 @@ describe("Rubric Agent manager", () => {
         return store.getRubricSession(session.id)
     }
 
+    it("routes generation and later review to the Runtime frozen with the session", async () => {
+        const requestedRuntimeIds = []
+        manager.getRuntime = async (runtimeId) => { requestedRuntimeIds.push(runtimeId); return runtime }
+        const session = await start()
+        await complete(session)
+        manager.getRuntimeDescriptor = () => ({runtimeId: "codex:other", providerId: "codex"})
+        await manager.sendMessage(session.id, "Clarify the scoring anchors")
+        await complete(session)
+        await manager.publish(session.id)
+        assert.deepEqual(requestedRuntimeIds, ["codex:alpha", "codex:alpha", "codex:alpha"])
+    })
+
     it("keeps a managed Dataset pathless while freezing its Rubric execution installation", async () => {
         const skillPath = join(directory, "SKILL.md")
         dataset = store.bindDatasetSkill(dataset.id, {

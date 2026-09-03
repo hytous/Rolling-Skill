@@ -233,9 +233,9 @@ export function SkillEditModal({
             </div> : null}
             {session ? <div className="rolling-skill-detail-stack">
                 <div className="rolling-skill-skill-edit-status"><div><strong>{stateLabel(t, session.state)}</strong><span>{session.runtime.runtimeId} · {session.runtime.modelId} · {session.runtime.effort}</span></div>{session.publishedVersionLabel ? <span>{t("publishedVersionLabel")} {session.publishedVersionLabel}</span> : null}</div>
-                <p className="rolling-skill-help">{session.objective}</p>
+                {session.messages.length === 0 ? <p className="rolling-skill-help">{session.objective}</p> : null}
                 {session.error?.message ? <p className="rolling-skill-inline-error" role="alert">{session.error.message}</p> : null}
-                <div className="rolling-skill-skill-edit-layout">
+                {session.state !== "published" ? <div className="rolling-skill-skill-edit-layout">
                     <section className="rolling-skill-subpanel rolling-skill-skill-edit-conversation">
                         <h4>{t("skillEditConversation")}</h4>
                         <div className="rolling-skill-skill-edit-messages">{session.messages.map((entry, index) => <article data-role={entry.role} key={`${entry.recordedAt ?? "message"}-${index}`}><strong>{entry.role === "assistant" ? t("agent") : t("you")}</strong><p>{entry.content}</p></article>)}{session.messages.length === 0 ? <p>{t("emptySkillEditConversation")}</p> : null}</div>
@@ -247,7 +247,7 @@ export function SkillEditModal({
                         <div className="rolling-skill-skill-edit-files">{changedFiles.map((file) => <article key={file.path}><header><strong>{file.path}</strong><span>{t(file.status === "added" ? "skillEditAdded" : file.status === "deleted" ? "skillEditDeleted" : "skillEditModified")} · +{file.additions ?? "–"} / -{file.deletions ?? "–"}</span></header>{file.binary ? <p>{t("skillEditBinaryFile")}</p> : <pre>{file.patch}</pre>}{file.truncated ? <small>{t("skillEditDiffTruncated")}</small> : null}</article>)}{!changedFiles.length ? <p>{RUNNING_STATES.has(session.state) ? t("skillEditWaitingForChanges") : t("skillEditNoChanges")}</p> : null}</div>
                         {session.diff?.truncated ? <p className="rolling-skill-help">{t("skillEditDiffTruncated")}</p> : null}
                     </section>
-                </div>
+                </div> : null}
                 {session.operatorSessionId ? <RuntimeInteractions t={t} ownerKind="operator" ownerId={session.operatorSessionId}/> : null}
             </div> : null}
         </div>

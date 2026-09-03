@@ -438,6 +438,26 @@ describe("control-plane domain services", () => {
         assert.doesNotThrow(() => parseControlOutput("approvals.resolve", resolved))
     })
 
+    it("does not restart the Agent Runtime after the user approves Optimization release and installation", async () => {
+        const {dependencies, operatorSessionManager} = fixture()
+        const getApproval = dependencies.operatorJobStore.getApproval
+        dependencies.operatorJobStore.getApproval = mock.fn((approvalId) => ({
+            ...getApproval(approvalId),
+            action: "optimization.release-install",
+        }))
+        const services = createDomainServices(dependencies)
+
+        const resolved = await services["approvals.resolve"]({
+            approvalId: "approval-1",
+            decision: "approve",
+            idempotencyKey: "approve-final-optimization",
+        }, humanServiceContext())
+
+        assert.equal(resolved.approval.status, "approved")
+        assert.equal(resolved.approval.action, "optimization.release-install")
+        assert.equal(operatorSessionManager.resumeAfterApproval.mock.callCount(), 0)
+    })
+
     it("adapts Curator actions through safe summaries without returning Trace or transcript payloads", async () => {
         const {dependencies, curationManager} = fixture()
         const services = createDomainServices(dependencies)

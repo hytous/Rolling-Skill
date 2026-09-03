@@ -8,7 +8,19 @@ const {
     buildSkillInstallationPrompt,
     freezeSkillInstallationRequest,
     parseSkillInstallationResult,
+    reportedSkillInstallationFailure,
 } = require("../src/skill-installation-protocol.cjs")
+
+it("only extracts diagnostic failure text from one source-bound, non-success result", () => {
+    const request = fixtureRequest()
+    const payload = {schema: INSTALL_RESULT_SCHEMA, purpose: request.purpose, operation: "install", status: "failed", source: request.source, error: {message: "Existing marker is truncated"}}
+    const text = (value) => `${INSTALL_RESULT_SENTINEL.open}${JSON.stringify(value)}${INSTALL_RESULT_SENTINEL.close}`
+    assert.equal(reportedSkillInstallationFailure(text(payload), request), "Existing marker is truncated")
+    assert.equal(reportedSkillInstallationFailure(text({...payload, status: "succeeded"}), request), null)
+    assert.equal(reportedSkillInstallationFailure(text({...payload, source: {...payload.source, skillId: "other-skill"}}), request), null)
+    assert.equal(reportedSkillInstallationFailure(text(payload) + text(payload), request), null)
+    assert.equal(reportedSkillInstallationFailure(text({...payload, error: {message: "x".repeat(4097)}}), request), null)
+})
 
 function fixtureRequest(overrides = {}) {
     return freezeSkillInstallationRequest({
@@ -58,6 +70,18 @@ function resultPayload(request, overrides = {}) {
 }
 
 describe("Runtime-driven Skill installation protocol", () => {
+    it("preserves a Runtime's plain-text failure explanation without trusting the installation", () => {
+        const request = fixtureRequest()
+        const parsed = parseSkillInstallationResult(resultPayload(request, {
+            status: "unverified",
+            classificationBefore: "conflict",
+            result: {actualDigest: request.source.expectedDigest, markerWritten: false, runtimeDiscovered: null},
+            error: "Awaiting confirmation before replacing the existing App marker; no changes made.",
+        }), request)
+        assert.equal(parsed.status, "unverified")
+        assert.equal(parsed.trusted, false)
+        assert.match(parsed.error.message, /Awaiting confirmation/)
+    })
     it("freezes only a Released version and exposes no mutable input objects", () => {
         const input = {
             repository: {id: "repository-1", managedPath: "/managed/repository-1"},
@@ -166,7 +190,13 @@ describe("Runtime-driven Skill installation protocol", () => {
         const prompt = buildSkillInstallationPrompt(request, {
             operation: "install",
             requestedPermission: "workspace-write",
-            priorInstallation: {destination: "/previous/path", versionId: "older"},
+            priorInstallation: {
+                destination: "/previous/path",
+                versionId: "older",
+                lastJobId: "current-job",
+                lastJobStatus: "running",
+                lastJobUpdatedAt: "2026-09-02T03:08:13.355Z",
+            },
         })
 
         assert.match(prompt, /managed-clean/u)
@@ -177,6 +207,9 @@ describe("Runtime-driven Skill installation protocol", () => {
         assert.match(prompt, new RegExp(request.source.commit))
         assert.match(prompt, new RegExp(INSTALL_RESULT_SCHEMA.replaceAll("/", "\\/")))
         assert.match(prompt, /runtimeDiscovered must be the JSON boolean true, the JSON boolean false, or null/u)
+        assert.match(prompt, /Start with priorInstallation\.destination when it is present/u)
+        assert.match(prompt, /Do not search controller stores, Job records, historical conversations, or traces/u)
+        assert.doesNotMatch(prompt, /lastJobStatus|lastJobId|lastJobUpdatedAt|current-job/u)
         assert.doesNotMatch(prompt, /"runtimeDiscovered": "true \| false \| null"/u)
         assert.doesNotMatch(prompt, /\.codex\/skills|\.codebuddy\/skills|\.dsh\/skills/u)
         assert.doesNotMatch(prompt, /Codex|CodeBuddy|DeepSeek Harness/u)

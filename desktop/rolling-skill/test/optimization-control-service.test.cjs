@@ -2,6 +2,10 @@
 
 const assert = require("node:assert/strict")
 const {describe, it} = require("node:test")
+const {mkdtempSync, rmSync} = require("node:fs")
+const {tmpdir} = require("node:os")
+const {join} = require("node:path")
+const {OperatorJobStore} = require("../src/operator/job-store.cjs")
 
 const {
     OptimizationControlService,
@@ -56,7 +60,7 @@ function snapshot(revision) {
     }
 }
 
-function fixture() {
+function fixture(options = {}) {
     let trustedRevision = 7
     const runs = new Map()
     const preflightCalls = []
@@ -79,6 +83,7 @@ function fixture() {
                 epochs: [],
                 checkpoint: {},
                 error: null,
+                createdAt: "2026-08-25T08:00:00.000Z",
             }
             runs.set(run.id, run)
             this.createOptions = structuredClone(options)
@@ -133,6 +138,10 @@ function fixture() {
         },
         pause(runId) { this.paused = runId },
         resume(runId) { this.resumed = runId; return Promise.resolve() },
+        resumeFinalApproval(runId, context) {
+            this.finalApprovalResumed = {runId, context: structuredClone(context)}
+            return new Promise(() => {})
+        },
         stop(runId) { this.stopped = runId },
     }
     const gateway = {
@@ -171,6 +180,7 @@ function fixture() {
             return snapshot(input.trusted.trustedRevision)
         },
         clock: () => "2026-08-25T08:00:00.000Z",
+        ...options,
     })
     return {
         service,
@@ -181,15 +191,17 @@ function fixture() {
         freezeCalls,
         workspaceCalls,
         operatorCalls,
+        operatorSessionManager,
         runnerCalls,
         artifactCalls,
         artifactBodies,
         artifactReadLimits,
         setTrustedRevision(value) { trustedRevision = value },
-        setRunState(state, checkpoint = {}) {
+        setRunState(state, checkpoint = {}, recovery = undefined) {
             const run = runs.get("optimization-run-1")
             run.state = state
             Object.assign(run.checkpoint, structuredClone(checkpoint))
+            if (recovery !== undefined) run.recovery = structuredClone(recovery)
         },
         setRunEpochs(epochs, checkpoint = {}) {
             const run = runs.get("optimization-run-1")
@@ -253,7 +265,7 @@ describe("Optimization control service", () => {
         const candidate = context.service.submitCandidate({
             runId: "optimization-run-1",
             message: "Improve owner drilldown",
-        }, {sessionId: "operator-session-1"})
+        }, {sessionId: "rotating-capability-session", operatorSessionId: "operator-session-1"})
         const decision = context.service.submitDecision({
             runId: "optimization-run-1",
             decision: {schemaVersion: "rolling-skill-optimization-decision/v1", action: "finish", rationale: "Done", observations: []},
@@ -270,11 +282,43 @@ describe("Optimization control service", () => {
             /startup recovery|recovery.*complete/iu,
         )
         await context.service.recoverStartup()
+        context.setRunState("needs_recovery", {paused: true})
         await context.service.resume("optimization-run-1")
         await context.service.stop("optimization-run-1")
         assert.equal(context.runner.paused, "optimization-run-1")
         assert.equal(context.runner.resumed, "optimization-run-1")
         assert.equal(context.runner.stopped, "optimization-run-1")
+    })
+
+    it("restarts a paused Operator with the same profiles and remaining budget without awaiting the entire optimization", async () => {
+        let now = "2026-08-25T08:00:00.000Z"
+        const context = fixture({clock: () => now, operatorTurnsUsed: () => 2})
+        await context.service.start({...config(), idempotencyKey: "restart-budget"})
+        now = "2026-08-25T08:10:00.000Z"
+        context.setRunState("needs_recovery", {paused: true, operatorTurnsUsedBefore: 3, baselineEvaluationRunId: "baseline-1"})
+        await context.service.recoverStartup()
+        context.runner.resume = () => new Promise(() => {})
+        const resumed = await Promise.race([context.service.resume("optimization-run-1"), new Promise((resolve) => setImmediate(() => resolve(null)))])
+        assert.ok(resumed, "Resume returns once dispatched, not when the multi-minute run finishes")
+        const request = context.operatorCalls.at(-1)
+        assert.equal(request.modelId, config().operator.modelId)
+        assert.equal(request.effort, config().operator.effort)
+        assert.equal(request.budget.maxDurationMs, 3000000)
+        assert.equal(request.budget.maxRuntimeTurns, 45)
+        assert.equal(request.budget.maxEvaluations, 4)
+    })
+
+    it("reports rejected resume preparation and stops the orphaned Operator", async () => {
+        const context = fixture()
+        await context.service.start({...config(), idempotencyKey: "resume-failure"})
+        context.setRunState("needs_recovery", {paused: true})
+        await context.service.recoverStartup()
+        const stopped = []
+        context.operatorSessionManager.stop = async (id) => stopped.push(id)
+        context.runner.resume = () => {throw new Error("Resume evidence is missing")}
+        await assert.rejects(context.service.resume("optimization-run-1"), /Resume evidence is missing/)
+        assert.equal(stopped.at(-1), "operator-session-1")
+        assert.equal(context.store.getRun("optimization-run-1").state, "needs_recovery")
     })
 
     it("hydrates only bounded Epoch, installation, and recovery summaries from Artifacts", async () => {
@@ -320,6 +364,11 @@ describe("Optimization control service", () => {
             analysisArtifactId: "analysis-1",
             decisionArtifactId: "decision-1",
         }], {
+            installationOperation: "experiment_inspect",
+            installationPending: true,
+            installationJobIds: ["inspection-job-1"],
+            paused: false,
+            pauseReason: "user_pause",
             telemetry: {elapsedMs: 1_000, turnsUsed: 2, tokens: null, costMicros: null},
             recoveryTargets: [{
                 runtimeId: "codex:target",
@@ -332,6 +381,10 @@ describe("Optimization control service", () => {
 
         const output = await context.service.get("optimization-run-1")
 
+        assert.equal(output.run.checkpoint.installationOperation, "experiment_inspect")
+        assert.equal(output.run.checkpoint.installationPending, true)
+        assert.deepEqual(output.run.checkpoint.installationJobIds, ["inspection-job-1"])
+        assert.equal(output.run.checkpoint.pauseReason, undefined)
         assert.deepEqual(output.run.epochs[0].candidate, {
             versionId: "version-candidate-1",
             commit: "b".repeat(40),
@@ -387,6 +440,101 @@ describe("Optimization control service", () => {
         assert.equal(context.runner.resumed, "optimization-run-1")
     })
 
+    it("reattaches an interrupted persisted final approval without starting another Agent", async () => {
+        const context = fixture()
+        await context.service.start({...config(), idempotencyKey: "recover-final-approval"})
+        const persistedWorkspace = context.runnerCalls[0].context.workspace
+        context.setRunState("needs_recovery", {
+            workspace: persistedWorkspace,
+            operatorSessionId: "operator-session-1",
+            operatorParentJobId: "operator-job-1",
+        }, {
+            previousState: "waiting_approval",
+            reason: "process_interrupted",
+            recoveredAt: "2026-08-25T08:01:00.000Z",
+        })
+
+        const recovered = await Promise.race([
+            context.service.recoverStartup(),
+            new Promise((resolve) => setImmediate(() => resolve(null))),
+        ])
+
+        assert.ok(recovered, "Startup recovery returns after dispatch instead of waiting for user approval")
+        assert.deepEqual(recovered, [{runId: "optimization-run-1", status: "waiting_approval"}])
+        assert.equal(context.workspaceCalls.some((entry) => entry.recover === "optimization-run-1"), true)
+        assert.deepEqual(context.runner.finalApprovalResumed, {
+            runId: "optimization-run-1",
+            context: {
+                operatorSessionId: "operator-session-1",
+                parentJobId: "operator-job-1",
+                workspace: persistedWorkspace,
+            },
+        })
+        assert.equal(context.operatorCalls.length, 1, "The persisted approval keeps its original Operator Job")
+    })
+
+    it("reattaches the same preserved approval after the App was cleanly closed", async () => {
+        const context = fixture()
+        await context.service.start({...config(), idempotencyKey: "resume-closed-final-approval"})
+        const persistedWorkspace = context.runnerCalls[0].context.workspace
+        context.setRunState("needs_recovery", {
+            workspace: persistedWorkspace,
+            paused: true,
+            resumePhase: "final_approval",
+            operatorSessionId: "operator-session-1",
+            operatorParentJobId: "operator-job-1",
+        })
+        const recovered = await context.service.recoverStartup()
+
+        assert.deepEqual(recovered, [{runId: "optimization-run-1", status: "waiting_approval"}])
+        assert.equal(context.operatorCalls.length, 1)
+        assert.deepEqual(context.runner.finalApprovalResumed, {
+            runId: "optimization-run-1",
+            context: {
+                operatorSessionId: "operator-session-1",
+                parentJobId: "operator-job-1",
+                workspace: persistedWorkspace,
+            },
+        })
+        assert.equal(context.runner.resumed, undefined)
+    })
+
+    it("resumes a user-paused final approval on its original Operator without starting another Agent", async () => {
+        const context = fixture()
+        await context.service.start({...config(), idempotencyKey: "resume-paused-final-approval"})
+        await context.service.recoverStartup()
+        const persistedWorkspace = context.runnerCalls[0].context.workspace
+        context.setRunState("needs_recovery", {
+            workspace: persistedWorkspace,
+            paused: true,
+            resumePhase: "final_approval",
+            operatorSessionId: "operator-session-1",
+            operatorParentJobId: "operator-job-1",
+        })
+        let replacementOperators = 0
+        context.operatorSessionManager.create = async () => {
+            replacementOperators += 1
+            throw new Error("Final approval resume must not create another Agent")
+        }
+
+        const resumed = await Promise.race([
+            context.service.resume("optimization-run-1"),
+            new Promise((resolve) => setImmediate(() => resolve(null))),
+        ])
+
+        assert.ok(resumed, "Resume returns after reattaching the persisted approval")
+        assert.equal(replacementOperators, 0)
+        assert.deepEqual(context.runner.finalApprovalResumed, {
+            runId: "optimization-run-1",
+            context: {
+                operatorSessionId: "operator-session-1",
+                parentJobId: "operator-job-1",
+                workspace: persistedWorkspace,
+            },
+        })
+        assert.equal(context.runner.resumed, undefined)
+    })
+
     it("persists a report Artifact on the owning Operator Job and exposes it from the Run", async () => {
         const context = fixture()
         await context.service.start({...config(), idempotencyKey: "start-3"})
@@ -401,5 +549,27 @@ describe("Optimization control service", () => {
         const stored = context.store.getRun("optimization-run-1")
         assert.equal(stored.checkpoint.reportArtifactId, "report-artifact-1")
         assert.equal(stored.checkpoint.reportDigest, result.report.digest)
+    })
+
+    it("renders a terminal Run report without writing into its real closed Operator Job", async (t) => {
+        const root = mkdtempSync(join(tmpdir(), "rolling-skill-terminal-report-"))
+        const jobs = new OperatorJobStore(join(root, "jobs.json"))
+        t.after(() => { jobs.close(); rmSync(root, {recursive: true, force: true}) })
+        const session = jobs.createSession({runtime: {runtimeId: "codex:one", providerId: "codex", displayName: "Codex", version: "1", executablePath: "/usr/bin/codex"}, modelId: "chosen-model", effort: "high", protocol: "rolling-skill-operator/v1", capabilityId: "capability-1"})
+        const job = jobs.createJob({sessionId: session.id, type: "operator-session", objective: "Finished optimization", budget: {maxDurationMs: 60000, maxRuntimeTurns: 20, maxEvaluations: 3, maxTargetExecutions: 9, maxJudgeExecutions: 9, maxTokens: null, maxReportedCost: null}})
+        jobs.transitionJob(job.id, "running")
+        jobs.transitionJob(job.id, "cancelling")
+        jobs.transitionJob(job.id, "cancelled")
+        const context = fixture({artifactStore: jobs})
+        await context.service.start({...config(), idempotencyKey: "terminal-report"})
+        context.setRunState("cancelled", {operatorParentJobId: job.id})
+        const beforeJob = jobs.getJob(job.id)
+        const beforeRun = context.store.getRun("optimization-run-1")
+        const result = context.service.report("optimization-run-1")
+        assert.equal(result.report.artifactId, null, "derived preview must not invent a persisted Artifact")
+        assert.match(result.report.preview, /^# Skill 多轮优化报告/u)
+        assert.deepEqual(jobs.getJob(job.id), beforeJob)
+        assert.deepEqual(context.store.getRun("optimization-run-1"), beforeRun)
+        assert.deepEqual(jobs.listArtifacts(job.id), [])
     })
 })

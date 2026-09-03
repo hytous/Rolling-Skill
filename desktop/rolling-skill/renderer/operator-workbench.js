@@ -278,6 +278,7 @@
 
     function optimizationRunActions(run = {}) {
         if (run.state === "restoring") return ["report"]
+        if (run.state === "waiting_approval") return ["report"]
         if (run.state === "needs_recovery") {
             return run.checkpoint?.paused === true ? ["resume", "stop", "report"] : ["report"]
         }
@@ -302,7 +303,7 @@
             },
             runtimeMatrix: cloneOptimizationSummary(preflight.targets ?? config.targets ?? []),
             telemetry: cloneOptimizationSummary(config.telemetry ?? {tokens: false, cost: false}),
-            approvals: ["candidate-experiment-install", "release", "released-install"],
+            approvals: ["candidate-experiment-install", "release-install"],
         }
     }
 
@@ -338,12 +339,40 @@
             recoveryTargets: cloneOptimizationSummary(run.recoveryTargets ?? run.checkpoint?.recoveryTargets ?? []),
             reportArtifactId: run.checkpoint?.reportArtifactId ?? null,
             release: {
-                approvalId: run.checkpoint?.releaseApprovalId ?? null,
+                approvalId: run.checkpoint?.finalApprovalId ?? run.checkpoint?.releaseApprovalId ?? null,
                 releasedVersionId: run.checkpoint?.releasedVersionId ?? null,
-                finalEvaluationArtifactId: run.checkpoint?.finalEvaluationArtifactId ?? null,
-                finalRegressionPassed: run.checkpoint?.finalRegressionPassed ?? null,
+                installArtifactId: run.checkpoint?.releasedInstallArtifactId ?? null,
             },
             actions: optimizationRunActions(run),
+        }
+    }
+
+    function optimizationFinalApproval(snapshot = {}) {
+        if (!snapshot?.job?.id) return null
+        const jobIds = operatorJobTreeIds(snapshot)
+        return (Array.isArray(snapshot.approvals) ? snapshot.approvals : []).find((approval) => (
+            approval.status === "pending" &&
+            approval.action === "optimization.release-install" &&
+            jobIds.has(approval.jobId ?? snapshot.job.id)
+        )) ?? null
+    }
+
+    function optimizationFinalApprovalView(run = {}, approval = null) {
+        const epochs = Array.isArray(run.epochs) ? run.epochs : []
+        const epoch = epochs.findLast?.((entry) => entry.number === run.currentEpoch) ?? epochs.at(-1) ?? {}
+        const analysis = epoch.analysis ?? {}
+        return {
+            approvalId: approval?.id ?? run.checkpoint?.finalApprovalId ?? null,
+            candidateVersionId: epoch.candidate?.versionId ?? null,
+            score: Number.isFinite(analysis.score) ? analysis.score : null,
+            passRate: Number.isFinite(analysis.passRate) ? analysis.passRate : null,
+            regressionCount: Number.isSafeInteger(analysis.regressionCount)
+                ? analysis.regressionCount
+                : null,
+            runtimeIds: [...new Set((Array.isArray(run.targets) ? run.targets : [])
+                .map((target) => String(target?.runtimeId ?? "").trim())
+                .filter(Boolean))],
+            risk: typeof approval?.risk === "string" ? approval.risk : null,
         }
     }
 
@@ -2290,7 +2319,7 @@
                 }, "Telemetry: tokens {tokens}, cost {cost}"),
                 text(
                     "operatorPreflightApprovals",
-                    "Approvals remain explicit for the first Candidate experiment install, release, and Released install.",
+                    "Approval remains explicit for the first Candidate experiment install and one final release-and-install decision.",
                 ),
             ].join(" · ")
         }
@@ -2340,6 +2369,9 @@
             selectors.optimizationPanel.classList.toggle("hidden", !run)
             if (!run) return
             const view = optimizationPanelView(run)
+            const snapshot = state.getSnapshot(state.activeJobId)
+            const finalApproval = optimizationFinalApproval(snapshot)
+            const finalApprovalEvidence = optimizationFinalApprovalView(run, finalApproval)
             selectors.optimizationFrozen.textContent = [
                 message("operatorBaselineValue", {value: view.baseline.versionId ?? "—"}, "Baseline {value}"),
                 message("operatorDatasetValue", {
@@ -2397,11 +2429,6 @@
                 text("operatorNoInstallationState", "No current installation state"),
             )
             const notReported = text("operatorNotReported", "not reported")
-            const finalRegression = view.release.finalRegressionPassed === true
-                ? text("operatorPassed", "passed")
-                : view.release.finalRegressionPassed === false
-                  ? text("operatorFailed", "failed")
-                  : text("operatorNotRun", "not run")
             selectors.optimizationBudget.textContent = [
                 message("operatorEpochValue", {value: view.currentEpoch}, "Epoch {value}"),
                 message("operatorRegressionsValue", {value: view.regressionCount}, "Regressions {value}"),
@@ -2410,13 +2437,33 @@
                 message("operatorRemainingTokens", {value: view.remaining.tokens ?? notReported}, "tokens {value}"),
                 message("operatorRemainingCost", {value: view.remaining.costMicros ?? notReported}, "cost µ {value}"),
                 message("operatorStopReason", {value: optimizationReasonText(view.stopReason, translate)}, "Stop reason {value}"),
-                message("operatorReleaseApproval", {
-                    value: view.release.approvalId ?? text("operatorNotRequested", "not requested"),
-                }, "Release approval {value}"),
+                message("operatorFinalApproval", {
+                    value: finalApprovalEvidence.approvalId ?? text("operatorNotRequested", "not requested"),
+                }, "Final approval {value}"),
+                ...(finalApproval ? [
+                    message("operatorApprovalCandidate", {
+                        value: finalApprovalEvidence.candidateVersionId ?? notReported,
+                    }, "Candidate {value}"),
+                    message("operatorApprovalEvaluation", {
+                        score: finalApprovalEvidence.score ?? notReported,
+                        passRate: finalApprovalEvidence.passRate === null
+                            ? notReported
+                            : `${Math.round(finalApprovalEvidence.passRate * 100)}%`,
+                        regressions: finalApprovalEvidence.regressionCount ?? notReported,
+                    }, "Evaluation {score}/100, pass {passRate}, regressions {regressions}"),
+                    message("operatorApprovalTargets", {
+                        value: finalApprovalEvidence.runtimeIds.join(", ") || notReported,
+                    }, "Target Runtimes {value}"),
+                    message("operatorApprovalRisk", {
+                        value: finalApprovalEvidence.risk ?? notReported,
+                    }, "Risk {value}"),
+                ] : []),
                 message("operatorReleasedValue", {
                     value: view.release.releasedVersionId ?? text("operatorNotPublished", "not published"),
                 }, "Released {value}"),
-                message("operatorFinalRegression", {value: finalRegression}, "Final regression {value}"),
+                message("operatorInstalledArtifact", {
+                    value: view.release.installArtifactId ?? text("operatorNotRun", "not run"),
+                }, "Install result {value}"),
             ].join(" · ")
             selectors.optimizationRecovery.replaceChildren()
             for (const target of view.recoveryTargets) {
@@ -2445,6 +2492,19 @@
                 button.dataset.optimizationAction = action
                 button.dataset.optimizationRunId = view.id
                 selectors.optimizationActions.append(button)
+            }
+            if (finalApproval && snapshot) {
+                for (const [decision, key, fallback, className] of [
+                    ["approve", "operatorInstallImproved", "Install improved version", ""],
+                    ["reject", "operatorRestoreOriginal", "Restore original version", "danger"],
+                ]) {
+                    const button = createElement(document_, "button", className, text(key, fallback))
+                    button.type = "button"
+                    button.dataset.operatorApprovalDecision = decision
+                    button.dataset.operatorApprovalId = finalApproval.id
+                    button.dataset.operatorJobId = finalApproval.jobId ?? snapshot.job.id
+                    selectors.optimizationActions.append(button)
+                }
             }
         }
 
@@ -3103,6 +3163,20 @@
         domEvents.listen(selectors.optimizationFields, "change", invalidateOptimizationPreflight)
         domEvents.listen(selectors.optimizationPreflight, "click", () => { void preflightOptimization() })
         domEvents.listen(selectors.optimizationActions, "click", (event) => {
+            const approvalButton = event.target.closest?.(
+                "[data-operator-approval-decision][data-operator-approval-id][data-operator-job-id]",
+            )
+            if (approvalButton) {
+                const snapshot = state.getSnapshot(state.activeJobId)
+                const approval = optimizationFinalApproval(snapshot)
+                const decision = approvalButton.dataset.operatorApprovalDecision
+                if (
+                    approval?.id === approvalButton.dataset.operatorApprovalId &&
+                    approval.jobId === approvalButton.dataset.operatorJobId &&
+                    ["approve", "reject"].includes(decision)
+                ) void resolveApproval(approval.id, decision)
+                return
+            }
             const button = event.target.closest?.("[data-optimization-action][data-optimization-run-id]")
             if (button) void controlOptimization(
                 button.dataset.optimizationRunId,
@@ -3153,6 +3227,8 @@
         createOperatorWorkbench,
         createOperatorWorkbenchState,
         optimizationPanelView,
+        optimizationFinalApproval,
+        optimizationFinalApprovalView,
         optimizationPreflightSummary,
         operatorStatusText,
         operatorJobTreeIds,

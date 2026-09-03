@@ -74,8 +74,8 @@ describe("Rolling Skill OS scheduler adapters", () => {
         const homeDirectory = temporaryDirectory("rolling-skill-systemd-")
         const workerExecutable = "/opt/Rolling Skill/bin/rolling-skill-worker"
         const dataRoot = "/home/me/.dsh/rolling skill"
-        const service = renderSystemdService({workerExecutable, dataRoot})
-        assert.match(service, /ExecStart="\/opt\/Rolling Skill\/bin\/rolling-skill-worker" "--data-root" "\/home\/me\/\.dsh\/rolling skill" "--slot" "scheduled"/u)
+        const service = renderSystemdService({workerExecutable, dataRoot, nodeExecutable: "/opt/node/bin/node", workspaceRoot: "/home/me/project"})
+        assert.match(service, /ExecStart="\/opt\/node\/bin\/node" "\/opt\/Rolling Skill\/bin\/rolling-skill-worker" "--data-root" "\/home\/me\/\.dsh\/rolling skill" "--slot" "scheduled" "--workspace-root" "\/home\/me\/project"/u)
         assert.doesNotMatch(service, /\$\(|`/u)
         assert.match(renderSystemdTimer({cadence: "daily", time: "09:10", weekday: 1}), /OnCalendar=\*-\*-\* 09:10:00/u)
         assert.match(renderSystemdTimer({cadence: "weekly", time: "09:10", weekday: 1}), /OnCalendar=Mon \*-\*-\* 09:10:00/u)
@@ -109,9 +109,11 @@ describe("Rolling Skill OS scheduler adapters", () => {
         const daily = taskCreateArguments({
             workerExecutable,
             dataRoot,
+            nodeExecutable: "C:\\Node\\node.exe",
+            workspaceRoot: "C:\\Project",
             schedule: {cadence: "daily", time: "09:05", weekday: 2},
         })
-        assert.deepEqual(daily.slice(0, 6), ["/Create", "/F", "/TN", IDENTIFIER, "/TR", `"${workerExecutable}" --data-root "${dataRoot}" --slot scheduled`])
+        assert.deepEqual(daily.slice(0, 6), ["/Create", "/F", "/TN", IDENTIFIER, "/TR", `"C:\\Node\\node.exe" "${workerExecutable}" --data-root "${dataRoot}" --slot scheduled --workspace-root "C:\\Project"`])
         assert.deepEqual(daily.slice(6), ["/SC", "DAILY", "/ST", "09:05"])
         const weekly = taskCreateArguments({
             workerExecutable,
@@ -129,16 +131,30 @@ describe("Rolling Skill OS scheduler adapters", () => {
         assert.deepEqual(calls.at(-1)[1], ["/Delete", "/F", "/TN", IDENTIFIER])
     })
 
-    it("selects the current platform and resolves the stable profile-level worker shim", () => {
+    it("selects the current platform and resolves the worker script without a PATH-dependent shim", () => {
         const {createSchedulerAdapter, resolveWorkerExecutable} = require("../src/scheduler/index.cjs")
         const moduleUrl = "file:///profile/node_modules/@rolling-skill/dsh-plugin/lib/index.js"
-        assert.equal(resolveWorkerExecutable(moduleUrl, "linux"), "/profile/node_modules/.bin/rolling-skill-worker")
-        assert.equal(resolveWorkerExecutable(moduleUrl, "win32"), "/profile/node_modules/.bin/rolling-skill-worker.cmd")
+        assert.equal(resolveWorkerExecutable(moduleUrl, "linux"), "/profile/node_modules/@rolling-skill/dsh-plugin/lib/worker.cjs")
+        assert.equal(resolveWorkerExecutable(moduleUrl, "win32"), "/profile/node_modules/@rolling-skill/dsh-plugin/lib/worker.cjs")
         assert.equal(createSchedulerAdapter({
             platform: "freebsd",
             dataRoot: "/tmp/data",
             workerExecutable: "/tmp/worker",
         }).capabilities().supported, false)
+    })
+
+    it("launches the registered Node directly, preserves the source workspace and exposes a failed launch", async () => {
+        const {createLaunchdAdapter, renderLaunchAgent} = require("../src/scheduler/launchd.cjs")
+        const options = {homeDirectory: temporaryDirectory("rolling-skill-launchd-path-"), workerExecutable: "/profile/lib/worker.cjs", nodeExecutable: "/opt/Node & Tools/node", workspaceRoot: "/work/project", dataRoot: "/data", uid: 501}
+        const source = renderLaunchAgent({...options, schedule: {cadence: "daily", time: "20:00", weekday: 1}})
+        assert.match(source, /<array>\s*<string>\/opt\/Node &amp; Tools\/node<\/string>\s*<string>\/profile\/lib\/worker.cjs<\/string>/u)
+        assert.match(source, /<string>--workspace-root<\/string>\s*<string>\/work\/project<\/string>/u)
+        const failed = await createLaunchdAdapter({...options, run: runner([], {exitCode: 0, stdout: "state = not running\nlast exit code = 127\n"})}).status()
+        assert.equal(failed.installed, true)
+        assert.equal(failed.lastExitCode, 127)
+        assert.match(failed.error, /127/u)
+        const successful = await createLaunchdAdapter({...options, run: runner([], {exitCode: 0, stdout: "last exit code = 0\n"})}).status()
+        assert.equal(successful.error, null)
     })
 
     it("persists installation status without changing automatic mode when registration fails", async () => {

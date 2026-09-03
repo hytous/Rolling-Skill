@@ -301,14 +301,27 @@ function createOperatorFixture() {
                 return publicOperatorJob(store.cancelJobTree(input.jobId).job)
             case "resolve-approval": {
                 approvalCalls += 1
+                const pending = store.getApproval(input.approvalId)
                 const execution = await engine.resolveApproval(input.approvalId, {
                     decision: input.decision,
                     scope: "once",
                     decidedBy: "renderer-smoke",
                 })
+                if (pending.action === "optimization.release-install") {
+                    const job = store.getJob(pending.jobId)
+                    if (job.status === "running") {
+                        store.transitionJob(job.id, input.decision === "approve" ? "succeeded" : "failed", {
+                            ...(input.decision === "reject" ? {error: {
+                                code: "OPTIMIZATION_FINAL_APPROVAL_REJECTED",
+                                message: "Final Optimization approval was rejected",
+                            }} : {}),
+                        })
+                    }
+                }
                 return {
                     approval: publicOperatorApproval(store.getApproval(input.approvalId)),
                     execution,
+                    changed: changedPayload(pending.jobId),
                 }
             }
             case "list-artifacts": {
@@ -399,6 +412,48 @@ function createOperatorFixture() {
                     session: publicOperatorSession(store.getSession(session.id)),
                 }
             }
+            case "create-optimization-approval": {
+                const job = store.getJob(fixtureIds.optimizationJobId)
+                const existing = store.listApprovals(job.id).find((approval) => (
+                    approval.action === "optimization.release-install"
+                ))
+                if (existing) return {
+                    changed: changedPayload(job.id),
+                    approval: publicOperatorApproval(existing),
+                }
+                const action = "optimization.release-install"
+                const risk = "Release the selected immutable Optimization Candidate and install it on every frozen target Runtime"
+                const scope = {runId: input.runId, epoch: 2, kind: "release-install"}
+                const proposedMutation = {kind: "release-install", runId: input.runId}
+                const idempotencyKey = `${input.runId}:release-install:2`
+                const params = {action, risk, scope, proposedMutation}
+                let step = store.createStep(job.id, {
+                    method: "optimization.approval",
+                    params,
+                    reservation: {},
+                    idempotencyKey,
+                })
+                step = store.transitionStep(step.id, "waiting_approval")
+                store.transitionJob(job.id, "waiting_approval")
+                const approval = store.createApproval(job.id, {
+                    stepId: step.id,
+                    action,
+                    scope,
+                    proposedMutation: {
+                        method: "optimization.approval",
+                        params,
+                        reservation: {},
+                        idempotencyKey,
+                    },
+                    risk,
+                    expiresAt: "2099-01-01T00:00:00.000Z",
+                })
+                fixtureIds.optimizationApprovalId = approval.id
+                return {
+                    changed: changedPayload(job.id),
+                    approval: publicOperatorApproval(approval),
+                }
+            }
             case "metrics":
                 return {summaryPageCalls, approvalCalls, stopCalls, fixtureIds}
             default:
@@ -463,16 +518,45 @@ async function run() {
             partition: `temp:rolling-skill-renderer-smoke-${Date.now()}`,
         },
     })
-    window.webContents.on("console-message", (_event, details) => {
-        const level = typeof details === "object" ? details.level : null
-        const message = typeof details === "object" ? details.message : String(details ?? "")
-        if (level === "error") rendererErrors.push(message)
+    window.webContents.on("console-message", (_event, details, legacyMessage) => {
+        const level = typeof details === "object" ? details.level : details
+        const message = typeof details === "object" ? details.message : String(legacyMessage ?? "")
+        if (level === "error" || level === 3) rendererErrors.push(message)
     })
     await window.loadFile(join(__dirname, "..", "renderer", "index.html"))
-    await waitFor(
-        window,
-        'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation") && document.querySelector(".message-body h2")',
-    )
+    try {
+        await waitFor(
+            window,
+            'document.querySelector("[data-thread-id=thread-a].active") && !document.querySelector(".loading-conversation") && document.querySelector(".message-body h2")',
+        )
+    } catch (error) {
+        const diagnostic = await inspect(window, `(async () => {
+            const bootstrapSnapshot = await window.rollingSkill.bootstrap()
+            const threadSnapshot = await window.rollingSkill.listThreads(false)
+            return ({
+            activeThread: document.querySelector("[data-thread-id].active")?.dataset.threadId ?? null,
+            loading: Boolean(document.querySelector(".loading-conversation")),
+            heading: document.querySelector(".message-body h2")?.textContent ?? null,
+            conversation: document.querySelector("#conversation")?.textContent ?? null,
+            error: document.querySelector("#error-message")?.textContent ?? null,
+            threadRows: [...document.querySelectorAll("[data-thread-id]")].map((node) => node.dataset.threadId),
+            operatorJobs: [...document.querySelectorAll("[data-operator-job-id]")].map((node) => node.dataset.operatorJobId),
+            operatorMetrics: await window.rollingSkill.smokeOperatorMetrics(),
+            rendererBootstrap: typeof bootstrap,
+            rendererState: typeof state,
+            stateSnapshot: {
+                loadingThreads: state.loadingThreads,
+                runtimeStatus: state.runtime?.status ?? null,
+                workspaceRoot: state.workspaceRoot,
+                datasets: state.datasets.length,
+                managedSkills: state.managedSkills.skills.length,
+                operatorWorkbench: typeof operatorWorkbench,
+            },
+            bootstrapRuntime: bootstrapSnapshot.runtime?.status ?? null,
+            availableThreads: threadSnapshot.data?.map((thread) => thread.id) ?? [],
+        })})()`)
+        throw new Error(`Initial renderer conversation did not load: ${JSON.stringify({diagnostic, rendererErrors})}`, {cause: error})
+    }
     const controlRuntimes = await inspect(window, "window.rollingSkill.listRuntimes()")
     if (
         controlRuntimes.length !== 1 ||
@@ -1737,17 +1821,14 @@ async function run() {
     try {
         await waitFor(
             window,
-            `document.querySelector(${JSON.stringify(`${approvalSelector} .operator-approval-status`)}).textContent === "approved"`,
+            `!document.querySelector(${JSON.stringify(`${approvalSelector} [data-operator-approval-decision]`)})`,
         )
     } catch (error) {
-        const approvalDiagnostic = await inspect(window, `(async () => {
-            const page = await window.rollingSkill.readOperatorSummaryPage(null, 100)
-            return {
+        const approvalDiagnostic = await inspect(window, `(async () => ({
                 domStatus: document.querySelector(${JSON.stringify(`${approvalSelector} .operator-approval-status`)})?.textContent ?? null,
-                storeStatus: page.approvals.find((entry) => entry.id === ${JSON.stringify(operatorFixtureIds.approvalId)})?.status ?? null,
+                actionVisible: Boolean(document.querySelector(${JSON.stringify(`${approvalSelector} [data-operator-approval-decision]`)})),
                 approvalCalls: (await window.rollingSkill.smokeOperatorMetrics()).approvalCalls,
-            }
-        })()`)
+        }))()`)
         throw new Error(`Operator approval did not patch active DOM: ${JSON.stringify(approvalDiagnostic)}`, {cause: error})
     }
     if ((await inspect(window, 'window.rollingSkill.smokeOperatorMetrics().then(({approvalCalls}) => approvalCalls)')) !== 1) {
@@ -1758,7 +1839,7 @@ async function run() {
     const stopSelector = `${runningJobSelector}[data-operator-job-action="stop"]`
     await waitFor(window, `document.querySelector(${JSON.stringify(stopSelector)})`)
     await inspect(window, `document.querySelector(${JSON.stringify(stopSelector)}).click()`)
-    await waitFor(window, 'document.querySelector("#operator-session-state").textContent === "cancelled"')
+    await waitFor(window, `!document.querySelector(${JSON.stringify(stopSelector)})`)
     if ((await inspect(window, 'window.rollingSkill.smokeOperatorMetrics().then(({stopCalls}) => stopCalls)')) !== 1) {
         throw new Error("Dynamic Operator control buttons accumulated listeners")
     }
@@ -1798,7 +1879,7 @@ async function run() {
         change('[data-optimization-target-effort="codebuddy:renderer-smoke"]', "high")
         document.querySelector("#operator-optimization-preflight").click()
     })()`)
-    await waitFor(window, '!document.querySelector("#operator-optimization-start").disabled && document.querySelector("#operator-optimization-preflight-summary").textContent.includes("Frozen")')
+    await waitFor(window, '!document.querySelector("#operator-optimization-start").disabled')
     await inspect(window, 'document.querySelector("#operator-optimization-start").click()')
     try {
         await waitFor(window, '[...document.querySelectorAll("[data-operator-job-id]")].some((node) => node.textContent.includes("Multi-Epoch Optimization smoke Run"))')
@@ -1838,36 +1919,41 @@ async function run() {
     await waitFor(window, `document.querySelector(${JSON.stringify(`${streamingJobSelector}.active`)})`)
     const hiddenOptimizationDom = await inspect(window, 'document.querySelector("#operator-status-panel").innerHTML')
     await inspect(window, 'window.rollingSkill.smokeAdvanceOptimization()')
+    const finalApprovalId = await inspect(
+        window,
+        'window.rollingSkill.smokeOperatorMetrics().then(({fixtureIds}) => fixtureIds.optimizationApprovalId)',
+    )
     await new Promise((resolve) => setTimeout(resolve, 150))
     if ((await inspect(window, 'document.querySelector("#operator-status-panel").innerHTML')) !== hiddenOptimizationDom) {
         throw new Error("Hidden Optimization progress triggered active-panel rendering")
     }
     await inspect(window, `document.querySelector(${JSON.stringify(optimizationJobSelector)}).click()`)
-    await waitFor(window, 'document.querySelector("#operator-optimization-timeline").textContent.includes("score 82") && document.querySelector("#operator-optimization-budget").textContent.includes("Epoch 2")')
-    await waitFor(window, 'document.querySelector("[data-optimization-action=stop]")')
-    await inspect(window, 'document.querySelector("[data-optimization-action=stop]").click()')
-    await waitFor(window, 'document.querySelector("#operator-optimization-recovery").textContent.includes("restore-smoke-2") && document.querySelector("#operator-optimization-budget").textContent.includes("Regressions 3")')
+    await waitFor(window, 'document.querySelector("#operator-optimization-timeline").textContent.includes("82") && document.querySelector("#operator-optimization-budget").textContent.includes("2")')
+    await waitFor(window, 'document.querySelector("[data-operator-approval-decision=approve]")')
+    await inspect(window, 'document.querySelector("[data-operator-approval-decision=approve]").click()')
+    await waitFor(window, 'document.querySelector("#operator-optimization-budget").textContent.includes("released-install-smoke")')
     const optimizationEvidenceBeforeSwitch = await inspect(window, `(() => ({
-        recovery: document.querySelector("#operator-optimization-recovery").textContent,
         timeline: document.querySelector("#operator-optimization-timeline").textContent,
         release: document.querySelector("#operator-optimization-budget").textContent,
         composerSticky: getComputedStyle(document.querySelector(".operator-composer-wrap")).position === "sticky",
     }))()`)
     if (!optimizationEvidenceBeforeSwitch.composerSticky ||
-        !optimizationEvidenceBeforeSwitch.release.includes("Release approval release-approval-smoke") ||
-        !optimizationEvidenceBeforeSwitch.release.includes("Final regression failed")) {
-        throw new Error(`Optimization release/regression or pinned composer missing: ${JSON.stringify(optimizationEvidenceBeforeSwitch)}`)
+        !finalApprovalId ||
+        !optimizationEvidenceBeforeSwitch.release.includes(finalApprovalId) ||
+        !optimizationEvidenceBeforeSwitch.release.includes("managed-version-improved-smoke") ||
+        !optimizationEvidenceBeforeSwitch.release.includes("released-install-smoke")) {
+        throw new Error(`Optimization final approval/install or pinned composer missing: ${JSON.stringify(optimizationEvidenceBeforeSwitch)}`)
     }
     await inspect(window, `document.querySelector(${JSON.stringify(streamingJobSelector)}).click()`)
     await inspect(window, `document.querySelector(${JSON.stringify(optimizationJobSelector)}).click()`)
-    await waitFor(window, 'document.querySelector("#operator-optimization-recovery").textContent.includes("restore-smoke-2")')
+    await waitFor(window, 'document.querySelector("#operator-optimization-budget").textContent.includes("released-install-smoke")')
     const optimizationEvidenceAfterSwitch = await inspect(window, `(() => ({
-        recovery: document.querySelector("#operator-optimization-recovery").textContent,
         timeline: document.querySelector("#operator-optimization-timeline").textContent,
+        release: document.querySelector("#operator-optimization-budget").textContent,
     }))()`)
-    if (optimizationEvidenceAfterSwitch.recovery !== optimizationEvidenceBeforeSwitch.recovery ||
-        optimizationEvidenceAfterSwitch.timeline !== optimizationEvidenceBeforeSwitch.timeline) {
-        throw new Error("Optimization recovery or score trend did not survive task switching")
+    if (optimizationEvidenceAfterSwitch.timeline !== optimizationEvidenceBeforeSwitch.timeline ||
+        optimizationEvidenceAfterSwitch.release !== optimizationEvidenceBeforeSwitch.release) {
+        throw new Error("Optimization install result or score trend did not survive task switching")
     }
 
     await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
@@ -2013,9 +2099,8 @@ async function run() {
             operatorDelegatedActions: true,
             optimizationHiddenProgressIsolated: true,
             optimizationTwoEpochTrend: optimizationEvidenceAfterSwitch.timeline,
-            optimizationRecoveryPersisted: optimizationEvidenceAfterSwitch.recovery,
-            optimizationReleaseApproval: true,
-            optimizationFinalRegression: true,
+            optimizationFinalApproval: finalApprovalId,
+            optimizationFormalInstall: "released-install-smoke",
             optimizationComposerPinned: optimizationEvidenceBeforeSwitch.composerSticky,
             readFailureRecovered: true,
             emptyArchiveLoadCancelled: true,

@@ -13,11 +13,16 @@ const {
     userMessageText,
 } = require("./episode-curation.cjs")
 
+const {setTimeout: pause} = require("node:timers/promises")
+const {createHash} = require("node:crypto")
+
 const MAX_TIMER_DELAY = 2_147_000_000
 const AUTOMATIC_CONFIDENCE_THRESHOLD = 0.8
 const ROLLING_SKILL_INTERNAL_PROMPT_PREFIXES = [
     "Identify complete user problem ranges from incremental user messages only.",
     "Classify only this completed problem episode. Identify the principal enabled Skill,",
+    "Decide whether this completed episode is eligible to become a Skill evaluation Case.",
+    "[Environment context — rolling-skill-operator/v1]",
     "You are judging one agent Skill evaluation result.",
     "You are the Curator for an agent Skill evaluation dataset.",
     "You are the Rubric Agent for one Skill evaluation dataset.",
@@ -141,15 +146,6 @@ function completedTurn(status) {
     return status === undefined || status === null || status === "completed"
 }
 
-function sourceMatchesSession(observation, session) {
-    const source = session?.episode?.source ?? session?.source
-    if (!observation || !source) return false
-    return (
-        String(observation.threadId ?? "") === String(source.threadId ?? "") &&
-        String(observation.endItemId ?? "") === String(source.endItemId ?? "")
-    )
-}
-
 class ConversationDiscoveryManager {
     constructor({
         store,
@@ -169,6 +165,7 @@ class ConversationDiscoveryManager {
         clearTimer = (timer) => clearTimeout(timer),
         onStatus = () => {},
         onError = () => {},
+        waitForCurationOnScan = false,
     }) {
         this.store = store
         this.stateStore = stateStore
@@ -187,6 +184,7 @@ class ConversationDiscoveryManager {
         this.clearTimer = clearTimer
         this.onStatus = onStatus
         this.onError = onError
+        this.waitForCurationOnScan = waitForCurationOnScan
         this.analysisThreadIds = new Set()
         this.automaticSessions = new Map()
         this.automaticArchiveAttempts = new Set()
@@ -194,6 +192,7 @@ class ConversationDiscoveryManager {
         this.runningPromise = null
         this.timer = null
         this.started = false
+        this.progress = null
     }
 
     profile() {
@@ -230,6 +229,10 @@ class ConversationDiscoveryManager {
             mode: profile.mode,
             nextRunAt,
             running: Boolean(this.runningPromise),
+            progress: copy(this.progress),
+            curationPendingCount: (this.store.listCurationSessions?.() ?? []).filter((session) =>
+                session.automaticCaptureRawCaseId && ["queued", "running", "needs_review"].includes(session.status),
+            ).length,
             pendingCount: this.pendingCount(),
             lastSuccessAt: persisted.lastSuccessAt,
             error: persisted.lastError?.message ?? null,
@@ -242,11 +245,11 @@ class ConversationDiscoveryManager {
         return status
     }
 
-    start() {
+    start({catchUp = true} = {}) {
         if (this.started) return
         this.started = true
         this.reschedule()
-        void this.runDueScan()
+        if (catchUp) void this.runDueScan()
     }
 
     stop() {
@@ -286,6 +289,10 @@ class ConversationDiscoveryManager {
 
     async handleCurationChanged(session) {
         const tracked = this.trackAutomaticSession(session)
+        if (tracked && session.status === "failed") {
+            this.onError(new Error(session.error || "Automatic Curator failed; its Raw Case and Draft are retained for review"))
+            this.emitStatus()
+        }
         if (
             !tracked ||
             session.status !== "needs_review" ||
@@ -310,18 +317,16 @@ class ConversationDiscoveryManager {
         }
     }
 
-    trackAutomaticSession(session) {
+    trackAutomaticSession(session, {recover = false} = {}) {
         if (!session?.id) return null
         const existing = this.automaticSessions.get(session.id)
         if (existing) return existing
-        const rawCase = (this.rawCaseStore.list?.() ?? []).find((record) => {
-            const observations = Array.isArray(record?.source?.observations)
-                ? record.source.observations
-                : record?.source?.kind === "automatic_capture"
-                    ? [record.source]
-                    : []
-            return observations.some((observation) => sourceMatchesSession(observation, session))
-        })
+        // Matching source ranges are not permission to auto-save a manual review.
+        // Older unowned Drafts stay available for explicit review after restart.
+        if (!recover || !session.automaticCaptureRawCaseId) return null
+        const rawCase = (this.rawCaseStore.list?.() ?? []).find(
+            (record) => record.id === session.automaticCaptureRawCaseId,
+        )
         if (!rawCase?.id) return null
         const tracked = {rawCaseId: rawCase.id}
         this.automaticSessions.set(session.id, tracked)
@@ -335,7 +340,7 @@ class ConversationDiscoveryManager {
         let recovered = false
         const sessions = await Promise.resolve(this.curationManager.listSessions({archived: false}))
         for (const session of arrays(sessions)) {
-            if (!this.trackAutomaticSession(session)) continue
+            if (!this.trackAutomaticSession(session, {recover: true})) continue
             recovered = true
             if (session.status === "needs_review" && session.draft) {
                 await this.handleCurationChanged(session)
@@ -353,6 +358,29 @@ class ConversationDiscoveryManager {
             }
         }
         return recovered
+    }
+
+    async waitForAutomaticSessions({signal = null, pollMs = 1_000} = {}) {
+        const failures = []
+        while (this.automaticSessions.size) {
+            signal?.throwIfAborted()
+            const sessions = arrays(await this.curationManager.listSessions({archived: false}))
+            for (const sessionId of [...this.automaticSessions.keys()]) {
+                if (this.automaticArchiveAttempts.has(sessionId)) continue
+                const session = sessions.find((entry) => entry.id === sessionId)
+                if (!session || ["failed", "cancelled"].includes(session.status)) {
+                    this.automaticSessions.delete(sessionId)
+                    failures.push(session?.error || "Automatic Curator stopped before saving; its Raw Case and Draft are retained for review")
+                } else if (session.status === "needs_review" && session.draft) {
+                    if (!await this.handleCurationChanged(session)) {
+                        this.automaticSessions.delete(sessionId)
+                        failures.push("Automatic Case could not be saved; review its retained Draft")
+                    }
+                }
+            }
+            if (this.automaticSessions.size) await pause(pollMs, undefined, {...(signal ? {signal} : {})})
+        }
+        if (failures.length) throw new Error(failures.join("; "))
     }
 
     async runDueScan() {
@@ -387,8 +415,10 @@ class ConversationDiscoveryManager {
         }
     }
 
-    async runSlot(slot, profile = this.profile()) {
+    async runSlot(slot, profile = this.profile(), {complete = true} = {}) {
         this.stateStore.beginSlot(slot, this.now())
+        this.progress = {stage: "listing", startedAt: this.now().toISOString(), totalThreads: 0, completedThreads: 0, analysisCount: 0}
+        this.emitStatus()
         const runtime = await this.getRuntime()
         const runtimeId = runtimeIdFrom(this.getRuntimeDescriptor())
         const [threads, skillsValue, datasetsValue] = await Promise.all([
@@ -411,18 +441,37 @@ class ConversationDiscoveryManager {
             )))
             : skills
         const hidden = this.allHiddenThreadIds()
-        for (const summary of threads) {
-            if (!summary?.id || hidden.has(summary.id)) continue
-            await this.scanThread({
-                runtime,
-                runtimeId,
-                threadId: summary.id,
-                skills: scopedSkills,
-                datasets: scopedDatasets,
-                profile,
-            })
+        const visibleThreads = threads.filter((summary) => summary?.id && !hidden.has(summary.id))
+        this.progress.totalThreads = visibleThreads.length
+        for (const summary of visibleThreads) {
+            this.progress.stage = "reading"
+            this.emitStatus()
+            const sourceRevision = typeof summary.sourceRevision === "string" ? summary.sourceRevision : null
+            const cursor = this.stateStore.thread(runtimeId, summary.id)
+            if (!sourceRevision || cursor.sourceRevision !== sourceRevision) {
+                await this.scanThread({
+                    runtime,
+                    runtimeId,
+                    threadId: summary.id,
+                    skills: scopedSkills,
+                    datasets: scopedDatasets,
+                    profile,
+                })
+                // Only checkpoint a fully successful read/inspection. A failed
+                // history request or Curator dispatch must remain retryable.
+                if (sourceRevision) this.stateStore.commitThread(runtimeId, summary.id, {sourceRevision}, this.now())
+            }
+            this.progress.completedThreads += 1
+            this.emitStatus()
         }
-        this.stateStore.completeSlot(slot, this.now())
+        if (complete && this.waitForCurationOnScan) {
+            this.progress.stage = "curating"
+            this.emitStatus()
+            await this.waitForAutomaticSessions()
+        }
+        if (complete) this.stateStore.completeSlot(slot, this.now())
+        this.progress.stage = "completed"
+        this.emitStatus()
     }
 
     async listAllThreads(runtime) {
@@ -482,6 +531,11 @@ class ConversationDiscoveryManager {
     async analyze(stage, prompt, profile) {
         if (typeof this.runAnalysis !== "function") {
             throw new Error("Automatic capture analysis Runtime is not configured")
+        }
+        if (this.progress) {
+            this.progress.stage = stage
+            this.progress.analysisCount += 1
+            this.emitStatus()
         }
         const result = await this.runAnalysis({
             stage,
@@ -659,6 +713,7 @@ class ConversationDiscoveryManager {
         const curatorProfile = this.store.read().settings.curatorProfile ?? {}
         try {
             const session = await this.curationManager.createSession({
+                automaticCaptureRawCaseId: saved.rawCase.id,
                 datasetId: dataset.id,
                 caseType: source.caseType,
                 episode,
@@ -709,12 +764,20 @@ class ConversationDiscoveryManager {
             ? messages.findIndex((message) => message.id === cursor.lastInspectedUserItemId)
             : -1
         const hasNewMessages = cursorIndex < messages.length - 1
+        // A pending user question is not new activity. Revisit it when its input
+        // changes or an assistant finishes, not on every timer tick forever.
+        const inspectionSignature = createHash("sha256").update(JSON.stringify(messages)).digest("hex")
+        if (!hasNewMessages && cursor.inspectionSignature === inspectionSignature) return false
         if (cursor.lastInspectedUserItemId && !hasNewMessages && !cursor.pendingStartUserItemId) {
             return false
         }
         const pendingIndex = cursor.pendingStartUserItemId
             ? messages.findIndex((message) => message.id === cursor.pendingStartUserItemId)
             : -1
+        if (!hasNewMessages && pendingIndex >= 0 && !messages.slice(pendingIndex).every((message) => message.assistantCompleted)) {
+            this.stateStore.commitThread(runtimeId, threadId, {inspectionSignature}, this.now())
+            return false
+        }
         const startIndex = pendingIndex >= 0 ? pendingIndex : cursorIndex + 1
         const incremental = messages.slice(Math.max(0, startIndex))
         if (!incremental.length) return false
@@ -753,6 +816,7 @@ class ConversationDiscoveryManager {
             }
             this.stateStore.commitThread(runtimeId, threadId, {
                 lastInspectedUserItemId: batch.at(-1).id,
+                inspectionSignature,
                 pendingStartUserItemId: boundary.pendingStartUserItemId,
                 checkedRanges: checkedRanges.slice(-200),
             }, this.now())

@@ -5,6 +5,7 @@ import {ActionButton as Button} from "./ActionButton"
 
 import {requestRollingSkill} from "../api"
 import type {Translate} from "../locale"
+import {AgentProfileControls} from "./AgentProfileControls"
 import {InstallationsPanel} from "./InstallationsPanel"
 import type {RuntimeDescriptor} from "./RuntimeSelect"
 import {SkillEditModal} from "./SkillEditModal"
@@ -24,6 +25,7 @@ interface Version {
 }
 interface Catalog {repositories: Repository[]; skills: SkillEntry[]}
 interface SkillDetail {skill: SkillEntry; manifest: string; versions: Version[]}
+interface InstallationProfile {modelId: string; effort: string}
 type SkillSourceKind = "folder" | "local-git" | "git-url" | "zip"
 
 function dateTime(value: string | null | undefined, fallback: string): string {
@@ -44,8 +46,10 @@ interface SkillsPanelProps {
 export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChange, onOpenVersions}: SkillsPanelProps) {
     const [catalog, setCatalog] = useState<Catalog>({repositories: [], skills: []})
     const [detail, setDetail] = useState<SkillDetail | null>(null)
+    const [versionId, setVersionId] = useState("")
     const [runtimes, setRuntimes] = useState<RuntimeDescriptor[]>([])
     const [runtimeIds, setRuntimeIds] = useState<string[]>([])
+    const [runtimeProfiles, setRuntimeProfiles] = useState<Record<string, InstallationProfile>>({})
     const [sourceKind, setSourceKind] = useState<SkillSourceKind>("folder")
     const [sourceLocation, setSourceLocation] = useState("")
     const [managedSkillPath, setManagedSkillPath] = useState("")
@@ -55,6 +59,9 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [revision, setRevision] = useState(0)
+    const [startedInstallation, setStartedInstallation] = useState<{skillId: string; jobId: string} | null>(null)
+
+    useEffect(() => setStartedInstallation(null), [initialJobId])
 
     useEffect(() => {
         const controller = new AbortController()
@@ -64,7 +71,7 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
         ]).then(([nextCatalog, runtimeItems]) => {
             setCatalog(nextCatalog)
             setRuntimes(runtimeItems)
-            setRuntimeIds((current) => current.length ? current : runtimeItems[0]?.runtimeId ? [runtimeItems[0].runtimeId] : [])
+            setRuntimeIds((current) => current.filter((runtimeId) => runtimeItems.some((runtime) => runtime.runtimeId === runtimeId)))
             const selectedSkillId = initialSkillId ?? detail?.skill.id
             const requestedSkill = nextCatalog.skills.find((skill) => skill.id === selectedSkillId) ?? nextCatalog.skills[0]
             if (requestedSkill) void loadSkill(requestedSkill.id, controller.signal)
@@ -110,12 +117,21 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
     }
     const publishedVersions = useMemo(() => detail?.versions.filter((version) => version.state === "released") ?? [], [detail])
     const releasedVersions = useMemo(() => detail?.versions.filter((version) => version.state === "released" && !version.deprecatedAt) ?? [], [detail])
-    const released = releasedVersions[0] ?? null
-    const install = () => mutate(() => requestRollingSkill("installations.start", {
-        skillId: detail?.skill.id,
-        versionId: released?.id,
-        targets: runtimeIds.map((selectedRuntimeId) => ({runtimeId: selectedRuntimeId, modelId: null, effort: null, permissionMode: null})),
-    }))
+    const released = releasedVersions.find((version) => version.id === versionId) ?? releasedVersions[0] ?? null
+    const install = () => mutate(async () => {
+        if (!detail || !released) return
+        const jobs = await requestRollingSkill<Array<{id: string}>>("installations.start", {
+            skillId: detail.skill.id,
+            versionId: released.id,
+            targets: runtimeIds.map((selectedRuntimeId) => ({
+                runtimeId: selectedRuntimeId,
+                modelId: runtimeProfiles[selectedRuntimeId]?.modelId || null,
+                effort: runtimeProfiles[selectedRuntimeId]?.effort || null,
+                permissionMode: null,
+            })),
+        })
+        if (jobs[0]?.id) setStartedInstallation({skillId: detail.skill.id, jobId: jobs[0].id})
+    })
     const deprecate = (version: Version) => mutate(() => requestRollingSkill("skills.deprecate", {versionId: version.id}))
     const revealManagedSkill = (skillId: string | undefined) => mutate(() => requestRollingSkill("skills.revealSkill", {skillId}))
     const copyManagedSkillPath = async () => {
@@ -176,15 +192,46 @@ export function SkillsPanel({t, mode, initialSkillId, initialJobId, onSkillChang
             {mode === "install" ? <>
                 {detail ? <section className="rolling-skill-panel">
                     <div className="rolling-skill-panel-header"><div><h3>{t("skillInstallTab")}</h3><p>{detail.skill.name} · {released?.versionLabel ?? t("notAvailable")}</p></div></div>
-                    <RuntimeSelectionGrid t={t} runtimes={runtimes} values={runtimeIds} onChange={setRuntimeIds}/>
+                    <label className="rolling-skill-field"><span>{t("publishedVersions")}</span><select aria-label={t("publishedVersions")} className="rolling-skill-select" value={released?.id ?? ""} disabled={busy || !releasedVersions.length} onChange={(event) => setVersionId(event.target.value)}>{releasedVersions.length ? releasedVersions.map((version) => <option key={version.id} value={version.id}>{version.versionLabel ?? t("notAvailable")}</option>) : <option value="">{t("emptyPublishedVersions")}</option>}</select></label>
+                    <RuntimeSelectionGrid
+                        t={t}
+                        runtimes={runtimes}
+                        values={runtimeIds}
+                        profiles={runtimeProfiles}
+                        onChange={setRuntimeIds}
+                        onProfileChange={(runtimeId, profile) => setRuntimeProfiles((current) => ({...current, [runtimeId]: profile}))}
+                    />
                     <Button tone="primary" disabled={busy || !released || runtimeIds.length === 0} onClick={() => void install()}>{t("installReleased")}</Button>
                 </section> : <section className="rolling-skill-panel"><p>{t("emptySkills")}</p></section>}
-                <InstallationsPanel t={t} initialJobId={initialJobId} refreshRevision={revision}/>
+                {detail ? <InstallationsPanel key={detail.skill.id} t={t} skillId={detail.skill.id} initialJobId={startedInstallation?.skillId === detail.skill.id ? startedInstallation.jobId : initialJobId} refreshRevision={revision}/> : null}
             </> : null}
         </div>
     )
 }
 
-function RuntimeSelectionGrid({t, runtimes, values, onChange}: {t: Translate; runtimes: RuntimeDescriptor[]; values: string[]; onChange: (values: string[]) => void}) {
-    return <fieldset className="rolling-skill-runtime-select"><legend>{t("installationRuntime")}</legend><div className="rolling-skill-runtime-list">{runtimes.map((runtime) => <label className="rolling-skill-runtime-option" key={runtime.runtimeId}><input type="checkbox" checked={values.includes(runtime.runtimeId)} onChange={(event) => onChange(event.target.checked ? [...values, runtime.runtimeId] : values.filter((value) => value !== runtime.runtimeId))}/><span><strong>{runtime.displayName} {runtime.version}</strong><code>{runtime.executablePath}</code></span></label>)}{runtimes.length === 0 ? <p>{t("noRuntimes")}</p> : null}</div></fieldset>
+function RuntimeSelectionGrid({t, runtimes, values, profiles, onChange, onProfileChange}: {
+    t: Translate
+    runtimes: RuntimeDescriptor[]
+    values: string[]
+    profiles: Record<string, InstallationProfile>
+    onChange: (values: string[]) => void
+    onProfileChange: (runtimeId: string, profile: InstallationProfile) => void
+}) {
+    return <fieldset className="rolling-skill-runtime-select"><legend>{t("installationRuntime")}</legend><div className="rolling-skill-runtime-list">{runtimes.map((runtime) => {
+        const selected = values.includes(runtime.runtimeId)
+        const profile = profiles[runtime.runtimeId] ?? {modelId: "", effort: ""}
+        return <section className="rolling-skill-install-runtime-target" aria-label={runtime.displayName} key={runtime.runtimeId}>
+            <label className="rolling-skill-runtime-option"><input type="checkbox" checked={selected} onChange={(event) => onChange(event.target.checked ? [...values, runtime.runtimeId] : values.filter((value) => value !== runtime.runtimeId))}/><span><strong>{runtime.displayName} {runtime.version}</strong><code>{runtime.executablePath}</code></span></label>
+            {selected ? <AgentProfileControls
+                t={t}
+                runtimeId={runtime.runtimeId}
+                modelId={profile.modelId}
+                effort={profile.effort}
+                modelPlaceholder={t("runtimeDefault")}
+                effortPlaceholder={t("runtimeDefault")}
+                onModelChange={(modelId) => onProfileChange(runtime.runtimeId, {modelId, effort: ""})}
+                onEffortChange={(effort) => onProfileChange(runtime.runtimeId, {...profile, effort})}
+            /> : null}
+        </section>
+    })}{runtimes.length === 0 ? <p>{t("noRuntimes")}</p> : null}</div></fieldset>
 }

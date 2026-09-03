@@ -1,9 +1,10 @@
 import {Button} from "@deepseek-ai/dsh-client-ui-primitives"
-import {useEffect, useState, useSyncExternalStore} from "react"
+import {useEffect, useRef, useState, useSyncExternalStore} from "react"
 
 import {
     getRollingSkillConnectionSnapshot,
     requestRollingSkill,
+    RollingSkillApiError,
     subscribeRollingSkillConnection,
 } from "../api"
 import type {Translate, TranslationKey} from "../locale"
@@ -176,29 +177,69 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
     )
     const [route, setRoute] = useState<WorkbenchRoute>(() => normalizeWorkbenchRoute(initialRoute))
     const [reloadRevision, setReloadRevision] = useState(0)
+    const [requestRevision, setRequestRevision] = useState(0)
+    const [refreshing, setRefreshing] = useState(false)
     const [dataRevision, setDataRevision] = useState(0)
     const [state, setState] = useState<
         {status: "loading"} |
-        {status: "error"; message: string} |
+        {status: "error"; message: string; code?: string} |
         {status: "ready"; dashboard: DashboardSnapshot}
     >({status: "loading"})
+    const currentState = useRef(state)
+    currentState.current = state
+    const previousConnection = useRef(connection.status)
+
+    useEffect(() => {
+        const recovered = previousConnection.current === "disconnected" && connection.status === "connected"
+        previousConnection.current = connection.status
+        // Only retry an unsuccessful initial load automatically. Remounting a
+        // populated page here would erase the user's filters and unsaved edits.
+        if (recovered && state.status === "error") setRequestRevision((revision) => revision + 1)
+    }, [connection.status, state.status])
 
     useEffect(() => {
         const controller = new AbortController()
+        setRefreshing(true)
         setState((current) => current.status === "ready" ? current : {status: "loading"})
         requestRollingSkill<DashboardSnapshot>("dashboard.get", {}, controller.signal)
-            .then((dashboard) => setState({status: "ready", dashboard}))
+            .then((dashboard) => {
+                if (controller.signal.aborted) return
+                setState({status: "ready", dashboard})
+                if (requestRevision > 0) setReloadRevision((revision) => revision + 1)
+            })
             .catch((error: unknown) => {
                 if (controller.signal.aborted) return
                 setState((current) => current.status === "ready" ? current : {
                     status: "error",
                     message: error instanceof Error ? error.message : t("loadError"),
+                    code: error instanceof RollingSkillApiError ? error.code : undefined,
                 })
-            })
+            }).finally(() => {if (!controller.signal.aborted) setRefreshing(false)})
         return () => controller.abort()
-    }, [reloadRevision])
+    }, [requestRevision])
 
-    const reload = () => setReloadRevision((revision) => revision + 1)
+    useEffect(() => {
+        let pending: AbortController | null = null
+        const timer = window.setInterval(() => {
+            if (pending) return
+            const controller = new AbortController()
+            pending = controller
+            void requestRollingSkill("health.get", {}, controller.signal)
+                .then(() => {
+                    // DATA_BUSY is an HTTP response, not a network disconnect.
+                    // A healthy owner handover therefore has no reconnect event.
+                    const current = currentState.current
+                    if (!controller.signal.aborted && current.status === "error" && current.code === "DATA_BUSY") {
+                        setRequestRevision((revision) => revision + 1)
+                    }
+                })
+                .catch(() => { /* The shared connection banner owns network failures. */ })
+                .finally(() => {if (pending === controller) pending = null})
+        }, 5_000)
+        return () => {window.clearInterval(timer); pending?.abort()}
+    }, [])
+
+    const reload = () => setRequestRevision((revision) => revision + 1)
     const navigate = (next: WorkbenchRoute) => {
         setRoute(next)
         onRouteChange?.(next)
@@ -221,7 +262,7 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
                     <h2 id="rolling-skill-title">{t("title")}</h2>
                     <p>{t("subtitle")}</p>
                 </div>
-                <ActionButton size="sm" onClick={reload} disabled={state.status === "loading"}>
+                <ActionButton size="sm" onClick={reload} disabled={refreshing}>
                     {t("refresh")}
                 </ActionButton>
             </header>
@@ -232,7 +273,7 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
                         <strong>{t("connectionUnavailable")}</strong>
                         <span>{t("connectionUnavailableDescription")}</span>
                     </div>
-                    <ActionButton size="sm" onClick={reload}>{t("reconnect")}</ActionButton>
+                    <ActionButton size="sm" onClick={reload} disabled={refreshing}>{t("reconnect")}</ActionButton>
                 </div>
             ) : null}
 
@@ -269,7 +310,7 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
                 <div className="rolling-skill-state" role="status">{t("loading")}</div>
             ) : state.status === "error" ? (
                 <div className="rolling-skill-state rolling-skill-error" role="alert">
-                    <strong>{t("loadError")}</strong>
+                    <strong>{t(state.code === "DATA_BUSY" ? "waitingForBackgroundTask" : "loadError")}</strong>
                     {connection.status === "connected" ? <span>{state.message}</span> : null}
                     <ActionButton size="sm" onClick={reload}>{t("retry")}</ActionButton>
                 </div>
@@ -306,7 +347,7 @@ export function Workbench({locale, t, initialRoute = {page: "overview"}, onRoute
             ) : route.page === "operator" ? (
                 <OperatorPanel key={`operator:${reloadRevision}`} t={t} initialSessionId={route.sessionId}/>
             ) : route.page === "optimization" ? (
-                <OptimizationPanel key={`optimization:${reloadRevision}`} t={t} initialRunId={route.runId}/>
+                <OptimizationPanel key={`optimization:${reloadRevision}`} t={t} initialRunId={route.runId} onNavigate={navigate}/>
             ) : (
                 <Overview dashboard={state.dashboard} t={t}/>
             )}

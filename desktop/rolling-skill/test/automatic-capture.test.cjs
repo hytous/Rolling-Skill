@@ -13,6 +13,42 @@ const {AutomaticCaptureStateStore} = require("../src/automatic-capture-state-sto
 
 const directories = []
 
+it("reports real source-scan and model stages rather than an undifferentiated running flag", async () => {
+    const result = fixture()
+    await result.manager.runSlot(new Date("2026-09-01T08:00:00Z"))
+    const progress = result.statuses.map((entry) => entry.progress).filter(Boolean)
+    assert.ok(progress.some((entry) => entry.stage === "boundary" && entry.totalThreads === 1 && entry.completedThreads === 0))
+    assert.ok(progress.some((entry) => entry.stage === "outcome" && entry.analysisCount === 2))
+    assert.equal(progress.at(-1).completedThreads, 1)
+    assert.equal(progress.at(-1).stage, "completed")
+})
+
+it("skips full history reads only for an unchanged, successfully inspected source revision", async () => {
+    let revision = "dsh:100"
+    let reads = 0
+    let fail = false
+    const value = fixture({runtime: {
+        listThreads: async ({archived}) => ({data: archived ? [] : [{id: "thread-1", sourceRevision: revision}]}),
+        readThread: async () => {reads += 1; if (fail) throw new Error("history unavailable"); return {thread: thread("thread-1")}},
+    }})
+    const scan = () => value.manager.runSlot(new Date("2026-09-01T09:00:00Z"))
+    await scan()
+    await scan()
+    assert.equal(reads, 1, "unchanged source summaries must not download the whole conversation again")
+    assert.equal(value.stateStore.thread("codex:/opt/codex-a", "thread-1").sourceRevision, "dsh:100")
+    revision = "dsh:101"
+    fail = true
+    await assert.rejects(scan, /history unavailable/u)
+    assert.equal(value.stateStore.thread("codex:/opt/codex-a", "thread-1").sourceRevision, "dsh:100", "failed reads must not advance the source checkpoint")
+    fail = false
+    await scan()
+    assert.equal(reads, 3)
+    revision = null
+    await scan()
+    await scan()
+    assert.equal(reads, 5, "active sources and providers without reliable revision metadata still get read")
+})
+
 afterEach(() => {
     for (const directory of directories.splice(0)) rmSync(directory, {recursive: true, force: true})
 })
@@ -206,6 +242,18 @@ describe("automatic dataset routing", () => {
 })
 
 describe("scheduled conversation discovery manager", () => {
+    it("can schedule the next run without silently backfilling historical slots on Host startup", () => {
+        const {manager} = fixture({mode: "automatic"})
+        let scans = 0
+        let timers = 0
+        manager.runDueScan = async () => {scans += 1}
+        manager.setTimer = () => {timers += 1; return 1}
+        manager.clearTimer = () => {}
+        manager.start({catchUp: false})
+        assert.equal(scans, 0)
+        assert.equal(timers, 1)
+        manager.stop()
+    })
     it("passes only configured candidate Skills to Case detection", async () => {
         const datasets = [
             {
@@ -360,6 +408,8 @@ describe("scheduled conversation discovery manager", () => {
             thread("thread-1", "Identify complete user problem ranges from incremental user messages only.\n<incremental-user-messages>{}</incremental-user-messages>"),
             thread("thread-2", "You are judging one agent Skill evaluation result. Evaluate only the supplied answer."),
             thread("thread-3", "/billing-cost-managementYou are the Curator for an agent Skill evaluation dataset.\nThe source episode follows."),
+            thread("thread-4", "Decide whether this completed episode is eligible to become a Skill evaluation Case.\nThe source episode follows."),
+            thread("thread-5", "[Environment context — rolling-skill-operator/v1]\nRolling Skill Operator Protocol v1\nFrozen scope: {}"),
         ]
         const runtime = {
             async listThreads({archived}) {
@@ -381,7 +431,7 @@ describe("scheduled conversation discovery manager", () => {
         )
 
         await value.manager.runSlot(new Date(2026, 7, 27, 9, 0), value.settings.autoCaptureProfile)
-        assert.deepEqual(reads.sort(), ["thread-1", "thread-2", "thread-3"])
+        assert.deepEqual(reads.sort(), ["thread-1", "thread-2", "thread-3", "thread-4", "thread-5"])
     })
 
     it("does not persist an ineligible internal or installation episode as a Raw Case", async () => {
@@ -629,6 +679,16 @@ describe("scheduled conversation discovery manager", () => {
             value.stateStore.thread("codex:/opt/codex-a", "thread-1").pendingStartUserItemId,
             "thread-1-user-1",
         )
+        await value.manager.runSlot(new Date("2026-09-02T08:00:00Z"))
+        assert.equal(value.analyses.length, 1, "an unchanged unanswered tail must not spend another model call")
+        incomplete.turns[1].items.push({id: "thread-1-agent-2", type: "agentMessage", text: "Now completed"})
+        value.manager.runAnalysis = async (input) => {
+            value.analyses.push(input)
+            if (input.stage === "boundary") return JSON.stringify({segments: [], pendingStartUserItemId: "thread-1-user-1"})
+            return JSON.stringify({eligibleForCase: false, sourceKind: "other_internal", skillName: null, outcome: "resolved", caseType: null, finalAssistantItemId: null, confidence: 0.9, reason: "Not a business Case"})
+        }
+        await value.manager.runSlot(new Date("2026-09-03T08:00:00Z"))
+        assert.deepEqual(value.analyses.map((entry) => entry.stage), ["boundary", "boundary", "outcome"], "a newly completed assistant response must be inspected")
     })
 
     it("defers a model-closed segment whose final user turn has no Assistant response", async () => {
@@ -852,6 +912,7 @@ describe("scheduled conversation discovery manager", () => {
         })
 
         assert.equal(created[0].datasetId, "dataset-current")
+        assert.equal(created[0].automaticCaptureRawCaseId, "raw-current")
     })
 
     it("fails closed when selected managed Skills have an ambiguous name", async () => {
@@ -929,6 +990,24 @@ describe("scheduled conversation discovery manager", () => {
         )
     })
 
+    it("keeps a background run alive until the automatic Curator actually saves its Case", async () => {
+        let session = {id: "owned", status: "running", automaticCaptureRawCaseId: "raw-owned"}
+        const value = fixture({mode: "automatic", curationManager: {
+            listSessions: () => [session], hiddenThreadIds: () => new Set(),
+            async archive() {session = {...session, status: "archived", caseId: "saved"}; return {id: "saved"}},
+        }})
+        value.manager.automaticSessions.set("owned", {rawCaseId: "raw-owned"})
+        let done = false
+        const waiting = value.manager.waitForAutomaticSessions({pollMs: 1}).then(() => {done = true})
+        await new Promise((resolve) => setImmediate(resolve))
+        assert.equal(done, false)
+        session = {...session, status: "needs_review", draft: {schemaVersion: "rolling-skill-curated-case/v1"}}
+        await value.manager.handleCurationChanged(session)
+        await waiting
+        assert.equal(done, true)
+        assert.equal(value.dispatches[0].dispatch.caseId, "saved")
+    })
+
     it("marks a Raw Case dispatched only after automatic Case persistence succeeds", async () => {
         let resolveArchive
         const archiveResult = new Promise((resolve) => { resolveArchive = resolve })
@@ -963,7 +1042,7 @@ describe("scheduled conversation discovery manager", () => {
         assert.equal(value.dispatches.length, 1)
     })
 
-    it("recovers an interrupted automatic curation after restart from persisted source evidence", async () => {
+    it("recovers only explicitly owned automatic curation after restart, never a matching manual Draft", async () => {
         const dispatches = []
         const retries = []
         const archives = []
@@ -984,6 +1063,7 @@ describe("scheduled conversation discovery manager", () => {
         }
         const interrupted = {
             id: "session-restart",
+            automaticCaptureRawCaseId: "raw-restart",
             status: "failed",
             error: "The Curator task was interrupted when Rolling Skill stopped. Retry to continue.",
             draft: null,
@@ -995,7 +1075,11 @@ describe("scheduled conversation discovery manager", () => {
             },
         }
         const curationManager = {
-            listSessions: () => [interrupted],
+            listSessions: () => [
+                {...interrupted, id: "manual-review", automaticCaptureRawCaseId: null,
+                    status: "needs_review", draft: {schemaVersion: "rolling-skill-curated-case/v1"}},
+                interrupted,
+            ],
             async retry(id) {
                 retries.push(id)
                 return {

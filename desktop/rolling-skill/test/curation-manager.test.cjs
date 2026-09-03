@@ -252,6 +252,15 @@ describe("curation manager", () => {
 
     afterEach(() => rmSync(directory, {recursive: true, force: true}))
 
+    it("persists automatic ownership before a Curator starts, without assigning it to manual Drafts", async () => {
+        const input = {datasetId: store.listDatasets()[0].id, caseType: "goodcase", ...frozenDshEvidence()}
+        const automatic = await manager.createEpisodeSession({...input, automaticCaptureRawCaseId: "raw-owned"})
+        const manual = await manager.createEpisodeSession(input)
+        const reloaded = new LocalEvaluationStore(join(directory, "store.json"))
+        assert.equal(reloaded.getCurationSession(automatic.id).automaticCaptureRawCaseId, "raw-owned")
+        assert.equal(reloaded.getCurationSession(manual.id).automaticCaptureRawCaseId, null)
+    })
+
     it("creates a Curator draft from trusted frozen DSH evidence without rereading its source", async () => {
         runtime.readThread = async () => assert.fail("must not read the source Runtime thread")
         const datasetId = store.listDatasets()[0].id

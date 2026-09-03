@@ -659,8 +659,12 @@ class OperatorJobEngine {
         }))
     }
 
-    requestApproval(jobId, input = {}) {
+    requestApproval(jobId, input = {}, options = {}) {
         const request = requireObject(input, "Internal Operator approval")
+        const onPending = options?.onPending ?? null
+        if (onPending !== null && typeof onPending !== "function") {
+            throw new Error("Internal Operator approval pending callback is invalid")
+        }
         const action = requiredText(request.action, "Internal approval action", 300)
         const risk = requiredText(request.risk, "Internal approval risk", 16_384)
         const scope = cloneJson(requireObject(request.scope, "Internal approval scope"))
@@ -719,7 +723,10 @@ class OperatorJobEngine {
                 risk,
                 expiresAt: new Date(this.#now() + this.#approvalTtlMs).toISOString(),
             })
-        }).then((approval) => this.#waitForManualApproval(approval))
+        }).then((approval) => {
+            onPending?.(cloneJson(approval))
+            return this.#waitForManualApproval(approval)
+        })
     }
 
     #manualApprovalResult(approval) {
@@ -747,6 +754,37 @@ class OperatorJobEngine {
         if (!waiter) return
         this.#manualApprovalWaiters.delete(approval.id)
         waiter.resolve(this.#manualApprovalResult(approval))
+    }
+
+    suspendApprovalWaiter(approvalId) {
+        const approval = this.#store.getApproval(requiredText(
+            approvalId,
+            "Operator approval id",
+            200,
+        ))
+        if (approval.status !== "pending") return false
+        const waiter = this.#manualApprovalWaiters.get(approval.id)
+        if (!waiter) return false
+        this.#manualApprovalWaiters.delete(approval.id)
+        waiter.resolve({
+            approved: false,
+            suspended: true,
+            approvalId: approval.id,
+            decisionScope: "app_shutdown",
+        })
+        return true
+    }
+
+    #settleClosedManualApprovals() {
+        for (const approvalId of [...this.#manualApprovalWaiters.keys()]) {
+            let approval
+            try {
+                approval = this.#store.getApproval(approvalId)
+            } catch {
+                continue
+            }
+            if (approval.status !== "pending") this.#settleManualApproval(approval)
+        }
     }
 
     execute(jobId, input = {}) {
@@ -1514,9 +1552,12 @@ class OperatorJobEngine {
 
     async cancel(jobId) {
         const job = this.#store.beginCancellation(jobId)
+        this.#settleClosedManualApprovals()
         if (TERMINAL_JOB_STATUSES.has(job.status)) return job
         this.#abortTree(jobId)
-        return this.#store.cancelJobTree(jobId).job
+        const cancelled = this.#store.cancelJobTree(jobId).job
+        this.#settleClosedManualApprovals()
+        return cancelled
     }
 
     interrupt(jobId, error = {}) {
@@ -1535,7 +1576,9 @@ class OperatorJobEngine {
         if (!steps.some((step) => step.status === "running")) {
             return this.#store.getJob(jobId)
         }
-        return this.#store.interruptJob(jobId, record)
+        const interrupted = this.#store.interruptJob(jobId, record)
+        this.#settleClosedManualApprovals()
+        return interrupted
     }
 
     #abortTree(jobId) {
@@ -1574,11 +1617,14 @@ class OperatorJobEngine {
                 return Promise.resolve(current)
             }
             this.#store.beginCancellation(jobId)
+            this.#settleClosedManualApprovals()
             this.#abortTree(jobId)
-            return Promise.resolve(this.#store.cancelJobTree(jobId, {
+            const failed = this.#store.cancelJobTree(jobId, {
                 rootStatus: "failed",
                 rootPatch: patch,
-            }).job)
+            }).job
+            this.#settleClosedManualApprovals()
+            return Promise.resolve(failed)
         }
         return this.#enqueue(jobId, async () => {
             let job = this.#store.getJob(jobId)

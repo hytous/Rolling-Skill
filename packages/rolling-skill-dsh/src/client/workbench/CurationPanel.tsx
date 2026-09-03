@@ -8,6 +8,7 @@ import type {Translate} from "../locale"
 import type {WorkbenchRoute} from "./Workbench"
 import {CurationSessionView} from "./CurationSessionView"
 import {usePollingRevision} from "./usePollingRevision"
+import {displayStatus} from "./display-state"
 
 interface CurationSummary {
     id: string
@@ -112,7 +113,7 @@ export function CurationPanel({t, initialSessionId, onNavigate}: CurationPanelPr
                             }}
                         >
                             <strong>{session.episode?.originalQuestion || session.id}</strong>
-                            <span>{session.caseType} · {session.status}</span>
+                            <span>{session.caseType} · {displayStatus(session.status, t)}</span>
                         </button>
                     ))}
                 </div>

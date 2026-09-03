@@ -34,6 +34,8 @@ function publicFailure(request, response, error) {
         return
     }
     const publicCodes = {
+        DATA_BUSY: {status: 503, message: "后台任务或另一个 DSH 正在使用 Rolling Skill 数据。任务结束或关闭另一个 DSH 后会自动恢复；当前不会同时写入数据。"},
+        AUTOMATIC_BUSY: {status: 409, message: "Case 检测正在运行，完成后再保存设置或启动下一次。页面会自动更新进度。"},
         RESOURCE_CHANGED: {status: 409, message: "The Skill changed. Refresh before continuing."},
         NO_CHANGES: {status: 409, message: "The Skill edit has no changes to apply."},
         NEEDS_RECOVERY: {status: 409, message: "The Skill edit needs recovery before it can continue."},
@@ -48,6 +50,17 @@ function publicFailure(request, response, error) {
         return
     }
     const message = String(error?.message ?? "")
+    // Only exact, known prerequisite messages are public; never expose arbitrary
+    // Runtime exceptions, private paths, or credentials from unexpected failures.
+    const captureFailure = {
+        "Trusted DSH source Skill evidence is required before curation": {code: "CAPTURE_SKILL_CONTEXT_MISSING", message: "当前来源没有可识别的 Skill 加载信息，请检查所选数据集是否对应该 Case。已有会话上下文中的加载记录会自动承接，无需重复加载。"},
+        "Trusted DSH observed Skill does not match the Dataset Skill": {code: "CAPTURE_SKILL_MISMATCH", message: "来源会话的 Skill 与所选数据集不一致，请选择对应数据集。"},
+        "Trusted DSH source Skill does not match the verified installation": {code: "CAPTURE_INSTALLATION_MISMATCH", message: "来源 Skill 与已保存的安装记录不一致，请到 Skill 与安装检查对应 Runtime 的安装记录。"},
+    }[message]
+    if (captureFailure) {
+        writeJson(request, response, 409, {ok: false, error: captureFailure})
+        return
+    }
     if (
         message.startsWith("Unknown Rolling Skill method") ||
         message.startsWith("Unsupported conversation curation field") ||

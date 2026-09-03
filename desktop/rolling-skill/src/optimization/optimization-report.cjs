@@ -14,6 +14,28 @@ function percent(value) {
     return Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : "—"
 }
 
+function finalApprovalText(run) {
+    if (run.error?.code === "OPTIMIZATION_FINAL_APPROVAL_REJECTED") return "已拒绝"
+    const checkpoint = run.checkpoint ?? {}
+    if (checkpoint.finalApprovalId) return `已通过（${checkpoint.finalApprovalId}）`
+    if (run.error?.code === "OPTIMIZATION_RELEASE_REJECTED") return "历史发布审批已拒绝"
+    if (run.error?.code === "OPTIMIZATION_INSTALL_REJECTED") return "历史安装审批已拒绝"
+    if (checkpoint.releaseApprovalId || checkpoint.installApprovalId) {
+        return `历史两阶段审批（发布 ${display(checkpoint.releaseApprovalId, "未记录")}；安装 ${display(checkpoint.installApprovalId, "未记录")}）`
+    }
+    return "未记录审批结果"
+}
+
+function endingReason(run) {
+    const reasons = {
+        OPTIMIZATION_FINAL_APPROVAL_REJECTED: "用户选择回退原版本",
+        OPTIMIZATION_RELEASE_REJECTED: "发布审批被拒绝，未发布候选版本",
+        OPTIMIZATION_INSTALL_REJECTED: "正式版本安装审批被拒绝",
+        OPTIMIZATION_CANCELLED: "用户取消运行",
+    }
+    return reasons[run.error?.code] ?? display(run.error?.message, "无额外错误")
+}
+
 function artifactValue(value) {
     if (value === null || value === undefined) return null
     if (Buffer.isBuffer(value)) return JSON.parse(value.toString("utf8"))
@@ -103,7 +125,8 @@ function generateOptimizationReport({run, readArtifact: read}) {
         "",
         `- Run：${display(run.id)}`,
         `- 状态：${display(run.state)}`,
-        `- 停止原因：${display(checkpoint.stopReason, "未提供")}`,
+        `- 结束原因：${endingReason(run)}`,
+        `- 优化停止条件：${checkpoint.stopReason === "target_achieved" ? "已达到目标（target_achieved）" : display(checkpoint.stopReason, "未提供")}`,
         "",
         "## 冻结输入",
         "",
@@ -116,13 +139,11 @@ function generateOptimizationReport({run, readArtifact: read}) {
         `- Dataset：${display(snapshot.dataset?.id)} @ revision ${display(snapshot.dataset?.revision)}（${display(snapshot.dataset?.digest)}）`,
         `- Rubric：${display(snapshot.rubric?.id)} @ version ${display(snapshot.rubric?.version)}（${display(snapshot.rubric?.digest)}）`,
         "",
-        "## Runtime 矩阵",
+        "## 验证 Runtime",
         "",
-        "| Runtime | Model | Effort |",
-        "| --- | --- | --- |",
     ]
     for (const target of snapshot.targets ?? []) {
-        lines.push(`| ${display(target.runtimeId)} | ${display(target.modelId)} | ${display(target.effort)} |`)
+        lines.push(`- ${display(target.runtimeId)}：模型 ${display(target.modelId)}；推理强度 ${display(target.effort, "Runtime 默认值")}`)
     }
     lines.push("", "## Epoch 结果", "")
     for (const epoch of run.epochs ?? []) renderEpoch(lines, epoch, read)
@@ -133,19 +154,30 @@ function generateOptimizationReport({run, readArtifact: read}) {
         `- Token：${Number.isFinite(tokens) ? tokens : "运行时未提供"}`,
         `- 成本（micros）：${Number.isFinite(costMicros) ? costMicros : "运行时未提供"}`,
         "",
-        "## 发布与最终回归",
+        "## 最终审批与安装",
         "",
-        `- Release approval：${display(checkpoint.releaseApprovalId, "未申请")}`,
-        `- Install approval：${display(checkpoint.installApprovalId, "未申请")}`,
+        `- 最终审批：${finalApprovalText(run)}`,
         `- Released version：${display(checkpoint.releasedVersionId, "未发布")}`,
         `- Released install Artifact：${display(checkpoint.releasedInstallArtifactId, "未提供")}`,
-        `- 最终回归：${checkpoint.finalRegressionPassed === true ? "通过" : checkpoint.finalRegressionPassed === false ? "未通过" : "未运行"}`,
-        `- 最终评测 Artifact：${display(checkpoint.finalEvaluationArtifactId, "未提供")}`,
         "",
         "## 恢复状态",
         "",
         `- Run 恢复状态：${display(run.state)}`,
     )
+    if (checkpoint.finalRegressionPassed !== undefined || checkpoint.finalEvaluationArtifactId) {
+        lines.splice(lines.indexOf("## 恢复状态"), 0,
+            `- 历史最终回归：${checkpoint.finalRegressionPassed === true ? "通过" : checkpoint.finalRegressionPassed === false ? "未通过" : "状态未记录"}`,
+            `- 历史最终评测 Artifact：${display(checkpoint.finalEvaluationArtifactId, "未提供")}`,
+            "",
+        )
+    }
+    if (["experiment_restore", "experiment_remove"].includes(checkpoint.installationOperation)) {
+        lines.push(
+            `- 最近恢复操作：${checkpoint.installationOperation === "experiment_restore" ? "恢复基线" : "移除试验安装"}`,
+            `- 安装任务：${(checkpoint.installationJobIds ?? []).join("、") || "未记录"}`,
+            "- 具体恢复结果请查看对应安装任务；运行已结束不单独代表恢复成功。",
+        )
+    }
     if (run.recovery) {
         lines.push(
             `- 中断前状态：${display(run.recovery.previousState)}`,

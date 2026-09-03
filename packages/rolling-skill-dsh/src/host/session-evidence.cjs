@@ -184,6 +184,7 @@ function observedSkills(events) {
         if (
             !result ||
             result.data?.error ||
+            result.data?.message?.content?.some((block) => block?.type === "tool-result" && block.isError === true) ||
             !identity ||
             args?.name !== identity.name
         ) continue
@@ -366,6 +367,10 @@ function createSessionEvidenceSource({sessionQuery, traceRoot}) {
         const events = snapshot.events.filter(
             (event) => event.seq >= start.seq && event.seq <= turnEnd.seq,
         )
+        // Skill identity is inherited conversation context, not another Case's
+        // question/answer or a tool call performed inside this capture range.
+        const skillContext = observedSkills(snapshot.events.filter((event) => event.seq < start.seq))
+            .map((skill) => ({...skill, inherited: true}))
         const frozenSnapshot = {
             schemaVersion: "rolling-skill-dsh-conversation-evidence/v1",
             session: snapshot.session,
@@ -376,6 +381,7 @@ function createSessionEvidenceSource({sessionQuery, traceRoot}) {
                 endMessageId,
             },
             events,
+            skillContext,
             lineage: {
                 start: traceProjection(startTrace),
                 end: traceProjection(endTrace),
@@ -390,7 +396,7 @@ function createSessionEvidenceSource({sessionQuery, traceRoot}) {
             endMessageId,
             digest: persisted.digest,
             snapshotPath: persisted.path,
-            observedSkills: observedSkills(events),
+            observedSkills: [...skillContext, ...observedSkills(events)],
         }
         return {
             episode: episodeFromSlice({
@@ -438,7 +444,10 @@ function createSessionEvidenceSource({sessionQuery, traceRoot}) {
             endMessageId: assistant.data?.message?.id ?? null,
             digest: null,
             snapshotPath: null,
-            observedSkills: observedSkills(events),
+            observedSkills: [
+                ...observedSkills(snapshot.events.filter((event) => event.seq < start.seq)).map((skill) => ({...skill, inherited: true})),
+                ...observedSkills(events),
+            ],
         }
         return episodeFromSlice({
             session: snapshot.session,

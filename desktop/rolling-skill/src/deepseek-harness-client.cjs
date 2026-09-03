@@ -990,6 +990,10 @@ class DeepSeekHarnessClient extends EventEmitter {
                     recencyAt: updatedAt,
                     status: {type: summary.running ? "active" : "idle"},
                     modelProvider: "deepseek-harness",
+                    // Keep millisecond precision. The display timestamp has a
+                    // fallback, which must never be used to skip source reads.
+                    sourceRevision: summary.running === false && Number.isFinite(Number(summary.updatedAt)) && Number(summary.updatedAt) > 0
+                        ? `dsh:${Number(summary.updatedAt)}` : null,
                 }
             })
             .sort((left, right) => right.updatedAt - left.updatedAt)
@@ -1034,6 +1038,21 @@ class DeepSeekHarnessClient extends EventEmitter {
         const thread = threadFromHistory({summary, entries, workspaceRoot: this.workspaceRoot})
         this.recordTrace("inbound", {method: "thread/read", result: {thread}})
         return this.publicValue({thread})
+    }
+
+    async captureConversationEpisode(input) {
+        if (!this.baseUrl) throw new Error("DeepSeek Harness Host is not running")
+        const response = await this.fetchImpl(`${this.baseUrl}/rolling-skill/evidence`, {
+            method: "POST",
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({method: "capture", input}),
+            signal: AbortSignal.timeout(30_000),
+        })
+        const result = await response.json()
+        if (!response.ok || result?.ok !== true || !result.value?.episode) {
+            throw new Error("DSH background source evidence is unavailable; check that the current Rolling Skill plugin is installed in the web profile")
+        }
+        return this.publicValue(result.value)
     }
 
     async ensureCatalogSession() {

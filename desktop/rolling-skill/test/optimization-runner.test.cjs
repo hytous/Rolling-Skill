@@ -4,6 +4,7 @@ const assert = require("node:assert/strict")
 const {describe, it} = require("node:test")
 
 const {OptimizationRunner} = require("../src/optimization/optimization-runner.cjs")
+const {OptimizationOperatorGateway} = require("../src/optimization/optimization-operator-gateway.cjs")
 
 function digest(character) {
     return `sha256:${character.repeat(64)}`
@@ -223,11 +224,13 @@ function runnerFixture(options = {}) {
         async wait(jobId) { return structuredClone(installationJobs.get(jobId)) },
     }
     const evaluationCalls = []
-    const scores = [70, 80, 95, 95]
+    const scores = [70, 80, 95]
     const evaluationManager = {
         async run(input) {
             evaluationCalls.push(structuredClone(input))
-            return evaluation(`evaluation-${evaluationCalls.length}`, scores.shift())
+            const result = evaluation(`evaluation-${evaluationCalls.length}`, scores.shift())
+            result.results = input.targets.flatMap((target) => result.results.map((entry) => ({...entry, id: `${entry.caseId}:${target.runtimeId}`, runtimeId: target.runtimeId})))
+            return result
         },
     }
     let candidateEpoch = 0
@@ -272,10 +275,14 @@ function runnerFixture(options = {}) {
     }
     const approvalCalls = []
     const approvals = {
-        async request(input) {
+        async request(input, onPending) {
             approvalCalls.push(structuredClone(input))
-            return {approved: true, approvalId: `approval-${approvalCalls.length}`}
+            const approvalId = `approval-${approvalCalls.length}`
+            onPending?.({approvalId})
+            return {approved: true, approvalId}
         },
+        async reject() {},
+        suspend() { return false },
     }
     const releaseCalls = []
     const releaseManager = {
@@ -294,7 +301,10 @@ function runnerFixture(options = {}) {
         operatorGateway,
         approvals,
         releaseManager,
-        telemetry: () => ({elapsedMs: 1_000, turnsUsed: 2, tokensUsed: null, costMicros: null}),
+        telemetry: ({runId}) => {
+            assert.equal(runId, run.id, "Telemetry must receive the real Core adapter contract")
+            return {elapsedMs: 1_000, turnsUsed: 2, tokensUsed: null, costMicros: null}
+        },
         ...options,
     })
     return {
@@ -318,6 +328,45 @@ function runnerFixture(options = {}) {
 }
 
 describe("multi-Epoch OptimizationRunner", () => {
+    it("cancels a real pending Operator submission without waiting for another model response", async () => {
+        const gateway = new OptimizationOperatorGateway()
+        const fixture = runnerFixture({operatorGateway: gateway})
+        const operation = fixture.runner.run(fixture.run.id, {operatorSessionId: "operator-session-1", parentJobId: "operator-job-1"})
+        for (let index = 0; index < 20 && !gateway.pending(fixture.run.id); index += 1) await new Promise((resolve) => setImmediate(resolve))
+        assert.equal(gateway.pending(fixture.run.id)?.kind, "candidate")
+        fixture.runner.stop(fixture.run.id)
+        assert.equal(gateway.pending(fixture.run.id), null, "Stop must release the pending request immediately")
+        assert.equal((await operation).status, "cancelled")
+        assert.equal(fixture.installationCalls.length, 0)
+    })
+    it("can cancel a recovered pre-install run without resuming the Agent", async () => {
+        const gateway = new OptimizationOperatorGateway()
+        const fixture = runnerFixture({operatorGateway: gateway})
+        fixture.store.updateCheckpoint(fixture.run.id, {operatorSessionId: "operator-session-1", operatorParentJobId: "operator-job-1"})
+        const operation = fixture.runner.run(fixture.run.id, {operatorSessionId: "operator-session-1", parentJobId: "operator-job-1"})
+        for (let index = 0; index < 20 && !gateway.pending(fixture.run.id); index += 1) await new Promise((resolve) => setImmediate(resolve))
+        fixture.runner.pause(fixture.run.id)
+        assert.equal((await operation).status, "paused")
+        assert.equal(fixture.store.getRun(fixture.run.id).checkpoint.pauseReason, "user_pause")
+        fixture.runner.stop(fixture.run.id)
+        await fixture.runner.waitForIdle()
+        assert.equal(fixture.store.getRun(fixture.run.id).state, "cancelled")
+        assert.equal(fixture.installationCalls.length, 0)
+    })
+    it("preserves an incomplete baseline and stops before changing the Skill when Judge is unavailable", async () => {
+        const failed = evaluation("baseline-capacity-error", 70)
+        failed.results[0].gradingStatus = "failed"
+        failed.results[0].gradingError = "Selected model is at capacity"
+        failed.results[0].computedScore = null
+        const fixture = runnerFixture({evaluationManager: {run: async () => failed}})
+        const outcome = await fixture.runner.run(fixture.run.id, {operatorSessionId: "operator-session-1", parentJobId: "operator-job-1"})
+        assert.equal(outcome.status, "failed")
+        assert.equal(fixture.store.getRun(fixture.run.id).error.code, "OPTIMIZATION_BASELINE_INCOMPLETE")
+        assert.match(fixture.store.getRun(fixture.run.id).error.message, /at capacity/)
+        assert.equal(fixture.store.getRun(fixture.run.id).checkpoint.baselineEvaluationRunId, failed.id)
+        assert.equal(fixture.operatorGateway.candidateRequests, 0)
+        assert.equal(fixture.installationCalls.length, 0)
+    })
     it("uses the controller-created registered workspace without creating a second worktree", async () => {
         const fixture = runnerFixture()
         const workspace = {
@@ -340,7 +389,7 @@ describe("multi-Epoch OptimizationRunner", () => {
         assert.equal(fixture.workspaceManager.createCalls, 0)
     })
 
-    it("runs baseline, two Candidates, release install, and final regression in engine-owned order", async () => {
+    it("runs baseline, two Candidates, and one approved release-install in engine-owned order", async () => {
         const fixture = runnerFixture()
         const frozenDataset = JSON.stringify(fixture.run.snapshot.dataset)
         const outcome = await fixture.runner.run(fixture.run.id, {
@@ -373,22 +422,88 @@ describe("multi-Epoch OptimizationRunner", () => {
             "baseline",
             "candidate",
             "candidate",
-            "final-regression",
         ])
         assert.equal(fixture.operatorGateway.candidateRequests, 2)
         assert.equal(fixture.operatorGateway.decisionRequests, 2)
-        assert.deepEqual(fixture.approvalCalls.map((entry) => entry.kind), ["release", "install"])
+        assert.deepEqual(fixture.approvalCalls.map((entry) => entry.kind), ["release-install"])
         assert.equal(
             fixture.approvalCalls.every((entry) => entry.parentJobId === "operator-job-1"),
             true,
         )
         assert.equal(fixture.releaseCalls.length, 1)
+        assert.equal(stored.checkpoint.finalApprovalId, "approval-1")
+        assert.equal(stored.checkpoint.installApprovalId, undefined)
+        assert.equal(stored.checkpoint.finalEvaluationArtifactId, undefined)
+        assert.equal(stored.checkpoint.finalRegressionPassed, undefined)
         assert.equal(fixture.workspaceManager.createCalls, 1)
         assert.equal(fixture.childJobs.active, 0)
         assert.equal(
             fixture.childJobs.sequence.filter((entry) => entry.event === "started").length,
             fixture.childJobs.sequence.filter((entry) => entry.event === "terminal").length,
         )
+    })
+
+    it("checkpoints the final approval id while the user decision is still pending", async () => {
+        const fixture = runnerFixture()
+        let settleApproval
+        fixture.approvals.request = (input, onPending) => {
+            fixture.approvalCalls.push(structuredClone(input))
+            onPending?.({approvalId: "approval-pending-1"})
+            return new Promise((resolve) => { settleApproval = resolve })
+        }
+        const operation = fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+        for (let index = 0; index < 30 && !settleApproval; index += 1) {
+            await new Promise((resolve) => setImmediate(resolve))
+        }
+
+        assert.equal(typeof settleApproval, "function")
+        assert.equal(fixture.store.getRun(fixture.run.id).state, "waiting_approval")
+        assert.equal(fixture.store.getRun(fixture.run.id).checkpoint.finalApprovalId, "approval-pending-1")
+
+        settleApproval({approved: true, approvalId: "approval-pending-1"})
+        assert.equal((await operation).status, "succeeded")
+    })
+
+    it("rebuilds the approved Candidate from durable evidence after a final-approval restart", async () => {
+        const fixture = runnerFixture()
+        await fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+        const run = fixture.store.run
+        const epoch = run.epochs.at(-1)
+        run.state = "needs_recovery"
+        run.recovery = {
+            previousState: "waiting_approval",
+            reason: "process_interrupted",
+            recoveredAt: "2026-09-03T08:00:00.000Z",
+        }
+        epoch.status = "deciding"
+        delete run.checkpoint.finalApprovalId
+        delete run.checkpoint.releasePhase
+        delete run.checkpoint.releasedVersionId
+        delete run.checkpoint.releasedInstallArtifactId
+        fixture.approvalCalls.length = 0
+        fixture.releaseCalls.length = 0
+        fixture.installationCalls.length = 0
+        const candidateRequests = fixture.operatorGateway.candidateRequests
+        const evaluationCalls = fixture.evaluationCalls.length
+
+        const outcome = await fixture.runner.resumeFinalApproval(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+            workspace: run.checkpoint.workspace,
+        })
+
+        assert.equal(outcome.status, "succeeded")
+        assert.deepEqual(fixture.approvalCalls.map((entry) => entry.kind), ["release-install"])
+        assert.equal(fixture.releaseCalls.length, 1)
+        assert.deepEqual(fixture.installationCalls.map((entry) => entry.kind), ["released"])
+        assert.equal(fixture.operatorGateway.candidateRequests, candidateRequests)
+        assert.equal(fixture.evaluationCalls.length, evaluationCalls)
     })
 
     it("honors fixed maximum Epoch and adaptive patience before an Agent can continue", async () => {
@@ -546,6 +661,24 @@ describe("multi-Epoch OptimizationRunner", () => {
         assert.equal(fixture.store.getRun(fixture.run.id).checkpoint.paused, false)
     })
 
+    it("exposes a pending inspection and retains its Job and failure reason without installing", async () => {
+        const fixture = runnerFixture()
+        fixture.installationManager.wait = async (jobId) => {
+            const checkpoint = fixture.store.getRun(fixture.run.id).checkpoint
+            assert.equal(checkpoint.installationOperation, "experiment_inspect")
+            assert.equal(checkpoint.installationPending, true)
+            assert.deepEqual(checkpoint.installationJobIds, [jobId])
+            return {...fixture.installationJobs.get(jobId), status: "unverified", error: {message: "Management marker is truncated; nothing was changed."}}
+        }
+        const result = await fixture.runner.run(fixture.run.id, {operatorSessionId: "operator-session-1", parentJobId: "operator-job-1"})
+        assert.equal(result.status, "failed")
+        const run = fixture.store.getRun(fixture.run.id)
+        assert.match(run.error.message, /Management marker is truncated/u)
+        assert.equal(run.checkpoint.installationPending, false)
+        assert.deepEqual(run.checkpoint.installationJobIds, ["installation-1"])
+        assert.deepEqual(fixture.installationCalls.map((call) => call.operation), ["experiment_inspect"])
+    })
+
     it("restores after Candidate install/evaluation failure and release rejection", async () => {
         const installFailure = runnerFixture()
         const originalInstallStart = installFailure.installationManager.startOptimizationExperiment.bind(
@@ -582,7 +715,7 @@ describe("multi-Epoch OptimizationRunner", () => {
 
         const rejected = runnerFixture()
         rejected.approvals.request = async (input) => ({
-            approved: input.kind !== "release",
+            approved: input.kind !== "release-install",
             approvalId: "approval-rejected",
         })
         const rejectedOutcome = await rejected.runner.run(rejected.run.id, {
@@ -590,6 +723,7 @@ describe("multi-Epoch OptimizationRunner", () => {
             parentJobId: "operator-job-1",
         })
         assert.equal(rejectedOutcome.status, "cancelled")
+        assert.equal(rejected.releaseCalls.length, 0)
         assert.equal(rejected.installationCalls.at(-1).operation, "experiment_restore")
     })
 
@@ -723,6 +857,78 @@ describe("multi-Epoch OptimizationRunner", () => {
         )
     })
 
+    it("pauses a final approval for shutdown without resolving its durable decision", async () => {
+        const fixture = runnerFixture()
+        let settleApproval
+        fixture.approvals.request = (input, onPending) => {
+            fixture.approvalCalls.push(structuredClone(input))
+            onPending?.({approvalId: "approval-before-shutdown"})
+            return new Promise((resolve) => { settleApproval = resolve })
+        }
+        fixture.approvals.suspend = (approvalId) => {
+            assert.equal(approvalId, "approval-before-shutdown")
+            settleApproval({
+                approved: false,
+                suspended: true,
+                approvalId,
+                decisionScope: "app_shutdown",
+            })
+            return true
+        }
+        const operation = fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+        for (let index = 0; index < 30 && !settleApproval; index += 1) {
+            await new Promise((resolve) => setImmediate(resolve))
+        }
+        assert.equal(typeof settleApproval, "function")
+
+        fixture.runner.checkpointAndStop()
+        const outcome = await Promise.race([
+            operation,
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Runner did not detach its approval waiter")), 100)),
+        ])
+
+        assert.equal(outcome.status, "paused")
+        assert.equal(fixture.store.getRun(fixture.run.id).state, "needs_recovery")
+        assert.equal(fixture.store.getRun(fixture.run.id).checkpoint.paused, true)
+        assert.equal(fixture.store.getRun(fixture.run.id).checkpoint.resumePhase, "final_approval")
+        assert.deepEqual(await fixture.runner.waitForIdle(), {activeRunIds: []})
+    })
+
+    it("resolves a direct stop during final approval as the same persisted rejection", async () => {
+        const fixture = runnerFixture()
+        let settleApproval
+        fixture.approvals.request = (input, onPending) => {
+            fixture.approvalCalls.push(structuredClone(input))
+            onPending?.({approvalId: "approval-before-stop"})
+            return new Promise((resolve) => { settleApproval = resolve })
+        }
+        const rejected = []
+        fixture.approvals.reject = async (approvalId) => {
+            rejected.push(approvalId)
+            settleApproval({
+                approved: false,
+                approvalId,
+                decisionScope: "optimization_cancel",
+            })
+        }
+        const operation = fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+        for (let index = 0; index < 30 && !settleApproval; index += 1) {
+            await new Promise((resolve) => setImmediate(resolve))
+        }
+        assert.equal(typeof settleApproval, "function")
+
+        await fixture.runner.stop(fixture.run.id)
+        assert.deepEqual(rejected, ["approval-before-stop"])
+        assert.equal((await operation).status, "cancelled")
+        assert.equal(fixture.releaseCalls.length, 0)
+    })
+
     it("resumes from a shutdown checkpoint when a pending Candidate request is cancelled", async () => {
         const fixture = runnerFixture()
         let firstRequest = true
@@ -752,7 +958,7 @@ describe("multi-Epoch OptimizationRunner", () => {
         assert.equal(fixture.store.getRun(fixture.run.id).state, "succeeded")
     })
 
-    it("restores after a Released installation or final regression failure", async () => {
+    it("restores after a Released installation failure", async () => {
         const releasedInstallFailure = runnerFixture()
         const originalReleasedStart = releasedInstallFailure.installationManager.start.bind(
             releasedInstallFailure.installationManager,
@@ -768,18 +974,5 @@ describe("multi-Epoch OptimizationRunner", () => {
         })
         assert.equal(installOutcome.status, "failed")
         assert.equal(releasedInstallFailure.installationCalls.at(-1).operation, "experiment_restore")
-
-        const finalRegression = runnerFixture()
-        const originalRun = finalRegression.evaluationManager.run.bind(finalRegression.evaluationManager)
-        finalRegression.evaluationManager.run = async (input) => {
-            if (input.kind === "final-regression") return evaluation("final-regression", 50)
-            return originalRun(input)
-        }
-        const regressionOutcome = await finalRegression.runner.run(finalRegression.run.id, {
-            operatorSessionId: "operator-session-1",
-            parentJobId: "operator-job-1",
-        })
-        assert.equal(regressionOutcome.status, "failed")
-        assert.equal(finalRegression.installationCalls.at(-1).operation, "experiment_restore")
     })
 })
