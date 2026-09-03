@@ -1160,9 +1160,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     bootstrapOperator: () => invokeOperator("bootstrap"),
     readOperatorSummaryPage: (cursor = null, limit = 100) =>
         invokeOperator("read-summary", {cursor, limit}),
-    createOperatorSession: async () => {
-        throw new Error("Creating an Operator session is outside the renderer smoke fixture")
-    },
+    createOperatorSession: (input) => invokeOperator("create-session", input),
     getOperatorSession: (sessionId) => invokeOperator("get-session", {sessionId}),
     sendOperatorMessage: async () => ({queued: true}),
     pauseOperatorJob: (jobId) => invokeOperator("pause", {jobId}),

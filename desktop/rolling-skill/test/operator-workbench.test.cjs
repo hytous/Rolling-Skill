@@ -198,6 +198,17 @@ describe("Operator workbench state", () => {
         ])
     })
 
+    it("renders only maximum iterations and permanent deletion in the automation boundary", () => {
+        const markup = fs.readFileSync(require.resolve("../renderer/index.html"), "utf8")
+        assert.doesNotMatch(markup, /id="operator-permission-grants"/u)
+        assert.doesNotMatch(markup, /data-operator-budget=/u)
+        assert.equal((markup.match(/data-operator-max-iterations/gu) ?? []).length, 1)
+        assert.match(markup, /<input[^>]+value="50"[^>]+data-operator-max-iterations[^>]*>/u)
+        const risk = markup.match(/<input[^>]+data-operator-risk="datasets\.delete"[^>]*>/u)?.[0]
+        assert.ok(risk)
+        assert.doesNotMatch(risk, /\schecked(?:\s|=|>)/u)
+    })
+
     it("builds setup requests only from capability-backed Runtime and model catalogs", () => {
         const request = buildOperatorSessionRequest({
             runtimeId: "runtime-1",

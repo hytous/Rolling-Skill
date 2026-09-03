@@ -432,23 +432,18 @@
                                 <div id="operator-optimization-preflight-summary" class="operator-optimization-preflight-summary" aria-live="polite" data-i18n="operatorPreflightInitial">Run preflight to freeze inputs and inspect installation readiness.</div>
                             </section>
                             <details class="operator-setup-details">
-                                <summary data-i18n="operatorPermissionsBudget">Permission grants and budget</summary>
-                                <fieldset class="operator-fieldset">
-                                    <legend data-i18n="operatorPermissionGrants">Permission grants</legend>
-                                    <div id="operator-permission-grants" class="operator-check-grid permission-grid"></div>
-                                </fieldset>
-                                <fieldset class="operator-fieldset">
-                                    <legend data-i18n="operatorHardBudget">Hard budget</legend>
-                                    <div class="operator-budget-grid">
-                                        <label><span data-i18n="operatorDurationMs">Duration (ms)</span><input type="number" min="0" step="1000" value="3600000" data-operator-budget="maxDurationMs" required /></label>
-                                        <label><span data-i18n="operatorRuntimeTurns">Runtime turns</span><input type="number" min="0" value="20" data-operator-budget="maxRuntimeTurns" required /></label>
-                                        <label><span data-i18n="operatorEvaluations">Evaluations</span><input type="number" min="0" value="5" data-operator-budget="maxEvaluations" required /></label>
-                                        <label><span data-i18n="operatorTargetExecutions">Target executions</span><input type="number" min="0" value="50" data-operator-budget="maxTargetExecutions" required /></label>
-                                        <label><span data-i18n="operatorJudgeExecutions">Judge executions</span><input type="number" min="0" value="20" data-operator-budget="maxJudgeExecutions" required /></label>
-                                        <label><span data-i18n="operatorTokensOptional">Tokens · optional</span><input type="number" min="0" data-operator-budget="maxTokens" /></label>
-                                        <label><span data-i18n="operatorReportedCostOptional">Reported cost · optional</span><input type="number" min="0" step="0.01" data-operator-budget="maxReportedCost" /></label>
-                                    </div>
-                                </fieldset>
+                                <summary data-i18n="operatorAutomationBoundary">Automation boundary</summary>
+                                <p class="operator-help" data-i18n="operatorAutomaticAuthorityHelp">Normal work inside the selected scope can run, evaluate, publish, and install automatically. Every action remains audited.</p>
+                                <div class="operator-boundary-grid">
+                                    <label class="operator-field">
+                                        <span data-i18n="operatorMaxIterations">Maximum iterations</span>
+                                        <input type="number" min="1" value="50" data-operator-max-iterations required />
+                                    </label>
+                                    <label class="operator-check">
+                                        <input type="checkbox" data-operator-risk="datasets.delete" />
+                                        <span data-i18n="operatorAllowPermanentDelete">Allow permanent Dataset or Case deletion</span>
+                                    </label>
+                                </div>
                             </details>
                             <p id="operator-setup-error" class="operator-error hidden" role="alert"></p>
                             </div>

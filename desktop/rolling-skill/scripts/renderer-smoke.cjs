@@ -10,6 +10,7 @@ const {
 const {OperatorJobEngine} = require("../src/operator/job-engine.cjs")
 const {OperatorJobStore} = require("../src/operator/job-store.cjs")
 const {publicOperatorSummaryPage} = require("../src/operator/public-summary.cjs")
+const {operatorApprovalRequirement} = require("../src/control-plane/policy.cjs")
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-renderer-smoke-"))
 app.setPath("userData", join(temporaryDirectory, "profile"))
@@ -99,6 +100,7 @@ function createOperatorFixture() {
     let pagingRecordsPopulated = false
     let approvalCalls = 0
     let stopCalls = 0
+    let operatorCreateInput = null
     const summaryPageCalls = []
     const artifacts = []
 
@@ -216,6 +218,11 @@ function createOperatorFixture() {
                 versionId: "managed-version-smoke",
                 versionLabel: "v1.0.0",
             },
+            policyApproval: operatorApprovalRequirement("skills.release", {
+                skillId: "managed-skill-smoke",
+                versionId: "managed-version-smoke",
+                versionLabel: "v1.0.0",
+            }),
             idempotencyKey: "renderer-smoke-release",
         })
         store.transitionJob(waitingJob.id, "waiting_approval")
@@ -299,6 +306,29 @@ function createOperatorFixture() {
                 stopCalls += 1
                 store.beginCancellation(input.jobId)
                 return publicOperatorJob(store.cancelJobTree(input.jobId).job)
+            case "create-session": {
+                operatorCreateInput = structuredClone(input)
+                const session = createSession()
+                store.appendSessionTranscript(session.id, {
+                    kind: "operator_session_configuration",
+                    actions: input.actions,
+                    scopes: input.scopes,
+                    budget: input.budget,
+                })
+                const job = store.createJob({
+                    sessionId: session.id,
+                    type: "operator-session",
+                    objective: input.objective,
+                    budget: input.budget,
+                })
+                store.transitionJob(job.id, "running")
+                fixtureIds.createdSessionId = session.id
+                fixtureIds.createdJobId = job.id
+                return {
+                    session: publicOperatorSession(store.getSession(session.id)),
+                    parentJob: publicOperatorJob(store.getJob(job.id)),
+                }
+            }
             case "resolve-approval": {
                 approvalCalls += 1
                 const pending = store.getApproval(input.approvalId)
@@ -455,7 +485,7 @@ function createOperatorFixture() {
                 }
             }
             case "metrics":
-                return {summaryPageCalls, approvalCalls, stopCalls, fixtureIds}
+                return {summaryPageCalls, approvalCalls, stopCalls, operatorCreateInput, fixtureIds}
             default:
                 throw new Error(`Unknown smoke Operator method: ${method}`)
             }
@@ -1847,6 +1877,70 @@ async function run() {
     await inspect(window, 'document.querySelector("#operator-new-job").click()')
     await waitFor(window, '!document.querySelector("#operator-setup-form").classList.contains("hidden")')
     await inspect(window, `(() => {
+        document.querySelector("[data-operator-max-iterations]").closest("details").open = true
+    })()`)
+    window.setSize(760, 480)
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    const narrowAutomationBoundary = await inspect(window, `(() => {
+        const grid = document.querySelector(".operator-boundary-grid")
+        const iterations = grid?.querySelector("[data-operator-max-iterations]")?.closest("label")
+        const deletion = grid?.querySelector('[data-operator-risk="datasets.delete"]')?.closest("label")
+        if (!grid || !iterations || !deletion) return null
+        const gridRect = grid.getBoundingClientRect()
+        const iterationRect = iterations.getBoundingClientRect()
+        const deletionRect = deletion.getBoundingClientRect()
+        return {
+            grid: {left: gridRect.left, right: gridRect.right},
+            maxIterations: grid.querySelector("[data-operator-max-iterations]").value,
+            permanentDeletion: grid.querySelector('[data-operator-risk="datasets.delete"]').checked,
+            iterations: {
+                left: iterationRect.left,
+                right: iterationRect.right,
+                bottom: iterationRect.bottom,
+            },
+            deletion: {
+                left: deletionRect.left,
+                right: deletionRect.right,
+                top: deletionRect.top,
+            },
+        }
+    })()`)
+    if (
+        !narrowAutomationBoundary ||
+        narrowAutomationBoundary.maxIterations !== "50" ||
+        narrowAutomationBoundary.permanentDeletion !== false ||
+        narrowAutomationBoundary.iterations.left < narrowAutomationBoundary.grid.left - 1 ||
+        narrowAutomationBoundary.iterations.right > narrowAutomationBoundary.grid.right + 1 ||
+        narrowAutomationBoundary.deletion.left < narrowAutomationBoundary.grid.left - 1 ||
+        narrowAutomationBoundary.deletion.right > narrowAutomationBoundary.grid.right + 1 ||
+        narrowAutomationBoundary.deletion.top < narrowAutomationBoundary.iterations.bottom - 1
+    ) {
+        throw new Error(`Automation boundary does not stack inside a narrow window: ${JSON.stringify(narrowAutomationBoundary)}`)
+    }
+    window.setSize(1_180, 800)
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await inspect(window, `(() => {
+        document.querySelector('#operator-setup-form [name="objective"]').value = "Automated boundary smoke Job"
+        document.querySelector("[data-operator-max-iterations]").value = "7"
+        document.querySelector('[data-operator-risk="datasets.delete"]').checked = true
+        document.querySelector("#operator-generic-start").click()
+    })()`)
+    await waitFor(window, 'document.querySelector("#operator-setup-form").classList.contains("hidden")')
+    const operatorCreateInput = await inspect(
+        window,
+        'window.rollingSkill.smokeOperatorMetrics().then(({operatorCreateInput}) => operatorCreateInput)',
+    )
+    if (
+        JSON.stringify(operatorCreateInput?.budget) !== JSON.stringify({maxIterations: 7}) ||
+        !operatorCreateInput.actions.includes("runtime.execute") ||
+        !operatorCreateInput.actions.includes("skills.release") ||
+        !operatorCreateInput.actions.includes("datasets.delete")
+    ) {
+        throw new Error(`Operator automation boundary submitted the wrong request: ${JSON.stringify(operatorCreateInput)}`)
+    }
+    await inspect(window, 'document.querySelector("#operator-new-job").click()')
+    await waitFor(window, '!document.querySelector("#operator-setup-form").classList.contains("hidden")')
+    await inspect(window, `(() => {
         const change = (selector, value) => {
             const element = document.querySelector(selector)
             element.value = value
@@ -1857,6 +1951,31 @@ async function run() {
     })()`)
     await waitFor(window, 'document.querySelector("#operator-optimization-baseline option[value=managed-version-released-smoke]")')
     await waitFor(window, 'document.querySelector("[data-operator-target=\\"codebuddy:renderer-smoke\\"]") && document.querySelector("[data-optimization-target-model=\\"codebuddy:renderer-smoke\\"] option")')
+    const criticalCaseLayout = await inspect(window, `(() => {
+        const checkbox = document.querySelector('[data-optimization-target="requireCriticalCases"]')
+        const label = checkbox?.closest("label")?.querySelector("span")
+        if (!checkbox || !label) return null
+        const checkboxRect = checkbox.getBoundingClientRect()
+        const labelRect = label.getBoundingClientRect()
+        return {
+            width: checkboxRect.width,
+            height: checkboxRect.height,
+            checkboxCenterY: checkboxRect.top + checkboxRect.height / 2,
+            labelCenterY: labelRect.top + labelRect.height / 2,
+        }
+    })()`)
+    if (
+        !criticalCaseLayout ||
+        criticalCaseLayout.width < 12 ||
+        criticalCaseLayout.width > 18 ||
+        criticalCaseLayout.height < 12 ||
+        criticalCaseLayout.height > 18
+    ) {
+        throw new Error(`Critical Case checkbox is not compact: ${JSON.stringify(criticalCaseLayout)}`)
+    }
+    if (Math.abs(criticalCaseLayout.checkboxCenterY - criticalCaseLayout.labelCenterY) > 3) {
+        throw new Error(`Critical Case checkbox is not vertically aligned: ${JSON.stringify(criticalCaseLayout)}`)
+    }
     await inspect(window, `(() => {
         const change = (selector, value) => {
             const element = document.querySelector(selector)
@@ -2051,7 +2170,16 @@ async function run() {
     if (rendererErrors.length) throw new Error(`Renderer console errors: ${rendererErrors.join(" | ")}`)
     const screenshotPath = process.env.ROLLING_SKILL_RENDERER_SMOKE_SCREENSHOT
     if (screenshotPath) {
-        if (process.env.ROLLING_SKILL_RENDERER_SMOKE_SCREENSHOT_SURFACE === "rubric") {
+        if (process.env.ROLLING_SKILL_RENDERER_SMOKE_SCREENSHOT_SURFACE === "operator") {
+            await inspect(window, 'document.querySelector("[data-surface=operator]").click()')
+            await inspect(window, 'document.querySelector("#operator-new-job").click()')
+            await waitFor(window, '!document.querySelector("#operator-setup-form").classList.contains("hidden")')
+            await inspect(window, `(() => {
+                const details = document.querySelector("[data-operator-max-iterations]").closest("details")
+                details.open = true
+                details.scrollIntoView({block: "center"})
+            })()`)
+        } else if (process.env.ROLLING_SKILL_RENDERER_SMOKE_SCREENSHOT_SURFACE === "rubric") {
             await inspect(window, 'document.querySelector("[data-surface=evaluation]").click()')
             await inspect(window, 'document.querySelector("[data-evaluation-view=cases]").click()')
             await waitFor(window, 'document.querySelector("[data-evaluation-case-id=case-smoke]")')
@@ -2097,6 +2225,15 @@ async function run() {
             operatorApprovalResolved: true,
             operatorStopChatIsolated: true,
             operatorDelegatedActions: true,
+            operatorAutomationBoundary: operatorCreateInput.budget,
+            operatorAutomationBoundaryNarrow: true,
+            operatorCriticalCaseCheckbox: {
+                width: criticalCaseLayout.width,
+                height: criticalCaseLayout.height,
+                aligned: Math.abs(
+                    criticalCaseLayout.checkboxCenterY - criticalCaseLayout.labelCenterY,
+                ) <= 3,
+            },
             optimizationHiddenProgressIsolated: true,
             optimizationTwoEpochTrend: optimizationEvidenceAfterSwitch.timeline,
             optimizationFinalApproval: finalApprovalId,

@@ -1561,6 +1561,7 @@
     })
 
     const OPERATOR_BUDGET_KEYS = Object.freeze({
+        maxIterations: "operatorMaxIterations",
         maxDurationMs: "operatorDurationMs",
         maxRuntimeTurns: "operatorRuntimeTurns",
         maxEvaluations: "operatorEvaluations",
@@ -1866,7 +1867,13 @@
                     assistant: text("operatorRoleAssistant", "Operator"),
                     activity: text("operatorRoleActivity", "Activity"),
                 }[role] ?? role
-                card.querySelector(".operator-entry-copy").textContent = entryText(entry)
+                card.querySelector(".operator-entry-copy").textContent =
+                    entry.kind === "operator_iteration_limit_reached"
+                        ? message("operatorIterationLimitReached", {
+                            used: entry.used,
+                            limit: entry.limit,
+                        }, `Iteration limit reached (${entry.used}/${entry.limit})`)
+                        : entryText(entry)
             },
         })
 
@@ -2949,12 +2956,10 @@
                 datasetId: selectors.dataset.value,
                 targetRuntimeIds: [...selectors.targets.querySelectorAll("[data-operator-target]:checked")]
                     .map((input) => input.value),
-                actionIds: [...selectors.setup.querySelectorAll("[data-operator-action]:checked")]
-                    .map((input) => input.value),
-                budget: Object.fromEntries(
-                    [...selectors.setup.querySelectorAll("[data-operator-budget]")]
-                        .map((input) => [input.dataset.operatorBudget, input.value]),
-                ),
+                maxIterations: selectors.setup.querySelector("[data-operator-max-iterations]").value,
+                allowPermanentDelete: selectors.setup.querySelector(
+                    '[data-operator-risk="datasets.delete"]',
+                ).checked,
             }
             try {
                 const request = buildOperatorSessionRequest(values, {
@@ -3035,10 +3040,6 @@
 
         function localize() {
             if (destroyed) return
-            for (const input of selectors.setup.querySelectorAll("[data-operator-action]")) {
-                const label = input.closest("label")?.querySelector("span")
-                if (label) label.textContent = operatorActionText(input.value, translate)
-            }
             renderSetupCatalogs()
             if (optimizationPreflight?.ready) renderOptimizationPreflight(optimizationPreflight)
             if (!initialized || root.classList.contains("hidden")) return
@@ -3183,18 +3184,6 @@
         domEvents.listen(selectors.transcript, "scroll", () => {
             if (state.activeJobId) state.setViewState(state.activeJobId, {scrollTop: selectors.transcript.scrollTop})
         }, {passive: true})
-
-        for (const action of OPERATOR_ACTIONS) {
-            if (selectors.setup.querySelector(`[data-operator-action="${action}"]`)) continue
-            const label = createElement(document_, "label", "operator-check")
-            const input = document_.createElement("input")
-            input.type = "checkbox"
-            input.value = action
-            input.dataset.operatorAction = action
-            input.checked = action.endsWith(".read") || action === "context.read"
-            label.append(input, createElement(document_, "span", "", operatorActionText(action, translate)))
-            selectors.setup.querySelector("#operator-permission-grants")?.append(label)
-        }
 
         return {initialize, setCatalogs, setVisible, ingest, activateSession, localize, destroy, state, language}
     }

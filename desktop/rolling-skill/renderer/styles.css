@@ -1045,7 +1045,8 @@ kbd {
 }
 
 .operator-field,
-.operator-budget-grid label {
+.operator-budget-grid > label:not(.operator-check),
+.operator-boundary-grid > label:not(.operator-check) {
     display: grid;
     gap: 4px;
     color: var(--muted);
@@ -1055,7 +1056,8 @@ kbd {
 
 .operator-field textarea,
 .operator-field select,
-.operator-budget-grid input {
+.operator-budget-grid input[type="number"],
+.operator-boundary-grid input[type="number"] {
     width: 100%;
     min-height: 34px;
     padding: 7px 9px;
@@ -1069,7 +1071,8 @@ kbd {
 
 .operator-field textarea:focus,
 .operator-field select:focus,
-.operator-budget-grid input:focus {
+.operator-budget-grid input[type="number"]:focus,
+.operator-boundary-grid input[type="number"]:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
@@ -1247,6 +1250,16 @@ kbd {
     font-size: 10.5px;
 }
 
+.operator-check input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    min-height: 14px;
+    margin: 0;
+    padding: 0;
+    flex: 0 0 14px;
+}
+
 .operator-check span {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1290,6 +1303,25 @@ kbd {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
+}
+
+.operator-help {
+    margin: 10px 0 0;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.5;
+}
+
+.operator-boundary-grid {
+    display: grid;
+    padding: 12px 0;
+    grid-template-columns: minmax(140px, 220px) minmax(0, 1fr);
+    align-items: end;
+    gap: 12px;
+}
+
+.operator-boundary-grid .operator-check {
+    min-height: 34px;
 }
 
 .operator-error {
@@ -6207,6 +6239,10 @@ kbd {
     .operator-setup-hero {
         grid-template-columns: 1fr;
         gap: 14px;
+    }
+
+    .operator-boundary-grid {
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .operator-job-panel {
