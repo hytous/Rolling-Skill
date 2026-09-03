@@ -198,12 +198,16 @@ describe("Operator workbench state", () => {
         ])
     })
 
-    it("renders only maximum iterations and permanent deletion in the automation boundary", () => {
+    it("renders only permanent deletion for ordinary automation and one Epoch limit for optimization", () => {
         const markup = fs.readFileSync(require.resolve("../renderer/index.html"), "utf8")
         assert.doesNotMatch(markup, /id="operator-permission-grants"/u)
         assert.doesNotMatch(markup, /data-operator-budget=/u)
-        assert.equal((markup.match(/data-operator-max-iterations/gu) ?? []).length, 1)
-        assert.match(markup, /<input[^>]+value="50"[^>]+data-operator-max-iterations[^>]*>/u)
+        assert.doesNotMatch(markup, /data-operator-max-iterations/u)
+        assert.doesNotMatch(markup, /id="operator-optimization-mode"/u)
+        assert.doesNotMatch(markup, /data-optimization-target=/u)
+        assert.equal((markup.match(/data-optimization-limit=/gu) ?? []).length, 1)
+        assert.match(markup, /<input[^>]+data-optimization-limit="maxEpochs"[^>]*>/u)
+        assert.match(markup, /One Epoch includes improving the Skill, installing the Candidate, running the complete evaluation, and reviewing the result/u)
         const risk = markup.match(/<input[^>]+data-operator-risk="datasets\.delete"[^>]*>/u)?.[0]
         assert.ok(risk)
         assert.doesNotMatch(risk, /\schecked(?:\s|=|>)/u)
@@ -219,7 +223,6 @@ describe("Operator workbench state", () => {
             skillId: "skill-1",
             datasetId: "dataset-1",
             targetRuntimeIds: ["runtime-1", "runtime-2"],
-            maxIterations: "50",
         }, {
             runtimes: [
                 {runtimeId: "runtime-1", efforts: ["low", "high"]},
@@ -242,7 +245,7 @@ describe("Operator workbench state", () => {
                 runtimeIds: ["runtime-1", "runtime-2"],
                 repositoryIds: ["repository-1"],
             },
-            budget: {maxIterations: 50},
+            budget: {},
             managedSkillBinding: {repositoryId: "repository-1", skillId: "skill-1"},
         })
         assert.throws(() => buildOperatorSessionRequest({
@@ -251,25 +254,12 @@ describe("Operator workbench state", () => {
             objective: "Do work",
             allowPermanentDelete: false,
             targetRuntimeIds: [],
-            maxIterations: "50",
         }, {
             runtimes: [{runtimeId: "runtime-1"}],
             modelsByRuntime: new Map([["runtime-1", [{id: "model-live-1"}]]]),
             skills: [],
             datasets: [],
         }), /model.*catalog/iu)
-        assert.throws(() => buildOperatorSessionRequest({
-            runtimeId: "runtime-1",
-            objective: "Do work",
-            allowPermanentDelete: false,
-            targetRuntimeIds: [],
-            maxIterations: "0",
-        }, {
-            runtimes: [{runtimeId: "runtime-1"}],
-            modelsByRuntime: new Map([["runtime-1", []]]),
-            skills: [],
-            datasets: [],
-        }), /maxIterations.*positive safe integer/iu)
     })
 
     it("derives artifact entity links from public metadata without exposing local paths", () => {
@@ -1501,21 +1491,11 @@ describe("multi-Epoch Optimization workbench", () => {
             targets: [{runtimeId: "codebuddy:target", modelId: "claude-sonnet", effort: "medium"}],
             judge: {runtimeId: "codex:operator", modelId: "gpt-5.6-sol", effort: "high"},
             activationMode: "automatic",
-            mode: "adaptive",
-            limits: {
-                maxEpochs: "5",
-                maxDurationMs: "7200000",
-                patience: "2",
-                minimumImprovement: "1",
-                maxTurns: "50",
-                maxTokens: "100000",
-                maxCostMicros: "5000000",
-            },
-            target: {minimumScore: "90", minimumPassRate: "0.95", requireCriticalCases: true},
+            limits: {maxEpochs: "5"},
         }
     }
 
-    it("builds a frozen optimization config only from matching Released, Dataset, model, and telemetry catalogs", () => {
+    it("builds a compact optimization config from matching Released, Dataset, and model catalogs", () => {
         assert.deepEqual(buildOptimizationConfig(values(), catalogs()), {
             skillId: "skill-1",
             baselineVersionId: "released-1",
@@ -1524,18 +1504,7 @@ describe("multi-Epoch Optimization workbench", () => {
             targets: values().targets,
             judge: values().judge,
             activationMode: "automatic",
-            mode: "adaptive",
-            limits: {
-                maxEpochs: 5,
-                maxDurationMs: 7_200_000,
-                patience: 2,
-                minimumImprovement: 1,
-                maxTurns: 50,
-                maxTokens: 100_000,
-                maxCostMicros: 5_000_000,
-            },
-            target: {minimumScore: 90, minimumPassRate: 0.95, requireCriticalCases: true},
-            telemetry: {tokens: true, cost: true},
+            limits: {maxEpochs: 5},
         })
 
         const wrongDataset = catalogs()
@@ -1544,12 +1513,14 @@ describe("multi-Epoch Optimization workbench", () => {
         const candidateBaseline = catalogs()
         candidateBaseline.versions[0].state = "candidate"
         assert.throws(() => buildOptimizationConfig(values(), candidateBaseline), /Released/iu)
-        const unsupportedTelemetry = catalogs()
-        unsupportedTelemetry.runtimes[1].capabilities = []
-        assert.throws(
-            () => buildOptimizationConfig(values(), unsupportedTelemetry),
-            /token.*telemetry|telemetry.*Runtime/iu,
-        )
+        assert.equal(buildOptimizationConfig({
+            ...values(),
+            limits: {maxEpochs: "101"},
+        }, catalogs()).limits.maxEpochs, 101)
+        assert.throws(() => buildOptimizationConfig({
+            ...values(),
+            limits: {maxEpochs: "0"},
+        }, catalogs()), /max Epochs.*invalid/iu)
     })
 
     it("reduces revisioned Epoch summaries into a stable score trend without accepting stale updates", () => {
@@ -1647,7 +1618,7 @@ describe("multi-Epoch Optimization workbench", () => {
             rubricId: "rubric-1",
             rubricVersion: 4,
         })
-        assert.deepEqual(summary.telemetry, {tokens: true, cost: true})
+        assert.equal(Object.hasOwn(summary, "telemetry"), false)
         assert.deepEqual(summary.approvals, ["release-install"])
         const rendererSource = fs.readFileSync(require.resolve("../renderer/renderer.js"), "utf8")
         assert.doesNotMatch(rendererSource, /first Candidate experiment install/iu)
@@ -1699,7 +1670,7 @@ describe("multi-Epoch Optimization workbench", () => {
         })
     })
 
-    it("derives live Epoch, regression, remaining-budget, stop, and recovery panel state", () => {
+    it("derives live Epoch, regression, stop, and recovery panel state without usage budgets", () => {
         const timeline = reduceOptimizationTimeline(null, {
             id: "optimization-1",
             revision: 12,
@@ -1708,7 +1679,7 @@ describe("multi-Epoch Optimization workbench", () => {
             baseline: {versionId: "released-1", contentDigest: `sha256:${"b".repeat(64)}`},
             dataset: {id: "dataset-1", revision: 7},
             rubric: {id: "rubric-1", version: 4},
-            limits: {maxDurationMs: 10_000, maxTurns: 20, maxTokens: 1_000, maxCostMicros: 5_000},
+            limits: {maxEpochs: 5},
             epochs: [{
                 number: 2,
                 status: "failed",
@@ -1718,7 +1689,6 @@ describe("multi-Epoch Optimization workbench", () => {
             }],
             checkpoint: {
                 stopReason: "broad_regression",
-                telemetry: {elapsedMs: 4_000, turnsUsed: 8, tokens: 600, costMicros: 2_000},
                 reportArtifactId: "report-1",
                 finalApprovalId: "final-approval-1",
                 releasedInstallArtifactId: "released-install-1",
@@ -1732,12 +1702,7 @@ describe("multi-Epoch Optimization workbench", () => {
         })
 
         const panel = optimizationPanelView(timeline)
-        assert.deepEqual(panel.remaining, {
-            durationMs: 6_000,
-            turns: 12,
-            tokens: 400,
-            costMicros: 3_000,
-        })
+        assert.equal(Object.hasOwn(panel, "remaining"), false)
         assert.equal(panel.regressionCount, 3)
         assert.equal(panel.stopReason, "broad_regression")
         assert.equal(panel.reportArtifactId, "report-1")

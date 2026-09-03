@@ -1877,43 +1877,30 @@ async function run() {
     await inspect(window, 'document.querySelector("#operator-new-job").click()')
     await waitFor(window, '!document.querySelector("#operator-setup-form").classList.contains("hidden")')
     await inspect(window, `(() => {
-        document.querySelector("[data-operator-max-iterations]").closest("details").open = true
+        document.querySelector("#operator-automation-boundary").open = true
     })()`)
     window.setSize(760, 480)
     await new Promise((resolve) => setTimeout(resolve, 75))
     const narrowAutomationBoundary = await inspect(window, `(() => {
         const grid = document.querySelector(".operator-boundary-grid")
-        const iterations = grid?.querySelector("[data-operator-max-iterations]")?.closest("label")
         const deletion = grid?.querySelector('[data-operator-risk="datasets.delete"]')?.closest("label")
-        if (!grid || !iterations || !deletion) return null
+        if (!grid || !deletion) return null
         const gridRect = grid.getBoundingClientRect()
-        const iterationRect = iterations.getBoundingClientRect()
         const deletionRect = deletion.getBoundingClientRect()
         return {
             grid: {left: gridRect.left, right: gridRect.right},
-            maxIterations: grid.querySelector("[data-operator-max-iterations]").value,
             permanentDeletion: grid.querySelector('[data-operator-risk="datasets.delete"]').checked,
-            iterations: {
-                left: iterationRect.left,
-                right: iterationRect.right,
-                bottom: iterationRect.bottom,
-            },
             deletion: {
                 left: deletionRect.left,
                 right: deletionRect.right,
-                top: deletionRect.top,
             },
         }
     })()`)
     if (
         !narrowAutomationBoundary ||
-        narrowAutomationBoundary.maxIterations !== "50" ||
         narrowAutomationBoundary.permanentDeletion !== false ||
-        narrowAutomationBoundary.iterations.left < narrowAutomationBoundary.grid.left - 1 ||
-        narrowAutomationBoundary.iterations.right > narrowAutomationBoundary.grid.right + 1 ||
         narrowAutomationBoundary.deletion.left < narrowAutomationBoundary.grid.left - 1 ||
-        narrowAutomationBoundary.deletion.right > narrowAutomationBoundary.grid.right + 1 ||
-        narrowAutomationBoundary.deletion.top < narrowAutomationBoundary.iterations.bottom - 1
+        narrowAutomationBoundary.deletion.right > narrowAutomationBoundary.grid.right + 1
     ) {
         throw new Error(`Automation boundary does not stack inside a narrow window: ${JSON.stringify(narrowAutomationBoundary)}`)
     }
@@ -1921,7 +1908,6 @@ async function run() {
     await new Promise((resolve) => setTimeout(resolve, 75))
     await inspect(window, `(() => {
         document.querySelector('#operator-setup-form [name="objective"]').value = "Automated boundary smoke Job"
-        document.querySelector("[data-operator-max-iterations]").value = "7"
         document.querySelector('[data-operator-risk="datasets.delete"]').checked = true
         document.querySelector("#operator-generic-start").click()
     })()`)
@@ -1931,7 +1917,7 @@ async function run() {
         'window.rollingSkill.smokeOperatorMetrics().then(({operatorCreateInput}) => operatorCreateInput)',
     )
     if (
-        JSON.stringify(operatorCreateInput?.budget) !== JSON.stringify({maxIterations: 7}) ||
+        JSON.stringify(operatorCreateInput?.budget) !== JSON.stringify({}) ||
         !operatorCreateInput.actions.includes("runtime.execute") ||
         !operatorCreateInput.actions.includes("skills.release") ||
         !operatorCreateInput.actions.includes("datasets.delete")
@@ -1951,30 +1937,35 @@ async function run() {
     })()`)
     await waitFor(window, 'document.querySelector("#operator-optimization-baseline option[value=managed-version-released-smoke]")')
     await waitFor(window, 'document.querySelector("[data-operator-target=\\"codebuddy:renderer-smoke\\"]") && document.querySelector("[data-optimization-target-model=\\"codebuddy:renderer-smoke\\"] option")')
-    const criticalCaseLayout = await inspect(window, `(() => {
-        const checkbox = document.querySelector('[data-optimization-target="requireCriticalCases"]')
-        const label = checkbox?.closest("label")?.querySelector("span")
-        if (!checkbox || !label) return null
-        const checkboxRect = checkbox.getBoundingClientRect()
-        const labelRect = label.getBoundingClientRect()
+    const epochOnlySetup = await inspect(window, `(() => {
+        const limits = [...document.querySelectorAll("[data-optimization-limit]")]
+        const epoch = limits[0]
+        const helper = document.querySelector(".operator-epoch-boundary .operator-help")
+        const ordinaryBoundary = document.querySelector("#operator-automation-boundary")
         return {
-            width: checkboxRect.width,
-            height: checkboxRect.height,
-            checkboxCenterY: checkboxRect.top + checkboxRect.height / 2,
-            labelCenterY: labelRect.top + labelRect.height / 2,
+            limitCount: limits.length,
+            limitName: epoch?.dataset.optimizationLimit ?? null,
+            limitValue: epoch?.value ?? null,
+            helper: helper?.textContent ?? "",
+            helperVisible: Boolean(helper && helper.getClientRects().length),
+            ordinaryBoundaryHidden: ordinaryBoundary?.classList.contains("hidden") ?? false,
+            maxIterationsCount: document.querySelectorAll("[data-operator-max-iterations]").length,
+            targetCount: document.querySelectorAll("[data-optimization-target]").length,
+            hasMode: Boolean(document.querySelector("#operator-optimization-mode")),
         }
     })()`)
     if (
-        !criticalCaseLayout ||
-        criticalCaseLayout.width < 12 ||
-        criticalCaseLayout.width > 18 ||
-        criticalCaseLayout.height < 12 ||
-        criticalCaseLayout.height > 18
+        epochOnlySetup.limitCount !== 1 ||
+        epochOnlySetup.limitName !== "maxEpochs" ||
+        epochOnlySetup.limitValue !== "5" ||
+        !epochOnlySetup.helper.includes("改进 Skill、安装候选版本、完整评测和结果复盘") ||
+        !epochOnlySetup.helperVisible ||
+        !epochOnlySetup.ordinaryBoundaryHidden ||
+        epochOnlySetup.maxIterationsCount !== 0 ||
+        epochOnlySetup.targetCount !== 0 ||
+        epochOnlySetup.hasMode
     ) {
-        throw new Error(`Critical Case checkbox is not compact: ${JSON.stringify(criticalCaseLayout)}`)
-    }
-    if (Math.abs(criticalCaseLayout.checkboxCenterY - criticalCaseLayout.labelCenterY) > 3) {
-        throw new Error(`Critical Case checkbox is not vertically aligned: ${JSON.stringify(criticalCaseLayout)}`)
+        throw new Error(`Optimization setup is not Epoch-only: ${JSON.stringify(epochOnlySetup)}`)
     }
     await inspect(window, `(() => {
         const change = (selector, value) => {
@@ -2185,7 +2176,7 @@ async function run() {
             await inspect(window, 'document.querySelector("#operator-new-job").click()')
             await waitFor(window, '!document.querySelector("#operator-setup-form").classList.contains("hidden")')
             await inspect(window, `(() => {
-                const details = document.querySelector("[data-operator-max-iterations]").closest("details")
+                const details = document.querySelector("#operator-automation-boundary")
                 details.open = true
                 details.scrollIntoView({block: "center"})
             })()`)
@@ -2237,13 +2228,7 @@ async function run() {
             operatorDelegatedActions: true,
             operatorAutomationBoundary: operatorCreateInput.budget,
             operatorAutomationBoundaryNarrow: true,
-            operatorCriticalCaseCheckbox: {
-                width: criticalCaseLayout.width,
-                height: criticalCaseLayout.height,
-                aligned: Math.abs(
-                    criticalCaseLayout.checkboxCenterY - criticalCaseLayout.labelCenterY,
-                ) <= 3,
-            },
+            operatorEpochOnlySetup: epochOnlySetup,
             optimizationPreflightSingleApproval: true,
             optimizationHiddenProgressIsolated: true,
             optimizationTwoEpochTrend: optimizationEvidenceAfterSwitch.timeline,

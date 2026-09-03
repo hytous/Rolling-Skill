@@ -82,16 +82,6 @@
         return numeric
     }
 
-    function optionalOptimizationInteger(value, label, maximum) {
-        if (value === "" || value === null || value === undefined) return null
-        return requiredOptimizationNumber(value, label, {integer: true, minimum: 0, maximum})
-    }
-
-    function runtimeTelemetry(runtime, capability) {
-        const capabilities = Array.isArray(runtime?.capabilities) ? runtime.capabilities : []
-        return capabilities.includes(capability)
-    }
-
     function buildOptimizationConfig(values = {}, catalogs = {}) {
         const skills = Array.isArray(catalogs.skills) ? catalogs.skills : []
         const versions = Array.isArray(catalogs.versions) ? catalogs.versions : []
@@ -125,10 +115,6 @@
             throw new Error("Optimization target Runtime ids must be unique")
         }
         const judge = optimizationSelection(values.judge, catalogs, "Judge")
-        const mode = String(values.mode ?? "").trim()
-        if (!["fixed", "adaptive"].includes(mode)) {
-            throw new Error("Optimization mode must be fixed or adaptive")
-        }
         const activationMode = String(values.activationMode ?? "").trim()
         if (!["automatic", "explicit"].includes(activationMode)) {
             throw new Error("Optimization activation mode must be automatic or explicit")
@@ -137,67 +123,7 @@
         const maxEpochs = requiredOptimizationNumber(values.limits?.maxEpochs, "Optimization max Epochs", {
             integer: true,
             minimum: 1,
-            maximum: 100,
         })
-        const limits = {
-            maxEpochs,
-            maxDurationMs: requiredOptimizationNumber(
-                values.limits?.maxDurationMs,
-                "Optimization max duration",
-                {integer: true, minimum: 1, maximum: 30 * 24 * 60 * 60 * 1_000},
-            ),
-            patience: requiredOptimizationNumber(values.limits?.patience, "Optimization patience", {
-                integer: true,
-                minimum: 1,
-                maximum: maxEpochs,
-            }),
-            minimumImprovement: requiredOptimizationNumber(
-                values.limits?.minimumImprovement,
-                "Optimization minimum improvement",
-                {minimum: 0, maximum: 100},
-            ),
-            maxTurns: optionalOptimizationInteger(values.limits?.maxTurns, "Optimization max turns", 1_000_000),
-            maxTokens: optionalOptimizationInteger(
-                values.limits?.maxTokens,
-                "Optimization max tokens",
-                1_000_000_000_000,
-            ),
-            maxCostMicros: optionalOptimizationInteger(
-                values.limits?.maxCostMicros,
-                "Optimization max cost",
-                Number.MAX_SAFE_INTEGER,
-            ),
-        }
-        const target = {
-            minimumScore: requiredOptimizationNumber(
-                values.target?.minimumScore,
-                "Optimization minimum score",
-                {minimum: 0, maximum: 100},
-            ),
-            minimumPassRate: requiredOptimizationNumber(
-                values.target?.minimumPassRate,
-                "Optimization minimum pass rate",
-                {minimum: 0, maximum: 1},
-            ),
-            requireCriticalCases: values.target?.requireCriticalCases === true,
-        }
-        if (typeof values.target?.requireCriticalCases !== "boolean") {
-            throw new TypeError("Optimization critical Case target must be boolean")
-        }
-
-        const selectedRuntimes = [operator, ...targets, judge].map((selection) => (
-            optimizationCatalogRuntime(catalogs, selection.runtimeId)
-        ))
-        const telemetry = {
-            tokens: selectedRuntimes.every((runtime) => runtimeTelemetry(runtime, "token-usage")),
-            cost: selectedRuntimes.every((runtime) => runtimeTelemetry(runtime, "cost-usage")),
-        }
-        if (limits.maxTokens > 0 && !telemetry.tokens) {
-            throw new Error("A hard token budget requires token telemetry from every Runtime")
-        }
-        if (limits.maxCostMicros > 0 && !telemetry.cost) {
-            throw new Error("A hard cost budget requires cost telemetry from every Runtime")
-        }
         return {
             skillId: skill.id,
             baselineVersionId: baseline.id,
@@ -206,10 +132,7 @@
             targets,
             judge,
             activationMode,
-            mode,
-            limits,
-            target,
-            telemetry,
+            limits: {maxEpochs},
         }
     }
 
@@ -281,20 +204,13 @@
                 rubricVersion: preflight.rubric?.version ?? null,
             },
             runtimeMatrix: cloneOptimizationSummary(preflight.targets ?? config.targets ?? []),
-            telemetry: cloneOptimizationSummary(config.telemetry ?? {tokens: false, cost: false}),
             approvals: ["release-install"],
         }
-    }
-
-    function remainingOptimizationBudget(limit, used) {
-        if (!Number.isFinite(limit) || !Number.isFinite(used)) return null
-        return Math.max(0, limit - used)
     }
 
     function optimizationPanelView(run = {}) {
         const epochs = Array.isArray(run.epochs) ? run.epochs : []
         const epoch = epochs.findLast?.((entry) => entry.number === run.currentEpoch) ?? epochs.at(-1) ?? null
-        const usage = run.checkpoint?.telemetry ?? {}
         return {
             id: run.id ?? null,
             state: run.state ?? null,
@@ -308,12 +224,6 @@
             regressionCount: Number.isSafeInteger(epoch?.analysis?.regressionCount)
                 ? epoch.analysis.regressionCount
                 : 0,
-            remaining: {
-                durationMs: remainingOptimizationBudget(run.limits?.maxDurationMs, usage.elapsedMs),
-                turns: remainingOptimizationBudget(run.limits?.maxTurns, usage.turnsUsed),
-                tokens: remainingOptimizationBudget(run.limits?.maxTokens, usage.tokens),
-                costMicros: remainingOptimizationBudget(run.limits?.maxCostMicros, usage.costMicros),
-            },
             stopReason: run.stopReason ?? run.checkpoint?.stopReason ?? null,
             recoveryTargets: cloneOptimizationSummary(run.recoveryTargets ?? run.checkpoint?.recoveryTargets ?? []),
             reportArtifactId: run.checkpoint?.reportArtifactId ?? null,
@@ -390,10 +300,6 @@
         if (values.datasetId && !datasets.some((entry) => entry.id === values.datasetId)) {
             throw new Error("Dataset is not in the catalog")
         }
-        const maxIterations = Number(values.maxIterations)
-        if (!Number.isSafeInteger(maxIterations) || maxIterations < 1) {
-            throw new TypeError("Operator maxIterations must be a positive safe integer")
-        }
         return {
             runtimeId: runtime.runtimeId,
             ...(selectedModelId ? {modelId: selectedModelId} : {}),
@@ -406,7 +312,7 @@
                 runtimeIds,
                 repositoryIds: skill?.repositoryId ? [skill.repositoryId] : [],
             },
-            budget: {maxIterations},
+            budget: {},
             ...(skill ? {managedSkillBinding: {
                 repositoryId: skill.repositoryId,
                 skillId: skill.id,
@@ -1778,7 +1684,7 @@
             optimizationJudgeModel: root.querySelector("#operator-optimization-judge-model"),
             optimizationJudgeEffort: root.querySelector("#operator-optimization-judge-effort"),
             optimizationActivation: root.querySelector("#operator-optimization-activation"),
-            optimizationMode: root.querySelector("#operator-optimization-mode"),
+            automationBoundary: root.querySelector("#operator-automation-boundary"),
             optimizationPreflightSummary: root.querySelector("#operator-optimization-preflight-summary"),
             optimizationPreflight: root.querySelector("#operator-optimization-preflight"),
             genericStart: root.querySelector("#operator-generic-start"),
@@ -2229,6 +2135,7 @@
             selectors.optimizationPreflight.classList.toggle("hidden", !optimization)
             selectors.optimizationStart.classList.toggle("hidden", !optimization)
             selectors.genericStart.classList.toggle("hidden", optimization)
+            selectors.automationBoundary.classList.toggle("hidden", optimization)
             const objective = selectors.setup.elements.objective
             objective.required = !optimization
             for (const card of selectors.targets.querySelectorAll("[data-operator-target-card]")) {
@@ -2250,13 +2157,6 @@
                 [...selectors.setup.querySelectorAll("[data-optimization-limit]")]
                     .map((input) => [input.dataset.optimizationLimit, input.value]),
             )
-            const target = Object.fromEntries(
-                [...selectors.setup.querySelectorAll("[data-optimization-target]")]
-                    .map((input) => [
-                        input.dataset.optimizationTarget,
-                        input.type === "checkbox" ? input.checked : input.value,
-                    ]),
-            )
             return {
                 skillId: selectors.skill.value,
                 baselineVersionId: selectors.optimizationBaseline.value,
@@ -2273,9 +2173,7 @@
                     effort: selectors.optimizationJudgeEffort.value,
                 },
                 activationMode: selectors.optimizationActivation.value,
-                mode: selectors.optimizationMode.value,
                 limits,
-                target,
             }
         }
 
@@ -2306,10 +2204,6 @@
                 message("operatorPreflightTargets", {
                     count: summary.runtimeMatrix.length,
                 }, "{count} target Runtime(s)"),
-                message("operatorPreflightTelemetry", {
-                    tokens: text(summary.telemetry.tokens ? "operatorYes" : "operatorNo", summary.telemetry.tokens ? "yes" : "no"),
-                    cost: text(summary.telemetry.cost ? "operatorYes" : "operatorNo", summary.telemetry.cost ? "yes" : "no"),
-                }, "Telemetry: tokens {tokens}, cost {cost}"),
                 text(
                     "operatorPreflightApprovals",
                     "Approval remains explicit for the first Candidate experiment install and one final release-and-install decision.",
@@ -2425,10 +2319,6 @@
             selectors.optimizationBudget.textContent = [
                 message("operatorEpochValue", {value: view.currentEpoch}, "Epoch {value}"),
                 message("operatorRegressionsValue", {value: view.regressionCount}, "Regressions {value}"),
-                message("operatorRemainingDuration", {value: view.remaining.durationMs ?? notReported}, "Remaining duration {value}"),
-                message("operatorRemainingTurns", {value: view.remaining.turns ?? notReported}, "turns {value}"),
-                message("operatorRemainingTokens", {value: view.remaining.tokens ?? notReported}, "tokens {value}"),
-                message("operatorRemainingCost", {value: view.remaining.costMicros ?? notReported}, "cost µ {value}"),
                 message("operatorStopReason", {value: optimizationReasonText(view.stopReason, translate)}, "Stop reason {value}"),
                 message("operatorFinalApproval", {
                     value: finalApprovalEvidence.approvalId ?? text("operatorNotRequested", "not requested"),
@@ -2956,7 +2846,6 @@
                 datasetId: selectors.dataset.value,
                 targetRuntimeIds: [...selectors.targets.querySelectorAll("[data-operator-target]:checked")]
                     .map((input) => input.value),
-                maxIterations: selectors.setup.querySelector("[data-operator-max-iterations]").value,
                 allowPermanentDelete: selectors.setup.querySelector(
                     '[data-operator-risk="datasets.delete"]',
                 ).checked,
