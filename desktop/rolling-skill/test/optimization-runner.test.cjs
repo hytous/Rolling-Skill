@@ -1,10 +1,15 @@
 "use strict"
 
 const assert = require("node:assert/strict")
+const {mkdtempSync, rmSync} = require("node:fs")
+const {tmpdir} = require("node:os")
+const {join} = require("node:path")
 const {describe, it} = require("node:test")
 
 const {OptimizationRunner} = require("../src/optimization/optimization-runner.cjs")
 const {OptimizationOperatorGateway} = require("../src/optimization/optimization-operator-gateway.cjs")
+const {OperatorJobEngine} = require("../src/operator/job-engine.cjs")
+const {OperatorJobStore} = require("../src/operator/job-store.cjs")
 
 function digest(character) {
     return `sha256:${character.repeat(64)}`
@@ -387,6 +392,96 @@ describe("multi-Epoch OptimizationRunner", () => {
 
         assert.equal(outcome.status, "succeeded")
         assert.equal(fixture.workspaceManager.createCalls, 0)
+    })
+
+    it("keeps ordinary Skill release automatic while Optimization waits for one final approval", async () => {
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-approval-boundary-"))
+        const operatorStore = new OperatorJobStore(join(directory, "operator-jobs.json"))
+        try {
+            const session = operatorStore.createSession({
+                runtime: {
+                    runtimeId: "codex:operator",
+                    providerId: "codex",
+                    displayName: "Codex Operator",
+                    version: "1.0.0",
+                    executablePath: "/usr/local/bin/codex",
+                },
+                modelId: "gpt-5.6-sol",
+                effort: "high",
+                protocol: "rolling-skill-operator/v1",
+                capabilityId: "capability-1",
+            })
+            const job = operatorStore.createJob({
+                sessionId: session.id,
+                type: "operator",
+                objective: "Improve the billing Skill",
+                budget: {maxIterations: 50},
+            })
+            let ordinaryReleaseCalls = 0
+            const engine = new OperatorJobEngine({
+                store: operatorStore,
+                handlers: {
+                    "skills.release": async () => {
+                        ordinaryReleaseCalls += 1
+                        return {released: true}
+                    },
+                },
+            })
+
+            const ordinaryRelease = await engine.execute(job.id, {
+                method: "skills.release",
+                params: {
+                    skillId: "skill-1",
+                    versionId: "candidate-manual",
+                    versionLabel: "v1.1.0",
+                },
+                idempotencyKey: "ordinary-skill-release",
+            })
+            assert.equal(ordinaryRelease.status, "succeeded")
+            assert.equal(ordinaryReleaseCalls, 1)
+            assert.equal(operatorStore.listApprovals(job.id).length, 0)
+
+            const fixture = runnerFixture()
+            fixture.approvals.request = (input, onPending) => {
+                const scope = {
+                    runId: input.runId,
+                    epoch: input.epoch,
+                    candidateVersionId: input.candidate.id,
+                }
+                return engine.requestApproval(job.id, {
+                    action: `optimization.${input.kind}`,
+                    risk: "Release and install the improved Candidate",
+                    scope,
+                    proposedMutation: scope,
+                    idempotencyKey: `${input.runId}:${input.kind}:${input.epoch}`,
+                }, {onPending})
+            }
+            const operation = fixture.runner.run(fixture.run.id, {
+                operatorSessionId: session.id,
+                parentJobId: job.id,
+            })
+            for (let index = 0; index < 30 && operatorStore.listApprovals(job.id).length === 0; index += 1) {
+                await new Promise((resolve) => setImmediate(resolve))
+            }
+
+            const pending = operatorStore.listApprovals(job.id)
+            const stored = fixture.store.getRun(fixture.run.id)
+            assert.equal(stored.state, "waiting_approval")
+            assert.ok(stored.epochs.at(-1).candidateArtifactId)
+            assert.equal(pending.length, 1)
+            assert.equal(pending[0].status, "pending")
+            assert.equal(pending[0].action, "optimization.release-install")
+
+            await engine.resolveApproval(pending[0].id, {
+                decision: "reject",
+                scope: "action",
+                decidedBy: "test-user",
+            })
+            assert.equal((await operation).status, "cancelled")
+        } finally {
+            operatorStore.close()
+            rmSync(directory, {recursive: true, force: true})
+        }
     })
 
     it("runs baseline, two Candidates, and one approved release-install in engine-owned order", async () => {

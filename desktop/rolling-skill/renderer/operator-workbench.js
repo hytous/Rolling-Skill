@@ -282,7 +282,7 @@
             },
             runtimeMatrix: cloneOptimizationSummary(preflight.targets ?? config.targets ?? []),
             telemetry: cloneOptimizationSummary(config.telemetry ?? {tokens: false, cost: false}),
-            approvals: ["candidate-experiment-install", "release-install"],
+            approvals: ["release-install"],
         }
     }
 

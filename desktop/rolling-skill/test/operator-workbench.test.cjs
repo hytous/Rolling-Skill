@@ -1621,7 +1621,7 @@ describe("multi-Epoch Optimization workbench", () => {
         assert.match(recovering.recoveryTargets[0].lastVerifiedDigest, /^sha256:/u)
     })
 
-    it("summarizes frozen preflight evidence and experiment approval boundaries", () => {
+    it("summarizes frozen preflight evidence and the one final approval boundary", () => {
         const config = buildOptimizationConfig(values(), catalogs())
         const summary = optimizationPreflightSummary({
             ready: true,
@@ -1648,10 +1648,12 @@ describe("multi-Epoch Optimization workbench", () => {
             rubricVersion: 4,
         })
         assert.deepEqual(summary.telemetry, {tokens: true, cost: true})
-        assert.deepEqual(summary.approvals, [
-            "candidate-experiment-install",
-            "release-install",
-        ])
+        assert.deepEqual(summary.approvals, ["release-install"])
+        const rendererSource = fs.readFileSync(require.resolve("../renderer/renderer.js"), "utf8")
+        assert.doesNotMatch(rendererSource, /first Candidate experiment install/iu)
+        assert.doesNotMatch(rendererSource, /首次安装实验改进版/u)
+        assert.match(rendererSource, /Only the final release-and-install decision requires explicit approval/iu)
+        assert.match(rendererSource, /仅最终一次“发布并安装”决定需要明确审批/u)
     })
 
     it("selects the one persisted release-install approval for the optimization detail", () => {

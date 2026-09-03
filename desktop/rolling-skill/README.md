@@ -245,14 +245,39 @@ capability, the `operator-mcp` server, or its credential environment. The deskto
 separate main-process-private capability for its existing UI actions; no token or session is exposed
 through preload, Renderer IPC arguments/results, or DevTools.
 
+## Self-operation automation boundary
+
+A new ordinary **Self-operation** task freezes its selected Skill, Dataset, managed repository, and
+Runtime scope before the Operator starts. Inside that scope, the capabilities required for normal
+work are preauthorized: Runtime execution, evaluation, Candidate creation and Skill release, Rubric
+publication, installation, curation, and Optimization control run without interrupting the task for
+another approval. Every Tool step remains scope-checked, idempotent, persisted, and auditable.
+
+Permanent Dataset or Case deletion is the only current opt-in action. It is disabled by default;
+without it the control gateway rejects deletion, and with it deletion can proceed without a second
+runtime prompt. Provider-native command or file permission requests do not inherit this authority:
+the App declines them automatically, so an Operator must perform authorized work through the
+Rolling Skill Tool gateway.
+
+New ordinary tasks have one user budget, **Maximum iterations**, with a default of 50. One iteration
+is one Operator Agent turn, not each Case, Runtime target, evaluation, Tool call, or polling update.
+The counter is persisted at turn boundaries. Reaching it pauses the Job with its current evidence;
+the Agent cannot request a runtime budget expansion. Existing tasks with legacy budget snapshots
+remain readable for recovery and audit.
+
+Multi-Epoch Optimization keeps its dedicated business decision separate from ordinary action
+authorization: after a Candidate has been evaluated and selected, the user receives one final
+`optimization.release-install` approval to install the improved version or restore the original.
+
 ## Multi-Epoch Skill optimization
 
 Use **Self-operation → Multi-Epoch Optimization** to improve one managed Skill against a stable
 evaluation contract. Before Start is enabled, preflight resolves and freezes the selected Released
 baseline, managed Skill/repository identity, Dataset and published Rubric revision, calibrated Case
 revisions, Operator Runtime, target Runtime matrix, Judge, activation mode, model/effort choices,
-stop targets, and hard budgets. A later Dataset, Rubric, Case, catalog, or Working-tree change does
-not mutate an existing Run. Start a new Run when the comparison inputs must change.
+stop targets, and Optimization-specific stopping limits. A later Dataset, Rubric, Case, catalog, or
+Working-tree change does not mutate an existing Run. Start a new Run when the comparison inputs must
+change.
 
 The engine, rather than the Operator Agent, owns the phase order:
 
@@ -282,14 +307,14 @@ installs**. Restoration rechecks the experiment marker before changing a target 
 restored content and inventory afterward; any uncertain target leaves the parent Job in
 `needs_recovery` with its last verified digest, marker, and installer Job link.
 
-The first Candidate experiment installation, the one final release-and-install decision, and any
-requested budget increase are distinct approval boundaries. The Agent cannot approve them or raise
-its own limits. At the final decision the user chooses either **Install improved version**, which
-publishes the immutable Candidate and formally installs it on every frozen target, or **Restore
-original version**, which skips release and restores the experiment targets. A successful release
-followed by a failed install remains recorded as “released but not installed”; the Released version
-is not rolled back, while enrolled Runtime targets are restored or surfaced for recovery. A
-successful formal installation ends the Run without another final-regression evaluation.
+Candidate experiment inspection, installation, rotation, and evaluation run automatically within
+the frozen preflight contract. Once the selected Candidate is complete, the Run has one final
+release-and-install approval. The Agent cannot approve it. The user chooses either **Install improved
+version**, which publishes the immutable Candidate and formally installs it on every frozen target,
+or **Restore original version**, which skips release and restores the experiment targets. A
+successful release followed by a failed install remains recorded as “released but not installed”;
+the Released version is not rolled back, while enrolled Runtime targets are restored or surfaced for
+recovery. A successful formal installation ends the Run without another final-regression evaluation.
 
 Pause prevents new phase scheduling without pretending an in-flight side effect was undone. Stop
 cancels queued work, interrupts active children, and then restores enrolled Runtime targets. During
@@ -301,11 +326,11 @@ used instead of blindly replaying installation or evaluation writes. Recovery fa
 durable and blocks a new Epoch or release action.
 
 The right-hand Run panel shows the frozen inputs, Epoch/Candidate timeline, per-Runtime installation
-state, score/pass trend, regressions, remaining budgets, stop reason, approvals, release/final
-installation result, and recovery targets. Large Diff, evaluation, Trace, and report bodies stay in
-lazy Artifacts rather than the Renderer snapshot. The generated Chinese Markdown report is derived
-from persisted evidence; unavailable Runtime telemetry is labeled as unavailable, never reported as
-zero.
+state, score/pass trend, regressions, remaining Optimization limits, stop reason, the final approval,
+release/final installation result, and recovery targets. Large Diff, evaluation, Trace, and report
+bodies stay in lazy Artifacts rather than the Renderer snapshot. The generated Chinese Markdown
+report is derived from persisted evidence; unavailable Runtime telemetry is labeled as unavailable,
+never reported as zero.
 
 ## Managed Skill repositories
 

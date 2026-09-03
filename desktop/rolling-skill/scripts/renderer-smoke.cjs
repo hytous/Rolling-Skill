@@ -1999,6 +1999,16 @@ async function run() {
         document.querySelector("#operator-optimization-preflight").click()
     })()`)
     await waitFor(window, '!document.querySelector("#operator-optimization-start").disabled')
+    const optimizationPreflightApprovalCopy = await inspect(
+        window,
+        'document.querySelector("#operator-optimization-preflight-summary").textContent',
+    )
+    if (
+        !optimizationPreflightApprovalCopy.includes("仅最终一次“发布并安装”决定需要明确审批") ||
+        optimizationPreflightApprovalCopy.includes("首次安装实验改进版")
+    ) {
+        throw new Error(`Optimization preflight exposed stale approval boundaries: ${optimizationPreflightApprovalCopy}`)
+    }
     await inspect(window, 'document.querySelector("#operator-optimization-start").click()')
     try {
         await waitFor(window, '[...document.querySelectorAll("[data-operator-job-id]")].some((node) => node.textContent.includes("Multi-Epoch Optimization smoke Run"))')
@@ -2234,6 +2244,7 @@ async function run() {
                     criticalCaseLayout.checkboxCenterY - criticalCaseLayout.labelCenterY,
                 ) <= 3,
             },
+            optimizationPreflightSingleApproval: true,
             optimizationHiddenProgressIsolated: true,
             optimizationTwoEpochTrend: optimizationEvidenceAfterSwitch.timeline,
             optimizationFinalApproval: finalApprovalId,
