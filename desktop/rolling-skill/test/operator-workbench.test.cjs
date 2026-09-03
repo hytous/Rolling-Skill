@@ -3,7 +3,9 @@ const fs = require("node:fs")
 const {describe, it} = require("node:test")
 
 const {
+    AUTOMATIC_OPERATOR_ACTIONS,
     OPERATOR_ACTIONS,
+    OPTIONAL_OPERATOR_ACTIONS,
     OPERATOR_DELTA_INTERVAL_MS,
     artifactDeepLinks,
     buildOptimizationConfig,
@@ -21,6 +23,7 @@ const {
     optimizationRunActions,
     operatorStatusText,
     operatorJobTreeIds,
+    operatorSessionActions,
     reduceOptimizationTimeline,
     registerOperatorActionDelegates,
     runtimeDisplayParts,
@@ -180,25 +183,32 @@ describe("Operator workbench state", () => {
         ])
     })
 
+    it("preauthorizes every normal Operator action and keeps permanent deletion optional", () => {
+        assert.deepEqual(OPTIONAL_OPERATOR_ACTIONS, ["datasets.delete"])
+        assert.equal(AUTOMATIC_OPERATOR_ACTIONS.includes("runtime.execute"), true)
+        assert.equal(AUTOMATIC_OPERATOR_ACTIONS.includes("evaluations.execute"), true)
+        assert.equal(AUTOMATIC_OPERATOR_ACTIONS.includes("skills.release"), true)
+        assert.equal(AUTOMATIC_OPERATOR_ACTIONS.includes("rubrics.publish"), true)
+        assert.equal(AUTOMATIC_OPERATOR_ACTIONS.includes("installations.execute"), true)
+        assert.equal(AUTOMATIC_OPERATOR_ACTIONS.includes("datasets.delete"), false)
+        assert.deepEqual(operatorSessionActions(false), AUTOMATIC_OPERATOR_ACTIONS)
+        assert.deepEqual(operatorSessionActions(true), [
+            ...AUTOMATIC_OPERATOR_ACTIONS,
+            "datasets.delete",
+        ])
+    })
+
     it("builds setup requests only from capability-backed Runtime and model catalogs", () => {
         const request = buildOperatorSessionRequest({
             runtimeId: "runtime-1",
             modelId: "model-live-1",
             effort: "high",
             objective: "Improve and evaluate this Skill",
-            actionIds: ["datasets.read", "evaluations.execute"],
+            allowPermanentDelete: false,
             skillId: "skill-1",
             datasetId: "dataset-1",
             targetRuntimeIds: ["runtime-1", "runtime-2"],
-            budget: {
-                maxDurationMs: "60000",
-                maxRuntimeTurns: "10",
-                maxEvaluations: "2",
-                maxTargetExecutions: "20",
-                maxJudgeExecutions: "20",
-                maxTokens: "",
-                maxReportedCost: "",
-            },
+            maxIterations: "50",
         }, {
             runtimes: [
                 {runtimeId: "runtime-1", efforts: ["low", "high"]},
@@ -214,31 +224,23 @@ describe("Operator workbench state", () => {
             modelId: "model-live-1",
             effort: "high",
             objective: "Improve and evaluate this Skill",
-            actions: ["datasets.read", "evaluations.execute"],
+            actions: AUTOMATIC_OPERATOR_ACTIONS,
             scopes: {
                 skillIds: ["skill-1"],
                 datasetIds: ["dataset-1"],
                 runtimeIds: ["runtime-1", "runtime-2"],
                 repositoryIds: ["repository-1"],
             },
-            budget: {
-                maxDurationMs: 60000,
-                maxRuntimeTurns: 10,
-                maxEvaluations: 2,
-                maxTargetExecutions: 20,
-                maxJudgeExecutions: 20,
-                maxTokens: null,
-                maxReportedCost: null,
-            },
+            budget: {maxIterations: 50},
             managedSkillBinding: {repositoryId: "repository-1", skillId: "skill-1"},
         })
         assert.throws(() => buildOperatorSessionRequest({
             runtimeId: "runtime-1",
             modelId: "invented-model",
             objective: "Do work",
-            actionIds: [],
+            allowPermanentDelete: false,
             targetRuntimeIds: [],
-            budget: request.budget,
+            maxIterations: "50",
         }, {
             runtimes: [{runtimeId: "runtime-1"}],
             modelsByRuntime: new Map([["runtime-1", [{id: "model-live-1"}]]]),
@@ -248,15 +250,15 @@ describe("Operator workbench state", () => {
         assert.throws(() => buildOperatorSessionRequest({
             runtimeId: "runtime-1",
             objective: "Do work",
-            actionIds: ["unknown.action"],
+            allowPermanentDelete: false,
             targetRuntimeIds: [],
-            budget: request.budget,
+            maxIterations: "0",
         }, {
             runtimes: [{runtimeId: "runtime-1"}],
             modelsByRuntime: new Map([["runtime-1", []]]),
             skills: [],
             datasets: [],
-        }), /action.*catalog/iu)
+        }), /maxIterations.*positive safe integer/iu)
     })
 
     it("derives artifact entity links from public metadata without exposing local paths", () => {

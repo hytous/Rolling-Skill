@@ -5,15 +5,6 @@
     const SUMMARY_PAGE_LIMIT = 100
     const MAX_SUMMARY_PAGES = 50
     const MAX_STALE_CURSOR_RETRIES = 2
-    const BUDGET_FIELDS = Object.freeze([
-        "maxDurationMs",
-        "maxRuntimeTurns",
-        "maxEvaluations",
-        "maxTargetExecutions",
-        "maxJudgeExecutions",
-        "maxTokens",
-        "maxReportedCost",
-    ])
 
     function modelId(model) {
         return String(model?.id ?? model?.modelId ?? model?.model ?? model ?? "").trim()
@@ -44,18 +35,6 @@
         const source = catalogs?.modelsByRuntime
         if (source instanceof Map) return source.get(runtimeId) ?? []
         return source?.[runtimeId] ?? []
-    }
-
-    function budgetValue(field, value) {
-        if ((field === "maxTokens" || field === "maxReportedCost") && (value === "" || value === null)) {
-            return null
-        }
-        const numeric = Number(value)
-        const valid = field === "maxReportedCost"
-            ? Number.isFinite(numeric) && numeric >= 0
-            : Number.isSafeInteger(numeric) && numeric >= 0
-        if (!valid) throw new TypeError(`Operator budget ${field} is invalid`)
-        return numeric
     }
 
     function optimizationCatalogRuntime(catalogs, runtimeId) {
@@ -398,10 +377,6 @@
 
         const objective = String(values.objective ?? "")
         if (!objective.trim()) throw new TypeError("Operator objective is required")
-        const actionIds = [...new Set((values.actionIds ?? []).filter((entry) => typeof entry === "string" && entry))]
-        if (actionIds.some((action) => !OPERATOR_ACTIONS.includes(action))) {
-            throw new Error("Operator action is not in the control catalog")
-        }
         const runtimeIds = [...new Set(values.targetRuntimeIds ?? [])]
         if (runtimeIds.some((id) => !runtimes.some((entry) => entry.runtimeId === id))) {
             throw new Error("A target Runtime is not in the capability catalog")
@@ -415,22 +390,23 @@
         if (values.datasetId && !datasets.some((entry) => entry.id === values.datasetId)) {
             throw new Error("Dataset is not in the catalog")
         }
-        const budget = Object.fromEntries(BUDGET_FIELDS.map((field) => (
-            [field, budgetValue(field, values.budget?.[field])]
-        )))
+        const maxIterations = Number(values.maxIterations)
+        if (!Number.isSafeInteger(maxIterations) || maxIterations < 1) {
+            throw new TypeError("Operator maxIterations must be a positive safe integer")
+        }
         return {
             runtimeId: runtime.runtimeId,
             ...(selectedModelId ? {modelId: selectedModelId} : {}),
             ...(selectedEffort ? {effort: selectedEffort} : {}),
             objective,
-            actions: actionIds,
+            actions: operatorSessionActions(values.allowPermanentDelete === true),
             scopes: {
                 skillIds: skill ? [skill.id] : [],
                 datasetIds: values.datasetId ? [values.datasetId] : [],
                 runtimeIds,
                 repositoryIds: skill?.repositoryId ? [skill.repositoryId] : [],
             },
-            budget,
+            budget: {maxIterations},
             ...(skill ? {managedSkillBinding: {
                 repositoryId: skill.repositoryId,
                 skillId: skill.id,
@@ -1520,6 +1496,16 @@
         "optimizations.read",
         "optimizations.execute",
     ])
+    const OPTIONAL_OPERATOR_ACTIONS = Object.freeze(["datasets.delete"])
+    const AUTOMATIC_OPERATOR_ACTIONS = Object.freeze(
+        OPERATOR_ACTIONS.filter((action) => !OPTIONAL_OPERATOR_ACTIONS.includes(action)),
+    )
+
+    function operatorSessionActions(allowPermanentDelete = false) {
+        return allowPermanentDelete
+            ? [...AUTOMATIC_OPERATOR_ACTIONS, ...OPTIONAL_OPERATOR_ACTIONS]
+            : [...AUTOMATIC_OPERATOR_ACTIONS]
+    }
 
     const OPERATOR_STATUS_KEYS = Object.freeze({
         unknown: "operatorStatusUnknown",
@@ -3214,7 +3200,9 @@
     }
 
     const exported = {
+        AUTOMATIC_OPERATOR_ACTIONS,
         OPERATOR_ACTIONS,
+        OPTIONAL_OPERATOR_ACTIONS,
         OPERATOR_DELTA_INTERVAL_MS,
         artifactDeepLinks,
         buildOptimizationConfig,
@@ -3232,6 +3220,7 @@
         optimizationPreflightSummary,
         operatorStatusText,
         operatorJobTreeIds,
+        operatorSessionActions,
         optimizationRunActions,
         reduceOptimizationTimeline,
         registerOperatorActionDelegates,
