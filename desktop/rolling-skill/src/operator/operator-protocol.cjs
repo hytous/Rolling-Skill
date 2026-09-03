@@ -1,4 +1,9 @@
 const {isAbsolute} = require("node:path")
+const {
+    LEGACY_BUDGET_FIELDS,
+    isIterationBudget,
+    normalizeOperatorBudget,
+} = require("./operator-budget.cjs")
 
 const OPERATOR_PROTOCOL = "rolling-skill-operator/v1"
 const MAX_OBJECTIVE_LENGTH = 32_768
@@ -9,15 +14,6 @@ const SCOPE_FIELDS = Object.freeze([
     "datasetIds",
     "runtimeIds",
     "repositoryIds",
-])
-const BUDGET_FIELDS = Object.freeze([
-    "maxDurationMs",
-    "maxRuntimeTurns",
-    "maxEvaluations",
-    "maxTargetExecutions",
-    "maxJudgeExecutions",
-    "maxTokens",
-    "maxReportedCost",
 ])
 const TRANSPORT_KINDS = new Set(["codex-dynamic", "acp-mcp", "cli"])
 
@@ -64,24 +60,6 @@ function normalizeScope(value) {
     return scope
 }
 
-function normalizeBudget(value) {
-    if (!plainObject(value)) throw new TypeError("Operator budget must be a plain object")
-    const budget = {}
-    for (const field of BUDGET_FIELDS) {
-        const entry = value[field]
-        if ((field === "maxTokens" || field === "maxReportedCost") && entry === null) {
-            budget[field] = null
-            continue
-        }
-        const valid = field === "maxReportedCost"
-            ? Number.isFinite(entry) && entry >= 0
-            : Number.isSafeInteger(entry) && entry >= 0
-        if (!valid) throw new TypeError(`Operator budget ${field} is invalid`)
-        budget[field] = entry
-    }
-    return budget
-}
-
 function normalizeTransport(value) {
     if (!plainObject(value) || value.ready !== true || !TRANSPORT_KINDS.has(value.kind)) {
         throw new TypeError("Operator transport must be a frozen ready transport")
@@ -103,13 +81,16 @@ function protocolSnapshot(context) {
     return {
         actions: stringArray(context.actions, "Operator actions"),
         scope: normalizeScope(context.scope),
-        budget: normalizeBudget(context.budget),
+        budget: normalizeOperatorBudget(context.budget),
         transport: normalizeTransport(context.transport),
     }
 }
 
 function buildOperatorInstructions(context) {
     const snapshot = protocolSnapshot(context)
+    const budgetInstruction = isIterationBudget(snapshot.budget)
+        ? `The Job must finish or pause within the frozen ${snapshot.budget.maxIterations} Operator iterations. The iteration ceiling cannot be expanded during this task.`
+        : "The Job budget is frozen. If it is insufficient, request a budget expansion and wait for approval."
     return [
         "Rolling Skill Operator Protocol v1",
         "",
@@ -119,7 +100,7 @@ function buildOperatorInstructions(context) {
         "An approval is a hard execution gate. Explain the proposed action and wait; never claim an approval or expand authority yourself.",
         "Never directly read, edit, or write Rolling Skill data files. Do not bypass the Tool by changing local JSON, databases, repositories, or runtime state.",
         "The capability scope is frozen for this session. Do not infer IDs or act outside it.",
-        "The Job budget is frozen. If it is insufficient, request a budget expansion and wait for approval.",
+        budgetInstruction,
         "The Tool transport is frozen for this session. Do not switch transports or fall back during a turn.",
         "When a Tool response contains a child jobId, briefly state that the child Job is running and end the turn. Wait for an environment completion message before continuing.",
         "",
@@ -157,7 +138,7 @@ function serializeOperatorInput(input) {
 }
 
 module.exports = {
-    BUDGET_FIELDS,
+    BUDGET_FIELDS: LEGACY_BUDGET_FIELDS,
     MAX_OBJECTIVE_LENGTH,
     OPERATOR_PROTOCOL,
     SCOPE_FIELDS,

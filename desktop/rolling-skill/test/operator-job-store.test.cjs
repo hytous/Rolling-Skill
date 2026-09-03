@@ -575,6 +575,40 @@ describe("Operator Job store", () => {
         assert.equal(JSON.parse(readFileSync(path, "utf8")).jobs.length, 1)
     })
 
+    it("stores a positive iteration-only budget for new Operator jobs", () => {
+        const {path, store} = fixture()
+        const session = createSession(store)
+        const created = store.createJob({
+            sessionId: session.id,
+            type: "operator-session",
+            objective: "Run autonomously",
+            budget: {maxIterations: 50},
+        })
+
+        assert.deepEqual(created.budget, {maxIterations: 50})
+        store.close()
+        const restarted = new OperatorJobStore(path)
+        assert.deepEqual(restarted.getJob(created.id).budget, {maxIterations: 50})
+    })
+
+    it("rejects malformed, unknown, and mixed iteration budgets", () => {
+        const {store} = fixture()
+        const session = createSession(store)
+        for (const invalidBudget of [
+            {maxIterations: 0},
+            {maxIterations: 1.5},
+            {maxIterations: 50, unknown: 1},
+            {maxIterations: 50, ...budget()},
+        ]) {
+            assert.throws(() => store.createJob({
+                sessionId: session.id,
+                type: "operator-session",
+                objective: "Reject an invalid budget",
+                budget: invalidBudget,
+            }), /budget|maxIterations|iteration/iu)
+        }
+    })
+
     it("enforces every legal Job transition and rejects invalid or post-terminal changes", () => {
         const {store} = fixture()
         const session = createSession(store)

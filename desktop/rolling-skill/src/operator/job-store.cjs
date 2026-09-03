@@ -15,6 +15,7 @@ const {
     writeFileSync,
 } = require("node:fs")
 const {basename, dirname, isAbsolute, join, resolve} = require("node:path")
+const {normalizeOperatorBudget} = require("./operator-budget.cjs")
 
 const LEGACY_OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v1"
 const OPERATOR_JOB_STORE_SCHEMA = "rolling-skill-operator-jobs/v2"
@@ -60,15 +61,6 @@ const STEP_TRANSITIONS = new Map([
     ["waiting_approval", new Set(["running", "failed", "cancelled"])],
     ["needs_recovery", new Set(["running", "succeeded", "failed", "cancelled"])],
 ])
-const BUDGET_FIELDS = [
-    "maxDurationMs",
-    "maxRuntimeTurns",
-    "maxEvaluations",
-    "maxTargetExecutions",
-    "maxJudgeExecutions",
-    "maxTokens",
-    "maxReportedCost",
-]
 
 function isPlainObject(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false
@@ -247,25 +239,10 @@ function canonicalRuntime(value) {
 }
 
 function normalizeBudget(value) {
-    const budget = requireObject(value, "Job budget")
-    const normalized = {}
-    for (const field of BUDGET_FIELDS) {
-        const entry = budget[field]
-        if (entry === null && (field === "maxTokens" || field === "maxReportedCost")) {
-            normalized[field] = null
-        } else {
-            const valid = field === "maxReportedCost"
-                ? Number.isFinite(entry) && entry >= 0
-                : Number.isSafeInteger(entry) && entry >= 0
-            if (!valid) throw new Error(`Job budget ${field} is invalid`)
-            normalized[field] = entry
-        }
-    }
-    return normalized
+    return normalizeOperatorBudget(value, {error: Error})
 }
 
 function canonicalBudget(value) {
-    exactKeys(value, BUDGET_FIELDS, "Operator Job budget")
     return normalizeBudget(value)
 }
 

@@ -5,6 +5,7 @@ const {
     OPERATOR_PROTOCOL,
     buildOperatorInitialInput,
     buildOperatorInstructions,
+    protocolSnapshot,
     serializeOperatorInput,
 } = require("../src/operator/operator-protocol.cjs")
 
@@ -48,6 +49,36 @@ describe("Rolling Skill Operator protocol", () => {
         assert.match(text, /dataset-1/u)
         assert.match(text, /maxEvaluations.*2/u)
         assert.match(text, /codex-dynamic/u)
+    })
+
+    it("accepts an iteration-only budget without telling the Agent to request expansion", () => {
+        const context = protocolContext({budget: {maxIterations: 50}})
+        const snapshot = protocolSnapshot(context)
+        const text = buildOperatorInstructions(context)
+
+        assert.deepEqual(snapshot.budget, {maxIterations: 50})
+        assert.match(text, /50.*iteration|iteration.*50/iu)
+        assert.match(text, /finish or pause/iu)
+        assert.doesNotMatch(text, /request a budget expansion/iu)
+    })
+
+    it("rejects malformed or mixed iteration budgets", () => {
+        const inheritedBudget = Object.assign(
+            Object.create({maxIterations: 50}),
+            protocolContext().budget,
+        )
+        for (const budget of [
+            {maxIterations: 0},
+            {maxIterations: 1.5},
+            {maxIterations: 50, unknown: 1},
+            {maxIterations: 50, maxDurationMs: 60_000},
+            inheritedBudget,
+        ]) {
+            assert.throws(
+                () => protocolSnapshot(protocolContext({budget})),
+                /budget|maxIterations|iteration/iu,
+            )
+        }
     })
 
     it("builds two typed initial parts and keeps authority and provider paths out", () => {
