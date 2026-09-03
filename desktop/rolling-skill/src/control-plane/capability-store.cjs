@@ -202,11 +202,8 @@ function normalizeBudget(budget, present) {
     assertKnownKeys(snapshot, BUDGET_KEY_SET, "Unknown capability budget")
     const normalized = {}
     for (const key of BUDGET_KEYS) {
-        defineOwnData(
-            normalized,
-            key,
-            normalizeBudgetLimit(snapshot.has(key) ? snapshot.get(key) : 0, key),
-        )
+        if (!snapshot.has(key)) continue
+        defineOwnData(normalized, key, normalizeBudgetLimit(snapshot.get(key), key))
     }
     return Object.freeze(normalized)
 }

@@ -625,13 +625,6 @@ function decideControlPolicy({
         )
     }
 
-    let budgetState = null
-    if (canonicalAction === "runtime.execute" || canonicalAction === "evaluations.execute") {
-        const trusted = trustedBudgetSnapshot(grant, budgetSnapshot)
-        if (trusted.denial !== null) return trusted.denial
-        budgetState = trusted.snapshot
-    }
-
     if (canonicalAction === "runtime.execute") {
         if (method !== "raw_cases.dispatch") {
             return deny(
@@ -639,7 +632,12 @@ function decideControlPolicy({
                 "Action is not available in control-plane phase one",
             )
         }
-        return reserveBudget(grant, budgetState, {
+        if (!Object.hasOwn(grant?.budget ?? {}, "maxRuntimeTurns")) {
+            return allowWithoutReservation(scopeState.scopeFilter)
+        }
+        const trusted = trustedBudgetSnapshot(grant, budgetSnapshot)
+        if (trusted.denial !== null) return trusted.denial
+        return reserveBudget(grant, trusted.snapshot, {
             budgetKey: "maxRuntimeTurns",
             usageKey: "runtimeTurns",
             amount: operatorMethodBudgetMinimum(method).runtimeTurns,
@@ -651,7 +649,12 @@ function decideControlPolicy({
             return allowWithoutReservation(scopeState.scopeFilter)
         }
         if (method === "evaluations.start") {
-            return reserveBudget(grant, budgetState, {
+            if (!Object.hasOwn(grant?.budget ?? {}, "maxEvaluations")) {
+                return allowWithoutReservation(scopeState.scopeFilter)
+            }
+            const trusted = trustedBudgetSnapshot(grant, budgetSnapshot)
+            if (trusted.denial !== null) return trusted.denial
+            return reserveBudget(grant, trusted.snapshot, {
                 budgetKey: "maxEvaluations",
                 usageKey: "evaluations",
                 amount: operatorMethodBudgetMinimum(method).evaluations,

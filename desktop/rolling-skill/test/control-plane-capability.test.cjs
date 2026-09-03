@@ -414,7 +414,7 @@ describe("control-plane capability store", () => {
                 runtimeIds: [],
                 repositoryIds: [],
             })
-            assert.deepEqual(firstGrant.budget, {maxRuntimeTurns: 0, maxEvaluations: 0})
+            assert.deepEqual(firstGrant.budget, {})
 
             const emptyOwnRecords = store.issue({
                 sessionId: "operator-2",
@@ -430,7 +430,7 @@ describe("control-plane capability store", () => {
                 runtimeIds: [],
                 repositoryIds: [],
             })
-            assert.deepEqual(secondGrant.budget, {maxRuntimeTurns: 0, maxEvaluations: 0})
+            assert.deepEqual(secondGrant.budget, {})
         } finally {
             for (const key of Object.keys(poisoned)) delete Object.prototype[key]
         }

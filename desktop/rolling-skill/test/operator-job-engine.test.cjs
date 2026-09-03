@@ -1084,6 +1084,46 @@ describe("Operator Job engine", () => {
         )
     })
 
+    it("runs a many-Case Evaluation without Tool reservations for an iteration budget", async () => {
+        const {store, session} = fixture()
+        const job = createJob(store, session.id, {budget: {maxIterations: 2}})
+        let telemetryCalls = 0
+        const engine = new OperatorJobEngine({
+            store,
+            runtimeTelemetry: () => {
+                telemetryCalls += 1
+                return []
+            },
+            handlers: {"evaluations.start": async ({params}) => ({
+                runId: "iteration-evaluation",
+                caseCount: params.caseIds.length,
+            })},
+        })
+        const result = await engine.execute(job.id, {
+            method: "evaluations.start",
+            params: {
+                datasetId: "dataset-1",
+                caseIds: Array.from({length: 100}, (_unused, index) => `case-${index + 1}`),
+                selectionMode: "selected",
+                runtimeConfigurations: [{runtimeId: "runtime-1"}, {runtimeId: "runtime-2"}],
+                judgeConfiguration: {runtimeId: "judge-1"},
+            },
+            idempotencyKey: "iteration-evaluation",
+        })
+
+        assert.equal(result.status, "succeeded")
+        assert.equal(result.result.caseCount, 100)
+        assert.equal(telemetryCalls, 0)
+        assert.equal(store.listEvents(job.id).some((event) => (
+            event.kind === "operator_budget_reserved"
+        )), false)
+        const created = store.listEvents(job.id).find((event) => (
+            event.kind === "operator_step_created"
+        ))
+        assert.deepEqual(created.request.reservation, {})
+        assert.deepEqual(preflightOperatorBudget({maxIterations: 2}), {valid: true, fields: {}})
+    })
+
     it("freezes trusted Dataset selection facts before Step creation and never resolves them again", async () => {
         const {path, store, session} = fixture()
         const job = createJob(store, session.id, {budget: budget({

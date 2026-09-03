@@ -7,6 +7,7 @@ const {
     protocolSnapshot,
     serializeOperatorInput,
 } = require("./operator-protocol.cjs")
+const {isIterationBudget} = require("./operator-budget.cjs")
 const {
     OperatorToolTransport,
     redactOperatorSecrets,
@@ -114,6 +115,7 @@ function selectedModel(runtime, requested) {
 }
 
 function capabilityBudget(budget) {
+    if (isIterationBudget(budget)) return {}
     return {
         maxRuntimeTurns: budget.maxRuntimeTurns,
         maxEvaluations: budget.maxEvaluations,
@@ -121,7 +123,11 @@ function capabilityBudget(budget) {
 }
 
 function capabilityLifetime(input, budget) {
-    const requested = input.expiresInMs ?? Math.max(60_000, budget.maxDurationMs)
+    const requested = input.expiresInMs ?? (
+        isIterationBudget(budget)
+            ? MAX_CAPABILITY_LIFETIME_MS
+            : Math.max(60_000, budget.maxDurationMs)
+    )
     if (!Number.isSafeInteger(requested) || requested <= 0 || requested > MAX_CAPABILITY_LIFETIME_MS) {
         throw new TypeError("Operator capability lifetime is invalid")
     }
@@ -591,6 +597,49 @@ class OperatorSessionManager {
             if (!Number.isSafeInteger(revision)) throw new Error("Durable Operator budget revision is too large")
         }
         return {usage, revision}
+    }
+
+    #iterationState(control) {
+        if (!isIterationBudget(control.budget)) return null
+        const transcript = this.#store.getSession(control.sessionId).transcript
+        const used = transcript.filter((entry) => (
+            entry.kind === "operator_iteration_started"
+        )).length
+        return {
+            transcript,
+            used,
+            limit: control.budget.maxIterations,
+        }
+    }
+
+    #reserveIteration(control) {
+        const state = this.#iterationState(control)
+        if (state === null) return true
+        if (state.used < state.limit) {
+            this.#append(control, "operator_iteration_started", {
+                iteration: state.used + 1,
+                limit: state.limit,
+            })
+            return true
+        }
+        control.paused = true
+        const parent = this.#store.getJob(control.parentJobId)
+        if (parent.status === "running") this.#store.transitionJob(parent.id, "paused")
+        else if (parent.status !== "paused" && parent.status !== "waiting_approval") {
+            throw new Error(`Operator iteration limit cannot pause Job while ${parent.status}`)
+        }
+        if (!state.transcript.some((entry) => (
+            entry.kind === "operator_iteration_limit_reached" &&
+            entry.used === state.used &&
+            entry.limit === state.limit
+        ))) {
+            this.#append(control, "operator_iteration_limit_reached", {
+                used: state.used,
+                limit: state.limit,
+                reason: "max_iterations_reached",
+            })
+        }
+        return false
     }
 
     #controlIsLive(control, generation = control.controlGeneration) {
@@ -1079,6 +1128,7 @@ class OperatorSessionManager {
         if (control.phase !== "idle" && control.phase !== "restoring") {
             throw new Error("Operator Runtime turn is already active")
         }
+        if (!this.#reserveIteration(control)) return null
         const controlGeneration = control.controlGeneration
         const generation = ++control.generation
         control.phase = "starting"
@@ -1403,7 +1453,8 @@ class OperatorSessionManager {
         if (!boundary) return
         control.draining = true
         try {
-            await this.#startTurn(control, boundary.input)
+            const started = await this.#startTurn(control, boundary.input)
+            if (started === null) return
             this.#assertControlOwned(control)
             this.#append(control, "operator_boundary_delivered", {
                 boundaryId: boundary.id,
@@ -1576,6 +1627,29 @@ class OperatorSessionManager {
         if (!configuration || configuration.protocol !== OPERATOR_PROTOCOL) {
             throw new Error("Operator session has no supported durable configuration")
         }
+        if (isIterationBudget(configuration.budget)) {
+            const used = session.transcript.filter((entry) => (
+                entry.kind === "operator_iteration_started"
+            )).length
+            if (used >= configuration.budget.maxIterations) {
+                if (parentJob.status === "running") {
+                    parentJob = this.#store.transitionJob(parentJob.id, "paused")
+                }
+                if (!session.transcript.some((entry) => (
+                    entry.kind === "operator_iteration_limit_reached" &&
+                    entry.used === used &&
+                    entry.limit === configuration.budget.maxIterations
+                ))) {
+                    this.#store.appendSessionTranscript(session.id, {
+                        kind: "operator_iteration_limit_reached",
+                        used,
+                        limit: configuration.budget.maxIterations,
+                        reason: "max_iterations_reached",
+                    })
+                }
+                if (parentJob.status === "paused") return this.get(sessionId)
+            }
+        }
         const wasSessionPaused = sessionIsPaused(session)
         const recovery = await this.#reconcile(session, parentJob)
         if (this.#blockedSessions.has(sessionId)) throw new Error("Operator session is stopped")
@@ -1745,6 +1819,10 @@ class OperatorSessionManager {
         }
         if (control.stopped) throw new Error("Operator session is stopped")
         if (control.paused) {
+            const iteration = this.#iterationState(control)
+            if (control.phase === "idle" && iteration?.used >= iteration?.limit) {
+                return this.#snapshot(control)
+            }
             const parent = this.#store.getJob(control.parentJobId)
             if (parent.status === "paused") this.#store.transitionJob(parent.id, "running")
             else if (parent.status !== "waiting_approval") {

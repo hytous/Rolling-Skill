@@ -527,6 +527,64 @@ describe("ControlPlane", () => {
         assert.equal(startEvaluation.mock.callCount(), 0)
     })
 
+    it("does not read or reserve Tool budgets for iteration-limited Operator execution", async () => {
+        const fixture = createFixture()
+        const iterationGrant = fixture.capabilities.issue({
+            sessionId: "operator-iteration-budget",
+            actions: fixture.issued.actions,
+            scopes: fixture.issued.scopes,
+            expiresInMs: 60_000,
+            budget: {},
+        })
+        let budgetSnapshotCalls = 0
+        const routed = []
+        fixture.control.registerOperatorExecutor({
+            sessionId: iterationGrant.sessionId,
+            capabilityId: iterationGrant.id,
+            budgetSnapshot: () => {
+                budgetSnapshotCalls += 1
+                return {usage: {runtimeTurns: 0, evaluations: 0}, revision: 0}
+            },
+            assertLive: () => true,
+            execute: async (request) => {
+                routed.push(request)
+                return fixture.services[request.method](request.input, request.context)
+            },
+        })
+
+        await fixture.control.invoke({
+            token: iterationGrant.token,
+            sessionId: iterationGrant.sessionId,
+            method: "raw_cases.dispatch",
+            params: {
+                id: "raw-1",
+                mode: "new",
+                runtime: {runtimeId: "runtime-1", modelId: null, effort: null},
+                idempotencyKey: "iteration-dispatch",
+            },
+        })
+        await fixture.control.invoke({
+            token: iterationGrant.token,
+            sessionId: iterationGrant.sessionId,
+            method: "evaluations.start",
+            params: {
+                datasetId: "dataset-1",
+                caseIds: ["case-1"],
+                selectionMode: "selected",
+                activationMode: "automatic",
+                runtimeConfigurations: [{runtimeId: "runtime-1", modelId: null, effort: null}],
+                judgeConfiguration: {runtimeId: "judge-1", modelId: null, effort: null},
+                idempotencyKey: "iteration-evaluation",
+            },
+        })
+
+        assert.equal(budgetSnapshotCalls, 0)
+        assert.deepEqual(routed.map((request) => request.policyDecision), [
+            {decision: "allow", reservation: null},
+            {decision: "allow", reservation: null},
+        ])
+    })
+
     it("routes mandatory destructive approval through the Operator executor without touching the domain", async () => {
         const {control, capabilities, issued, evaluationStore} = createFixture()
         evaluationStore.deleteDataset = mock.fn(() => ({id: "dataset-1", name: "Billing"}))

@@ -756,6 +756,32 @@ describe("control-plane policy", () => {
         })
     })
 
+    it("allows Runtime and Evaluation execution when no Tool budget key is frozen", () => {
+        const policy = createControlPolicy()
+        const authority = grant({budget: Object.freeze({})})
+
+        assert.deepEqual(policy.decide({
+            grant: authority,
+            method: "raw_cases.dispatch",
+            action: "runtime.execute",
+            input: {id: "raw-case-1", runtime: {runtimeId: "runtime-1"}},
+            resolvedScope: resolvedScope("raw_cases.dispatch", {
+                subject: {kind: "raw_case", id: "raw-case-1"},
+                skillIds: ["skill-1"],
+            }),
+        }), {decision: "allow", reservation: null})
+        assert.deepEqual(policy.decide({
+            grant: authority,
+            method: "evaluations.start",
+            action: "evaluations.execute",
+            input: {
+                datasetId: "dataset-1",
+                runtimeConfigurations: [{runtimeId: "runtime-1"}],
+                judgeConfiguration: {runtimeId: "judge-1"},
+            },
+        }), {decision: "allow", reservation: null})
+    })
+
     it("requires budget-expansion approval when an execution would exceed its limit", () => {
         const policy = createControlPolicy()
         const authority = grant()

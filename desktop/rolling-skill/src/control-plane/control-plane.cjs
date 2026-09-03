@@ -888,8 +888,10 @@ class ControlPlane {
             for (let attempt = 0; attempt < MAX_BUDGET_CAS_ATTEMPTS; attempt += 1) {
                 let budgetSnapshot
                 if (
-                    definition.action === "runtime.execute" ||
-                    definition.action === "evaluations.execute"
+                    (definition.action === "runtime.execute" &&
+                        Object.hasOwn(grant.budget, "maxRuntimeTurns")) ||
+                    (definition.action === "evaluations.execute" &&
+                        Object.hasOwn(grant.budget, "maxEvaluations"))
                 ) {
                     const budget = operatorRoute === null
                         ? state.budgetLedger.read(grant)

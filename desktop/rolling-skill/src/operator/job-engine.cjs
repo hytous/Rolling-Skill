@@ -2,6 +2,7 @@ const {
     operatorApprovalRequirement,
     operatorMethodBudgetMinimum,
 } = require("../control-plane/policy.cjs")
+const {isIterationBudget} = require("./operator-budget.cjs")
 
 const TERMINAL_JOB_STATUSES = new Set(["succeeded", "failed", "cancelled"])
 const TERMINAL_STEP_STATUSES = new Set(["succeeded", "failed", "cancelled"])
@@ -286,6 +287,7 @@ function normalizeTelemetry(value) {
 
 function preflightOperatorBudget(budget, runtimeTelemetry = [], involvedRuntimeIds = null) {
     const limits = requireObject(budget, "Operator Job budget")
+    if (isIterationBudget(limits)) return {valid: true, fields: {}}
     const telemetry = normalizeTelemetry(runtimeTelemetry)
     const involved = involvedRuntimeIds === null
         ? telemetry.map((entry) => entry.runtimeId)
@@ -794,8 +796,9 @@ class OperatorJobEngine {
         ))
     }
 
-    async #effectiveRequest(request, signal) {
-        const minimum = {...operatorMethodBudgetMinimum(request.method)}
+    async #effectiveRequest(request, signal, budget) {
+        const iterationOnly = isIterationBudget(budget)
+        const minimum = iterationOnly ? {} : {...operatorMethodBudgetMinimum(request.method)}
         const trustedFacts = {
             ...(request.policyApproval ? {
                 controlPolicyApproval: cloneJson(request.policyApproval),
@@ -853,16 +856,18 @@ class OperatorJobEngine {
                         code: "BUDGET_SELECTION_UNRESOLVED",
                     })
                 }
-                const executions = safeProduct(
-                    caseCount,
-                    params.runtimeConfigurations.length,
-                    "Operator evaluation execution reservation",
-                )
-                minimum.targetExecutions = executions
-                if (isPlainObject(params.judgeConfiguration)) minimum.judgeExecutions = executions
+                if (!iterationOnly) {
+                    const executions = safeProduct(
+                        caseCount,
+                        params.runtimeConfigurations.length,
+                        "Operator evaluation execution reservation",
+                    )
+                    minimum.targetExecutions = executions
+                    if (isPlainObject(params.judgeConfiguration)) minimum.judgeExecutions = executions
+                }
             }
         }
-        const reservation = {...request.reservation}
+        const reservation = iterationOnly ? {} : {...request.reservation}
         for (const [field, amount] of Object.entries(minimum)) {
             reservation[field] = Math.max(reservation[field] ?? 0, amount)
         }
@@ -891,7 +896,7 @@ class OperatorJobEngine {
             throw new Error(`Operator Job cannot execute a new Step while ${job.status}`)
         }
 
-        request = await this.#effectiveRequest(request, signal)
+        request = await this.#effectiveRequest(request, signal, job.budget)
         if (request.assertRunnable && request.assertRunnable() !== true) {
             throw Object.assign(new Error("Operator session is not accepting new Steps"), {
                 code: "CONTROL_BUSY",
@@ -906,7 +911,7 @@ class OperatorJobEngine {
             trustedFacts: request.trustedFacts,
             idempotencyKey: request.idempotencyKey,
         })
-        const telemetry = await this.#telemetry(request, signal)
+        const telemetry = isIterationBudget(job.budget) ? [] : await this.#telemetry(request, signal)
         const policyDecision = await this.#preInvokeDecision(job, step, request, telemetry, signal)
         if (policyDecision?.decision === "deny") {
             const error = {
@@ -976,7 +981,7 @@ class OperatorJobEngine {
         if (job.status !== "running" && job.status !== "waiting_approval") {
             return {status: "needs_recovery", jobId: step.jobId, stepId: step.id}
         }
-        const telemetry = await this.#telemetry(request, signal)
+        const telemetry = isIterationBudget(job.budget) ? [] : await this.#telemetry(request, signal)
         const decision = await this.#preInvokeDecision(job, step, request, telemetry, signal)
         if (decision?.decision === "approval_required") {
             return this.#createApproval(job, step, request, decision)
@@ -1059,6 +1064,7 @@ class OperatorJobEngine {
         if (custom.decision !== "allow" && custom.decision !== "approval_required") {
             throw new Error("Operator approval decision is invalid")
         }
+        if (isIterationBudget(job.budget)) return {decision: "allow"}
         const budget = this.#budgetAssessment(
             job,
             request.reservation,
@@ -1230,7 +1236,8 @@ class OperatorJobEngine {
     async #runStep(job, initialStep, request, {telemetry = [], signal = null} = {}) {
         let step = this.#store.getStep(initialStep.id)
         try {
-            this.#reserveBudget(job, step, request, telemetry)
+            const iterationOnly = isIterationBudget(job.budget)
+            if (!iterationOnly) this.#reserveBudget(job, step, request, telemetry)
             if (step.status === "running") {
                 return {status: "needs_recovery", jobId: job.id, stepId: step.id}
             }
@@ -1258,13 +1265,7 @@ class OperatorJobEngine {
             else signal?.addEventListener("abort", abortFromOperation, {once: true})
             this.#activeSteps.set(step.id, controller)
             let result
-            const timeoutError = Object.assign(new Error("Operator Job duration budget was exceeded"), {
-                code: "BUDGET_DURATION_EXCEEDED",
-            })
             try {
-                const limits = this.#budgetLimits(job, step.id)
-                const remainingMs = limits.maxDurationMs - Math.max(0, this.#now() - Date.parse(job.createdAt))
-                if (remainingMs <= 0) throw timeoutError
                 const handlerTrustedFacts = cloneJson(request.trustedFacts ?? {})
                 const handlerControlContext = Object.hasOwn(handlerTrustedFacts, "methodFacts")
                     ? Object.freeze({
@@ -1272,6 +1273,20 @@ class OperatorJobEngine {
                           trustedFacts: handlerTrustedFacts,
                       })
                     : request.handlerContext ?? null
+                const awaitOptions = {
+                    signal: controller.signal,
+                    label: "Operator handler",
+                }
+                if (!iterationOnly) {
+                    const timeoutError = Object.assign(new Error("Operator Job duration budget was exceeded"), {
+                        code: "BUDGET_DURATION_EXCEEDED",
+                    })
+                    const limits = this.#budgetLimits(job, step.id)
+                    const remainingMs = limits.maxDurationMs - Math.max(0, this.#now() - Date.parse(job.createdAt))
+                    if (remainingMs <= 0) throw timeoutError
+                    awaitOptions.timeoutMs = remainingMs
+                    awaitOptions.timeoutError = timeoutError
+                }
                 result = await this.#boundedAwait((hookSignal) => handler({
                     method: request.method,
                     params: cloneJson(request.params),
@@ -1281,12 +1296,7 @@ class OperatorJobEngine {
                     stepId: step.id,
                     signal: hookSignal,
                     controlContext: handlerControlContext,
-                }), {
-                    signal: controller.signal,
-                    label: "Operator handler",
-                    timeoutMs: remainingMs,
-                    timeoutError,
-                })
+                }), awaitOptions)
             } finally {
                 signal?.removeEventListener("abort", abortFromOperation)
                 this.#activeSteps.delete(step.id)
@@ -1705,7 +1715,7 @@ class OperatorJobEngine {
         const execution = this.#executionFromStep(step)
         if (isDeleteMethod(step.method)) return false
         if (isReadMethod(step.method)) {
-            const telemetry = await this.#telemetry(execution, signal)
+            const telemetry = isIterationBudget(job.budget) ? [] : await this.#telemetry(execution, signal)
             const result = await this.#runStep(job, step, execution, {telemetry, signal})
             return result.status === "succeeded" || result.status === "failed"
         }

@@ -791,6 +791,106 @@ describe("OperatorSessionManager", () => {
         assert.equal(userTurn.input[0].text, "Compare this result with the baseline")
     })
 
+    it("pauses durably before a third Agent Turn and keeps its boundary queued", async () => {
+        const {manager, clients, store} = fixture()
+        const created = await manager.create(createInput({budget: {maxIterations: 2}}))
+        const client = clients[0]
+        const child = store.createJob({
+            sessionId: created.session.id,
+            parentJobId: created.parentJob.id,
+            type: "evaluation",
+            objective: "Evaluate many Cases",
+            budget: {maxIterations: 2},
+        })
+        store.transitionJob(child.id, "running")
+        store.transitionJob(child.id, "succeeded", {result: {caseCount: 100}})
+
+        await manager.notifyChildCompletion(created.session.id, child.id)
+        completed(client, "turn-1")
+        await nextTick()
+        await manager.followUp(created.session.id, "Use the completed result")
+        completed(client, "turn-2")
+        await nextTick()
+        await nextTick()
+
+        assert.equal(client.calls.filter((call) => call.method === "startTurn").length, 2)
+        assert.equal(store.getJob(created.parentJob.id).status, "paused")
+        const transcript = store.getSession(created.session.id).transcript
+        assert.deepEqual(transcript.filter((entry) => (
+            entry.kind === "operator_iteration_started"
+        )).map((entry) => ({iteration: entry.iteration, limit: entry.limit})), [
+            {iteration: 1, limit: 2},
+            {iteration: 2, limit: 2},
+        ])
+        assert.deepEqual(transcript.filter((entry) => (
+            entry.kind === "operator_iteration_limit_reached"
+        )).map((entry) => ({used: entry.used, limit: entry.limit, reason: entry.reason})), [{
+            used: 2,
+            limit: 2,
+            reason: "max_iterations_reached",
+        }])
+        const pending = transcript.find((entry) => (
+            entry.kind === "operator_boundary_enqueued" && entry.content === "Use the completed result"
+        ))
+        assert.ok(pending)
+        assert.equal(transcript.some((entry) => (
+            entry.kind === "operator_boundary_delivered" && entry.boundaryId === pending.boundaryId
+        )), false)
+
+        const resumed = await manager.resume(created.session.id)
+        await nextTick()
+        assert.equal(resumed.parentJob.status, "paused")
+        assert.equal(client.calls.filter((call) => call.method === "startTurn").length, 2)
+        assert.equal(store.getSession(created.session.id).transcript.filter((entry) => (
+            entry.kind === "operator_iteration_limit_reached"
+        )).length, 1)
+    })
+
+    it("does not count Evaluation Case fan-out as additional Operator iterations", async () => {
+        const {manager, clients, store} = fixture()
+        const created = await manager.create(createInput({budget: {maxIterations: 2}}))
+        const result = await clients[0].options.requestTool({
+            callId: "many-case-evaluation",
+            method: "evaluations.start",
+            params: {
+                datasetId: "dataset-1",
+                caseIds: Array.from({length: 100}, (_unused, index) => `case-${index + 1}`),
+                selectionMode: "selected",
+                activationMode: "automatic",
+                runtimeConfigurations: [{runtimeId: "runtime-1", modelId: null, effort: null}],
+                judgeConfiguration: {runtimeId: "runtime-1", modelId: null, effort: null},
+                idempotencyKey: "many-case-evaluation",
+            },
+        })
+
+        assert.deepEqual(result, {ok: true})
+        assert.equal(store.getSession(created.session.id).transcript.filter((entry) => (
+            entry.kind === "operator_iteration_started"
+        )).length, 1)
+        assert.equal(clients[0].calls.filter((call) => call.method === "startTurn").length, 1)
+    })
+
+    it("does not restart a Runtime after the durable iteration ceiling is reached", async () => {
+        const source = fixture()
+        const created = await source.manager.create(createInput({budget: {maxIterations: 1}}))
+        await source.manager.followUp(created.session.id, "Remain queued at the ceiling")
+        completed(source.clients[0], "turn-1")
+        await nextTick()
+        await nextTick()
+        assert.equal(source.store.getJob(created.parentJob.id).status, "paused")
+
+        const restarted = fixture({store: source.store, supportsNativeResume: () => true})
+        const restored = await restarted.manager.resume(created.session.id)
+
+        assert.equal(restored.parentJob.status, "paused")
+        assert.equal(restored.state, "paused")
+        assert.equal(restarted.clients.length, 0)
+        assert.equal(restarted.grants.length, 0)
+        assert.equal(source.store.getSession(created.session.id).transcript.filter((entry) => (
+            entry.kind === "operator_iteration_limit_reached"
+        )).length, 1)
+    })
+
     it("pauses without cancelling a running child, resumes, then stops the tree and revokes authority", async () => {
         const {manager, clients, store, revoked, engineCalls} = fixture()
         const created = await manager.create(createInput())
