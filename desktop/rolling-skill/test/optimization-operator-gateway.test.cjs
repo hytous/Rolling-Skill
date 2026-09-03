@@ -15,11 +15,18 @@ async function remainsPending(promise) {
 }
 
 describe("Optimization Operator submit gateway", () => {
-    it("expires an unanswered Agent request instead of leaving the run editing forever", async () => {
+    it("keeps an unanswered Agent request pending until an explicit lifecycle action", async () => {
         const gateway = new OptimizationOperatorGateway()
-        const pending = gateway.requestCandidate({run: {runId: "timed-run"}, epoch: 1, operatorSessionId: "session-1", timeoutMs: 10})
-        await assert.rejects(pending, /time budget/)
-        assert.equal(gateway.pending("timed-run"), null)
+        const pending = gateway.requestCandidate({
+            run: {runId: "pending-run"},
+            epoch: 1,
+            operatorSessionId: "session-1",
+        })
+
+        assert.equal(await remainsPending(pending), true)
+        assert.equal(gateway.cancelRun("pending-run", "user stopped the run"), true)
+        await assert.rejects(pending, /user stopped/)
+        assert.equal(gateway.pending("pending-run"), null)
     })
 
     it("accepts a Candidate only from the current Runner Operator session", async () => {
@@ -57,7 +64,7 @@ describe("Optimization Operator submit gateway", () => {
         }), /pending|current/iu)
     })
 
-    it("passes a typed decision and optional limit request to the waiting Runner", async () => {
+    it("passes only the typed decision to the waiting Runner", async () => {
         const gateway = new OptimizationOperatorGateway()
         const requested = gateway.requestDecision({
             run: {runId: "run-2"},
@@ -70,8 +77,6 @@ describe("Optimization Operator submit gateway", () => {
             rationale: "One broad regression remains",
             observations: [],
         }
-        const limitRequest = {field: "maxEpochs", value: 4, rationale: "Need one repair Epoch"}
-
         assert.throws(() => gateway.submitCandidate({
             runId: "run-2",
             operatorSessionId: "operator-session-2",
@@ -81,9 +86,8 @@ describe("Optimization Operator submit gateway", () => {
             runId: "run-2",
             operatorSessionId: "operator-session-2",
             decision,
-            limitRequest,
         }), {runId: "run-2", kind: "decision"})
-        assert.deepEqual(await requested, {decision, limitRequest})
+        assert.deepEqual(await requested, {decision})
     })
 
     it("allows only one pending request per Run and cancels pending waits at shutdown", async () => {

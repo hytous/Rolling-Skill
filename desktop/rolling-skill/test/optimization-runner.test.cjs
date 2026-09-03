@@ -141,17 +141,7 @@ function runnerFixture(options = {}) {
             targets: [{runtimeId: "codex:target", modelId: "gpt-5.6-sol", effort: "high"}],
             judge: {runtimeId: "codex:judge", modelId: "gpt-5.6-sol", effort: "high"},
             activationMode: "automatic",
-            mode: "adaptive",
-            limits: {
-                maxEpochs: 3,
-                maxDurationMs: 3_600_000,
-                maxTurns: 50,
-                maxTokens: null,
-                maxCostMicros: null,
-                patience: 2,
-                minimumImprovement: 1,
-            },
-            target: {minimumScore: 90, minimumPassRate: 1, requireCriticalCases: true},
+            limits: {maxEpochs: 3},
         },
         epochs: [],
         currentEpoch: 0,
@@ -306,10 +296,6 @@ function runnerFixture(options = {}) {
         operatorGateway,
         approvals,
         releaseManager,
-        telemetry: ({runId}) => {
-            assert.equal(runId, run.id, "Telemetry must receive the real Core adapter contract")
-            return {elapsedMs: 1_000, turnsUsed: 2, tokensUsed: null, costMicros: null}
-        },
         ...options,
     })
     return {
@@ -330,6 +316,15 @@ function runnerFixture(options = {}) {
         releaseManager,
         releaseCalls,
     }
+}
+
+async function waitForPending(gateway, runId, kind) {
+    for (let index = 0; index < 50; index += 1) {
+        const pending = gateway.pending(runId)
+        if (pending?.kind === kind) return pending
+        await new Promise((resolve) => setImmediate(resolve))
+    }
+    assert.fail(`Optimization Run did not request ${kind}`)
 }
 
 describe("multi-Epoch OptimizationRunner", () => {
@@ -601,100 +596,76 @@ describe("multi-Epoch OptimizationRunner", () => {
         assert.equal(fixture.evaluationCalls.length, evaluationCalls)
     })
 
-    it("honors fixed maximum Epoch and adaptive patience before an Agent can continue", async () => {
-        for (const [mode, configure] of [
-            ["fixed", (run) => { run.snapshot.limits.maxEpochs = 1 }],
-            ["adaptive", (run) => {
-                run.snapshot.limits.patience = 1
-                run.snapshot.limits.minimumImprovement = 20
-            }],
-        ]) {
-            const fixture = runnerFixture()
-            fixture.store.run.snapshot.mode = mode
-            configure(fixture.store.run)
-            const outcome = await fixture.runner.run(fixture.run.id, {
-                operatorSessionId: "operator-session-1",
-                parentJobId: "operator-job-1",
-            })
-
-            assert.equal(outcome.status, "succeeded")
-            assert.equal(fixture.store.getRun(fixture.run.id).epochs.length, 1)
-            assert.equal(fixture.operatorGateway.decisionRequests, 1)
-        }
-    })
-
-    it("waits for a separate limit approval before starting another Epoch", async () => {
+    it("stops at the configured complete Epoch boundary even when the Agent chooses continue", async () => {
         const fixture = runnerFixture()
         fixture.store.run.snapshot.limits.maxEpochs = 1
-        let decisionCount = 0
-        fixture.operatorGateway.requestDecision = async () => {
-            decisionCount += 1
-            const decision = {
-                schemaVersion: "rolling-skill-optimization-decision/v1",
-                action: decisionCount === 1 ? "continue" : "finish",
-                rationale: "Need one bounded additional Epoch",
-            }
-            return decisionCount === 1
-                ? {
-                    decision,
-                    limitRequest: {
-                        field: "maxEpochs",
-                        value: 2,
-                        rationale: "The first Candidate improved but did not reach the target",
-                    },
-                }
-                : decision
-        }
-        const originalApproval = fixture.approvals.request.bind(fixture.approvals)
-        let approveLimit
-        fixture.approvals.request = (input) => {
-            if (input.kind !== "limit") return originalApproval(input)
-            return new Promise((resolve) => { approveLimit = resolve })
-        }
+        fixture.operatorGateway.requestDecision = async () => ({
+            schemaVersion: "rolling-skill-optimization-decision/v1",
+            action: "continue",
+            rationale: "There is more work, but the configured Epoch is complete",
+        })
+
+        const outcome = await fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
+
+        assert.equal(outcome.status, "succeeded")
+        assert.equal(fixture.store.getRun(fixture.run.id).epochs.length, 1)
+        assert.equal(fixture.store.getRun(fixture.run.id).checkpoint.stopReason, "max_epochs_reached")
+        assert.deepEqual(fixture.approvalCalls.map((entry) => entry.kind), ["release-install"])
+    })
+
+    it("runs two complete Epochs without limit approval and never creates Epoch 3", async () => {
+        const gateway = new OptimizationOperatorGateway()
+        const fixture = runnerFixture({operatorGateway: gateway})
+        fixture.store.run.snapshot.limits.maxEpochs = 2
         const operation = fixture.runner.run(fixture.run.id, {
             operatorSessionId: "operator-session-1",
             parentJobId: "operator-job-1",
         })
-        for (let index = 0; index < 20 && !approveLimit; index += 1) {
-            await new Promise((resolve) => setImmediate(resolve))
-        }
 
-        assert.equal(typeof approveLimit, "function")
-        assert.equal(fixture.store.getRun(fixture.run.id).epochs.length, 1)
-        approveLimit({approved: true, approvalId: "limit-approval-1"})
+        for (let epoch = 1; epoch <= 2; epoch += 1) {
+            await waitForPending(gateway, fixture.run.id, "candidate")
+            gateway.submitCandidate({
+                runId: fixture.run.id,
+                operatorSessionId: "operator-session-1",
+                message: `Candidate ${epoch}`,
+            })
+            await waitForPending(gateway, fixture.run.id, "decision")
+            gateway.submitDecision({
+                runId: fixture.run.id,
+                operatorSessionId: "operator-session-1",
+                decision: {
+                    schemaVersion: "rolling-skill-optimization-decision/v1",
+                    action: "continue",
+                    rationale: `Epoch ${epoch} is complete`,
+                    observations: [],
+                },
+            })
+        }
         const outcome = await operation
 
         assert.equal(outcome.status, "succeeded")
         assert.equal(fixture.store.getRun(fixture.run.id).epochs.length, 2)
-        assert.equal(fixture.store.getRun(fixture.run.id).snapshot.limits.maxEpochs, 1)
-        assert.equal(fixture.store.getRun(fixture.run.id).checkpoint.approvedLimits.maxEpochs, 2)
+        assert.equal(fixture.store.getRun(fixture.run.id).checkpoint.stopReason, "max_epochs_reached")
+        assert.equal(fixture.approvalCalls.some((entry) => entry.kind === "limit"), false)
+        assert.deepEqual(fixture.approvalCalls.map((entry) => entry.kind), ["release-install"])
+        assert.equal(gateway.pending(fixture.run.id), null)
     })
 
-    it("restores enrolled targets after timeout or token exhaustion", async () => {
-        for (const telemetry of [
-            {elapsedMs: 3_600_000, turnsUsed: 1, tokensUsed: null, costMicros: null},
-            {elapsedMs: 1_000, turnsUsed: 1, tokensUsed: 100, costMicros: null},
-        ]) {
-            const fixture = runnerFixture({telemetry: () => telemetry})
-            if (telemetry.tokensUsed !== null) fixture.store.run.snapshot.limits.maxTokens = 100
-            const outcome = await fixture.runner.run(fixture.run.id, {
-                operatorSessionId: "operator-session-1",
-                parentJobId: "operator-job-1",
-            })
+    it("does not read aggregate telemetry or persist usage as a stopping budget", async () => {
+        const fixture = runnerFixture({telemetry: () => {
+            throw new Error("aggregate telemetry must not be read")
+        }})
+        fixture.store.run.snapshot.limits.maxEpochs = 1
+        const outcome = await fixture.runner.run(fixture.run.id, {
+            operatorSessionId: "operator-session-1",
+            parentJobId: "operator-job-1",
+        })
 
-            assert.equal(outcome.status, "failed")
-            assert.equal(fixture.store.getRun(fixture.run.id).state, "failed")
-            assert.deepEqual(fixture.store.getRun(fixture.run.id).checkpoint.telemetry, {
-                elapsedMs: telemetry.elapsedMs,
-                turnsUsed: telemetry.turnsUsed,
-                tokens: telemetry.tokensUsed,
-                costMicros: telemetry.costMicros,
-            })
-            assert.equal(
-                fixture.installationCalls.at(-1).operation,
-                "experiment_restore",
-            )
-        }
+        assert.equal(outcome.status, "succeeded")
+        assert.equal(Object.hasOwn(fixture.store.getRun(fixture.run.id).checkpoint, "telemetry"), false)
     })
 
     it("pauses after an Agent pause or two invalid structured decisions", async () => {
@@ -823,12 +794,12 @@ describe("multi-Epoch OptimizationRunner", () => {
     })
 
     it("marks needs_recovery when restoration cannot prove a safe terminal state", async () => {
-        const fixture = runnerFixture({telemetry: () => ({
-            elapsedMs: 3_600_000,
-            turnsUsed: 1,
-            tokensUsed: null,
-            costMicros: null,
-        })})
+        const fixture = runnerFixture()
+        fixture.store.run.snapshot.limits.maxEpochs = 1
+        fixture.approvals.request = async () => ({
+            approved: false,
+            approvalId: "approval-rejected-before-recovery",
+        })
         const originalStart = fixture.installationManager.startOptimizationExperiment.bind(
             fixture.installationManager,
         )

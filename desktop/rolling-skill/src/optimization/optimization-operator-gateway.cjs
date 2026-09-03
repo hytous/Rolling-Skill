@@ -35,12 +35,8 @@ class OptimizationOperatorGateway {
         if (this.requests.has(identity.runId)) {
             throw new Error("Optimization Run already has a pending Operator request")
         }
-        let timer
         const pending = new Promise((resolve, reject) => {
             this.requests.set(identity.runId, {...identity, resolve, reject})
-            if (Number.isFinite(request.timeoutMs)) {
-                timer = setTimeout(() => this.cancelRun(identity.runId, "Optimization time budget has been exhausted while waiting for the Agent"), Math.max(1, request.timeoutMs))
-            }
         })
         if (this.onRequest !== null) {
             Promise.resolve().then(() => this.onRequest({...identity})).catch((error) => {
@@ -50,7 +46,7 @@ class OptimizationOperatorGateway {
                 current.reject(error)
             })
         }
-        return pending.finally(() => clearTimeout(timer))
+        return pending
     }
 
     requestCandidate(request) {
@@ -100,9 +96,6 @@ class OptimizationOperatorGateway {
     submitDecision(input) {
         return this.#submit(input, "decision", {
             decision: structuredClone(input?.decision),
-            limitRequest: input?.limitRequest === undefined
-                ? null
-                : structuredClone(input.limitRequest),
         })
     }
 

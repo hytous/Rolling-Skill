@@ -51,44 +51,6 @@ function installedInitialState(job, baseline) {
     }
 }
 
-function optimizationLimitRequest(value, currentLimits, telemetry) {
-    if (value === null || value === undefined) return null
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw new Error("Optimization limit request must be an object")
-    }
-    const keys = Object.keys(value).sort()
-    if (keys.join(",") !== "field,rationale,value") {
-        throw new Error("Optimization limit request has unknown or missing fields")
-    }
-    const field = String(value.field ?? "")
-    const maxima = {
-        maxEpochs: 100,
-        maxDurationMs: 30 * 24 * 60 * 60 * 1_000,
-        maxTurns: 1_000_000,
-        maxTokens: 1_000_000_000_000,
-        maxCostMicros: Number.MAX_SAFE_INTEGER,
-    }
-    if (!Object.hasOwn(maxima, field)) throw new Error("Optimization limit field is unsupported")
-    if (!Number.isSafeInteger(value.value) || value.value < 1 || value.value > maxima[field]) {
-        throw new Error("Optimization requested limit is outside its supported bound")
-    }
-    const current = currentLimits[field]
-    if (current !== null && current !== undefined && value.value <= current) {
-        throw new Error("Optimization requested limit must increase the current limit")
-    }
-    if (field === "maxTokens" && telemetry?.tokens !== true) {
-        throw new Error("Optimization token limit requires token telemetry")
-    }
-    if (field === "maxCostMicros" && telemetry?.cost !== true) {
-        throw new Error("Optimization cost limit requires cost telemetry")
-    }
-    const rationale = String(value.rationale ?? "").trim()
-    if (!rationale || rationale.length > 8_192) {
-        throw new Error("Optimization limit request rationale is required")
-    }
-    return {field, value: value.value, rationale}
-}
-
 function boundedRunSummary(run) {
     const epoch = run.epochs?.at(-1) ?? null
     return {
@@ -101,7 +63,6 @@ function boundedRunSummary(run) {
         rubricId: run.snapshot?.rubric?.id ?? null,
         rubricVersion: run.snapshot?.rubric?.version ?? null,
         limits: clone(run.snapshot?.limits ?? {}),
-        target: clone(run.snapshot?.target ?? {}),
         epoch: epoch ? {
             id: epoch.id,
             number: epoch.number,
@@ -131,8 +92,6 @@ function boundedAnalysisSummary(analysis) {
         missingScoreCount: analysis.missingScoreCount,
         executionFailureCount: analysis.executionFailureCount,
         gradingFailureCount: analysis.gradingFailureCount,
-        targetReached: analysis.targetReached,
-        consecutiveInsufficientImprovement: analysis.consecutiveInsufficientImprovement,
         improved: bounded(analysis.improved),
         regressed: bounded(analysis.regressed),
         criticalFailures: bounded(analysis.criticalFailures),
@@ -194,8 +153,6 @@ class OptimizationRunner {
         requiredDependency(this.approvals, "reject", "Optimization approval gateway")
         requiredDependency(this.approvals, "suspend", "Optimization approval gateway")
         this.releaseManager = requiredDependency(options.releaseManager, "release", "Skill release manager")
-        this.telemetry = options.telemetry ?? (() => ({}))
-        if (typeof this.telemetry !== "function") throw new Error("Optimization telemetry reader is invalid")
         this.onChanged = options.onChanged ?? (() => {})
         if (typeof this.onChanged !== "function") throw new Error("Optimization change callback is invalid")
         this.controls = new Map()
@@ -224,9 +181,7 @@ class OptimizationRunner {
             previousCandidate: null,
             baselineEvaluation: null,
             previousEvaluation: null,
-            analyses: [],
             workspace,
-            approvedLimits: {},
         }
         if (!control.operatorSessionId || !control.parentJobId) {
             throw new Error("Optimization Runner requires an Operator session and parent Job")
@@ -263,9 +218,7 @@ class OptimizationRunner {
             previousCandidate: null,
             baselineEvaluation: null,
             previousEvaluation: null,
-            analyses: [],
             workspace: clone(context.workspace ?? this.workspaceManager.get?.(runId) ?? null),
-            approvedLimits: clone(run.checkpoint.approvedLimits ?? {}),
             resumePrepared: true,
         }
         if (!control.operatorSessionId || !control.parentJobId || !control.workspace) {
@@ -323,9 +276,7 @@ class OptimizationRunner {
                 : null,
             baselineEvaluation: null,
             previousEvaluation: null,
-            analyses: [],
             workspace: clone(context.workspace ?? this.workspaceManager.get?.(runId) ?? null),
-            approvedLimits: clone(run.checkpoint.approvedLimits ?? {}),
         }
         if (
             !control.operatorSessionId || !control.parentJobId || !control.workspace ||
@@ -421,9 +372,6 @@ class OptimizationRunner {
         control.baselineEvaluation = this.#readArtifact(
             run.checkpoint.baselineEvaluationArtifactId,
         )
-        control.analyses = run.epochs
-            .filter((entry) => entry.analysisArtifactId)
-            .map((entry) => this.#readArtifact(entry.analysisArtifactId))
         const evaluatedEpoch = [...run.epochs].reverse().find((entry) => (
             entry.candidateArtifactId && entry.evaluationArtifactIds?.length
         ))
@@ -570,37 +518,17 @@ class OptimizationRunner {
         })
     }
 
-    async #operatorTimeRemaining(control) {
-        const run = this.store.getRun(control.runId)
-        const progress = await this.telemetry({runId: control.runId, epoch: run.currentEpoch})
-        return Math.max(1, (control.approvedLimits.maxDurationMs ?? run.snapshot.limits.maxDurationMs) - (progress.elapsedMs ?? 0))
-    }
-
     async #requestDecision(control, context) {
         let validationError = null
         for (let attempt = 1; attempt <= 2; attempt += 1) {
             const raw = await this.operatorGateway.requestDecision({
-                timeoutMs: await this.#operatorTimeRemaining(control),
                 ...context,
                 attempt,
                 validationError,
                 operatorSessionId: control.operatorSessionId,
             })
             try {
-                const wrapped = raw && typeof raw === "object" && !Array.isArray(raw) && raw.decision
-                    ? raw
-                    : {decision: raw, limitRequest: null}
-                const decision = parseOptimizationDecision(wrapped.decision)
-                const run = this.store.getRun(control.runId)
-                const limitRequest = optimizationLimitRequest(
-                    wrapped.limitRequest,
-                    {...run.snapshot.limits, ...control.approvedLimits},
-                    run.snapshot.telemetry,
-                )
-                if (limitRequest && decision.action !== "continue") {
-                    throw new Error("Optimization limit request requires a continue decision")
-                }
-                return {decision, limitRequest}
+                return parseOptimizationDecision(raw?.decision ?? raw)
             } catch (error) {
                 validationError = error.message
             }
@@ -653,7 +581,6 @@ class OptimizationRunner {
                 control.resumeEditingEpoch = null
                 const epochNumber = created.index
                 const submission = await this.operatorGateway.requestCandidate({
-                    timeoutMs: await this.#operatorTimeRemaining(control),
                     run: boundedRunSummary(this.store.getRun(control.runId)),
                     epoch: epochNumber,
                     workspace: clone(control.workspace),
@@ -726,30 +653,15 @@ class OptimizationRunner {
                 })
                 this.#transition(control, "deciding")
 
-                const progress = {
-                    ...clone(await this.telemetry({runId: control.runId, epoch: epochNumber})),
-                    cancelRequested: control.cancelRequested,
-                    recoveryFailed: false,
-                }
-                this.store.updateCheckpoint(control.runId, {
-                    telemetry: {
-                        elapsedMs: progress.elapsedMs,
-                        turnsUsed: progress.turnsUsed,
-                        tokens: progress.tokensUsed,
-                        costMicros: progress.costMicros,
-                    },
-                })
                 this.onChanged({runId: control.runId, state: "deciding"})
                 const analysisInput = {
                     baseline: control.baselineEvaluation,
                     previous: control.previousEvaluation,
                     current: candidateEvaluation.evaluation,
-                    mode: run.snapshot.mode,
                     epoch: epochNumber,
-                    target: run.snapshot.target,
-                    limits: run.snapshot.limits,
-                    progress,
-                    history: control.analyses,
+                    limits: {maxEpochs: run.snapshot.limits.maxEpochs},
+                    cancelRequested: control.cancelRequested,
+                    recoveryFailed: false,
                 }
                 const provisional = compareEvaluationRuns({
                     ...analysisInput,
@@ -770,28 +682,7 @@ class OptimizationRunner {
                     }, errorRecord(error))
                     return {runId: control.runId, status: "paused", reason: error.code}
                 }
-                const {decision, limitRequest} = requestedDecision
-                let limitApproval = null
-                if (limitRequest) {
-                    limitApproval = await this.approvals.request({
-                        kind: "limit",
-                        parentJobId: control.parentJobId,
-                        runId: control.runId,
-                        epoch: epochNumber,
-                        request: limitRequest,
-                    }, (approval) => {
-                        control.pendingApprovalId = approval?.approvalId ?? approval?.id ?? null
-                    })
-                    control.pendingApprovalId = null
-                    if (limitApproval?.approved === true) {
-                        control.approvedLimits[limitRequest.field] = limitRequest.value
-                        analysisInput.limits = {
-                            ...analysisInput.limits,
-                            ...control.approvedLimits,
-                        }
-                    }
-                }
-                const analysis = compareEvaluationRuns({...analysisInput, agentDecision: decision})
+                const analysis = compareEvaluationRuns({...analysisInput, agentDecision: requestedDecision})
                 const analysisArtifact = this.#artifact(
                     control.parentJobId,
                     "optimization-analysis",
@@ -803,14 +694,13 @@ class OptimizationRunner {
                     control.parentJobId,
                     "optimization-decision",
                     `decision-${epochNumber}.json`,
-                    decision,
+                    requestedDecision,
                     {runId: control.runId, epoch: epochNumber},
                 )
                 this.store.updateEpoch(control.runId, created.epochId, {
                     analysisArtifactId: analysisArtifact.id,
                     decisionArtifactId: decisionArtifact.id,
                 })
-                control.analyses.push(analysis)
                 const stopDecision = evaluateStopRules(analysis)
                 if (control.pauseRequested || stopDecision.action === "pause") {
                     this.#transition(control, "needs_recovery", {
@@ -823,13 +713,7 @@ class OptimizationRunner {
                     this.store.updateEpoch(control.runId, created.epochId, {status: "completed"})
                     control.previousCandidate = control.currentCandidate
                     control.previousEvaluation = candidateEvaluation.evaluation
-                    this.#transition(control, "editing", {
-                        approvedLimits: control.approvedLimits,
-                        ...(limitRequest ? {
-                            lastLimitRequest: limitRequest,
-                            lastLimitApprovalId: limitApproval?.approvalId ?? null,
-                        } : {}),
-                    })
+                    this.#transition(control, "editing")
                     continue
                 }
                 if (stopDecision.action === "restore" || stopDecision.action === "recover") {
