@@ -1169,6 +1169,43 @@ describe("Operator Job engine", () => {
         assert.deepEqual(preflightOperatorBudget({maxIterations: 2}), {valid: true, fields: {}})
     })
 
+    it("runs Tool steps without telemetry, reservations, or duration enforcement for an unbounded budget", async () => {
+        const {store, session} = fixture()
+        const job = createJob(store, session.id, {budget: {}})
+        let telemetryCalls = 0
+        const engine = new OperatorJobEngine({
+            store,
+            now: () => Date.parse(job.createdAt) + 365 * 24 * 60 * 60 * 1_000,
+            runtimeTelemetry: () => {
+                telemetryCalls += 1
+                return []
+            },
+            handlers: {"evaluations.start": async ({params}) => ({
+                runId: "unbounded-evaluation",
+                caseCount: params.caseIds.length,
+            })},
+        })
+        const result = await engine.execute(job.id, {
+            method: "evaluations.start",
+            params: {
+                datasetId: "dataset-1",
+                caseIds: ["case-1", "case-2"],
+                selectionMode: "selected",
+                runtimeConfigurations: [{runtimeId: "runtime-1"}],
+                judgeConfiguration: {runtimeId: "judge-1"},
+            },
+            idempotencyKey: "unbounded-evaluation",
+        })
+
+        assert.equal(result.status, "succeeded")
+        assert.equal(result.result.caseCount, 2)
+        assert.equal(telemetryCalls, 0)
+        assert.equal(store.listEvents(job.id).some((event) => (
+            event.kind === "operator_budget_reserved"
+        )), false)
+        assert.deepEqual(preflightOperatorBudget({}), {valid: true, fields: {}})
+    })
+
     it("freezes trusted Dataset selection facts before Step creation and never resolves them again", async () => {
         const {path, store, session} = fixture()
         const job = createJob(store, session.id, {budget: budget({

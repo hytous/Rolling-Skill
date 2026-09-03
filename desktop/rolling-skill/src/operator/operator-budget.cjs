@@ -13,6 +13,19 @@ function isIterationBudget(value) {
     return Boolean(value && typeof value === "object" && Object.hasOwn(value, "maxIterations"))
 }
 
+function isUnboundedBudget(value) {
+    return Boolean(
+        value &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        Object.keys(value).length === 0,
+    )
+}
+
+function isAutomaticBudget(value) {
+    return isIterationBudget(value) || isUnboundedBudget(value)
+}
+
 function normalizeOperatorBudget(value, {error = TypeError} = {}) {
     const prototype = value && typeof value === "object" ? Object.getPrototypeOf(value) : null
     if (
@@ -23,6 +36,7 @@ function normalizeOperatorBudget(value, {error = TypeError} = {}) {
     ) {
         throw new error("Operator budget must be a plain object")
     }
+    if (isUnboundedBudget(value)) return {}
     if (isIterationBudget(value)) {
         if (
             Object.keys(value).length !== 1 ||
@@ -58,6 +72,8 @@ function normalizeOperatorBudget(value, {error = TypeError} = {}) {
 module.exports = {
     ITERATION_BUDGET_FIELDS,
     LEGACY_BUDGET_FIELDS,
+    isAutomaticBudget,
     isIterationBudget,
+    isUnboundedBudget,
     normalizeOperatorBudget,
 }

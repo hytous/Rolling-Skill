@@ -862,6 +862,25 @@ describe("OperatorSessionManager", () => {
         assert.equal(clients[0].calls.filter((call) => call.method === "startTurn").length, 1)
     })
 
+    it("continues starting Agent Turns without iteration accounting for an unbounded session", async () => {
+        const {manager, clients, store} = fixture()
+        const created = await manager.create(createInput({budget: {}}))
+        const client = clients[0]
+
+        for (let index = 1; index <= 3; index += 1) {
+            await manager.followUp(created.session.id, `Continue ${index}`)
+            completed(client, `turn-${index}`)
+            await nextTick()
+        }
+
+        assert.equal(client.calls.filter((call) => call.method === "startTurn").length, 4)
+        assert.equal(store.getJob(created.parentJob.id).status, "running")
+        assert.equal(store.getSession(created.session.id).transcript.some((entry) => (
+            entry.kind === "operator_iteration_started" ||
+            entry.kind === "operator_iteration_limit_reached"
+        )), false)
+    })
+
     it("does not restart a Runtime after the durable iteration ceiling is reached", async () => {
         const source = fixture()
         const created = await source.manager.create(createInput({budget: {maxIterations: 1}}))

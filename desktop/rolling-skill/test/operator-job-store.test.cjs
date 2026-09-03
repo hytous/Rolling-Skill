@@ -591,6 +591,22 @@ describe("Operator Job store", () => {
         assert.deepEqual(restarted.getJob(created.id).budget, {maxIterations: 50})
     })
 
+    it("stores an explicit unbounded budget without treating it as a legacy budget", () => {
+        const {path, store} = fixture()
+        const session = createSession(store)
+        const created = store.createJob({
+            sessionId: session.id,
+            type: "operator-session",
+            objective: "Run until the Agent finishes or the user stops",
+            budget: {},
+        })
+
+        assert.deepEqual(created.budget, {})
+        store.close()
+        const restarted = new OperatorJobStore(path)
+        assert.deepEqual(restarted.getJob(created.id).budget, {})
+    })
+
     it("rejects malformed, unknown, and mixed iteration budgets", () => {
         const {store} = fixture()
         const session = createSession(store)

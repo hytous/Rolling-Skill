@@ -7,7 +7,7 @@ const {
     protocolSnapshot,
     serializeOperatorInput,
 } = require("./operator-protocol.cjs")
-const {isIterationBudget} = require("./operator-budget.cjs")
+const {isAutomaticBudget, isIterationBudget} = require("./operator-budget.cjs")
 const {
     OperatorToolTransport,
     redactOperatorSecrets,
@@ -115,7 +115,7 @@ function selectedModel(runtime, requested) {
 }
 
 function capabilityBudget(budget) {
-    if (isIterationBudget(budget)) return {}
+    if (isAutomaticBudget(budget)) return {}
     return {
         maxRuntimeTurns: budget.maxRuntimeTurns,
         maxEvaluations: budget.maxEvaluations,
@@ -124,7 +124,7 @@ function capabilityBudget(budget) {
 
 function capabilityLifetime(input, budget) {
     const requested = input.expiresInMs ?? (
-        isIterationBudget(budget)
+        isAutomaticBudget(budget)
             ? MAX_CAPABILITY_LIFETIME_MS
             : Math.max(60_000, budget.maxDurationMs)
     )

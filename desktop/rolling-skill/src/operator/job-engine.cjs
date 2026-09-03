@@ -1,5 +1,5 @@
 const {operatorMethodBudgetMinimum} = require("../control-plane/policy.cjs")
-const {isIterationBudget} = require("./operator-budget.cjs")
+const {isAutomaticBudget} = require("./operator-budget.cjs")
 
 const TERMINAL_JOB_STATUSES = new Set(["succeeded", "failed", "cancelled"])
 const TERMINAL_STEP_STATUSES = new Set(["succeeded", "failed", "cancelled"])
@@ -284,7 +284,7 @@ function normalizeTelemetry(value) {
 
 function preflightOperatorBudget(budget, runtimeTelemetry = [], involvedRuntimeIds = null) {
     const limits = requireObject(budget, "Operator Job budget")
-    if (isIterationBudget(limits)) return {valid: true, fields: {}}
+    if (isAutomaticBudget(limits)) return {valid: true, fields: {}}
     const telemetry = normalizeTelemetry(runtimeTelemetry)
     const involved = involvedRuntimeIds === null
         ? telemetry.map((entry) => entry.runtimeId)
@@ -794,8 +794,8 @@ class OperatorJobEngine {
     }
 
     async #effectiveRequest(request, signal, budget) {
-        const iterationOnly = isIterationBudget(budget)
-        const minimum = iterationOnly ? {} : {...operatorMethodBudgetMinimum(request.method)}
+        const automaticBudget = isAutomaticBudget(budget)
+        const minimum = automaticBudget ? {} : {...operatorMethodBudgetMinimum(request.method)}
         const trustedFacts = {
             ...(request.policyApproval ? {
                 controlPolicyApproval: cloneJson(request.policyApproval),
@@ -853,7 +853,7 @@ class OperatorJobEngine {
                         code: "BUDGET_SELECTION_UNRESOLVED",
                     })
                 }
-                if (!iterationOnly) {
+                if (!automaticBudget) {
                     const executions = safeProduct(
                         caseCount,
                         params.runtimeConfigurations.length,
@@ -864,7 +864,7 @@ class OperatorJobEngine {
                 }
             }
         }
-        const reservation = iterationOnly ? {} : {...request.reservation}
+        const reservation = automaticBudget ? {} : {...request.reservation}
         for (const [field, amount] of Object.entries(minimum)) {
             reservation[field] = Math.max(reservation[field] ?? 0, amount)
         }
@@ -908,7 +908,7 @@ class OperatorJobEngine {
             trustedFacts: request.trustedFacts,
             idempotencyKey: request.idempotencyKey,
         })
-        const telemetry = isIterationBudget(job.budget) ? [] : await this.#telemetry(request, signal)
+        const telemetry = isAutomaticBudget(job.budget) ? [] : await this.#telemetry(request, signal)
         const policyDecision = await this.#preInvokeDecision(job, step, request, telemetry, signal)
         if (policyDecision?.decision === "deny") {
             const error = {
@@ -978,7 +978,7 @@ class OperatorJobEngine {
         if (job.status !== "running" && job.status !== "waiting_approval") {
             return {status: "needs_recovery", jobId: step.jobId, stepId: step.id}
         }
-        const telemetry = isIterationBudget(job.budget) ? [] : await this.#telemetry(request, signal)
+        const telemetry = isAutomaticBudget(job.budget) ? [] : await this.#telemetry(request, signal)
         const decision = await this.#preInvokeDecision(job, step, request, telemetry, signal)
         if (decision?.decision === "approval_required") {
             return this.#createApproval(job, step, request, decision)
@@ -1059,7 +1059,7 @@ class OperatorJobEngine {
         if (custom.decision !== "allow" && custom.decision !== "approval_required") {
             throw new Error("Operator approval decision is invalid")
         }
-        if (isIterationBudget(job.budget)) return {decision: "allow"}
+        if (isAutomaticBudget(job.budget)) return {decision: "allow"}
         const budget = this.#budgetAssessment(
             job,
             request.reservation,
@@ -1231,8 +1231,8 @@ class OperatorJobEngine {
     async #runStep(job, initialStep, request, {telemetry = [], signal = null} = {}) {
         let step = this.#store.getStep(initialStep.id)
         try {
-            const iterationOnly = isIterationBudget(job.budget)
-            if (!iterationOnly) this.#reserveBudget(job, step, request, telemetry)
+            const automaticBudget = isAutomaticBudget(job.budget)
+            if (!automaticBudget) this.#reserveBudget(job, step, request, telemetry)
             if (step.status === "running") {
                 return {status: "needs_recovery", jobId: job.id, stepId: step.id}
             }
@@ -1272,7 +1272,7 @@ class OperatorJobEngine {
                     signal: controller.signal,
                     label: "Operator handler",
                 }
-                if (!iterationOnly) {
+                if (!automaticBudget) {
                     const timeoutError = Object.assign(new Error("Operator Job duration budget was exceeded"), {
                         code: "BUDGET_DURATION_EXCEEDED",
                     })
@@ -1710,7 +1710,7 @@ class OperatorJobEngine {
         const execution = this.#executionFromStep(step)
         if (isDeleteMethod(step.method)) return false
         if (isReadMethod(step.method)) {
-            const telemetry = isIterationBudget(job.budget) ? [] : await this.#telemetry(execution, signal)
+            const telemetry = isAutomaticBudget(job.budget) ? [] : await this.#telemetry(execution, signal)
             const result = await this.#runStep(job, step, execution, {telemetry, signal})
             return result.status === "succeeded" || result.status === "failed"
         }

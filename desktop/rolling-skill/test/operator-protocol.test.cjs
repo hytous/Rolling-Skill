@@ -62,6 +62,17 @@ describe("Rolling Skill Operator protocol", () => {
         assert.doesNotMatch(text, /request a budget expansion/iu)
     })
 
+    it("accepts an unbounded budget without imposing an Agent-turn count", () => {
+        const context = protocolContext({budget: {}})
+        const snapshot = protocolSnapshot(context)
+        const text = buildOperatorInstructions(context)
+
+        assert.deepEqual(snapshot.budget, {})
+        assert.match(text, /no Agent-turn limit/iu)
+        assert.doesNotMatch(text, /request a budget expansion/iu)
+        assert.doesNotMatch(text, /finish or pause within/iu)
+    })
+
     it("rejects malformed or mixed iteration budgets", () => {
         const inheritedBudget = Object.assign(
             Object.create({maxIterations: 50}),

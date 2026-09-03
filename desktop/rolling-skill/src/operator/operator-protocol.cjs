@@ -2,6 +2,7 @@ const {isAbsolute} = require("node:path")
 const {
     LEGACY_BUDGET_FIELDS,
     isIterationBudget,
+    isUnboundedBudget,
     normalizeOperatorBudget,
 } = require("./operator-budget.cjs")
 
@@ -90,7 +91,9 @@ function buildOperatorInstructions(context) {
     const snapshot = protocolSnapshot(context)
     const budgetInstruction = isIterationBudget(snapshot.budget)
         ? `The Job must finish or pause within the frozen ${snapshot.budget.maxIterations} Operator iterations. The iteration ceiling cannot be expanded during this task.`
-        : "The Job budget is frozen. If it is insufficient, request a budget expansion and wait for approval."
+        : isUnboundedBudget(snapshot.budget)
+            ? "The Job has no Agent-turn limit. Continue until the objective is complete, the user stops it, or a technical failure requires recovery. Do not request a runtime budget expansion."
+            : "The Job budget is frozen. If it is insufficient, request a budget expansion and wait for approval."
     return [
         "Rolling Skill Operator Protocol v1",
         "",
