@@ -16,7 +16,7 @@
 - Modify: `desktop/rolling-skill/test/main-bridge.test.cjs`
 - Test: `desktop/rolling-skill/test/main-bridge.test.cjs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add this test inside `describe("desktop main/preload bridge", ...)`:
 
@@ -58,7 +58,7 @@ it("keeps a temporary Runtime alive until its model catalog request settles", as
 })
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -75,7 +75,7 @@ Expected: FAIL because `calls` already contains `"stop"` before `resolveModels(.
 - Modify: `desktop/rolling-skill/src/main.cjs:1328`
 - Test: `desktop/rolling-skill/test/main-bridge.test.cjs`
 
-- [ ] **Step 1: Await the temporary model request**
+- [x] **Step 1: Await the temporary model request**
 
 Change the temporary-client return expression to:
 
@@ -87,7 +87,7 @@ return typeof temporaryClient.listModels === "function"
 
 This guarantees that `finally` calls `stop()` only after fulfillment or rejection.
 
-- [ ] **Step 2: Run the focused test and verify GREEN**
+- [x] **Step 2: Run the focused test and verify GREEN**
 
 Run:
 
@@ -98,7 +98,7 @@ node --test --test-name-pattern='keeps a temporary Runtime alive' test/main-brid
 
 Expected: PASS with zero failures.
 
-- [ ] **Step 3: Check the patch**
+- [x] **Step 3: Check the patch**
 
 Run:
 
@@ -109,7 +109,7 @@ git diff -- desktop/rolling-skill/src/main.cjs desktop/rolling-skill/test/main-b
 
 Expected: no whitespace errors; only the lifecycle await and focused regression test are present.
 
-- [ ] **Step 4: Commit the fix**
+- [x] **Step 4: Commit the fix**
 
 ```bash
 git add desktop/rolling-skill/src/main.cjs desktop/rolling-skill/test/main-bridge.test.cjs docs/superpowers/plans/2026-09-03-runtime-model-catalog-lifecycle-fix.md
@@ -122,7 +122,7 @@ git commit -m "fix: await Runtime model catalogs before shutdown"
 - Generated locally: `Rolling Skill.app`
 - Install target: `/Applications/Rolling Skill.app`
 
-- [ ] **Step 1: Run the renderer smoke check**
+- [x] **Step 1: Run the renderer smoke check**
 
 Run:
 
@@ -133,7 +133,7 @@ npm run smoke:renderer
 
 Expected: exit code 0.
 
-- [ ] **Step 2: Run the full desktop verification and signed App build once**
+- [x] **Step 2: Run the full desktop verification and signed App build once**
 
 Run from the repository root:
 
@@ -143,15 +143,15 @@ bash desktop/rolling-skill/scripts/build-macos-app.sh
 
 Expected: `npm test`, the external tool build, electron-builder, codesign, and plist validation all exit successfully and produce `Rolling Skill.app` at the repository root. Do not stage generated `.tgz` archives.
 
-- [ ] **Step 3: Replace the installed App safely**
+- [x] **Step 3: Replace the installed App safely**
 
 Quit the running App, copy the existing installation to a uniquely named `/tmp` backup, replace only `/Applications/Rolling Skill.app` with the newly built bundle, then relaunch it. Confirm the installed `app.asar` contains the same `src/main.cjs` digest as the working tree.
 
-- [ ] **Step 4: Verify the user journey**
+- [x] **Step 4: Verify the user journey**
 
 Open the self-operation workbench and wait for all Runtime model catalogs to settle. Confirm there is no global “Task could not continue / Codex app-server exited with code 0” banner, the workbench remains usable, and no Operator Job is created merely by opening the page.
 
-- [ ] **Step 5: Push the committed changes**
+- [x] **Step 5: Push the committed changes**
 
 Run:
 
