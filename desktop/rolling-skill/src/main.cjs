@@ -103,6 +103,9 @@ const {OptimizationRunner} = require("./optimization/optimization-runner.cjs")
 const {
     OptimizationControlService,
 } = require("./optimization/optimization-control-service.cjs")
+const {
+    assertOptimizationTelemetrySupport,
+} = require("./optimization/optimization-preflight.cjs")
 
 const RENDERER_FILE = join(__dirname, "..", "renderer", "index.html")
 const PRELOAD_FILE = join(__dirname, "preload.cjs")
@@ -2236,15 +2239,7 @@ async function resolveOptimizationPreflight(config) {
         if (!runtime) throw new Error(`Optimization Runtime ${runtimeId} is unavailable`)
         return runtime
     })
-    const allSupport = (capability) => runtimes.every((runtime) => (
-        Array.isArray(runtime.capabilities) && runtime.capabilities.includes(capability)
-    ))
-    if (config.telemetry.tokens && !allSupport("token-usage")) {
-        throw new Error("Optimization token telemetry is unavailable on one or more Runtimes")
-    }
-    if (config.telemetry.cost && !allSupport("cost-usage")) {
-        throw new Error("Optimization cost telemetry is unavailable on one or more Runtimes")
-    }
+    assertOptimizationTelemetrySupport(config, runtimes)
     const skillEvidence = await snapshotManagedSkillEvidence({
         name: skill.name,
         repositoryId: repository.id,

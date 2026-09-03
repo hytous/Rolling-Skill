@@ -892,6 +892,13 @@ describe("desktop main/preload bridge", () => {
         ]) assert.match(preload, new RegExp(`${method}:`))
         assert.doesNotMatch(preload, /submitOptimizationCandidate|submitOptimizationDecision/u)
 
+        const preflightResolver = main.slice(
+            main.indexOf("async function resolveOptimizationPreflight"),
+            main.indexOf("\nfunction optimizationRuntimeConfiguration"),
+        )
+        assert.match(preflightResolver, /assertOptimizationTelemetrySupport\(config, runtimes\)/u)
+        assert.doesNotMatch(preflightResolver, /config\.telemetry\.(?:tokens|cost)/u)
+
         const resolver = main.slice(
             main.indexOf("async function resolveManagedSkillWorkspace"),
             main.indexOf("\nfunction currentRendererScopes"),
