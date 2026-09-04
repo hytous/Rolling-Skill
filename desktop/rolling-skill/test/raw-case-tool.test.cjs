@@ -18,6 +18,7 @@ const {RawCaseStore} = require("../src/raw-case-store.cjs")
 const {ControlSocketServer} = require("../src/control-plane/socket-server.cjs")
 const {
     CONTROL_METHODS,
+    INSTALLATION_AGENT_CONTROL_METHODS,
     OPERATOR_CONTROL_METHODS,
     createPublicControlError,
 } = require("../src/control-plane/contracts.cjs")
@@ -738,6 +739,67 @@ describe("rolling-skill external Raw Case tool", () => {
             await server.close()
         }
         assertNoSecrets(Buffer.concat(stderr).toString("utf8"), [token, session, "hidden-queue"])
+    })
+
+    it("exposes only the private registration contract through installation MCP", async () => {
+        const token = "installation-mcp-secret-token"
+        const session = "installation-mcp-secret-session"
+        const invocations = []
+        const server = await startControlFixture(async (request) => {
+            invocations.push(request)
+            return {accepted: true, duplicate: false}
+        })
+        const [{Client}, {StdioClientTransport}] = await Promise.all([
+            import("@modelcontextprotocol/client"),
+            import("@modelcontextprotocol/client/stdio"),
+        ])
+        const transport = new StdioClientTransport({
+            command: process.execPath,
+            args: [toolPath, "installation-mcp"],
+            env: controlEnvironment(server.socketPath, token, session),
+            stderr: "pipe",
+        })
+        const stderr = []
+        transport.stderr.on("data", (chunk) => stderr.push(chunk))
+        const client = new Client({name: "rolling-skill-installation-test", version: "1.0.0"})
+        try {
+            await client.connect(transport)
+            const listed = await client.listTools()
+            assert.deepEqual(INSTALLATION_AGENT_CONTROL_METHODS, ["installations.register"])
+            assert.deepEqual(listed.tools.map((tool) => tool.name), [
+                "rolling_skill_installations_register",
+            ])
+            assert.equal(listed.tools[0].inputSchema.additionalProperties, false)
+            assert.equal(listed.tools[0].inputSchema.properties.runtimeId, undefined)
+
+            const evidence = {
+                status: "succeeded",
+                operation: "install",
+                classificationBefore: "unmanaged",
+                destination: "/runtime/skills/billing",
+                actualDigest: `sha256:${"a".repeat(64)}`,
+                beforeDigest: `sha256:${"b".repeat(64)}`,
+                mutationPerformed: true,
+                runtimeDiscovered: true,
+                warnings: [],
+                error: null,
+            }
+            const result = await client.callTool({
+                name: "rolling_skill_installations_register",
+                arguments: evidence,
+            })
+            assert.deepEqual(result.structuredContent, {accepted: true, duplicate: false})
+            assert.deepEqual(invocations, [{
+                method: "installations.register",
+                params: evidence,
+                token,
+                sessionId: session,
+            }])
+        } finally {
+            await client.close().catch(() => {})
+            await server.close()
+        }
+        assertNoSecrets(Buffer.concat(stderr).toString("utf8"), [token, session])
     })
 
     it("closes the operator MCP handle and socket client promptly on stdin EOF", async () => {

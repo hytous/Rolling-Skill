@@ -242,6 +242,36 @@ const installationTarget = runtimeProfile.extend({
     permissionMode: boundedText(100, "Installation permission").nullable().default(null),
 }).strict()
 
+const installationRegistrationInput = z.object({
+    status: z.enum(["succeeded", "failed", "cancelled", "unverified", "needs_recovery"]),
+    operation: z.enum([
+        "install",
+        "inspect",
+        "experiment_install",
+        "experiment_restore",
+        "experiment_remove",
+        "experiment_inspect",
+    ]),
+    classificationBefore: z.enum([
+        "absent",
+        "managed-clean",
+        "managed-drifted",
+        "unmanaged",
+        "conflict",
+        "uncertain",
+    ]),
+    destination: z.string().max(4_096).nullable(),
+    actualDigest: z.string().max(80).nullable(),
+    beforeDigest: z.string().max(80).nullable(),
+    mutationPerformed: z.boolean(),
+    runtimeDiscovered: z.boolean().nullable(),
+    warnings: z.array(z.string().max(4_096)).max(100),
+    error: z.object({
+        code: id,
+        message: z.string().min(1).max(8_192),
+    }).strict().nullable(),
+}).strict()
+
 const evaluationStart = z.object({
     datasetId: id,
     caseIds: z.array(id).max(MAX_EVALUATION_CASES).default([]),
@@ -705,6 +735,7 @@ const OPERATOR_UI_ONLY_METHODS = new Set([
     "optimization.pause",
     "optimization.resume",
     "optimization.stop",
+    "installations.register",
 ])
 
 function freezeMethodDefinitions(definitions) {
@@ -1007,6 +1038,14 @@ const METHOD_DEFINITIONS = freezeMethodDefinitions({
         input: z.object({installationId: id, idempotencyKey: id}).strict(),
         output: z.object({installation: publicInstallation}).strict(),
     },
+    "installations.register": {
+        action: "installations.register",
+        input: installationRegistrationInput,
+        output: z.object({
+            accepted: z.boolean(),
+            duplicate: z.boolean(),
+        }).strict(),
+    },
     "optimization.preflight": {
         action: "optimizations.read",
         input: optimizationConfigWithIdempotencyInput,
@@ -1071,6 +1110,7 @@ const CONTROL_METHODS = Object.freeze(Object.keys(METHOD_DEFINITIONS))
 const OPERATOR_CONTROL_METHODS = Object.freeze(
     CONTROL_METHODS.filter((method) => METHOD_DEFINITIONS[method].operatorExposed),
 )
+const INSTALLATION_AGENT_CONTROL_METHODS = Object.freeze(["installations.register"])
 const OPERATOR_CONTROL_ACTIONS = Object.freeze([
     ...new Set(OPERATOR_CONTROL_METHODS.map((method) => METHOD_DEFINITIONS[method].action)),
 ])
@@ -1328,6 +1368,7 @@ function publicControlError(error) {
 module.exports = {
     CONTROL_METHODS,
     DEFAULT_PAGE_LIMIT,
+    INSTALLATION_AGENT_CONTROL_METHODS,
     MAX_PAGE_SIZE,
     METHOD_DEFINITIONS,
     OPERATOR_CONTROL_ACTIONS,

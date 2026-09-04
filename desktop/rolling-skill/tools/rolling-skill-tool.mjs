@@ -20,6 +20,7 @@ import controlSocketClientModule from "../src/control-plane/socket-client.cjs"
 const {RawCaseStore} = rawCaseStoreModule
 const {
     CONTROL_METHODS,
+    INSTALLATION_AGENT_CONTROL_METHODS,
     OPERATOR_CONTROL_METHODS,
     PUBLIC_CONTROL_ERROR_CODES,
     controlDefinition,
@@ -453,6 +454,47 @@ function createOperatorMcpServer(credentials = controlCredentials()) {
     return server
 }
 
+function createInstallationMcpServer(credentials = controlCredentials()) {
+    const client = new ControlSocketClient(credentials)
+    const server = new McpServer(
+        {name: "rolling-skill-installation", version: TOOL_VERSION},
+        {capabilities: {tools: {}}},
+    )
+    for (const method of INSTALLATION_AGENT_CONTROL_METHODS) {
+        const definition = controlDefinition(method)
+        server.registerTool(
+            controlToolName(method),
+            {
+                title: "Register Rolling Skill Installation",
+                description: "Register verified terminal evidence for this scoped installation Job.",
+                inputSchema: definition.input,
+                outputSchema: definition.output,
+                annotations: {
+                    title: "Register Skill Installation",
+                    readOnlyHint: false,
+                    destructiveHint: false,
+                    idempotentHint: true,
+                    openWorldHint: false,
+                },
+            },
+            async (input) => {
+                try {
+                    const result = parseControlOutput(method, await client.invoke(method, input))
+                    return toolResponse(serializableControlResult(result, credentials))
+                } catch (error) {
+                    return controlToolError(error, credentials)
+                }
+            },
+        )
+    }
+    const closeServer = server.close.bind(server)
+    server.close = async () => {
+        client.close()
+        await closeServer()
+    }
+    return server
+}
+
 function usage() {
     return [
         "rolling-skill-tool enqueue --skill <name> --question <text> [--skill-path <path>] [--note <text>]",
@@ -460,6 +502,7 @@ function usage() {
         "rolling-skill-tool list [--skill <name>] --json",
         "rolling-skill-tool mcp",
         "rolling-skill-tool control <method> --params-json <file|->",
+        "rolling-skill-tool installation-mcp",
         "rolling-skill-tool operator-mcp",
     ].join("\n")
 }
@@ -524,6 +567,15 @@ async function runCli(arguments_) {
         await lifecycle.closed
         return
     }
+    if (command === "installation-mcp") {
+        const credentials = controlCredentials()
+        const lifecycle = serveMcpUntilShutdown(
+            () => createInstallationMcpServer(credentials),
+            {onerror: () => {}},
+        )
+        await lifecycle.closed
+        return
+    }
     if (command === "help" || command === "--help" || command === "-h") {
         process.stdout.write(`${usage()}\n`)
         return
@@ -571,7 +623,11 @@ async function runCli(arguments_) {
 
 const cliArguments = process.argv.slice(2)
 runCli(cliArguments).catch((error) => {
-    if (cliArguments[0] === "control" || cliArguments[0] === "operator-mcp") {
+if (
+    cliArguments[0] === "control" ||
+    cliArguments[0] === "operator-mcp" ||
+    cliArguments[0] === "installation-mcp"
+) {
         process.stderr.write(`${JSON.stringify(safeControlError(error, {
             token: process.env.ROLLING_SKILL_CONTROL_TOKEN,
             sessionId: process.env.ROLLING_SKILL_OPERATOR_SESSION ??
@@ -584,6 +640,7 @@ runCli(cliArguments).catch((error) => {
 })
 
 export {
+    createInstallationMcpServer,
     createOperatorMcpServer,
     createRawCaseMcpServer,
     enqueueBatch,

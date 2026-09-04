@@ -3,6 +3,7 @@ const {describe, it} = require("node:test")
 
 const {
     CONTROL_METHODS,
+    INSTALLATION_AGENT_CONTROL_METHODS,
     OPERATOR_CONTROL_METHODS,
     METHOD_DEFINITIONS,
     controlDefinition,
@@ -195,6 +196,18 @@ const validInputs = {
         installationId: "installation-1",
         idempotencyKey: "install-inspect-1",
     },
+    "installations.register": {
+        status: "succeeded",
+        operation: "install",
+        classificationBefore: "unmanaged",
+        destination: "/runtime/skills/billing",
+        actualDigest: `sha256:${"a".repeat(64)}`,
+        beforeDigest: `sha256:${"b".repeat(64)}`,
+        mutationPerformed: true,
+        runtimeDiscovered: true,
+        warnings: [],
+        error: null,
+    },
     "optimization.preflight": {...optimizationConfig, idempotencyKey: "optimization-preflight-1"},
     "optimization.start": {...optimizationConfig, idempotencyKey: "optimization-start-1"},
     "optimization.get": {runId: "optimization-run-1"},
@@ -294,6 +307,10 @@ const validOutputs = {
     "installations.inspect": {
         installation: {id: "inspection-1", status: "queued", repositoryId: "repository-1", skillId: "skill-1", runtimeId: "codex:local"},
     },
+    "installations.register": {
+        accepted: true,
+        duplicate: false,
+    },
     "optimization.preflight": {
         snapshotDigest: optimizationRun.snapshotDigest,
         baseline: optimizationRun.baseline,
@@ -368,6 +385,7 @@ describe("control-plane contracts", () => {
                 "installations.get": "installations.read",
                 "installations.cancel": "installations.execute",
                 "installations.inspect": "installations.execute",
+                "installations.register": "installations.register",
                 "optimization.preflight": "optimizations.read",
                 "optimization.start": "optimizations.execute",
                 "optimization.get": "optimizations.read",
@@ -413,6 +431,7 @@ describe("control-plane contracts", () => {
             "optimization.resume",
             "optimization.stop",
             "skills.get",
+            "installations.register",
         ]
         assert.deepEqual(
             CONTROL_METHODS.filter((method) => !controlDefinition(method).operatorExposed).sort(),
@@ -422,6 +441,24 @@ describe("control-plane contracts", () => {
             OPERATOR_CONTROL_METHODS,
             CONTROL_METHODS.filter((method) => !uiOnly.includes(method)),
         )
+        assert.deepEqual(INSTALLATION_AGENT_CONTROL_METHODS, ["installations.register"])
+        assert.equal(OPERATOR_CONTROL_METHODS.includes("installations.register"), false)
+    })
+
+    it("accepts only evidence for the private installation Agent registration method", () => {
+        assert.deepEqual(
+            parseControlInput("installations.register", validInputs["installations.register"]),
+            validInputs["installations.register"],
+        )
+        for (const forbiddenField of ["runtimeId", "skillId", "repositoryId", "versionId", "jobId"]) {
+            assert.throws(
+                () => parseControlInput("installations.register", {
+                    ...validInputs["installations.register"],
+                    [forbiddenField]: "agent-must-not-bind-identity",
+                }),
+                new RegExp(`${forbiddenField}|unrecognized`, "iu"),
+            )
+        }
     })
 
     it("rejects unknown methods before attempting to parse input or output", () => {
