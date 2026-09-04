@@ -408,6 +408,20 @@ describe("Operator Job engine", () => {
         assert.equal(failed.error.code, "EVALUATION_FAILED")
     })
 
+    it("inherits the frozen parent budget for an internal child Job", async () => {
+        const {store, session} = fixture()
+        const parent = createJob(store, session.id, {budget: {}})
+        const engine = new OperatorJobEngine({store})
+
+        const result = await engine.runChild({
+            parentJobId: parent.id,
+            type: "optimization_baseline",
+            objective: "Run the baseline evaluation",
+        }, ({jobId}) => ({jobId}))
+
+        assert.deepEqual(store.getJob(result.jobId).budget, parent.budget)
+    })
+
     it("coordinates idempotency and Job queues across Store instances for the same path", async () => {
         const {root, path, store, session} = fixture()
         const job = createJob(store, session.id)

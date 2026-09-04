@@ -602,12 +602,20 @@ class OperatorJobEngine {
         if (typeof operation !== "function") {
             throw new Error("Internal child Operator Job operation is required")
         }
+        const parentJobId = requiredText(
+            request.parentJobId,
+            "Parent Operator Job id",
+            200,
+        )
+        const budget = request.budget === undefined
+            ? this.#store.getJob(parentJobId).budget
+            : request.budget
         const child = await this.scheduleChild(
-            requiredText(request.parentJobId, "Parent Operator Job id", 200),
+            parentJobId,
             {
                 type: requiredText(request.type, "Child Operator Job type", 200),
                 objective: requiredText(request.objective, "Child Operator Job objective", 32_768),
-                budget: request.budget,
+                budget,
             },
         )
         return this.#enqueue(child.id, () => this.#withJobOperation(child.id, async (signal) => {
