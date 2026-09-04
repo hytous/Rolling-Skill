@@ -1987,26 +1987,47 @@ async function run() {
         target.dispatchEvent(new Event("change", {bubbles: true}))
         change('[data-optimization-target-model="codebuddy:renderer-smoke"]', "model-renderer-smoke")
         change('[data-optimization-target-effort="codebuddy:renderer-smoke"]', "high")
-        document.querySelector("#operator-optimization-preflight").click()
     })()`)
-    await waitFor(window, '!document.querySelector("#operator-optimization-start").disabled')
-    const optimizationPreflightApprovalCopy = await inspect(
-        window,
-        'document.querySelector("#operator-optimization-preflight-summary").textContent',
-    )
-    if (
-        !optimizationPreflightApprovalCopy.includes("仅最终一次“发布并安装”决定需要明确审批") ||
-        optimizationPreflightApprovalCopy.includes("首次安装实验改进版")
-    ) {
-        throw new Error(`Optimization preflight exposed stale approval boundaries: ${optimizationPreflightApprovalCopy}`)
+    const separatePreflightControl = await inspect(window, `Boolean(
+        document.querySelector("#operator-optimization-preflight") ||
+        document.querySelector("#operator-optimization-preflight-summary")
+    )`)
+    if (separatePreflightControl) {
+        throw new Error("Optimization still exposes a separate preflight action")
     }
+    await inspect(window, 'window.rollingSkill.smokeFailNextOptimizationStart()')
     await inspect(window, 'document.querySelector("#operator-optimization-start").click()')
+    await waitFor(window, `
+        document.querySelector("#operator-setup-error").textContent.includes("评分标准") &&
+        !document.querySelector("#operator-optimization-start").disabled
+    `)
+    const optimizationFailure = await inspect(window, `(() => ({
+        error: document.querySelector("#operator-setup-error").textContent,
+        errorVisible: !document.querySelector("#operator-setup-error").classList.contains("hidden"),
+        startDisabled: document.querySelector("#operator-optimization-start").disabled,
+        startText: document.querySelector("#operator-optimization-start").textContent,
+    }))()`)
+    if (
+        !optimizationFailure.errorVisible ||
+        !optimizationFailure.error.includes("尚未发布评分标准") ||
+        optimizationFailure.startDisabled ||
+        optimizationFailure.startText !== "开始优化"
+    ) {
+        throw new Error(`Optimization failure was not actionable and retryable: ${JSON.stringify(optimizationFailure)}`)
+    }
+    const optimizationStarting = await inspect(window, `(() => {
+        const start = document.querySelector("#operator-optimization-start")
+        start.click()
+        return {disabled: start.disabled, text: start.textContent}
+    })()`)
+    if (!optimizationStarting.disabled || optimizationStarting.text !== "正在检查并启动…") {
+        throw new Error(`Optimization Start did not expose its pending state: ${JSON.stringify(optimizationStarting)}`)
+    }
     try {
         await waitFor(window, '[...document.querySelectorAll("[data-operator-job-id]")].some((node) => node.textContent.includes("Multi-Epoch Optimization smoke Run"))')
     } catch (error) {
         const diagnostic = await inspect(window, `(() => ({
             setupError: document.querySelector("#operator-setup-error").textContent,
-            preflight: document.querySelector("#operator-optimization-preflight-summary").textContent,
             formValid: document.querySelector("#operator-setup-form").checkValidity(),
             invalid: [...document.querySelector("#operator-setup-form").elements]
                 .filter((element) => typeof element.checkValidity === "function" && !element.checkValidity())
@@ -2014,6 +2035,13 @@ async function run() {
             jobs: [...document.querySelectorAll("[data-operator-job-id]")].map((node) => node.textContent),
         }))()`)
         throw new Error(`Optimization Start did not create a Job: ${JSON.stringify({diagnostic, rendererErrors})}`, {cause: error})
+    }
+    const optimizationStartCalls = await inspect(
+        window,
+        'window.rollingSkill.smokeOperatorMetrics().then(({optimizationStartCalls}) => optimizationStartCalls)',
+    )
+    if (optimizationStartCalls !== 2) {
+        throw new Error(`Optimization Start call count changed: ${optimizationStartCalls}`)
     }
     const optimizationJobId = await inspect(window, `[...document.querySelectorAll("[data-operator-job-id]")]
         .find((node) => node.textContent.includes("Multi-Epoch Optimization smoke Run"))?.dataset.operatorJobId`)
@@ -2229,7 +2257,8 @@ async function run() {
             operatorAutomationBoundary: operatorCreateInput.budget,
             operatorAutomationBoundaryNarrow: true,
             operatorEpochOnlySetup: epochOnlySetup,
-            optimizationPreflightSingleApproval: true,
+            optimizationOneActionStart: true,
+            optimizationActionableRetry: true,
             optimizationHiddenProgressIsolated: true,
             optimizationTwoEpochTrend: optimizationEvidenceAfterSwitch.timeline,
             optimizationFinalApproval: finalApprovalId,

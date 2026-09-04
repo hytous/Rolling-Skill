@@ -272,11 +272,14 @@ authorization: after a Candidate has been evaluated and selected, the user recei
 ## Multi-Epoch Skill optimization
 
 Use **Self-operation → Multi-Epoch Optimization** to improve one managed Skill against a stable
-evaluation contract. Before Start is enabled, preflight resolves and freezes the selected Released
-baseline, managed Skill/repository identity, Dataset and published Rubric revision, calibrated Case
-revisions, Operator Runtime, target Runtime matrix, Judge, activation mode, model/effort choices,
-and the maximum closed-loop Epoch count. A later Dataset, Rubric, Case, catalog, or Working-tree
-change does not mutate an existing Run. Start a new Run when the comparison inputs must change.
+evaluation contract. Click **Start Optimization** once: the App performs preflight internally,
+freezes the selected Released baseline, managed Skill/repository identity, Dataset and published
+Rubric revision, calibrated Case revisions, Operator Runtime, target Runtime matrix, Judge,
+activation mode, model/effort choices, and the maximum closed-loop Epoch count, then immediately
+creates the Run. If validation fails, the form remains open, the Start button becomes available
+again, and the exact blocking resource or Runtime is shown. A later Dataset, Rubric, Case, catalog,
+or Working-tree change does not mutate an existing Run. Start a new Run when the comparison inputs
+must change.
 
 The engine, rather than the Operator Agent, owns the phase order:
 

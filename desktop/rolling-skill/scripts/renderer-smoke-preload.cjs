@@ -390,6 +390,8 @@ const smokeOptimizationDataset = {
 
 let smokeOptimizationRun = null
 let smokeOptimizationStage = 0
+let smokeOptimizationStartCalls = 0
+let failNextOptimizationStart = false
 
 function smokeOptimizationBase(config) {
     return {
@@ -1166,15 +1168,12 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     pauseOperatorJob: (jobId) => invokeOperator("pause", {jobId}),
     resumeOperatorJob: (jobId) => invokeOperator("resume", {jobId}),
     stopOperatorJob: (jobId) => invokeOperator("stop", {jobId}),
-    preflightOptimization: async (input) => ({
-        snapshotDigest: `sha256:${"d".repeat(64)}`,
-        baseline: smokeOptimizationBase(input).baseline,
-        dataset: smokeOptimizationBase(input).dataset,
-        rubric: smokeOptimizationBase(input).rubric,
-        targets: input.targets,
-        ready: true,
-    }),
     startOptimization: async (input) => {
+        smokeOptimizationStartCalls += 1
+        if (failNextOptimizationStart) {
+            failNextOptimizationStart = false
+            throw new Error("Optimization Dataset requires a published Rubric")
+        }
         smokeOptimizationStage = 0
         smokeOptimizationRun = smokeOptimizationBase(input)
         const created = await invokeOperator("create-optimization", {runId: smokeOptimizationRun.id})
@@ -1292,6 +1291,9 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         emitOperator(operatorChangedListeners, created.changed)
         return structuredClone(smokeOptimizationRun)
     },
+    smokeFailNextOptimizationStart: () => {
+        failNextOptimizationStart = true
+    },
     smokeEmitOperatorGap: async () => {
         emitOperator(operatorChangedListeners, await invokeOperator("emit-gap"))
     },
@@ -1303,6 +1305,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
     },
     smokeOperatorMetrics: async () => ({
         ...await invokeOperator("metrics"),
+        optimizationStartCalls: smokeOptimizationStartCalls,
         subscriptions: {
             changed: operatorChangedListeners.size,
             event: operatorEventListeners.size,
