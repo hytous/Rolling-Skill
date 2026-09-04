@@ -12,22 +12,13 @@ const {
     flattenThread,
     userMessageText,
 } = require("./episode-curation.cjs")
+const {classifyInternalRuntimePrompt} = require("./internal-runtime-thread.cjs")
 
 const {setTimeout: pause} = require("node:timers/promises")
 const {createHash} = require("node:crypto")
 
 const MAX_TIMER_DELAY = 2_147_000_000
 const AUTOMATIC_CONFIDENCE_THRESHOLD = 0.8
-const ROLLING_SKILL_INTERNAL_PROMPT_PREFIXES = [
-    "Identify complete user problem ranges from incremental user messages only.",
-    "Classify only this completed problem episode. Identify the principal enabled Skill,",
-    "Decide whether this completed episode is eligible to become a Skill evaluation Case.",
-    "[Environment context — rolling-skill-operator/v1]",
-    "You are judging one agent Skill evaluation result.",
-    "You are the Curator for an agent Skill evaluation dataset.",
-    "You are the Rubric Agent for one Skill evaluation dataset.",
-    "Re-execute the immutable evaluation question below with the current Skill and current",
-]
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
@@ -132,14 +123,7 @@ function deferIncompleteSegments(boundary, batch) {
 }
 
 function isAutomaticAnalysisTask(messages) {
-    return messages.some((message) => ROLLING_SKILL_INTERNAL_PROMPT_PREFIXES.some(
-        (prefix) => {
-            const text = message.text.trimStart()
-            if (text.startsWith(prefix)) return true
-            const offset = text.indexOf(prefix)
-            return text.startsWith("/") && offset > 0 && offset <= 200
-        },
-    ))
+    return messages.some((message) => classifyInternalRuntimePrompt(message.text) !== null)
 }
 
 function completedTurn(status) {
@@ -185,7 +169,9 @@ class ConversationDiscoveryManager {
         this.onStatus = onStatus
         this.onError = onError
         this.waitForCurationOnScan = waitForCurationOnScan
-        this.analysisThreadIds = new Set()
+        this.analysisThreadIds = new Set(
+            this.store.listInternalThreadIds?.("automatic-analysis") ?? [],
+        )
         this.automaticSessions = new Map()
         this.automaticArchiveAttempts = new Set()
         this.automaticRecoveryAttempts = new Set()
@@ -201,6 +187,12 @@ class ConversationDiscoveryManager {
 
     hiddenThreadIds() {
         return new Set(this.analysisThreadIds)
+    }
+
+    rememberAnalysisThread(threadId) {
+        if (!threadId || this.analysisThreadIds.has(threadId)) return
+        this.store.recordInternalThread?.(threadId, "automatic-analysis")
+        this.analysisThreadIds.add(threadId)
     }
 
     allHiddenThreadIds() {
@@ -543,10 +535,10 @@ class ConversationDiscoveryManager {
             modelId: profile.modelId,
             effort: profile.effort,
             onThreadStarted: (threadId) => {
-                if (threadId) this.analysisThreadIds.add(threadId)
+                this.rememberAnalysisThread(threadId)
             },
         })
-        if (result?.threadId) this.analysisThreadIds.add(result.threadId)
+        this.rememberAnalysisThread(result?.threadId)
         return responseText(result)
     }
 
@@ -747,7 +739,7 @@ class ConversationDiscoveryManager {
         if (!messages.length) return false
         const cursor = this.stateStore.thread(runtimeId, threadId)
         if (isAutomaticAnalysisTask(messages)) {
-            this.analysisThreadIds.add(threadId)
+            this.rememberAnalysisThread(threadId)
             if (
                 cursor.lastInspectedUserItemId !== messages.at(-1).id ||
                 cursor.pendingStartUserItemId !== null

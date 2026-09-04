@@ -16,7 +16,7 @@ const SCOPE_FIELDS = Object.freeze([
     "runtimeIds",
     "repositoryIds",
 ])
-const TRANSPORT_KINDS = new Set(["codex-dynamic", "acp-mcp", "cli"])
+const TRANSPORT_KINDS = new Set(["codex-dynamic", "acp-mcp", "dsh-mcp", "cli"])
 
 function plainObject(value) {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return false

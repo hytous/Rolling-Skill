@@ -374,6 +374,61 @@ function smokeManagedOverview() {
     }
 }
 
+function smokeSkillInstallationOverview(skillId = smokeManagedSkill.id) {
+    if (skillId !== smokeManagedSkill.id) return {jobs: [], matrix: []}
+    return {
+        jobs: [{
+            id: "managed-installation-job-smoke",
+            operation: "install",
+            runtime: {
+                runtimeId: "codex:renderer-smoke",
+                providerId: "codex",
+                displayName: "Codex",
+                version: "smoke",
+            },
+            request: {
+                skillName: smokeManagedSkill.name,
+                versionLabel: "v1.0.0",
+                source: {
+                    skillId: smokeManagedSkill.id,
+                    versionId: "managed-version-created-smoke",
+                },
+            },
+            modelId: "gpt-5.6-sol",
+            effort: "high",
+            permissionMode: "danger-full-access",
+            status: "unverified",
+            registration: {
+                state: "accepted",
+                invocationFingerprint: "sha256:smoke",
+                acceptedAt: "2026-09-04T01:02:03.000Z",
+            },
+            parsedResult: {
+                destination: "/tmp/runtime/skills/billing-cost-management",
+                classificationBefore: "unmanaged",
+                verification: "none",
+            },
+            timeline: [{
+                kind: "message",
+                role: "assistant",
+                content: "Checked the exact Runtime target.",
+            }, {
+                kind: "activity",
+                type: "commandExecution",
+                command: `find /tmp/runtime/skills/billing-cost-management -type f -print ${"--long-argument ".repeat(40)}`,
+            }],
+            error: {
+                code: "EXPERIMENT_TARGET_MISMATCH",
+                message: "The exact target does not match the expected source digest and has no matching management marker.",
+            },
+            conversationError: null,
+            createdAt: "2026-09-04T01:00:00.000Z",
+            updatedAt: "2026-09-04T01:02:03.000Z",
+        }],
+        matrix: [],
+    }
+}
+
 const smokeOptimizationDataset = {
     id: "optimization-dataset-smoke",
     name: "Optimization Smoke Dataset",
@@ -1156,7 +1211,7 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         }],
         rawCases: smokeRawCases,
         managedSkills: smokeManagedOverview(),
-        skillInstallations: {jobs: [], matrix: []},
+        skillInstallations: smokeSkillInstallationOverview(),
         settings,
     }),
     bootstrapOperator: () => invokeOperator("bootstrap"),
@@ -1414,11 +1469,10 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         return () => rawCasesChangedListeners.delete(listener)
     },
     listManagedSkills: fakeManagedSkillOverview,
-    listSkillInstallations: async () => ({jobs: [], matrix: []}),
+    listSkillInstallations: async (skillId) => smokeSkillInstallationOverview(skillId),
     startSkillInstallations: async () => [],
     cancelSkillInstallation: async () => null,
     inspectSkillInstallation: async () => null,
-    sendSkillInstallationMessage: async () => null,
     respondSkillInstallationQuestion: async () => ({accepted: true}),
     rescanManagedSkills: async () => ({...smokeManagedOverview(), failures: []}),
     importManagedSkill: async () => ({cancelled: true}),

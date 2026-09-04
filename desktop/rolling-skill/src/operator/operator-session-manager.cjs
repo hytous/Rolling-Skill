@@ -148,7 +148,7 @@ function safeSelection(selection, runtime, support) {
     if (!plainObject(selection) || selection.ready !== true || typeof selection.kind !== "string") {
         throw new Error(selection?.reason ?? "Operator Tool transport is unavailable")
     }
-    if (!["codex-dynamic", "acp-mcp", "cli"].includes(selection.kind)) {
+    if (!["codex-dynamic", "acp-mcp", "dsh-mcp", "cli"].includes(selection.kind)) {
         throw new Error("Operator Tool transport selection is invalid")
     }
     const output = {
@@ -158,6 +158,7 @@ function safeSelection(selection, runtime, support) {
         support: {
             dynamicToolsReady: support?.dynamicToolsReady === true,
             mcpServersReady: support?.mcpServersReady === true,
+            dshMcpReady: support?.dshMcpReady === true,
         },
     }
     if (selection.kind === "cli") {
@@ -326,6 +327,7 @@ class OperatorSessionManager {
     #stopPromises = new Map()
     #blockedSessions = new Set()
     #revokedCapabilities = new Set()
+    #hiddenThreadIds = new Set()
 
     constructor({
         store,
@@ -399,6 +401,13 @@ class OperatorSessionManager {
         this.#workspaceRoot = workspaceRoot
         this.#resolveManagedSkillWorkspace = resolveManagedSkillWorkspace
         this.#traceDirectory = traceDirectory
+        for (const session of this.#store.listSessions()) {
+            for (const entry of session.transcript) {
+                if (typeof entry.runtimeThreadId === "string" && entry.runtimeThreadId) {
+                    this.#hiddenThreadIds.add(entry.runtimeThreadId)
+                }
+            }
+        }
     }
 
     async #managedWorkspace(value, scope, {persisted = false} = {}) {
@@ -867,10 +876,14 @@ class OperatorSessionManager {
     }
 
     #clientOptions(control) {
+        const mcpServers = control.selection.kind === "dsh-mcp"
+            ? control.transport.mcpServers?.() ?? []
+            : []
         return {
             ...(control.workspaceRoot ? {workspaceRoot: control.workspaceRoot} : {}),
             ...(this.#traceDirectory ? {traceDirectory: this.#traceDirectory} : {}),
             childEnvironment: {...control.childEnvironment},
+            ...(mcpServers.length > 0 ? {mcpServers} : {}),
             nonInteractive: false,
             requestTool: (request) => this.#requestTool(control, request),
             requestPermission: (request) => this.#permission(control, request),
@@ -1260,6 +1273,10 @@ class OperatorSessionManager {
         return response
     }
 
+    hiddenThreadIds() {
+        return new Set(this.#hiddenThreadIds)
+    }
+
     async create(input = {}) {
         if (!plainObject(input)) throw new TypeError("Operator session request is invalid")
         const allowedInputKeys = new Set([
@@ -1372,6 +1389,7 @@ class OperatorSessionManager {
             const thread = await control.client.startThread(this.#threadOptions(control))
             this.#assertControlOwned(control, restorationGeneration)
             control.runtimeThreadId = runtimeThreadId(thread)
+            this.#hiddenThreadIds.add(control.runtimeThreadId)
             this.#append(control, "runtime_thread_started", {runtimeThreadId: control.runtimeThreadId})
             parentJob = this.#store.transitionJob(parentJob.id, "running")
             await this.#startTurn(control, buildOperatorInitialInput(protocolContext, objective))
@@ -1738,6 +1756,7 @@ class OperatorSessionManager {
                     const resumed = await control.client.resumeThread(priorThreadId, this.#threadOptions(control))
                     this.#assertControlOwned(control, restorationGeneration)
                     control.runtimeThreadId = runtimeThreadId(resumed)
+                    this.#hiddenThreadIds.add(control.runtimeThreadId)
                     control.phase = "idle"
                     this.#append(control, "runtime_thread_resumed", {
                         runtimeThreadId: control.runtimeThreadId,
@@ -1753,6 +1772,7 @@ class OperatorSessionManager {
                 const started = await control.client.startThread(this.#threadOptions(control))
                 this.#assertControlOwned(control, restorationGeneration)
                 control.runtimeThreadId = runtimeThreadId(started)
+                this.#hiddenThreadIds.add(control.runtimeThreadId)
                 this.#append(control, "runtime_thread_started", {
                     runtimeThreadId: control.runtimeThreadId,
                     capabilityId: authority.grant.id,

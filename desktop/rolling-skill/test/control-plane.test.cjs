@@ -199,6 +199,60 @@ function enqueueRequest(token, overrides = {}) {
 }
 
 describe("ControlPlane", () => {
+    it("routes only installations.register through a Job-scoped installation executor", async () => {
+        const {control, capabilities} = createFixture()
+        const issued = capabilities.issue({
+            sessionId: "installation-job-1",
+            actions: ["installations.register"],
+            scopes: {
+                skillIds: ["skill-1"],
+                runtimeIds: ["runtime-1"],
+                repositoryIds: ["repository-1"],
+            },
+            expiresInMs: 60_000,
+        })
+        const calls = []
+        const lease = control.registerInstallationExecutor({
+            sessionId: issued.sessionId,
+            capabilityId: issued.id,
+            assertLive: () => true,
+            execute: async (request) => {
+                calls.push(request)
+                return {accepted: true, duplicate: false}
+            },
+        })
+        const evidence = {
+            status: "succeeded",
+            operation: "install",
+            classificationBefore: "absent",
+            destination: "/runtime/skills/billing",
+            actualDigest: `sha256:${"a".repeat(64)}`,
+            beforeDigest: null,
+            mutationPerformed: true,
+            runtimeDiscovered: true,
+            warnings: [],
+            error: null,
+        }
+
+        assert.deepEqual(await control.invoke({
+            token: issued.token,
+            sessionId: issued.sessionId,
+            method: "installations.register",
+            params: evidence,
+        }), {accepted: true, duplicate: false})
+        assert.equal(calls.length, 1)
+        assert.equal(calls[0].method, "installations.register")
+        assert.deepEqual(calls[0].input, evidence)
+        await assert.rejects(control.invoke({
+            token: issued.token,
+            sessionId: issued.sessionId,
+            method: "context.get",
+            params: {},
+        }), /does not grant this action/iu)
+        assert.equal(calls.length, 1)
+        lease.unregister()
+    })
+
     it("routes an Operator grant through one capability-bound executor after policy", async () => {
         const audit = []
         const {control, issued, evaluationStore} = createFixture({auditSink: (event) => audit.push(event)})

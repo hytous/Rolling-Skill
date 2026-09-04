@@ -315,8 +315,12 @@ describe("local-first desktop surface", () => {
     })
 
     it("contains no bundled agent runtime dependency", () => {
-        const packageJson = source("package.json")
-        assert.doesNotMatch(packageJson, /@openai\/codex|codex-runtime|extraResources/)
+        const packageJson = JSON.parse(source("package.json"))
+        assert.doesNotMatch(JSON.stringify(packageJson.dependencies), /@openai\/codex|codex-runtime/)
+        assert.deepEqual(packageJson.build.extraResources, [{
+            from: "dist-tools/rolling-skill-tool",
+            to: "rolling-skill-tool",
+        }])
     })
 
     it("exposes local runtime discovery and explicit selection controls", () => {
@@ -674,12 +678,14 @@ describe("local-first desktop surface", () => {
         assert.match(renderer, /onSkillInstallationsChanged/)
         assert.match(renderer, /startManagedSkillInstallations/)
         assert.match(renderer, /renderManagedSkillInstallations/)
-        assert.match(renderer, /sendSkillInstallationMessage/)
+        assert.match(renderer, /retryManagedSkillInstallation/)
+        assert.doesNotMatch(renderer, /sendSkillInstallationMessage/)
         assert.match(styles, /\.workbench\.skills-mode\s*>\s*\.conversation-scroll/)
         assert.match(styles, /\.skill-management-grid\s*\{[^}]*grid-template-columns:/s)
         assert.match(styles, /\.managed-install-runtime-row/)
         assert.match(styles, /\.managed-install-timeline/)
-        assert.match(styles, /\.managed-install-composer/)
+        assert.match(styles, /\.managed-install-diagnostics/)
+        assert.doesNotMatch(styles, /\.managed-install-composer/)
         assert.match(styles, /@media\s*\(max-width:\s*760px\)[\s\S]*\.skill-management-grid/s)
         assert.doesNotMatch(styles, /body\.(?:busy|loading)[^}]*cursor:\s*(?:wait|progress)/s)
     })

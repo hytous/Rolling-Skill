@@ -601,19 +601,13 @@ const publicOptimizationCandidate = z.object({
 
 const positiveOptimizationEpoch = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)
 
-const publicOptimizationMarker = z.object({
-    runId: id,
-    epoch: positiveOptimizationEpoch,
-    versionId: id,
-    contentDigest: boundedText(80, "Optimization marker digest"),
-}).strict()
-
 const publicOptimizationInstallation = z.object({
     runtimeId: id,
     status: boundedText(80, "Optimization installation status"),
     installationJobId: id,
+    operation: boundedText(80, "Optimization installation operation").optional(),
+    destination: boundedText(4_096, "Optimization installation destination").nullable().optional(),
     lastVerifiedDigest: boundedText(80, "Optimization installation digest").nullable().optional(),
-    lastVerifiedMarker: publicOptimizationMarker.nullable().optional(),
 }).strict()
 
 const publicOptimizationAnalysis = z.object({

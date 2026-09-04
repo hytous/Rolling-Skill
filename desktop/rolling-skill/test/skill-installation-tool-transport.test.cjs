@@ -63,7 +63,7 @@ describe("Skill installation Tool transport", () => {
         transport.freeze({providerId: "codebuddy"}, {mcpServersReady: true})
 
         assert.deepEqual(transport.mcpServers(), [{
-            name: "rolling-skill-installation",
+            name: "rolling-skill-install",
             command: path,
             args: ["installation-mcp"],
             env: Object.entries(credentials()).map(([name, value]) => ({name, value})),
@@ -72,20 +72,27 @@ describe("Skill installation Tool transport", () => {
         assert.match(transport.registrationInstruction(), /rolling_skill_installations_register/u)
     })
 
-    it("uses the scoped stdin CLI fallback for DSH without putting credentials in arguments", () => {
+    it("uses a scoped native MCP tool for DSH without putting credentials in prompts", () => {
         const path = executableTool()
         const transport = new SkillInstallationToolTransport({
             executablePath: path,
             childEnvironment: credentials(),
         })
-        assert.deepEqual(transport.freeze({providerId: "deepseek-harness"}), {
-            kind: "cli",
-            ready: true,
-            executablePath: path,
-        })
+        assert.deepEqual(transport.freeze(
+            {providerId: "deepseek-harness"},
+            {dshMcpReady: true},
+        ), {kind: "dsh-mcp", ready: true})
         assert.deepEqual(transport.dynamicTools(), [])
-        assert.deepEqual(transport.mcpServers(), [])
-        assert.match(transport.registrationInstruction(), /control installations\.register --params-json -/u)
+        assert.deepEqual(transport.mcpServers(), [{
+            name: "rolling-skill-install",
+            command: path,
+            args: ["installation-mcp"],
+            env: Object.entries(credentials()).map(([name, value]) => ({name, value})),
+        }])
+        assert.equal(
+            transport.registrationInstruction(),
+            "Call mcp__rolling-skill-install__rolling_skill_installations_register with the verified terminal evidence.",
+        )
         assert.equal(transport.registrationInstruction().includes("installation-secret-token"), false)
     })
 })

@@ -548,7 +548,7 @@ async function trustedFactsResolution(services, method, input, context) {
     return snapshot
 }
 
-function operatorExecutorInput(value) {
+function operatorExecutorInput(value, {budgetRequired = true} = {}) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new TypeError("Operator executor registration is invalid")
     }
@@ -580,7 +580,8 @@ function operatorExecutorInput(value) {
     if (
         identifier(input.sessionId) === null ||
         identifier(input.capabilityId) === null ||
-        typeof input.budgetSnapshot !== "function" ||
+        (budgetRequired && typeof input.budgetSnapshot !== "function") ||
+        (!budgetRequired && input.budgetSnapshot !== undefined) ||
         typeof input.assertLive !== "function" ||
         (input.contextSnapshot !== undefined && typeof input.contextSnapshot !== "function") ||
         typeof input.execute !== "function" ||
@@ -717,7 +718,7 @@ class ControlPlane {
         Object.freeze(this)
     }
 
-    registerOperatorExecutor(registration = {}) {
+    registerOperatorExecutor(registration = {}, allowedMethods = null) {
         const state = stateByControlPlane.get(this)
         const input = operatorExecutorInput(registration)
         sweepOperatorExecutors(state)
@@ -744,6 +745,7 @@ class ControlPlane {
             assertLive: input.assertLive,
             contextSnapshot: input.contextSnapshot ?? null,
             execute: input.execute,
+            allowedMethods,
             enabled: input.enabled !== false,
             registered: true,
         }
@@ -781,6 +783,12 @@ class ControlPlane {
             current.execute = null
         }
         return lease
+    }
+
+    registerInstallationExecutor(registration = {}) {
+        const input = operatorExecutorInput(registration, {budgetRequired: false})
+        input.budgetSnapshot = () => ({usage: {runtimeTurns: 0, evaluations: 0}, revision: 0})
+        return this.registerOperatorExecutor(input, Object.freeze(["installations.register"]))
     }
 
     operatorExecutorRegistryStats() {
@@ -848,7 +856,12 @@ class ControlPlane {
             auditSessionId = boundedAuditId(grant.sessionId, bearerSecret)
             operatorRoute = operatorRouteForGrant(state, grant)
             if (operatorRoute !== null) assertOperatorRouteLive(state, operatorRoute)
-            if (operatorRoute !== null && definition.operatorExposed !== true) {
+            if (
+                operatorRoute !== null &&
+                (operatorRoute.allowedMethods === null
+                    ? definition.operatorExposed !== true
+                    : !operatorRoute.allowedMethods.includes(method))
+            ) {
                 throw decisionError({decision: "deny", code: "OPERATOR_METHOD_NOT_EXPOSED"}, definition.action)
             }
 

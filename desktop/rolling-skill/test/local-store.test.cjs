@@ -145,6 +145,62 @@ function saveCuratedCase(store, datasetId, question) {
 }
 
 describe("local evaluation store", () => {
+    it("migrates every durable app-owned Runtime task and persists newly created internal tasks", () => {
+        const {path, store} = fixture()
+        const state = store.read()
+        state.curationSessions = [
+            {
+                id: "curation-archived",
+                status: "archived",
+                operation: "capture",
+                curator: {threadId: "curator-thread"},
+            },
+            {
+                id: "refresh-archived",
+                status: "archived",
+                operation: "refresh",
+                curator: {threadId: "refresh-curator-thread"},
+                episode: {source: {threadId: "refresh-execution-thread"}},
+            },
+        ]
+        state.rubricSessions = [{
+            id: "rubric-archived",
+            status: "archived",
+            rubricAgent: {threadId: "rubric-thread"},
+        }]
+        state.evaluationRuns = [{
+            id: "evaluation-completed",
+            status: "completed",
+            results: [{
+                id: "result-1",
+                status: "completed",
+                threadId: "evaluation-target-thread",
+                judge: {threadId: "evaluation-judge-thread"},
+                failureDiagnostics: {threadId: "evaluation-failed-thread"},
+            }],
+        }]
+        writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`)
+
+        const restarted = new LocalEvaluationStore(path)
+        assert.deepEqual(new Set(restarted.listInternalThreadIds()), new Set([
+            "curator-thread",
+            "refresh-curator-thread",
+            "refresh-execution-thread",
+            "rubric-thread",
+            "evaluation-target-thread",
+            "evaluation-judge-thread",
+            "evaluation-failed-thread",
+        ]))
+
+        restarted.recordInternalThread("automatic-analysis-thread", "automatic-analysis")
+        assert.equal(
+            new LocalEvaluationStore(path).listInternalThreadIds().includes(
+                "automatic-analysis-thread",
+            ),
+            true,
+        )
+    })
+
     it("reconstructs deterministic DSH Draft and saved Case markers from durable records", () => {
         const {path, store} = fixture()
         const dataset = store.bindDatasetSkill(store.listDatasets()[0].id, skillReference())

@@ -48,9 +48,9 @@ The semantic tool contract is provider-neutral while transport remains provider-
 
 - Codex receives a dynamic function tool on its installer thread.
 - CodeBuddy receives the same function through a Job-scoped MCP server.
-- DSH uses a Job-scoped Rolling Skill control-tool transport supported by its Host integration; if the Host cannot mount the typed tool, the adapter uses the bundled scoped tool executable rather than parsing assistant text.
+- DSH mounts the Job-scoped MCP server through `@deepseek-ai/dsh-mcp-client` using a mode-0600 ephemeral `--patch`. The file is a DSH loader patch using `insert:`, not a plain Cordis plugin list. Its descriptor name is `rolling-skill-install`, keeping the final DSH tool name within the Host's 64-character limit so the prompt and advertised tool name remain identical. The patch contains only `process.env` references, never credential values, and is removed on Host exit, startup failure, or client stop. If native MCP mounting is unavailable, preflight fails explicitly; DSH does not fall back to Bash because its safety policy strips control credentials from shell tools.
 
-Every transport routes to the same main-process validator and installation journal. Capability credentials are process-local, short-lived, scoped to one Job, and never included in the prompt, command-line arguments, persisted traces, or user-visible logs.
+Every transport routes to the same main-process validator and installation journal. Capability credentials are process-local, short-lived, scoped to one Job, and never included in the prompt, command-line arguments, persisted traces, or user-visible logs. The installer protocol also limits cleanup to temporary paths created by the current Job; pre-existing temporary paths are outside its mutation scope.
 
 ### Central installation journal
 
@@ -132,7 +132,7 @@ The detail view may show current and expected digest prefixes under diagnostics,
 
 Unit tests cover the tool schema, immutable Job scoping, idempotency, digest and operation validation, missing-tool completion, central journal persistence, crash recovery, drift classification, and removal of marker assumptions.
 
-Provider tests cover Codex dynamic-tool dispatch, CodeBuddy Job-scoped MCP transport, and DSH scoped control-tool transport.
+Provider tests cover Codex dynamic-tool dispatch, CodeBuddy Job-scoped MCP transport, and DSH native MCP mounting plus ephemeral-patch cleanup.
 
 Manager tests prove that final response prose cannot create or change installation state and that ordinary and optimization Jobs complete only through accepted registration events.
 

@@ -4,10 +4,9 @@ const {
     INSTALLATION_AGENT_CONTROL_METHODS,
     controlDefinition,
 } = require("./control-plane/contracts.cjs")
-const {
-    OPERATOR_ENVIRONMENT_KEYS,
-    OperatorToolTransport,
-} = require("./operator/operator-tool-transport.cjs")
+const {OperatorToolTransport} = require("./operator/operator-tool-transport.cjs")
+
+const INSTALLATION_MCP_SERVER_NAME = "rolling-skill-install"
 
 function copy(value) {
     return JSON.parse(JSON.stringify(value))
@@ -41,7 +40,7 @@ class SkillInstallationToolTransport {
 
     freeze(runtimeDescriptor = {}, support = {}) {
         if (this.#selection) throw new Error("Skill installation Tool transport is already frozen")
-        this.#selection = Object.freeze(this.preflight(runtimeDescriptor, support))
+        this.#selection = Object.freeze(this.#base.freeze(runtimeDescriptor, support))
         return this.selection()
     }
 
@@ -54,17 +53,13 @@ class SkillInstallationToolTransport {
     }
 
     mcpServers() {
-        if (this.#selection?.kind !== "acp-mcp") return []
-        const base = this.#base
-        const environment = base.childEnvironment()
-        return [{
-            name: "rolling-skill-installation",
-            command: this.#selection.executablePath ?? base.preflight(
-                {providerId: "deepseek-harness"},
-            ).executablePath,
+        if (!["acp-mcp", "dsh-mcp"].includes(this.#selection?.kind)) return []
+        const [server] = this.#base.mcpServers()
+        return server ? [{
+            ...server,
+            name: INSTALLATION_MCP_SERVER_NAME,
             args: ["installation-mcp"],
-            env: OPERATOR_ENVIRONMENT_KEYS.map((name) => ({name, value: environment[name]})),
-        }]
+        }] : []
     }
 
     childEnvironment() {
@@ -72,6 +67,9 @@ class SkillInstallationToolTransport {
     }
 
     registrationInstruction() {
+        if (this.#selection?.kind === "dsh-mcp") {
+            return `Call mcp__${INSTALLATION_MCP_SERVER_NAME}__rolling_skill_installations_register with the verified terminal evidence.`
+        }
         if (this.#selection?.kind === "cli") {
             return `Send the registration JSON through stdin to \"${this.#selection.executablePath}\" control installations.register --params-json -.`
         }

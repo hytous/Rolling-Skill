@@ -383,7 +383,10 @@ describe("Optimization control service", () => {
                 id: "install-job-1",
                 status: "succeeded",
                 runtime: {runtimeId: "codex:target"},
-                parsedResult: {result: {actualDigest: digest("b")}},
+                parsedResult: {
+                    destination: "/runtime/skills/billing",
+                    result: {actualDigest: digest("b")},
+                },
                 rawResult: "must not reach Renderer",
             }],
         }))
@@ -421,6 +424,8 @@ describe("Optimization control service", () => {
                 runtimeId: "codex:target",
                 status: "needs_recovery",
                 installationJobId: "restore-job-1",
+                operation: "experiment_restore",
+                destination: "/runtime/skills/billing",
                 lastVerifiedDigest: digest("c"),
                 workspacePath: "/must/not/reach-renderer",
             }],
@@ -441,6 +446,8 @@ describe("Optimization control service", () => {
             runtimeId: "codex:target",
             status: "succeeded",
             installationJobId: "install-job-1",
+            operation: "experiment_install",
+            destination: "/runtime/skills/billing",
             lastVerifiedDigest: digest("b"),
         }])
         assert.deepEqual(output.run.epochs[0].analysis, {
@@ -457,6 +464,8 @@ describe("Optimization control service", () => {
             runtimeId: "codex:target",
             status: "needs_recovery",
             installationJobId: "restore-job-1",
+            operation: "experiment_restore",
+            destination: "/runtime/skills/billing",
             lastVerifiedDigest: digest("c"),
         }])
         assert.equal(output.run.checkpoint.telemetry, undefined)

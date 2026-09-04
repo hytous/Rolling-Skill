@@ -1,6 +1,15 @@
 const assert = require("node:assert/strict")
 const {EventEmitter} = require("node:events")
-const {chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync} = require("node:fs")
+const {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    statSync,
+    writeFileSync,
+} = require("node:fs")
 const {tmpdir} = require("node:os")
 const {join} = require("node:path")
 const {afterEach, describe, it} = require("node:test")
@@ -560,6 +569,105 @@ describe("DeepSeek Harness session adapter", () => {
             await client.stop()
         }
         assert.equal(sockets.every((socket) => socket.readyState === FakeWebSocket.CLOSED), true)
+    })
+
+    it("mounts scoped MCP servers through an ephemeral DSH patch without persisting secrets", async () => {
+        const child = new ManagedFakeChild()
+        const spawnCalls = []
+        const sockets = []
+        const traceDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-dsh-mcp-"))
+        temporaryDirectories.push(traceDirectory)
+        const childEnvironment = {
+            ROLLING_SKILL_CONTROL_SOCKET: "/private/dsh-mcp.sock",
+            ROLLING_SKILL_CONTROL_TOKEN: "dsh-mcp-secret-token",
+            ROLLING_SKILL_OPERATOR_SESSION: "dsh-mcp-session",
+        }
+        const client = new DeepSeekHarnessClient({
+            binaryPath: "/bin/dsh",
+            workspaceRoot: "/workspace",
+            traceDirectory,
+            childEnvironment,
+            mcpServers: [{
+                name: "rolling-skill-installation",
+                command: "/Applications/Rolling Skill.app/Contents/Resources/rolling-skill-tool",
+                args: ["installation-mcp"],
+                env: Object.entries(childEnvironment).map(([name, value]) => ({name, value})),
+            }],
+            spawnProcess: (path, args, options) => {
+                spawnCalls.push({path, args, options})
+                queueMicrotask(() => child.stdout.emit("data", "dsh web: http://127.0.0.1:54945\n"))
+                return child
+            },
+            webSocketFactory: (url) => {
+                const socket = new FakeWebSocket(url)
+                sockets.push(socket)
+                return socket
+            },
+            fetchImpl: async (_url, options) => {
+                const body = JSON.parse(options.body)
+                return responseFor(body, body.method === "llm.models" ? {groups: [], failures: []} : {})
+            },
+        })
+
+        let patchPath
+        try {
+            await client.start()
+            assert.deepEqual(spawnCalls[0].args.slice(0, 3), ["--profile", "web", "--patch"])
+            patchPath = spawnCalls[0].args[3]
+            assert.deepEqual(spawnCalls[0].args.slice(4), ["--no-open", "--port", "0"])
+            assert.equal(existsSync(patchPath), true)
+            assert.equal(statSync(patchPath).mode & 0o777, 0o600)
+            const patch = readFileSync(patchPath, "utf8")
+            assert.match(patch, /^- insert:\n {4}- id: "rolling-skill-mcp-0-rolling-skill-installation"$/mu)
+            assert.match(patch, /^ {6}name: "@deepseek-ai\/dsh-mcp-client"$/mu)
+            assert.match(patch, /^ {8}serverName: "rolling-skill-installation"$/mu)
+            assert.match(patch, /^ {8}args: \["installation-mcp"\]$/mu)
+            for (const name of Object.keys(childEnvironment)) {
+                assert.match(patch, new RegExp(`^ {10}${name}: !!js process\\.env\\.${name}$`, "mu"))
+            }
+            assert.equal(patch.includes(childEnvironment.ROLLING_SKILL_CONTROL_SOCKET), false)
+            assert.equal(patch.includes(childEnvironment.ROLLING_SKILL_CONTROL_TOKEN), false)
+            assert.equal(patch.includes(childEnvironment.ROLLING_SKILL_OPERATOR_SESSION), false)
+        } finally {
+            await client.stop()
+        }
+        assert.equal(existsSync(patchPath), false)
+        assert.equal(sockets.every((socket) => socket.readyState === FakeWebSocket.CLOSED), true)
+    })
+
+    it("removes the ephemeral DSH MCP patch when Host spawning fails", async () => {
+        const traceDirectory = mkdtempSync(join(tmpdir(), "rolling-skill-dsh-mcp-spawn-failure-"))
+        temporaryDirectories.push(traceDirectory)
+        const childEnvironment = {
+            ROLLING_SKILL_CONTROL_SOCKET: "/private/dsh-mcp-failure.sock",
+            ROLLING_SKILL_CONTROL_TOKEN: "dsh-mcp-failure-token",
+            ROLLING_SKILL_OPERATOR_SESSION: "dsh-mcp-failure-session",
+        }
+        let patchPath = null
+        const client = new DeepSeekHarnessClient({
+            binaryPath: "/bin/dsh",
+            workspaceRoot: "/workspace",
+            traceDirectory,
+            childEnvironment,
+            mcpServers: [{
+                name: "rolling-skill-operator",
+                command: "/Applications/Rolling Skill.app/Contents/Resources/rolling-skill-tool",
+                args: ["operator-mcp"],
+                env: Object.entries(childEnvironment).map(([name, value]) => ({name, value})),
+            }],
+            spawnProcess: (_path, args) => {
+                assert.equal(args.includes("--patch"), true)
+                patchPath = args[args.indexOf("--patch") + 1]
+                throw new Error("Host spawn denied")
+            },
+            fetchImpl: async () => {
+                throw new Error("Host must not be contacted")
+            },
+        })
+
+        await assert.rejects(() => client.start(), /Host spawn denied/u)
+        assert.equal(typeof patchPath, "string")
+        assert.equal(existsSync(patchPath), false)
     })
 
     it("redacts Operator authority from HTTP successes, failures, and history projections", async () => {

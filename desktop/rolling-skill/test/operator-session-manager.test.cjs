@@ -112,7 +112,9 @@ class FakeTransport {
     }
 
     mcpServers() {
-        return this.selected.kind === "acp-mcp" ? [{name: "rolling-skill-operator"}] : []
+        return ["acp-mcp", "dsh-mcp"].includes(this.selected.kind)
+            ? [{name: "rolling-skill-operator"}]
+            : []
     }
 
     childEnvironment() {
@@ -353,6 +355,14 @@ function makeWaitingApproval(store, parentJobId) {
 }
 
 describe("OperatorSessionManager", () => {
+    it("keeps every persisted Operator Runtime task out of ordinary Chat history", async () => {
+        const context = fixture()
+        const created = await context.manager.create(createInput())
+
+        assert.equal(created.runtimeThreadId, "runtime-thread-1")
+        assert.deepEqual([...context.manager.hiddenThreadIds()], ["runtime-thread-1"])
+    })
+
     it("runs a preauthorized ControlPlane mutation through the Manager without approval", async () => {
         const directory = mkdtempSync(join(tmpdir(), "rolling-skill-operator-integration-"))
         directories.push(directory)
@@ -1097,8 +1107,8 @@ describe("OperatorSessionManager", () => {
             },
             {
                 providerId: "deepseek-harness",
-                selection: {kind: "cli", ready: true, executablePath: "/app/rolling-skill-tool"},
-                support: {},
+                selection: {kind: "dsh-mcp", ready: true},
+                support: {dshMcpReady: true},
             },
         ]
         for (const provider of providers) {
@@ -1126,6 +1136,12 @@ describe("OperatorSessionManager", () => {
                 },
             })
             const created = await context.manager.create(createInput())
+
+            if (provider.providerId === "deepseek-harness") {
+                assert.deepEqual(context.clients[0].options.mcpServers, [{
+                    name: "rolling-skill-operator",
+                }])
+            }
 
             context.clients[0].emit("state", {
                 status: "stopped",

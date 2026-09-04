@@ -1672,7 +1672,8 @@ kbd {
 }
 
 .managed-install-status.failed,
-.managed-install-status.unverified {
+.managed-install-status.unverified,
+.managed-install-status.needs_recovery {
     color: var(--danger);
 }
 
@@ -1713,16 +1714,95 @@ kbd {
     overflow-wrap: anywhere;
 }
 
-.managed-install-timeline {
-    display: flex;
-    max-height: 310px;
-    overflow-y: auto;
-    padding: 8px;
+.managed-install-steps {
+    display: grid;
+    margin: 0;
+    padding: 9px;
     border: 1px solid var(--border);
     border-radius: 10px;
+    gap: 7px;
+    background: color-mix(in srgb, var(--surface) 82%, transparent);
+    list-style: none;
+}
+
+.managed-install-step {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.managed-install-step strong {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.managed-install-step-dot {
+    width: 8px;
+    height: 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 50%;
+    background: var(--surface-raised);
+}
+
+.managed-install-step.active .managed-install-step-dot {
+    border-color: var(--accent);
+    background: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.managed-install-step.complete .managed-install-step-dot {
+    border-color: var(--success);
+    background: var(--success);
+}
+
+.managed-install-step.failed .managed-install-step-dot {
+    border-color: var(--danger);
+    background: var(--danger);
+}
+
+.managed-install-error-summary {
+    margin: 0;
+}
+
+.managed-install-diagnostics {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+
+.managed-install-diagnostics > summary {
+    padding: 8px 10px;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 650;
+    list-style-position: inside;
+}
+
+.managed-install-diagnostics[open] > summary {
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+}
+
+.managed-install-diagnostics-body {
+    max-height: min(52vh, 640px);
+    overflow: auto;
+    padding: 8px;
+    overflow-wrap: anywhere;
+}
+
+.managed-install-timeline {
+    display: flex;
     flex-direction: column;
     gap: 7px;
-    background: color-mix(in srgb, var(--surface) 80%, transparent);
 }
 
 .managed-install-timeline-item {
@@ -1742,6 +1822,40 @@ kbd {
     font-size: 10px;
 }
 
+.managed-install-timeline-item.command {
+    display: block;
+    overflow: hidden;
+}
+
+.managed-install-timeline-item.command > summary {
+    overflow: hidden;
+    cursor: pointer;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.managed-install-command {
+    overflow: auto;
+    margin: 7px 0 0;
+    padding-top: 7px;
+    border-top: 1px solid var(--border);
+    font: inherit;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.managed-install-diagnostic-error {
+    margin-top: 8px;
+    padding: 8px;
+    border: 1px solid color-mix(in srgb, var(--danger) 25%, var(--border));
+    border-radius: 8px;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
+
 .managed-install-question {
     padding: 9px;
     border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
@@ -1752,31 +1866,6 @@ kbd {
 .managed-install-question p {
     margin: 0 0 7px;
     font-size: 11px;
-}
-
-.managed-install-composer {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: end;
-    gap: 6px;
-}
-
-.managed-install-composer textarea {
-    min-width: 0;
-    max-height: 110px;
-    padding: 8px;
-    resize: vertical;
-    border: 1px solid var(--border);
-    border-radius: 9px;
-    outline: none;
-    background: var(--surface);
-    color: var(--text);
-    font: inherit;
-    line-height: 1.4;
-}
-
-.managed-install-composer textarea:focus {
-    border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
 }
 
 .managed-install-question-actions {

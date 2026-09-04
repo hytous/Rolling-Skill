@@ -4,9 +4,9 @@
 
 **Goal:** Make Runtime Agents register Skill installation and optimization results through a scoped tool, remove both Runtime-directory marker files, and replace the truncated installer conversation with a compact installation detail view.
 
-**Architecture:** Keep Runtime Agents responsible for path discovery and filesystem mutation, but bind one short-lived control capability to each installation Job. Codex uses a dynamic tool, CodeBuddy uses a one-tool MCP server, and DSH uses the same scoped control method through the bundled tool executable when a typed session tool is unavailable. The App validates tool evidence against the frozen Job, commits it to the atomic installation store, and treats final assistant prose as display-only.
+**Architecture:** Keep Runtime Agents responsible for path discovery and filesystem mutation, but bind one short-lived control capability to each installation Job. Codex uses a dynamic tool, CodeBuddy uses a one-tool MCP server, and DSH mounts that same one-tool server as a native MCP tool through an ephemeral Host patch. The App validates tool evidence against the frozen Job, commits it to the atomic installation store, and treats final assistant prose as display-only.
 
-**Tech Stack:** Electron 43, Node.js CommonJS, Zod 4, Codex app-server dynamic tools, CodeBuddy ACP MCP servers, DSH Host/CLI transport, node:test, vanilla JavaScript renderer, CSS.
+**Tech Stack:** Electron 43, Node.js CommonJS, Zod 4, Codex app-server dynamic tools, CodeBuddy ACP MCP servers, DSH Host native MCP tools, node:test, vanilla JavaScript renderer, CSS.
 
 ---
 
@@ -85,7 +85,7 @@ return deepFreeze({
 })
 ~~~
 
-Build prompts around a required terminal tool call. Accept an injected CLI instruction for DSH fallback and state that final prose is display-only.
+Build prompts around a required terminal tool call. Accept an injected provider-specific Tool instruction and state that final prose is display-only.
 
 - [ ] **Step 4: Run GREEN and commit**
 
@@ -158,7 +158,7 @@ assert.throws(() => parseControlInput("installations.register", {
 }))
 ~~~
 
-Test Codex selects codex-dynamic, CodeBuddy selects acp-mcp, and DSH selects cli. Assert only rolling_skill_installations_register is exposed and credentials never appear in prompts or command arguments.
+Test Codex selects codex-dynamic, CodeBuddy selects acp-mcp, and DSH selects dsh-mcp. Assert only rolling_skill_installations_register is exposed and credentials never appear in prompts, command arguments, or the ephemeral DSH patch.
 
 - [ ] **Step 2: Run RED**
 
@@ -191,11 +191,7 @@ Export INSTALLATION_AGENT_CONTROL_METHODS. Keep the method available to a regist
 
 - [ ] **Step 4: Implement transport and external MCP**
 
-Model SkillInstallationToolTransport after OperatorToolTransport. Generate one dynamic function, one MCP server entry invoking installation-mcp, or the inherited-credential CLI instruction:
-
-~~~text
-"/absolute/rolling-skill-tool" control installations.register --params-json -
-~~~
+Model SkillInstallationToolTransport after OperatorToolTransport. Generate one dynamic function or one MCP server entry invoking installation-mcp. For DSH, pass the MCP descriptor into DeepSeekHarnessClient, create a mode-0600 temporary loader `--patch` using `insert:` that references only `process.env` variable names, and delete its exact temporary directory on exit, startup failure, or stop. Keep the composed DSH MCP tool name within the Host's 64-character limit so it is not rewritten to a hash-suffixed alias. Do not fall back to the CLI because DSH Bash intentionally strips the scoped control credential.
 
 Add createInstallationMcpServer(credentials) to rolling-skill-tool.mjs. It exposes only rolling_skill_installations_register and delegates to invokeControl.
 
@@ -456,3 +452,47 @@ git push origin main
 ~~~
 
 Expected: only the known untracked tgz archives remain locally and remote main advances to the verified implementation.
+
+### Task 8: Hide orphaned historical App-owned Runtime tasks
+
+**Files:**
+- Create: desktop/rolling-skill/src/internal-runtime-thread.cjs
+- Create: desktop/rolling-skill/test/internal-runtime-thread.test.cjs
+- Modify: desktop/rolling-skill/src/automatic-capture.cjs
+- Modify: desktop/rolling-skill/src/local-store.cjs
+- Modify: desktop/rolling-skill/src/main.cjs
+- Modify: desktop/rolling-skill/README.md
+
+- [x] **Step 1: Reproduce the orphaned archived task**
+
+Open Archived Chat in the installed App and confirm that the historical Case-refresh task whose
+preview begins `Re-execute the immutable evaluation question...` remains visible after its owning
+Evaluation Run has already been removed.
+
+- [x] **Step 2: Write and run RED tests**
+
+Cover strict App-generated prompt prefixes, provider command wrappers, normal user discussion that
+quotes an internal phrase, durable internal-task IDs, and filtering of both Current and Archived
+Chat. Verify the new classifier module is missing and the list-filter expectations fail before the
+implementation is added.
+
+- [x] **Step 3: Add one shared classifier and durable registry**
+
+Use exact generated prompt prefixes for Automatic Analysis, Operator, Judge, Curator, Rubric, Case
+refresh, ordinary installation, and optimization installation. Persist inferred orphan IDs to
+`evaluation-store.json` under `internalThreads`; newly created App-owned tasks are recorded at their
+manager boundary, while ordinary user tasks remain visible.
+
+- [x] **Step 4: Run focused GREEN tests**
+
+~~~bash
+node --test test/internal-runtime-thread.test.cjs test/local-store.test.cjs test/main-bridge.test.cjs test/automatic-capture.test.cjs test/case-refresh-manager.test.cjs test/evaluation-runner.test.cjs test/operator-session-manager.test.cjs
+~~~
+
+Expected: every focused test passes with no failures.
+
+- [ ] **Step 5: Verify the installed App migration**
+
+After rebuilding and reinstalling, open both Current and Archived Chat. Confirm the historical
+orphan is absent, its ID is persisted with kind `case-refresh`, and no other App-owned Runtime task
+appears in either list.

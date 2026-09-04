@@ -414,6 +414,7 @@ class CurationManager {
                 ...(session.curator.effort ? {effort: session.curator.effort} : {}),
             }
             const response = await runtime.startThread(options)
+            this.store.recordInternalThread?.(response.thread.id, "curation")
             this.threadSessions.set(response.thread.id, sessionId)
             session = this.store.getCurationSession(sessionId)
             if (session.status === "cancelled") {
@@ -782,7 +783,10 @@ class CurationManager {
     }
 
     hiddenThreadIds() {
-        return new Set(this.threadSessions.keys())
+        return new Set([
+            ...(this.store.listInternalThreadIds?.("curation") ?? []),
+            ...this.threadSessions.keys(),
+        ])
     }
 }
 

@@ -131,6 +131,7 @@ function fixture({
         },
     }
     const analyses = []
+    const recordedInternalThreads = []
     const analysis = runAnalysis ?? (async (input) => {
         analyses.push(input)
         if (input.stage === "boundary") {
@@ -160,6 +161,9 @@ function fixture({
         store: {
             read: () => ({settings}),
             hasCurationForSource: alreadyCurated,
+            recordInternalThread(threadId, kind) {
+                recordedInternalThreads.push({threadId, kind})
+            },
         },
         stateStore,
         rawCaseStore: raw,
@@ -191,6 +195,7 @@ function fixture({
         errors,
         manager,
         raw,
+        recordedInternalThreads,
         runtimeCalls,
         settings,
         sourceThread,
@@ -429,6 +434,10 @@ describe("scheduled conversation discovery manager", () => {
             value.stateStore.thread("codex:/opt/codex-a", "thread-1").lastInspectedUserItemId,
             "thread-1-user-2",
         )
+        assert.deepEqual(value.recordedInternalThreads, internalThreads.map(({id}) => ({
+            threadId: id,
+            kind: "automatic-analysis",
+        })))
 
         await value.manager.runSlot(new Date(2026, 7, 27, 9, 0), value.settings.autoCaptureProfile)
         assert.deepEqual(reads.sort(), ["thread-1", "thread-2", "thread-3", "thread-4", "thread-5"])

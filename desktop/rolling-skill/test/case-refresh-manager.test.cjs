@@ -36,6 +36,7 @@ function fixture(overrides = {}) {
     const runtimeInputs = []
     const curationInputs = []
     const archivedThreads = []
+    const recordedInternalThreads = []
     let released = 0
     const store = {
         getDataset: (id) => {
@@ -47,6 +48,9 @@ function fixture(overrides = {}) {
             return [entry]
         },
         listCurationSessions: () => [],
+        recordInternalThread: (threadId, kind) => {
+            recordedInternalThreads.push({threadId, kind})
+        },
         reserveDataset: () => () => { released += 1 },
         read: () => ({
             settings: {
@@ -130,6 +134,7 @@ function fixture(overrides = {}) {
         runtimeInputs,
         curationInputs,
         archivedThreads,
+        recordedInternalThreads,
         released: () => released,
     }
 }
@@ -148,6 +153,10 @@ describe("Case refresh manager", () => {
         assert.equal(test.runtimeInputs[0].activationMode, "explicit")
         assert.equal(test.runtimeInputs[0].skillReference.name, "billing-cost-management")
         assert.equal(test.runtimeInputs[0].modelId, "gpt-task")
+        assert.deepEqual(test.recordedInternalThreads, [{
+            threadId: "refresh-thread",
+            kind: "case-refresh",
+        }])
         assert.equal(test.runtimeInputs[0].effort, "high")
         assert.match(test.runtimeInputs[0].question, /do not copy historical values/iu)
         assert.match(test.runtimeInputs[0].question, /protected external writes/iu)

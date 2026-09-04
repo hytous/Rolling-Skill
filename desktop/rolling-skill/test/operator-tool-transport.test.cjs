@@ -98,7 +98,7 @@ describe("Operator Tool transport", () => {
         assert.equal(JSON.stringify(transport.mcpServers()).includes("SHOULD_NOT_PASS"), false)
     })
 
-    it("uses an absolute CLI fallback for DSH and failed typed-tool preflight", () => {
+    it("uses native MCP for DSH instead of exposing credentials to Bash", () => {
         const executablePath = executableTool()
         const dsh = new OperatorToolTransport({
             executablePath: realpathSync(executablePath),
@@ -113,10 +113,29 @@ describe("Operator Tool transport", () => {
             childEnvironment: credentials(),
         })
 
-        assert.deepEqual(dsh.preflight({providerId: "deepseek-harness"}), {
-            kind: "cli",
-            ready: true,
+        assert.deepEqual(dsh.preflight(
+            {providerId: "deepseek-harness"},
+            {dshMcpReady: true},
+        ), {kind: "dsh-mcp", ready: true})
+        dsh.freeze({providerId: "deepseek-harness"}, {dshMcpReady: true})
+        assert.deepEqual(dsh.mcpServers(), [{
+            name: "rolling-skill-operator",
+            command: realpathSync(executablePath),
+            args: ["operator-mcp"],
+            env: OPERATOR_ENVIRONMENT_KEYS.map((name) => ({
+                name,
+                value: credentials()[name],
+            })),
+        }])
+        assert.equal(JSON.stringify(dsh.mcpServers()).includes("--token"), false)
+
+        assert.deepEqual(new OperatorToolTransport({
             executablePath: realpathSync(executablePath),
+            childEnvironment: credentials(),
+        }).preflight({providerId: "deepseek-harness"}), {
+            kind: "unsupported",
+            ready: false,
+            reason: "DeepSeek Harness native MCP tools are unavailable",
         })
         assert.deepEqual(incompatibleCodex.preflight(
             {providerId: "codex"},

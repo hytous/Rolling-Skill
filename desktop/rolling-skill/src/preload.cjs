@@ -205,8 +205,6 @@ contextBridge.exposeInMainWorld("rollingSkill", {
         ipcRenderer.invoke("skill-installations:cancel", {jobId}),
     inspectSkillInstallation: (jobId) =>
         ipcRenderer.invoke("skill-installations:inspect", {jobId}),
-    sendSkillInstallationMessage: (jobId, text) =>
-        ipcRenderer.invoke("skill-installations:send", {jobId, text}),
     respondSkillInstallationQuestion: (input) =>
         ipcRenderer.invoke("skill-installations:respond-question", input),
     revealManagedSkillRepository: (repositoryId) =>

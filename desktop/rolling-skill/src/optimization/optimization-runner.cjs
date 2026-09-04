@@ -100,20 +100,16 @@ function boundedAnalysisSummary(analysis) {
 
 function recoveryTargetSummary(job) {
     const result = job?.parsedResult?.result ?? {}
-    const marker = result.markerAfter
+    const destination = job?.parsedResult?.destination
     return {
         runtimeId: job?.runtime?.runtimeId ?? job?.runtimeId ?? "unknown-runtime",
         status: job?.status ?? "needs_recovery",
         installationJobId: job?.id ?? "unknown-installation-job",
+        ...(typeof job?.operation === "string" ? {operation: job.operation} : {}),
+        ...(typeof destination === "string" || destination === null ? {destination} : {}),
         ...(typeof result.actualDigest === "string"
             ? {lastVerifiedDigest: result.actualDigest}
             : {}),
-        ...(marker && typeof marker === "object" ? {lastVerifiedMarker: {
-            runId: marker.runId,
-            epoch: marker.epoch,
-            versionId: marker.versionId,
-            contentDigest: marker.contentDigest,
-        }} : {}),
     }
 }
 

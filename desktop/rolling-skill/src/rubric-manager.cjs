@@ -166,6 +166,7 @@ class RubricManager {
                 ...(session.rubricAgent.modelId ? {model: session.rubricAgent.modelId} : {}),
                 ...(session.rubricAgent.effort ? {effort: session.rubricAgent.effort} : {}),
             })
+            this.store.recordInternalThread?.(response.thread.id, "rubric")
             this.threadSessions.set(response.thread.id, sessionId)
             session = this.store.updateRubricSession(sessionId, {
                 status: "running",
@@ -449,7 +450,10 @@ class RubricManager {
     }
 
     hiddenThreadIds() {
-        return new Set(this.threadSessions.keys())
+        return new Set([
+            ...(this.store.listInternalThreadIds?.("rubric") ?? []),
+            ...this.threadSessions.keys(),
+        ])
     }
 }
 

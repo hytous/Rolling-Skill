@@ -233,10 +233,14 @@ describe("multi-runtime evaluation runner", () => {
 
     it("sends only the frozen original question to the target runtime", async () => {
         const calls = []
+        const recordedInternalThreads = []
         const runner = new EvaluationRunner({
             store: {
                 updateEvaluationRun() {},
                 updateEvaluationResult() {},
+                recordInternalThread(threadId, kind) {
+                    recordedInternalThreads.push({threadId, kind})
+                },
             },
             runtimeRegistry: {
                 createClient() {
@@ -244,7 +248,12 @@ describe("multi-runtime evaluation runner", () => {
                         start: async () => {},
                         async runEvaluationCase(input) {
                             calls.push(input)
-                            return {response: "answer", durationMs: 1}
+                            input.onThreadStarted?.("evaluation-target-thread")
+                            return {
+                                response: "answer",
+                                durationMs: 1,
+                                threadId: "evaluation-target-thread",
+                            }
                         },
                         stop: async () => {},
                     }
@@ -275,6 +284,10 @@ describe("multi-runtime evaluation runner", () => {
         assert.equal(calls.length, 1)
         assert.equal(calls[0].question, "查一下七月各业务成本。")
         assert.equal("issueDescription" in calls[0], false)
+        assert.deepEqual(recordedInternalThreads, [{
+            threadId: "evaluation-target-thread",
+            kind: "evaluation-target",
+        }])
     })
 
     it("runs runtime queues concurrently and Cases sequentially within a runtime", async () => {

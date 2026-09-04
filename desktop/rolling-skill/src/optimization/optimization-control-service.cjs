@@ -64,17 +64,6 @@ function boundedArtifactValue(readArtifact, artifactId) {
     return value && typeof value === "object" && !Array.isArray(value) ? value : null
 }
 
-function publicMarker(value) {
-    if (!value || typeof value !== "object") return null
-    const runId = typeof value.runId === "string" ? value.runId.slice(0, 200) : ""
-    const versionId = typeof value.versionId === "string" ? value.versionId.slice(0, 200) : ""
-    const contentDigest = typeof value.contentDigest === "string"
-        ? value.contentDigest.slice(0, 80)
-        : ""
-    if (!runId || !versionId || !Number.isSafeInteger(value.epoch) || !contentDigest) return null
-    return {runId, epoch: value.epoch, versionId, contentDigest}
-}
-
 function publicInstallation(value) {
     if (!value || typeof value !== "object") return null
     const runtimeId = typeof value.runtimeId === "string"
@@ -86,15 +75,22 @@ function publicInstallation(value) {
     if (typeof runtimeId !== "string" || !runtimeId || typeof installationJobId !== "string" || !installationJobId) {
         return null
     }
-    const result = value.parsedResult?.result ?? {}
+    const parsedResult = value.parsedResult ?? {}
+    const result = parsedResult.result ?? {}
     const digest = value.lastVerifiedDigest ?? result.actualDigest ?? null
-    const marker = value.lastVerifiedMarker ?? result.markerAfter ?? null
+    const operation = typeof value.operation === "string" ? value.operation : null
+    const destination = Object.hasOwn(value, "destination")
+        ? value.destination
+        : parsedResult.destination
     return {
         runtimeId: runtimeId.slice(0, 200),
         status: String(value.status ?? "unknown").slice(0, 80),
         installationJobId: installationJobId.slice(0, 200),
+        ...(operation ? {operation: operation.slice(0, 80)} : {}),
+        ...(typeof destination === "string"
+            ? {destination: destination.slice(0, 4_096)}
+            : destination === null ? {destination: null} : {}),
         ...(typeof digest === "string" ? {lastVerifiedDigest: digest.slice(0, 80)} : {}),
-        ...(publicMarker(marker) ? {lastVerifiedMarker: publicMarker(marker)} : {}),
     }
 }
 
@@ -203,7 +199,8 @@ function publicEpoch(epoch, readArtifact) {
         .map((artifactId) => boundedArtifactValue(readArtifact, artifactId))
         .filter(Boolean)
     const installations = installationArtifacts
-        .flatMap((artifact) => Array.isArray(artifact.jobs) ? artifact.jobs.slice(0, 64) : [artifact])
+        .flatMap((artifact) => (Array.isArray(artifact.jobs) ? artifact.jobs.slice(0, 64) : [artifact])
+            .map((job) => ({operation: job.operation ?? artifact.operation, ...job})))
         .slice(0, 64)
         .map(publicInstallation)
         .filter(Boolean)

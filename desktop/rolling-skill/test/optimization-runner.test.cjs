@@ -191,6 +191,7 @@ function runnerFixture(options = {}) {
                     : target.initial?.classification ?? "managed-clean"
                 installationJobs.set(id, {
                     id,
+                    operation: input.operation,
                     status: "succeeded",
                     runtime: {runtimeId: target.runtimeId},
                     parsedResult: {
@@ -810,12 +811,6 @@ describe("multi-Epoch OptimizationRunner", () => {
                     const stored = fixture.installationJobs.get(job.id)
                     stored.status = "needs_recovery"
                     stored.parsedResult.result.actualDigest = digest("e")
-                    stored.parsedResult.result.markerAfter = {
-                        runId: fixture.run.id,
-                        epoch: 1,
-                        versionId: "candidate-1",
-                        contentDigest: digest("e"),
-                    }
                 }
             }
             return jobs
@@ -832,13 +827,9 @@ describe("multi-Epoch OptimizationRunner", () => {
             runtimeId: "codex:target",
             status: "needs_recovery",
             installationJobId: "installation-3",
+            operation: "experiment_restore",
+            destination: "/runtime/skills/billing",
             lastVerifiedDigest: digest("e"),
-            lastVerifiedMarker: {
-                runId: fixture.run.id,
-                epoch: 1,
-                versionId: "candidate-1",
-                contentDigest: digest("e"),
-            },
         }])
     })
 

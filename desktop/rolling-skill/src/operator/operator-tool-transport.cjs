@@ -242,6 +242,15 @@ class OperatorToolTransport {
                 reason: "Operator control credentials are unavailable",
             }
         }
+        if (providerId === "deepseek-harness") {
+            return support.dshMcpReady === true
+                ? {kind: "dsh-mcp", ready: true}
+                : {
+                    kind: "unsupported",
+                    ready: false,
+                    reason: "DeepSeek Harness native MCP tools are unavailable",
+                }
+        }
         if (providerId === "codebuddy" && support.mcpServersReady === true) {
             return {kind: "acp-mcp", ready: true}
         }
@@ -263,7 +272,7 @@ class OperatorToolTransport {
     }
 
     mcpServers() {
-        if (this.#selection?.kind !== "acp-mcp") return []
+        if (!["acp-mcp", "dsh-mcp"].includes(this.#selection?.kind)) return []
         const path = this.#resolveExecutable()
         return [{
             name: "rolling-skill-operator",

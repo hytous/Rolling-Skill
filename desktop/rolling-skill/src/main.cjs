@@ -41,6 +41,7 @@ const {CaseRefreshManager} = require("./case-refresh-manager.cjs")
 const {RubricManager} = require("./rubric-manager.cjs")
 const {EvaluationRunner} = require("./evaluation-runner.cjs")
 const {EvaluationPowerGuard} = require("./evaluation-power-guard.cjs")
+const {classifyInternalRuntimeThread} = require("./internal-runtime-thread.cjs")
 const {
     buildDatasetCsv,
     datasetExportFilename,
@@ -223,6 +224,7 @@ let operatorJobStore = null
 let operatorJobEngine = null
 let operatorSessionManager = null
 let operatorCapabilityIssuer = null
+let installationCapabilityIssuer = null
 let optimizationStore = null
 let optimizationWorkspaceManager = null
 let optimizationOperatorGateway = null
@@ -243,6 +245,30 @@ const loadedThreads = new Set()
 const activeThreads = new Set()
 const runtimeNotificationRouter = new RuntimeNotificationRouter()
 const controlAuditEvents = []
+
+const skillInstallationControlPlaneFacade = Object.freeze({
+    invoke(request) {
+        if (!controlPlane) throw new Error("Skill installation ControlPlane is unavailable")
+        return controlPlane.invoke(request)
+    },
+    registerInstallationExecutor(registration) {
+        if (!controlPlane) throw new Error("Skill installation ControlPlane is unavailable")
+        return controlPlane.registerInstallationExecutor(registration)
+    },
+})
+
+const skillInstallationCapabilityFacade = Object.freeze({
+    issue(request) {
+        if (!installationCapabilityIssuer) {
+            throw new Error("Skill installation capability issuer is unavailable")
+        }
+        return installationCapabilityIssuer.issue(request)
+    },
+    revoke(capabilityId) {
+        if (!capabilityStore) return false
+        return capabilityStore.revoke(capabilityId)
+    },
+})
 
 app.setName("Rolling Skill")
 
@@ -324,13 +350,25 @@ function sourceCurationMarkers() {
         }))
 }
 
-function isHiddenRuntimeThread(threadId) {
+function isHiddenRuntimeThread(thread) {
+    const threadId = typeof thread === "string" ? thread : thread?.id
+    const inferredKind = typeof thread === "object" && thread !== null
+        ? classifyInternalRuntimeThread(thread)
+        : null
+    if (threadId && inferredKind) {
+        store?.recordInternalThread(threadId, inferredKind)
+        return true
+    }
     return Boolean(
         threadId && (
             curationManager?.hiddenThreadIds().has(threadId) ||
             rubricManager?.hiddenThreadIds().has(threadId) ||
             caseRefreshManager?.hiddenThreadIds().has(threadId) ||
-            automaticCaptureManager?.hiddenThreadIds().has(threadId)
+            automaticCaptureManager?.hiddenThreadIds().has(threadId) ||
+            store?.listInternalThreadIds().includes(threadId) ||
+            evaluationRunner?.hiddenThreadIds().has(threadId) ||
+            operatorSessionManager?.hiddenThreadIds().has(threadId) ||
+            skillInstallationManager?.hiddenThreadIds().has(threadId)
         ),
     )
 }
@@ -1980,6 +2018,9 @@ function initializeControlPlane() {
     rendererCapabilityIssuer = createTrustedHumanCapabilityIssuer(capabilityStore, {
         maxScopeIds: MAX_TRUSTED_SCOPE_IDS,
     })
+    installationCapabilityIssuer = createTrustedCapabilityIssuer(capabilityStore, {
+        maxScopeIds: MAX_TRUSTED_SCOPE_IDS,
+    })
     rendererServiceErrorDiagnostics = createServiceErrorDiagnosticChannel()
     controlPolicy = createControlPolicy()
     controlServices = createDomainServices({
@@ -2163,6 +2204,7 @@ function initializeOperatorRuntime() {
         transportSupport: (runtime) => ({
             dynamicToolsReady: runtime?.providerId === "codex",
             mcpServersReady: runtime?.providerId === "codebuddy",
+            dshMcpReady: runtime?.providerId === "deepseek-harness",
         }),
         requestPermission: () => "decline",
         requestQuestion: () => ({answers: []}),
@@ -3042,12 +3084,6 @@ function installIpc() {
             requireIdentifier(input.jobId, "Skill installation job"),
         ),
     )
-    ipcMain.handle("skill-installations:send", (_event, input = {}) =>
-        skillInstallationManager.send(
-            requireIdentifier(input.jobId, "Skill installation job"),
-            String(input.text ?? ""),
-        ),
-    )
     ipcMain.handle("skill-installations:respond-question", (_event, input = {}) => {
         const requestId = requireIdentifier(input.requestId, "Skill installation question")
         const jobId = requireIdentifier(input.jobId, "Skill installation job")
@@ -3070,12 +3106,10 @@ function installIpc() {
             return {data: [], nextCursor: null, unsupported: true}
         }
         const response = await (await ensureRuntime()).listThreads({archived})
-        const hidden = new Set([
-            ...curationManager.hiddenThreadIds(),
-            ...rubricManager.hiddenThreadIds(),
-            ...caseRefreshManager.hiddenThreadIds(),
-        ])
-        return {...response, data: (response.data ?? []).filter((thread) => !hidden.has(thread.id))}
+        return {
+            ...response,
+            data: (response.data ?? []).filter((thread) => !isHiddenRuntimeThread(thread)),
+        }
     })
     ipcMain.handle("runtime:archive-thread", async (_event, threadId) => {
         threadId = requireIdentifier(threadId, "thread")
@@ -3815,9 +3849,13 @@ if (!hasLock) {
                 return runtime.runEvaluationJudge(input)
             },
             getHiddenThreadIds: () => new Set([
+                ...store.listInternalThreadIds(),
                 ...curationManager.hiddenThreadIds(),
                 ...rubricManager.hiddenThreadIds(),
                 ...caseRefreshManager.hiddenThreadIds(),
+                ...(evaluationRunner?.hiddenThreadIds() ?? []),
+                ...(operatorSessionManager?.hiddenThreadIds() ?? []),
+                ...(skillInstallationManager?.hiddenThreadIds() ?? []),
             ]),
             onStatus: (status) => send("automatic-capture:status", status),
             onError: (error) => send("runtime:state", {
@@ -3841,6 +3879,17 @@ if (!hasLock) {
             getRuntimes: () => availableRuntimes,
             workspaceRoot,
             traceDirectory: join(app.getPath("userData"), "traces", "skill-installations"),
+            controlPlane: skillInstallationControlPlaneFacade,
+            capabilities: skillInstallationCapabilityFacade,
+            controlSocketPath: join(app.getPath("userData"), "control", "control.sock"),
+            installationToolPath: app.isPackaged
+                ? join(process.resourcesPath, "rolling-skill-tool")
+                : join(__dirname, "..", "dist-tools", "rolling-skill-tool"),
+            transportSupport: (runtime) => ({
+                dynamicToolsReady: runtime?.providerId === "codex",
+                mcpServersReady: runtime?.providerId === "codebuddy",
+                dshMcpReady: runtime?.providerId === "deepseek-harness",
+            }),
             resolvePermission: installerRuntimePermissionFor,
             requestPermission: (request) => showRuntimePermissionDialog({
                 ...request,

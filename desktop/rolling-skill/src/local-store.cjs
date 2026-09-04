@@ -77,6 +77,86 @@ function copy(value) {
     return JSON.parse(JSON.stringify(value))
 }
 
+function internalThreadId(value) {
+    const normalized = String(value ?? "").trim()
+    if (!normalized || normalized.length > 4_096) {
+        throw new Error("Internal Runtime task id is invalid")
+    }
+    return normalized
+}
+
+function internalThreadKind(value) {
+    const normalized = String(value ?? "internal").trim()
+    if (!normalized || normalized.length > 100) {
+        throw new Error("Internal Runtime task kind is invalid")
+    }
+    return normalized
+}
+
+function internalThreadRecords(state) {
+    const records = new Map()
+    const remember = (threadId, kind, recordedAt = null) => {
+        if (typeof threadId !== "string" || !threadId.trim()) return
+        let id
+        try {
+            id = internalThreadId(threadId)
+        } catch {
+            return
+        }
+        if (records.has(id)) return
+        records.set(id, {
+            threadId: id,
+            kind: internalThreadKind(kind),
+            recordedAt: typeof recordedAt === "string" && recordedAt ? recordedAt : null,
+        })
+    }
+    for (const entry of Array.isArray(state.internalThreads) ? state.internalThreads : []) {
+        if (typeof entry === "string") remember(entry, "internal")
+        else remember(entry?.threadId, entry?.kind, entry?.recordedAt)
+    }
+    for (const session of state.curationSessions ?? []) {
+        remember(
+            session?.curator?.threadId,
+            "curation",
+            session?.updatedAt ?? session?.createdAt,
+        )
+        if (session?.operation === "refresh") {
+            remember(
+                session?.episode?.source?.threadId,
+                "case-refresh",
+                session?.updatedAt ?? session?.createdAt,
+            )
+        }
+    }
+    for (const session of state.rubricSessions ?? []) {
+        remember(
+            session?.rubricAgent?.threadId,
+            "rubric",
+            session?.updatedAt ?? session?.createdAt,
+        )
+    }
+    for (const run of state.evaluationRuns ?? []) {
+        for (const result of run?.results ?? []) {
+            remember(
+                result?.threadId,
+                "evaluation-target",
+                result?.completedAt ?? result?.startedAt ?? run?.createdAt,
+            )
+            remember(
+                result?.failureDiagnostics?.threadId,
+                "evaluation-target",
+                result?.completedAt ?? result?.startedAt ?? run?.createdAt,
+            )
+            remember(
+                result?.judge?.threadId,
+                "evaluation-judge",
+                result?.gradingCompletedAt ?? result?.gradingStartedAt ?? run?.createdAt,
+            )
+        }
+    }
+    return [...records.values()]
+}
+
 function originalAssistantMessagesFromEpisode(episode) {
     if (!Array.isArray(episode?.items)) return []
     return episode.items
@@ -204,6 +284,7 @@ function initialState() {
         datasetRubricVersions: [],
         rubricSessions: [],
         evaluationRuns: [],
+        internalThreads: [],
     }
 }
 
@@ -574,6 +655,11 @@ function migrateState(input) {
                 changed = true
             }
         }
+    }
+    const normalizedInternalThreads = internalThreadRecords(state)
+    if (JSON.stringify(state.internalThreads ?? []) !== JSON.stringify(normalizedInternalThreads)) {
+        state.internalThreads = normalizedInternalThreads
+        changed = true
     }
     return {state, changed}
 }
@@ -1180,6 +1266,29 @@ class LocalEvaluationStore {
 
     read() {
         return copy(this.load())
+    }
+
+    listInternalThreadIds(kind = null) {
+        const normalizedKind = kind === null ? null : internalThreadKind(kind)
+        return this.load().internalThreads
+            .filter((entry) => normalizedKind === null || entry.kind === normalizedKind)
+            .map((entry) => entry.threadId)
+    }
+
+    recordInternalThread(threadId, kind = "internal") {
+        const state = this.load()
+        const id = internalThreadId(threadId)
+        const normalizedKind = internalThreadKind(kind)
+        const existing = state.internalThreads.find((entry) => entry.threadId === id)
+        if (existing) return copy(existing)
+        const record = {
+            threadId: id,
+            kind: normalizedKind,
+            recordedAt: new Date().toISOString(),
+        }
+        state.internalThreads.push(record)
+        this.persist()
+        return copy(record)
     }
 
     listDatasets() {

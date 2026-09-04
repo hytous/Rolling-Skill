@@ -30,6 +30,12 @@
             "renderer/**/*",
             "package.json"
         ],
+        "extraResources": [
+            {
+                "from": "dist-tools/rolling-skill-tool",
+                "to": "rolling-skill-tool"
+            }
+        ],
         "directories": {
             "output": "dist",
             "buildResources": "assets"

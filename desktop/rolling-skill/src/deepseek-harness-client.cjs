@@ -1,7 +1,9 @@
 const {randomUUID} = require("node:crypto")
 const {EventEmitter} = require("node:events")
 const {spawn} = require("node:child_process")
-const {dirname} = require("node:path")
+const {mkdtempSync, rmdirSync, unlinkSync, writeFileSync} = require("node:fs")
+const {tmpdir} = require("node:os")
+const {dirname, isAbsolute, join} = require("node:path")
 
 const {evaluationTurnError} = require("./evaluation-turn-error.cjs")
 const {TraceRecorder} = require("./trace-recorder.cjs")
@@ -19,6 +21,78 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 2_000
 const DEFAULT_MUX_RECONNECT_DELAY_MS = 500
 const MAX_MUX_RECONNECT_DELAY_MS = 5_000
 const DSH_PERMISSION_MODES = new Set(["read-only", "workspace-write", "danger-full-access"])
+const DSH_MCP_SERVER_NAME = /^[A-Za-z0-9_-]{1,32}$/u
+const DSH_MCP_ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]{0,127}$/u
+
+function plainObject(value) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+    const prototype = Object.getPrototypeOf(value)
+    return prototype === Object.prototype || prototype === null
+}
+
+function boundedMcpText(value, label, maximum = 8_192) {
+    if (
+        typeof value !== "string" || value.length === 0 || value.length > maximum ||
+        /[\u0000\r\n]/u.test(value)
+    ) throw new TypeError(`${label} is invalid`)
+    return value
+}
+
+function normalizeDshMcpServers(value, childEnvironment) {
+    if (value === undefined || value === null) return []
+    if (!Array.isArray(value) || value.length > 8) {
+        throw new TypeError("DeepSeek Harness MCP servers must be a bounded array")
+    }
+    const serverNames = new Set()
+    return value.map((server) => {
+        if (!plainObject(server) || !DSH_MCP_SERVER_NAME.test(server.name ?? "")) {
+            throw new TypeError("DeepSeek Harness MCP server name is invalid")
+        }
+        if (serverNames.has(server.name)) {
+            throw new TypeError("DeepSeek Harness MCP server names must be unique")
+        }
+        serverNames.add(server.name)
+        const command = boundedMcpText(server.command, "DeepSeek Harness MCP command")
+        if (!isAbsolute(command)) throw new TypeError("DeepSeek Harness MCP command must be absolute")
+        if (!Array.isArray(server.args) || server.args.length > 100) {
+            throw new TypeError("DeepSeek Harness MCP arguments must be a bounded array")
+        }
+        const args = server.args.map((argument) => (
+            boundedMcpText(argument, "DeepSeek Harness MCP argument")
+        ))
+        if (!Array.isArray(server.env) || server.env.length > 128) {
+            throw new TypeError("DeepSeek Harness MCP environment must be a bounded array")
+        }
+        const environmentNames = []
+        for (const entry of server.env) {
+            if (
+                !plainObject(entry) || !DSH_MCP_ENVIRONMENT_NAME.test(entry.name ?? "") ||
+                typeof childEnvironment[entry.name] !== "string" ||
+                entry.value !== childEnvironment[entry.name] ||
+                environmentNames.includes(entry.name)
+            ) throw new TypeError("DeepSeek Harness MCP environment entry is invalid")
+            environmentNames.push(entry.name)
+        }
+        return Object.freeze({name: server.name, command, args, environmentNames})
+    })
+}
+
+function dshMcpPatch(servers) {
+    return `- insert:\n${servers.map((server, index) => [
+        `    - id: ${JSON.stringify(`rolling-skill-mcp-${index}-${server.name}`)}`,
+        "      name: \"@deepseek-ai/dsh-mcp-client\"",
+        "      config:",
+        `        serverName: ${JSON.stringify(server.name)}`,
+        "        transport: \"stdio\"",
+        `        command: ${JSON.stringify(server.command)}`,
+        `        args: ${JSON.stringify(server.args)}`,
+        "        env:",
+        ...server.environmentNames.map((name) => `          ${name}: !!js process.env.${name}`),
+        "        failOnStartupError: true",
+        "        reconnect:",
+        "          enabled: false",
+    ].join("\n")).join("\n")}\n`
+}
 
 function encodeModelId(provider, model) {
     provider = String(provider ?? "").trim()
@@ -275,6 +349,7 @@ class DeepSeekHarnessClient extends EventEmitter {
         requestPermission = null,
         requestQuestion = null,
         childEnvironment = {},
+        mcpServers = [],
         pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
         startupTimeoutMs = DEFAULT_STARTUP_TIMEOUT_MS,
         startupRetryDelayMs = DEFAULT_STARTUP_RETRY_DELAY_MS,
@@ -303,6 +378,9 @@ class DeepSeekHarnessClient extends EventEmitter {
         this.requestPermission = requestPermission
         this.requestQuestion = requestQuestion
         this.childEnvironment = sanitizeOperatorChildEnvironment(childEnvironment)
+        this.mcpServers = normalizeDshMcpServers(mcpServers, this.childEnvironment)
+        this.mcpPatchDirectory = null
+        this.mcpPatchPath = null
         this.stderrRedactor = null
         this.pollIntervalMs = pollIntervalMs
         this.startupTimeoutMs = startupTimeoutMs
@@ -390,23 +468,37 @@ class DeepSeekHarnessClient extends EventEmitter {
             runtime: this.runtimeDescriptor,
         })
         const epoch = ++this.processEpoch
-        const child = this.spawnProcess(
-            this.binaryPath,
-            ["--profile", "web", "--no-open", "--port", "0"],
-            {
-                cwd: this.workspaceRoot,
-                env: {
-                    ...mergeOperatorChildEnvironment({
-                        ...process.env,
-                        PATH: `${dirname(this.binaryPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-                        DSH_PERMISSION_MODE: this.defaultPermissionMode,
-                    }, this.childEnvironment),
-                    ROLLING_SKILL_OPERATOR_HOST: "1",
+        const patchPath = this.createMcpPatch()
+        let child
+        try {
+            child = this.spawnProcess(
+                this.binaryPath,
+                [
+                    "--profile",
+                    "web",
+                    ...(patchPath ? ["--patch", patchPath] : []),
+                    "--no-open",
+                    "--port",
+                    "0",
+                ],
+                {
+                    cwd: this.workspaceRoot,
+                    env: {
+                        ...mergeOperatorChildEnvironment({
+                            ...process.env,
+                            PATH: `${dirname(this.binaryPath)}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+                            DSH_PERMISSION_MODE: this.defaultPermissionMode,
+                        }, this.childEnvironment),
+                        ROLLING_SKILL_OPERATOR_HOST: "1",
+                    },
+                    shell: false,
+                    stdio: ["ignore", "pipe", "pipe"],
                 },
-                shell: false,
-                stdio: ["ignore", "pipe", "pipe"],
-            },
-        )
+            )
+        } catch (error) {
+            this.cleanupMcpPatch()
+            throw error
+        }
         this.child = child
         this.stderrRedactor = new OperatorStreamRedactor(this.childEnvironment)
         this.emit("state", this.state())
@@ -436,6 +528,45 @@ class DeepSeekHarnessClient extends EventEmitter {
                 this.handleExit(error, child, epoch)
             }
             throw error
+        }
+    }
+
+    createMcpPatch() {
+        this.cleanupMcpPatch()
+        if (this.mcpServers.length === 0) return null
+        const directory = mkdtempSync(join(tmpdir(), "rolling-skill-dsh-mcp-"))
+        const path = join(directory, "cordis.patch.yml")
+        try {
+            writeFileSync(path, dshMcpPatch(this.mcpServers), {
+                encoding: "utf8",
+                flag: "wx",
+                mode: 0o600,
+            })
+        } catch (error) {
+            try {
+                rmdirSync(directory)
+            } catch {}
+            throw error
+        }
+        this.mcpPatchDirectory = directory
+        this.mcpPatchPath = path
+        return path
+    }
+
+    cleanupMcpPatch() {
+        const path = this.mcpPatchPath
+        const directory = this.mcpPatchDirectory
+        this.mcpPatchPath = null
+        this.mcpPatchDirectory = null
+        if (path) {
+            try {
+                unlinkSync(path)
+            } catch {}
+        }
+        if (directory) {
+            try {
+                rmdirSync(directory)
+            } catch {}
         }
     }
 
@@ -501,6 +632,7 @@ class DeepSeekHarnessClient extends EventEmitter {
         this.pendingTurns.clear()
         this.pendingNonInteractiveFailures.clear()
         this.sessionPermissions.clear()
+        this.cleanupMcpPatch()
         const message = redactOperatorSecrets(error.message, this.childEnvironment)
         this.emit("state", {...this.state(), error: this.stopping ? null : message})
         if (!this.stopping) this.emit("runtimeError", new Error(message))
@@ -1592,7 +1724,10 @@ class DeepSeekHarnessClient extends EventEmitter {
         this.pendingNonInteractiveFailures.clear()
         const child = this.child
         const epoch = this.processEpoch
-        if (!child) return
+        if (!child) {
+            this.cleanupMcpPatch()
+            return
+        }
         await this.terminateProcess(child)
         if (this.child === child && this.processEpoch === epoch) {
             this.handleExit(new Error("DeepSeek Harness Host stopped"), child, epoch)

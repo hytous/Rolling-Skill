@@ -70,11 +70,17 @@ class CaseRefreshManager {
         this.getTaskProfile = getTaskProfile ?? (() => this.store.read().settings.taskProfile)
         this.getCuratorProfile = getCuratorProfile ?? (() => this.store.read().settings.curatorProfile)
         this.resolveOperation = resolveOperation
-        this.hidden = new Set()
+        this.hidden = new Set(this.store.listInternalThreadIds?.("case-refresh") ?? [])
     }
 
     hiddenThreadIds() {
         return new Set(this.hidden)
+    }
+
+    rememberInternalThread(threadId) {
+        if (!threadId || this.hidden.has(threadId)) return
+        this.store.recordInternalThread?.(threadId, "case-refresh")
+        this.hidden.add(threadId)
     }
 
     async createSession({datasetId, caseId}) {
@@ -110,12 +116,12 @@ class CaseRefreshManager {
                 effort: taskProfile.effort ?? null,
                 onThreadStarted: (threadId) => {
                     internalThreadId = threadId
-                    this.hidden.add(threadId)
+                    this.rememberInternalThread(threadId)
                 },
             })
             internalThreadId = output.threadId ?? internalThreadId
             if (!internalThreadId) throw new Error("Case refresh Runtime did not return a task id")
-            this.hidden.add(internalThreadId)
+            this.rememberInternalThread(internalThreadId)
             const response = await runtime.readThread(internalThreadId)
             const episode = buildEpisodeSnapshot(response.thread, {
                 endTurnId: output.turnId,

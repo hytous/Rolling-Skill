@@ -562,27 +562,49 @@ const translations = {
         installationStatusFailed: "Failed",
         installationStatusCancelled: "Cancelled",
         installationStatusUnverified: "Unverified",
+        installationStatusNeedsRecovery: "Needs recovery",
         installationRuntimeDefault: "Runtime default",
         installationCurrentVersion: "Installed: {version}",
         installationNotVerified: "No verified installation",
         installationRuntimeVerified: "Runtime verified",
         installationFilesystemOnly: "Copied · awaiting Runtime verification",
         installationLastJob: "Last job: {status}",
-        installationSession: "Installer session",
-        installationResultSummary: "Structured result",
+        installationSession: "Installation details",
+        installationResultSummary: "Verified result",
+        installationRuntime: "Runtime",
+        installationReleasedVersion: "Released version",
         installationDestination: "Destination",
+        installationDestinationPending: "Waiting for the Agent to discover the target",
         installationClassification: "Pre-state",
         installationVerification: "Verification",
-        installationNoTimeline: "The installer has not produced completed output yet.",
+        installationNoTimeline: "No execution records yet.",
+        completeExecutionLog: "Complete execution log",
+        installationStepPreparing: "Preparing",
+        installationStepInstalling: "Installing",
+        installationStepVerifying: "Verifying",
+        installationStepRegistering: "Registering",
+        installationStepPending: "Pending",
+        installationStepActive: "In progress",
+        installationStepComplete: "Complete",
+        installationStepFailed: "Needs attention",
+        installationRegistrationAccepted: "Registered",
+        installationRegistrationPending: "Not registered",
+        installationVerificationPending: "Pending verification",
+        installationErrorTargetNotInstalled: "The target Skill was not found. Recheck the Runtime or retry installation.",
+        installationErrorOverwriteRequired: "The target contains different content. Review it before retrying installation.",
+        installationErrorRegistrationMissing: "The Agent finished without registering its result. Run a read-only recheck.",
+        installationErrorResultInvalid: "The Agent reported invalid verification evidence. Run a read-only recheck.",
+        installationErrorTargetMismatch: "The target contains different content; the read-only check did not overwrite it.",
+        installationUnknownError: "The installation did not complete. Expand the execution log for details.",
+        installationDiagnosticError: "Raw error",
         installationTool: "Tool · {name}",
         installationCommand: "Command · {command}",
         installationStop: "Stop installation",
         installationStopped: "Installation stop requested",
-        inspectInstallation: "Inspect read-only",
-        inspectionQueued: "Read-only inspection queued",
-        installerConversationRunning: "Agent running",
-        installerMessagePlaceholder: "Ask the installer Agent…",
-        sendInstallerMessage: "Send",
+        inspectInstallation: "Recheck",
+        inspectionQueued: "Read-only recheck queued",
+        retryInstallation: "Retry installation",
+        retryInstallationQueued: "Installation retry queued",
         installationQuestionTitle: "Installer needs your input",
         installationOpenAfterRelease: "Version released. Open Runtime installs to deploy it.",
         openRuntimeInstallations: "Open Runtime installs",
@@ -1302,27 +1324,49 @@ const translations = {
         installationStatusFailed: "失败",
         installationStatusCancelled: "已停止",
         installationStatusUnverified: "未验证",
+        installationStatusNeedsRecovery: "待恢复检查",
         installationRuntimeDefault: "Runtime 默认",
         installationCurrentVersion: "已安装：{version}",
         installationNotVerified: "尚无可信安装记录",
         installationRuntimeVerified: "Runtime 已验证",
         installationFilesystemOnly: "已复制 · 等待 Runtime 验证",
         installationLastJob: "最近任务：{status}",
-        installationSession: "安装 Agent 会话",
-        installationResultSummary: "结构化结果",
+        installationSession: "安装详情",
+        installationResultSummary: "可信结果",
+        installationRuntime: "Runtime",
+        installationReleasedVersion: "已发布版本",
         installationDestination: "目标目录",
+        installationDestinationPending: "等待 Agent 发现目标目录",
         installationClassification: "安装前状态",
         installationVerification: "验证方式",
-        installationNoTimeline: "安装 Agent 还没有产生已完成的输出。",
+        installationNoTimeline: "暂无执行记录。",
+        completeExecutionLog: "完整执行记录",
+        installationStepPreparing: "准备",
+        installationStepInstalling: "安装",
+        installationStepVerifying: "验证",
+        installationStepRegistering: "登记",
+        installationStepPending: "等待中",
+        installationStepActive: "进行中",
+        installationStepComplete: "已完成",
+        installationStepFailed: "需要处理",
+        installationRegistrationAccepted: "已登记",
+        installationRegistrationPending: "未登记",
+        installationVerificationPending: "等待验证",
+        installationErrorTargetNotInstalled: "没有找到目标 Skill，请检查 Runtime 后重新检查或重试安装。",
+        installationErrorOverwriteRequired: "目标目录已有不同内容，请确认内容后再重试安装。",
+        installationErrorRegistrationMissing: "Agent 已结束但没有登记结果，请执行一次只读检查。",
+        installationErrorResultInvalid: "Agent 提交的验证证据无效，请执行一次只读检查。",
+        installationErrorTargetMismatch: "目标目录已有不同内容，本次只读检查未进行覆盖。",
+        installationUnknownError: "安装未完成，请展开完整执行记录查看详情。",
+        installationDiagnosticError: "原始错误",
         installationTool: "工具 · {name}",
         installationCommand: "命令 · {command}",
         installationStop: "停止安装",
         installationStopped: "已请求停止安装",
-        inspectInstallation: "只读检查",
+        inspectInstallation: "重新检查",
         inspectionQueued: "只读检查任务已进入队列",
-        installerConversationRunning: "Agent 运行中",
-        installerMessagePlaceholder: "追问安装 Agent…",
-        sendInstallerMessage: "发送",
+        retryInstallation: "重试安装",
+        retryInstallationQueued: "重试安装任务已进入队列",
         installationQuestionTitle: "安装 Agent 需要你的输入",
         installationOpenAfterRelease: "版本已发布，可前往 Runtime 安装页面部署。",
         openRuntimeInstallations: "打开 Runtime 安装",
@@ -1579,7 +1623,6 @@ const state = {
     managedInstallConfigurations: {},
     activeSkillInstallationJobId: null,
     pendingSkillInstallationQuestions: new Map(),
-    skillInstallationInputDrafts: new Map(),
     managedInstallationLoading: false,
     managedInstallationStarting: false,
     evaluationCases: [],
@@ -1676,6 +1719,7 @@ const elements = {
     startManagedSkillInstallations: document.querySelector("#start-managed-skill-installations"),
     managedInstallJobList: document.querySelector("#managed-install-job-list"),
     managedInstallSession: document.querySelector("#managed-install-session"),
+    retryManagedSkillInstallation: document.querySelector("#retry-managed-skill-installation"),
     inspectManagedSkillInstallation: document.querySelector("#inspect-managed-skill-installation"),
     cancelManagedSkillInstallation: document.querySelector("#cancel-managed-skill-installation"),
     managedSkillError: document.querySelector("#managed-skill-error"),
@@ -5128,6 +5172,7 @@ const TERMINAL_SKILL_INSTALLATION_STATUSES = new Set([
     "failed",
     "cancelled",
     "unverified",
+    "needs_recovery",
 ])
 
 function normalizedSkillInstallationOverview(value = {}) {
@@ -5148,8 +5193,73 @@ function skillInstallationStatusLabel(status) {
         failed: "installationStatusFailed",
         cancelled: "installationStatusCancelled",
         unverified: "installationStatusUnverified",
+        needs_recovery: "installationStatusNeedsRecovery",
     }[status]
     return key ? t(key) : String(status ?? t("none"))
+}
+
+function skillInstallationVerificationLabel(verification) {
+    return {
+        "runtime-inventory": t("installationRuntimeVerified"),
+        "filesystem-only": t("installationFilesystemOnly"),
+    }[verification] ?? t("installationVerificationPending")
+}
+
+function skillInstallationErrorMessage(error) {
+    const key = {
+        TARGET_NOT_INSTALLED: "installationErrorTargetNotInstalled",
+        OVERWRITE_CONFIRMATION_REQUIRED: "installationErrorOverwriteRequired",
+        INSTALLATION_REGISTRATION_MISSING: "installationErrorRegistrationMissing",
+        INSTALLATION_RESULT_INVALID: "installationErrorResultInvalid",
+        EXPERIMENT_TARGET_MISMATCH: "installationErrorTargetMismatch",
+    }[error?.code]
+    if (key) return t(key)
+    if (/exact target.*expected source digest|matching management marker/iu.test(error?.message ?? "")) {
+        return t("installationErrorTargetMismatch")
+    }
+    return t("installationUnknownError")
+}
+
+function skillInstallationSteps(job) {
+    const terminal = TERMINAL_SKILL_INSTALLATION_STATUSES.has(job.status)
+    const succeeded = job.status === "succeeded"
+    const accepted = job.registration?.state === "accepted"
+    const beforeInstallation = job.status === "queued"
+    const installing = new Set([
+        "running",
+        "awaiting_permission",
+        "awaiting_confirmation",
+    ]).has(job.status)
+    return [
+        {
+            label: t("installationStepPreparing"),
+            state: beforeInstallation ? "active" : "complete",
+        },
+        {
+            label: t("installationStepInstalling"),
+            state: beforeInstallation ? "pending" : installing ? "active" : terminal && !succeeded
+                ? "failed" : "complete",
+        },
+        {
+            label: t("installationStepVerifying"),
+            state: beforeInstallation || installing ? "pending" : job.status === "verifying"
+                ? "active" : terminal && !succeeded ? "failed" : "complete",
+        },
+        {
+            label: t("installationStepRegistering"),
+            state: accepted ? "complete" : terminal ? "failed" : job.status === "verifying"
+                ? "active" : "pending",
+        },
+    ]
+}
+
+function skillInstallationStepStateLabel(stateName) {
+    return t({
+        pending: "installationStepPending",
+        active: "installationStepActive",
+        complete: "installationStepComplete",
+        failed: "installationStepFailed",
+    }[stateName])
 }
 
 function releasedManagedVersions(skillId) {
@@ -5403,34 +5513,8 @@ function renderSkillInstallationQuestion(request) {
     return form
 }
 
-function renderManagedSkillInstallationSession(job) {
-    elements.managedInstallSession.replaceChildren()
-    elements.inspectManagedSkillInstallation.classList.add("hidden")
-    elements.cancelManagedSkillInstallation.classList.add("hidden")
-    if (!job) return
-    const head = node("div", "managed-skill-panel-head")
-    head.append(
-        node("span", "", t("installationSession")),
-        node(
-            "strong",
-            "",
-            job.conversationStatus === "running"
-                ? `${skillInstallationStatusLabel(job.status)} · ${t("installerConversationRunning")}`
-                : skillInstallationStatusLabel(job.status),
-        ),
-    )
-    elements.managedInstallSession.append(head)
-    if (job.parsedResult) {
-        const summary = node("dl", "managed-install-result")
-        for (const [label, value] of [
-            [t("installationDestination"), job.parsedResult.destination ?? t("none")],
-            [t("installationClassification"), job.parsedResult.classificationBefore ?? t("none")],
-            [t("installationVerification"), job.parsedResult.verification ?? t("none")],
-        ]) {
-            summary.append(node("dt", "", label), node("dd", "", value))
-        }
-        elements.managedInstallSession.append(summary)
-    }
+function renderSkillInstallationDiagnostics(job) {
+    const body = node("div", "managed-install-diagnostics-body")
     const timeline = node("div", "managed-install-timeline")
     if (!job.timeline?.length) {
         timeline.append(node("div", "managed-skill-empty", t("installationNoTimeline")))
@@ -5442,47 +5526,103 @@ function renderManagedSkillInstallationSession(job) {
             timeline.append(item)
             continue
         }
-        const label = entry.command
-            ? formatMessage("installationCommand", {command: entry.command})
-            : formatMessage("installationTool", {name: entry.name ?? entry.type ?? t("none")})
-        timeline.append(node("div", "managed-install-timeline-item tool", label))
+        if (entry.command) {
+            const command = document.createElement("details")
+            command.className = "managed-install-timeline-item tool command"
+            const oneLine = String(entry.command).replace(/\s+/gu, " ").trim()
+            command.append(
+                node("summary", "", formatMessage("installationCommand", {command: oneLine})),
+                node("pre", "managed-install-command", entry.command),
+            )
+            timeline.append(command)
+            continue
+        }
+        timeline.append(node(
+            "div",
+            "managed-install-timeline-item tool",
+            formatMessage("installationTool", {name: entry.name ?? entry.type ?? t("none")}),
+        ))
     }
-    elements.managedInstallSession.append(timeline)
+    body.append(timeline)
+    for (const error of [job.error, job.conversationError]) {
+        if (!error?.message) continue
+        body.append(node(
+            "div",
+            "managed-install-diagnostic-error",
+            `${t("installationDiagnosticError")} · ${error.code ?? "ERROR"}\n${error.message}`,
+        ))
+    }
+    return body
+}
+
+function renderManagedSkillInstallationSession(job) {
+    elements.managedInstallSession.replaceChildren()
+    elements.retryManagedSkillInstallation.classList.add("hidden")
+    elements.inspectManagedSkillInstallation.classList.add("hidden")
+    elements.cancelManagedSkillInstallation.classList.add("hidden")
+    if (!job) return
+    const head = node("div", "managed-skill-panel-head")
+    head.append(
+        node("span", "", t("installationSession")),
+        node("strong", "", skillInstallationStatusLabel(job.status)),
+    )
+    elements.managedInstallSession.append(head)
+
+    const summary = node("dl", "managed-install-result")
+    for (const [label, value] of [
+        [t("installationRuntime"), `${job.runtime.displayName}${job.runtime.version ? ` ${job.runtime.version}` : ""}`],
+        [t("installationReleasedVersion"), job.request.versionLabel],
+        [t("installationDestination"), job.parsedResult?.destination ?? t("installationDestinationPending")],
+        [t("installationVerification"), skillInstallationVerificationLabel(job.parsedResult?.verification)],
+    ]) {
+        summary.append(node("dt", "", label), node("dd", "", value))
+    }
+    elements.managedInstallSession.append(summary)
+
+    const steps = node("ol", "managed-install-steps")
+    for (const step of skillInstallationSteps(job)) {
+        const item = node("li", `managed-install-step ${step.state}`)
+        item.append(
+            node("span", "managed-install-step-dot", ""),
+            node("strong", "", step.label),
+            node("small", "", skillInstallationStepStateLabel(step.state)),
+        )
+        steps.append(item)
+    }
+    elements.managedInstallSession.append(steps)
+
+    if (job.error) {
+        elements.managedInstallSession.append(
+            node("p", "managed-skill-error managed-install-error-summary", skillInstallationErrorMessage(job.error)),
+        )
+    }
     const question = [...state.pendingSkillInstallationQuestions.values()].find(
         (entry) => entry.jobId === job.id,
     )
     if (question) elements.managedInstallSession.append(renderSkillInstallationQuestion(question))
-    if (job.error?.message) {
-        elements.managedInstallSession.append(node("p", "managed-skill-error", job.error.message))
-    }
-    if (job.conversationError?.message) {
-        elements.managedInstallSession.append(
-            node("p", "managed-skill-error", job.conversationError.message),
-        )
-    }
-    if (TERMINAL_SKILL_INSTALLATION_STATUSES.has(job.status)) {
-        const form = node("form", "managed-install-composer")
-        form.dataset.skillInstallationMessageForm = job.id
-        const input = document.createElement("textarea")
-        input.rows = 2
-        input.maxLength = 120_000
-        input.placeholder = t("installerMessagePlaceholder")
-        input.value = state.skillInstallationInputDrafts.get(job.id) ?? ""
-        input.dataset.skillInstallationMessageInput = job.id
-        input.disabled = job.conversationStatus === "running"
-        const send = node("button", "primary", t("sendInstallerMessage"))
-        send.type = "submit"
-        send.disabled = job.conversationStatus === "running"
-        form.append(input, send)
-        elements.managedInstallSession.append(form)
-    }
-    if (!TERMINAL_SKILL_INSTALLATION_STATUSES.has(job.status) || job.conversationStatus === "running") {
+
+    const diagnostics = document.createElement("details")
+    diagnostics.className = "managed-install-diagnostics"
+    diagnostics.append(
+        node("summary", "", t("completeExecutionLog")),
+        renderSkillInstallationDiagnostics(job),
+    )
+    elements.managedInstallSession.append(diagnostics)
+
+    if (!TERMINAL_SKILL_INSTALLATION_STATUSES.has(job.status)) {
         elements.cancelManagedSkillInstallation.classList.remove("hidden")
         elements.cancelManagedSkillInstallation.dataset.jobId = job.id
         elements.cancelManagedSkillInstallation.title = t("installationStop")
-    } else {
-        elements.inspectManagedSkillInstallation.classList.remove("hidden")
-        elements.inspectManagedSkillInstallation.dataset.jobId = job.id
+        return
+    }
+    elements.inspectManagedSkillInstallation.classList.remove("hidden")
+    elements.inspectManagedSkillInstallation.dataset.jobId = job.id
+    if (
+        job.operation === "install" &&
+        new Set(["failed", "cancelled", "unverified", "needs_recovery"]).has(job.status)
+    ) {
+        elements.retryManagedSkillInstallation.classList.remove("hidden")
+        elements.retryManagedSkillInstallation.dataset.jobId = job.id
     }
 }
 
@@ -5622,17 +5762,32 @@ async function inspectManagedSkillInstallation(jobId) {
     }
 }
 
-async function sendSkillInstallationMessage(jobId, text) {
-    text = String(text ?? "").trim()
-    if (!text) return
+async function retryManagedSkillInstallation(jobId) {
+    const previous = state.skillInstallations.jobs.find((entry) => entry.id === jobId)
+    if (!previous || previous.operation !== "install") return
+    state.managedInstallationStarting = true
+    renderManagedSkillInstallations()
     try {
-        const job = await window.rollingSkill.sendSkillInstallationMessage(jobId, text)
-        state.skillInstallationInputDrafts.delete(jobId)
-        mergeSkillInstallationJob(job)
+        const jobs = await window.rollingSkill.startSkillInstallations({
+            skillId: previous.request.source.skillId,
+            versionId: previous.request.source.versionId,
+            targets: [{
+                runtimeId: previous.runtime.runtimeId,
+                modelId: previous.modelId ?? null,
+                effort: previous.effort ?? null,
+                permissionMode: previous.permissionMode ?? null,
+            }],
+        })
+        for (const job of jobs ?? []) mergeSkillInstallationJob(job)
+        state.activeSkillInstallationJobId = jobs?.[0]?.id ?? state.activeSkillInstallationJobId
+        showToast(t("retryInstallationQueued"))
         renderManagedSkillInstallations()
     } catch (error) {
         state.managedSkillError = managedSkillErrorMessage(error)
         renderSkillManagementWorkbench()
+    } finally {
+        state.managedInstallationStarting = false
+        renderManagedSkillInstallations()
     }
 }
 
@@ -8924,27 +9079,17 @@ elements.managedSkillInstallations.addEventListener("change", (event) => {
     renderManagedSkillInstallations()
 })
 elements.managedSkillInstallations.addEventListener("submit", (event) => {
-    const messageForm = event.target.closest("[data-skill-installation-message-form]")
-    if (messageForm) {
-        event.preventDefault()
-        const jobId = messageForm.dataset.skillInstallationMessageForm
-        const input = messageForm.querySelector("[data-skill-installation-message-input]")
-        void sendSkillInstallationMessage(jobId, input?.value ?? "")
-        return
-    }
     const form = event.target.closest("[data-skill-installation-question-id]")
     if (!form) return
     event.preventDefault()
     void respondSkillInstallationQuestion(form)
 })
-elements.managedSkillInstallations.addEventListener("input", (event) => {
-    const input = event.target.closest("[data-skill-installation-message-input]")
-    if (!input) return
-    if (input.value) state.skillInstallationInputDrafts.set(input.dataset.skillInstallationMessageInput, input.value)
-    else state.skillInstallationInputDrafts.delete(input.dataset.skillInstallationMessageInput)
-})
 elements.startManagedSkillInstallations.addEventListener("click", () => {
     void startManagedSkillInstallations()
+})
+elements.retryManagedSkillInstallation.addEventListener("click", () => {
+    const jobId = elements.retryManagedSkillInstallation.dataset.jobId
+    if (jobId) void retryManagedSkillInstallation(jobId)
 })
 elements.cancelManagedSkillInstallation.addEventListener("click", () => {
     const jobId = elements.cancelManagedSkillInstallation.dataset.jobId

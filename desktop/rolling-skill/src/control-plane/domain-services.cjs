@@ -2172,6 +2172,10 @@ function createDomainServices(dependencies = {}) {
             )}
         },
 
+        async "installations.register"() {
+            throw new Error("Installation registration requires a live Job-scoped executor")
+        },
+
         async "optimization.preflight"(input, context) {
             if (typeof optimizationControlService?.preflight !== "function") {
                 throw new Error("Optimization control service unavailable")

@@ -340,6 +340,35 @@ const validOutputs = {
 }
 
 describe("control-plane contracts", () => {
+    it("keeps Optimization recovery installation evidence marker-free", () => {
+        const recoveryTarget = {
+            runtimeId: "codex:target",
+            status: "needs_recovery",
+            installationJobId: "installation-1",
+            operation: "experiment_restore",
+            destination: "/runtime/skills/billing",
+            lastVerifiedDigest: `sha256:${"c".repeat(64)}`,
+        }
+        assert.doesNotThrow(() => parseControlOutput("optimization.get", {
+            run: {
+                ...optimizationRun,
+                checkpoint: {paused: false, recoveryTargets: [recoveryTarget]},
+            },
+        }))
+        assert.throws(() => parseControlOutput("optimization.get", {
+            run: {
+                ...optimizationRun,
+                checkpoint: {
+                    paused: false,
+                    recoveryTargets: [{
+                        ...recoveryTarget,
+                        lastVerifiedMarker: {runId: "run-1"},
+                    }],
+                },
+            },
+        }), /lastVerifiedMarker|unrecognized/iu)
+    })
+
     it("defines the complete initial method and action inventory", () => {
         assert.deepEqual(CONTROL_METHODS, Object.keys(validInputs))
         assert.ok(CONTROL_METHODS.includes("evaluations.start"))

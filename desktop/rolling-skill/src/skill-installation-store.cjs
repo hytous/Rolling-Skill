@@ -119,7 +119,6 @@ function normalizeRequest(request = {}) {
     const normalized = {
         schema: requiredText(request.schema, "Installation request schema", 100),
         purpose: requiredText(purpose, "Installation purpose", 100),
-        markerSchema: requiredText(request.markerSchema, "Installation marker schema", 100),
         repositoryPath: requiredText(request.repositoryPath, "Managed repository path", 8_192),
         skillName: requiredText(request.skillName, "Skill name", 200),
         versionLabel: requiredText(request.versionLabel, "Version label", 100),
@@ -145,16 +144,13 @@ function normalizeRequest(request = {}) {
         throw new Error("Optimization experiment operation is invalid")
     }
     normalized.experiment = copy(experiment)
+    delete normalized.experiment.marker
+    if (normalized.experiment.previous) delete normalized.experiment.previous.marker
     requiredText(experiment.runId, "Optimization Run id", 200)
     if (!Number.isSafeInteger(experiment.epoch) || experiment.epoch < 1) {
         throw new Error("Optimization Epoch is invalid")
     }
     requiredText(experiment.snapshotDigest, "Optimization snapshot digest", 80)
-    if (!experiment.marker || typeof experiment.marker !== "object") {
-        throw new Error("Optimization experiment marker is required")
-    }
-    requiredText(experiment.marker.runId, "Optimization marker Run id", 200)
-    requiredText(experiment.marker.versionId, "Optimization marker version id", 200)
     requiredText(experiment.baseline?.versionId, "Optimization baseline version id", 200)
     if (experiment.initial !== null) {
         const classification = requiredText(
@@ -223,6 +219,27 @@ function validateState(state) {
         job.messages.forEach((entry) => validateTimelineEntry(entry, "Installation message"))
         job.activities.forEach((entry) => validateTimelineEntry(entry, "Installation activity"))
         job.timeline.forEach((entry) => validateTimelineEntry(entry, "Installation timeline entry"))
+        if (!job.registration || typeof job.registration !== "object" || Array.isArray(job.registration)) {
+            throw new Error("Skill installation registration state is invalid")
+        }
+        if (job.registration.state === "pending") {
+            if (
+                job.registration.invocationFingerprint !== null ||
+                job.registration.acceptedAt !== null
+            ) throw new Error("Pending Skill installation registration is invalid")
+        } else if (job.registration.state === "accepted") {
+            requiredText(
+                job.registration.invocationFingerprint,
+                "Installation registration fingerprint",
+                200,
+            )
+            requiredText(job.registration.acceptedAt, "Installation registration time", 100)
+            if (!job.parsedResult || typeof job.parsedResult !== "object") {
+                throw new Error("Accepted Skill installation registration has no evidence")
+            }
+        } else {
+            throw new Error("Skill installation registration state is invalid")
+        }
     }
     for (const installation of state.installations) {
         requiredText(installation.id, "Installation record id", 200)
@@ -276,20 +293,35 @@ class SkillInstallationStore {
         }
         try {
             const parsed = JSON.parse(readFileSync(this.path, "utf8"))
+            let migrated = false
             for (const job of parsed.jobs ?? []) {
                 job.operation ??= "install"
                 job.parentJobId ??= null
                 job.conversationStatus ??= "idle"
                 job.conversationError ??= null
-                if (Array.isArray(job.timeline)) continue
-                job.timeline = [
-                    ...(job.messages ?? []).map((entry) => ({...entry, kind: "message"})),
-                    ...(job.activities ?? []).map((entry) => ({...entry, kind: "activity"})),
-                ].sort((left, right) => String(left.recordedAt ?? "").localeCompare(
-                    String(right.recordedAt ?? ""),
-                ))
+                job.request = normalizeRequest(job.request)
+                if (!job.registration) {
+                    job.registration = job.status === "succeeded" && job.parsedResult?.trusted === true
+                        ? {
+                            state: "accepted",
+                            invocationFingerprint: `legacy:${job.id}`,
+                            acceptedAt: job.completedAt ?? job.updatedAt ?? new Date().toISOString(),
+                        }
+                        : {state: "pending", invocationFingerprint: null, acceptedAt: null}
+                    migrated = true
+                }
+                if (!Array.isArray(job.timeline)) {
+                    job.timeline = [
+                        ...(job.messages ?? []).map((entry) => ({...entry, kind: "message"})),
+                        ...(job.activities ?? []).map((entry) => ({...entry, kind: "activity"})),
+                    ].sort((left, right) => String(left.recordedAt ?? "").localeCompare(
+                        String(right.recordedAt ?? ""),
+                    ))
+                    migrated = true
+                }
             }
             this.state = validateState(parsed)
+            if (migrated) this.persist()
         } catch (error) {
             throw new Error(`Could not read Skill installation store: ${error.message}`)
         }
@@ -379,11 +411,27 @@ class SkillInstallationStore {
         const records = []
         for (const installation of this.state.installations) {
             const job = this.state.jobs.find((entry) => entry.id === installation.jobId)
+            const jobIndex = this.state.jobs.findIndex((entry) => entry.id === installation.jobId)
+            const invalidatedByAbsentInspection = jobIndex >= 0 && this.state.jobs
+                .slice(jobIndex + 1)
+                .some((entry) => (
+                    entry.request?.purpose === "managed-installation" &&
+                    entry.operation === "inspect" &&
+                    entry.status === "succeeded" &&
+                    entry.registration?.state === "accepted" &&
+                    entry.parsedResult?.trusted === true &&
+                    entry.parsedResult?.classificationBefore === "absent" &&
+                    entry.parsedResult?.destination === null &&
+                    entry.request?.source?.skillId === installation.skillId &&
+                    entry.runtime?.runtimeId === installation.runtimeId
+                ))
             if (
                 !job ||
+                invalidatedByAbsentInspection ||
                 job.status !== "succeeded" ||
                 job.request.purpose !== "managed-installation" ||
-                job.operation !== "install" ||
+                !new Set(["install", "inspect"]).has(job.operation) ||
+                job.registration?.state !== "accepted" ||
                 job.parsedResult?.trusted !== true ||
                 !installation.repositoryId ||
                 !installation.skillId ||
@@ -404,6 +452,7 @@ class SkillInstallationStore {
                 job.runtime.runtimeId !== installation.runtimeId ||
                 job.runtime.providerId !== installation.providerId ||
                 job.parsedResult.destination !== installation.destination ||
+                job.parsedResult.result?.actualDigest !== installation.contentDigest ||
                 job.parsedResult.verification !== installation.verification
             ) {
                 continue
@@ -496,6 +545,11 @@ class SkillInstallationStore {
             activities: [],
             timeline: [],
             parsedResult: null,
+            registration: {
+                state: "pending",
+                invocationFingerprint: null,
+                acceptedAt: null,
+            },
             rawResult: null,
             traceReference: null,
             error: null,
@@ -605,12 +659,51 @@ class SkillInstallationStore {
         })
     }
 
+    acceptRegistration(jobId, input = {}) {
+        const current = this.getJob(jobId)
+        if (TERMINAL_STATUSES.has(current.status)) {
+            throw new Error("Skill installation Job is already complete")
+        }
+        const invocationFingerprint = requiredText(
+            input.invocationFingerprint,
+            "Installation registration fingerprint",
+            200,
+        )
+        const parsedResult = validateTimelineEntry(
+            input.parsedResult,
+            "Installation registration evidence",
+        )
+        if (parsedResult.status === "succeeded" && parsedResult.trusted !== true) {
+            throw new Error("A successful installation registration requires trusted evidence")
+        }
+        if (current.registration.state === "accepted") {
+            if (
+                current.registration.invocationFingerprint === invocationFingerprint &&
+                JSON.stringify(current.parsedResult) === JSON.stringify(parsedResult)
+            ) return {accepted: true, duplicate: true}
+            throw new Error("Conflicting Skill installation registration")
+        }
+        return this.mutate(() => {
+            const job = this.state.jobs.find((entry) => entry.id === current.id)
+            const acceptedAt = new Date().toISOString()
+            job.registration = {state: "accepted", invocationFingerprint, acceptedAt}
+            job.parsedResult = copy(parsedResult)
+            if (canTransition(job.status, "verifying")) job.status = "verifying"
+            job.updatedAt = acceptedAt
+            if (!job.startedAt) job.startedAt = acceptedAt
+            return {accepted: true, duplicate: false}
+        })
+    }
+
     completeJob(jobId, input = {}) {
         const job = this.getJob(jobId)
         const status = requiredText(input.status, "Installation completion status", 80)
         if (!TERMINAL_STATUSES.has(status)) throw new Error("Installation completion must be terminal")
-        if (status === "succeeded" && input.parsedResult?.trusted !== true) {
-            throw new Error("A successful installation requires a trusted protocol result")
+        if (
+            status === "succeeded" &&
+            (job.registration?.state !== "accepted" || job.parsedResult?.trusted !== true)
+        ) {
+            throw new Error("A successful installation requires an accepted trusted registration")
         }
         return this.mutate(() => {
             const stored = this.state.jobs.find((entry) => entry.id === job.id)
@@ -618,14 +711,18 @@ class SkillInstallationStore {
                 throw new Error(`Invalid Skill installation transition from ${stored.status} to ${status}`)
             }
             stored.status = status
-            stored.parsedResult = input.parsedResult ? copy(input.parsedResult) : null
+            if (input.parsedResult) stored.parsedResult = copy(input.parsedResult)
             stored.rawResult = nullableText(input.rawResult, "Raw installation result", 256 * 1024)
             stored.traceReference = nullableText(input.traceReference, "Trace reference", 8_192)
             stored.error = normalizeError(input.error ?? input.parsedResult?.error)
             stored.updatedAt = new Date().toISOString()
             stored.completedAt = stored.updatedAt
-            if (status === "succeeded" && stored.request.purpose !== "optimization-experiment") {
-                const result = input.parsedResult
+            if (
+                status === "succeeded" &&
+                stored.request.purpose !== "optimization-experiment" &&
+                stored.parsedResult.destination
+            ) {
+                const result = stored.parsedResult
                 this.state.installations.push({
                     id: randomUUID(),
                     jobId: stored.id,
@@ -648,8 +745,10 @@ class SkillInstallationStore {
     installationMatrix(skillId) {
         skillId = requiredText(skillId, "Skill id", 200)
         const installations = new Map()
-        for (const installation of this.state.installations) {
-            if (installation.skillId === skillId) installations.set(installation.runtimeId, installation)
+        for (const installation of this.listVerifiedInstallations({skillId})) {
+            if (!installations.has(installation.runtimeId)) {
+                installations.set(installation.runtimeId, installation)
+            }
         }
         const lastJobs = new Map()
         for (const job of this.state.jobs) {

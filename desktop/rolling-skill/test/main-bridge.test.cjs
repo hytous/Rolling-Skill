@@ -231,6 +231,15 @@ describe("desktop main/preload bridge", () => {
         )
     })
 
+    it("filters all persisted internal Runtime tasks from current and archived Chat lists", () => {
+        const main = source("src/main.cjs")
+
+        assert.match(main, /store\?\.listInternalThreadIds\(\)/u)
+        assert.match(main, /classifyInternalRuntimeThread/u)
+        assert.match(main, /evaluationRunner\?\.hiddenThreadIds\(\)\.has\(threadId\)/u)
+        assert.match(main, /operatorSessionManager\?\.hiddenThreadIds\(\)\.has\(threadId\)/u)
+    })
+
     it("routes optional delete recovery through the Case recycle service", async () => {
         const main = source("src/main.cjs")
         const {api, calls} = preloadBridge(() => ({deleted: true}))
@@ -391,7 +400,7 @@ describe("desktop main/preload bridge", () => {
     it("fails closed instead of routing hidden Curator or Rubric questions into Chat", () => {
         const main = source("src/main.cjs")
 
-        assert.match(main, /function isHiddenRuntimeThread\(threadId\)/)
+        assert.match(main, /function isHiddenRuntimeThread\(thread\)/)
         assert.match(main, /curationManager\?\.hiddenThreadIds\(\)\.has\(threadId\)/)
         assert.match(main, /rubricManager\?\.hiddenThreadIds\(\)\.has\(threadId\)/)
         const questionStart = main.indexOf("function requestRuntimeQuestion")
@@ -719,6 +728,13 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /SkillInstallationStore/)
         assert.match(main, /SkillInstallationManager/)
         assert.match(main, /skill-installations\.json/)
+        assert.match(main, /controlPlane:\s*skillInstallationControlPlaneFacade/)
+        assert.match(main, /capabilities:\s*skillInstallationCapabilityFacade/)
+        assert.match(main, /controlSocketPath:\s*join\(app\.getPath\("userData"\),\s*"control",\s*"control\.sock"\)/)
+        assert.match(main, /installationToolPath:\s*app\.isPackaged/)
+        assert.match(main, /dynamicToolsReady:\s*runtime\?\.providerId\s*===\s*"codex"/)
+        assert.match(main, /mcpServersReady:\s*runtime\?\.providerId\s*===\s*"codebuddy"/)
+        assert.match(main, /dshMcpReady:\s*runtime\?\.providerId\s*===\s*"deepseek-harness"/)
         assert.match(main, /skillInstallations:\s*skillInstallationManager\.overview\(\)/)
         for (const channel of [
             "skill-installations:list",
@@ -726,7 +742,6 @@ describe("desktop main/preload bridge", () => {
             "skill-installations:start",
             "skill-installations:cancel",
             "skill-installations:inspect",
-            "skill-installations:send",
             "skill-installations:respond-question",
         ]) {
             assert.match(main, new RegExp(channel))
@@ -735,6 +750,22 @@ describe("desktop main/preload bridge", () => {
         assert.match(main, /send\("skill-installations:question-requested"/)
         assert.match(main, /send\("skill-versions:released"/)
         assert.match(main, /skillInstallationManager\?\.stopAll/)
+        assert.match(
+            main,
+            /skillInstallationManager\?\.hiddenThreadIds\(\)\.has\(threadId\)/u,
+        )
+        const listThreadsStart = main.indexOf('ipcMain.handle("runtime:list-threads"')
+        const archiveThreadStart = main.indexOf(
+            'ipcMain.handle("runtime:archive-thread"',
+            listThreadsStart,
+        )
+        const listThreadsHandler = main.slice(listThreadsStart, archiveThreadStart)
+        assert.ok(listThreadsStart >= 0 && archiveThreadStart > listThreadsStart)
+        assert.match(listThreadsHandler, /isHiddenRuntimeThread\(thread\)/u)
+        assert.match(
+            main,
+            /getHiddenThreadIds:\s*\(\)\s*=>\s*new Set\(\[[\s\S]*?skillInstallationManager\?\.hiddenThreadIds\(\)/u,
+        )
         const startIndex = main.indexOf('ipcMain.handle("skill-installations:start"')
         const cancelIndex = main.indexOf('ipcMain.handle("skill-installations:cancel"', startIndex)
         const startHandler = main.slice(startIndex, cancelIndex)
@@ -749,7 +780,7 @@ describe("desktop main/preload bridge", () => {
         assert.match(preload, /startSkillInstallations/)
         assert.match(preload, /cancelSkillInstallation/)
         assert.match(preload, /inspectSkillInstallation/)
-        assert.match(preload, /sendSkillInstallationMessage/)
+        assert.doesNotMatch(preload, /sendSkillInstallationMessage|skill-installations:send/)
         assert.match(preload, /respondSkillInstallationQuestion/)
         assert.match(preload, /onSkillInstallationsChanged/)
         assert.match(preload, /onSkillInstallationQuestion/)

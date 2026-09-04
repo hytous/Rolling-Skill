@@ -58,7 +58,7 @@ function runtime(id = "codex:one") {
 
 function parsedResult(request_, overrides = {}) {
     return {
-        schema: "rolling-skill-install-result/v1",
+        schema: "rolling-skill-install-result/v2",
         status: "succeeded",
         operation: "install",
         classificationBefore: "absent",
@@ -67,7 +67,8 @@ function parsedResult(request_, overrides = {}) {
         permission: {requested: "workspace-write", effective: "workspace-write"},
         result: {
             actualDigest: request_.source.expectedDigest,
-            markerWritten: true,
+            beforeDigest: null,
+            mutationPerformed: true,
             runtimeDiscovered: true,
         },
         warnings: [],
@@ -76,6 +77,13 @@ function parsedResult(request_, overrides = {}) {
         trusted: true,
         ...overrides,
     }
+}
+
+function acceptResult(store, job, result = parsedResult(job.request), fingerprint = "registration-1") {
+    return store.acceptRegistration(job.id, {
+        invocationFingerprint: fingerprint,
+        parsedResult: result,
+    })
 }
 
 function createJob(store, request_ = request(), runtime_ = runtime()) {
@@ -95,12 +103,43 @@ function completeSuccessfulJob(store, {
 } = {}) {
     const job = createJob(store, request_, runtime_)
     store.updateJob(job.id, {status: "running"})
+    acceptResult(store, job, parsedResult(request_, {
+        ...(destination ? {destination} : {}),
+    }))
     store.completeJob(job.id, {
         status: "succeeded",
-        parsedResult: parsedResult(request_, {
-            ...(destination ? {destination} : {}),
-        }),
     })
+    return job
+}
+
+function completeSuccessfulInspection(store, {
+    request: request_ = request(),
+    runtime: runtime_ = runtime(),
+    destination = "/installed/billing",
+} = {}) {
+    const job = store.createJob({
+        operation: "inspect",
+        runtime: runtime_,
+        request: request_,
+        modelId: "model-1",
+        effort: "high",
+        permissionMode: "read-only",
+    })
+    store.updateJob(job.id, {status: "running"})
+    const absent = destination === null
+    acceptResult(store, job, parsedResult(request_, {
+        operation: "inspect",
+        classificationBefore: absent ? "absent" : "managed-clean",
+        destination,
+        permission: {requested: "read-only", effective: "read-only"},
+        result: {
+            actualDigest: absent ? null : request_.source.expectedDigest,
+            beforeDigest: absent ? null : request_.source.expectedDigest,
+            mutationPerformed: false,
+            runtimeDiscovered: absent ? false : true,
+        },
+    }), `inspection-${job.id}`)
+    store.completeJob(job.id, {status: "succeeded"})
     return job
 }
 
@@ -114,6 +153,11 @@ describe("Skill installation store", () => {
         assert.equal(statSync(path).mode & 0o777, 0o600)
         assert.equal(statSync(join(path, "..")).mode & 0o777, 0o700)
         assert.equal(job.status, "queued")
+        assert.deepEqual(job.registration, {
+            state: "pending",
+            invocationFingerprint: null,
+            acceptedAt: null,
+        })
         requested.source.commit = "f".repeat(40)
         assert.equal(store.getJob(job.id).request.source.commit, "a".repeat(40))
 
@@ -158,9 +202,9 @@ describe("Skill installation store", () => {
         const firstRequest = request("version-1")
         const first = createJob(store, firstRequest)
         store.updateJob(first.id, {status: "running"})
+        acceptResult(store, first, parsedResult(firstRequest))
         store.completeJob(first.id, {
             status: "succeeded",
-            parsedResult: parsedResult(firstRequest),
             traceReference: "/trace/first",
         })
 
@@ -186,16 +230,46 @@ describe("Skill installation store", () => {
         assert.equal(store.listJobs({skillId: "skill-1"}).length, 2)
     })
 
+    it("lets a trusted inspection invalidate stale install evidence and restore it when present", () => {
+        const {path, store} = fixture()
+        completeSuccessfulJob(store)
+        const absent = completeSuccessfulInspection(store, {destination: null})
+
+        let matrix = store.installationMatrix("skill-1")
+        assert.equal(matrix.length, 1)
+        assert.equal(matrix[0].versionId, null)
+        assert.equal(matrix[0].trustedJobId, null)
+        assert.equal(matrix[0].lastJobId, absent.id)
+        assert.throws(() => store.resolveVerifiedInstallation({
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            versionId: "version-1",
+            runtimeId: "codex:one",
+            providerId: "codex",
+        }), /verified.*installation|installation.*required/i)
+
+        const restarted = new SkillInstallationStore(path)
+        matrix = restarted.installationMatrix("skill-1")
+        assert.equal(matrix[0].versionId, null)
+
+        const present = completeSuccessfulInspection(restarted)
+        matrix = restarted.installationMatrix("skill-1")
+        assert.equal(matrix[0].versionId, "version-1")
+        assert.equal(matrix[0].trustedJobId, present.id)
+        assert.equal(matrix[0].destination, "/installed/billing")
+    })
+
     it("does not trust a succeeded-shaped result unless the protocol marked it trusted", () => {
         const {store} = fixture()
         const requested = request()
         const job = createJob(store, requested)
         store.updateJob(job.id, {status: "running"})
         assert.throws(
-            () => store.completeJob(job.id, {
-                status: "succeeded",
-                parsedResult: parsedResult(requested, {trusted: false, verification: "none"}),
-            }),
+            () => acceptResult(
+                store,
+                job,
+                parsedResult(requested, {trusted: false, verification: "none"}),
+            ),
             /trusted/u,
         )
         const matrix = store.installationMatrix("skill-1")
@@ -203,6 +277,35 @@ describe("Skill installation store", () => {
         assert.equal(matrix[0].versionId, null)
         assert.equal(matrix[0].trustedJobId, null)
         assert.equal(matrix[0].lastJobStatus, "running")
+    })
+
+    it("accepts one idempotent registration and rejects conflicting evidence", () => {
+        const {store} = fixture()
+        const job = createJob(store)
+        store.updateJob(job.id, {status: "running"})
+        const result = parsedResult(job.request)
+
+        assert.deepEqual(acceptResult(store, job, result), {
+            accepted: true,
+            duplicate: false,
+        })
+        assert.deepEqual(acceptResult(store, job, result), {
+            accepted: true,
+            duplicate: true,
+        })
+        assert.throws(
+            () => acceptResult(
+                store,
+                job,
+                {...result, destination: "/installed/other"},
+                "registration-2",
+            ),
+            /conflicting/iu,
+        )
+        const stored = store.getJob(job.id)
+        assert.equal(stored.registration.state, "accepted")
+        assert.equal(stored.parsedResult.destination, "/installed/billing")
+        assert.ok(stored.registration.acceptedAt)
     })
 
     it("resolves one exact verified normal installation with complete frozen evidence", () => {

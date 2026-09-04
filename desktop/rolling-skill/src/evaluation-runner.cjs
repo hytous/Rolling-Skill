@@ -123,6 +123,17 @@ class EvaluationRunner {
         this.runControls = new Map()
         this.activeClients = new Set()
         this.clientStopOperations = new WeakMap()
+        this.internalThreadIds = new Set(this.store.listInternalThreadIds?.() ?? [])
+    }
+
+    rememberInternalThread(threadId, kind) {
+        if (!threadId || this.internalThreadIds.has(threadId)) return
+        this.store.recordInternalThread?.(threadId, kind)
+        this.internalThreadIds.add(threadId)
+    }
+
+    hiddenThreadIds() {
+        return new Set(this.internalThreadIds)
     }
 
     assertSkillSnapshotUnchanged(run) {
@@ -258,7 +269,11 @@ class EvaluationRunner {
                         skillReference: targetSkillReference,
                         modelId: configuration.modelId,
                         effort: configuration.effort,
+                        onThreadStarted: (threadId) => {
+                            this.rememberInternalThread(threadId, "evaluation-target")
+                        },
                     })
+                    this.rememberInternalThread(output.threadId, "evaluation-target")
                     this.assertSkillSnapshotUnchanged(run)
                     if (control.cancelRequested) {
                         this.cancelExecutionResult(run, result, control)
@@ -308,6 +323,10 @@ class EvaluationRunner {
                         continue
                     }
                     const failureDiagnostics = targetFailureDiagnostics(error)
+                    this.rememberInternalThread(
+                        failureDiagnostics?.threadId,
+                        "evaluation-target",
+                    )
                     this.store.updateEvaluationResult(run.id, result.id, {
                         status: "failed",
                         gradingStatus: "skipped",
@@ -483,7 +502,11 @@ class EvaluationRunner {
                     modelId: configuration.modelId,
                     effort: configuration.effort,
                     attempt,
+                    onThreadStarted: (threadId) => {
+                        this.rememberInternalThread(threadId, "evaluation-judge")
+                    },
                 })
+                this.rememberInternalThread(lastOutput.threadId, "evaluation-judge")
                 try {
                     judgment = parseJudgeResult(lastOutput.response ?? "", contract)
                     break

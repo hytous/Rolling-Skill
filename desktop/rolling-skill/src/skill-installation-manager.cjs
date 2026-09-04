@@ -1,3 +1,4 @@
+const {createHash, randomUUID} = require("node:crypto")
 const {join} = require("node:path")
 
 const {
@@ -5,9 +6,9 @@ const {
     freezeSkillExperimentRecoveryInspectionRequest,
     freezeSkillExperimentRequest,
     freezeSkillInstallationRequest,
-    parseSkillInstallationResult,
-    reportedSkillInstallationFailure,
+    validateSkillInstallationRegistration,
 } = require("./skill-installation-protocol.cjs")
+const {SkillInstallationToolTransport} = require("./skill-installation-tool-transport.cjs")
 
 const TERMINAL_STATUSES = new Set([
     "succeeded",
@@ -77,6 +78,36 @@ function traceReferenceFor(client) {
     return client?.recorder?.latestReference ?? client?.state?.()?.traceReference ?? null
 }
 
+function plainObject(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false
+    const prototype = Object.getPrototypeOf(value)
+    return prototype === Object.prototype || prototype === null
+}
+
+function clone(value, label = "Value") {
+    try {
+        const serialized = JSON.stringify(value)
+        if (serialized === undefined) throw new Error()
+        return JSON.parse(serialized)
+    } catch {
+        throw new TypeError(`${label} must be JSON data`)
+    }
+}
+
+function canonicalJson(value) {
+    if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`
+    if (value && typeof value === "object") {
+        return `{${Object.keys(value).filter((key) => value[key] !== undefined).sort().map((key) => (
+            `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+        )).join(",")}}`
+    }
+    return JSON.stringify(value)
+}
+
+function registrationFingerprint(parsedResult) {
+    return `sha256:${createHash("sha256").update(canonicalJson(parsedResult), "utf8").digest("hex")}`
+}
+
 function readOnlyPermissionMode(providerId) {
     if (providerId === "codex" || providerId === "deepseek-harness") return "read-only"
     if (providerId === "codebuddy") return "plan"
@@ -97,6 +128,15 @@ class SkillInstallationManager {
         this.resolvePermission = options.resolvePermission ?? ((_providerId, mode) => ({
             permissionMode: mode,
         }))
+        this.controlPlane = options.controlPlane
+        this.capabilities = options.capabilities
+        this.controlSocketPath = options.controlSocketPath
+        this.installationToolPath = options.installationToolPath
+        this.transportSupport = options.transportSupport ?? (() => ({}))
+        this.transportFactory = options.transportFactory ?? ((input) => new SkillInstallationToolTransport({
+            executablePath: this.installationToolPath,
+            childEnvironment: input.childEnvironment,
+        }))
         this.onChanged = options.onChanged ?? (() => {})
         this.timeoutMs = options.timeoutMs ?? 30 * 60 * 1_000
         this.queueTails = new Map()
@@ -107,6 +147,25 @@ class SkillInstallationManager {
         }
         if (!this.runtimeRegistry || typeof this.runtimeRegistry.createClient !== "function") {
             throw new Error("Runtime registry is required")
+        }
+        if (
+            !this.controlPlane ||
+            typeof this.controlPlane.invoke !== "function" ||
+            typeof this.controlPlane.registerInstallationExecutor !== "function"
+        ) throw new TypeError("Skill installation manager requires the shared ControlPlane")
+        if (
+            !this.capabilities ||
+            typeof this.capabilities.issue !== "function" ||
+            typeof this.capabilities.revoke !== "function"
+        ) throw new TypeError("Skill installation manager requires capability issue and revoke access")
+        if (typeof this.controlSocketPath !== "string" || !this.controlSocketPath) {
+            throw new TypeError("Skill installation control socket is required")
+        }
+        if (typeof this.transportSupport !== "function") {
+            throw new TypeError("Skill installation transport support resolver is invalid")
+        }
+        if (typeof this.transportFactory !== "function") {
+            throw new TypeError("Skill installation transport factory is invalid")
         }
     }
 
@@ -268,32 +327,6 @@ class SkillInstallationManager {
         return job
     }
 
-    async send(jobId, text) {
-        const job = this.store.getJob(requiredText(jobId, "Installation job id", 200))
-        text = requiredText(text, "Installer message", 120_000)
-        if (!TERMINAL_STATUSES.has(job.status) || !job.threadId) {
-            throw new Error("The installer session is not ready for a follow-up")
-        }
-        if (this.operations.has(job.id) || job.conversationStatus === "running") {
-            throw new Error("The installer session is already running")
-        }
-        const key = `${job.runtime.runtimeId}\0${job.request.source.skillId}`
-        const previous = this.queueTails.get(key) ?? Promise.resolve()
-        const operation = previous.then(
-            () => this.executeConversation(job.id, text),
-            () => this.executeConversation(job.id, text),
-        )
-        const tail = operation.catch(() => {}).finally(() => {
-            if (this.queueTails.get(key) === tail) this.queueTails.delete(key)
-        })
-        this.queueTails.set(key, tail)
-        const tracked = operation.finally(() => {
-            if (this.operations.get(job.id) === tracked) this.operations.delete(job.id)
-        })
-        this.operations.set(job.id, tracked)
-        return this.store.getJob(job.id)
-    }
-
     schedule(job) {
         const key = `${job.runtime.runtimeId}\0${job.request.source.skillId}`
         const previous = this.queueTails.get(key) ?? Promise.resolve()
@@ -346,15 +379,167 @@ class SkillInstallationManager {
         }
     }
 
-    clientFor(job, descriptor) {
+    async registrationControl(job, descriptor) {
+        const sessionId = `installation-${randomUUID()}`
+        const grant = await this.capabilities.issue({
+            sessionId,
+            actions: ["installations.register"],
+            scopes: {
+                skillIds: [job.request.source.skillId],
+                runtimeIds: [job.runtime.runtimeId],
+                repositoryIds: [job.request.source.repositoryId],
+            },
+            expiresInMs: Math.min(24 * 60 * 60 * 1_000, this.timeoutMs + 60_000),
+        })
+        if (
+            !plainObject(grant) ||
+            typeof grant.id !== "string" || !grant.id ||
+            typeof grant.token !== "string" || !grant.token ||
+            grant.sessionId !== sessionId ||
+            !Array.isArray(grant.actions) || !grant.actions.includes("installations.register")
+        ) {
+            if (typeof grant?.id === "string") {
+                await Promise.resolve(this.capabilities.revoke(grant.id)).catch(() => {})
+            }
+            throw new Error("Skill installation capability issuer returned an invalid grant")
+        }
+        const childEnvironment = {
+            ROLLING_SKILL_CONTROL_SOCKET: this.controlSocketPath,
+            ROLLING_SKILL_CONTROL_TOKEN: grant.token,
+            ROLLING_SKILL_OPERATOR_SESSION: sessionId,
+        }
+        const transport = this.transportFactory({descriptor, runtime: descriptor, childEnvironment})
+        if (!transport || typeof transport.freeze !== "function") {
+            await Promise.resolve(this.capabilities.revoke(grant.id)).catch(() => {})
+            throw new Error("Skill installation Tool transport factory returned an invalid transport")
+        }
+        try {
+            const support = clone(
+                await this.transportSupport(descriptor),
+                "Skill installation transport support",
+            )
+            const preflight = typeof transport.preflight === "function"
+                ? transport.preflight(descriptor, support)
+                : null
+            if (preflight && preflight.ready !== true) {
+                throw new Error(preflight.reason ?? "Skill installation Tool transport is unavailable")
+            }
+            const selection = transport.freeze(descriptor, support)
+            if (!plainObject(selection) || selection.ready !== true || ![
+                "codex-dynamic",
+                "acp-mcp",
+                "dsh-mcp",
+                "cli",
+            ].includes(selection.kind)) {
+                throw new Error(selection?.reason ?? "Skill installation Tool transport is unavailable")
+            }
+            return {
+                grant,
+                sessionId,
+                childEnvironment,
+                transport,
+                selection,
+                registrationRequest: job.request,
+                registrationOperation: job.operation,
+                acceptingRegistrations: true,
+                executorLease: null,
+            }
+        } catch (error) {
+            await Promise.resolve(this.capabilities.revoke(grant.id)).catch(() => {})
+            throw error
+        }
+    }
+
+    profileWithRegistration(profile, registration) {
+        const result = {...profile}
+        if (registration.selection.kind === "codex-dynamic") {
+            result.dynamicTools = registration.transport.dynamicTools()
+        }
+        if (registration.selection.kind === "acp-mcp") {
+            result.mcpServers = registration.transport.mcpServers()
+        }
+        return result
+    }
+
+    registerExecutor(jobId, control) {
+        const registration = control.registration
+        registration.executorLease = this.controlPlane.registerInstallationExecutor({
+            sessionId: registration.sessionId,
+            capabilityId: registration.grant.id,
+            assertLive: () => (
+                this.controls.get(jobId) === control && registration.acceptingRegistrations
+            ),
+            contextSnapshot: () => Object.freeze({
+                workspaceRoot: this.workspaceRoot,
+                runtimeId: control.descriptor.runtimeId,
+            }),
+            execute: (request) => this.acceptRegistration(jobId, control, request),
+        })
+    }
+
+    acceptRegistration(jobId, control, request = {}) {
+        const registration = control.registration
+        if (
+            this.controls.get(jobId) !== control ||
+            registration.acceptingRegistrations !== true ||
+            request.method !== "installations.register"
+        ) throw new Error("Skill installation registration is unavailable")
+        const parsedResult = validateSkillInstallationRegistration(
+            clone(request.input, "Installation registration evidence"),
+            registration.registrationRequest,
+            {
+                operation: registration.registrationOperation,
+                requestedPermission: this.store.getJob(jobId).permissionMode,
+                effectivePermission: this.store.getJob(jobId).effectivePermissionMode,
+            },
+        )
+        const accepted = this.store.acceptRegistration(jobId, {
+            invocationFingerprint: registrationFingerprint(parsedResult),
+            parsedResult,
+        })
+        this.emit(jobId)
+        return accepted
+    }
+
+    async requestRegistrationTool(jobId, control, request = {}) {
+        if (!plainObject(request) || !plainObject(request.params)) {
+            throw new TypeError("Skill installation Tool request is invalid")
+        }
+        if (
+            this.controls.get(jobId) !== control ||
+            control.registration.acceptingRegistrations !== true
+        ) throw new Error("Skill installation Tool call is outside an active Job")
+        if (request.threadId !== control.threadId) {
+            throw new Error("Skill installation Tool call belongs to another thread")
+        }
+        if (control.turnId && request.turnId !== control.turnId) {
+            throw new Error("Skill installation Tool call belongs to another turn")
+        }
+        return this.controlPlane.invoke({
+            token: control.registration.grant.token,
+            sessionId: control.registration.sessionId,
+            method: requiredText(request.method, "Skill installation Tool method", 300),
+            params: clone(request.params, "Skill installation Tool parameters"),
+        })
+    }
+
+    clientFor(job, descriptor, control) {
         const permission = this.resolvePermission(descriptor.providerId, job.permissionMode) ?? {}
         let client = null
+        const registration = control?.registration ?? null
         client = this.runtimeRegistry.createClient(descriptor, {
             workspaceRoot: this.workspaceRoot,
             traceDirectory: join(this.traceDirectory, job.id),
             executionPolicy: permission,
             nonInteractive: false,
             installationRequest: job.request,
+            ...(registration ? {
+                childEnvironment: registration.transport.childEnvironment(),
+                ...(registration.selection.kind === "dsh-mcp"
+                    ? {mcpServers: registration.transport.mcpServers()}
+                    : {}),
+                requestTool: (request) => this.requestRegistrationTool(job.id, control, request),
+            } : {}),
             requestPermission: (request) => this.interaction(
                 job.id,
                 "awaiting_permission",
@@ -384,9 +569,10 @@ class SkillInstallationManager {
         })
         this.emit(jobId)
         job = this.store.getJob(jobId)
-        const {client, permission} = this.clientFor(job, descriptor)
         const control = {
-            client,
+            client: null,
+            descriptor,
+            registration: null,
             threadId: null,
             turnId: null,
             cancelRequested: false,
@@ -394,7 +580,16 @@ class SkillInstallationManager {
             inspecting: false,
         }
         this.controls.set(jobId, control)
+        let client = null
+        let permission = {}
         try {
+            control.registration = await this.registrationControl(job, descriptor)
+            if (control.cancelRequested) throw Object.assign(new Error("Installation cancelled"), {
+                code: "INSTALLATION_CANCELLED",
+            })
+            ;({client, permission} = this.clientFor(job, descriptor, control))
+            control.client = client
+            this.registerExecutor(jobId, control)
             await client.start()
             if (control.cancelRequested) throw Object.assign(new Error("Installation cancelled"), {
                 code: "INSTALLATION_CANCELLED",
@@ -406,9 +601,10 @@ class SkillInstallationManager {
                 threadSource: "subagent",
                 ephemeral: false,
             }
+            const registeredProfile = this.profileWithRegistration(profile, control.registration)
             const threadResponse = (job.operation === "inspect" || job.operation === "experiment_inspect") && job.threadId
-                ? await client.resumeThread(job.threadId, profile)
-                : await client.startThread(profile)
+                ? await client.resumeThread(job.threadId, registeredProfile)
+                : await client.startThread(registeredProfile)
             control.threadId = requiredText(threadResponse?.thread?.id, "Installer thread id", 300)
             this.store.updateJob(jobId, {
                 threadId: control.threadId,
@@ -422,11 +618,18 @@ class SkillInstallationManager {
             const prompt = buildSkillInstallationPrompt(job.request, {
                 operation: job.operation,
                 requestedPermission: job.permissionMode,
+                registrationInstruction: control.registration.transport.registrationInstruction(),
                 priorInstallation: this.store.installationMatrix(job.request.source.skillId)
                     .find((entry) => entry.runtimeId === job.runtime.runtimeId) ?? null,
             })
-            const turnDeadline = Date.now() + this.timeoutMs
-            let output = await this.runTurn({client, jobId, threadId: control.threadId, prompt, profile, control})
+            const output = await this.runTurn({
+                client,
+                jobId,
+                threadId: control.threadId,
+                prompt,
+                profile: registeredProfile,
+                control,
+            })
             if (control.cancelRequested || output.turnStatus === "interrupted" || output.turnStatus === "cancelled") {
                 if (job.operation === "inspect" || job.operation === "experiment_inspect") {
                     return this.finish(jobId, "unverified", {
@@ -449,51 +652,22 @@ class SkillInstallationManager {
             }
             this.store.updateJob(jobId, {status: "verifying", rawResult: output.response})
             this.emit(jobId)
-            let parsed
-            for (let attempt = 0; attempt < 2; attempt++) {
-                try {
-                    parsed = parseSkillInstallationResult(output.response, job.request)
-                    if (job.operation === "inspect" && parsed.operation !== "inspect") {
-                        throw new Error("Inspection result must report an inspect operation")
-                    }
-                    if (job.operation === "experiment_inspect" && parsed.operation !== "experiment_inspect") {
-                        throw new Error("Experiment inspection result must report an experiment_inspect operation")
-                    }
-                    break
-                } catch (error) {
-                    const failure = errorRecord(error, "INSTALLATION_RESULT_INVALID")
-                    const readOnly = ["inspect", "experiment_inspect"].includes(job.operation) &&
-                        job.permissionMode === readOnlyPermissionMode(descriptor.providerId)
-                    if (attempt === 0 && readOnly && !control.cancelRequested && Date.now() < turnDeadline) {
-                        const correction = `The previous result failed format validation: ${failure.message}\nThis is the one allowed format correction. Reuse verified evidence; do not invent success or change facts. Report the exact discovered destination and installed-state evidence required by the schema. This remains strictly read-only: do not install, restore, write, delete, or request write permission.`
-                        this.store.appendMessage(jobId, {role: "user", content: correction})
-                        this.emit(jobId)
-                        control.turnId = null
-                        output = await this.runTurn({client, jobId, threadId: control.threadId, prompt: `${prompt}\n\n${correction}`, profile, control, timeoutMs: Math.max(1, turnDeadline - Date.now())})
-                        if (control.cancelRequested || ["interrupted", "cancelled"].includes(output.turnStatus)) {
-                            return this.finish(jobId, "unverified", {
-                                rawResult: output.response, traceReference: traceReferenceFor(client),
-                                error: {code: "INSPECTION_CANCELLED", message: "Read-only result correction was cancelled"},
-                            })
-                        }
-                        this.store.updateJob(jobId, {rawResult: output.response})
-                        continue
-                    }
-                    const reported = reportedSkillInstallationFailure(output.response, job.request)
-                    if (reported) failure.message = `${failure.message}\nRuntime reported: ${reported}`
-                    return this.finish(jobId, "unverified", {
-                        rawResult: output.response,
-                        traceReference: traceReferenceFor(client),
-                        error: failure,
-                    })
-                }
+            const registered = this.store.getJob(jobId)
+            if (registered.registration?.state !== "accepted") {
+                return this.finish(jobId, "unverified", {
+                    rawResult: output.response,
+                    traceReference: traceReferenceFor(client),
+                    error: {
+                        code: "INSTALLATION_REGISTRATION_MISSING",
+                        message: "安装 Agent 未登记执行结果。",
+                    },
+                })
             }
-            const status = parsed.status
-            return this.finish(jobId, status, {
-                parsedResult: parsed,
+            return this.finish(jobId, registered.parsedResult.status, {
+                parsedResult: registered.parsedResult,
                 rawResult: output.response,
                 traceReference: traceReferenceFor(client),
-                error: parsed.error,
+                error: registered.parsedResult.error,
             })
         } catch (error) {
             const current = this.store.getJob(jobId)
@@ -508,7 +682,10 @@ class SkillInstallationManager {
                     },
                 })
             }
-            if (cancelled && control.threadId && !control.inspecting) {
+            if (
+                cancelled && client && control.registration &&
+                control.threadId && !control.inspecting
+            ) {
                 return this.inspectAfterCancellation({
                     client,
                     descriptor,
@@ -531,8 +708,17 @@ class SkillInstallationManager {
                     : errorRecord(error),
             })
         } finally {
+            if (control.registration) {
+                control.registration.acceptingRegistrations = false
+                try {
+                    control.registration.executorLease?.unregister()
+                } catch {}
+                await Promise.resolve(
+                    this.capabilities.revoke(control.registration.grant.id),
+                ).catch(() => {})
+            }
             this.controls.delete(jobId)
-            await client.stop?.().catch(() => {})
+            await client?.stop?.().catch(() => {})
         }
     }
 
@@ -573,19 +759,39 @@ class SkillInstallationManager {
         const request = experiment
             ? freezeSkillExperimentRecoveryInspectionRequest(originalRequest)
             : originalRequest
+        const expectedOperation = experiment ? "experiment_inspect" : "inspect"
+        const alreadyRegistered = this.store.getJob(jobId)
+        if (alreadyRegistered.registration?.state === "accepted") {
+            return this.finish(jobId, "cancelled", {
+                parsedResult: alreadyRegistered.parsedResult,
+                rawResult: alreadyRegistered.rawResult,
+                traceReference: traceReferenceFor(client),
+                error: {
+                    code: "INSTALLATION_CANCELLED",
+                    message: "Installation cancelled after verified evidence was registered",
+                },
+            })
+        }
+        control.registration.registrationRequest = request
+        control.registration.registrationOperation = expectedOperation
         const prompt = buildSkillInstallationPrompt(request, {
-            operation: experiment ? "experiment_inspect" : "inspect",
+            operation: expectedOperation,
             requestedPermission: permissionMode,
+            registrationInstruction: control.registration.transport.registrationInstruction(),
             priorInstallation: this.store.installationMatrix(request.source.skillId)
                 .find((entry) => entry.runtimeId === descriptor.runtimeId) ?? null,
         })
         try {
+            const inspectionProfile = this.profileWithRegistration(
+                {...profile, ...inspectPermission},
+                control.registration,
+            )
             const output = await this.runTurn({
                 client,
                 jobId,
                 threadId,
                 prompt,
-                profile: {...profile, ...inspectPermission},
+                profile: inspectionProfile,
                 control,
             })
             if (output.turnStatus === "interrupted" || output.turnStatus === "cancelled") {
@@ -593,13 +799,17 @@ class SkillInstallationManager {
                     code: "POST_CANCEL_INSPECTION_INTERRUPTED",
                 })
             }
-            const parsed = parseSkillInstallationResult(output.response, request)
-            const expectedOperation = experiment ? "experiment_inspect" : "inspect"
-            if (parsed.operation !== expectedOperation) {
+            const registered = this.store.getJob(jobId)
+            if (registered.registration?.state !== "accepted") {
+                throw Object.assign(new Error("安装 Agent 未登记只读检查结果。"), {
+                    code: "INSTALLATION_REGISTRATION_MISSING",
+                })
+            }
+            if (registered.parsedResult.operation !== expectedOperation) {
                 throw new Error(`Post-cancellation result must report an ${expectedOperation} operation`)
             }
             return this.finish(jobId, "cancelled", {
-                parsedResult: parsed,
+                parsedResult: registered.parsedResult,
                 rawResult: output.response,
                 traceReference: traceReferenceFor(client),
                 error: {
@@ -612,63 +822,6 @@ class SkillInstallationManager {
                 traceReference: traceReferenceFor(client),
                 error: errorRecord(error, "POST_CANCEL_INSPECTION_FAILED"),
             })
-        }
-    }
-
-    async executeConversation(jobId, text) {
-        const job = this.store.getJob(jobId)
-        const descriptor = this.runtimeById(job.runtime.runtimeId)
-        this.store.updateJob(jobId, {
-            conversationStatus: "running",
-            conversationError: null,
-        })
-        this.store.appendMessage(jobId, {role: "user", content: text})
-        this.emit(jobId)
-        const {client, permission} = this.clientFor(job, descriptor)
-        const control = {
-            client,
-            threadId: job.threadId,
-            turnId: null,
-            cancelRequested: false,
-            cancelWake: null,
-            inspecting: false,
-            conversation: true,
-        }
-        this.controls.set(jobId, control)
-        try {
-            await client.start()
-            const profile = {
-                ...(job.modelId ? {model: job.modelId} : {}),
-                ...(job.effort ? {effort: job.effort} : {}),
-                ...permission,
-                threadSource: "subagent",
-                ephemeral: false,
-            }
-            await client.resumeThread(job.threadId, profile)
-            const output = await this.runTurn({
-                client,
-                jobId,
-                threadId: job.threadId,
-                prompt: text,
-                profile,
-                control,
-            })
-            this.store.updateJob(jobId, {
-                conversationStatus: "idle",
-                conversationError: output.turnStatus === "interrupted" || output.turnStatus === "cancelled"
-                    ? {code: "INSTALLER_CONVERSATION_CANCELLED", message: "Installer follow-up cancelled"}
-                    : null,
-            })
-            return this.emit(jobId)
-        } catch (error) {
-            this.store.updateJob(jobId, {
-                conversationStatus: "failed",
-                conversationError: errorRecord(error, "INSTALLER_CONVERSATION_FAILED"),
-            })
-            return this.emit(jobId)
-        } finally {
-            this.controls.delete(jobId)
-            await client.stop?.().catch(() => {})
         }
     }
 
@@ -774,10 +927,11 @@ class SkillInstallationManager {
             if (!control) return job
             if (control.cancelRequested) return this.store.getJob(job.id)
             control.cancelRequested = true
+            const cancelWake = control.cancelWake
             if (control.threadId && control.turnId) {
                 await control.client.interruptTurn(control.threadId, control.turnId)
             }
-            control.cancelWake?.()
+            cancelWake?.()
             return this.store.getJob(job.id)
         }
         if (!control) {
@@ -790,6 +944,7 @@ class SkillInstallationManager {
         }
         if (control.cancelRequested) return this.store.getJob(job.id)
         control.cancelRequested = true
+        const cancelWake = control.cancelWake
         if (job.status !== "verifying") {
             this.store.updateJob(job.id, {status: "verifying"})
             this.emit(job.id)
@@ -797,7 +952,7 @@ class SkillInstallationManager {
         if (control.threadId && control.turnId) {
             await control.client.interruptTurn(control.threadId, control.turnId)
         }
-        control.cancelWake?.()
+        cancelWake?.()
         return this.store.getJob(job.id)
     }
 
@@ -813,6 +968,10 @@ class SkillInstallationManager {
             jobs,
             matrix: skillIds.flatMap((id) => this.store.installationMatrix(id)),
         }
+    }
+
+    hiddenThreadIds() {
+        return new Set(this.store.listJobs().map((job) => job.threadId).filter(Boolean))
     }
 
     async stopAll() {

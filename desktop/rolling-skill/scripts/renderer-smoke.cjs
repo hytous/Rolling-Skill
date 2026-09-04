@@ -882,6 +882,33 @@ async function run() {
     ) {
         throw new Error(`Managed Skill Runtime installs are incomplete: ${JSON.stringify(managedSkillInstallations)}`)
     }
+    await waitFor(window, 'document.querySelector("#managed-install-session .managed-install-steps")')
+    const managedInstallationDetail = await inspect(window, `(() => {
+        const details = document.querySelector("#managed-install-session .managed-install-diagnostics")
+        return {
+            title: document.querySelector("#managed-install-session .managed-skill-panel-head span")?.textContent,
+            summary: document.querySelector("#managed-install-session .managed-install-result")?.textContent,
+            steps: document.querySelectorAll("#managed-install-session .managed-install-step").length,
+            error: document.querySelector("#managed-install-session .managed-install-error-summary")?.textContent,
+            diagnosticsClosed: details?.open === false,
+            composerPresent: Boolean(document.querySelector("#managed-install-session textarea")),
+            retryVisible: !document.querySelector("#retry-managed-skill-installation")?.classList.contains("hidden"),
+            recheckVisible: !document.querySelector("#inspect-managed-skill-installation")?.classList.contains("hidden"),
+        }
+    })()`)
+    if (
+        managedInstallationDetail.title !== "安装详情" ||
+        !managedInstallationDetail.summary.includes("Codex") ||
+        !managedInstallationDetail.summary.includes("v1.0.0") ||
+        managedInstallationDetail.steps !== 4 ||
+        managedInstallationDetail.error !== "目标目录已有不同内容，本次只读检查未进行覆盖。" ||
+        !managedInstallationDetail.diagnosticsClosed ||
+        managedInstallationDetail.composerPresent ||
+        !managedInstallationDetail.retryVisible ||
+        !managedInstallationDetail.recheckVisible
+    ) {
+        throw new Error(`Managed installation detail is incomplete: ${JSON.stringify(managedInstallationDetail)}`)
+    }
     await inspect(window, 'document.querySelector("[data-surface=chat]").click()')
     await waitFor(window, '!document.querySelector("#conversation-scroll").classList.contains("hidden")')
     const restoredChatDraft = await inspect(window, 'document.querySelector("#composer-input").value')

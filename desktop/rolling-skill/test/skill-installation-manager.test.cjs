@@ -7,10 +7,6 @@ const {afterEach, describe, it} = require("node:test")
 
 const {SkillInstallationManager} = require("../src/skill-installation-manager.cjs")
 const {SkillInstallationStore} = require("../src/skill-installation-store.cjs")
-const {
-    INSTALL_RESULT_SCHEMA,
-    INSTALL_RESULT_SENTINEL,
-} = require("../src/skill-installation-protocol.cjs")
 
 const temporaryDirectories = []
 
@@ -89,25 +85,22 @@ function managedFixtures(state = "released") {
     }
 }
 
-function resultText(jobRequest, overrides = {}) {
-    const payload = {
-        schema: INSTALL_RESULT_SCHEMA,
+function registrationEvidence(jobRequest, overrides = {}) {
+    const operation = overrides.operation ?? jobRequest.operation ?? "install"
+    const inspection = operation === "inspect" || operation === "experiment_inspect"
+    return {
         status: "succeeded",
-        operation: "install",
-        classificationBefore: "absent",
+        operation,
+        classificationBefore: inspection ? "managed-clean" : "absent",
         destination: "/runtime/skills/billing",
-        source: {...jobRequest.source},
-        permission: {requested: "workspace-write", effective: "workspace-write"},
-        result: {
-            actualDigest: jobRequest.source.expectedDigest,
-            markerWritten: true,
-            runtimeDiscovered: true,
-        },
+        actualDigest: jobRequest.source.expectedDigest,
+        beforeDigest: inspection ? jobRequest.source.expectedDigest : null,
+        mutationPerformed: true,
+        runtimeDiscovered: true,
         warnings: [],
         error: null,
         ...overrides,
     }
-    return `${INSTALL_RESULT_SENTINEL.open}\n${JSON.stringify(payload)}\n${INSTALL_RESULT_SENTINEL.close}`
 }
 
 class FakeClient extends EventEmitter {
@@ -180,18 +173,36 @@ function successfulBehavior(options = {}) {
         async run(client, turn) {
             if (options.beforeRun) await options.beforeRun(client, turn)
             const request = options.requestForPrompt(turn.prompt, client) ?? client.options.installationRequest
+            const operation = turn.prompt.includes('"operation": "experiment_inspect"')
+                ? "experiment_inspect"
+                : turn.prompt.includes('"operation": "inspect"')
+                  ? "inspect"
+                  : request.operation ?? "install"
+            if (options.register !== false && turn.prompt.includes("Frozen installation request")) {
+                try {
+                    await client.options.requestTool({
+                        threadId: turn.threadId,
+                        turnId: turn.turnId,
+                        callId: `register-${turn.turnId}`,
+                        method: "installations.register",
+                        params: registrationEvidence(request, {
+                            operation,
+                            mutationPerformed: !operation.endsWith("inspect"),
+                            ...options.registrationOverrides,
+                        }),
+                    })
+                } catch (error) {
+                    options.onRegistrationError?.(error)
+                    if (!options.ignoreRegistrationError) throw error
+                }
+            }
             const items = options.items ?? [
                 {id: "message-1", type: "agentMessage", text: "Checking target"},
                 {id: "command-1", type: "commandExecution", command: "git archive", status: "completed"},
                 {
                     id: "message-2",
                     type: "agentMessage",
-                    text: resultText(request, {
-                        operation: turn.prompt.includes('"operation": "inspect"')
-                            ? "inspect"
-                            : "install",
-                        ...options.resultOverrides,
-                    }),
+                    text: options.finalText ?? "Installation complete",
                 },
             ]
             for (const item of items) {
@@ -230,6 +241,53 @@ function fixture(options = {}) {
     }
     const store = new SkillInstallationStore(join(root, "installations.json"))
     const changes = []
+    const authorities = []
+    const revoked = []
+    const executors = new Map()
+    const controlPlane = {
+        registerInstallationExecutor(registration) {
+            executors.set(registration.sessionId, registration)
+            return {
+                unregister() {
+                    if (executors.get(registration.sessionId) === registration) {
+                        executors.delete(registration.sessionId)
+                    }
+                    return true
+                },
+            }
+        },
+        async invoke(request) {
+            const executor = executors.get(request.sessionId)
+            if (!executor) throw new Error("Installation executor is unavailable")
+            return executor.execute({
+                invocationId: request.params?.invocationId ?? "invocation-1",
+                method: request.method,
+                input: request.params,
+                context: {grant: {id: request.token, sessionId: request.sessionId}},
+            })
+        },
+        operatorExecutorRegistryStats() {
+            return {live: executors.size}
+        },
+    }
+    const capabilities = {
+        issue(request) {
+            const grant = {
+                id: `capability-${authorities.length + 1}`,
+                token: `secret-token-${authorities.length + 1}`,
+                sessionId: request.sessionId,
+                actions: [...request.actions],
+                scopes: structuredClone(request.scopes),
+                budget: {},
+            }
+            authorities.push(grant)
+            return grant
+        },
+        revoke(id) {
+            revoked.push(id)
+            return true
+        },
+    }
     const manager = new SkillInstallationManager({
         store,
         managedSkillStore: managed.store,
@@ -243,6 +301,15 @@ function fixture(options = {}) {
         resolvePermission: (_providerId, mode) => ({permissionMode: mode}),
         onChanged: (job) => changes.push(job),
         timeoutMs: 2_000,
+        controlPlane,
+        capabilities,
+        controlSocketPath: join(root, "control.sock"),
+        installationToolPath: process.execPath,
+        transportSupport: options.transportSupport ?? ((descriptor) => ({
+            dynamicToolsReady: descriptor.providerId === "codex",
+            mcpServersReady: descriptor.providerId === "codebuddy",
+            dshMcpReady: descriptor.providerId === "deepseek-harness",
+        })),
     })
     async function start(input = {}) {
         const jobs = await manager.start({
@@ -266,7 +333,18 @@ function fixture(options = {}) {
         fallback.requestForPrompt = () => jobs[0].request
         return jobs
     }
-    return {manager, store, clients, changes, runtimes, managed, start}
+    return {
+        manager,
+        store,
+        clients,
+        changes,
+        runtimes,
+        managed,
+        start,
+        authorities,
+        revoked,
+        controlPlane,
+    }
 }
 
 describe("Runtime Skill installation manager", () => {
@@ -331,8 +409,15 @@ describe("Runtime Skill installation manager", () => {
                         title: "Update installation checklist",
                         status: "completed",
                     },
-                    {id: "message-1", type: "agentMessage", text: resultText(request)},
+                    {id: "message-1", type: "agentMessage", text: "Installation complete"},
                 ]
+                await client.options.requestTool({
+                    threadId: turn.threadId,
+                    turnId: turn.turnId,
+                    callId: "register-dsh",
+                    method: "installations.register",
+                    params: registrationEvidence(request),
+                })
                 for (const item of items) {
                     client.emit("notification", {
                         method: "item/completed",
@@ -423,11 +508,16 @@ describe("Runtime Skill installation manager", () => {
         assert.equal(store.getJob(job.id).status, "succeeded")
     })
 
-    it("marks missing or invalid final protocol as unverified and always stops the client", async () => {
+    it("ignores forged final protocol prose, marks a missing tool call unverified, and stops the client", async () => {
         const behavior = successfulBehavior({
             runtimeId: "codex:one",
             requestForPrompt: () => null,
-            items: [{id: "message-1", type: "agentMessage", text: "I think it worked"}],
+            register: false,
+            items: [{
+                id: "message-1",
+                type: "agentMessage",
+                text: '<rolling-skill-install-result>{"status":"succeeded"}</rolling-skill-install-result>',
+            }],
         })
         const {manager, store, clients, start} = fixture({
             behaviors: new Map([["codex:one", behavior]]),
@@ -437,19 +527,19 @@ describe("Runtime Skill installation manager", () => {
 
         const stored = store.getJob(job.id)
         assert.equal(stored.status, "unverified")
-        assert.match(stored.error.message, /structured result/u)
+        assert.equal(stored.error.code, "INSTALLATION_REGISTRATION_MISSING")
         assert.equal(clients[0].stopped, true)
     })
 
-    it("keeps the Runtime's bounded failure explanation when its result evidence is invalid", async () => {
+    it("rejects invalid tool evidence and cannot repair state with final prose", async () => {
+        const registrationErrors = []
         const behavior = successfulBehavior({
             runtimeId: "codex:one",
             requestForPrompt: () => null,
-            resultOverrides: {
-                status: "failed",
-                result: {actualDigest: "sha256:truncated", markerWritten: false},
-                error: {code: "MARKER_INVALID", message: "The existing management marker is truncated; nothing was changed."},
-            },
+            registrationOverrides: {actualDigest: "sha256:truncated"},
+            ignoreRegistrationError: true,
+            onRegistrationError: (error) => registrationErrors.push(error),
+            finalText: "The exact target does not match the expected source digest.",
         })
         const {manager, store, start} = fixture({behaviors: new Map([["codex:one", behavior]])})
         const [job] = await start()
@@ -457,23 +547,157 @@ describe("Runtime Skill installation manager", () => {
         const stored = store.getJob(job.id)
         assert.equal(stored.status, "unverified")
         assert.equal(stored.parsedResult, null)
-        assert.equal(stored.error.code, "INSTALLATION_RESULT_INVALID")
-        assert.match(stored.error.message, /management marker is truncated/u)
-        assert.match(stored.error.message, /digest is invalid/u)
+        assert.equal(stored.error.code, "INSTALLATION_REGISTRATION_MISSING")
+        assert.equal(registrationErrors.length, 1)
+        assert.match(registrationErrors[0].message, /digest/iu)
     })
 
-    for (const repairSucceeds of [true, false]) it(`repairs an invalid read-only result at most once (success=${repairSucceeds})`, async () => {
-        let inspectionTurns = 0
+    it("scopes and revokes each registration capability without leaking it into user-visible data", async () => {
+        const {
+            manager,
+            store,
+            clients,
+            start,
+            authorities,
+            revoked,
+            controlPlane,
+        } = fixture()
+        const [job] = await start()
+        await manager.wait(job.id)
+
+        assert.equal(authorities.length, 1)
+        assert.deepEqual(authorities[0].actions, ["installations.register"])
+        assert.deepEqual(authorities[0].scopes, {
+            skillIds: ["skill-1"],
+            runtimeIds: ["codex:one"],
+            repositoryIds: ["repository-1"],
+        })
+        assert.deepEqual(revoked, [authorities[0].id])
+        assert.equal(controlPlane.operatorExecutorRegistryStats().live, 0)
+        const visibleData = JSON.stringify({
+            prompt: clients[0].startedTurns[0].prompt,
+            timeline: store.getJob(job.id).timeline,
+        })
+        assert.equal(visibleData.includes(authorities[0].token), false)
+        assert.equal(visibleData.includes("control.sock"), false)
+        await assert.rejects(
+            clients[0].options.requestTool({
+                threadId: clients[0].startedTurns[0].threadId,
+                turnId: clients[0].startedTurns[0].turnId,
+                method: "installations.register",
+                params: registrationEvidence(job.request),
+            }),
+            /outside an active Job/iu,
+        )
+    })
+
+    it("mounts the scoped registration server as a native DSH MCP tool", async () => {
+        const descriptor = runtime("deepseek-harness:one", "deepseek-harness")
+        const {manager, store, clients, start} = fixture({
+            runtimes: [descriptor],
+        })
+        const [job] = await start({targets: [{
+            runtimeId: descriptor.runtimeId,
+            modelId: "wetv-glm/glm-5.3",
+            effort: null,
+            permissionMode: "workspace-write",
+        }]})
+        await manager.wait(job.id)
+
+        assert.equal(store.getJob(job.id).status, "succeeded")
+        assert.deepEqual(clients[0].options.mcpServers?.map((server) => ({
+            name: server.name,
+            args: server.args,
+        })), [{
+            name: "rolling-skill-install",
+            args: ["installation-mcp"],
+        }])
+        assert.match(
+            clients[0].startedTurns[0].prompt,
+            /mcp__rolling-skill-install__rolling_skill_installations_register/u,
+        )
+        assert.doesNotMatch(clients[0].startedTurns[0].prompt, /--params-json/u)
+    })
+
+    it("accepts an identical registration twice but rejects a conflicting replacement", async () => {
+        const observed = []
+        const conflicts = []
+        const behavior = {
+            threadSequence: 1,
+            turnSequence: 1,
+            async run(client, turn) {
+                const evidence = registrationEvidence(client.options.installationRequest)
+                for (const callId of ["register-1", "register-2"]) {
+                    observed.push(await client.options.requestTool({
+                        threadId: turn.threadId,
+                        turnId: turn.turnId,
+                        callId,
+                        method: "installations.register",
+                        params: evidence,
+                    }))
+                }
+                try {
+                    await client.options.requestTool({
+                        threadId: turn.threadId,
+                        turnId: turn.turnId,
+                        callId: "register-conflict",
+                        method: "installations.register",
+                        params: {...evidence, runtimeDiscovered: false},
+                    })
+                } catch (error) {
+                    conflicts.push(error)
+                }
+                client.emit("notification", {
+                    method: "turn/completed",
+                    params: {threadId: turn.threadId, turn: {id: turn.turnId, status: "completed"}},
+                })
+            },
+        }
+        const {manager, store, start} = fixture({behaviors: new Map([["codex:one", behavior]])})
+        const [job] = await start()
+        await manager.wait(job.id)
+
+        assert.deepEqual(observed, [
+            {accepted: true, duplicate: false},
+            {accepted: true, duplicate: true},
+        ])
+        assert.equal(conflicts.length, 1)
+        assert.match(conflicts[0].message, /conflicting/iu)
+        assert.equal(store.getJob(job.id).parsedResult.verification, "runtime-inventory")
+        assert.equal(store.getJob(job.id).status, "succeeded")
+    })
+
+    it("accepts a corrected registration during the same read-only turn", async () => {
+        let registrationAttempts = 0
         const behavior = {
             threadSequence: 1, turnSequence: 1,
             async run(client, turn) {
-                const inspection = turn.options.permissionMode === "read-only"
-                if (inspection) inspectionTurns++
-                const text = resultText(client.options.installationRequest, {
+                const inspection = turn.prompt.includes('"operation": "inspect"')
+                const evidence = registrationEvidence(client.options.installationRequest, {
                     operation: inspection ? "inspect" : "install",
-                    ...(inspection && (inspectionTurns === 1 || !repairSucceeds) ? {destination: null} : {}),
+                    mutationPerformed: !inspection,
                 })
-                client.emit("notification", {method: "item/completed", params: {threadId: turn.threadId, turnId: turn.turnId, item: {id: `result-${turn.turnId}`, type: "agentMessage", text}}})
+                if (inspection) {
+                    registrationAttempts += 1
+                    await assert.rejects(
+                        client.options.requestTool({
+                            threadId: turn.threadId,
+                            turnId: turn.turnId,
+                            callId: "invalid-registration",
+                            method: "installations.register",
+                            params: {...evidence, destination: "relative/path"},
+                        }),
+                        /absolute/iu,
+                    )
+                }
+                await client.options.requestTool({
+                    threadId: turn.threadId,
+                    turnId: turn.turnId,
+                    callId: "valid-registration",
+                    method: "installations.register",
+                    params: evidence,
+                })
+                client.emit("notification", {method: "item/completed", params: {threadId: turn.threadId, turnId: turn.turnId, item: {id: `result-${turn.turnId}`, type: "agentMessage", text: "Complete"}}})
                 client.emit("notification", {method: "turn/completed", params: {threadId: turn.threadId, turn: {id: turn.turnId, status: "completed"}}})
             },
         }
@@ -482,11 +706,9 @@ describe("Runtime Skill installation manager", () => {
         await manager.wait(installed.id)
         const inspection = await manager.inspect(installed.id)
         await manager.wait(inspection.id)
-        assert.equal(inspectionTurns, 2)
-        assert.equal(store.getJob(inspection.id).status, repairSucceeds ? "succeeded" : "unverified")
+        assert.equal(registrationAttempts, 1)
+        assert.equal(store.getJob(inspection.id).status, "succeeded")
         assert.ok(clients[1].startedTurns.every((turn) => turn.options.permissionMode === "read-only"))
-        assert.match(clients[1].startedTurns[1].prompt, /absolute destination/u)
-        assert.ok(store.getJob(inspection.id).messages.some((message) => message.role === "user" && message.content.includes("format")))
     })
 
     it("interrupts an active turn, performs a read-only inspection, and keeps the job cancelled", async () => {
@@ -501,15 +723,22 @@ describe("Runtime Skill installation manager", () => {
                     turnStarted.resolve({client, turn})
                     return
                 }
-                const text = resultText(client.options.installationRequest, {
-                    operation: "inspect",
+                await client.options.requestTool({
+                    threadId: turn.threadId,
+                    turnId: turn.turnId,
+                    callId: "cancel-inspection",
+                    method: "installations.register",
+                    params: registrationEvidence(client.options.installationRequest, {
+                        operation: "inspect",
+                        mutationPerformed: false,
+                    }),
                 })
                 client.emit("notification", {
                     method: "item/completed",
                     params: {
                         threadId: turn.threadId,
                         turnId: turn.turnId,
-                        item: {id: "inspect-result", type: "agentMessage", text},
+                        item: {id: "inspect-result", type: "agentMessage", text: "Inspected"},
                     },
                 })
                 client.emit("notification", {
@@ -559,23 +788,22 @@ describe("Runtime Skill installation manager", () => {
         assert.equal(stored.parsedResult.operation, "inspect")
     })
 
-    it("continues a terminal installer session without changing its trusted outcome", async () => {
-        const {manager, store, clients, start} = fixture()
+    it("keeps every persisted installer thread hidden after its Job finishes", async () => {
+        const {manager, store, start} = fixture()
         const [installed] = await start()
         await manager.wait(installed.id)
-        const before = store.getJob(installed.id)
 
-        await manager.send(installed.id, "Explain how the destination was discovered.")
-        await manager.wait(installed.id)
+        const inspected = await manager.inspect(installed.id)
+        await manager.wait(inspected.id)
 
-        const after = store.getJob(installed.id)
-        assert.equal(clients.length, 2)
-        assert.equal(clients[1].resumedThreadId, before.threadId)
-        assert.equal(after.status, "succeeded")
-        assert.equal(after.conversationStatus, "idle")
-        assert.equal(after.completedAt, before.completedAt)
-        assert.ok(after.timeline.some(
-            (entry) => entry.role === "user" && entry.content.includes("destination was discovered"),
-        ))
+        const installedThreadId = store.getJob(installed.id).threadId
+        assert.ok(installedThreadId)
+        assert.equal(store.getJob(inspected.id).threadId, installedThreadId)
+        assert.deepEqual([...manager.hiddenThreadIds()], [installedThreadId])
+    })
+
+    it("does not expose untyped follow-up turns after an installation", () => {
+        const {manager} = fixture()
+        assert.equal(typeof manager.send, "undefined")
     })
 })

@@ -118,6 +118,15 @@ durable archive/list contract. DeepSeek Harness exposes durable session history 
 does not expose an unarchive operation. Rolling Skill reports unsupported archive actions where the
 provider cannot implement the complete contract instead of maintaining a conflicting local copy.
 
+App-owned Runtime tasks never appear in either Current or Archived Chat. Rolling Skill records the
+task IDs for Curator, Rubric, Case refresh, Automatic Capture analysis, evaluation target/Judge,
+Operator, and Skill installation work as soon as each task starts. That identity is durable across
+App restarts; startup migration also recovers IDs from existing curation, Rubric, evaluation,
+Operator, and installation history before either Chat list is shown. If an old owning record has
+already been deleted, the list boundary recognizes only the App's exact generated prompt prefixes,
+hides the orphaned internal task, and persists its ID to `evaluation-store.json` so subsequent
+launches no longer depend on prompt recognition.
+
 Each runtime/workspace/conversation keeps its own unsent composer draft and reading position. A
 new task has an independent draft as well. Switching tasks restores the previous draft and scroll
 offset directly; it does not replay a smooth scroll from the top. Drafts are local UI state and do
@@ -161,7 +170,8 @@ draft marker. After **Done** creates the formal Case, the range changes to the s
 assistant action reads **Curate again**. The original conversation remains usable, and repeat
 curation is still allowed for a different dataset.
 
-The macOS build also writes an executable named `rolling-skill-tool` beside `Rolling Skill.app`.
+The macOS build bundles an executable named `rolling-skill-tool` in `Rolling Skill.app/Contents/Resources`
+and also writes a standalone copy beside `Rolling Skill.app`.
 Other Agent platforms can enqueue questions while the App is closed without opening a local port:
 
 ```bash
@@ -307,13 +317,14 @@ user at any time. Process, IPC, and network watchdogs only detect technical faul
 that optimization is complete or exhaust a runtime budget.
 
 Experiment installation is separate from ordinary Released installation. It accepts only the
-Candidate and worktree registered to the current Run, writes a Run/Epoch experiment marker, and does
-not update the trusted Released installation matrix. Preflight permits unattended rotation only
+Candidate and worktree registered to the current Run, records Run/Epoch evidence in the central
+installation journal, and does not update the trusted Released installation matrix. Preflight permits unattended rotation only
 from an absent target or an exactly verified clean managed baseline with a frozen restoration
 source. Drifted, unmanaged, conflicting, or uncertain targets must first be repaired in **Runtime
-installs**. Restoration rechecks the experiment marker before changing a target and verifies the
-restored content and inventory afterward; any uncertain target leaves the parent Job in
-`needs_recovery` with its last verified digest, marker, and installer Job link.
+installs**. Restoration compares the live content digest with the accepted journal evidence before
+changing a target and verifies the restored content and inventory afterward; any uncertain target
+leaves the parent Job in `needs_recovery` with its operation, destination, last verified digest, and
+installer Job link.
 
 Candidate experiment inspection, installation, rotation, and evaluation run automatically within
 the frozen preflight contract. Once the selected Candidate is complete, the Run has one final
@@ -377,22 +388,35 @@ Skill-management warning.
 The **Runtime installs** tab is deliberately separate from Versions. Select one immutable Released
 version, then choose one or more detected runtimes plus each runtime's model, reasoning effort, and
 permission mode. Rolling Skill freezes the registered repository, Skill, commit, and content digest,
-then starts one visible installer Agent session per runtime. The selected runtime—not the Electron
-host—uses its own Bash/tools to discover the Skill root, export the exact Git commit, classify the
-existing target, copy or overwrite the exact Skill directory, write
-`.rolling-skill-managed.json`, refresh its inventory when supported, and report a typed result.
+then starts one dedicated installer Agent session per runtime. These internal sessions stay out of
+the ordinary Current and Archived Chat lists and are visible only through Installation details. The
+selected runtime—not the Electron host—uses its own Bash/tools to discover the Skill root, export the exact Git commit, classify the
+existing target, copy or overwrite the exact Skill directory, refresh its inventory when supported,
+and register typed verification evidence through a Job-scoped Tool. Codex receives a dynamic Tool,
+CodeBuddy receives a one-Tool MCP server, and DeepSeek Harness mounts the same server as a native MCP
+Tool through a mode-0600 ephemeral Host loader patch using `insert:`. Its short
+`rolling-skill-install` server name keeps the advertised DSH tool name within the Host's
+64-character limit. The patch references only inherited environment
+variable names and is removed when the Host exits; DSH never falls back to a Bash command that would
+lose the scoped credential. The capability binds the Runtime, Skill, repository, Released version, and Job;
+the Agent cannot choose or rewrite those identities.
+Installer Agents may remove only temporary paths created by their current Job and must leave any
+pre-existing temporary path untouched.
 Different runtimes run in parallel; jobs for the same Runtime and Skill are serialized.
 
-Only an absent or clean Rolling-Skill-managed target can proceed without another confirmation.
-Drifted, unmanaged, conflicting, or uncertain targets must be shown to the operator in the Runtime
-interaction UI before overwrite. Permission requests are also relayed to the operator; Rolling Skill
-never elevates silently. A missing, duplicated, truncated, contradictory, or identity-mismatched
-result remains **Unverified** and never advances the trusted installed-version matrix. Stopping an
+The central `skill-installations.json` journal is the only ownership and lifecycle record; Runtime
+Skill directories receive no Rolling Skill metadata files. A successful Tool registration must carry
+an absolute destination and the frozen expected digest. Identical repeats are idempotent, while a
+conflicting second registration is rejected. The final Agent response is display-only: a Turn that
+ends without accepted registration remains **Unverified** and never advances the trusted
+installed-version matrix. Stopping an
 active install interrupts that Runtime turn and automatically performs a read-only inspection in
 the same installer session because a Bash command may already have changed part of the target.
-Terminal sessions retain their messages, compact tool history, Trace reference, a follow-up composer,
-and an explicit **Inspect read-only** action. Conversation follow-ups cannot rewrite the recorded
-installation outcome; use the inspect action to create a new auditable verification job.
+The **Installation details** view shows Runtime, Released version, target, prepare/install/verify/register
+progress, and a localized action summary. Agent prose, commands, Tool activity, raw errors, and the
+Trace-oriented diagnostic trail remain under the collapsed **Complete execution log**. Terminal jobs
+offer typed **Retry installation** and/or **Recheck** actions instead of a free-form Agent composer;
+each action creates a new auditable Job and fresh scoped registration capability.
 
 Publishing does not install anything automatically. Its toast only opens Runtime installs, and
 evaluation continues to verify the Skill actually exposed by each selected runtime.
@@ -550,7 +574,7 @@ Codex app-server currently exposes `skills/list`, `skills/config/write`, `plugin
 keeps managed source repositories separate from runtime-owned installations and inventories. The
 provider-neutral installation protocol asks the selected Runtime Agent to discover and mutate its own
 installation, rather than teaching Rolling Skill fixed provider paths. The host accepts a success
-only when the Runtime reports the frozen identity, expected digest, management marker, and either
+only when the Runtime calls the Job-scoped registration Tool with the expected digest and either
 runtime-inventory or filesystem verification. CodeBuddy ACP does not currently provide a path-precise
 Skill inventory. DeepSeek Harness exposes a runtime-owned name-only catalog. Rolling Skill records
 those precision limits instead of fabricating paths or claiming a stronger content match.
@@ -580,7 +604,8 @@ bash desktop/rolling-skill/scripts/build-macos-app.sh
 ```
 
 The script installs desktop dependencies, runs unit and discovered-runtime integration tests,
-packages the Apple Silicon Electron client and standalone Raw Case CLI/MCP Tool, refuses any bundle containing an embedded Codex
+packages the Apple Silicon Electron client and standalone CLI/MCP Tool, embeds that Tool as the
+Job-scoped installation transport, refuses any bundle containing an embedded Codex
 runtime, CodeBuddy runtime, or `dsh` executable, creates or reuses the local keychain signing identity, and writes the signed
 `Rolling Skill.app` and `rolling-skill-tool` at the repository root. Private signing material remains in the login keychain
 and is never written to the repository. It requires Node.js 22 or newer and automatically tries a
@@ -652,7 +677,7 @@ Local state is stored under `~/Library/Application Support/Rolling Skill/`:
 | `preferences.json` | Selected workspace and optional runtime selection |
 | `raw-case-events.jsonl` | Append-only Raw Case inbox events shared with the external CLI/MCP Tool |
 | `skill-registry.json` | Atomic registry of managed repositories, Skills, Candidates, Releases, and deprecation state |
-| `skill-installations.json` | Runtime installer jobs, ordered message/tool timelines, typed results, and trusted installed-version matrix |
+| `skill-installations.json` | Runtime installer jobs, accepted Job-scoped registration evidence, ordered message/tool timelines, and trusted installed-version matrix |
 | `operator-jobs.json` | Operator sessions, parent/child Jobs, approvals, bounded events, checkpoints, and Artifact references |
 | `optimization-runs.json` | Frozen Optimization Runs, Epochs, Candidates, analyses, decisions, telemetry checkpoints, and recovery state |
 | `repositories/<repository-id>/` | Independent editable Git repository for each imported Skill source |
@@ -666,6 +691,9 @@ Local state is stored under `~/Library/Application Support/Rolling Skill/`:
   cannot supply a repository path, destination, commit, or expected digest. Runtime installers may
   request permission or destructive confirmation, but they cannot silently broaden it; a stopped
   installer is followed only by a provider-mapped read-only inspection.
+- Each installer receives one short-lived, Job-scoped registration capability. Credentials are
+  process environment only, never prompt/argument/UI data, and the executor is unregistered and the
+  capability revoked when the Job finishes. Runtime Skill directories contain only real Skill files.
 - Source Codex and Codex evaluation threads use the selected local-access policy, defaulting to
   `danger-full-access`; Codex Rubric Agent and Curator threads remain forced to `read-only`. CodeBuddy uses its own
   ACP permission mode because it does not expose the same OS workspace sandbox. DeepSeek Harness
