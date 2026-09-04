@@ -396,7 +396,7 @@ function baselineSnapshot(value, {releasedFact = true} = {}) {
     exactKeys(
         value,
         ["repositoryId", "skillId", "versionId", "commit", "skillRoot", "contentDigest"],
-        releasedFact ? ["state"] : [],
+        releasedFact ? ["state", "skillName"] : ["skillName"],
         "Optimization baseline",
     )
     if (releasedFact && String(value.state ?? "").toLowerCase() !== "released") {
@@ -404,11 +404,15 @@ function baselineSnapshot(value, {releasedFact = true} = {}) {
     }
     const commit = requiredText(value.commit, "Baseline commit", 64)
     if (!/^[a-f0-9]{40}$/u.test(commit)) throw new Error("Baseline commit must be a full SHA-1")
+    const skillName = value.skillName === undefined
+        ? null
+        : requiredText(value.skillName, "Baseline Skill name", 200)
     return {
         repositoryId: requiredText(value.repositoryId, "Baseline repository id", 200),
         skillId: requiredText(value.skillId, "Baseline Skill id", 200),
         versionId: requiredText(value.versionId, "Baseline version id", 200),
         commit,
+        ...(skillName === null ? {} : {skillName}),
         skillRoot: trustedSkillRoot(value.skillRoot),
         contentDigest: digestText(value.contentDigest, "Baseline content digest"),
     }

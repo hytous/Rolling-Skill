@@ -36,8 +36,12 @@ function normalizedConfig(value) {
 
 function optimizationTaskTitle(run) {
     const baseline = run.snapshot?.baseline ?? {}
+    const skillName = typeof baseline.skillName === "string" ? baseline.skillName.trim() : ""
     const skillRoot = typeof baseline.skillRoot === "string" ? baseline.skillRoot : ""
-    const skillLabel = (skillRoot.split("/").filter(Boolean).at(-1) || baseline.skillId || "Skill")
+    const skillRootLabel = skillRoot === "."
+        ? ""
+        : skillRoot.split("/").filter(Boolean).at(-1) ?? ""
+    const skillLabel = (skillName || skillRootLabel || baseline.skillId || "Skill")
         .slice(0, 80)
     const runId = String(run.id ?? "")
     const runLabel = /^[a-f0-9]{8}-[a-f0-9-]+$/iu.test(runId)

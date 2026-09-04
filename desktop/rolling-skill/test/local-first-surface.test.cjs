@@ -22,6 +22,10 @@ describe("local-first desktop surface", () => {
         assert.match(html, /id="operator-transcript"/)
         assert.match(html, /id="operator-status-panel"/)
         assert.match(html, /id="operator-composer"/)
+        assert.match(
+            html,
+            /id="operator-composer-send"[^>]*class="[^"]*operator-action-button[^"]*primary[^"]*"/u,
+        )
         assert.match(html, /id="operator-setup-form"/)
         assert.match(html, /id="operator-approval-queue"/)
         assert.match(html, /id="operator-job-kind"/)
@@ -60,6 +64,8 @@ describe("local-first desktop surface", () => {
         assert.match(operator, /resumeOptimization/)
         assert.match(operator, /stopOptimization/)
         assert.match(operator, /getOptimizationReport/)
+        assert.ok((operator.match(/"operator-action-button"/gu) ?? []).length >= 2)
+        assert.match(operator, /operator-action-button operator-action-danger/u)
         assert.match(renderer, /versions:\s*state\.managedSkills\.versions/)
         assert.doesNotMatch(operator, /renderAll\s*\(/)
         assert.doesNotMatch(operator, /gpt-[\w.-]+|claude-[\w.-]+|deepseek-[\w.-]+/iu)
@@ -102,6 +108,14 @@ describe("local-first desktop surface", () => {
         assert.match(styles, /\.operator-session-panel:has\(\.operator-setup-form:not\(\.hidden\)\) \.operator-transcript/)
         assert.doesNotMatch(styles, /\.operator-state-pill\s*\{[^}]*text-transform:\s*capitalize/s)
         assert.match(styles, /\.operator-composer-wrap\s*\{[^}]*position:\s*sticky/s)
+        assert.match(styles, /\.operator-action-button\s*\{[^}]*min-height:[^}]*border-radius:/su)
+        assert.match(styles, /\.operator-action-button\.primary\s*\{[^}]*background:\s*var\(--accent\)/su)
+        assert.match(styles, /\.operator-action-button:focus-visible\s*\{[^}]*outline:/su)
+        assert.match(styles, /\.operator-action-button:disabled\s*\{[^}]*opacity:/su)
+        assert.match(
+            styles,
+            /\.operator-action-button\.operator-action-danger:hover:not\(:disabled\),[\s\S]*?\{[^}]*var\(--danger\)/u,
+        )
         assert.match(styles, /\.operator-optimization-grid\s*\{[^}]*grid-template-columns:/s)
         assert.match(styles, /\.operator-optimization-recovery/)
         assert.match(styles, /@media \(max-width: 1120px\)[\s\S]*?\.operator-grid\s*\{[^}]*grid-template-columns:/)

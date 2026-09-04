@@ -2306,6 +2306,7 @@ async function resolveOptimizationPreflight(config) {
             skillId: skill.id,
             versionId: version.id,
             commit: version.commit,
+            skillName: skill.name,
             skillRoot: version.skillRoot,
             contentDigest: version.contentDigest,
             state: version.state,

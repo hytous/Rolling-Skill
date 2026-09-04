@@ -418,18 +418,17 @@ function createOperatorFixture() {
                 })
                 store.appendSessionTranscript(session.id, {
                     kind: "operator_session_configuration",
-                    payload: {
-                        scopes: {
-                            skillIds: ["managed-skill-smoke-two"],
-                            datasetIds: ["optimization-dataset-smoke"],
-                            runtimeIds: ["codex:renderer-smoke", "codebuddy:renderer-smoke"],
-                        },
+                    title: "Skill 自动优化 · billing-cost-management · optimization",
+                    scopes: {
+                        skillIds: ["managed-skill-smoke-two"],
+                        datasetIds: ["optimization-dataset-smoke"],
+                        runtimeIds: ["codex:renderer-smoke", "codebuddy:renderer-smoke"],
                     },
                 })
                 const job = store.createJob({
                     sessionId: session.id,
                     type: "operator-session",
-                    objective: "Multi-Epoch Optimization smoke Run",
+                    objective: "Optimize frozen Run optimization-renderer-smoke. Wait for a Candidate.",
                     budget: operatorBudget(),
                     checkpoint: {optimizationRunId: input.runId},
                 })
@@ -2051,7 +2050,7 @@ async function run() {
         throw new Error(`Optimization Start did not expose its pending state: ${JSON.stringify(optimizationStarting)}`)
     }
     try {
-        await waitFor(window, '[...document.querySelectorAll("[data-operator-job-id]")].some((node) => node.textContent.includes("Multi-Epoch Optimization smoke Run"))')
+        await waitFor(window, '[...document.querySelectorAll("[data-operator-job-id]")].some((node) => node.textContent.includes("Skill 自动优化 · billing-cost-management · optimization"))')
     } catch (error) {
         const diagnostic = await inspect(window, `(() => ({
             setupError: document.querySelector("#operator-setup-error").textContent,
@@ -2071,7 +2070,7 @@ async function run() {
         throw new Error(`Optimization Start call count changed: ${optimizationStartCalls}`)
     }
     const optimizationJobId = await inspect(window, `[...document.querySelectorAll("[data-operator-job-id]")]
-        .find((node) => node.textContent.includes("Multi-Epoch Optimization smoke Run"))?.dataset.operatorJobId`)
+        .find((node) => node.textContent.includes("Skill 自动优化 · billing-cost-management · optimization"))?.dataset.operatorJobId`)
     const optimizationJobSelector = `[data-operator-job-id="${optimizationJobId}"]`
     try {
         await waitFor(window, `document.querySelector(${JSON.stringify(`${optimizationJobSelector}.active`)}) && !document.querySelector("#operator-optimization-panel").classList.contains("hidden")`)
@@ -2089,6 +2088,26 @@ async function run() {
             })
         })()`)
         throw new Error(`Optimization Job was not activated: ${JSON.stringify({diagnostic, rendererErrors})}`, {cause: error})
+    }
+    const optimizationChrome = await inspect(window, `(() => ({
+        listTitle: document.querySelector(${JSON.stringify(optimizationJobSelector)})
+            ?.querySelector(".operator-job-title")?.textContent,
+        sessionTitle: document.querySelector("#operator-session-title").textContent,
+        actions: [
+            document.querySelector("#operator-composer-send"),
+            document.querySelector("[data-optimization-action=pause]"),
+            document.querySelector("[data-optimization-action=stop]"),
+            document.querySelector("[data-optimization-action=report]"),
+        ].map((button) => button?.className ?? null),
+    }))()`)
+    if (
+        optimizationChrome.listTitle !== "Skill 自动优化 · billing-cost-management · optimization" ||
+        optimizationChrome.sessionTitle !== "Skill 自动优化 · billing-cost-management · optimization" ||
+        optimizationChrome.actions.some((className) => !className?.includes("operator-action-button")) ||
+        !optimizationChrome.actions[0].includes("primary") ||
+        !optimizationChrome.actions[2].includes("operator-action-danger")
+    ) {
+        throw new Error(`Optimization title or action styles are inconsistent: ${JSON.stringify(optimizationChrome)}`)
     }
     await inspect(window, `document.querySelector(${JSON.stringify(streamingJobSelector)}).click()`)
     await waitFor(window, `document.querySelector(${JSON.stringify(`${streamingJobSelector}.active`)})`)
@@ -2286,6 +2305,8 @@ async function run() {
             operatorEpochOnlySetup: epochOnlySetup,
             optimizationOneActionStart: true,
             optimizationActionableRetry: true,
+            optimizationTaskTitle: optimizationChrome.sessionTitle,
+            operatorActionButtons: optimizationChrome.actions,
             optimizationHiddenProgressIsolated: true,
             optimizationTwoEpochTrend: optimizationEvidenceAfterSwitch.timeline,
             optimizationFinalApproval: finalApprovalId,

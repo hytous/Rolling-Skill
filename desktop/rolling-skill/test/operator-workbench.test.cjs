@@ -21,6 +21,7 @@ const {
     optimizationFinalApprovalView,
     optimizationSetupErrorText,
     optimizationRunActions,
+    operatorJobTitle,
     operatorStatusText,
     operatorJobTreeIds,
     operatorSessionActions,
@@ -69,6 +70,40 @@ function event(id, sessionId = "session-1", jobId = "job-1") {
 }
 
 describe("Operator workbench state", () => {
+    it("prefers the persisted session title and preserves legacy fallbacks", () => {
+        assert.equal(operatorJobTitle({
+            job: {
+                id: "job-1",
+                objective: "Optimize frozen Run 2d5d5f00-b0e3-4310-849c-3f97441684ac.",
+            },
+            transcript: [
+                {
+                    kind: "operator_session_configuration",
+                    payload: {title: "Legacy nested title"},
+                },
+                {
+                    kind: "operator_session_configuration",
+                    title: "Skill 自动优化 · billing-cost-management · 2d5d5f00",
+                },
+            ],
+        }), "Skill 自动优化 · billing-cost-management · 2d5d5f00")
+        assert.equal(operatorJobTitle({
+            job: {id: "job-nested", objective: "Nested fallback"},
+            transcript: [{
+                kind: "operator_session_configuration",
+                payload: {title: "Nested compatibility title"},
+            }],
+        }), "Nested compatibility title")
+        assert.equal(operatorJobTitle({
+            job: {id: "job-legacy", objective: "Legacy objective"},
+            transcript: [],
+        }), "Legacy objective")
+        assert.equal(operatorJobTitle({
+            job: {id: "job-id-only", objective: "   "},
+            transcript: [],
+        }), "job-id-only")
+    })
+
     it("splits Runtime identity into the same title and path hierarchy used by Skill evaluation", () => {
         assert.deepEqual(runtimeDisplayParts({
             runtimeId: "codex:chatgpt",

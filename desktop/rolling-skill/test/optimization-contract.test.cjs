@@ -91,6 +91,7 @@ function freezeInput(overrides = {}) {
             versionId: "version-1",
             state: "released",
             commit: "a".repeat(40),
+            skillName: "billing-cost-management",
             skillRoot: "skills/billing-cost-management",
             contentDigest: digest("baseline content"),
         },
@@ -164,6 +165,12 @@ describe("optimization contract", () => {
         const legacy = freezeOptimizationRun(freezeInput())
         assert.equal(legacy.schemaVersion, "rolling-skill-frozen-optimization-run/v1")
         assert.equal(validateFrozenOptimizationRun(legacy).mode, "adaptive")
+
+        const unnamedInput = freezeInput({config: compactConfig()})
+        delete unnamedInput.baseline.skillName
+        const unnamed = freezeOptimizationRun(unnamedInput)
+        assert.equal(Object.hasOwn(unnamed.baseline, "skillName"), false)
+        assert.deepEqual(validateFrozenOptimizationRun(unnamed), unnamed)
     })
 
     it("parses fixed and adaptive configurations into deeply immutable local selections", () => {
@@ -253,6 +260,7 @@ describe("optimization contract", () => {
             skillId: "skill-1",
             versionId: "version-1",
             commit: "a".repeat(40),
+            skillName: "billing-cost-management",
             skillRoot: "skills/billing-cost-management",
             contentDigest: digest("baseline content"),
         })

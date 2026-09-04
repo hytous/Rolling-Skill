@@ -814,7 +814,6 @@ kbd {
     gap: 6px;
 }
 
-.operator-control-button,
 .operator-approval-actions button,
 .operator-link {
     min-height: 28px;
@@ -823,6 +822,52 @@ kbd {
     border-radius: 7px;
     background: var(--surface);
     font-size: 11px;
+}
+
+.operator-action-button {
+    min-height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 620;
+    line-height: 1;
+    transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.operator-action-button:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--accent) 38%, var(--border-strong));
+    background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+
+.operator-action-button.primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
+}
+
+.operator-action-button.primary:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--accent) 82%, var(--text));
+    background: color-mix(in srgb, var(--accent) 88%, var(--surface));
+}
+
+.operator-action-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: 2px;
+}
+
+.operator-action-button:disabled {
+    cursor: default;
+    opacity: 0.45;
+}
+
+.operator-action-button.operator-action-danger:hover:not(:disabled),
+.operator-action-button.operator-action-danger:focus-visible {
+    border-color: color-mix(in srgb, var(--danger) 55%, var(--border-strong));
+    background: color-mix(in srgb, var(--danger) 9%, var(--surface));
+    color: var(--danger);
 }
 
 .operator-transcript {
@@ -914,10 +959,9 @@ kbd {
     color: var(--text);
 }
 
-.operator-composer button {
+.operator-composer .operator-action-button {
     min-width: 58px;
     height: 34px;
-    border-radius: 8px;
 }
 
 .operator-status-panel {

@@ -31,6 +31,29 @@
         return detail ? `${base} · ${detail}` : base
     }
 
+    function operatorSessionConfiguration(snapshot) {
+        const transcript = Array.isArray(snapshot?.transcript) ? snapshot.transcript : []
+        for (let index = transcript.length - 1; index >= 0; index -= 1) {
+            const entry = transcript[index]
+            if (entry?.kind === "operator_session_configuration") {
+                return entry.payload && typeof entry.payload === "object"
+                    ? entry.payload
+                    : entry
+            }
+        }
+        return {}
+    }
+
+    function operatorJobTitle(snapshot) {
+        const configuredTitle = operatorSessionConfiguration(snapshot).title
+        if (typeof configuredTitle === "string" && configuredTitle.trim()) {
+            return configuredTitle.trim()
+        }
+        const objective = snapshot?.job?.objective
+        if (typeof objective === "string" && objective.trim()) return objective.trim()
+        return String(snapshot?.job?.id ?? "")
+    }
+
     function catalogForRuntime(catalogs, runtimeId) {
         const source = catalogs?.modelsByRuntime
         if (source instanceof Map) return source.get(runtimeId) ?? []
@@ -2349,7 +2372,10 @@
                 report: text("operatorReport", "Report"),
             }
             for (const action of view.actions) {
-                const button = createElement(document_, "button", action === "stop" ? "danger" : "", labels[action])
+                const className = action === "stop"
+                    ? "operator-action-button operator-action-danger"
+                    : "operator-action-button"
+                const button = createElement(document_, "button", className, labels[action])
                 button.type = "button"
                 button.dataset.optimizationAction = action
                 button.dataset.optimizationRunId = view.id
@@ -2357,8 +2383,8 @@
             }
             if (finalApproval && snapshot) {
                 for (const [decision, key, fallback, className] of [
-                    ["approve", "operatorInstallImproved", "Install improved version", ""],
-                    ["reject", "operatorRestoreOriginal", "Restore original version", "danger"],
+                    ["approve", "operatorInstallImproved", "Install improved version", "operator-action-button primary"],
+                    ["reject", "operatorRestoreOriginal", "Restore original version", "operator-action-button operator-action-danger"],
                 ]) {
                     const button = createElement(document_, "button", className, text(key, fallback))
                     button.type = "button"
@@ -2473,7 +2499,7 @@
                 const node_ = ensureJobNode(jobId)
                 retained.add(jobId)
                 node_.classList.toggle("active", jobId === state.activeJobId && !creating)
-                node_.querySelector(".operator-job-title").textContent = snapshot.job.objective || jobId
+                node_.querySelector(".operator-job-title").textContent = operatorJobTitle(snapshot)
                 node_.querySelector(".operator-job-meta").textContent = jobStatusText(snapshot.job.status)
                 const unread = Object.values(snapshot.unread).reduce((sum, value) => sum + value, 0)
                 const badge = node_.querySelector(".operator-job-unread")
@@ -2502,10 +2528,7 @@
         }
 
         function sessionConfiguration(snapshot) {
-            const configuration = snapshot.transcript.find((entry) => (
-                entry.kind === "operator_session_configuration"
-            ))
-            return configuration?.payload ?? {}
+            return operatorSessionConfiguration(snapshot)
         }
 
         function renderList(container, entries, renderEntry, emptyText) {
@@ -2630,7 +2653,10 @@
                 stop: text("operatorStop", "Stop"),
             }
             for (const action of operatorJobActions(snapshot.job.status)) {
-                const button = createElement(document_, "button", "operator-control-button", labels[action])
+                const className = action === "stop"
+                    ? "operator-action-button operator-action-danger"
+                    : "operator-action-button"
+                const button = createElement(document_, "button", className, labels[action])
                 button.type = "button"
                 button.dataset.operatorJobAction = action
                 button.dataset.operatorJobId = snapshot.job.id
@@ -2663,7 +2689,7 @@
             activeOptimizationRunId = snapshot.job.optimizationRunId ?? null
             renderOptimizationPanel(optimizationRunForSnapshot(snapshot))
             if (activeOptimizationRunId) scheduleOptimizationPoll(0)
-            selectors.sessionTitle.textContent = snapshot.job.objective || snapshot.job.id
+            selectors.sessionTitle.textContent = operatorJobTitle(snapshot)
             selectors.sessionState.textContent = jobStatusText(snapshot.job.status)
             renderSessionActions(snapshot)
             patchStatus(snapshot)
@@ -3063,6 +3089,7 @@
         optimizationFinalApproval,
         optimizationFinalApprovalView,
         optimizationSetupErrorText,
+        operatorJobTitle,
         operatorStatusText,
         operatorJobTreeIds,
         operatorSessionActions,

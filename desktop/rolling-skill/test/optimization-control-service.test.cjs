@@ -58,6 +58,8 @@ function snapshot(revision, {legacy = false} = {}) {
             skillId: "skill-1",
             versionId: "version-1",
             commit: "a".repeat(40),
+            skillName: "billing-cost-management",
+            skillRoot: ".",
             contentDigest: digest("a"),
         },
         dataset: {id: "dataset-1", revision, digest: digest("d")},
@@ -251,7 +253,7 @@ describe("Optimization control service", () => {
         assert.equal(context.operatorCalls.length, 1)
         assert.equal(
             context.operatorCalls[0].title,
-            "Skill 自动优化 · skill-1 · optimization-run-1",
+            "Skill 自动优化 · billing-cost-management · optimization-run-1",
         )
         assert.deepEqual(context.operatorCalls[0].managedSkillBinding, {
             repositoryId: "repository-1",
