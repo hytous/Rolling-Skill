@@ -334,6 +334,18 @@
                 "The selected baseline is not a Released version of this Skill. Select a matching Released version.",
             )
         }
+        const missingBaselineInstallation = detail.match(
+            /^Optimization target (.+) requires the selected Released baseline to be installed and verified\./iu,
+        )
+        if (missingBaselineInstallation) {
+            return formattedText(
+                formatMessage,
+                translate,
+                "operatorErrorOptimizationBaselineInstallation",
+                {runtime: missingBaselineInstallation[1]},
+                "Runtime {runtime} does not have the selected baseline installed and verified. Install it from Skill Installations before starting Optimization.",
+            )
+        }
         const unavailableRuntime = detail.match(/^Optimization Runtime (.+) is unavailable$/iu)
         if (unavailableRuntime) {
             return formattedText(

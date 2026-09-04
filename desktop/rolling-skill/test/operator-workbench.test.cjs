@@ -1596,6 +1596,7 @@ describe("multi-Epoch Optimization workbench", () => {
         const translations = {
             operatorErrorOptimizationRubric: "所选数据集尚未发布评分标准，请先发布后再开始优化。",
             operatorErrorOptimizationBaseline: "所选基线不是这个 Skill 的已发布版本，请重新选择。",
+            operatorErrorOptimizationBaselineInstallation: "目标 Runtime {runtime} 尚未安装并验证所选基线版本，请先在 Skill 安装中安装后再开始优化。",
             operatorErrorOptimizationRuntime: "Runtime {runtime} 当前不可用，请重新选择。",
             operatorErrorWithDetail: "操作失败：{message}",
         }
@@ -1612,6 +1613,11 @@ describe("multi-Epoch Optimization workbench", () => {
             translate,
             formatMessage,
         ), translations.operatorErrorOptimizationBaseline)
+        assert.equal(optimizationSetupErrorText(
+            new Error("Optimization target Codex requires the selected Released baseline to be installed and verified. Install it from Skill Installations before starting: A verified Skill installation is required"),
+            translate,
+            formatMessage,
+        ), "目标 Runtime Codex 尚未安装并验证所选基线版本，请先在 Skill 安装中安装后再开始优化。")
         assert.equal(optimizationSetupErrorText(
             new Error("Optimization Runtime codex:missing is unavailable"),
             translate,

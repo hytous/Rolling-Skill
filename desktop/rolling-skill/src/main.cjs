@@ -23,7 +23,7 @@ const {
     writeFileSync,
 } = require("node:fs")
 const {homedir} = require("node:os")
-const {isAbsolute, join, relative, resolve, sep} = require("node:path")
+const {basename, isAbsolute, join, relative, resolve, sep} = require("node:path")
 const {pathToFileURL} = require("node:url")
 const {createHash, randomUUID} = require("node:crypto")
 const {AsyncLocalStorage} = require("node:async_hooks")
@@ -2239,6 +2239,14 @@ async function resolveOptimizationPreflight(config) {
         if (!runtime) throw new Error(`Optimization Runtime ${runtimeId} is unavailable`)
         return runtime
     })
+    for (const target of config.targets) {
+        optimizationReleasedSkillBinding({
+            runtimeConfiguration: optimizationRuntimeConfiguration(target, "Target"),
+            repository,
+            skill,
+            version,
+        })
+    }
     assertOptimizationTelemetrySupport(config, runtimes)
     const skillEvidence = await snapshotManagedSkillEvidence({
         name: skill.name,
@@ -2285,6 +2293,106 @@ function optimizationRuntimeConfiguration(requested, label) {
     }
 }
 
+function optimizationInstalledSkillPath(destination) {
+    return basename(destination).toLocaleLowerCase("en-US") === "skill.md"
+        ? destination
+        : join(destination, "SKILL.md")
+}
+
+function optimizationReleasedSkillBinding({runtimeConfiguration, repository, skill, version}) {
+    let installation
+    try {
+        installation = skillInstallationStore.resolveVerifiedInstallation({
+            repositoryId: repository.id,
+            skillId: skill.id,
+            versionId: version.id ?? version.versionId,
+            runtimeId: runtimeConfiguration.runtimeId,
+            providerId: runtimeConfiguration.providerId,
+        })
+    } catch (error) {
+        const runtime = runtimeConfiguration.displayName ?? runtimeConfiguration.runtimeId
+        throw new Error(
+            `Optimization target ${runtime} requires the selected Released baseline to be ` +
+            `installed and verified. Install it from Skill Installations before starting: ` +
+            `${error?.message ?? String(error)}`,
+        )
+    }
+    if (
+        installation.commit !== version.commit ||
+        installation.contentDigest !== version.contentDigest
+    ) {
+        throw new Error("Recorded Runtime installation does not match the Optimization Released baseline")
+    }
+    return {
+        ...runtimeConfiguration,
+        skillEvidenceBinding: "verified",
+        skillReference: {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            id: skill.id,
+            repositoryId: repository.id,
+            name: skill.name,
+            path: optimizationInstalledSkillPath(installation.destination),
+            scope: "runtime",
+            description: skill.description ?? null,
+            runtimeId: runtimeConfiguration.runtimeId,
+            providerId: runtimeConfiguration.providerId,
+            confirmedAt: installation.installedAt,
+        },
+        installationId: installation.installationId ?? installation.id,
+        installationJobId: installation.jobId,
+        installationVerification: installation.verification,
+        expectedContentDigest: version.contentDigest,
+    }
+}
+
+function optimizationCandidateSkillBinding({
+    runtimeConfiguration,
+    repository,
+    skill,
+    candidate,
+    installationJob,
+}) {
+    const versionId = candidate.id ?? candidate.versionId
+    if (
+        installationJob?.status !== "succeeded" ||
+        installationJob.request?.purpose !== "optimization-experiment" ||
+        installationJob.parsedResult?.trusted !== true ||
+        !installationJob.parsedResult.destination ||
+        !installationJob.parsedResult.verification ||
+        installationJob.parsedResult.verification === "none" ||
+        installationJob.runtime?.runtimeId !== runtimeConfiguration.runtimeId ||
+        installationJob.runtime?.providerId !== runtimeConfiguration.providerId ||
+        installationJob.request.source?.repositoryId !== repository.id ||
+        installationJob.request.source?.skillId !== skill.id ||
+        installationJob.request.source?.versionId !== versionId ||
+        installationJob.request.source?.commit !== candidate.commit ||
+        installationJob.request.source?.expectedDigest !== candidate.contentDigest
+    ) {
+        throw new Error(
+            `Optimization target ${runtimeConfiguration.runtimeId} lacks a trusted Candidate installation`,
+        )
+    }
+    return {
+        ...runtimeConfiguration,
+        skillEvidenceBinding: "verified",
+        skillReference: {
+            schemaVersion: "rolling-skill-skill-reference/v1",
+            id: skill.id,
+            repositoryId: repository.id,
+            name: skill.name,
+            path: optimizationInstalledSkillPath(installationJob.parsedResult.destination),
+            scope: "runtime",
+            description: skill.description ?? null,
+            runtimeId: runtimeConfiguration.runtimeId,
+            providerId: runtimeConfiguration.providerId,
+            confirmedAt: installationJob.completedAt ?? new Date().toISOString(),
+        },
+        installationJobId: installationJob.id,
+        installationVerification: installationJob.parsedResult.verification,
+        expectedContentDigest: candidate.contentDigest,
+    }
+}
+
 async function runOptimizationEvaluation(input) {
     const optimizationRun = input.optimizationRun
     const snapshot = optimizationRun.snapshot
@@ -2297,33 +2405,53 @@ async function runOptimizationEvaluation(input) {
         })
     }
     const candidate = input.candidate
+    const versionId = candidate.id ?? candidate.versionId
+    const version = {...candidate, id: versionId}
     const skill = managedSkillStore.getSkill(candidate.skillId)
     const repository = managedSkillStore.getRepository(candidate.repositoryId)
     const skillEvidence = await snapshotManagedSkillEvidence({
         name: skill.name,
         repositoryId: repository.id,
         skillId: skill.id,
-        versionId: candidate.id,
+        versionId,
         repositoryPath: repository.managedPath,
         commit: candidate.commit,
         skillRoot: candidate.skillRoot,
         contentDigest: candidate.contentDigest,
     }, {git: managedSkillManager.git})
-    const runtimeConfigurations = input.targets.map((target) => (
-        optimizationRuntimeConfiguration(target, "Target")
-    ))
-    const installationJobIdsByRuntime = Object.fromEntries(
-        (input.installationJobs ?? []).map((job) => [job.runtime.runtimeId, job.id]),
+    const installationJobsByRuntime = new Map(
+        (input.installationJobs ?? []).map((job) => [job.runtime.runtimeId, job]),
     )
-    const managedVersionSnapshot = input.installationJobs?.length ? {
+    const runtimeConfigurations = input.targets.map((target) => {
+        const runtimeConfiguration = optimizationRuntimeConfiguration(target, "Target")
+        if (input.kind === "baseline" || input.kind === "final-regression") {
+            return optimizationReleasedSkillBinding({
+                runtimeConfiguration,
+                repository,
+                skill,
+                version,
+            })
+        }
+        return optimizationCandidateSkillBinding({
+            runtimeConfiguration,
+            repository,
+            skill,
+            candidate: version,
+            installationJob: installationJobsByRuntime.get(runtimeConfiguration.runtimeId),
+        })
+    })
+    const installationJobIdsByRuntime = Object.fromEntries(runtimeConfigurations.map(
+        (configuration) => [configuration.runtimeId, configuration.installationJobId],
+    ))
+    const managedVersionSnapshot = {
         repositoryId: repository.id,
         skillId: skill.id,
-        versionId: candidate.id,
+        versionId,
         commit: candidate.commit,
         skillRoot: candidate.skillRoot,
         contentDigest: candidate.contentDigest,
         installationJobIdsByRuntime,
-    } : null
+    }
     const judgeConfiguration = optimizationRuntimeConfiguration(snapshot.judge, "Judge")
     const run = store.createEvaluationRun({
         datasetId: snapshot.dataset.id,
@@ -2331,7 +2459,7 @@ async function runOptimizationEvaluation(input) {
         selectionMode: "selected",
         activationMode: snapshot.activationMode,
         skillEvidence,
-        ...(managedVersionSnapshot ? {managedVersionSnapshot} : {}),
+        managedVersionSnapshot,
         judgeProfile: {
             runtimePolicy: "active",
             modelId: judgeConfiguration.modelId,

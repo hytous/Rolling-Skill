@@ -15,7 +15,7 @@ const {
     writeFileSync,
 } = require("node:fs")
 const {tmpdir} = require("node:os")
-const {isAbsolute, join, relative, resolve, sep} = require("node:path")
+const {basename, isAbsolute, join, relative, resolve, sep} = require("node:path")
 const {describe, it} = require("node:test")
 const vm = require("node:vm")
 
@@ -936,6 +936,260 @@ describe("desktop main/preload bridge", () => {
         assert.ok(
             shutdown.indexOf("operatorSessionManager?.stopAll") < shutdown.indexOf("optimizationStore?.close"),
         )
+    })
+
+    it("requires every Optimization target to have the exact Released baseline installed", async () => {
+        const context = mainFunctionContext(
+            "resolveOptimizationPreflight",
+            "runOptimizationEvaluation",
+            {
+                assertOptimizationTelemetrySupport: () => {},
+                availableRuntimes: [{
+                    runtimeId: "runtime-1",
+                    providerId: "codex",
+                    displayName: "Codex",
+                }],
+                basename,
+                join,
+                managedSkillManager: {git: {}},
+                managedSkillStore: {
+                    getRepository: () => ({id: "repository-1", managedPath: "/managed/repository"}),
+                    getSkill: () => ({
+                        id: "skill-1",
+                        repositoryId: "repository-1",
+                        name: "billing-cost-management",
+                    }),
+                    getVersion: () => ({
+                        id: "version-1",
+                        repositoryId: "repository-1",
+                        skillId: "skill-1",
+                        state: "released",
+                        commit: "a".repeat(40),
+                        skillRoot: ".",
+                        contentDigest: `sha256:${"b".repeat(64)}`,
+                    }),
+                },
+                optimizationDatasetSnapshot: () => ({
+                    snapshot: {id: "dataset-1", digest: "dataset-digest"},
+                    dataset: {id: "dataset-1"},
+                    rubric: {id: "rubric-1", rubricDigest: "rubric-digest"},
+                }),
+                optionalEffort: (value) => value ?? null,
+                optionalIdentifier: (value) => value ?? null,
+                requireIdentifier: (value) => value,
+                skillInstallationStore: {
+                    resolveVerifiedInstallation: () => {
+                        throw new Error("A verified Skill installation is required")
+                    },
+                },
+                snapshotManagedSkillEvidence: async () => ({digest: "skill-evidence-digest"}),
+            },
+        )
+
+        await assert.rejects(
+            () => context.resolveOptimizationPreflight({
+                skillId: "skill-1",
+                baselineVersionId: "version-1",
+                datasetId: "dataset-1",
+                operator: {runtimeId: "runtime-1"},
+                judge: {runtimeId: "runtime-1"},
+                targets: [{runtimeId: "runtime-1"}],
+            }),
+            /Codex.*Released baseline.*Skill Installations/i,
+        )
+    })
+
+    it("binds baseline evaluation to the exact verified Released installation", async () => {
+        const baseline = {
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            versionId: "version-1",
+            commit: "a".repeat(40),
+            skillRoot: ".",
+            contentDigest: `sha256:${"b".repeat(64)}`,
+        }
+        let evidenceSource = null
+        let runInput = null
+        const context = mainFunctionContext(
+            "optimizationRuntimeConfiguration",
+            "optimizationVersionLabel",
+            {
+                availableRuntimes: [{
+                    runtimeId: "runtime-1",
+                    providerId: "codex",
+                    displayName: "Codex",
+                }],
+                basename,
+                evaluationRunner: {run: async () => {}},
+                join,
+                managedSkillManager: {git: {}},
+                managedSkillStore: {
+                    getRepository: () => ({id: "repository-1", managedPath: "/managed/repository"}),
+                    getSkill: () => ({id: "skill-1", name: "billing-cost-management"}),
+                },
+                optimizationDatasetSnapshot: () => ({
+                    snapshot: {digest: "dataset-digest"},
+                    rubric: {id: "rubric-1", rubricDigest: "rubric-digest"},
+                }),
+                optimizationRuntimeConfiguration: (value) => value,
+                snapshotManagedSkillEvidence: async (source_) => {
+                    evidenceSource = structuredClone(source_)
+                    return {digest: "skill-evidence-digest"}
+                },
+                skillInstallationStore: {
+                    resolveVerifiedInstallation: (input) => ({
+                        id: "installation-1",
+                        installationId: "installation-1",
+                        jobId: "install-job-1",
+                        commit: baseline.commit,
+                        contentDigest: baseline.contentDigest,
+                        destination: "/runtime/skills/billing-cost-management",
+                        installedAt: "2026-09-04T00:00:00.000Z",
+                        verification: "runtime-inventory",
+                        ...input,
+                    }),
+                },
+                optionalEffort: (value) => value ?? null,
+                optionalIdentifier: (value) => value ?? null,
+                requireIdentifier: (value) => value,
+                store: {
+                    createEvaluationRun: (input) => {
+                        runInput = structuredClone(input)
+                        return {id: "evaluation-1"}
+                    },
+                    getEvaluationRun: () => ({id: "evaluation-1", status: "completed"}),
+                },
+            },
+        )
+
+        await context.runOptimizationEvaluation({
+            optimizationRun: {
+                snapshot: {
+                    activationMode: "automatic",
+                    baseline,
+                    dataset: {
+                        id: "dataset-1",
+                        digest: "dataset-digest",
+                        caseRevisions: [{caseId: "case-1"}],
+                    },
+                    rubric: {id: "rubric-1", digest: "rubric-digest"},
+                    judge: {runtimeId: "runtime-1"},
+                },
+            },
+            kind: "baseline",
+            candidate: baseline,
+            installationJobs: [],
+            targets: [{runtimeId: "runtime-1"}],
+        })
+
+        assert.equal(evidenceSource.versionId, baseline.versionId)
+        assert.equal(runInput.managedVersionSnapshot.versionId, baseline.versionId)
+        assert.deepEqual(runInput.managedVersionSnapshot.installationJobIdsByRuntime, {
+            "runtime-1": "install-job-1",
+        })
+        assert.equal(
+            runInput.runtimeConfigurations[0].skillReference.path,
+            "/runtime/skills/billing-cost-management/SKILL.md",
+        )
+        assert.equal(runInput.runtimeConfigurations[0].installationId, "installation-1")
+        assert.equal(runInput.runtimeConfigurations[0].installationVerification, "runtime-inventory")
+    })
+
+    it("binds Candidate evaluation to the exact trusted experiment installation", async () => {
+        const candidate = {
+            id: "candidate-1",
+            repositoryId: "repository-1",
+            skillId: "skill-1",
+            commit: "c".repeat(40),
+            skillRoot: ".",
+            contentDigest: `sha256:${"d".repeat(64)}`,
+        }
+        const installationJob = {
+            id: "experiment-job-1",
+            status: "succeeded",
+            runtime: {runtimeId: "runtime-1", providerId: "codex"},
+            request: {
+                purpose: "optimization-experiment",
+                source: {
+                    repositoryId: candidate.repositoryId,
+                    skillId: candidate.skillId,
+                    versionId: candidate.id,
+                    commit: candidate.commit,
+                    expectedDigest: candidate.contentDigest,
+                },
+            },
+            parsedResult: {
+                trusted: true,
+                destination: "/runtime/skills/billing-cost-management",
+                verification: "experiment-marker",
+            },
+            completedAt: "2026-09-04T00:00:00.000Z",
+        }
+        let runInput = null
+        const context = mainFunctionContext(
+            "optimizationRuntimeConfiguration",
+            "optimizationVersionLabel",
+            {
+                availableRuntimes: [{
+                    runtimeId: "runtime-1",
+                    providerId: "codex",
+                    displayName: "Codex",
+                }],
+                basename,
+                evaluationRunner: {run: async () => {}},
+                join,
+                managedSkillManager: {git: {}},
+                managedSkillStore: {
+                    getRepository: () => ({id: "repository-1", managedPath: "/managed/repository"}),
+                    getSkill: () => ({id: "skill-1", name: "billing-cost-management"}),
+                },
+                optimizationDatasetSnapshot: () => ({
+                    snapshot: {digest: "dataset-digest"},
+                    rubric: {id: "rubric-1", rubricDigest: "rubric-digest"},
+                }),
+                optionalEffort: (value) => value ?? null,
+                optionalIdentifier: (value) => value ?? null,
+                requireIdentifier: (value) => value,
+                snapshotManagedSkillEvidence: async () => ({digest: "skill-evidence-digest"}),
+                store: {
+                    createEvaluationRun: (input) => {
+                        runInput = structuredClone(input)
+                        return {id: "evaluation-1"}
+                    },
+                    getEvaluationRun: () => ({id: "evaluation-1", status: "completed"}),
+                },
+            },
+        )
+
+        await context.runOptimizationEvaluation({
+            optimizationRun: {
+                snapshot: {
+                    activationMode: "automatic",
+                    dataset: {
+                        id: "dataset-1",
+                        digest: "dataset-digest",
+                        caseRevisions: [{caseId: "case-1"}],
+                    },
+                    rubric: {id: "rubric-1", digest: "rubric-digest"},
+                    judge: {runtimeId: "runtime-1"},
+                },
+            },
+            kind: "candidate",
+            candidate,
+            installationJobs: [installationJob],
+            targets: [{runtimeId: "runtime-1"}],
+        })
+
+        assert.equal(runInput.managedVersionSnapshot.versionId, candidate.id)
+        assert.deepEqual(runInput.managedVersionSnapshot.installationJobIdsByRuntime, {
+            "runtime-1": installationJob.id,
+        })
+        assert.equal(
+            runInput.runtimeConfigurations[0].skillReference.path,
+            "/runtime/skills/billing-cost-management/SKILL.md",
+        )
+        assert.equal(runInput.runtimeConfigurations[0].installationJobId, installationJob.id)
+        assert.equal(runInput.runtimeConfigurations[0].installationVerification, "experiment-marker")
     })
 
     it("keeps renderer capability private, rotates scoped grants, and validates the sender", () => {
