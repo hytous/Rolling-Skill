@@ -19,7 +19,7 @@ const {
     optimizationPanelView,
     optimizationFinalApproval,
     optimizationFinalApprovalView,
-    optimizationPreflightSummary,
+    optimizationSetupErrorText,
     optimizationRunActions,
     operatorStatusText,
     operatorJobTreeIds,
@@ -1592,39 +1592,37 @@ describe("multi-Epoch Optimization workbench", () => {
         assert.match(recovering.recoveryTargets[0].lastVerifiedDigest, /^sha256:/u)
     })
 
-    it("summarizes frozen preflight evidence and the one final approval boundary", () => {
-        const config = buildOptimizationConfig(values(), catalogs())
-        const summary = optimizationPreflightSummary({
-            ready: true,
-            snapshotDigest: `sha256:${"d".repeat(64)}`,
-            baseline: {
-                repositoryId: "repository-1",
-                skillId: "skill-1",
-                versionId: "released-1",
-                contentDigest: `sha256:${"b".repeat(64)}`,
-            },
-            dataset: {id: "dataset-1", revision: 7, digest: `sha256:${"e".repeat(64)}`},
-            rubric: {id: "rubric-1", version: 4, digest: `sha256:${"f".repeat(64)}`},
-            targets: config.targets,
-        }, config)
+    it("explains Optimization setup failures with actionable Chinese messages", () => {
+        const translations = {
+            operatorErrorOptimizationRubric: "所选数据集尚未发布评分标准，请先发布后再开始优化。",
+            operatorErrorOptimizationBaseline: "所选基线不是这个 Skill 的已发布版本，请重新选择。",
+            operatorErrorOptimizationRuntime: "Runtime {runtime} 当前不可用，请重新选择。",
+            operatorErrorWithDetail: "操作失败：{message}",
+        }
+        const translate = (key) => translations[key] ?? key
+        const formatMessage = (key) => translations[key] ?? key
 
-        assert.equal(summary.ready, true)
-        assert.deepEqual(summary.frozen, {
-            snapshotDigest: `sha256:${"d".repeat(64)}`,
-            baselineVersionId: "released-1",
-            baselineDigest: `sha256:${"b".repeat(64)}`,
-            datasetId: "dataset-1",
-            datasetRevision: 7,
-            rubricId: "rubric-1",
-            rubricVersion: 4,
-        })
-        assert.equal(Object.hasOwn(summary, "telemetry"), false)
-        assert.deepEqual(summary.approvals, ["release-install"])
-        const rendererSource = fs.readFileSync(require.resolve("../renderer/renderer.js"), "utf8")
-        assert.doesNotMatch(rendererSource, /first Candidate experiment install/iu)
-        assert.doesNotMatch(rendererSource, /首次安装实验改进版/u)
-        assert.match(rendererSource, /Only the final release-and-install decision requires explicit approval/iu)
-        assert.match(rendererSource, /仅最终一次“发布并安装”决定需要明确审批/u)
+        assert.equal(optimizationSetupErrorText(
+            new Error("Optimization Dataset requires a published Rubric"),
+            translate,
+            formatMessage,
+        ), translations.operatorErrorOptimizationRubric)
+        assert.equal(optimizationSetupErrorText(
+            new Error("Optimization baseline must be the selected Skill's Released version"),
+            translate,
+            formatMessage,
+        ), translations.operatorErrorOptimizationBaseline)
+        assert.equal(optimizationSetupErrorText(
+            new Error("Optimization Runtime codex:missing is unavailable"),
+            translate,
+            formatMessage,
+        ), "Runtime codex:missing 当前不可用，请重新选择。")
+        assert.equal(optimizationSetupErrorText(
+            new Error("workspace disk is locked"),
+            translate,
+            formatMessage,
+        ), "操作失败：workspace disk is locked")
+
     })
 
     it("selects the one persisted release-install approval for the optimization detail", () => {

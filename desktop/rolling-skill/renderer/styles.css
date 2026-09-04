@@ -1170,7 +1170,6 @@ kbd {
     gap: 10px;
 }
 
-.operator-optimization-preflight-summary,
 .operator-optimization-stop-warning,
 .operator-optimization-recovery {
     padding: 10px;
@@ -1362,6 +1361,11 @@ kbd {
     border-color: var(--accent);
     background: var(--accent);
     color: var(--accent-ink);
+}
+
+.operator-setup-actions button:disabled {
+    cursor: default;
+    opacity: 0.45;
 }
 
 .operator-session-panel:has(.operator-setup-form:not(.hidden)) .operator-transcript,

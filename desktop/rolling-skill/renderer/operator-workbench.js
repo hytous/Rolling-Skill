@@ -191,23 +191,6 @@
         return ["pause", "stop", "report"]
     }
 
-    function optimizationPreflightSummary(preflight = {}, config = {}) {
-        return {
-            ready: preflight.ready === true,
-            frozen: {
-                snapshotDigest: preflight.snapshotDigest ?? null,
-                baselineVersionId: preflight.baseline?.versionId ?? null,
-                baselineDigest: preflight.baseline?.contentDigest ?? null,
-                datasetId: preflight.dataset?.id ?? null,
-                datasetRevision: preflight.dataset?.revision ?? null,
-                rubricId: preflight.rubric?.id ?? null,
-                rubricVersion: preflight.rubric?.version ?? null,
-            },
-            runtimeMatrix: cloneOptimizationSummary(preflight.targets ?? config.targets ?? []),
-            approvals: ["release-install"],
-        }
-    }
-
     function optimizationPanelView(run = {}) {
         const epochs = Array.isArray(run.epochs) ? run.epochs : []
         const epoch = epochs.findLast?.((entry) => entry.number === run.currentEpoch) ?? epochs.at(-1) ?? null
@@ -332,6 +315,68 @@
             : translatedText(translate, key, fallback)
         return template.replace(/\{(\w+)\}/gu, (match, name) =>
             values[name] === undefined ? match : String(values[name]),
+        )
+    }
+
+    function optimizationSetupErrorText(error, translate = null, formatMessage = null) {
+        const detail = error?.message ?? String(error)
+        if (/Optimization Dataset requires a published Rubric/iu.test(detail)) {
+            return translatedText(
+                translate,
+                "operatorErrorOptimizationRubric",
+                "The selected Dataset has no published Rubric. Publish one before starting Optimization.",
+            )
+        }
+        if (/Optimization baseline must be (?:the selected Skill's|a matching) Released version/iu.test(detail)) {
+            return translatedText(
+                translate,
+                "operatorErrorOptimizationBaseline",
+                "The selected baseline is not a Released version of this Skill. Select a matching Released version.",
+            )
+        }
+        const unavailableRuntime = detail.match(/^Optimization Runtime (.+) is unavailable$/iu)
+        if (unavailableRuntime) {
+            return formattedText(
+                formatMessage,
+                translate,
+                "operatorErrorOptimizationRuntime",
+                {runtime: unavailableRuntime[1]},
+                "Runtime {runtime} is unavailable. Select an available Runtime.",
+            )
+        }
+        const missingRuntime = detail.match(/^(Operator|Judge|Target \d+) Runtime is not in the capability catalog$/iu)
+        if (missingRuntime) {
+            return formattedText(
+                formatMessage,
+                translate,
+                "operatorErrorOptimizationRuntimeSelection",
+                {role: missingRuntime[1]},
+                "The {role} Runtime is unavailable. Select another Runtime.",
+            )
+        }
+        const missingModel = detail.match(/^(Operator|Judge|Target \d+) model is not in the Runtime catalog$/iu)
+        if (missingModel) {
+            return formattedText(
+                formatMessage,
+                translate,
+                "operatorErrorOptimizationModel",
+                {role: missingModel[1]},
+                "The {role} model is unavailable for its Runtime. Select another model.",
+            )
+        }
+        if (/Optimization Dataset and Skill binding do not match/iu.test(detail)) {
+            return translatedText(
+                translate,
+                "operatorErrorOptimizationDatasetBinding",
+                "The selected Dataset belongs to another Skill. Select a matching Dataset.",
+            )
+        }
+        return formattedText(
+            formatMessage,
+            translate,
+            "operatorErrorWithDetail",
+            {message: detail},
+            `Operation failed: ${detail}`,
         )
     }
 
@@ -1685,8 +1730,6 @@
             optimizationJudgeEffort: root.querySelector("#operator-optimization-judge-effort"),
             optimizationActivation: root.querySelector("#operator-optimization-activation"),
             automationBoundary: root.querySelector("#operator-automation-boundary"),
-            optimizationPreflightSummary: root.querySelector("#operator-optimization-preflight-summary"),
-            optimizationPreflight: root.querySelector("#operator-optimization-preflight"),
             genericStart: root.querySelector("#operator-generic-start"),
             optimizationStart: root.querySelector("#operator-optimization-start"),
             transcript: root.querySelector("#operator-transcript"),
@@ -1724,8 +1767,6 @@
         let destroyed = false
         let creating = false
         let activeRenderedJobId = null
-        let optimizationPreflight = null
-        let optimizationPreflightSignature = null
         let activeOptimizationRunId = null
         let optimizationPollTimer = null
         const optimizationRuns = new Map()
@@ -2117,22 +2158,9 @@
             return selectors.jobKind.value === "optimization"
         }
 
-        function invalidateOptimizationPreflight() {
-            optimizationPreflight = null
-            optimizationPreflightSignature = null
-            selectors.optimizationStart.disabled = true
-            if (isOptimizationSetup()) {
-                selectors.optimizationPreflightSummary.textContent = text(
-                    "operatorConfigurationChanged",
-                    "Configuration changed. Run preflight again before starting.",
-                )
-            }
-        }
-
         function renderOptimizationSetupMode() {
             const optimization = isOptimizationSetup()
             selectors.optimizationFields.classList.toggle("hidden", !optimization)
-            selectors.optimizationPreflight.classList.toggle("hidden", !optimization)
             selectors.optimizationStart.classList.toggle("hidden", !optimization)
             selectors.genericStart.classList.toggle("hidden", optimization)
             selectors.automationBoundary.classList.toggle("hidden", optimization)
@@ -2184,67 +2212,6 @@
         function optimizationRequestId(prefix) {
             const suffix = globalObject?.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
             return `${prefix}-${suffix}`
-        }
-
-        function renderOptimizationPreflight(summary) {
-            const frozen = summary.frozen
-            selectors.optimizationPreflightSummary.textContent = [
-                message("operatorPreflightFrozen", {
-                    version: frozen.baselineVersionId,
-                    digest: frozen.baselineDigest ?? text("operatorDigestPending", "digest pending"),
-                }, "Frozen {version} ({digest})"),
-                message("operatorPreflightDataset", {
-                    id: frozen.datasetId,
-                    revision: frozen.datasetRevision,
-                }, "Dataset {id} @ revision {revision}"),
-                message("operatorPreflightRubric", {
-                    id: frozen.rubricId,
-                    version: frozen.rubricVersion,
-                }, "Rubric {id} @ version {version}"),
-                message("operatorPreflightTargets", {
-                    count: summary.runtimeMatrix.length,
-                }, "{count} target Runtime(s)"),
-                text(
-                    "operatorPreflightApprovals",
-                    "Approval remains explicit for the first Candidate experiment install and one final release-and-install decision.",
-                ),
-            ].join(" · ")
-        }
-
-        async function preflightOptimization() {
-            selectors.setupError.textContent = ""
-            selectors.setupError.classList.add("hidden")
-            try {
-                const config = optimizationConfigFromSetup()
-                const signature = JSON.stringify(config)
-                selectors.optimizationPreflight.disabled = true
-                selectors.optimizationPreflightSummary.textContent = text(
-                    "operatorCheckingPreflight",
-                    "Checking frozen inputs and Runtime readiness…",
-                )
-                const preflight = await api.preflightOptimization({
-                    ...config,
-                    idempotencyKey: optimizationRequestId("optimization-preflight"),
-                })
-                if (destroyed) return
-                optimizationPreflight = optimizationPreflightSummary(preflight, config)
-                optimizationPreflightSignature = signature
-                selectors.optimizationStart.disabled = optimizationPreflight.ready !== true
-                renderOptimizationPreflight(optimizationPreflight)
-            } catch (error) {
-                if (destroyed) return
-                optimizationPreflight = null
-                optimizationPreflightSignature = null
-                selectors.optimizationStart.disabled = true
-                selectors.optimizationPreflightSummary.textContent = text(
-                    "operatorPreflightFailed",
-                    "Preflight failed. Fix the configuration and retry.",
-                )
-                selectors.setupError.textContent = localizedErrorText(error)
-                selectors.setupError.classList.remove("hidden")
-            } finally {
-                if (!destroyed) selectors.optimizationPreflight.disabled = false
-            }
         }
 
         function optimizationRunForSnapshot(snapshot) {
@@ -2799,16 +2766,13 @@
             selectors.setupError.textContent = ""
             selectors.setupError.classList.add("hidden")
             if (isOptimizationSetup()) {
+                selectors.optimizationStart.disabled = true
+                selectors.optimizationStart.textContent = text(
+                    "operatorStartingOptimization",
+                    "Checking and starting…",
+                )
                 try {
                     const config = optimizationConfigFromSetup()
-                    const signature = JSON.stringify(config)
-                    if (!optimizationPreflight?.ready || optimizationPreflightSignature !== signature) {
-                        throw new Error(text(
-                            "operatorPreflightRequired",
-                            "Run Optimization preflight for the current configuration before Start.",
-                        ))
-                    }
-                    selectors.optimizationStart.disabled = true
                     const run = await api.startOptimization({
                         ...config,
                         idempotencyKey: optimizationRequestId("optimization-start"),
@@ -2831,9 +2795,20 @@
                     scheduleOptimizationPoll(250)
                 } catch (error) {
                     if (destroyed) return
-                    selectors.setupError.textContent = localizedErrorText(error)
+                    selectors.setupError.textContent = optimizationSetupErrorText(
+                        error,
+                        translate,
+                        formatMessage_,
+                    )
                     selectors.setupError.classList.remove("hidden")
-                    selectors.optimizationStart.disabled = !optimizationPreflight?.ready
+                } finally {
+                    if (!destroyed) {
+                        selectors.optimizationStart.disabled = false
+                        selectors.optimizationStart.textContent = text(
+                            "operatorStartOptimization",
+                            "Start Optimization",
+                        )
+                    }
                 }
                 return
             }
@@ -2930,7 +2905,6 @@
         function localize() {
             if (destroyed) return
             renderSetupCatalogs()
-            if (optimizationPreflight?.ready) renderOptimizationPreflight(optimizationPreflight)
             if (!initialized || root.classList.contains("hidden")) return
             renderVisibleSurface()
         }
@@ -2977,28 +2951,15 @@
         })
         domEvents.listen(selectors.runtime, "change", () => {
             if (destroyed) return
-            invalidateOptimizationPreflight()
             renderSetupCatalogs()
             void loadRuntimeModels(selectors.runtime.value, true)
         })
         domEvents.listen(selectors.model, "change", () => {
-            if (!destroyed) {
-                invalidateOptimizationPreflight()
-                renderEfforts()
-            }
+            if (!destroyed) renderEfforts()
         })
-        domEvents.listen(selectors.effort, "change", invalidateOptimizationPreflight)
-        domEvents.listen(selectors.jobKind, "change", () => {
-            invalidateOptimizationPreflight()
-            renderOptimizationSetupMode()
-        })
-        domEvents.listen(selectors.skill, "change", () => {
-            invalidateOptimizationPreflight()
-            renderSetupCatalogs()
-        })
-        domEvents.listen(selectors.dataset, "change", invalidateOptimizationPreflight)
+        domEvents.listen(selectors.jobKind, "change", renderOptimizationSetupMode)
+        domEvents.listen(selectors.skill, "change", renderSetupCatalogs)
         domEvents.listen(selectors.optimizationJudgeRuntime, "change", () => {
-            invalidateOptimizationPreflight()
             void loadRuntimeModels(selectors.optimizationJudgeRuntime.value)
             populateOptimizationModelSelect(
                 selectors.optimizationJudgeRuntime.value,
@@ -3007,14 +2968,12 @@
             )
         })
         domEvents.listen(selectors.optimizationJudgeModel, "change", () => {
-            invalidateOptimizationPreflight()
             populateOptimizationModelSelect(
                 selectors.optimizationJudgeRuntime.value,
                 selectors.optimizationJudgeModel,
                 selectors.optimizationJudgeEffort,
             )
         })
-        domEvents.listen(selectors.optimizationJudgeEffort, "change", invalidateOptimizationPreflight)
         domEvents.listen(selectors.targets, "change", (event) => {
             if (destroyed) return
             const targetToggle = event.target.closest?.("[data-operator-target]")
@@ -3033,11 +2992,7 @@
                     card.querySelector("[data-optimization-target-effort]"),
                 )
             }
-            invalidateOptimizationPreflight()
         })
-        domEvents.listen(selectors.optimizationFields, "input", invalidateOptimizationPreflight)
-        domEvents.listen(selectors.optimizationFields, "change", invalidateOptimizationPreflight)
-        domEvents.listen(selectors.optimizationPreflight, "click", () => { void preflightOptimization() })
         domEvents.listen(selectors.optimizationActions, "click", (event) => {
             const approvalButton = event.target.closest?.(
                 "[data-operator-approval-decision][data-operator-approval-id][data-operator-job-id]",
@@ -3095,7 +3050,7 @@
         optimizationPanelView,
         optimizationFinalApproval,
         optimizationFinalApprovalView,
-        optimizationPreflightSummary,
+        optimizationSetupErrorText,
         operatorStatusText,
         operatorJobTreeIds,
         operatorSessionActions,

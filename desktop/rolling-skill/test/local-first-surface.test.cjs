@@ -28,8 +28,13 @@ describe("local-first desktop surface", () => {
         assert.match(html, /id="operator-optimization-fields"/)
         assert.match(html, /id="operator-optimization-baseline"/)
         assert.match(html, /id="operator-optimization-judge-runtime"/)
-        assert.match(html, /id="operator-optimization-preflight"/)
-        assert.match(html, /id="operator-optimization-start"[^>]*disabled/)
+        assert.doesNotMatch(html, /id="operator-optimization-preflight"/u)
+        assert.doesNotMatch(html, /id="operator-optimization-preflight-summary"/u)
+        assert.match(html, /id="operator-optimization-start"[^>]*type="submit"/u)
+        assert.doesNotMatch(
+            html.match(/id="operator-optimization-start"[^>]*>/u)?.[0] ?? "",
+            /disabled/u,
+        )
         assert.match(html, /id="operator-optimization-panel"/)
         assert.match(html, /id="operator-optimization-timeline"/)
         assert.match(html, /id="operator-optimization-recovery"/)
@@ -48,7 +53,7 @@ describe("local-first desktop surface", () => {
         assert.match(operator, /readOperatorSummaryPage/)
         assert.match(operator, /resolveOperatorApproval/)
         assert.match(operator, /listModelsForRuntime/)
-        assert.match(operator, /preflightOptimization/)
+        assert.doesNotMatch(operator, /preflightOptimization/u)
         assert.match(operator, /startOptimization/)
         assert.match(operator, /getOptimizationRun/)
         assert.match(operator, /pauseOptimization/)
@@ -86,6 +91,7 @@ describe("local-first desktop surface", () => {
         assert.match(styles, /\.operator-job-panel,\s*\.operator-session-panel,\s*\.operator-status-panel\s*\{[^}]*border-radius:\s*13px/s)
         assert.match(styles, /\.operator-job-panel,\s*\.operator-session-panel,\s*\.operator-status-panel\s*\{[^}]*background:\s*color-mix/s)
         assert.match(styles, /\.operator-target-card:has\(input:checked\)/)
+        assert.match(styles, /\.operator-setup-actions button:disabled\s*\{[^}]*opacity:\s*0\.45/su)
         assert.match(styles, /\.operator-check-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s)
         assert.match(styles, /\.evaluation-runtime-heading\.operator-primary-runtime-heading\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s)
         assert.match(styles, /\.evaluation-runtime-controls\.operator-primary-runtime-controls\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/s)
